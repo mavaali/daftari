@@ -55,22 +55,22 @@ describe("vaultIndex", () => {
     const result = await vaultIndex(VAULT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.count).toBe(7);
-    expect(result.value.entries).toHaveLength(7);
+    expect(result.value.count).toBe(10);
+    expect(result.value.entries).toHaveLength(10);
   });
 
   it("filters by collection", async () => {
     const result = await vaultIndex(VAULT, { collection: "competitive-intel" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.count).toBe(3);
+    expect(result.value.count).toBe(4);
   });
 
   it("filters by status", async () => {
     const result = await vaultIndex(VAULT, { status: "canonical" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.count).toBe(3);
+    expect(result.value.count).toBe(6);
   });
 
   it("filters by domain", async () => {
@@ -105,12 +105,12 @@ describe("vaultStatus", () => {
     const result = await vaultStatus(VAULT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.fileCount).toBe(7);
+    expect(result.value.fileCount).toBe(10);
     const counts = Object.fromEntries(
       result.value.collections.map((c) => [c.collection, c.count]),
     );
-    expect(counts["competitive-intel"]).toBe(3);
-    expect(counts["pricing"]).toBe(2);
+    expect(counts["competitive-intel"]).toBe(4);
+    expect(counts["pricing"]).toBe(4);
     expect(counts["moonshot"]).toBe(1);
   });
 

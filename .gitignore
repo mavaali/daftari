@@ -3,3 +3,7 @@ dist/
 *.log
 .DS_Store
 test/fixtures/sample-vault/.daftari/index.db
+**/.daftari/index.db
+**/.daftari/index.db-journal
+**/.daftari/index.db-wal
+**/.daftari/index.db-shm

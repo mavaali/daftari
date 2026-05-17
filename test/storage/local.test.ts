@@ -14,7 +14,7 @@ describe("listFiles", () => {
     const result = await listFiles(VAULT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value).toHaveLength(7);
+    expect(result.value).toHaveLength(10);
     expect(result.value.every((p) => p.endsWith(".md"))).toBe(true);
     expect(result.value.some((p) => p.includes(".daftari"))).toBe(false);
   });
@@ -34,7 +34,7 @@ describe("listFiles", () => {
     const result = await listFiles(VAULT, "pricing/*.md");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value).toHaveLength(2);
+    expect(result.value).toHaveLength(4);
   });
 });
 

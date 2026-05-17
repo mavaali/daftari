@@ -11,6 +11,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
+import { searchTools } from "./tools/search.js";
 
 export const SERVER_NAME = "daftari";
 export const SERVER_VERSION = "0.1.0";
@@ -21,7 +22,7 @@ export function createServer(vaultRoot: string): Server {
     { capabilities: { tools: {} } },
   );
 
-  const tools: ToolDefinition[] = [...readTools];
+  const tools: ToolDefinition[] = [...readTools, ...searchTools];
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

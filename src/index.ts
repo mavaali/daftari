@@ -1,12 +1,15 @@
 // Daftari MCP server entry point.
 //
-// Parses `--vault <path>`, verifies the vault directory exists, then serves the
-// read-path tools over stdio. Diagnostics go to stderr so they never corrupt
-// the stdio JSON-RPC stream on stdout.
+// Parses `--vault <path>`, verifies the vault directory exists, builds the
+// search index, then serves the tools over stdio. Diagnostics go to stderr so
+// they never corrupt the stdio JSON-RPC stream on stdout.
+//
+// `--reindex` rebuilds the search index and exits without starting the server.
 
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { reindexVault } from "./search/reindex.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 
@@ -38,6 +41,27 @@ export async function main(
       `daftari: vault directory not found: ${vaultRoot}\n`,
     );
     process.exitCode = 1;
+    return;
+  }
+
+  // Build (or rebuild) the search index. With --reindex this is the whole job.
+  const reindexed = await reindexVault(vaultRoot);
+  if (reindexed.ok) {
+    const r = reindexed.value;
+    process.stderr.write(
+      `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
+        `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
+    );
+  } else {
+    // A failed index is not fatal: lexical search still works and the search
+    // tools retry indexing lazily on first use.
+    process.stderr.write(
+      `daftari: warning: index build failed: ${reindexed.error.message}\n`,
+    );
+  }
+
+  if (argv.includes("--reindex")) {
+    if (!reindexed.ok) process.exitCode = 1;
     return;
   }
 
