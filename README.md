@@ -217,8 +217,10 @@ A few capabilities were deliberately deferred so v1 ships with a tight,
 defensible surface — a server that does its core job well rather than a wide
 one that does many jobs partially. Not in this release:
 
-- **Cloud-hosted multi-tenant server** — an S3/GCS storage backend with
-  auth-token identity. v1 runs against a local filesystem as a single process.
+- **Self-hosted server mode** — a long-lived HTTP/SSE server multiple clients
+  connect to, with pluggable cloud-storage backends (ADLS, S3, GCS) and OAuth
+  authentication. Self-hosted by the operator, *not* a managed service. v1 runs
+  against a local filesystem as a single stdio process.
 - **Conflict resolution beyond file-level locks** — CRDTs or semantic merge for
   concurrent edits to the same document. v1 arbitrates with 60-second write locks.
 - **Background curation agent** — a scheduler that runs `vault_lint` on a
