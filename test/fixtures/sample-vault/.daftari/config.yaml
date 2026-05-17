@@ -1,0 +1,27 @@
+# .daftari/config.yaml — vault configuration (Phase 1 stub)
+# RBAC is config-driven: roles and users are declared here. Enforcement is
+# wired up in a later phase; Phase 1 does not read this file.
+version: 1
+vault_name: sample-vault
+
+collections:
+  competitive-intel:
+    domain: accumulation
+  pricing:
+    domain: accumulation
+  moonshot:
+    domain: generative
+
+roles:
+  admin:
+    can: [read, write, promote, deprecate, curate]
+  contributor:
+    can: [read, write]
+  reader:
+    can: [read]
+
+users:
+  - id: human:mihir
+    role: admin
+  - id: agent:claude-code
+    role: contributor

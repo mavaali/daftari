@@ -1,0 +1,39 @@
+{
+  "name": "daftari",
+  "version": "0.1.0",
+  "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
+  "license": "MIT",
+  "author": "Mihir Wagle / mavaali",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "daftari": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "dev": "tsx watch src/index.ts --vault ./test/fixtures/sample-vault"
+  },
+  "keywords": [
+    "mcp",
+    "knowledge-vault",
+    "markdown",
+    "agents"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.10.0",
+    "glob": "^13.0.6",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.8.0",
+    "tsx": "^4.22.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
