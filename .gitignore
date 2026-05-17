@@ -7,3 +7,8 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/index.db-journal
 **/.daftari/index.db-wal
 **/.daftari/index.db-shm
+**/.daftari/locks.db
+**/.daftari/locks.db-journal
+**/.daftari/locks.db-wal
+**/.daftari/locks.db-shm
+**/.daftari/curation-log.jsonl

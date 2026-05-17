@@ -90,6 +90,14 @@ export function clearIndex(db: IndexDb): void {
   db.exec("DELETE FROM documents; DELETE FROM chunks;");
 }
 
+// Drops one document and all its chunks. Used by the write path to evict a
+// document's stale rows before re-inserting it: a plain INSERT OR REPLACE on
+// chunks would leave orphaned high-index rows behind if the document shrank.
+export function deleteDocument(db: IndexDb, path: string): void {
+  db.prepare("DELETE FROM documents WHERE path = ?").run(path);
+  db.prepare("DELETE FROM chunks WHERE path = ?").run(path);
+}
+
 // --- Float32 <-> BLOB ------------------------------------------------------
 
 export function embeddingToBlob(vec: Float32Array): Buffer {
