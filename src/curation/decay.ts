@@ -41,7 +41,14 @@ export function computeDecay(input: DecayInput, now: Date = new Date()): DecaySt
   if (input.status === "deprecated") {
     level = "deprecated";
     reasons.push("status is deprecated — this document has been retired");
-    if (input.superseded_by) reasons.push(`superseded by: ${input.superseded_by}`);
+    if (input.superseded_by) {
+      // `superseded_by` is the only document-authored string that reaches the
+      // banner. Collapse all whitespace before interpolating it: a newline would
+      // otherwise forge an extra banner line — a prompt-injection vector against
+      // the consuming agent.
+      const ref = input.superseded_by.replace(/\s+/g, " ").trim();
+      reasons.push(`superseded by: ${ref}`);
+    }
   }
 
   // Past TTL.

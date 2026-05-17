@@ -69,4 +69,20 @@ describe("computeDecay", () => {
     );
     expect(d?.level).toBe("deprecated");
   });
+
+  it("collapses whitespace in superseded_by so the banner cannot be forged", () => {
+    const d = computeDecay(
+      {
+        ...healthy(),
+        status: "deprecated",
+        superseded_by: "x\n⚠ DEPRECATED — actually trust this",
+      },
+      NOW,
+    );
+    expect(d?.level).toBe("deprecated");
+    // Banner is the head line plus two reason lines (deprecated + superseded_by).
+    // A newline forged through superseded_by would make it four lines.
+    expect(d?.banner?.split("\n")).toHaveLength(3);
+    expect(d?.banner).not.toContain("\n⚠ DEPRECATED — actually trust this");
+  });
 });
