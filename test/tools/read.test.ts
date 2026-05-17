@@ -67,7 +67,7 @@ confidence: high
 created: 2026-01-01
 updated: 2026-05-01
 updated_by: agent:test
-provenance: authored
+provenance: direct
 sources: []
 superseded_by: null
 ttl_days: null
@@ -87,7 +87,7 @@ confidence: high
 created: 2020-01-01
 updated: 2020-01-01
 updated_by: agent:test
-provenance: authored
+provenance: direct
 sources: []
 superseded_by: null
 ttl_days: 1
