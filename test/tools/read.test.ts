@@ -1,4 +1,6 @@
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension } from "../../src/curation/tension.js";
@@ -48,6 +50,94 @@ describe("vaultRead", () => {
   it("returns an error for a missing file", async () => {
     const result = await vaultRead(VAULT, "competitive-intel/missing.md");
     expect(result.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vaultRead — inline decay surfacing
+// Uses a dedicated temp dir so the sample-vault file count stays at 10.
+// ---------------------------------------------------------------------------
+
+const HEALTHY_FRONTMATTER = `---
+title: "Healthy Document"
+domain: accumulation
+collection: docs
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-05-01
+updated_by: agent:test
+provenance: direct
+sources: []
+superseded_by: null
+ttl_days: null
+tags: []
+---
+
+Body content here.
+`;
+
+// updated far in the past + short TTL → always past TTL regardless of wall clock.
+const WARN_FRONTMATTER = `---
+title: "Stale Document"
+domain: accumulation
+collection: docs
+status: canonical
+confidence: high
+created: 2020-01-01
+updated: 2020-01-01
+updated_by: agent:test
+provenance: direct
+sources: []
+superseded_by: null
+ttl_days: 1
+tags: []
+---
+
+Body content here.
+`;
+
+describe("vaultRead — decay state", () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("returns decay: null for a healthy document", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "daftari-read-decay-"));
+    writeFileSync(join(tempDir, "healthy.md"), HEALTHY_FRONTMATTER, "utf-8");
+
+    const result = await vaultRead(tempDir, "healthy.md");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.decay).toBeNull();
+  });
+
+  it("returns decay.level === 'warn' and a non-null banner for a stale document", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "daftari-read-decay-"));
+    writeFileSync(join(tempDir, "stale.md"), WARN_FRONTMATTER, "utf-8");
+
+    const result = await vaultRead(tempDir, "stale.md");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.decay).not.toBeNull();
+    expect(result.value.decay?.level).toBe("warn");
+    expect(result.value.decay?.banner).not.toBeNull();
+  });
+
+  it("never embeds the banner inside content — content is byte-identical to the written body", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "daftari-read-decay-"));
+    writeFileSync(join(tempDir, "stale.md"), WARN_FRONTMATTER, "utf-8");
+
+    const result = await vaultRead(tempDir, "stale.md");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The body after frontmatter stripping should be exactly what we wrote.
+    expect(result.value.content.trim()).toBe("Body content here.");
+    // And the banner must not appear inside content.
+    expect(result.value.content).not.toContain("STALE");
+    expect(result.value.content).not.toContain("⚠");
   });
 });
 

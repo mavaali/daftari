@@ -8,6 +8,7 @@
 // unavailable) or the index holds no embeddings, the search degrades to
 // lexical-only and reports vectorUsed: false rather than failing.
 
+import { computeDecay, type DecayState } from "../curation/decay.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import {
   getAllChunks,
@@ -35,6 +36,7 @@ export interface HybridHit {
   bm25Score: number;
   vectorScore: number;
   snippet: string;
+  decay: DecayState | null;
 }
 
 export interface HybridSearchResult {
@@ -146,6 +148,14 @@ function rankDocuments(
       bm25Score,
       vectorScore,
       snippet: makeSnippet(doc.content, queryTokens),
+      decay: computeDecay({
+        status: doc.status,
+        confidence: doc.confidence,
+        updated: doc.updated,
+        created: doc.created,
+        ttl_days: doc.ttlDays,
+        superseded_by: doc.supersededBy,
+      }),
     });
   }
 

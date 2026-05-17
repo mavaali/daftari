@@ -19,6 +19,8 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 
 export type IndexDb = Database.Database;
 
+const SCHEMA_VERSION = "2";
+
 export interface IndexedDocument {
   path: string;
   title: string;
@@ -30,6 +32,9 @@ export interface IndexedDocument {
   tags: string[];
   content: string;
   tokens: string[];
+  ttlDays: number | null;
+  created: string;
+  supersededBy: string | null;
 }
 
 export interface IndexedChunk {
@@ -47,16 +52,19 @@ export function indexDbPath(vaultRoot: string): string {
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS documents (
-  path        TEXT PRIMARY KEY,
-  title       TEXT NOT NULL,
-  collection  TEXT NOT NULL,
-  domain      TEXT NOT NULL,
-  status      TEXT NOT NULL,
-  confidence  TEXT NOT NULL,
-  updated     TEXT NOT NULL,
-  tags        TEXT NOT NULL,
-  content     TEXT NOT NULL,
-  tokens      TEXT NOT NULL
+  path          TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  collection    TEXT NOT NULL,
+  domain        TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  confidence    TEXT NOT NULL,
+  updated       TEXT NOT NULL,
+  tags          TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  tokens        TEXT NOT NULL,
+  ttl_days      INTEGER,
+  created       TEXT NOT NULL DEFAULT '',
+  superseded_by TEXT
 );
 CREATE TABLE IF NOT EXISTS chunks (
   path         TEXT NOT NULL,
@@ -76,7 +84,17 @@ export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     const db = new Database(indexDbPath(vaultRoot));
     db.pragma("journal_mode = WAL");
+    // Ensure the meta table exists before reading schema_version from it.
+    db.exec(`CREATE TABLE IF NOT EXISTS meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );`);
+    const stored = getMeta(db, "schema_version");
+    if (stored !== SCHEMA_VERSION) {
+      db.exec("DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS chunks;");
+    }
     db.exec(SCHEMA);
+    setMeta(db, "schema_version", SCHEMA_VERSION);
     return ok(db);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -117,8 +135,9 @@ export function blobToEmbedding(blob: Buffer): Float32Array {
 export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   db.prepare(
     `INSERT OR REPLACE INTO documents
-       (path, title, collection, domain, status, confidence, updated, tags, content, tokens)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (path, title, collection, domain, status, confidence, updated, tags, content, tokens,
+        ttl_days, created, superseded_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     doc.path,
     doc.title,
@@ -130,6 +149,9 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
     JSON.stringify(doc.tags),
     doc.content,
     JSON.stringify(doc.tokens),
+    doc.ttlDays,
+    doc.created,
+    doc.supersededBy,
   );
 }
 
@@ -162,6 +184,9 @@ interface DocumentRow {
   tags: string;
   content: string;
   tokens: string;
+  ttl_days: number | null;
+  created: string;
+  superseded_by: string | null;
 }
 
 function rowToDocument(row: DocumentRow): IndexedDocument {
@@ -176,6 +201,9 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
     tags: JSON.parse(row.tags) as string[],
     content: row.content,
     tokens: JSON.parse(row.tokens) as string[],
+    ttlDays: row.ttl_days,
+    created: row.created,
+    supersededBy: row.superseded_by,
   };
 }
 

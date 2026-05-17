@@ -63,6 +63,17 @@ describe("search tools", () => {
       if (!result.ok) return;
       expect(result.value.weights).toEqual({ bm25: 1, vector: 0 });
     });
+
+    it("every hit carries a decay field that is null or an object", async () => {
+      const result = await vaultSearch(vault, { query: "pricing" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.hits.length).toBeGreaterThan(0);
+      for (const hit of result.value.hits) {
+        expect(Object.hasOwn(hit, "decay")).toBe(true);
+        expect(hit.decay === null || typeof hit.decay === "object").toBe(true);
+      }
+    });
   });
 
   describe("vault_search_related", () => {

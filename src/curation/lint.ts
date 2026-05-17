@@ -9,6 +9,7 @@ import { posix } from "node:path";
 import { parseDocument } from "../frontmatter/parser.js";
 import { type Frontmatter, ok, type Result } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { ageInDays, computeStaleness } from "./staleness.js";
 
 export const LINT_CHECKS = [
@@ -144,8 +145,8 @@ export async function runLint(
   const docs = loaded.value;
 
   const now = opts.now ?? new Date();
-  const draftMaxDays = opts.draftMaxDays ?? 30;
-  const lowConfidenceMaxDays = opts.lowConfidenceMaxDays ?? 30;
+  const draftMaxDays = opts.draftMaxDays ?? DRAFT_MAX_DAYS;
+  const lowConfidenceMaxDays = opts.lowConfidenceMaxDays ?? LOW_CONFIDENCE_MAX_DAYS;
   const inbound = buildInboundMap(docs);
   const byPath = new Map(docs.map((d) => [d.path, d]));
 
