@@ -29,6 +29,9 @@ const sampleDoc: IndexedDocument = {
   tags: ["foo", "bar"],
   content: "the body text",
   tokens: ["body", "text"],
+  ttlDays: null,
+  created: "2026-01-01",
+  supersededBy: null,
 };
 
 describe("index-db", () => {
@@ -101,5 +104,40 @@ describe("index-db", () => {
     expect(getMeta(db, "missing")).toBeNull();
     setMeta(db, "vector_enabled", "true");
     expect(getMeta(db, "vector_enabled")).toBe("true");
+  });
+
+  it("round-trips decay fields (ttlDays, created, supersededBy)", () => {
+    const doc: IndexedDocument = {
+      ...sampleDoc,
+      path: "pricing/decay.md",
+      ttlDays: 90,
+      created: "2026-03-15",
+      supersededBy: "pricing/new.md",
+    };
+    insertDocument(db, doc);
+    const read = getDocument(db, "pricing/decay.md");
+    expect(read?.ttlDays).toBe(90);
+    expect(read?.created).toBe("2026-03-15");
+    expect(read?.supersededBy).toBe("pricing/new.md");
+  });
+
+  it("round-trips null ttlDays and null supersededBy", () => {
+    const doc: IndexedDocument = {
+      ...sampleDoc,
+      path: "pricing/null-decay.md",
+      ttlDays: null,
+      created: "2026-04-01",
+      supersededBy: null,
+    };
+    insertDocument(db, doc);
+    const read = getDocument(db, "pricing/null-decay.md");
+    expect(read?.ttlDays).toBeNull();
+    expect(read?.created).toBe("2026-04-01");
+    expect(read?.supersededBy).toBeNull();
+  });
+
+  it("schema versioning: drops and recreates tables on version mismatch", () => {
+    // The DB opened in beforeEach should already have schema_version set.
+    expect(getMeta(db, "schema_version")).toBe("2");
   });
 });

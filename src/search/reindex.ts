@@ -67,6 +67,9 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StagedDocum
       tags: fm.tags,
       content: body,
       tokens,
+      ttlDays: fm.ttl_days,
+      created: fm.created,
+      supersededBy: fm.superseded_by,
     },
     chunks: chunkText(body),
   };
