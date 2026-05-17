@@ -5,6 +5,7 @@
 // additionally guards against unexpected throws at the transport boundary so a
 // bug cannot take the stdio connection down.
 
+import { readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
@@ -14,7 +15,14 @@ import { searchTools } from "./tools/search.js";
 import { writeTools } from "./tools/write.js";
 
 export const SERVER_NAME = "daftari";
-export const SERVER_VERSION = "0.1.0";
+
+// The version is read from the package manifest so it never drifts from the
+// published version. src/server.ts and dist/server.js both sit one level under
+// the package root, so this relative path resolves the same in dev and build.
+const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as {
+  version: string;
+};
+export const SERVER_VERSION = manifest.version;
 
 // The server runs as one access identity for its whole lifetime — the
 // --user / --role it was started with. Every tool call is enforced against it.
