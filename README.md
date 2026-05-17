@@ -66,7 +66,7 @@ Daftari exposes 13 tools, grouped by layer.
 
 | Tool | Description |
 |------|-------------|
-| `vault_read` | Read one document: markdown body, parsed frontmatter, and an advisory validation report. |
+| `vault_read` | Read one document: markdown body, parsed frontmatter, an advisory validation report, and an inline decay assessment. |
 | `vault_index` | List documents, filterable by collection, status, domain, or tags. |
 | `vault_status` | Vault health dashboard: total file count, per-collection counts, count of documents with invalid frontmatter, a staleness distribution (fresh/aging/stale), unresolved tensions, and recent write history. |
 
@@ -74,7 +74,7 @@ Daftari exposes 13 tools, grouped by layer.
 
 | Tool | Description |
 |------|-------------|
-| `vault_search` | Hybrid BM25 + vector search across the vault, with tunable ranking weights. |
+| `vault_search` | Hybrid BM25 + vector search across the vault, with tunable ranking weights; each hit carries an inline decay assessment. |
 | `vault_search_related` | Find documents thematically related to a given document. |
 | `vault_reindex` | Rebuild the SQLite search index from the markdown files. |
 
@@ -129,7 +129,8 @@ by name with JSON arguments; the server replies with a JSON text block. Here is
       "title": "Helios Consumption Pricing (Compute Credit Model)",
       "collection": "pricing", "status": "canonical",
       "score": 1, "bm25Score": 1, "vectorScore": 1,
-      "snippet": "# Helios Consumption Pricing (Compute Credit Model) Helios is a fictional platform…"
+      "snippet": "# Helios Consumption Pricing (Compute Credit Model) Helios is a fictional platform…",
+      "decay": null
     }
   ]
 }
@@ -223,8 +224,6 @@ one that does many jobs partially. Not in this release:
   against a local filesystem as a single stdio process.
 - **Conflict resolution beyond file-level locks** — CRDTs or semantic merge for
   concurrent edits to the same document. v1 arbitrates with 60-second write locks.
-- **Background curation agent** — a scheduler that runs `vault_lint` on a
-  cadence. v1's linter is advisory and invoked on demand.
 - **LLM reranking of search results** — a model pass over the BM25 + vector
   candidate set. v1 ships hybrid ranking without a rerank stage.
 - **Enforced domain separation** — v1 *documents* the convention that

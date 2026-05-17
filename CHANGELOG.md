@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-05-17
+
+### Added
+
+- **Inline decay surfacing** — `vault_read` and `vault_search` responses now
+  carry a `decay` assessment, so an agent cannot silently trust knowledge that
+  has decayed. A new `computeDecay` derives a per-document decay state —
+  `deprecated`, `warn`, or `aging` — from frontmatter; a warning banner is
+  rendered for `warn` and `deprecated` documents and withheld for healthy or
+  merely `aging` ones (the scarcity rule). The banner is never written into a
+  document's body. The search index gained `ttl_days`, `created`, and
+  `superseded_by` columns, with schema versioning to rebuild on a schema change.
+
 ## [1.0.0] - 2026-05-17
 
 First public release. Daftari is an MCP server that exposes a curated markdown
@@ -34,4 +47,5 @@ vault to AI agents, exposing 13 tools over stdio.
   example documents, git history, search index); `daftari --vault` serves it.
 - 160 tests covering all 13 tools and their supporting modules.
 
+[1.1.0]: https://github.com/mavaali/daftari/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mavaali/daftari/releases/tag/v1.0.0
