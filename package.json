@@ -34,7 +34,8 @@
     "lint": "biome check src test",
     "lint:fix": "biome check --write src test",
     "format": "biome format --write src test",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "prepare": "husky"
   },
   "keywords": [
     "mcp",
@@ -42,6 +43,10 @@
     "markdown",
     "agents"
   ],
+  "lint-staged": {
+    "src/**/*.{ts,tsx}": ["biome check --write --no-errors-on-unmatched"],
+    "test/**/*.{ts,tsx}": ["biome check --write --no-errors-on-unmatched"]
+  },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -55,6 +60,8 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.8.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "tsx": "^4.22.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
