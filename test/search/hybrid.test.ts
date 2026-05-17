@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
 import { reindexVault } from "../../src/search/reindex.js";
@@ -118,5 +121,136 @@ describe("hybrid search", () => {
       if (!result.ok) return;
       expect(result.value.weights).toEqual(DEFAULT_WEIGHTS);
     });
+  });
+});
+
+describe("hybrid search — decay surfacing", () => {
+  let decayVault: string;
+  let decayDb: IndexDb;
+
+  beforeAll(async () => {
+    decayVault = mkdtempSync(join(tmpdir(), "daftari-decay-search-"));
+
+    // A past-TTL canonical document. updated and created are far in the past,
+    // ttl_days: 1 means it expired the day after creation.
+    writeFileSync(
+      join(decayVault, "stale-doc.md"),
+      `---
+title: "Stale Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2020-01-01
+updated: 2020-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - some-source
+superseded_by: null
+ttl_days: 1
+tags: [stale, expired, decay]
+---
+
+# Stale Document
+
+This document covers stale and expired decay information for testing purposes.
+`,
+    );
+
+    // A healthy document to ensure decay is null for non-decayed hits.
+    writeFileSync(
+      join(decayVault, "healthy-doc.md"),
+      `---
+title: "Healthy Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-05-01
+updated_by: human:test
+provenance: direct
+sources:
+  - some-source
+superseded_by: null
+ttl_days: 365
+tags: [healthy, current]
+---
+
+# Healthy Document
+
+This document is healthy and current with no decay issues at all.
+`,
+    );
+
+    // A second healthy document to pad results.
+    writeFileSync(
+      join(decayVault, "another-doc.md"),
+      `---
+title: "Another Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-02-01
+updated: 2026-04-15
+updated_by: human:test
+provenance: direct
+sources:
+  - another-source
+superseded_by: null
+ttl_days: 365
+tags: [reference, general]
+---
+
+# Another Document
+
+Reference material for general use across the vault.
+`,
+    );
+
+    const reindexed = await reindexVault(decayVault);
+    if (!reindexed.ok) throw reindexed.error;
+    const opened = openIndexDb(decayVault);
+    if (!opened.ok) throw opened.error;
+    decayDb = opened.value;
+  }, 60_000);
+
+  afterAll(() => {
+    decayDb.close();
+    rmSync(decayVault, { recursive: true, force: true });
+  });
+
+  it("attaches decay state to a past-TTL hit", async () => {
+    const result = await hybridSearch(decayDb, "stale expired decay");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const staleHit = result.value.hits.find((h) => h.path === "stale-doc.md");
+    expect(staleHit).toBeDefined();
+    expect(staleHit?.decay).not.toBeNull();
+    expect(staleHit?.decay?.level).toBe("warn");
+  });
+
+  it("returns null decay for a healthy document hit", async () => {
+    const result = await hybridSearch(decayDb, "healthy current document");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const healthyHit = result.value.hits.find((h) => h.path === "healthy-doc.md");
+    expect(healthyHit).toBeDefined();
+    expect(healthyHit?.decay).toBeNull();
+  });
+
+  it("every hit carries the decay field (null or object)", async () => {
+    const result = await hybridSearch(decayDb, "document");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hits.length).toBeGreaterThan(0);
+    for (const hit of result.value.hits) {
+      expect(Object.hasOwn(hit, "decay")).toBe(true);
+      expect(hit.decay === null || typeof hit.decay === "object").toBe(true);
+    }
   });
 });
