@@ -1,7 +1,8 @@
 // Daftari MCP server entry point.
 //
-// Parses `--vault <path>`, verifies the vault directory exists, builds the
-// search index, then serves the tools over stdio. Diagnostics go to stderr so
+// Parses `--vault <path>`, verifies the vault directory exists, loads the RBAC
+// config, builds the search index, then serves the tools over stdio under the
+// access identity given by `--user` / `--role`. Diagnostics go to stderr so
 // they never corrupt the stdio JSON-RPC stream on stdout.
 //
 // `--reindex` rebuilds the search index and exits without starting the server.
@@ -12,15 +13,23 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { reindexVault } from "./search/reindex.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
+import { loadConfig } from "./utils/config.js";
+import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 
-export function parseVaultArg(argv: string[]): string | null {
-  const flagIndex = argv.indexOf("--vault");
+// Reads `--name value` or `--name=value` from argv; null if absent.
+export function parseFlag(argv: string[], name: string): string | null {
+  const flag = `--${name}`;
+  const flagIndex = argv.indexOf(flag);
   if (flagIndex !== -1 && flagIndex + 1 < argv.length) {
     return argv[flagIndex + 1] ?? null;
   }
-  const inline = argv.find((a) => a.startsWith("--vault="));
-  if (inline) return inline.slice("--vault=".length);
+  const inline = argv.find((a) => a.startsWith(`${flag}=`));
+  if (inline) return inline.slice(`${flag}=`.length);
   return null;
+}
+
+export function parseVaultArg(argv: string[]): string | null {
+  return parseFlag(argv, "vault");
 }
 
 export async function main(
@@ -44,6 +53,27 @@ export async function main(
     return;
   }
 
+  // Load the RBAC config. A malformed config fails loud: the server must not
+  // start serving content under a policy it could not parse.
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) {
+    process.stderr.write(`daftari: ${config.error.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Resolve the access identity. With no --role the server runs as the
+  // deny-all guest; an unknown role name resolves the same way.
+  const user = parseFlag(argv, "user") ?? "guest";
+  const roleName = parseFlag(argv, "role") ?? GUEST_ROLE;
+  const access = resolveAccess(config.value, user, roleName);
+  if (access.role === null && roleName !== GUEST_ROLE) {
+    process.stderr.write(
+      `daftari: warning: role '${roleName}' not found in config — ` +
+        `running as deny-all guest\n`,
+    );
+  }
+
   // Build (or rebuild) the search index. With --reindex this is the whole job.
   const reindexed = await reindexVault(vaultRoot);
   if (reindexed.ok) {
@@ -65,10 +95,13 @@ export async function main(
     return;
   }
 
-  const server = createServer(vaultRoot);
+  const server = createServer(vaultRoot, access);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  process.stderr.write(`daftari: serving vault at ${vaultRoot} (stdio)\n`);
+  process.stderr.write(
+    `daftari: serving vault at ${vaultRoot} (stdio) — ` +
+      `user=${access.user} role=${access.roleName}\n`,
+  );
 }
 
 // Auto-run only when this module is the process entry point (e.g. `tsx

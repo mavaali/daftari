@@ -18,7 +18,25 @@ import {
   readProvenanceLog,
   type ProvenanceEntry,
 } from "../curation/provenance.js";
+import { hasAnyRead, type AccessContext } from "../access/rbac.js";
 import type { ToolDefinition } from "./read.js";
+
+// Curation tools are open to any role with at least one read grant. A guest
+// (or any role with no read access) is denied.
+function requireReadAccess(
+  tool: string,
+  access?: AccessContext,
+): Result<void, Error> {
+  if (access && !hasAnyRead(access.role)) {
+    return {
+      ok: false,
+      error: new Error(
+        `access denied: role '${access.roleName}' cannot use ${tool}`,
+      ),
+    };
+  }
+  return ok(undefined);
+}
 
 // ---------------------------------------------------------------------------
 // vault_tension_log
@@ -27,7 +45,11 @@ import type { ToolDefinition } from "./read.js";
 export async function vaultTensionLog(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<TensionEntry, Error>> {
+  const allowed = requireReadAccess("vault_tension_log", access);
+  if (!allowed.ok) return allowed;
+
   const str = (field: string): Result<string, Error> => {
     const v = args[field];
     if (typeof v !== "string" || v.trim().length === 0) {
@@ -78,7 +100,11 @@ export interface VaultLintResult {
 export async function vaultLint(
   vaultRoot: string,
   args: Record<string, unknown> = {},
+  access?: AccessContext,
 ): Promise<Result<VaultLintResult, Error>> {
+  const allowed = requireReadAccess("vault_lint", access);
+  if (!allowed.ok) return allowed;
+
   let filter: LintCheckName | null = null;
   if (args.filter !== undefined && args.filter !== null) {
     if (
@@ -131,7 +157,11 @@ export interface VaultProvenanceResult {
 export async function vaultProvenance(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<VaultProvenanceResult, Error>> {
+  const allowed = requireReadAccess("vault_provenance", access);
+  if (!allowed.ok) return allowed;
+
   const filePath = args.filePath;
   if (typeof filePath !== "string" || filePath.trim().length === 0) {
     return {
@@ -191,7 +221,8 @@ export const curationTools: ToolDefinition[] = [
       required: ["title", "sourceA", "claimA", "sourceB", "claimB", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultTensionLog(vaultRoot, args),
+    handler: (vaultRoot, args, access) =>
+      vaultTensionLog(vaultRoot, args, access),
   },
   {
     name: "vault_lint",
@@ -212,7 +243,7 @@ export const curationTools: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultLint(vaultRoot, args),
+    handler: (vaultRoot, args, access) => vaultLint(vaultRoot, args, access),
   },
   {
     name: "vault_provenance",
@@ -231,6 +262,7 @@ export const curationTools: ToolDefinition[] = [
       required: ["filePath"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultProvenance(vaultRoot, args),
+    handler: (vaultRoot, args, access) =>
+      vaultProvenance(vaultRoot, args, access),
   },
 ];

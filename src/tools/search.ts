@@ -17,6 +17,7 @@ import {
   type RelatedSearchResult,
 } from "../search/hybrid.js";
 import { reindexVault, type ReindexResult } from "../search/reindex.js";
+import { canRead, type AccessContext } from "../access/rbac.js";
 import type { ToolDefinition } from "./read.js";
 
 // Builds the index if it has never been built. A populated index is left as-is
@@ -65,6 +66,7 @@ function parseLimit(raw: unknown): number {
 export async function vaultSearch(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<HybridSearchResult, Error>> {
   const query = args.query;
   if (typeof query !== "string" || query.trim().length === 0) {
@@ -81,10 +83,16 @@ export async function vaultSearch(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
-    return await hybridSearch(db, query, {
+    const result = await hybridSearch(db, query, {
       weights: parseWeights(args.weights),
       limit: parseLimit(args.limit),
     });
+    if (!result.ok || !access) return result;
+    // RBAC: drop hits in collections the role cannot read.
+    const hits = result.value.hits.filter((h) =>
+      canRead(access.role, h.collection),
+    );
+    return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();
   }
@@ -97,6 +105,7 @@ export async function vaultSearch(
 export async function vaultSearchRelated(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<RelatedSearchResult, Error>> {
   const path = args.path;
   if (typeof path !== "string" || path.trim().length === 0) {
@@ -115,10 +124,16 @@ export async function vaultSearchRelated(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
-    return relatedSearch(db, path, {
+    const result = relatedSearch(db, path, {
       weights: parseWeights(args.weights),
       limit: parseLimit(args.limit),
     });
+    if (!result.ok || !access) return result;
+    // RBAC: drop related hits in collections the role cannot read.
+    const hits = result.value.hits.filter((h) =>
+      canRead(access.role, h.collection),
+    );
+    return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();
   }
@@ -175,7 +190,7 @@ export const searchTools: ToolDefinition[] = [
       required: ["query"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultSearch(vaultRoot, args),
+    handler: (vaultRoot, args, access) => vaultSearch(vaultRoot, args, access),
   },
   {
     name: "vault_search_related",
@@ -199,7 +214,8 @@ export const searchTools: ToolDefinition[] = [
       required: ["path"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultSearchRelated(vaultRoot, args),
+    handler: (vaultRoot, args, access) =>
+      vaultSearchRelated(vaultRoot, args, access),
   },
   {
     name: "vault_reindex",

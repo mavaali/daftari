@@ -33,6 +33,11 @@ import {
   frontmatterDiff,
   recordProvenance,
 } from "../curation/provenance.js";
+import {
+  canPromote,
+  canWrite,
+  type AccessContext,
+} from "../access/rbac.js";
 import type { ToolDefinition } from "./read.js";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +46,12 @@ import type { ToolDefinition } from "./read.js";
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+// A document's RBAC collection: its frontmatter `collection`, falling back to
+// the top-level directory of its vault-relative path.
+function collectionOf(relPath: string, fm: Frontmatter): string {
+  return fm.collection || (relPath.split("/")[0] ?? "");
 }
 
 // Serializes a frontmatter block and markdown body back into file text.
@@ -170,6 +181,7 @@ function requireString(
 export async function vaultWrite(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
   const path = requireString(args, "path", "vault_write");
   if (!path.ok) return path;
@@ -184,6 +196,25 @@ export async function vaultWrite(
       new Error("vault_write requires a 'frontmatter' object argument"),
     );
   }
+  const rawFrontmatter = args.frontmatter as Record<string, unknown>;
+
+  // RBAC is checked before any file I/O or frontmatter validation: an
+  // unauthorized caller is denied without learning anything about the target.
+  if (access) {
+    const declared = rawFrontmatter.collection;
+    const collection =
+      typeof declared === "string" && declared.length > 0
+        ? declared
+        : (path.value.split("/")[0] ?? "");
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot write to ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
@@ -196,9 +227,7 @@ export async function vaultWrite(
   }
   const isUpdate = oldFrontmatter !== null;
 
-  const { frontmatter, report } = validateFrontmatter(
-    args.frontmatter as Record<string, unknown>,
-  );
+  const { frontmatter, report } = validateFrontmatter(rawFrontmatter);
   if (!report.valid) {
     const summary = report.issues
       .map((i) => `${i.field}: ${i.message}`)
@@ -239,6 +268,7 @@ export async function vaultWrite(
 export async function vaultAppend(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
   const path = requireString(args, "path", "vault_append");
   if (!path.ok) return path;
@@ -258,6 +288,17 @@ export async function vaultAppend(
   if (!parsed.ok) return parsed;
 
   const oldFrontmatter = parsed.value.frontmatter;
+  if (access) {
+    const collection = collectionOf(path.value, oldFrontmatter);
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot write to ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
   const newFrontmatter: Frontmatter = {
     ...oldFrontmatter,
     updated: todayISO(),
@@ -290,11 +331,20 @@ export async function vaultAppend(
 export async function vaultPromote(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
   const path = requireString(args, "path", "vault_promote");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_promote");
   if (!agent.ok) return agent;
+
+  if (access && !canPromote(access.role)) {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' cannot promote documents`,
+      ),
+    );
+  }
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
@@ -368,6 +418,7 @@ export async function vaultPromote(
 export async function vaultDeprecate(
   vaultRoot: string,
   args: Record<string, unknown>,
+  access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
   const path = requireString(args, "path", "vault_deprecate");
   if (!path.ok) return path;
@@ -397,6 +448,17 @@ export async function vaultDeprecate(
   if (!parsed.ok) return parsed;
 
   const oldFrontmatter = parsed.value.frontmatter;
+  if (access) {
+    const collection = collectionOf(path.value, oldFrontmatter);
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot write to ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
   const newFrontmatter: Frontmatter = {
     ...oldFrontmatter,
     status: "deprecated",
@@ -460,7 +522,7 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "body", "frontmatter", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultWrite(vaultRoot, args),
+    handler: (vaultRoot, args, access) => vaultWrite(vaultRoot, args, access),
   },
   {
     name: "vault_append",
@@ -483,7 +545,7 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "section", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultAppend(vaultRoot, args),
+    handler: (vaultRoot, args, access) => vaultAppend(vaultRoot, args, access),
   },
   {
     name: "vault_promote",
@@ -503,7 +565,7 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultPromote(vaultRoot, args),
+    handler: (vaultRoot, args, access) => vaultPromote(vaultRoot, args, access),
   },
   {
     name: "vault_deprecate",
@@ -531,6 +593,7 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "reason", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultDeprecate(vaultRoot, args),
+    handler: (vaultRoot, args, access) =>
+      vaultDeprecate(vaultRoot, args, access),
   },
 ];

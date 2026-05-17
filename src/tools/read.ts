@@ -15,14 +15,22 @@ import {
   type ValidationReport,
 } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import {
+  canRead,
+  filterByReadPermission,
+  type AccessContext,
+} from "../access/rbac.js";
 
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  // `access` is supplied by the server transport on every call. When omitted
+  // (a direct in-process call, e.g. from a test) RBAC is not enforced.
   handler: (
     vaultRoot: string,
     args: Record<string, unknown>,
+    access?: AccessContext,
   ) => Promise<Result<unknown, Error>>;
 }
 
@@ -42,6 +50,7 @@ export interface VaultReadResult {
 export async function vaultRead(
   vaultRoot: string,
   path: string,
+  access?: AccessContext,
 ): Promise<Result<VaultReadResult, Error>> {
   if (typeof path !== "string" || path.length === 0) {
     return err(new Error("vault_read requires a non-empty 'path' argument"));
@@ -54,6 +63,18 @@ export async function vaultRead(
 
   const parsed = parseDocument(file.value);
   if (!parsed.ok) return parsed;
+
+  if (access) {
+    const collection = collectionOf(path, parsed.value.frontmatter);
+    if (!canRead(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot read ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
 
   return ok({
     path,
@@ -104,6 +125,7 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
 export async function vaultIndex(
   vaultRoot: string,
   filters: VaultIndexFilters = {},
+  access?: AccessContext,
 ): Promise<Result<VaultIndexResult, Error>> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return list;
@@ -141,7 +163,11 @@ export async function vaultIndex(
     });
   }
 
-  return ok({ count: entries.length, entries });
+  // RBAC: drop documents in collections the role cannot read.
+  const visible = access
+    ? filterByReadPermission(access.role, entries)
+    : entries;
+  return ok({ count: visible.length, entries: visible });
 }
 
 // ---------------------------------------------------------------------------
@@ -165,8 +191,10 @@ export interface VaultStatusResult {
 
 export async function vaultStatus(
   vaultRoot: string,
+  access?: AccessContext,
 ): Promise<Result<VaultStatusResult, Error>> {
-  const index = await vaultIndex(vaultRoot);
+  // vault_status reports only over the documents the role can read.
+  const index = await vaultIndex(vaultRoot, {}, access);
   if (!index.ok) return index;
 
   const byCollection = new Map<string, number>();
@@ -229,7 +257,8 @@ export const readTools: ToolDefinition[] = [
       required: ["path"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) => vaultRead(vaultRoot, String(args.path ?? "")),
+    handler: (vaultRoot, args, access) =>
+      vaultRead(vaultRoot, String(args.path ?? ""), access),
   },
   {
     name: "vault_index",
@@ -258,13 +287,17 @@ export const readTools: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
-    handler: (vaultRoot, args) =>
-      vaultIndex(vaultRoot, {
-        collection: asString(args.collection),
-        status: asString(args.status),
-        domain: asString(args.domain),
-        tags: asStringArray(args.tags),
-      }),
+    handler: (vaultRoot, args, access) =>
+      vaultIndex(
+        vaultRoot,
+        {
+          collection: asString(args.collection),
+          status: asString(args.status),
+          domain: asString(args.domain),
+          tags: asStringArray(args.tags),
+        },
+        access,
+      ),
   },
   {
     name: "vault_status",
@@ -276,6 +309,6 @@ export const readTools: ToolDefinition[] = [
       properties: {},
       additionalProperties: false,
     },
-    handler: (vaultRoot) => vaultStatus(vaultRoot),
+    handler: (vaultRoot, _args, access) => vaultStatus(vaultRoot, access),
   },
 ];

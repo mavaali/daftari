@@ -1,0 +1,27 @@
+# .daftari/config.yaml — vault configuration template.
+#
+# Copied into a new vault's .daftari/ directory by `daftari --init`. RBAC is
+# config-driven: roles and their per-collection permissions are declared here,
+# and the server is started with --role <name> to select one.
+#
+#   read    — collections whose documents the role may read/search
+#   write   — collections the role may create/append/deprecate documents in
+#   promote — whether the role may promote a draft to canonical (default false)
+#
+# "*" in a read or write list is a wildcard matching every collection. A role
+# that is not started with --role, or a name not listed here, falls back to an
+# implicit "guest" with no permissions — every tool is denied.
+version: 1
+vault_name: my-vault
+
+roles:
+  reader:
+    read: ["*"]
+    write: []
+  contributor:
+    read: ["*"]
+    write: ["*"]
+  admin:
+    read: ["*"]
+    write: ["*"]
+    promote: true
