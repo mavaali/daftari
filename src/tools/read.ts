@@ -5,6 +5,7 @@
 // definitions; tests call the logic functions directly.
 
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import { computeDecay, type DecayState } from "../curation/decay.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { listStaleFiles } from "../curation/staleness.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
@@ -44,6 +45,7 @@ export interface VaultReadResult {
   raw: Record<string, unknown>;
   validation: ValidationReport;
   hasFrontmatter: boolean;
+  decay: DecayState | null;
 }
 
 export async function vaultRead(
@@ -81,6 +83,7 @@ export async function vaultRead(
     raw: parsed.value.raw,
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
+    decay: computeDecay(parsed.value.frontmatter),
   });
 }
 
@@ -316,7 +319,9 @@ export const readTools: ToolDefinition[] = [
     name: "vault_read",
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
-      "frontmatter, and a validation report. Path is relative to the vault root.",
+      "frontmatter, a validation report, and a decay assessment (null when " +
+      "healthy; otherwise level, reasons, and an optional banner). Path is " +
+      "relative to the vault root.",
     inputSchema: {
       type: "object",
       properties: {
