@@ -1,6 +1,6 @@
 {
   "name": "daftari",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
   "license": "MIT",
   "author": "Mihir Wagle / mavaali",
@@ -9,14 +9,29 @@
   "bin": {
     "daftari": "./dist/cli.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mavaali/daftari.git"
+  },
+  "homepage": "https://github.com/mavaali/daftari#readme",
+  "bugs": {
+    "url": "https://github.com/mavaali/daftari/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist",
-    "templates"
+    "templates",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "dev": "tsx watch src/index.ts --vault ./test/fixtures/sample-vault"
+    "dev": "tsx watch src/index.ts --vault ./test/fixtures/sample-vault",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
