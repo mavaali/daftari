@@ -1,5 +1,9 @@
 # Daftari
 
+[![CI](https://github.com/mavaali/daftari/actions/workflows/ci.yml/badge.svg)](https://github.com/mavaali/daftari/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/daftari.svg)](https://www.npmjs.com/package/daftari)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **An MCP server that exposes a curated markdown vault to AI agents.**
 
 Daftari is not RAG. It is not a chatbot. It is a *living, agent-maintained
@@ -64,7 +68,7 @@ Daftari exposes 13 tools, grouped by layer.
 |------|-------------|
 | `vault_read` | Read one document: markdown body, parsed frontmatter, and an advisory validation report. |
 | `vault_index` | List documents, filterable by collection, status, domain, or tags. |
-| `vault_status` | Vault summary: total files, per-collection counts, count of documents with invalid frontmatter. |
+| `vault_status` | Vault health dashboard: total file count, per-collection counts, count of documents with invalid frontmatter, a staleness distribution (fresh/aging/stale), unresolved tensions, and recent write history. |
 
 **Search**
 
@@ -94,6 +98,42 @@ Daftari exposes 13 tools, grouped by layer.
 The curation engine is **advisory**: `vault_lint` reports problems and
 `vault_tension_log` records contradictions — neither auto-fixes anything. A
 human or a deliberate agent decision drives every change.
+
+---
+
+## What an agent call looks like
+
+Daftari speaks the Model Context Protocol over stdio. An agent invokes a tool
+by name with JSON arguments; the server replies with a JSON text block. Here is
+`vault_search` against a freshly scaffolded vault (`npx daftari --init`):
+
+**Request**
+
+```json
+{ "method": "tools/call", "params": {
+    "name": "vault_search",
+    "arguments": { "query": "consumption pricing", "limit": 1 } } }
+```
+
+**Response** — `content[0].text`, parsed:
+
+```json
+{
+  "query": "consumption pricing",
+  "count": 1,
+  "vectorUsed": true,
+  "weights": { "bm25": 0.5, "vector": 0.5 },
+  "hits": [
+    {
+      "path": "pricing/helios-consumption-pricing.md",
+      "title": "Helios Consumption Pricing (Compute Credit Model)",
+      "collection": "pricing", "status": "canonical",
+      "score": 1, "bm25Score": 1, "vectorScore": 1,
+      "snippet": "# Helios Consumption Pricing (Compute Credit Model) Helios is a fictional platform…"
+    }
+  ]
+}
+```
 
 ---
 
@@ -168,6 +208,29 @@ The `## Questions Answered` / `## Questions Raised` pattern is a convention,
 not a requirement: it makes a document's epistemic edges explicit so the next
 agent knows what is settled and what is still open. Full field reference in
 [docs/file-format.md](docs/file-format.md).
+
+---
+
+## What's not in v1
+
+A few capabilities were deliberately deferred so v1 ships with a tight,
+defensible surface — a server that does its core job well rather than a wide
+one that does many jobs partially. Not in this release:
+
+- **Cloud-hosted multi-tenant server** — an S3/GCS storage backend with
+  auth-token identity. v1 runs against a local filesystem as a single process.
+- **Conflict resolution beyond file-level locks** — CRDTs or semantic merge for
+  concurrent edits to the same document. v1 arbitrates with 60-second write locks.
+- **Background curation agent** — a scheduler that runs `vault_lint` on a
+  cadence. v1's linter is advisory and invoked on demand.
+- **LLM reranking of search results** — a model pass over the BM25 + vector
+  candidate set. v1 ships hybrid ranking without a rerank stage.
+- **Enforced domain separation** — v1 *documents* the convention that
+  generative-domain documents are not cross-referenced into accumulation pages;
+  the write tools do not yet enforce it. v2 will.
+
+Each of these is a clean increment on top of a surface that already works —
+deliberately deferred, not forgotten.
 
 ---
 
