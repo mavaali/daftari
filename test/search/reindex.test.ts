@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { reindexVault } from "../../src/search/reindex.js";
-import { getAllChunks, getAllDocuments, getMeta, openIndexDb } from "../../src/storage/index-db.js";
+import {
+  getAllChunks,
+  getAllDocuments,
+  getDocument,
+  getMeta,
+  openIndexDb,
+} from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 describe("reindexVault", () => {
@@ -45,5 +51,28 @@ describe("reindexVault", () => {
     if (!first.ok || !second.ok) return;
     expect(second.value.documentCount).toBe(first.value.documentCount);
     expect(second.value.chunkCount).toBe(first.value.chunkCount);
+  }, 60_000);
+
+  it("populates ttlDays, created, and supersededBy from frontmatter after reindex", async () => {
+    const result = await reindexVault(vault);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const opened = openIndexDb(vault);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      // competitive-intel/northwind-data-governance.md has:
+      //   ttl_days: 120, created: 2026-03-10, superseded_by: null
+      const doc = getDocument(db, "competitive-intel/northwind-data-governance.md");
+      expect(doc).not.toBeNull();
+      if (!doc) return;
+      expect(doc.ttlDays).toBe(120);
+      expect(doc.created).toBe("2026-03-10");
+      expect(doc.supersededBy).toBeNull();
+    } finally {
+      db.close();
+    }
   }, 60_000);
 });
