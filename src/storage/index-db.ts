@@ -94,9 +94,7 @@ export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
       db.exec("DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS chunks;");
     }
     db.exec(SCHEMA);
-    if (stored !== SCHEMA_VERSION) {
-      setMeta(db, "schema_version", SCHEMA_VERSION);
-    }
+    setMeta(db, "schema_version", SCHEMA_VERSION);
     return ok(db);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);

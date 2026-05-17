@@ -137,7 +137,19 @@ describe("index-db", () => {
   });
 
   it("schema versioning: drops and recreates tables on version mismatch", () => {
-    // The DB opened in beforeEach should already have schema_version set.
+    // Stamp a stale schema version and insert a document.
+    setMeta(db, "schema_version", "1");
+    insertDocument(db, sampleDoc);
+    expect(documentCount(db)).toBe(1);
+    db.close();
+
+    // Reopen the same DB — openIndexDb must detect the version mismatch, drop
+    // documents/chunks, recreate them, and write the current schema version.
+    const reopened = openIndexDb(vault);
+    if (!reopened.ok) throw reopened.error;
+    db = reopened.value;
+
+    expect(documentCount(db)).toBe(0);
     expect(getMeta(db, "schema_version")).toBe("2");
   });
 });
