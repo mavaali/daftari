@@ -8,19 +8,19 @@ import {
 
 describe("tokenize", () => {
   it("lowercases and splits on non-alphanumeric runs", () => {
-    expect(tokenize("Fabric Capacity SKUs (F2-F2048)")).toEqual([
-      "fabric",
+    expect(tokenize("Cirrus Capacity Tiers (C2-C2048)")).toEqual([
+      "cirrus",
       "capacity",
-      "skus",
-      "f2",
-      "f2048",
+      "tiers",
+      "c2",
+      "c2048",
     ]);
   });
 
   it("drops stopwords and single characters", () => {
-    expect(tokenize("the cost of a DBU is high")).toEqual([
+    expect(tokenize("the cost of a credit is high")).toEqual([
       "cost",
-      "dbu",
+      "credit",
       "high",
     ]);
   });
@@ -28,20 +28,20 @@ describe("tokenize", () => {
 
 describe("buildBm25 + searchBm25", () => {
   const docs: Bm25Document[] = [
-    { path: "a.md", tokens: tokenize("databricks dbu consumption pricing model") },
-    { path: "b.md", tokens: tokenize("fabric pooled capacity sku pricing") },
-    { path: "c.md", tokens: tokenize("snowflake cortex llm governance story") },
+    { path: "a.md", tokens: tokenize("helios credit consumption pricing model") },
+    { path: "b.md", tokens: tokenize("cirrus pooled capacity tier pricing") },
+    { path: "c.md", tokens: tokenize("vega insight llm governance story") },
   ];
 
   it("ranks the document with the strongest term overlap first", () => {
     const model = buildBm25(docs);
-    const hits = searchBm25(model, tokenize("dbu consumption pricing"));
+    const hits = searchBm25(model, tokenize("credit consumption pricing"));
     expect(hits[0]?.path).toBe("a.md");
   });
 
   it("omits documents with zero query-term overlap", () => {
     const model = buildBm25(docs);
-    const hits = searchBm25(model, tokenize("cortex governance"));
+    const hits = searchBm25(model, tokenize("insight governance"));
     expect(hits.map((h) => h.path)).toEqual(["c.md"]);
   });
 
@@ -51,13 +51,13 @@ describe("buildBm25 + searchBm25", () => {
   });
 
   it("scores rarer terms higher via IDF", () => {
-    // 'pricing' appears in two of three docs; 'cortex' in one. A query on the
+    // 'pricing' appears in two of three docs; 'insight' in one. A query on the
     // rarer term should rank its document above the common-term match.
     const model = buildBm25(docs);
-    const hits = searchBm25(model, tokenize("cortex"));
+    const hits = searchBm25(model, tokenize("insight"));
     const common = searchBm25(model, tokenize("pricing"));
-    const cortexScore = hits[0]?.score ?? 0;
+    const insightScore = hits[0]?.score ?? 0;
     const pricingTop = common[0]?.score ?? 0;
-    expect(cortexScore).toBeGreaterThan(pricingTop);
+    expect(insightScore).toBeGreaterThan(pricingTop);
   });
 });

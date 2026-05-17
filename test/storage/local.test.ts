@@ -24,7 +24,7 @@ describe("listFiles", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toContain(
-      "competitive-intel/databricks-lakeflow-vs-data-factory.md",
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
     );
     const sorted = [...result.value].sort();
     expect(result.value).toEqual(sorted);
@@ -42,12 +42,12 @@ describe("readFile", () => {
   it("reads an existing file", async () => {
     const target = resolve(
       VAULT,
-      "competitive-intel/databricks-lakeflow-vs-data-factory.md",
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
     );
     const result = await readFile(target);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value).toContain("Databricks Lakeflow vs Data Factory");
+    expect(result.value).toContain("Aurora Pipelines vs Helios Connect");
   });
 
   it("returns an error for a missing file", async () => {
@@ -60,11 +60,11 @@ describe("readFile", () => {
 
 describe("resolveVaultPath", () => {
   it("resolves a normal vault-relative path", () => {
-    const result = resolveVaultPath(VAULT, "pricing/databricks-consumption-pricing.md");
+    const result = resolveVaultPath(VAULT, "pricing/helios-consumption-pricing.md");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe(
-      resolve(VAULT, "pricing/databricks-consumption-pricing.md"),
+      resolve(VAULT, "pricing/helios-consumption-pricing.md"),
     );
   });
 

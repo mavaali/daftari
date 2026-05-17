@@ -1,0 +1,167 @@
+# Architecture
+
+Daftari is a single MCP server process. It is started against one vault
+directory, runs as one access identity for its lifetime, and serves 13 tools
+over stdio. This document explains how a tool call travels through the system
+and why the design is shaped the way it is.
+
+## The layered model
+
+```
+                      ┌─────────────────────────────┐
+   MCP client  ──────▶ │  MCP server (stdio, 13 tools)│
+   (agent)             └──────────────┬──────────────┘
+                                      │  every call
+                       ┌──────────────▼──────────────┐
+              Layer 2  │  ACL — config-driven RBAC    │  can this role read/
+                       │  (.daftari/config.yaml)      │  write/promote here?
+                       └──────────────┬──────────────┘
+                                      │  permitted
+                       ┌──────────────▼──────────────┐
+              Layer 3  │  Write arbitration           │  file lock (60s TTL),
+                       │  locks · git · provenance    │  auto-commit, log
+                       └──────────────┬──────────────┘
+                                      │  mutation applied
+                       ┌──────────────▼──────────────┐
+              Layer 4  │  Curation                    │  staleness · tensions
+                       │  lint · tension · lifecycle  │  · lint · promote/dep.
+                       └──────────────┬──────────────┘
+                                      │
+                       ┌──────────────▼──────────────┐
+              Layer 1  │  Storage                     │  markdown + frontmatter
+                       │  markdown · git · SQLite idx │  · git history · index
+                       └─────────────────────────────┘
+```
+
+Read the layers as concerns, not as a strict call stack — a read touches only
+layers 2 and 1; a write travels through 2, 3, 4, and 1. The numbering follows
+the README's four-layer model.
+
+### Layer 1 — Storage
+
+The vault is a directory of markdown files, each with a YAML frontmatter block.
+Frontmatter *is* the metadata layer; there is no separate metadata store.
+
+Three things sit alongside the markdown:
+
+- **Git.** The vault root is a git work tree. Every write auto-commits, so the
+  files' git history *is* the document history. There is no second versioning
+  system.
+- **SQLite index** (`.daftari/index.db`). Holds the BM25 term statistics and
+  the vector embeddings that power hybrid search. It is **ephemeral** — it can
+  be rebuilt from the markdown files at any time with `vault_reindex`, and it
+  is git-ignored.
+- **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
+  ephemeral.
+
+The markdown files are the single source of truth. Delete every `.db` file and
+the vault loses nothing — rebuild and continue.
+
+### Layer 2 — ACL (multi-tenant access control)
+
+RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
+per-collection `read` / `write` / `promote` permissions. The server is started
+with `--user` and `--role`; that role governs every tool call for the life of
+the process. There is no user-management system and no login — identity is an
+operational decision made at startup.
+
+A missing or unmatched role resolves to a deny-all **guest**. A malformed
+config makes the server refuse to start: a permission layer that silently loads
+a broken policy is worse than one that won't boot.
+
+### Layer 3 — Write arbitration
+
+This is the first layer that is genuinely hard, and the first half of the moat.
+Multiple agents may write to one vault. Arbitration makes concurrent writes
+safe:
+
+- **File-level write locks**, SQLite-backed, with a 60-second TTL. A writer
+  acquires the lock for one file; a competing writer fails cleanly with a
+  "locked" error rather than corrupting the file. An expired lock is released
+  automatically, so a crashed writer cannot wedge the vault.
+- **Auto-commit.** Every successful write is committed to git, authored by the
+  acting identity. The history is complete and attributable without anyone
+  having to remember to commit.
+- **Provenance log.** Beyond git, each mutation is appended to a structured
+  provenance log: which tool, which agent, which file, what changed in the
+  frontmatter. `vault_provenance` reads it back.
+
+### Layer 4 — Curation
+
+The second half of the moat. Storing knowledge is easy; keeping a growing vault
+*coherent* is the real problem. The curation engine is deliberately
+**advisory** — it surfaces problems and never auto-fixes:
+
+- **Staleness.** Each document has a `ttl_days`. Past it, the document is
+  flagged stale with a decay score. Stale does not mean deleted — it means "a
+  human or agent should re-verify this."
+- **Tensions.** When two documents contradict each other, `vault_tension_log`
+  records the contradiction — both sources, both claims — with status
+  `unresolved`. It records; it does not resolve.
+- **Lint.** `vault_lint` runs five cross-vault checks (stale files, orphans,
+  old drafts, stagnant low-confidence files, deprecated-but-still-linked) and
+  produces a report.
+- **Lifecycle.** The `draft → canonical → deprecated / superseded` status
+  progression. `vault_promote` and `vault_deprecate` move documents along it;
+  promotion is gated on complete frontmatter and the `promote` permission.
+
+Advisory-by-design is the point: an agent maintains the vault, but no automated
+process silently rewrites or deletes knowledge. Every change is a deliberate,
+attributable act.
+
+## The request path
+
+A **read** (`vault_read`, `vault_index`, `vault_status`, `vault_search`):
+
+1. The server receives the tool call.
+2. **Layer 2** checks the role's `read` permission for the target collection.
+   Denied collections are filtered out of results entirely.
+3. **Layer 1** reads the markdown (or queries the index) and returns it, with
+   an advisory frontmatter validation report attached.
+
+A **write** (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`):
+
+1. The server receives the tool call.
+2. **Layer 2** checks the role's `write` permission (and `promote` for
+   promotions).
+3. **Layer 3** acquires the file's write lock. If another holder owns it, the
+   call fails cleanly here.
+4. The frontmatter is validated; an invalid write is rejected before anything
+   touches disk.
+5. **Layer 1** writes the markdown file.
+6. **Layer 3** auto-commits to git and appends a provenance entry.
+7. The search index is refreshed for the changed file.
+8. The lock is released.
+
+Every tool handler returns a `Result<T, Error>` — it never throws. A failure at
+any step is a value the server turns into an MCP error response; the stdio
+connection is never taken down by a bug in one tool.
+
+## Accumulation vs. generative domains
+
+Every document declares a `domain`, and the distinction is load-bearing.
+
+**Accumulation domain.** Knowledge that *compounds*. A competitive-intelligence
+note, a pricing breakdown, a researched comparison. Each write builds on the
+last; the document is meant to become more complete and more trustworthy over
+time. Accumulation documents are *compiled*: the agent does the synthesis once
+and writes the durable result. They are the documents that earn canonical
+status, accrue inbound links, and are cross-referenced.
+
+**Generative domain.** Knowledge that is *speculative or single-shot*. A
+moonshot sketch, a brainstorm, a "what if" note. These are summaries, not
+compiled canon. They are expected to be provisional — the agent flags tensions
+in them but does not invest in cross-referencing or hardening them.
+
+Why the schema distinction matters: the two domains have different curation
+economics. An accumulation document that goes stale is a *problem* — it was
+supposed to stay true. A generative document that goes stale is *expected* —
+that is what speculation does. Tooling that treated both the same would either
+nag about every brainstorm or quietly trust every stale fact. The `domain`
+field lets the curation layer apply the right standard to each: hold
+accumulation knowledge to a high bar, and let generative knowledge be
+provisional without penalty.
+
+That split — compile what compounds, summarize what speculates — is the same
+idea as "compilation over retrieval", applied one level down: not just *whether*
+to compile, but *which knowledge is even worth compiling*.

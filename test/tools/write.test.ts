@@ -188,7 +188,7 @@ describe("write tools", () => {
 
     it("refuses to promote a document that is not a draft", async () => {
       const result = await vaultPromote(vault, {
-        path: "competitive-intel/snowflake-cortex-positioning.md",
+        path: "competitive-intel/vega-insight-positioning.md",
         agent: AGENT,
       });
       expect(result.ok).toBe(false);
@@ -210,9 +210,9 @@ describe("write tools", () => {
   describe("vault_deprecate", () => {
     it("deprecates a document and records reason + superseded_by", async () => {
       const result = await vaultDeprecate(vault, {
-        path: "pricing/fabric-capacity-skus.md",
+        path: "pricing/cirrus-capacity-tiers.md",
         reason: "Replaced by the 2026 capacity refresh",
-        superseded_by: "pricing/fabric-capacity-skus-2026.md",
+        superseded_by: "pricing/cirrus-capacity-tiers-2026.md",
         agent: AGENT,
       });
       expect(result.ok).toBe(true);
@@ -220,17 +220,17 @@ describe("write tools", () => {
       expect(result.value.action).toBe("deprecate");
       expect(result.value.status).toBe("deprecated");
 
-      const read = await vaultRead(vault, "pricing/fabric-capacity-skus.md");
+      const read = await vaultRead(vault, "pricing/cirrus-capacity-tiers.md");
       expect(read.ok).toBe(true);
       if (!read.ok) return;
       expect(read.value.frontmatter.status).toBe("deprecated");
       expect(read.value.frontmatter.superseded_by).toBe(
-        "pricing/fabric-capacity-skus-2026.md",
+        "pricing/cirrus-capacity-tiers-2026.md",
       );
 
       // The reason is captured in the auto-commit message.
       const history = await log(vault, {
-        path: "pricing/fabric-capacity-skus.md",
+        path: "pricing/cirrus-capacity-tiers.md",
       });
       expect(history.ok).toBe(true);
       if (!history.ok) return;
@@ -241,19 +241,19 @@ describe("write tools", () => {
 
     it("deprecates without a superseded_by when none is given", async () => {
       const result = await vaultDeprecate(vault, {
-        path: "pricing/fabric-capacity-skus.md",
+        path: "pricing/cirrus-capacity-tiers.md",
         reason: "Stale, no replacement yet",
         agent: AGENT,
       });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      const read = await vaultRead(vault, "pricing/fabric-capacity-skus.md");
+      const read = await vaultRead(vault, "pricing/cirrus-capacity-tiers.md");
       expect(read.ok && read.value.frontmatter.superseded_by).toBeNull();
     }, 60_000);
 
     it("requires a reason", async () => {
       const result = await vaultDeprecate(vault, {
-        path: "pricing/fabric-capacity-skus.md",
+        path: "pricing/cirrus-capacity-tiers.md",
         agent: AGENT,
       });
       expect(result.ok).toBe(false);

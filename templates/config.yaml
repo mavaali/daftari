@@ -11,16 +11,20 @@
 # "*" in a read or write list is a wildcard matching every collection. A role
 # that is not started with --role, or a name not listed here, falls back to an
 # implicit "guest" with no permissions — every tool is denied.
+#
+# The roles below are scoped to the collections `daftari --init` scaffolds
+# (competitive-intel, pricing, moonshot, _drafts). Edit them to match your own
+# collections — they are examples, not a fixed schema.
 version: 1
 vault_name: my-vault
 
 roles:
-  reader:
+  analyst:
+    read: [competitive-intel, pricing]
+    write: [competitive-intel, _drafts]
+  researcher:
     read: ["*"]
-    write: []
-  contributor:
-    read: ["*"]
-    write: ["*"]
+    write: [moonshot, _drafts]
   admin:
     read: ["*"]
     write: ["*"]

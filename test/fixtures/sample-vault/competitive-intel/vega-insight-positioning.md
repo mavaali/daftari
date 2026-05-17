@@ -1,5 +1,5 @@
 ---
-title: "Snowflake Cortex Positioning"
+title: "Vega Insight Positioning"
 domain: accumulation
 collection: competitive-intel
 status: canonical
@@ -9,19 +9,19 @@ updated: 2026-04-30
 updated_by: human:mihir
 provenance: direct
 sources:
-  - snowflake-cortex-ga-announcement
+  - vega-insight-ga-announcement
 superseded_by: null
 ttl_days: 120
-tags: [snowflake, cortex, llm, competitive]
+tags: [vega, insight, llm, competitive]
 ---
 
-# Snowflake Cortex Positioning
+# Vega Insight Positioning
 
-Cortex is positioned as in-warehouse LLM functions rather than a separate AI
+Insight is positioned as in-warehouse LLM functions rather than a separate AI
 platform. The pitch is governance: data never leaves the warehouse boundary.
 
 ## Questions Answered
-- What is Cortex's core differentiation message?
+- What is Insight's core differentiation message?
 
 ## Questions Raised
 - Does the in-warehouse story hold once customers want multi-modal inputs?

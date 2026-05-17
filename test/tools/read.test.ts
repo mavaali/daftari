@@ -8,12 +8,12 @@ describe("vaultRead", () => {
   it("reads a document and returns body + parsed frontmatter", async () => {
     const result = await vaultRead(
       VAULT,
-      "competitive-intel/databricks-lakeflow-vs-data-factory.md",
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.frontmatter.title).toBe(
-      "Databricks Lakeflow vs Data Factory",
+      "Aurora Pipelines vs Helios Connect",
     );
     expect(result.value.frontmatter.status).toBe("canonical");
     expect(result.value.content).toContain("## Questions Answered");
@@ -84,7 +84,7 @@ describe("vaultIndex", () => {
   });
 
   it("filters by tags conjunctively", async () => {
-    const result = await vaultIndex(VAULT, { tags: ["databricks"] });
+    const result = await vaultIndex(VAULT, { tags: ["helios"] });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.count).toBe(2);

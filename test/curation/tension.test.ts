@@ -10,7 +10,7 @@ import {
 
 const sampleInput = {
   title: "Pooled vs consumption billing",
-  sourceA: "pricing/fabric-capacity-skus.md",
+  sourceA: "pricing/cirrus-capacity-tiers.md",
   claimA: "pooled capacity is billed whether used or not",
   sourceB: "pricing/serverless-cost-predictability.md",
   claimB: "serverless billing tracks actual consumption",

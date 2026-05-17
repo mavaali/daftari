@@ -8,10 +8,10 @@ import { reindexVault } from "../../src/search/reindex.js";
 import { openIndexDb, type IndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
-const DBU_DOC = "pricing/databricks-consumption-pricing.md";
-const BIGQUERY_DOC = "competitive-intel/bigquery-data-governance.md";
-const CORTEX_DOC = "competitive-intel/snowflake-cortex-positioning.md";
-const GOVERNANCE_DOCS = [BIGQUERY_DOC, CORTEX_DOC];
+const CREDIT_DOC = "pricing/helios-consumption-pricing.md";
+const NORTHWIND_DOC = "competitive-intel/northwind-data-governance.md";
+const INSIGHT_DOC = "competitive-intel/vega-insight-positioning.md";
+const GOVERNANCE_DOCS = [NORTHWIND_DOC, INSIGHT_DOC];
 
 describe("hybrid search", () => {
   let vault: string;
@@ -33,14 +33,17 @@ describe("hybrid search", () => {
 
   describe("hybridSearch", () => {
     it("ranks the strongest lexical match first for a keyword query", async () => {
-      const result = await hybridSearch(db, "Databricks DBU consumption pricing");
+      const result = await hybridSearch(
+        db,
+        "Helios compute credit consumption pricing",
+      );
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.hits[0]?.path).toBe(DBU_DOC);
+      expect(result.value.hits[0]?.path).toBe(CREDIT_DOC);
     });
 
     it("returns snippets and per-ranker scores", async () => {
-      const result = await hybridSearch(db, "fabric pooled capacity SKU");
+      const result = await hybridSearch(db, "cirrus pooled capacity tier");
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.vectorUsed).toBe(true);
@@ -95,19 +98,19 @@ describe("hybrid search", () => {
 
   describe("relatedSearch", () => {
     it("excludes the source document from its own results", () => {
-      const result = relatedSearch(db, CORTEX_DOC);
+      const result = relatedSearch(db, INSIGHT_DOC);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.hits.map((h) => h.path)).not.toContain(CORTEX_DOC);
+      expect(result.value.hits.map((h) => h.path)).not.toContain(INSIGHT_DOC);
       expect(result.value.hits.length).toBeGreaterThan(0);
     });
 
     it("surfaces a thematically related document", () => {
-      // Snowflake Cortex and BigQuery both pitch a data-governance story.
-      const result = relatedSearch(db, CORTEX_DOC, { limit: 4 });
+      // Vega Insight and Northwind both pitch a data-governance story.
+      const result = relatedSearch(db, INSIGHT_DOC, { limit: 4 });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.hits.map((h) => h.path)).toContain(BIGQUERY_DOC);
+      expect(result.value.hits.map((h) => h.path)).toContain(NORTHWIND_DOC);
     });
 
     it("errors for a document that is not indexed", () => {
@@ -118,7 +121,7 @@ describe("hybrid search", () => {
     });
 
     it("uses the default weights when none are given", () => {
-      const result = relatedSearch(db, DBU_DOC);
+      const result = relatedSearch(db, CREDIT_DOC);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.weights).toEqual(DEFAULT_WEIGHTS);
