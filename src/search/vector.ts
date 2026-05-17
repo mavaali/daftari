@@ -2,7 +2,7 @@
 //
 // Documents are split into chunks; each chunk is embedded into a 384-dim
 // vector with the all-MiniLM-L6-v2 sentence-transformer (run locally via
-// @xenova/transformers — no network at query time once the model is cached).
+// @huggingface/transformers — no network at query time once the model is cached).
 // Similarity is cosine distance. Embeddings come back L2-normalised, so cosine
 // reduces to a dot product, but cosineSimilarity stays general for safety.
 //
@@ -92,7 +92,7 @@ let extractorPromise: Promise<Extractor> | null = null;
 
 async function getExtractor(): Promise<Extractor> {
   if (!extractorPromise) {
-    extractorPromise = import("@xenova/transformers").then(({ pipeline }) =>
+    extractorPromise = import("@huggingface/transformers").then(({ pipeline }) =>
       pipeline("feature-extraction", EMBEDDING_MODEL),
     ) as Promise<Extractor>;
   }
