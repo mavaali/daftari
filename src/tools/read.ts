@@ -20,6 +20,12 @@ import {
   filterByReadPermission,
   type AccessContext,
 } from "../access/rbac.js";
+import { listStaleFiles } from "../curation/staleness.js";
+import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
+import {
+  readProvenanceLog,
+  type ProvenanceEntry,
+} from "../curation/provenance.js";
 
 export interface ToolDefinition {
   name: string;
@@ -174,19 +180,47 @@ export async function vaultIndex(
 // vault_status
 // ---------------------------------------------------------------------------
 
+// Vault files bucketed by decay score: fresh (< 0.5 of TTL elapsed), aging
+// (>= 0.5, not yet expired), stale (>= 1.0 — at or past TTL). `total` is the
+// number of files scored, which equals the role's visible file count.
+export interface StalenessDistribution {
+  fresh: number;
+  aging: number;
+  stale: number;
+  total: number;
+}
+
+export interface TensionSummary {
+  title: string;
+  date: string;
+}
+
+export interface UnresolvedTensions {
+  count: number;
+  recent: TensionSummary[];
+}
+
+export interface RecentWrites {
+  count: number;
+  entries: ProvenanceEntry[];
+}
+
 export interface VaultStatusResult {
   vault: string;
   fileCount: number;
   collections: { collection: string; count: number }[];
   invalidCount: number;
   generatedAt: string;
-  // Phase 1 reports file/collection counts only. The fields below depend on
-  // engines built in later phases.
-  deferred: {
-    stalenessDistribution: string;
-    unresolvedTensions: string;
-    recentWrites: string;
-  };
+  stalenessDistribution: StalenessDistribution;
+  unresolvedTensions: UnresolvedTensions;
+  recentWrites: RecentWrites;
+}
+
+// The collection a bare vault-relative path belongs to: its top-level
+// directory. tension/provenance records carry only a path (no frontmatter),
+// so RBAC on those falls back to this path-based collection.
+function topCollection(relPath: string): string {
+  return relPath.split("/")[0] ?? "";
 }
 
 export async function vaultStatus(
@@ -211,16 +245,67 @@ export async function vaultStatus(
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([collection, count]) => ({ collection, count }));
 
+  // Staleness: score every file, then keep only those the index already
+  // deemed visible, so the distribution honours RBAC. Threshold 0 makes
+  // listStaleFiles return every document with its decay score.
+  const visiblePaths = new Set(index.value.entries.map((e) => e.path));
+  const staleScan = await listStaleFiles(vaultRoot, 0);
+  if (!staleScan.ok) return staleScan;
+
+  const stalenessDistribution: StalenessDistribution = {
+    fresh: 0,
+    aging: 0,
+    stale: 0,
+    total: 0,
+  };
+  for (const file of staleScan.value) {
+    if (!visiblePaths.has(file.path)) continue;
+    stalenessDistribution.total += 1;
+    const score = file.staleness.score;
+    if (score >= 1) stalenessDistribution.stale += 1;
+    else if (score >= 0.5) stalenessDistribution.aging += 1;
+    else stalenessDistribution.fresh += 1;
+  }
+
+  // Unresolved tensions. A tension links two files; with an access context we
+  // show it only when the role can read the collections of BOTH sources, so
+  // the dashboard never leaks the existence of a doc in a denied collection.
+  const tensions = await listTensions(vaultRoot, DEFAULT_TENSION_STATUS);
+  if (!tensions.ok) return tensions;
+  const visibleTensions = access
+    ? tensions.value.filter(
+        (t) =>
+          canRead(access.role, topCollection(t.sourceA)) &&
+          canRead(access.role, topCollection(t.sourceB)),
+      )
+    : tensions.value;
+  const recentTensions = [...visibleTensions]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 5)
+    .map((t) => ({ title: t.title, date: t.date }));
+
+  // Recent writes from the provenance log (oldest first in the file). Each
+  // entry is gated by the role's read access to the written file's collection.
+  const log = await readProvenanceLog(vaultRoot);
+  if (!log.ok) return log;
+  const visibleWrites = access
+    ? log.value.filter((e) => canRead(access.role, topCollection(e.file)))
+    : log.value;
+
   return ok({
     vault: vaultRoot,
     fileCount: index.value.count,
     collections,
     invalidCount,
     generatedAt: new Date().toISOString(),
-    deferred: {
-      stalenessDistribution: "deferred to Phase 4 (curation engine)",
-      unresolvedTensions: "deferred to Phase 4 (tension log)",
-      recentWrites: "deferred to Phase 3 (write path + curation log)",
+    stalenessDistribution,
+    unresolvedTensions: {
+      count: visibleTensions.length,
+      recent: recentTensions,
+    },
+    recentWrites: {
+      count: visibleWrites.length,
+      entries: visibleWrites.slice(-10),
     },
   });
 }
@@ -302,8 +387,9 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_status",
     description:
-      "Vault health dashboard: total file count, per-collection counts, and " +
-      "count of documents with invalid frontmatter.",
+      "Vault health dashboard: total file count, per-collection counts, " +
+      "count of documents with invalid frontmatter, a staleness distribution " +
+      "(fresh/aging/stale), unresolved tensions, and recent write history.",
     inputSchema: {
       type: "object",
       properties: {},

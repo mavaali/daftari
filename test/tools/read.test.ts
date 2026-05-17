@@ -1,6 +1,9 @@
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { vaultIndex, vaultRead, vaultStatus } from "../../src/tools/read.js";
+import { addTension } from "../../src/curation/tension.js";
+import { recordProvenance } from "../../src/curation/provenance.js";
+import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
 
@@ -121,11 +124,89 @@ describe("vaultStatus", () => {
     expect(result.value.invalidCount).toBe(1);
   });
 
-  it("documents the phase-deferred sections", async () => {
+  it("buckets every file into a staleness distribution", async () => {
     const result = await vaultStatus(VAULT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.deferred.stalenessDistribution).toContain("Phase 4");
-    expect(result.value.deferred.recentWrites).toContain("Phase 3");
+    const dist = result.value.stalenessDistribution;
+    // Every scored file lands in exactly one bucket.
+    expect(dist.total).toBe(result.value.fileCount);
+    expect(dist.fresh + dist.aging + dist.stale).toBe(dist.total);
+    // The fixture carries a long-expired document (competitive-intel/
+    // cirrus-realtime-early-read.md, updated 2026-01-09, ttl 60).
+    expect(dist.stale).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reports empty tension/write sections for a pristine vault", async () => {
+    const result = await vaultStatus(VAULT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unresolvedTensions).toEqual({ count: 0, recent: [] });
+    expect(result.value.recentWrites).toEqual({ count: 0, entries: [] });
+  });
+
+  describe("with a seeded curation log", () => {
+    let vault: string;
+
+    afterEach(() => {
+      if (vault) cleanupVault(vault);
+    });
+
+    it("surfaces unresolved tensions, most recent first", async () => {
+      vault = makeTempVault();
+      await addTension(vault, {
+        title: "Older tension",
+        sourceA: "pricing/cirrus-capacity-tiers.md",
+        claimA: "pooled capacity is billed whether used or not",
+        sourceB: "pricing/serverless-cost-predictability.md",
+        claimB: "serverless billing tracks actual consumption",
+        loggedBy: "agent:claude-code",
+        date: "2026-05-01",
+      });
+      await addTension(vault, {
+        title: "Newer tension",
+        sourceA: "competitive-intel/vega-insight-positioning.md",
+        claimA: "Vega leads on LLM features",
+        sourceB: "competitive-intel/aurora-pipelines-vs-helios-connect.md",
+        claimB: "Aurora leads on integration breadth",
+        loggedBy: "agent:claude-code",
+        date: "2026-05-15",
+      });
+
+      const result = await vaultStatus(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.unresolvedTensions.count).toBe(2);
+      expect(
+        result.value.unresolvedTensions.recent.map((t) => t.title),
+      ).toEqual(["Newer tension", "Older tension"]);
+    });
+
+    it("surfaces the most recent provenance entries", async () => {
+      vault = makeTempVault();
+      await recordProvenance(vault, {
+        timestamp: "2026-05-10T00:00:00.000Z",
+        tool: "vault_write",
+        file: "pricing/cirrus-capacity-tiers-2026.md",
+        agent: "agent:claude-code",
+        action: "create",
+      });
+      await recordProvenance(vault, {
+        timestamp: "2026-05-12T00:00:00.000Z",
+        tool: "vault_promote",
+        file: "pricing/cirrus-capacity-tiers-2026.md",
+        agent: "human:mihir",
+        action: "promote",
+      });
+
+      const result = await vaultStatus(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.recentWrites.count).toBe(2);
+      expect(result.value.recentWrites.entries.map((e) => e.action)).toEqual([
+        "create",
+        "promote",
+      ]);
+    });
   });
 });
