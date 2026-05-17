@@ -1,11 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  DEFAULT_WEIGHTS,
-  hybridSearch,
-  relatedSearch,
-} from "../../src/search/hybrid.js";
+import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
 import { reindexVault } from "../../src/search/reindex.js";
-import { openIndexDb, type IndexDb } from "../../src/storage/index-db.js";
+import { type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const CREDIT_DOC = "pricing/helios-consumption-pricing.md";
@@ -33,10 +29,7 @@ describe("hybrid search", () => {
 
   describe("hybridSearch", () => {
     it("ranks the strongest lexical match first for a keyword query", async () => {
-      const result = await hybridSearch(
-        db,
-        "Helios compute credit consumption pricing",
-      );
+      const result = await hybridSearch(db, "Helios compute credit consumption pricing");
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.hits[0]?.path).toBe(CREDIT_DOC);
@@ -69,8 +62,7 @@ describe("hybrid search", () => {
     it("finds semantically related docs when no keywords overlap", async () => {
       // None of these query words appear anywhere in the vault, so BM25 alone
       // returns nothing — any hit is a pure vector match.
-      const query =
-        "preventing unauthorized exfiltration of confidential corporate information";
+      const query = "preventing unauthorized exfiltration of confidential corporate information";
 
       const lexicalOnly = await hybridSearch(db, query, {
         weights: { bm25: 1, vector: 0 },

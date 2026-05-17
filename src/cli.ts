@@ -152,9 +152,7 @@ export async function initVault(targetPath: string): Promise<number> {
   const vaultRoot = resolve(targetPath);
 
   if (existsSync(vaultRoot) && readdirSync(vaultRoot).length > 0) {
-    process.stderr.write(
-      `daftari: refusing to scaffold — ${vaultRoot} exists and is not empty\n`,
-    );
+    process.stderr.write(`daftari: refusing to scaffold — ${vaultRoot} exists and is not empty\n`);
     return 1;
   }
 
@@ -166,10 +164,7 @@ export async function initVault(targetPath: string): Promise<number> {
   }
 
   // RBAC config: copied from the package's bundled template.
-  const template = readFileSync(
-    resolve(HERE, "..", "templates", "config.yaml"),
-    "utf-8",
-  );
+  const template = readFileSync(resolve(HERE, "..", "templates", "config.yaml"), "utf-8");
   writeFileSync(join(vaultRoot, ".daftari", "config.yaml"), template);
 
   writeFileSync(join(vaultRoot, ".gitignore"), VAULT_GITIGNORE);
@@ -223,8 +218,7 @@ export async function run(argv: string[]): Promise<void> {
     return;
   }
 
-  const wantsInit =
-    argv.includes("--init") || argv.some((a) => a.startsWith("--init="));
+  const wantsInit = argv.includes("--init") || argv.some((a) => a.startsWith("--init="));
   if (wantsInit) {
     const target = parseFlag(argv, "init") ?? "./daftari-vault";
     process.exitCode = await initVault(target);
@@ -246,7 +240,7 @@ export async function run(argv: string[]): Promise<void> {
 const entryUrl = pathToFileURL(process.argv[1] ?? "").href;
 if (import.meta.url === entryUrl) {
   run(process.argv.slice(2)).catch((e) => {
-    const reason = e instanceof Error ? e.stack ?? e.message : String(e);
+    const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
     process.stderr.write(`daftari: fatal: ${reason}\n`);
     process.exitCode = 1;
   });

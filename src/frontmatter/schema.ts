@@ -8,13 +8,13 @@
 
 import {
   CONFIDENCES,
-  DOMAINS,
-  PROVENANCES,
-  STATUSES,
   type Confidence,
+  DOMAINS,
   type Domain,
   type Frontmatter,
+  PROVENANCES,
   type Provenance,
+  STATUSES,
   type Status,
   type ValidationIssue,
   type ValidationReport,
@@ -25,9 +25,7 @@ export interface FrontmatterValidation {
   report: ValidationReport;
 }
 
-export function validateFrontmatter(
-  data: Record<string, unknown>,
-): FrontmatterValidation {
+export function validateFrontmatter(data: Record<string, unknown>): FrontmatterValidation {
   const issues: ValidationIssue[] = [];
 
   const requireString = (field: string): string => {
@@ -41,11 +39,7 @@ export function validateFrontmatter(
     return "";
   };
 
-  const requireEnum = <T extends string>(
-    field: string,
-    allowed: readonly T[],
-    fallback: T,
-  ): T => {
+  const requireEnum = <T extends string>(field: string, allowed: readonly T[], fallback: T): T => {
     const v = data[field];
     if (typeof v === "string" && (allowed as readonly string[]).includes(v)) {
       return v as T;

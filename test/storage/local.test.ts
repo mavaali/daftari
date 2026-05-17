@@ -1,11 +1,6 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  directoryExists,
-  listFiles,
-  readFile,
-  resolveVaultPath,
-} from "../../src/storage/local.js";
+import { directoryExists, listFiles, readFile, resolveVaultPath } from "../../src/storage/local.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
 
@@ -23,9 +18,7 @@ describe("listFiles", () => {
     const result = await listFiles(VAULT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value).toContain(
-      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
-    );
+    expect(result.value).toContain("competitive-intel/aurora-pipelines-vs-helios-connect.md");
     const sorted = [...result.value].sort();
     expect(result.value).toEqual(sorted);
   });
@@ -40,10 +33,7 @@ describe("listFiles", () => {
 
 describe("readFile", () => {
   it("reads an existing file", async () => {
-    const target = resolve(
-      VAULT,
-      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
-    );
+    const target = resolve(VAULT, "competitive-intel/aurora-pipelines-vs-helios-connect.md");
     const result = await readFile(target);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -63,9 +53,7 @@ describe("resolveVaultPath", () => {
     const result = resolveVaultPath(VAULT, "pricing/helios-consumption-pricing.md");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value).toBe(
-      resolve(VAULT, "pricing/helios-consumption-pricing.md"),
-    );
+    expect(result.value).toBe(resolve(VAULT, "pricing/helios-consumption-pricing.md"));
   });
 
   it("rejects path traversal outside the vault root", () => {

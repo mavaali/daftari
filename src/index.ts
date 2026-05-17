@@ -10,11 +10,11 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 import { reindexVault } from "./search/reindex.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig } from "./utils/config.js";
-import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 
 // Reads `--name value` or `--name=value` from argv; null if absent.
 export function parseFlag(argv: string[], name: string): string | null {
@@ -32,23 +32,17 @@ export function parseVaultArg(argv: string[]): string | null {
   return parseFlag(argv, "vault");
 }
 
-export async function main(
-  argv: string[] = process.argv.slice(2),
-): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const vaultArg = parseVaultArg(argv);
   if (!vaultArg) {
-    process.stderr.write(
-      "daftari: missing required --vault <path> argument\n",
-    );
+    process.stderr.write("daftari: missing required --vault <path> argument\n");
     process.exitCode = 1;
     return;
   }
 
   const vaultRoot = resolve(vaultArg);
   if (!(await directoryExists(vaultRoot))) {
-    process.stderr.write(
-      `daftari: vault directory not found: ${vaultRoot}\n`,
-    );
+    process.stderr.write(`daftari: vault directory not found: ${vaultRoot}\n`);
     process.exitCode = 1;
     return;
   }
@@ -69,8 +63,7 @@ export async function main(
   const access = resolveAccess(config.value, user, roleName);
   if (access.role === null && roleName !== GUEST_ROLE) {
     process.stderr.write(
-      `daftari: warning: role '${roleName}' not found in config — ` +
-        `running as deny-all guest\n`,
+      `daftari: warning: role '${roleName}' not found in config — running as deny-all guest\n`,
     );
   }
 
@@ -85,9 +78,7 @@ export async function main(
   } else {
     // A failed index is not fatal: lexical search still works and the search
     // tools retry indexing lazily on first use.
-    process.stderr.write(
-      `daftari: warning: index build failed: ${reindexed.error.message}\n`,
-    );
+    process.stderr.write(`daftari: warning: index build failed: ${reindexed.error.message}\n`);
   }
 
   if (argv.includes("--reindex")) {
@@ -109,7 +100,7 @@ export async function main(
 const entryUrl = pathToFileURL(process.argv[1] ?? "").href;
 if (import.meta.url === entryUrl) {
   main().catch((e) => {
-    const reason = e instanceof Error ? e.stack ?? e.message : String(e);
+    const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
     process.stderr.write(`daftari: fatal: ${reason}\n`);
     process.exitCode = 1;
   });

@@ -7,11 +7,7 @@
 
 import { posix } from "node:path";
 import { parseDocument } from "../frontmatter/parser.js";
-import {
-  ok,
-  type Frontmatter,
-  type Result,
-} from "../frontmatter/types.js";
+import { type Frontmatter, ok, type Result } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { ageInDays, computeStaleness } from "./staleness.js";
 
@@ -85,9 +81,7 @@ function resolveLink(
   if (byPath.has(rawTarget)) return rawTarget;
   if (byPath.has(withMd(rawTarget))) return withMd(rawTarget);
 
-  const relual = posix.normalize(
-    posix.join(posix.dirname(fromPath), rawTarget),
-  );
+  const relual = posix.normalize(posix.join(posix.dirname(fromPath), rawTarget));
   if (byPath.has(relual)) return relual;
   if (byPath.has(withMd(relual))) return withMd(relual);
 
@@ -97,9 +91,7 @@ function resolveLink(
 
 // --- check orchestration --------------------------------------------------
 
-async function loadDocuments(
-  vaultRoot: string,
-): Promise<Result<LoadedDoc[], Error>> {
+async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return list;
 
@@ -169,10 +161,7 @@ export async function runLint(
     const fm = doc.frontmatter;
 
     // 1. Stale: a document at or past its TTL.
-    const staleness = computeStaleness(
-      { updated: fm.updated, ttl_days: fm.ttl_days },
-      now,
-    );
+    const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
     if (staleness.expired) {
       checks.staleFiles.push({
         path: doc.path,
@@ -209,8 +198,7 @@ export async function runLint(
         checks.stagnantLowConfidence.push({
           path: doc.path,
           detail:
-            `low confidence, unchanged for ${idleDays}d ` +
-            `(limit ${lowConfidenceMaxDays}d)`,
+            `low confidence, unchanged for ${idleDays}d ` + `(limit ${lowConfidenceMaxDays}d)`,
         });
       }
     }
@@ -229,10 +217,7 @@ export async function runLint(
     }
   }
 
-  const totalFindings = LINT_CHECKS.reduce(
-    (n, name) => n + checks[name].length,
-    0,
-  );
+  const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
   return ok({ generatedAt: now.toISOString(), checks, totalFindings });
 }

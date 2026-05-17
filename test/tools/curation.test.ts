@@ -2,13 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  vaultLint,
-  vaultProvenance,
-  vaultTensionLog,
-} from "../../src/tools/curation.js";
-import { listTensions } from "../../src/curation/tension.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
+import { listTensions } from "../../src/curation/tension.js";
+import { vaultLint, vaultProvenance, vaultTensionLog } from "../../src/tools/curation.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
 
@@ -105,10 +101,7 @@ describe("curation tools", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.count).toBe(2);
-      expect(result.value.history.map((e) => e.action)).toEqual([
-        "create",
-        "promote",
-      ]);
+      expect(result.value.history.map((e) => e.action)).toEqual(["create", "promote"]);
     });
 
     it("returns an empty history for a file with no recorded writes", async () => {

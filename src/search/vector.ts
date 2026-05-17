@@ -102,9 +102,7 @@ async function getExtractor(): Promise<Extractor> {
 // Embeds a batch of texts. The whole batch goes through the model in one call.
 // Returns one Float32Array per input text. An empty input yields an empty
 // array without loading the model.
-export async function embed(
-  texts: string[],
-): Promise<Result<Float32Array[], Error>> {
+export async function embed(texts: string[]): Promise<Result<Float32Array[], Error>> {
   if (texts.length === 0) return ok([]);
   try {
     const extractor = await getExtractor();
@@ -125,9 +123,7 @@ export async function embed(
 }
 
 // Convenience wrapper for embedding a single query string.
-export async function embedQuery(
-  text: string,
-): Promise<Result<Float32Array, Error>> {
+export async function embedQuery(text: string): Promise<Result<Float32Array, Error>> {
   const result = await embed([text]);
   if (!result.ok) return result;
   const first = result.value[0];

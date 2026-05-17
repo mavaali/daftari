@@ -11,10 +11,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 
 // Resolves a vault-relative path to an absolute path, refusing anything that
 // escapes the vault root (path traversal) or resolves to the root itself.
-export function resolveVaultPath(
-  vaultRoot: string,
-  relativePath: string,
-): Result<string, Error> {
+export function resolveVaultPath(vaultRoot: string, relativePath: string): Result<string, Error> {
   const root = resolve(vaultRoot);
   const target = resolve(root, relativePath);
   const rel = relative(root, target);
@@ -33,9 +30,7 @@ export async function directoryExists(path: string): Promise<boolean> {
   }
 }
 
-export async function readFile(
-  absolutePath: string,
-): Promise<Result<string, Error>> {
+export async function readFile(absolutePath: string): Promise<Result<string, Error>> {
   try {
     const content = await fsReadFile(absolutePath, "utf-8");
     return ok(content);

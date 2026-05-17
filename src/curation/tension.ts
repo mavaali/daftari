@@ -8,8 +8,8 @@
 // The log is a human-readable markdown file, .daftari/tensions.md — append-only
 // from this module's side. Each entry is one `## ` block.
 
-import { appendFile, readFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
+import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
@@ -54,18 +54,8 @@ export async function addTension(
   vaultRoot: string,
   input: TensionInput,
 ): Promise<Result<TensionEntry, Error>> {
-  for (const field of [
-    "title",
-    "sourceA",
-    "claimA",
-    "sourceB",
-    "claimB",
-    "loggedBy",
-  ] as const) {
-    if (
-      typeof input[field] !== "string" ||
-      input[field].trim().length === 0
-    ) {
+  for (const field of ["title", "sourceA", "claimA", "sourceB", "claimB", "loggedBy"] as const) {
+    if (typeof input[field] !== "string" || input[field].trim().length === 0) {
       return err(new Error(`addTension requires a non-empty '${field}'`));
     }
   }
@@ -166,7 +156,5 @@ export async function listTensions(
     if (entry) entries.push(entry);
   }
 
-  return ok(
-    status ? entries.filter((e) => e.status === status) : entries,
-  );
+  return ok(status ? entries.filter((e) => e.status === status) : entries);
 }

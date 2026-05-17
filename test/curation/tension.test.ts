@@ -2,11 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  addTension,
-  listTensions,
-  tensionsPath,
-} from "../../src/curation/tension.js";
+import { addTension, listTensions, tensionsPath } from "../../src/curation/tension.js";
 
 const sampleInput = {
   title: "Pooled vs consumption billing",
@@ -43,9 +39,7 @@ describe("tension", () => {
     // The file holds the canonical block format.
     const raw = readFileSync(tensionsPath(vault), "utf-8");
     expect(raw).toContain(`## ${added.value.date} — ${sampleInput.title}`);
-    expect(raw).toContain(
-      `- **Source A:** ${sampleInput.sourceA} says ${sampleInput.claimA}`,
-    );
+    expect(raw).toContain(`- **Source A:** ${sampleInput.sourceA} says ${sampleInput.claimA}`);
     expect(raw).toContain("- **Status:** unresolved");
     expect(raw).toContain("- **Logged by:** agent:claude-code");
   });

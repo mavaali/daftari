@@ -4,28 +4,21 @@
 // plus an MCP ToolDefinition that wraps it. server.ts registers the
 // definitions; tests call the logic functions directly.
 
+import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+import { listStaleFiles } from "../curation/staleness.js";
+import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
   DOMAINS,
-  STATUSES,
   err,
-  ok,
   type Frontmatter,
+  ok,
   type Result,
+  STATUSES,
   type ValidationReport,
 } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
-import {
-  canRead,
-  filterByReadPermission,
-  type AccessContext,
-} from "../access/rbac.js";
-import { listStaleFiles } from "../curation/staleness.js";
-import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
-import {
-  readProvenanceLog,
-  type ProvenanceEntry,
-} from "../curation/provenance.js";
 
 export interface ToolDefinition {
   name: string;
@@ -75,8 +68,7 @@ export async function vaultRead(
     if (!canRead(access.role, collection)) {
       return err(
         new Error(
-          `access denied: role '${access.roleName}' cannot read ` +
-            `collection '${collection}'`,
+          `access denied: role '${access.roleName}' cannot read ` + `collection '${collection}'`,
         ),
       );
     }
@@ -170,9 +162,7 @@ export async function vaultIndex(
   }
 
   // RBAC: drop documents in collections the role cannot read.
-  const visible = access
-    ? filterByReadPermission(access.role, entries)
-    : entries;
+  const visible = access ? filterByReadPermission(access.role, entries) : entries;
   return ok({ count: visible.length, entries: visible });
 }
 
@@ -234,10 +224,7 @@ export async function vaultStatus(
   const byCollection = new Map<string, number>();
   let invalidCount = 0;
   for (const entry of index.value.entries) {
-    byCollection.set(
-      entry.collection,
-      (byCollection.get(entry.collection) ?? 0) + 1,
-    );
+    byCollection.set(entry.collection, (byCollection.get(entry.collection) ?? 0) + 1);
     if (!entry.valid) invalidCount += 1;
   }
 
@@ -335,15 +322,13 @@ export const readTools: ToolDefinition[] = [
       properties: {
         path: {
           type: "string",
-          description:
-            "Vault-relative path to the markdown file, e.g. competitive-intel/foo.md",
+          description: "Vault-relative path to the markdown file, e.g. competitive-intel/foo.md",
         },
       },
       required: ["path"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args, access) =>
-      vaultRead(vaultRoot, String(args.path ?? ""), access),
+    handler: (vaultRoot, args, access) => vaultRead(vaultRoot, String(args.path ?? ""), access),
   },
   {
     name: "vault_index",

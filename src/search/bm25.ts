@@ -16,10 +16,43 @@ const B = 0.75;
 // Common English words carry no discriminating signal; dropping them keeps IDF
 // meaningful and snippets pointed at content words.
 const STOPWORDS = new Set([
-  "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
-  "has", "have", "he", "her", "his", "in", "is", "it", "its", "of", "on",
-  "or", "she", "that", "the", "their", "them", "they", "this", "to", "was",
-  "were", "will", "with", "you", "your",
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "for",
+  "from",
+  "has",
+  "have",
+  "he",
+  "her",
+  "his",
+  "in",
+  "is",
+  "it",
+  "its",
+  "of",
+  "on",
+  "or",
+  "she",
+  "that",
+  "the",
+  "their",
+  "them",
+  "they",
+  "this",
+  "to",
+  "was",
+  "were",
+  "will",
+  "with",
+  "you",
+  "your",
 ]);
 
 // Lowercases, splits on any non-alphanumeric run, and drops stopwords and
@@ -84,10 +117,7 @@ export interface Bm25Hit {
 // Scores every document against the query terms and returns the matches
 // (score > 0) sorted high to low. A document with zero query-term overlap is
 // omitted entirely rather than returned with a zero score.
-export function searchBm25(
-  model: Bm25Model,
-  queryTokens: string[],
-): Bm25Hit[] {
+export function searchBm25(model: Bm25Model, queryTokens: string[]): Bm25Hit[] {
   const hits: Bm25Hit[] = [];
   const uniqueQueryTerms = [...new Set(queryTokens)];
 
@@ -100,12 +130,8 @@ export function searchBm25(
       const df = model.docFreqs.get(term) ?? 0;
       // IDF with the +1 inside the log keeps it non-negative even for terms
       // that appear in more than half the corpus.
-      const idf = Math.log(
-        1 + (model.docCount - df + 0.5) / (df + 0.5),
-      );
-      const denom =
-        freq +
-        K1 * (1 - B + (B * docLength) / (model.avgDocLength || 1));
+      const idf = Math.log(1 + (model.docCount - df + 0.5) / (df + 0.5));
+      const denom = freq + K1 * (1 - B + (B * docLength) / (model.avgDocLength || 1));
       score += idf * ((freq * (K1 + 1)) / denom);
     }
     if (score > 0) hits.push({ path, score });

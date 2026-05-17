@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { vaultIndex, vaultRead, vaultStatus } from "../../src/tools/read.js";
-import { addTension } from "../../src/curation/tension.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
+import { addTension } from "../../src/curation/tension.js";
+import { vaultIndex, vaultRead, vaultStatus } from "../../src/tools/read.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
@@ -15,9 +15,7 @@ describe("vaultRead", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.frontmatter.title).toBe(
-      "Aurora Pipelines vs Helios Connect",
-    );
+    expect(result.value.frontmatter.title).toBe("Aurora Pipelines vs Helios Connect");
     expect(result.value.frontmatter.status).toBe("canonical");
     expect(result.value.content).toContain("## Questions Answered");
     expect(result.value.validation.valid).toBe(true);
@@ -81,9 +79,7 @@ describe("vaultIndex", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.count).toBe(1);
-    expect(result.value.entries[0]?.path).toBe(
-      "_drafts/moonshot-agentic-etl.md",
-    );
+    expect(result.value.entries[0]?.path).toBe("_drafts/moonshot-agentic-etl.md");
   });
 
   it("filters by tags conjunctively", async () => {
@@ -109,12 +105,10 @@ describe("vaultStatus", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.fileCount).toBe(10);
-    const counts = Object.fromEntries(
-      result.value.collections.map((c) => [c.collection, c.count]),
-    );
+    const counts = Object.fromEntries(result.value.collections.map((c) => [c.collection, c.count]));
     expect(counts["competitive-intel"]).toBe(4);
-    expect(counts["pricing"]).toBe(4);
-    expect(counts["moonshot"]).toBe(1);
+    expect(counts.pricing).toBe(4);
+    expect(counts.moonshot).toBe(1);
   });
 
   it("reports the count of documents with invalid frontmatter", async () => {
@@ -177,9 +171,10 @@ describe("vaultStatus", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.unresolvedTensions.count).toBe(2);
-      expect(
-        result.value.unresolvedTensions.recent.map((t) => t.title),
-      ).toEqual(["Newer tension", "Older tension"]);
+      expect(result.value.unresolvedTensions.recent.map((t) => t.title)).toEqual([
+        "Newer tension",
+        "Older tension",
+      ]);
     });
 
     it("surfaces the most recent provenance entries", async () => {
@@ -203,10 +198,7 @@ describe("vaultStatus", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.recentWrites.count).toBe(2);
-      expect(result.value.recentWrites.entries.map((e) => e.action)).toEqual([
-        "create",
-        "promote",
-      ]);
+      expect(result.value.recentWrites.entries.map((e) => e.action)).toEqual(["create", "promote"]);
     });
   });
 });

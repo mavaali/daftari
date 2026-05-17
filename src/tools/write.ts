@@ -11,33 +11,22 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import matter from "gray-matter";
+import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
+import { type AccessContext, canPromote, canWrite } from "../access/rbac.js";
+import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
   CONFIDENCES,
   err,
-  ok,
   type Frontmatter,
+  ok,
   type Result,
   type ValidationReport,
 } from "../frontmatter/types.js";
-import { readFile, resolveVaultPath } from "../storage/local.js";
-import {
-  acquireLock,
-  openLockDb,
-  releaseLock,
-} from "../access/locks.js";
 import { indexDocument } from "../search/reindex.js";
+import { readFile, resolveVaultPath } from "../storage/local.js";
 import { commit } from "../utils/git.js";
-import {
-  frontmatterDiff,
-  recordProvenance,
-} from "../curation/provenance.js";
-import {
-  canPromote,
-  canWrite,
-  type AccessContext,
-} from "../access/rbac.js";
 import type { ToolDefinition } from "./read.js";
 
 // ---------------------------------------------------------------------------
@@ -133,10 +122,7 @@ async function performWrite(params: {
         file: params.relPath,
         agent: params.agent,
         action: params.action,
-        frontmatter_diff: frontmatterDiff(
-          params.oldFrontmatter,
-          params.newFrontmatter,
-        ),
+        frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
       });
 
       return ok({
@@ -192,9 +178,7 @@ export async function vaultWrite(
     return err(new Error("vault_write requires a string 'body' argument"));
   }
   if (args.frontmatter === null || typeof args.frontmatter !== "object") {
-    return err(
-      new Error("vault_write requires a 'frontmatter' object argument"),
-    );
+    return err(new Error("vault_write requires a 'frontmatter' object argument"));
   }
   const rawFrontmatter = args.frontmatter as Record<string, unknown>;
 
@@ -229,9 +213,7 @@ export async function vaultWrite(
 
   const { frontmatter, report } = validateFrontmatter(rawFrontmatter);
   if (!report.valid) {
-    const summary = report.issues
-      .map((i) => `${i.field}: ${i.message}`)
-      .join("; ");
+    const summary = report.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return err(new Error(`invalid frontmatter: ${summary}`));
   }
 
@@ -254,8 +236,7 @@ export async function vaultWrite(
     oldFrontmatter,
     validation: report,
     commitMessage:
-      `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` +
-      `by ${agent.value}`,
+      `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
   });
 }
 
@@ -339,11 +320,7 @@ export async function vaultPromote(
   if (!agent.ok) return agent;
 
   if (access && !canPromote(access.role)) {
-    return err(
-      new Error(
-        `access denied: role '${access.roleName}' cannot promote documents`,
-      ),
-    );
+    return err(new Error(`access denied: role '${access.roleName}' cannot promote documents`));
   }
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
@@ -369,9 +346,7 @@ export async function vaultPromote(
     const summary = parsed.value.validation.issues
       .map((i) => `${i.field}: ${i.message}`)
       .join("; ");
-    return err(
-      new Error(`vault_promote: frontmatter is incomplete: ${summary}`),
-    );
+    return err(new Error(`vault_promote: frontmatter is incomplete: ${summary}`));
   }
   // `confidence set` — the document must declare a confidence explicitly, not
   // ride on the validator's default.
@@ -380,9 +355,7 @@ export async function vaultPromote(
     typeof rawConfidence !== "string" ||
     !(CONFIDENCES as readonly string[]).includes(rawConfidence)
   ) {
-    return err(
-      new Error("vault_promote: confidence must be set before promotion"),
-    );
+    return err(new Error("vault_promote: confidence must be set before promotion"));
   }
 
   const newFrontmatter: Frontmatter = {
@@ -403,8 +376,7 @@ export async function vaultPromote(
     newFrontmatter,
     oldFrontmatter,
     validation: parsed.value.validation,
-    commitMessage:
-      `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
+    commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
   });
 }
 
@@ -430,9 +402,7 @@ export async function vaultDeprecate(
   let supersededBy: string | null = null;
   if (args.superseded_by !== undefined && args.superseded_by !== null) {
     if (typeof args.superseded_by !== "string") {
-      return err(
-        new Error("vault_deprecate: 'superseded_by' must be a string or null"),
-      );
+      return err(new Error("vault_deprecate: 'superseded_by' must be a string or null"));
     }
     supersededBy = args.superseded_by;
   }
@@ -585,15 +555,13 @@ export const writeTools: ToolDefinition[] = [
         },
         superseded_by: {
           type: "string",
-          description:
-            "Optional vault-relative path of the document that replaces this one",
+          description: "Optional vault-relative path of the document that replaces this one",
         },
         agent: agentProperty,
       },
       required: ["path", "reason", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args, access) =>
-      vaultDeprecate(vaultRoot, args, access),
+    handler: (vaultRoot, args, access) => vaultDeprecate(vaultRoot, args, access),
   },
 ];

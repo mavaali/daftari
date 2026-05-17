@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  LOCK_TTL_MS,
   acquireLock,
   getLock,
   isLocked,
+  LOCK_TTL_MS,
+  type LockDb,
   openLockDb,
   releaseLock,
-  type LockDb,
 } from "../../src/access/locks.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 

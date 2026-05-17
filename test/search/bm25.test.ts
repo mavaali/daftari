@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildBm25,
-  searchBm25,
-  tokenize,
-  type Bm25Document,
-} from "../../src/search/bm25.js";
+import { type Bm25Document, buildBm25, searchBm25, tokenize } from "../../src/search/bm25.js";
 
 describe("tokenize", () => {
   it("lowercases and splits on non-alphanumeric runs", () => {
@@ -18,11 +13,7 @@ describe("tokenize", () => {
   });
 
   it("drops stopwords and single characters", () => {
-    expect(tokenize("the cost of a credit is high")).toEqual([
-      "cost",
-      "credit",
-      "high",
-    ]);
+    expect(tokenize("the cost of a credit is high")).toEqual(["cost", "credit", "high"]);
   });
 });
 

@@ -5,17 +5,14 @@
 // frontmatter changed, but it never blocks or alters a write. It is local
 // audit state, not vault content — it is git-ignored, not committed.
 
-import { appendFile, readFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
+import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Frontmatter } from "../frontmatter/types.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 // Per-field before/after, for any frontmatter field that changed in a write.
-export type FrontmatterDiff = Record<
-  string,
-  { before: unknown; after: unknown }
->;
+export type FrontmatterDiff = Record<string, { before: unknown; after: unknown }>;
 
 export interface ProvenanceEntry {
   timestamp: string; // ISO 8601
@@ -33,19 +30,11 @@ export function curationLogPath(vaultRoot: string): string {
 // Diffs two frontmatter blocks, returning only the fields that changed. A
 // `before` of null means the document is newly created — every field counts
 // as a change from `undefined`.
-export function frontmatterDiff(
-  before: Frontmatter | null,
-  after: Frontmatter,
-): FrontmatterDiff {
+export function frontmatterDiff(before: Frontmatter | null, after: Frontmatter): FrontmatterDiff {
   const diff: FrontmatterDiff = {};
-  const keys = new Set<string>([
-    ...(before ? Object.keys(before) : []),
-    ...Object.keys(after),
-  ]);
+  const keys = new Set<string>([...(before ? Object.keys(before) : []), ...Object.keys(after)]);
   for (const key of keys) {
-    const b = before
-      ? (before as unknown as Record<string, unknown>)[key]
-      : undefined;
+    const b = before ? (before as unknown as Record<string, unknown>)[key] : undefined;
     const a = (after as unknown as Record<string, unknown>)[key];
     if (JSON.stringify(b) !== JSON.stringify(a)) {
       diff[key] = { before: b, after: a };

@@ -1,8 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { configPath, loadConfig } from "../../src/utils/config.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canPromote,
   canRead,
@@ -14,6 +13,7 @@ import {
 } from "../../src/access/rbac.js";
 import { vaultIndex } from "../../src/tools/read.js";
 import { vaultReindex, vaultSearch } from "../../src/tools/search.js";
+import { configPath, loadConfig } from "../../src/utils/config.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const SAMPLE = resolve("test/fixtures/sample-vault");
@@ -31,15 +31,8 @@ const admin = resolveAccess(config, "human:m", "admin");
 describe("rbac", () => {
   describe("loadConfig", () => {
     it("loads the sample vault's roles", () => {
-      expect(Object.keys(config.roles).sort()).toEqual([
-        "admin",
-        "analyst",
-        "researcher",
-      ]);
-      expect(config.roles.analyst?.read).toEqual([
-        "competitive-intel",
-        "pricing",
-      ]);
+      expect(Object.keys(config.roles).sort()).toEqual(["admin", "analyst", "researcher"]);
+      expect(config.roles.analyst?.read).toEqual(["competitive-intel", "pricing"]);
       expect(config.roles.admin?.promote).toBe(true);
     });
 
@@ -71,10 +64,7 @@ describe("rbac", () => {
       try {
         mkdirSync(join(dir, ".daftari"), { recursive: true });
         // `read` must be a list, not a string.
-        writeFileSync(
-          configPath(dir),
-          "roles:\n  analyst:\n    read: competitive-intel\n",
-        );
+        writeFileSync(configPath(dir), "roles:\n  analyst:\n    read: competitive-intel\n");
         const result = loadConfig(dir);
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.error.message).toContain("malformed");
@@ -136,9 +126,7 @@ describe("rbac", () => {
         { collection: "pricing", path: "b" },
         { collection: "moonshot", path: "c" },
       ];
-      expect(filterByReadPermission(analyst.role, items).map((i) => i.path)).toEqual(
-        ["a", "b"],
-      );
+      expect(filterByReadPermission(analyst.role, items).map((i) => i.path)).toEqual(["a", "b"]);
       expect(filterByReadPermission(admin.role, items)).toHaveLength(3);
       expect(filterByReadPermission(guestAccess().role, items)).toEqual([]);
     });
@@ -188,25 +176,15 @@ describe("rbac", () => {
     });
 
     it("excludes moonshot hits from the analyst's search", async () => {
-      const result = await vaultSearch(
-        vault,
-        { query: "fully agentic ETL moonshot" },
-        analyst,
-      );
+      const result = await vaultSearch(vault, { query: "fully agentic ETL moonshot" }, analyst);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.hits.every((h) => h.collection !== "moonshot")).toBe(
-        true,
-      );
+      expect(result.value.hits.every((h) => h.collection !== "moonshot")).toBe(true);
       expect(result.value.hits.map((h) => h.path)).not.toContain(MOONSHOT_DOC);
     }, 60_000);
 
     it("includes the moonshot draft in the admin's search", async () => {
-      const result = await vaultSearch(
-        vault,
-        { query: "fully agentic ETL moonshot" },
-        admin,
-      );
+      const result = await vaultSearch(vault, { query: "fully agentic ETL moonshot" }, admin);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.hits.map((h) => h.path)).toContain(MOONSHOT_DOC);

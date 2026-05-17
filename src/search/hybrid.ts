@@ -12,8 +12,8 @@ import { ok, type Result } from "../frontmatter/types.js";
 import {
   getAllChunks,
   getAllDocuments,
-  getDocument,
   getChunksForPath,
+  getDocument,
   type IndexDb,
 } from "../storage/index-db.js";
 import { buildBm25, searchBm25, tokenize } from "./bm25.js";
@@ -102,9 +102,7 @@ function rankDocuments(
   const documents = getAllDocuments(db);
   const byPath = new Map(documents.map((d) => [d.path, d]));
 
-  const bm25Model = buildBm25(
-    documents.map((d) => ({ path: d.path, tokens: d.tokens })),
-  );
+  const bm25Model = buildBm25(documents.map((d) => ({ path: d.path, tokens: d.tokens })));
   const bm25Raw = new Map<string, number>();
   for (const hit of searchBm25(bm25Model, queryTokens)) {
     bm25Raw.set(hit.path, hit.score);
@@ -126,14 +124,9 @@ function rankDocuments(
   const vectorNorm = normalize(vectorRaw);
 
   // With no usable vector signal, lexical ranking carries the full weight.
-  const weights: HybridWeights = vectorUsed
-    ? opts.weights
-    : { bm25: 1, vector: 0 };
+  const weights: HybridWeights = vectorUsed ? opts.weights : { bm25: 1, vector: 0 };
 
-  const candidates = new Set<string>([
-    ...bm25Norm.keys(),
-    ...vectorNorm.keys(),
-  ]);
+  const candidates = new Set<string>([...bm25Norm.keys(), ...vectorNorm.keys()]);
 
   const hits: HybridHit[] = [];
   for (const path of candidates) {
@@ -142,8 +135,7 @@ function rankDocuments(
     if (!doc) continue;
     const bm25Score = bm25Norm.get(path) ?? 0;
     const vectorScore = vectorNorm.get(path) ?? 0;
-    const score =
-      weights.bm25 * bm25Score + weights.vector * vectorScore;
+    const score = weights.bm25 * bm25Score + weights.vector * vectorScore;
     if (score <= 0) continue;
     hits.push({
       path,

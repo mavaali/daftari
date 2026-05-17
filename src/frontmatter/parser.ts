@@ -7,13 +7,7 @@
 
 import matter from "gray-matter";
 import { validateFrontmatter } from "./schema.js";
-import {
-  err,
-  ok,
-  type Frontmatter,
-  type Result,
-  type ValidationReport,
-} from "./types.js";
+import { err, type Frontmatter, ok, type Result, type ValidationReport } from "./types.js";
 
 export interface ParsedDocument {
   frontmatter: Frontmatter; // coerced, always complete

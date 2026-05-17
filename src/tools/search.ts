@@ -6,18 +6,18 @@
 // it. If the index is empty (first run after a fresh clone) they trigger a
 // reindex first, so search works without an explicit setup step.
 
+import { type AccessContext, canRead } from "../access/rbac.js";
 import { ok, type Result } from "../frontmatter/types.js";
-import { documentCount, openIndexDb } from "../storage/index-db.js";
 import {
   DEFAULT_WEIGHTS,
-  hybridSearch,
-  relatedSearch,
   type HybridSearchResult,
   type HybridWeights,
+  hybridSearch,
   type RelatedSearchResult,
+  relatedSearch,
 } from "../search/hybrid.js";
-import { reindexVault, type ReindexResult } from "../search/reindex.js";
-import { canRead, type AccessContext } from "../access/rbac.js";
+import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { documentCount, openIndexDb } from "../storage/index-db.js";
 import type { ToolDefinition } from "./read.js";
 
 // Builds the index if it has never been built. A populated index is left as-is
@@ -89,9 +89,7 @@ export async function vaultSearch(
     });
     if (!result.ok || !access) return result;
     // RBAC: drop hits in collections the role cannot read.
-    const hits = result.value.hits.filter((h) =>
-      canRead(access.role, h.collection),
-    );
+    const hits = result.value.hits.filter((h) => canRead(access.role, h.collection));
     return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();
@@ -111,9 +109,7 @@ export async function vaultSearchRelated(
   if (typeof path !== "string" || path.trim().length === 0) {
     return {
       ok: false,
-      error: new Error(
-        "vault_search_related requires a non-empty 'path' argument",
-      ),
+      error: new Error("vault_search_related requires a non-empty 'path' argument"),
     };
   }
 
@@ -130,9 +126,7 @@ export async function vaultSearchRelated(
     });
     if (!result.ok || !access) return result;
     // RBAC: drop related hits in collections the role cannot read.
-    const hits = result.value.hits.filter((h) =>
-      canRead(access.role, h.collection),
-    );
+    const hits = result.value.hits.filter((h) => canRead(access.role, h.collection));
     return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();
@@ -147,9 +141,7 @@ export interface VaultReindexResult extends ReindexResult {
   vault: string;
 }
 
-export async function vaultReindex(
-  vaultRoot: string,
-): Promise<Result<VaultReindexResult, Error>> {
+export async function vaultReindex(vaultRoot: string): Promise<Result<VaultReindexResult, Error>> {
   const result = await reindexVault(vaultRoot);
   if (!result.ok) return result;
   return ok({ ...result.value, vault: vaultRoot });
@@ -161,8 +153,7 @@ export async function vaultReindex(
 
 const weightsSchema = {
   type: "object",
-  description:
-    "Optional ranking weights. Defaults to an even bm25/vector split.",
+  description: "Optional ranking weights. Defaults to an even bm25/vector split.",
   properties: {
     bm25: { type: "number", description: "Lexical (BM25) weight, >= 0" },
     vector: { type: "number", description: "Semantic (vector) weight, >= 0" },
@@ -214,8 +205,7 @@ export const searchTools: ToolDefinition[] = [
       required: ["path"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args, access) =>
-      vaultSearchRelated(vaultRoot, args, access),
+    handler: (vaultRoot, args, access) => vaultSearchRelated(vaultRoot, args, access),
   },
   {
     name: "vault_reindex",

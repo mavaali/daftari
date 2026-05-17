@@ -25,26 +25,13 @@ describe("daftari --init", () => {
 
     expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
     expect(existsSync(join(vault, ".gitignore"))).toBe(true);
-    for (const collection of [
-      "competitive-intel",
-      "pricing",
-      "moonshot",
-      "_drafts",
-    ]) {
+    for (const collection of ["competitive-intel", "pricing", "moonshot", "_drafts"]) {
       expect(existsSync(join(vault, collection))).toBe(true);
     }
 
-    expect(
-      existsSync(
-        join(vault, "competitive-intel", "aurora-pipelines-overview.md"),
-      ),
-    ).toBe(true);
-    expect(
-      existsSync(join(vault, "pricing", "helios-consumption-pricing.md")),
-    ).toBe(true);
-    expect(
-      existsSync(join(vault, "moonshot", "zero-config-ingestion.md")),
-    ).toBe(true);
+    expect(existsSync(join(vault, "competitive-intel", "aurora-pipelines-overview.md"))).toBe(true);
+    expect(existsSync(join(vault, "pricing", "helios-consumption-pricing.md"))).toBe(true);
+    expect(existsSync(join(vault, "moonshot", "zero-config-ingestion.md"))).toBe(true);
 
     // The scaffold is committed: the vault has git history from the start.
     expect(existsSync(join(vault, ".git"))).toBe(true);
@@ -60,9 +47,7 @@ describe("daftari --init", () => {
       "utf-8",
     );
     expect(overview).toContain("Aurora Pipelines");
-    expect(overview.toLowerCase()).not.toMatch(
-      /microsoft|fabric|databricks|snowflake|bigquery/,
-    );
+    expect(overview.toLowerCase()).not.toMatch(/microsoft|fabric|databricks|snowflake|bigquery/);
   }, 60_000);
 
   it("refuses to scaffold into a non-empty directory", async () => {
@@ -77,9 +62,7 @@ describe("daftari --vault", () => {
   // Boots the CLI as a subprocess and waits for the server to report it is
   // serving over stdio. A clean boot proves --vault wiring (config load, index
   // build, server connect) works end to end.
-  function bootServer(
-    vault: string,
-  ): Promise<{ ok: boolean; stderr: string }> {
+  function bootServer(vault: string): Promise<{ ok: boolean; stderr: string }> {
     return new Promise((resolveBoot) => {
       const tsx = resolve("node_modules/.bin/tsx");
       const proc = spawn(tsx, [

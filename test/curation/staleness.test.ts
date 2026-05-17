@@ -1,10 +1,6 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  ageInDays,
-  computeStaleness,
-  listStaleFiles,
-} from "../../src/curation/staleness.js";
+import { ageInDays, computeStaleness, listStaleFiles } from "../../src/curation/staleness.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
 const NOW = new Date("2026-02-15T12:00:00Z");

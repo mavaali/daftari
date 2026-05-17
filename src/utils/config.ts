@@ -27,10 +27,7 @@ export function configPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "config.yaml");
 }
 
-function asStringArray(
-  value: unknown,
-  where: string,
-): Result<string[], Error> {
+function asStringArray(value: unknown, where: string): Result<string[], Error> {
   if (value === undefined) return ok([]);
   if (!Array.isArray(value)) {
     return err(new Error(`${where} must be a list`));
@@ -43,10 +40,7 @@ function asStringArray(
   return ok(value as string[]);
 }
 
-function validateRole(
-  name: string,
-  raw: unknown,
-): Result<RoleConfig, Error> {
+function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return err(new Error(`role '${name}' must be a mapping`));
   }
@@ -103,18 +97,12 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
   if (rawRoles === undefined) {
     return ok({ roles: {} });
   }
-  if (
-    rawRoles === null ||
-    typeof rawRoles !== "object" ||
-    Array.isArray(rawRoles)
-  ) {
+  if (rawRoles === null || typeof rawRoles !== "object" || Array.isArray(rawRoles)) {
     return err(new Error("malformed config: 'roles' must be a mapping"));
   }
 
   const roles: Record<string, RoleConfig> = {};
-  for (const [name, raw] of Object.entries(
-    rawRoles as Record<string, unknown>,
-  )) {
+  for (const [name, raw] of Object.entries(rawRoles as Record<string, unknown>)) {
     const role = validateRole(name, raw);
     if (!role.ok) return err(new Error(`malformed config: ${role.error.message}`));
     roles[name] = role.value;

@@ -2,9 +2,7 @@
 
 // A Result<T, E> is returned instead of throwing. Tool handlers and storage
 // functions surface failures as values so callers can branch explicitly.
-export type Result<T, E = Error> =
-  | { ok: true; value: T }
-  | { ok: false; error: E };
+export type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 
 export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
 export const err = <E = Error>(error: E): Result<never, E> => ({ ok: false, error });
@@ -12,13 +10,7 @@ export const err = <E = Error>(error: E): Result<never, E> => ({ ok: false, erro
 export const DOMAINS = ["accumulation", "generative"] as const;
 export type Domain = (typeof DOMAINS)[number];
 
-export const STATUSES = [
-  "draft",
-  "canonical",
-  "deprecated",
-  "superseded",
-  "archived",
-] as const;
+export const STATUSES = ["draft", "canonical", "deprecated", "superseded", "archived"] as const;
 export type Status = (typeof STATUSES)[number];
 
 export const CONFIDENCES = ["low", "medium", "high"] as const;

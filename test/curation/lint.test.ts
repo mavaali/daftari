@@ -20,36 +20,30 @@ describe("lint", () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      expect(report.value.checks.staleFiles.map((f) => f.path)).toEqual([
-        "stale-doc.md",
-      ]);
+      expect(report.value.checks.staleFiles.map((f) => f.path)).toEqual(["stale-doc.md"]);
     });
 
     it("flags the orphan with no inbound links", async () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      expect(report.value.checks.orphanFiles.map((f) => f.path)).toEqual([
-        "orphan-doc.md",
-      ]);
+      expect(report.value.checks.orphanFiles.map((f) => f.path)).toEqual(["orphan-doc.md"]);
     });
 
     it("flags the draft older than the 30-day limit", async () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      expect(report.value.checks.oldDrafts.map((f) => f.path)).toEqual([
-        "old-draft.md",
-      ]);
+      expect(report.value.checks.oldDrafts.map((f) => f.path)).toEqual(["old-draft.md"]);
     });
 
     it("flags the stagnant low-confidence file", async () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      expect(
-        report.value.checks.stagnantLowConfidence.map((f) => f.path),
-      ).toEqual(["stagnant-low-conf.md"]);
+      expect(report.value.checks.stagnantLowConfidence.map((f) => f.path)).toEqual([
+        "stagnant-low-conf.md",
+      ]);
     });
 
     it("flags the deprecated file still linked from a canonical doc", async () => {

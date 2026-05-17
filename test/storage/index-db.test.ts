@@ -9,12 +9,12 @@ import {
   getChunksForPath,
   getDocument,
   getMeta,
+  type IndexDb,
+  type IndexedDocument,
   insertChunk,
   insertDocument,
   openIndexDb,
   setMeta,
-  type IndexDb,
-  type IndexedDocument,
 } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -65,9 +65,7 @@ describe("index-db", () => {
     });
     const chunks = getChunksForPath(db, "pricing/foo.md");
     expect(chunks).toHaveLength(1);
-    expect(chunks[0]?.embedding && [...chunks[0].embedding]).toEqual([
-      ...embedding,
-    ]);
+    expect(chunks[0]?.embedding && [...chunks[0].embedding]).toEqual([...embedding]);
   });
 
   it("stores a null embedding when none is provided", () => {

@@ -43,24 +43,18 @@ function permits(list: string[], collection: string): boolean {
 }
 
 // True if the role may read documents in `collection`.
-export function canRead(
-  role: RoleConfig | null,
-  collection: string,
-): boolean {
+export function canRead(role: RoleConfig | null, collection: string): boolean {
   return role !== null && permits(role.read, collection);
 }
 
 // True if the role may create/modify documents in `collection`.
-export function canWrite(
-  role: RoleConfig | null,
-  collection: string,
-): boolean {
+export function canWrite(role: RoleConfig | null, collection: string): boolean {
   return role !== null && permits(role.write, collection);
 }
 
 // True if the role may promote a draft to canonical.
 export function canPromote(role: RoleConfig | null): boolean {
-  return role !== null && role.promote;
+  return role?.promote ?? false;
 }
 
 // True if the role has read access to at least one collection. Curation tools

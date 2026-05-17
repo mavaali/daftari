@@ -14,16 +14,16 @@ import {
   clearIndex,
   deleteDocument,
   documentCount,
+  type IndexDb,
+  type IndexedDocument,
   insertChunk,
   insertDocument,
   openIndexDb,
   setMeta,
-  type IndexDb,
-  type IndexedDocument,
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { tokenize } from "./bm25.js";
-import { chunkText, embed, EMBEDDING_DIM } from "./vector.js";
+import { chunkText, EMBEDDING_DIM, embed } from "./vector.js";
 
 export interface ReindexResult {
   documentCount: number;
@@ -41,10 +41,7 @@ interface StagedDocument {
 // Reads and parses a single markdown file into the shape the index needs.
 // Returns null when the file should be skipped (unreadable, or malformed YAML
 // frontmatter) so a reindex never aborts on one bad file.
-async function stageOne(
-  vaultRoot: string,
-  relPath: string,
-): Promise<StagedDocument | null> {
+async function stageOne(vaultRoot: string, relPath: string): Promise<StagedDocument | null> {
   const resolved = resolveVaultPath(vaultRoot, relPath);
   if (!resolved.ok) return null;
   const file = await readFile(resolved.value);
@@ -123,9 +120,7 @@ function writeIndex(
   return chunkCount;
 }
 
-export async function reindexVault(
-  vaultRoot: string,
-): Promise<Result<ReindexResult, Error>> {
+export async function reindexVault(vaultRoot: string): Promise<Result<ReindexResult, Error>> {
   const staging = await stageDocuments(vaultRoot);
   if (!staging.ok) return staging;
   const { staged, skipped } = staging.value;

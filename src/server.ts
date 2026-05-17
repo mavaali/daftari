@@ -6,15 +6,12 @@
 // bug cannot take the stdio connection down.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { type AccessContext, guestAccess } from "./access/rbac.js";
+import { curationTools } from "./tools/curation.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { searchTools } from "./tools/search.js";
 import { writeTools } from "./tools/write.js";
-import { curationTools } from "./tools/curation.js";
-import { guestAccess, type AccessContext } from "./access/rbac.js";
 
 export const SERVER_NAME = "daftari";
 export const SERVER_VERSION = "0.1.0";
@@ -22,21 +19,13 @@ export const SERVER_VERSION = "0.1.0";
 // The server runs as one access identity for its whole lifetime — the
 // --user / --role it was started with. Every tool call is enforced against it.
 // Absent an explicit context the server falls back to the deny-all guest.
-export function createServer(
-  vaultRoot: string,
-  access: AccessContext = guestAccess(),
-): Server {
+export function createServer(vaultRoot: string, access: AccessContext = guestAccess()): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
 
-  const tools: ToolDefinition[] = [
-    ...readTools,
-    ...searchTools,
-    ...writeTools,
-    ...curationTools,
-  ];
+  const tools: ToolDefinition[] = [...readTools, ...searchTools, ...writeTools, ...curationTools];
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -62,9 +51,7 @@ export function createServer(
       if (!result.ok) {
         return {
           isError: true,
-          content: [
-            { type: "text" as const, text: `Error: ${result.error.message}` },
-          ],
+          content: [{ type: "text" as const, text: `Error: ${result.error.message}` }],
         };
       }
       return {
@@ -79,9 +66,7 @@ export function createServer(
       const reason = e instanceof Error ? e.message : String(e);
       return {
         isError: true,
-        content: [
-          { type: "text" as const, text: `Unexpected error in ${name}: ${reason}` },
-        ],
+        content: [{ type: "text" as const, text: `Unexpected error in ${name}: ${reason}` }],
       };
     }
   });

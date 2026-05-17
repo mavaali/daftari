@@ -36,10 +36,7 @@ export function gitIdentity(identity: string): GitIdentity {
   };
 }
 
-async function git(
-  vaultRoot: string,
-  args: string[],
-): Promise<Result<string, Error>> {
+async function git(vaultRoot: string, args: string[]): Promise<Result<string, Error>> {
   try {
     const { stdout } = await run("git", ["-C", vaultRoot, ...args], {
       maxBuffer: 16 * 1024 * 1024,
@@ -57,18 +54,13 @@ async function git(
 }
 
 export async function isGitRepo(vaultRoot: string): Promise<boolean> {
-  const result = await git(vaultRoot, [
-    "rev-parse",
-    "--is-inside-work-tree",
-  ]);
+  const result = await git(vaultRoot, ["rev-parse", "--is-inside-work-tree"]);
   return result.ok && result.value.trim() === "true";
 }
 
 // Initializes a git repo at the vault root if one does not already exist.
 // Idempotent — safe to call on every write.
-export async function ensureGitRepo(
-  vaultRoot: string,
-): Promise<Result<void, Error>> {
+export async function ensureGitRepo(vaultRoot: string): Promise<Result<void, Error>> {
   if (await isGitRepo(vaultRoot)) return ok(undefined);
   const init = await git(vaultRoot, ["init", "--quiet"]);
   if (!init.ok) return init;

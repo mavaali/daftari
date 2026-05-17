@@ -1,9 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  vaultReindex,
-  vaultSearch,
-  vaultSearchRelated,
-} from "../../src/tools/search.js";
+import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const INSIGHT_DOC = "competitive-intel/vega-insight-positioning.md";
@@ -41,9 +37,7 @@ describe("search tools", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.hits.length).toBeGreaterThan(0);
-      expect(result.value.hits[0]?.path).toBe(
-        "pricing/helios-consumption-pricing.md",
-      );
+      expect(result.value.hits[0]?.path).toBe("pricing/helios-consumption-pricing.md");
     });
 
     it("rejects a missing or empty query", async () => {

@@ -1,14 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  vaultAppend,
-  vaultDeprecate,
-  vaultPromote,
-  vaultWrite,
-} from "../../src/tools/write.js";
-import { vaultRead } from "../../src/tools/read.js";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
-import { log } from "../../src/utils/git.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { vaultRead } from "../../src/tools/read.js";
+import { vaultAppend, vaultDeprecate, vaultPromote, vaultWrite } from "../../src/tools/write.js";
+import { log } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -81,9 +76,7 @@ describe("write tools", () => {
         (e) => e.file === "pricing/new-note.md" && e.action === "create",
       );
       expect(entry?.tool).toBe("vault_write");
-      expect(entry?.frontmatter_diff?.title?.after).toBe(
-        "Serverless Cost Notes",
-      );
+      expect(entry?.frontmatter_diff?.title?.after).toBe("Serverless Cost Notes");
     }, 60_000);
 
     it("updates an existing document and preserves its created date", async () => {
@@ -181,9 +174,7 @@ describe("write tools", () => {
       const history = await log(vault, {
         path: "_drafts/moonshot-agentic-etl.md",
       });
-      expect(history.ok && history.value[0]?.subject).toContain(
-        "draft→canonical",
-      );
+      expect(history.ok && history.value[0]?.subject).toContain("draft→canonical");
     }, 60_000);
 
     it("refuses to promote a document that is not a draft", async () => {
@@ -224,9 +215,7 @@ describe("write tools", () => {
       expect(read.ok).toBe(true);
       if (!read.ok) return;
       expect(read.value.frontmatter.status).toBe("deprecated");
-      expect(read.value.frontmatter.superseded_by).toBe(
-        "pricing/cirrus-capacity-tiers-2026.md",
-      );
+      expect(read.value.frontmatter.superseded_by).toBe("pricing/cirrus-capacity-tiers-2026.md");
 
       // The reason is captured in the auto-commit message.
       const history = await log(vault, {
@@ -234,9 +223,7 @@ describe("write tools", () => {
       });
       expect(history.ok).toBe(true);
       if (!history.ok) return;
-      expect(history.value[0]?.subject).toContain(
-        "Replaced by the 2026 capacity refresh",
-      );
+      expect(history.value[0]?.subject).toContain("Replaced by the 2026 capacity refresh");
     }, 60_000);
 
     it("deprecates without a superseded_by when none is given", async () => {
@@ -302,10 +289,7 @@ describe("write tools", () => {
           frontmatter: newFrontmatter(),
           agent,
         });
-      const results = await Promise.all([
-        writeOnce("agent:a"),
-        writeOnce("agent:b"),
-      ]);
+      const results = await Promise.all([writeOnce("agent:a"), writeOnce("agent:b")]);
 
       // At least one write lands; any write that loses the race fails cleanly
       // with a lock error rather than throwing or producing a partial file.

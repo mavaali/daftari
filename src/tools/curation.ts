@@ -6,33 +6,20 @@
 // exposes a pure logic function (returns Result, never throws) plus an MCP
 // ToolDefinition, mirroring the read- and write-path tools.
 
-import { ok, type Result } from "../frontmatter/types.js";
+import { type AccessContext, hasAnyRead } from "../access/rbac.js";
+import { LINT_CHECKS, type LintCheckName, type LintFinding, runLint } from "../curation/lint.js";
+import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { addTension, type TensionEntry } from "../curation/tension.js";
-import {
-  LINT_CHECKS,
-  runLint,
-  type LintCheckName,
-  type LintFinding,
-} from "../curation/lint.js";
-import {
-  readProvenanceLog,
-  type ProvenanceEntry,
-} from "../curation/provenance.js";
-import { hasAnyRead, type AccessContext } from "../access/rbac.js";
+import { ok, type Result } from "../frontmatter/types.js";
 import type { ToolDefinition } from "./read.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
 // (or any role with no read access) is denied.
-function requireReadAccess(
-  tool: string,
-  access?: AccessContext,
-): Result<void, Error> {
+function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
   if (access && !hasAnyRead(access.role)) {
     return {
       ok: false,
-      error: new Error(
-        `access denied: role '${access.roleName}' cannot use ${tool}`,
-      ),
+      error: new Error(`access denied: role '${access.roleName}' cannot use ${tool}`),
     };
   }
   return ok(undefined);
@@ -55,9 +42,7 @@ export async function vaultTensionLog(
     if (typeof v !== "string" || v.trim().length === 0) {
       return {
         ok: false,
-        error: new Error(
-          `vault_tension_log requires a non-empty '${field}' argument`,
-        ),
+        error: new Error(`vault_tension_log requires a non-empty '${field}' argument`),
       };
     }
     return ok(v);
@@ -113,9 +98,7 @@ export async function vaultLint(
     ) {
       return {
         ok: false,
-        error: new Error(
-          `vault_lint 'filter' must be one of: ${LINT_CHECKS.join(", ")}`,
-        ),
+        error: new Error(`vault_lint 'filter' must be one of: ${LINT_CHECKS.join(", ")}`),
       };
     }
     filter = args.filter as LintCheckName;
@@ -166,9 +149,7 @@ export async function vaultProvenance(
   if (typeof filePath !== "string" || filePath.trim().length === 0) {
     return {
       ok: false,
-      error: new Error(
-        "vault_provenance requires a non-empty 'filePath' argument",
-      ),
+      error: new Error("vault_provenance requires a non-empty 'filePath' argument"),
     };
   }
 
@@ -221,8 +202,7 @@ export const curationTools: ToolDefinition[] = [
       required: ["title", "sourceA", "claimA", "sourceB", "claimB", "agent"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args, access) =>
-      vaultTensionLog(vaultRoot, args, access),
+    handler: (vaultRoot, args, access) => vaultTensionLog(vaultRoot, args, access),
   },
   {
     name: "vault_lint",
@@ -262,7 +242,6 @@ export const curationTools: ToolDefinition[] = [
       required: ["filePath"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args, access) =>
-      vaultProvenance(vaultRoot, args, access),
+    handler: (vaultRoot, args, access) => vaultProvenance(vaultRoot, args, access),
   },
 ];

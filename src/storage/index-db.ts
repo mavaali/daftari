@@ -146,9 +146,7 @@ export function insertChunk(db: IndexDb, chunk: IndexedChunk): void {
 }
 
 export function setMeta(db: IndexDb, key: string, value: string): void {
-  db.prepare(
-    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-  ).run(key, value);
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
 }
 
 // --- reads -----------------------------------------------------------------
@@ -182,19 +180,14 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
 }
 
 export function getAllDocuments(db: IndexDb): IndexedDocument[] {
-  const rows = db
-    .prepare("SELECT * FROM documents ORDER BY path")
-    .all() as DocumentRow[];
+  const rows = db.prepare("SELECT * FROM documents ORDER BY path").all() as DocumentRow[];
   return rows.map(rowToDocument);
 }
 
-export function getDocument(
-  db: IndexDb,
-  path: string,
-): IndexedDocument | null {
-  const row = db
-    .prepare("SELECT * FROM documents WHERE path = ?")
-    .get(path) as DocumentRow | undefined;
+export function getDocument(db: IndexDb, path: string): IndexedDocument | null {
+  const row = db.prepare("SELECT * FROM documents WHERE path = ?").get(path) as
+    | DocumentRow
+    | undefined;
   return row ? rowToDocument(row) : null;
 }
 
@@ -215,9 +208,7 @@ function rowToChunk(row: ChunkRow): IndexedChunk {
 }
 
 export function getAllChunks(db: IndexDb): IndexedChunk[] {
-  const rows = db
-    .prepare("SELECT * FROM chunks ORDER BY path, chunk_index")
-    .all() as ChunkRow[];
+  const rows = db.prepare("SELECT * FROM chunks ORDER BY path, chunk_index").all() as ChunkRow[];
   return rows.map(rowToChunk);
 }
 
@@ -229,15 +220,13 @@ export function getChunksForPath(db: IndexDb, path: string): IndexedChunk[] {
 }
 
 export function getMeta(db: IndexDb, key: string): string | null {
-  const row = db
-    .prepare("SELECT value FROM meta WHERE key = ?")
-    .get(key) as { value: string } | undefined;
+  const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
   return row ? row.value : null;
 }
 
 export function documentCount(db: IndexDb): number {
-  const row = db
-    .prepare("SELECT COUNT(*) AS n FROM documents")
-    .get() as { n: number };
+  const row = db.prepare("SELECT COUNT(*) AS n FROM documents").get() as { n: number };
   return row.n;
 }

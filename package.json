@@ -31,6 +31,9 @@
     "build": "tsc",
     "test": "vitest run",
     "dev": "tsx watch src/index.ts --vault ./test/fixtures/sample-vault",
+    "lint": "biome check src test",
+    "lint:fix": "biome check --write src test",
+    "format": "biome format --write src test",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -48,6 +51,7 @@
     "js-yaml": "^4.1.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.8.0",

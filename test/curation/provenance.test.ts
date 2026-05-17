@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Frontmatter } from "../../src/frontmatter/types.js";
 import {
   frontmatterDiff,
   readProvenanceLog,
   recordProvenance,
 } from "../../src/curation/provenance.js";
+import type { Frontmatter } from "../../src/frontmatter/types.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const baseFrontmatter: Frontmatter = {
@@ -50,9 +50,7 @@ describe("provenance", () => {
     });
 
     it("returns an empty diff when nothing changed", () => {
-      expect(frontmatterDiff(baseFrontmatter, { ...baseFrontmatter })).toEqual(
-        {},
-      );
+      expect(frontmatterDiff(baseFrontmatter, { ...baseFrontmatter })).toEqual({});
     });
   });
 

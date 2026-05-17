@@ -79,10 +79,7 @@ export async function listStaleFiles(
     if (!parsed.ok) continue;
 
     const fm = parsed.value.frontmatter;
-    const staleness = computeStaleness(
-      { updated: fm.updated, ttl_days: fm.ttl_days },
-      now,
-    );
+    const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
     if (staleness.score >= threshold) {
       stale.push({ path: relPath, title: fm.title, staleness });
     }

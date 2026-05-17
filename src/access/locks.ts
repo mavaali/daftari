@@ -92,9 +92,9 @@ export function acquireLock(
   }
   try {
     purgeExpired(db, now);
-    const existing = db
-      .prepare("SELECT * FROM locks WHERE path = ?")
-      .get(path) as LockRow | undefined;
+    const existing = db.prepare("SELECT * FROM locks WHERE path = ?").get(path) as
+      | LockRow
+      | undefined;
     if (existing && existing.holder !== holder) {
       return err(
         new Error(
@@ -129,9 +129,7 @@ export function releaseLock(
   holder: string,
 ): Result<{ released: boolean }, Error> {
   try {
-    const info = db
-      .prepare("DELETE FROM locks WHERE path = ? AND holder = ?")
-      .run(path, holder);
+    const info = db.prepare("DELETE FROM locks WHERE path = ? AND holder = ?").run(path, holder);
     return ok({ released: info.changes > 0 });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -140,26 +138,16 @@ export function releaseLock(
 }
 
 // True if `path` carries a lock whose TTL has not yet passed.
-export function isLocked(
-  db: LockDb,
-  path: string,
-  now: number = Date.now(),
-): boolean {
-  const row = db
-    .prepare("SELECT expires_at FROM locks WHERE path = ?")
-    .get(path) as { expires_at: number } | undefined;
+export function isLocked(db: LockDb, path: string, now: number = Date.now()): boolean {
+  const row = db.prepare("SELECT expires_at FROM locks WHERE path = ?").get(path) as
+    | { expires_at: number }
+    | undefined;
   return row !== undefined && row.expires_at > now;
 }
 
 // Returns the live lock on `path`, or null if none / expired.
-export function getLock(
-  db: LockDb,
-  path: string,
-  now: number = Date.now(),
-): Lock | null {
-  const row = db
-    .prepare("SELECT * FROM locks WHERE path = ?")
-    .get(path) as LockRow | undefined;
+export function getLock(db: LockDb, path: string, now: number = Date.now()): Lock | null {
+  const row = db.prepare("SELECT * FROM locks WHERE path = ?").get(path) as LockRow | undefined;
   if (!row || row.expires_at <= now) return null;
   return rowToLock(row);
 }
