@@ -24,9 +24,10 @@ export type Provenance = (typeof PROVENANCES)[number];
 // type so config.ts and the frontmatter layer agree on the shape.
 export type ExtensionValue = string | number | boolean | string[] | null;
 
-// The metadata layer for every vault document. Mirrors the YAML frontmatter
-// block. Daftari does not maintain any metadata outside frontmatter.
-export interface Frontmatter {
+// Daftari's built-in frontmatter fields — the core schema every vault shares.
+// Each field keeps a narrow type; `Frontmatter` intersects this with an open
+// index signature so config-declared extension fields are also well-typed.
+export interface BuiltinFrontmatter {
   title: string;
   domain: Domain;
   collection: string;
@@ -46,6 +47,14 @@ export interface Frontmatter {
   questions_answered: string[];
   questions_raised: string[];
 }
+
+// The metadata layer for every vault document. Mirrors the YAML frontmatter
+// block. The built-in fields keep their narrow types; the index signature
+// admits any config-declared schema-extension field without a core type
+// change. Daftari does not maintain any metadata outside frontmatter.
+export type Frontmatter = BuiltinFrontmatter & {
+  [extensionKey: string]: ExtensionValue;
+};
 
 // A single problem found while validating frontmatter. Advisory only —
 // validation never blocks a read.
