@@ -273,11 +273,6 @@ one that does many jobs partially. Not in this release:
   connect to, with pluggable cloud-storage backends (ADLS, S3, GCS) and OAuth
   authentication. Self-hosted by the operator, *not* a managed service. v1 runs
   against a local filesystem as a single stdio process.
-- **Stronger concurrent-write conflict detection** — optimistic concurrency, so
-  a writer that composed its change against a now-stale version of a document
-  is told so instead of silently overwriting. v1 ships file-level write locks
-  only: they prevent corruption and simultaneous writers, not stale overwrites.
-  Tracked in [#14](https://github.com/mavaali/daftari/issues/14).
 - **LLM reranking of search results** — a model pass over the BM25 + vector
   candidate set. v1 ships hybrid ranking without a rerank stage.
 - **Enforced domain separation** — v1 *documents* the convention that

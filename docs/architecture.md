@@ -117,13 +117,25 @@ it does *not* do:
   spans several documents is not atomic across them.
 
 This is sufficient for the common case — agents usually write to different
-documents — and it guarantees no write ever corrupts a file. But it is *not*
-multi-agent write orchestration, and the lock does not catch a **stale write**:
-an agent that reads a document, then writes it after another agent changed it
-in between, still overwrites silently — the two never held the lock at the same
-time. Closing that gap with optimistic concurrency (a version token checked at
-write time) is the v2 direction — tracked in issue #14 — and is a better fit
-than queuing, which only reorders writes without resolving their staleness.
+documents — and it guarantees no write ever corrupts a file. But the lock
+alone does not catch a **stale write**: an agent that reads a document, then
+writes it after another agent changed it in between, never held the lock at
+the same time as that other agent.
+
+**Optimistic concurrency** closes that gap. `vault_read` returns a `version`
+token — the SHA-256 of the file as read, frontmatter included. Every write
+tool (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`)
+accepts an optional `base_version`. When supplied, the server re-hashes the
+file *inside the write lock* and, if the hash no longer matches, rejects the
+write with a `stale write:` error — nothing is written, committed, or
+indexed, and a `rejected_stale` entry is appended to the provenance log.
+Omitting `base_version` preserves last-write-wins behavior, so the check is
+fully backward compatible.
+
+One caveat: the in-lock hash only synchronizes Daftari writers. A non-Daftari
+process editing the file directly can still race the check between the hash
+and the write — acceptable, because the lock only ever coordinated Daftari
+writers in the first place.
 
 ### Layer 4 — Curation
 
