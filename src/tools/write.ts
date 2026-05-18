@@ -18,6 +18,7 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
   CONFIDENCES,
+  type ExtensionValue,
   err,
   type Frontmatter,
   ok,
@@ -26,6 +27,7 @@ import {
 } from "../frontmatter/types.js";
 import { indexDocument } from "../search/reindex.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import type { ToolDefinition } from "./read.js";
@@ -44,11 +46,33 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
   return fm.collection || (relPath.split("/")[0] ?? "");
 }
 
+// Resolves an extension field's serializable value: the raw frontmatter value
+// (a js-yaml Date normalized to a YYYY-MM-DD string), or the declared default
+// when the field is absent. Returns undefined when absent with no default, so
+// the caller can omit the key entirely.
+function extensionValue(
+  raw: Record<string, unknown>,
+  ext: SchemaExtension,
+): ExtensionValue | undefined {
+  const v = raw[ext.field];
+  if (v === undefined) return ext.default;
+  if (ext.type === "date" && v instanceof Date && !Number.isNaN(v.getTime())) {
+    return v.toISOString().slice(0, 10);
+  }
+  return v as ExtensionValue;
+}
+
 // Serializes a frontmatter block and markdown body back into file text.
-// Fields are written in schema order so a round-tripped document has stable,
-// predictable frontmatter.
-function serializeDocument(fm: Frontmatter, body: string): string {
-  const ordered = {
+// Built-in fields are written first in schema order, then config-declared
+// extension fields in declaration order, so a round-tripped document has
+// stable, predictable frontmatter regardless of the input object's key order.
+export function serializeDocument(
+  fm: Frontmatter,
+  body: string,
+  extensions: SchemaExtension[] = [],
+  raw: Record<string, unknown> = {},
+): string {
+  const ordered: Record<string, unknown> = {
     title: fm.title,
     domain: fm.domain,
     collection: fm.collection,
@@ -65,6 +89,10 @@ function serializeDocument(fm: Frontmatter, body: string): string {
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
   };
+  for (const ext of extensions) {
+    const value = extensionValue(raw, ext);
+    if (value !== undefined) ordered[ext.field] = value;
+  }
   return matter.stringify(body.startsWith("\n") ? body : `\n${body}`, ordered);
 }
 
@@ -265,7 +293,14 @@ export async function vaultWrite(
   }
   const isUpdate = oldFrontmatter !== null;
 
-  const { frontmatter, report } = validateFrontmatter(rawFrontmatter);
+  // Config-declared schema extensions participate in validation and
+  // serialization. A malformed config fails the write loudly, matching the
+  // server's loud-config contract.
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
+  const { frontmatter, report } = validateFrontmatter(rawFrontmatter, extensions);
   if (!report.valid) {
     const summary = report.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return err(new Error(`invalid frontmatter: ${summary}`));
@@ -285,7 +320,7 @@ export async function vaultWrite(
     agent: agent.value,
     tool: "vault_write",
     action: isUpdate ? "update" : "create",
-    fileText: serializeDocument(stamped, body),
+    fileText: serializeDocument(stamped, body, extensions, rawFrontmatter),
     newFrontmatter: stamped,
     oldFrontmatter,
     validation: report,
@@ -325,6 +360,10 @@ export async function vaultAppend(
   const parsed = parseDocument(existing.value);
   if (!parsed.ok) return parsed;
 
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
   const oldFrontmatter = parsed.value.frontmatter;
   if (access) {
     const collection = collectionOf(path.value, oldFrontmatter);
@@ -351,7 +390,7 @@ export async function vaultAppend(
     agent: agent.value,
     tool: "vault_append",
     action: "append",
-    fileText: serializeDocument(newFrontmatter, newBody),
+    fileText: serializeDocument(newFrontmatter, newBody, extensions, parsed.value.raw),
     newFrontmatter,
     oldFrontmatter,
     validation: parsed.value.validation,
@@ -393,6 +432,10 @@ export async function vaultPromote(
   const parsed = parseDocument(existing.value);
   if (!parsed.ok) return parsed;
 
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
   const oldFrontmatter = parsed.value.frontmatter;
   if (oldFrontmatter.status !== "draft") {
     return err(
@@ -432,7 +475,7 @@ export async function vaultPromote(
     agent: agent.value,
     tool: "vault_promote",
     action: "promote",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content),
+    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
     newFrontmatter,
     oldFrontmatter,
     validation: parsed.value.validation,
@@ -480,6 +523,10 @@ export async function vaultDeprecate(
   const parsed = parseDocument(existing.value);
   if (!parsed.ok) return parsed;
 
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
   const oldFrontmatter = parsed.value.frontmatter;
   if (access) {
     const collection = collectionOf(path.value, oldFrontmatter);
@@ -507,7 +554,7 @@ export async function vaultDeprecate(
     agent: agent.value,
     tool: "vault_deprecate",
     action: "deprecate",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content),
+    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
     newFrontmatter,
     oldFrontmatter,
     validation: parsed.value.validation,
