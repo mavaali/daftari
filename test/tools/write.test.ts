@@ -572,4 +572,62 @@ describe("write tools", () => {
       expect(fresh.value.status).toBe("deprecated");
     }, 60_000);
   });
+
+  // -------------------------------------------------------------------------
+  // issue #14 regression — the A/B stale-write race
+  //
+  // A and B never hold the file lock at the same time, yet A's payload was
+  // composed against a version B has since replaced. The lock alone cannot
+  // catch this; the base_version check must.
+  // -------------------------------------------------------------------------
+
+  describe("issue #14 regression — A/B stale-write race", () => {
+    it("rejects agent A's write composed against a version agent B has replaced", async () => {
+      const path = "pricing/helios.md";
+
+      // Seed the document.
+      await vaultWrite(vault, {
+        path,
+        body: "# Helios\n\nInitial pricing notes.\n",
+        frontmatter: newFrontmatter({ title: "Helios" }),
+        agent: "agent:seed",
+      });
+
+      // 1. Agent A reads the file and captures the version it will compose against.
+      const aRead = await vaultRead(vault, path);
+      expect(aRead.ok).toBe(true);
+      if (!aRead.ok) return;
+      const aBaseVersion = aRead.value.version;
+
+      // 2. Agent B reads, writes, and releases its lock. B passes no
+      //    base_version, so B's write lands. A never held the lock while B did.
+      const bWrite = await vaultWrite(vault, {
+        path,
+        body: "# Helios\n\nB's revised pricing notes.\n",
+        frontmatter: newFrontmatter({ title: "Helios" }),
+        agent: "agent:B",
+      });
+      expect(bWrite.ok).toBe(true);
+
+      // 3. Agent A writes, declaring the version it composed against. Before
+      //    issue #14 this silently clobbered B; it must now be rejected.
+      const aWrite = await vaultWrite(vault, {
+        path,
+        body: "# Helios\n\nA's notes, composed against the pre-B version.\n",
+        frontmatter: newFrontmatter({ title: "Helios" }),
+        agent: "agent:A",
+        base_version: aBaseVersion,
+      });
+      expect(aWrite.ok).toBe(false);
+      if (aWrite.ok) return;
+      expect(aWrite.error.message.startsWith("stale write:")).toBe(true);
+
+      // B's work survives — A did not clobber it.
+      const final = await vaultRead(vault, path);
+      expect(final.ok).toBe(true);
+      if (!final.ok) return;
+      expect(final.value.content).toContain("B's revised pricing notes");
+      expect(final.value.content).not.toContain("composed against the pre-B version");
+    }, 60_000);
+  });
 });
