@@ -27,6 +27,7 @@ import {
 import { indexDocument } from "../search/reindex.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { commit } from "../utils/git.js";
+import { sha256Hex } from "../utils/hash.js";
 import type { ToolDefinition } from "./read.js";
 
 // ---------------------------------------------------------------------------
@@ -77,6 +78,12 @@ export interface WriteResult {
   indexUpdated: boolean;
 }
 
+// First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
+// Anything that is not a full SHA-256 is returned unchanged.
+function shortHash(h: string): string {
+  return h.length === 64 ? h.slice(0, 12) : h;
+}
+
 // Runs the durable part of a write under an exclusive file lock: write the
 // file, refresh the index, commit, log provenance. The lock is released in a
 // finally block so a failure mid-write never wedges the file.
@@ -84,6 +91,13 @@ export interface WriteResult {
 // Commit failure is fatal (the write is not durably recorded). Index and
 // provenance failures are not — the index is a rebuildable cache and the log
 // is advisory — so they are reported via `indexUpdated` rather than aborting.
+//
+// Optimistic concurrency: when `baseVersion` is supplied, the file on disk is
+// hashed inside the lock and compared before any write. A mismatch (including
+// a file that no longer exists, or never did) rejects the write as stale —
+// nothing is written, committed, or indexed, and a "rejected_stale" provenance
+// entry is logged. When `baseVersion` is omitted the check is skipped entirely
+// and last-write-wins behavior is preserved.
 async function performWrite(params: {
   vaultRoot: string;
   relPath: string;
@@ -96,6 +110,7 @@ async function performWrite(params: {
   oldFrontmatter: Frontmatter | null;
   validation: ValidationReport;
   commitMessage: string;
+  baseVersion?: string;
 }): Promise<Result<WriteResult, Error>> {
   const lockDbResult = openLockDb(params.vaultRoot);
   if (!lockDbResult.ok) return lockDbResult;
@@ -106,6 +121,25 @@ async function performWrite(params: {
     if (!lock.ok) return lock;
 
     try {
+      // Stale-write check, atomic with respect to other lock-holders. An
+      // empty-string baseVersion is falsy here, so it is treated as "omitted".
+      if (params.baseVersion) {
+        const onDisk = await readFile(params.absPath);
+        const currentHash = onDisk.ok ? sha256Hex(onDisk.value) : null;
+        if (currentHash !== params.baseVersion) {
+          await recordProvenance(params.vaultRoot, {
+            tool: params.tool,
+            file: params.relPath,
+            agent: params.agent,
+            action: "rejected_stale",
+            reason:
+              `stale: base_version ${shortHash(params.baseVersion)} != ` +
+              `current ${currentHash ? shortHash(currentHash) : "<absent>"}`,
+          });
+          return err(new Error(`stale write: ${params.relPath} changed since base_version`));
+        }
+      }
+
       await mkdir(dirname(params.absPath), { recursive: true });
       await writeFile(params.absPath, params.fileText, "utf-8");
 
@@ -159,6 +193,22 @@ function requireString(
   return ok(v);
 }
 
+// Reads the optional `base_version` optimistic-concurrency token. Absent, null,
+// or an empty string all resolve to `undefined` ("not provided") — an empty
+// string is treated as omitted, defensive against clients sending a blank. A
+// non-string value is a hard error.
+function readBaseVersion(
+  args: Record<string, unknown>,
+  tool: string,
+): Result<string | undefined, Error> {
+  const v = args.base_version;
+  if (v === undefined || v === null) return ok(undefined);
+  if (typeof v !== "string") {
+    return err(new Error(`${tool}: 'base_version' must be a string`));
+  }
+  return ok(v.length === 0 ? undefined : v);
+}
+
 // ---------------------------------------------------------------------------
 // vault_write
 // ---------------------------------------------------------------------------
@@ -175,6 +225,8 @@ export async function vaultWrite(
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_write");
   if (!agent.ok) return agent;
+  const baseVersion = readBaseVersion(args, "vault_write");
+  if (!baseVersion.ok) return baseVersion;
   const body = args.body;
   if (typeof body !== "string") {
     return err(new Error("vault_write requires a string 'body' argument"));
@@ -239,6 +291,7 @@ export async function vaultWrite(
     validation: report,
     commitMessage:
       `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
+    baseVersion: baseVersion.value,
   });
 }
 
@@ -259,6 +312,8 @@ export async function vaultAppend(
   if (!agent.ok) return agent;
   const section = requireString(args, "section", "vault_append");
   if (!section.ok) return section;
+  const baseVersion = readBaseVersion(args, "vault_append");
+  if (!baseVersion.ok) return baseVersion;
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
@@ -301,6 +356,7 @@ export async function vaultAppend(
     oldFrontmatter,
     validation: parsed.value.validation,
     commitMessage: `vault_append: ${path.value} by ${agent.value}`,
+    baseVersion: baseVersion.value,
   });
 }
 
@@ -320,6 +376,8 @@ export async function vaultPromote(
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_promote");
   if (!agent.ok) return agent;
+  const baseVersion = readBaseVersion(args, "vault_promote");
+  if (!baseVersion.ok) return baseVersion;
 
   if (access && !canPromote(access.role)) {
     return err(new Error(`access denied: role '${access.roleName}' cannot promote documents`));
@@ -379,6 +437,7 @@ export async function vaultPromote(
     oldFrontmatter,
     validation: parsed.value.validation,
     commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
+    baseVersion: baseVersion.value,
   });
 }
 
@@ -400,6 +459,8 @@ export async function vaultDeprecate(
   if (!agent.ok) return agent;
   const reason = requireString(args, "reason", "vault_deprecate");
   if (!reason.ok) return reason;
+  const baseVersion = readBaseVersion(args, "vault_deprecate");
+  if (!baseVersion.ok) return baseVersion;
 
   let supersededBy: string | null = null;
   if (args.superseded_by !== undefined && args.superseded_by !== null) {
@@ -453,6 +514,7 @@ export async function vaultDeprecate(
     commitMessage:
       `vault_deprecate: ${path.value} by ${agent.value} — ${reason.value}` +
       (supersededBy ? ` (superseded by ${supersededBy})` : ""),
+    baseVersion: baseVersion.value,
   });
 }
 
@@ -465,6 +527,16 @@ const agentProperty = {
   description:
     "Acting identity, e.g. 'agent:claude-code' or 'human:mihir'. Recorded " +
     "as updated_by, the git author, and in the provenance log.",
+};
+
+const baseVersionProperty = {
+  type: "string",
+  description:
+    "Optional optimistic-concurrency token: the 'version' that vault_read " +
+    "returned for the document this write was composed against. The server " +
+    "re-hashes the file inside the write lock; if it no longer matches, the " +
+    "write is rejected as stale and nothing is changed. Omit for " +
+    "last-write-wins behavior.",
 };
 
 export const writeTools: ToolDefinition[] = [
@@ -490,6 +562,7 @@ export const writeTools: ToolDefinition[] = [
             "status, confidence, created, provenance.",
         },
         agent: agentProperty,
+        base_version: baseVersionProperty,
       },
       required: ["path", "body", "frontmatter", "agent"],
       additionalProperties: false,
@@ -513,6 +586,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Markdown text to append to the document body",
         },
         agent: agentProperty,
+        base_version: baseVersionProperty,
       },
       required: ["path", "section", "agent"],
       additionalProperties: false,
@@ -533,6 +607,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Vault-relative path of the draft document to promote",
         },
         agent: agentProperty,
+        base_version: baseVersionProperty,
       },
       required: ["path", "agent"],
       additionalProperties: false,
@@ -560,6 +635,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Optional vault-relative path of the document that replaces this one",
         },
         agent: agentProperty,
+        base_version: baseVersionProperty,
       },
       required: ["path", "reason", "agent"],
       additionalProperties: false,

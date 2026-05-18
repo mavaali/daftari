@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultAppend, vaultDeprecate, vaultPromote, vaultWrite } from "../../src/tools/write.js";
 import { log } from "../../src/utils/git.js";
@@ -322,6 +325,251 @@ describe("write tools", () => {
 
       const read = await vaultRead(vault, "pricing/race.md");
       expect(read.ok).toBe(true);
+    }, 60_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // optimistic concurrency — base_version
+  // -------------------------------------------------------------------------
+
+  describe("optimistic concurrency", () => {
+    // The `version` token vault_read returns for a file currently on disk.
+    async function versionOf(vaultRoot: string, path: string): Promise<string> {
+      const read = await vaultRead(vaultRoot, path);
+      if (!read.ok) throw new Error(`could not read ${path}: ${read.error.message}`);
+      return read.value.version;
+    }
+
+    // Count provenance lines for a file whose action is "rejected_stale".
+    async function rejectedStaleCount(vaultRoot: string, file: string): Promise<number> {
+      const prov = await readProvenanceLog(vaultRoot);
+      if (!prov.ok) throw new Error(prov.error.message);
+      return prov.value.filter((e) => e.file === file && e.action === "rejected_stale").length;
+    }
+
+    it("accepts a vault_write whose base_version matches the file on disk", async () => {
+      await vaultWrite(vault, {
+        path: "pricing/oc-note.md",
+        body: "v1\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      const version = await versionOf(vault, "pricing/oc-note.md");
+
+      const update = await vaultWrite(vault, {
+        path: "pricing/oc-note.md",
+        body: "v2 content\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+        base_version: version,
+      });
+      expect(update.ok).toBe(true);
+      if (!update.ok) return;
+      // Committed.
+      expect(update.value.commit).toMatch(/^[0-9a-f]+$/);
+      // Indexed — the new content is searchable.
+      expect(update.value.indexUpdated).toBe(true);
+      const dbResult = openIndexDb(vault);
+      expect(dbResult.ok).toBe(true);
+      if (!dbResult.ok) return;
+      const doc = getDocument(dbResult.value, "pricing/oc-note.md");
+      dbResult.value.close();
+      expect(doc?.content).toContain("v2 content");
+    }, 60_000);
+
+    it("rejects a vault_write whose base_version is stale, leaving everything untouched", async () => {
+      const path = "pricing/oc-stale.md";
+      const absPath = join(vault, path);
+
+      await vaultWrite(vault, {
+        path,
+        body: "v1\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      // The caller composed against v1.
+      const staleVersion = await versionOf(vault, path);
+
+      // Another agent updates the file — the caller's version is now stale.
+      await vaultWrite(vault, {
+        path,
+        body: "v2 by other agent\n",
+        frontmatter: newFrontmatter(),
+        agent: "agent:other",
+      });
+
+      const bytesBefore = readFileSync(absPath);
+      const commitsBefore = await log(vault, { path });
+      expect(commitsBefore.ok).toBe(true);
+      if (!commitsBefore.ok) return;
+
+      const result = await vaultWrite(vault, {
+        path,
+        body: "v3 composed against stale v1\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+        base_version: staleVersion,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message.startsWith("stale write:")).toBe(true);
+
+      // File byte-identical to before the rejected write.
+      expect(readFileSync(absPath).equals(bytesBefore)).toBe(true);
+      // No new git commit.
+      const commitsAfter = await log(vault, { path });
+      expect(commitsAfter.ok).toBe(true);
+      if (!commitsAfter.ok) return;
+      expect(commitsAfter.value.length).toBe(commitsBefore.value.length);
+      // Index still holds the v2 content, not the rejected v3.
+      const dbResult = openIndexDb(vault);
+      expect(dbResult.ok).toBe(true);
+      if (!dbResult.ok) return;
+      const doc = getDocument(dbResult.value, path);
+      dbResult.value.close();
+      expect(doc?.content).toContain("v2 by other agent");
+      expect(doc?.content).not.toContain("v3 composed against stale");
+      // Exactly one rejected_stale provenance line.
+      expect(await rejectedStaleCount(vault, path)).toBe(1);
+    }, 60_000);
+
+    it("ignores a stale file when no base_version is supplied (backward compat)", async () => {
+      const path = "pricing/oc-nobase.md";
+      await vaultWrite(vault, {
+        path,
+        body: "v1\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      // The file is modified out from under the caller.
+      await vaultWrite(vault, {
+        path,
+        body: "v2 by other agent\n",
+        frontmatter: newFrontmatter(),
+        agent: "agent:other",
+      });
+      // A write with no base_version still lands — last-write-wins is preserved.
+      const result = await vaultWrite(vault, {
+        path,
+        body: "v3 no base_version\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+      const read = await vaultRead(vault, path);
+      expect(read.ok && read.value.content).toContain("v3 no base_version");
+    }, 60_000);
+
+    it("rejects a vault_write to a non-existent path when base_version is provided", async () => {
+      const path = "pricing/oc-ghost.md";
+      const result = await vaultWrite(vault, {
+        path,
+        body: "body\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+        base_version: "0".repeat(64),
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message.startsWith("stale write:")).toBe(true);
+      // Nothing was written.
+      expect(existsSync(join(vault, path))).toBe(false);
+      // The rejection is recorded in provenance.
+      expect(await rejectedStaleCount(vault, path)).toBe(1);
+    }, 60_000);
+
+    it("vault_append honors base_version", async () => {
+      const path = "_drafts/moonshot-agentic-etl.md";
+      const staleVersion = await versionOf(vault, path);
+
+      // Another agent appends — the caller's version is now stale.
+      await vaultAppend(vault, {
+        path,
+        section: "## Bumped\n\nBy another agent.",
+        agent: "agent:other",
+      });
+
+      const stale = await vaultAppend(vault, {
+        path,
+        section: "## Stale append",
+        agent: AGENT,
+        base_version: staleVersion,
+      });
+      expect(stale.ok).toBe(false);
+      if (stale.ok) return;
+      expect(stale.error.message.startsWith("stale write:")).toBe(true);
+
+      // With the current version the append lands.
+      const fresh = await vaultAppend(vault, {
+        path,
+        section: "## Fresh append\n\nAgainst current version.",
+        agent: AGENT,
+        base_version: await versionOf(vault, path),
+      });
+      expect(fresh.ok).toBe(true);
+      const read = await vaultRead(vault, path);
+      expect(read.ok && read.value.content).toContain("Fresh append");
+    }, 60_000);
+
+    it("vault_promote honors base_version", async () => {
+      const path = "_drafts/moonshot-agentic-etl.md";
+      const staleVersion = await versionOf(vault, path);
+
+      // An append bumps the file (status stays draft, still promotable).
+      await vaultAppend(vault, {
+        path,
+        section: "## Note\n\nBumped before promotion.",
+        agent: "agent:other",
+      });
+
+      const stale = await vaultPromote(vault, {
+        path,
+        agent: AGENT,
+        base_version: staleVersion,
+      });
+      expect(stale.ok).toBe(false);
+      if (stale.ok) return;
+      expect(stale.error.message.startsWith("stale write:")).toBe(true);
+
+      const fresh = await vaultPromote(vault, {
+        path,
+        agent: AGENT,
+        base_version: await versionOf(vault, path),
+      });
+      expect(fresh.ok).toBe(true);
+      if (!fresh.ok) return;
+      expect(fresh.value.status).toBe("canonical");
+    }, 60_000);
+
+    it("vault_deprecate honors base_version", async () => {
+      const path = "pricing/cirrus-capacity-tiers.md";
+      const staleVersion = await versionOf(vault, path);
+
+      await vaultAppend(vault, {
+        path,
+        section: "## Note\n\nBumped before deprecation.",
+        agent: "agent:other",
+      });
+
+      const stale = await vaultDeprecate(vault, {
+        path,
+        reason: "stale attempt",
+        agent: AGENT,
+        base_version: staleVersion,
+      });
+      expect(stale.ok).toBe(false);
+      if (stale.ok) return;
+      expect(stale.error.message.startsWith("stale write:")).toBe(true);
+
+      const fresh = await vaultDeprecate(vault, {
+        path,
+        reason: "Replaced by the 2026 capacity refresh",
+        agent: AGENT,
+        base_version: await versionOf(vault, path),
+      });
+      expect(fresh.ok).toBe(true);
+      if (!fresh.ok) return;
+      expect(fresh.value.status).toBe("deprecated");
     }, 60_000);
   });
 });
