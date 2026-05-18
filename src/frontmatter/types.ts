@@ -19,6 +19,11 @@ export type Confidence = (typeof CONFIDENCES)[number];
 export const PROVENANCES = ["direct", "synthesized", "inferred"] as const;
 export type Provenance = (typeof PROVENANCES)[number];
 
+// The runtime value of a config-declared schema-extension field. `date` and
+// `enum` fields are carried as strings; `array` fields as string[]. A core
+// type so config.ts and the frontmatter layer agree on the shape.
+export type ExtensionValue = string | number | boolean | string[] | null;
+
 // The metadata layer for every vault document. Mirrors the YAML frontmatter
 // block. Daftari does not maintain any metadata outside frontmatter.
 export interface Frontmatter {
