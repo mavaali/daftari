@@ -9,9 +9,16 @@
 // usage screen. Diagnostics go to stderr so stdout stays a clean JSON-RPC
 // stream when the server runs.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { main, parseFlag } from "./index.js";
 import { reindexVault } from "./search/reindex.js";
 import { commit } from "./utils/git.js";
@@ -237,8 +244,23 @@ export async function run(argv: string[]): Promise<void> {
 
 // Auto-run only when this module is the process entry point. When imported
 // (by tests) it stays inert so initVault / run can be exercised directly.
-const entryUrl = pathToFileURL(process.argv[1] ?? "").href;
-if (import.meta.url === entryUrl) {
+//
+// process.argv[1] may be a symlink: npm/npx bin shims and `npm i -g` all invoke
+// the CLI through a symlinked `daftari` launcher, so the launch path differs
+// from this module's real path. Both sides are resolved with realpathSync
+// before comparing — without this the installed `daftari` command silently
+// no-ops, since the entry-point check never matches.
+function isProcessEntryPoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isProcessEntryPoint()) {
   run(process.argv.slice(2)).catch((e) => {
     const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
     process.stderr.write(`daftari: fatal: ${reason}\n`);
