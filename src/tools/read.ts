@@ -20,6 +20,7 @@ import {
   type ValidationReport,
 } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { sha256Hex } from "../utils/hash.js";
 
 export interface ToolDefinition {
   name: string;
@@ -46,6 +47,9 @@ export interface VaultReadResult {
   validation: ValidationReport;
   hasFrontmatter: boolean;
   decay: DecayState | null;
+  // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
+  // this back as a write tool's `base_version` to detect a stale write.
+  version: string;
 }
 
 export async function vaultRead(
@@ -84,6 +88,7 @@ export async function vaultRead(
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
     decay: computeDecay(parsed.value.frontmatter),
+    version: sha256Hex(file.value),
   });
 }
 
@@ -329,9 +334,11 @@ export const readTools: ToolDefinition[] = [
     name: "vault_read",
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
-      "frontmatter, a validation report, and a decay assessment (null when " +
-      "healthy; otherwise level, reasons, and an optional banner). Path is " +
-      "relative to the vault root.",
+      "frontmatter, a validation report, a decay assessment (null when " +
+      "healthy; otherwise level, reasons, and an optional banner), and a " +
+      "'version' token (SHA-256 of the file) that can be passed back to a " +
+      "write tool as 'base_version' for optimistic-concurrency checking. " +
+      "Path is relative to the vault root.",
     inputSchema: {
       type: "object",
       properties: {

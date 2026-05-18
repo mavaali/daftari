@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -56,6 +57,18 @@ describe("vaultRead", () => {
   it("returns an error for a missing file", async () => {
     const result = await vaultRead(VAULT, "competitive-intel/missing.md");
     expect(result.ok).toBe(false);
+  });
+
+  it("returns a version token equal to the SHA-256 of the raw file bytes", async () => {
+    const relPath = "competitive-intel/aurora-pipelines-vs-helios-connect.md";
+    const result = await vaultRead(VAULT, relPath);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Hash the file independently — frontmatter included, exactly as on disk.
+    const raw = readFileSync(join(VAULT, relPath), "utf-8");
+    const expected = createHash("sha256").update(raw, "utf-8").digest("hex");
+    expect(result.value.version).toBe(expected);
+    expect(result.value.version).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
