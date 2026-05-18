@@ -6,6 +6,7 @@
 // every structural problem. It does NOT enforce curation rules (staleness,
 // tension, superseded_by consistency) — that is the curation engine's job.
 
+import type { SchemaExtension } from "../utils/config.js";
 import {
   CONFIDENCES,
   type Confidence,
@@ -25,7 +26,82 @@ export interface FrontmatterValidation {
   report: ValidationReport;
 }
 
-export function validateFrontmatter(data: Record<string, unknown>): FrontmatterValidation {
+// Validates one config-declared extension field against the raw frontmatter,
+// appending any problem to `issues`. Advisory, like the built-in checks: a
+// missing optional field is fine, a missing field with a declared default is
+// fine (the default is applied at serialization time).
+function validateExtensionField(
+  data: Record<string, unknown>,
+  ext: SchemaExtension,
+  issues: ValidationIssue[],
+): void {
+  const v = data[ext.field];
+  const field = ext.field;
+
+  if (v === undefined || v === null) {
+    if (ext.required && ext.default === undefined) {
+      issues.push({ field, message: "missing required field" });
+    }
+    return;
+  }
+
+  switch (ext.type) {
+    case "string": {
+      if (typeof v !== "string") {
+        issues.push({ field, message: `expected string, got ${typeof v}` });
+        return;
+      }
+      if (ext.pattern && !new RegExp(ext.pattern).test(v)) {
+        issues.push({ field, message: `does not match pattern /${ext.pattern}/` });
+      }
+      return;
+    }
+    case "date": {
+      // js-yaml parses unquoted ISO dates into Date objects.
+      if (v instanceof Date && !Number.isNaN(v.getTime())) return;
+      if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+      issues.push({ field, message: `expected a YYYY-MM-DD date, got ${JSON.stringify(v)}` });
+      return;
+    }
+    case "number": {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        issues.push({ field, message: `expected number, got ${typeof v}` });
+      }
+      return;
+    }
+    case "boolean": {
+      if (typeof v !== "boolean") {
+        issues.push({ field, message: `expected boolean, got ${typeof v}` });
+      }
+      return;
+    }
+    case "array": {
+      if (!Array.isArray(v) || !v.every((item) => typeof item === "string")) {
+        issues.push({ field, message: "expected an array of strings" });
+      }
+      return;
+    }
+    case "enum": {
+      const allowed = ext.enum ?? [];
+      if (typeof v !== "string" || !allowed.includes(v)) {
+        issues.push({
+          field,
+          message: `expected one of [${allowed.join(", ")}], got ${JSON.stringify(v)}`,
+        });
+      }
+      return;
+    }
+  }
+}
+
+// Validates frontmatter against the built-in schema and, when supplied, the
+// config-declared schema extensions. Extensions are checked alongside the
+// built-ins; their issues land in the same advisory report. With no
+// extensions the behaviour is identical to before they existed.
+export function validateFrontmatter(
+  data: Record<string, unknown>,
+  extensions: SchemaExtension[] = [],
+): FrontmatterValidation {
   const issues: ValidationIssue[] = [];
 
   const requireString = (field: string): string => {
@@ -123,6 +199,10 @@ export function validateFrontmatter(data: Record<string, unknown>): FrontmatterV
     questions_answered: optionalStringArray("questions_answered"),
     questions_raised: optionalStringArray("questions_raised"),
   };
+
+  for (const ext of extensions) {
+    validateExtensionField(data, ext, issues);
+  }
 
   return {
     frontmatter,
