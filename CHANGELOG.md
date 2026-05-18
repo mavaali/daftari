@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-17
+
+### Added
+
+- **Structured epistemic-surface fields** — `questions_answered` and
+  `questions_raised` are now optional frontmatter array fields, making the
+  Questions Answered / Questions Raised convention tool-queryable. `vault_index`
+  gains a `has_unanswered` filter and returns each document's questions;
+  `vault_lint` gains a sixth check, `unansweredQuestions`, that flags a question
+  raised in one document but answered in none. Additive and optional — vaults
+  and callers without the fields are unaffected, and the `--init` scaffold now
+  seeds the fields in its example documents. (#15)
+- **`docs/worked-example.md`** — a three-write walkthrough showing compilation
+  over retrieval: one document maturing from draft to canonical, contrasted
+  with RAG. (#13)
+- **`docs/curation-workflow.md`** — the reference curation loop: how an agent
+  should act on `vault_lint` output instead of letting it accumulate. (#17)
+- **README "Search internals" section** — documents the hybrid-search embedding
+  model (`all-MiniLM-L6-v2`, 384-dim, run locally with no embedding API and no
+  API key) and the BM25-only fallback. (#11)
+- **README etymology line** — "Daftari" glossed from دفتر. (#12)
+
+### Changed
+
+- **Layer 3 reframed from "write arbitration" to "write safety"** — the README
+  and architecture doc now describe what is shipped (single-writer-per-file
+  safety) rather than implying multi-agent write coordination. Adds a "Known
+  limitations" subsection and points at optimistic concurrency (#14) as the v2
+  direction. (#16)
+
 ## [1.1.1] - 2026-05-17
 
 ### Fixed

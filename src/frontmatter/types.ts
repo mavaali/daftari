@@ -35,6 +35,11 @@ export interface Frontmatter {
   superseded_by: string | null;
   ttl_days: number | null;
   tags: string[];
+  // Optional epistemic-surface fields. They mirror the body's `## Questions
+  // Answered` / `## Questions Raised` convention as structured, tool-queryable
+  // metadata. Default to [] when absent.
+  questions_answered: string[];
+  questions_raised: string[];
 }
 
 // A single problem found while validating frontmatter. Advisory only —

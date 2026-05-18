@@ -79,6 +79,27 @@ describe("write tools", () => {
       expect(entry?.frontmatter_diff?.title?.after).toBe("Serverless Cost Notes");
     }, 60_000);
 
+    it("round-trips the questions_answered / questions_raised fields", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/questions-note.md",
+        body: "# Notes\n\nBody.\n",
+        frontmatter: newFrontmatter({
+          questions_answered: ["What is the billing unit?"],
+          questions_raised: ["Is spend predictable?"],
+        }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const read = await vaultRead(vault, "pricing/questions-note.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.frontmatter.questions_answered).toEqual(["What is the billing unit?"]);
+      expect(read.value.frontmatter.questions_raised).toEqual(["Is spend predictable?"]);
+      expect(read.value.validation.valid).toBe(true);
+    }, 60_000);
+
     it("updates an existing document and preserves its created date", async () => {
       await vaultWrite(vault, {
         path: "pricing/new-note.md",

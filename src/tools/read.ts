@@ -96,6 +96,9 @@ export interface VaultIndexFilters {
   status?: string;
   domain?: string;
   tags?: string[];
+  // When set, keep only documents that have (true) or do not have (false)
+  // open questions in `questions_raised`.
+  hasUnanswered?: boolean;
 }
 
 export interface VaultIndexEntry {
@@ -107,6 +110,8 @@ export interface VaultIndexEntry {
   confidence: string;
   updated: string;
   tags: string[];
+  questionsAnswered: string[];
+  questionsRaised: string[];
   valid: boolean;
 }
 
@@ -150,6 +155,9 @@ export async function vaultIndex(
       const hasAll = filters.tags.every((t) => fm.tags.includes(t));
       if (!hasAll) continue;
     }
+    if (filters.hasUnanswered !== undefined) {
+      if (fm.questions_raised.length > 0 !== filters.hasUnanswered) continue;
+    }
 
     entries.push({
       path: relPath,
@@ -160,6 +168,8 @@ export async function vaultIndex(
       confidence: fm.confidence,
       updated: fm.updated,
       tags: fm.tags,
+      questionsAnswered: fm.questions_answered,
+      questionsRaised: fm.questions_raised,
       valid: parsed.value.validation.valid,
     });
   }
@@ -338,8 +348,9 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_index",
     description:
-      "List vault documents with their metadata. Optionally filter by " +
-      "collection, status, domain, or tags (tags match is conjunctive).",
+      "List vault documents with their metadata, including each document's " +
+      "questions_answered / questions_raised. Optionally filter by collection, " +
+      "status, domain, tags (conjunctive), or has_unanswered.",
     inputSchema: {
       type: "object",
       properties: {
@@ -359,6 +370,12 @@ export const readTools: ToolDefinition[] = [
           items: { type: "string" },
           description: "Filter to documents that have all of these tags",
         },
+        has_unanswered: {
+          type: "boolean",
+          description:
+            "true: only documents with open questions in questions_raised; " +
+            "false: only documents with none",
+        },
       },
       additionalProperties: false,
     },
@@ -370,6 +387,7 @@ export const readTools: ToolDefinition[] = [
           status: asString(args.status),
           domain: asString(args.domain),
           tags: asStringArray(args.tags),
+          hasUnanswered: typeof args.has_unanswered === "boolean" ? args.has_unanswered : undefined,
         },
         access,
       ),

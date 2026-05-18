@@ -60,6 +60,8 @@ always valid even though you never typed those two fields.
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
+| `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
+| `questions_raised` | list of strings | `[]` | Open questions this document leaves. `vault_index` filters on it via `has_unanswered`; `vault_lint` flags any entry no document answers. |
 
 ### `status` — the lifecycle
 
@@ -97,22 +99,49 @@ agents maintaining it.
 
 ### The Questions Answered / Questions Raised pattern
 
-End a document with two sections:
+A document can make its epistemic boundary explicit: what it *settles*, and what
+it leaves *open*. `Questions Answered` is what a later agent can take as known;
+`Questions Raised` is the open edges worth a future write. This lets the next
+agent know where to build rather than re-deriving what is already settled.
+
+The pattern has two forms, and they are kept in sync:
+
+**1. Frontmatter fields — the source of truth for tooling.** The optional
+`questions_answered` and `questions_raised` arrays make the pattern structured
+and queryable:
+
+```yaml
+questions_answered:
+  - "What is Helios's unit of consumption billing?"
+  - "Why do workload tiers carry different credit rates?"
+questions_raised:
+  - "How predictable is monthly spend for spiky, agent-driven workloads?"
+```
+
+Because they are structured metadata, tools can act on them:
+
+- `vault_index` returns each document's questions, and its `has_unanswered`
+  filter selects documents that do (or do not) carry open questions.
+- `vault_lint`'s `unansweredQuestions` check flags any question in a document's
+  `questions_raised` that no document in the vault lists under
+  `questions_answered` — turning the epistemic surface into a coverage map.
+  Matching is by normalized text (trimmed, lower-cased, whitespace collapsed),
+  so a question counts as answered only when phrased the same way.
+
+**2. Body sections — a human-readable mirror.** The same questions may also
+appear as `## Questions Answered` / `## Questions Raised` markdown sections so a
+person reading the file sees them in context:
 
 ```markdown
 ## Questions Answered
 - What is Helios's unit of consumption billing?
-- Why do workload tiers carry different credit rates?
 
 ## Questions Raised
 - How predictable is monthly spend for spiky, agent-driven workloads?
 ```
 
-`Questions Answered` states what the document *settles* — what a later agent can
-take as known. `Questions Raised` states the open edges — what is still
-unresolved and worth a future write. This makes a document's epistemic boundary
-explicit, so the next agent knows where to build rather than re-deriving what is
-already settled. It is a convention, not a schema requirement.
+Both forms are optional. When both are present, keep them consistent — the
+frontmatter is what tooling reads.
 
 ### Links: wikilinks vs. markdown links
 
@@ -152,6 +181,10 @@ sources:
 superseded_by: null
 ttl_days: 90
 tags: [aurora, helios, ingestion, competitive]
+questions_answered:
+  - "Where does each product draw the ingestion/transformation boundary?"
+questions_raised:
+  - "How does Helios Connect pricing behave past 10 TB/day of ingestion?"
 ---
 
 # Aurora Pipelines vs Helios Connect

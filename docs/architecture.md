@@ -18,7 +18,7 @@ and why the design is shaped the way it is.
                        └──────────────┬──────────────┘
                                       │  permitted
                        ┌──────────────▼──────────────┐
-              Layer 3  │  Write arbitration           │  file lock (60s TTL),
+              Layer 3  │  Write safety                │  file lock (60s TTL),
                        │  locks · git · provenance    │  auto-commit, log
                        └──────────────┬──────────────┘
                                       │  mutation applied
@@ -51,6 +51,17 @@ Three things sit alongside the markdown:
   the vector embeddings that power hybrid search. It is **ephemeral** — it can
   be rebuilt from the markdown files at any time with `vault_reindex`, and it
   is git-ignored.
+
+  The vector embeddings are produced **locally**. Each document body is split
+  into ~800-character chunks; every chunk is embedded into a 384-dimension
+  vector by the `all-MiniLM-L6-v2` sentence-transformer, run in-process via
+  `@huggingface/transformers` (Transformers.js). No embedding API is called —
+  the only network access is the one-time download of the model weights to the
+  Hugging Face cache on first use. Embedding is best-effort: if the model
+  cannot load, a reindex still builds the BM25 side and the vector column is
+  left `NULL` (`vectorEnabled` is `false`), so search degrades to lexical-only
+  rather than failing. The model is pinned in code (`EMBEDDING_MODEL` in
+  `src/search/vector.ts`); v1 has no config-driven embedding-provider hook.
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
@@ -69,22 +80,50 @@ A missing or unmatched role resolves to a deny-all **guest**. A malformed
 config makes the server refuse to start: a permission layer that silently loads
 a broken policy is worse than one that won't boot.
 
-### Layer 3 — Write arbitration
+### Layer 3 — Write safety
 
-This is the first layer that is genuinely hard, and the first half of the moat.
-Multiple agents may write to one vault. Arbitration makes concurrent writes
-safe:
+The first half of the moat. Multiple agents may write to one vault; Layer 3
+makes those writes *safe and attributable* — it does not orchestrate them.
 
 - **File-level write locks**, SQLite-backed, with a 60-second TTL. A writer
   acquires the lock for one file; a competing writer fails cleanly with a
   "locked" error rather than corrupting the file. An expired lock is released
-  automatically, so a crashed writer cannot wedge the vault.
+  automatically, so a crashed writer cannot wedge the vault. This is a safety
+  mechanism — single-writer-per-file — not a coordination protocol.
 - **Auto-commit.** Every successful write is committed to git, authored by the
   acting identity. The history is complete and attributable without anyone
   having to remember to commit.
 - **Provenance log.** Beyond git, each mutation is appended to a structured
   provenance log: which tool, which agent, which file, what changed in the
   frontmatter. `vault_provenance` reads it back.
+
+The locks are table stakes — single-writer safety is the floor, not the moat.
+What is genuinely differentiated here is **auto-commit + provenance**: a
+complete, attributable history of who changed what, produced without anyone
+having to remember to record it.
+
+#### Known limitations
+
+The locking is deliberately minimal, and it is worth being precise about what
+it does *not* do:
+
+- **No queuing.** Two agents targeting the same file inside the 60-second lock
+  window do not take turns. The first acquires the lock; the second fails
+  immediately with a "locked" error. There is no wait-and-retry.
+- **No merge.** Concurrent edits to one document are never reconciled. The
+  losing writer must re-read the (now-changed) file and decide what to do —
+  Daftari does not merge their changes.
+- **Per-file granularity.** The lock protects one file. A write that logically
+  spans several documents is not atomic across them.
+
+This is sufficient for the common case — agents usually write to different
+documents — and it guarantees no write ever corrupts a file. But it is *not*
+multi-agent write orchestration, and the lock does not catch a **stale write**:
+an agent that reads a document, then writes it after another agent changed it
+in between, still overwrites silently — the two never held the lock at the same
+time. Closing that gap with optimistic concurrency (a version token checked at
+write time) is the v2 direction — tracked in issue #14 — and is a better fit
+than queuing, which only reorders writes without resolving their staleness.
 
 ### Layer 4 — Curation
 
@@ -98,9 +137,9 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
 - **Tensions.** When two documents contradict each other, `vault_tension_log`
   records the contradiction — both sources, both claims — with status
   `unresolved`. It records; it does not resolve.
-- **Lint.** `vault_lint` runs five cross-vault checks (stale files, orphans,
-  old drafts, stagnant low-confidence files, deprecated-but-still-linked) and
-  produces a report.
+- **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
+  old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
+  questions raised but unanswered anywhere in the vault) and produces a report.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
