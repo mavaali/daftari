@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-05-17
+
+### Fixed
+
+- **CLI silently no-opped when invoked via a symlink** — `npx daftari`,
+  `npm i -g daftari`, and any `node_modules/.bin/daftari` shim launch the CLI
+  through a symlinked launcher. The entry-point guard compared `import.meta.url`
+  against `process.argv[1]` without resolving symlinks, so the check never
+  matched and the installed `daftari` command exited 0 having done nothing —
+  the `npx daftari --init` Quickstart included. Both sides are now resolved
+  with `realpathSync` before comparing.
+
 ## [1.1.0] - 2026-05-17
 
 ### Added
@@ -47,5 +59,6 @@ vault to AI agents, exposing 13 tools over stdio.
   example documents, git history, search index); `daftari --vault` serves it.
 - 160 tests covering all 13 tools and their supporting modules.
 
+[1.1.1]: https://github.com/mavaali/daftari/releases/tag/v1.1.1
 [1.1.0]: https://github.com/mavaali/daftari/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mavaali/daftari/releases/tag/v1.0.0
