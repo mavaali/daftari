@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -100,6 +100,32 @@ describe("daftari --vault", () => {
       expect(result.stderr).toContain("role=admin");
     } finally {
       cleanupVault(vault);
+    }
+  }, 60_000);
+});
+
+describe("daftari invoked through a symlink (npm/npx bin shim)", () => {
+  // npm/npx bin shims and `npm i -g` invoke the CLI through a symlinked
+  // launcher, so process.argv[1] is the symlink path, not cli.ts's real path.
+  // The entry-point guard must resolve symlinks before comparing — without
+  // that, the installed `daftari` command silently no-ops. This reproduces
+  // that invocation path.
+  it("runs --init when launched via a symlink", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "daftari-symlink-"));
+    const linkPath = join(parent, "daftari-launcher.ts");
+    const vault = join(parent, "vault");
+    symlinkSync(resolve("src/cli.ts"), linkPath);
+    try {
+      const tsx = resolve("node_modules/.bin/tsx");
+      const exitCode = await new Promise<number | null>((resolveRun) => {
+        const proc = spawn(tsx, [linkPath, "--init", vault]);
+        proc.on("exit", (code) => resolveRun(code));
+        proc.on("error", () => resolveRun(-1));
+      });
+      expect(exitCode).toBe(0);
+      expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
     }
   }, 60_000);
 });
