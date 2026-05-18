@@ -17,6 +17,10 @@ sources:
 superseded_by: null
 ttl_days: 90
 tags: [alpha, beta]
+questions_answered:
+  - "What does this document settle?"
+questions_raised:
+  - "What is still open?"
 ---
 
 # Body heading
@@ -61,6 +65,22 @@ describe("parseDocument", () => {
     expect(fm.superseded_by).toBeNull();
     expect(fm.sources).toEqual(["source-one", "source-two"]);
     expect(fm.tags).toEqual(["alpha", "beta"]);
+    expect(fm.questions_answered).toEqual(["What does this document settle?"]);
+    expect(fm.questions_raised).toEqual(["What is still open?"]);
+  });
+
+  it("defaults the questions fields to [] when absent", () => {
+    const noQuestions = VALID.replace(
+      'questions_answered:\n  - "What does this document settle?"\n' +
+        'questions_raised:\n  - "What is still open?"\n',
+      "",
+    );
+    const result = parseDocument(noQuestions);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.validation.valid).toBe(true);
+    expect(result.value.frontmatter.questions_answered).toEqual([]);
+    expect(result.value.frontmatter.questions_raised).toEqual([]);
   });
 
   it("flags an invalid enum value but still returns content", () => {

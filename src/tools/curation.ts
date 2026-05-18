@@ -209,9 +209,9 @@ export const curationTools: ToolDefinition[] = [
     description:
       "Run the advisory curation checks across the vault: stale files past " +
       "TTL, orphan files with no inbound links, old drafts, stagnant " +
-      "low-confidence files, and deprecated files still linked from " +
-      "canonical ones. Reports problems; never auto-fixes. Optionally filter " +
-      "to a single check.",
+      "low-confidence files, deprecated files still linked from canonical " +
+      "ones, and questions raised but unanswered anywhere in the vault. " +
+      "Reports problems; never auto-fixes. Optionally filter to a single check.",
     inputSchema: {
       type: "object",
       properties: {

@@ -4,7 +4,13 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension } from "../../src/curation/tension.js";
-import { vaultIndex, vaultRead, vaultStatus } from "../../src/tools/read.js";
+import {
+  readTools,
+  type VaultIndexResult,
+  vaultIndex,
+  vaultRead,
+  vaultStatus,
+} from "../../src/tools/read.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
@@ -186,6 +192,109 @@ describe("vaultIndex", () => {
     const invalid = result.value.entries.filter((e) => !e.valid);
     expect(invalid).toHaveLength(1);
     expect(invalid[0]?.path).toBe("_drafts/incomplete-note.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vaultIndex — questions_answered / questions_raised
+// ---------------------------------------------------------------------------
+
+function questionsDoc(opts: { answered: string[]; raised: string[] }): string {
+  const yamlList = (xs: string[]) =>
+    xs.length === 0 ? " []" : `\n${xs.map((x) => `  - "${x}"`).join("\n")}`;
+  return `---
+title: "Q Doc"
+domain: accumulation
+collection: docs
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-05-01
+updated_by: agent:test
+provenance: direct
+sources: []
+superseded_by: null
+ttl_days: null
+tags: []
+questions_answered:${yamlList(opts.answered)}
+questions_raised:${yamlList(opts.raised)}
+---
+
+Body.
+`;
+}
+
+describe("vaultIndex — questions fields", () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("exposes each document's questions and filters by has_unanswered", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "daftari-index-q-"));
+    writeFileSync(
+      join(tempDir, "open.md"),
+      questionsDoc({ answered: ["settled?"], raised: ["still open?"] }),
+      "utf-8",
+    );
+    writeFileSync(
+      join(tempDir, "closed.md"),
+      questionsDoc({ answered: ["all done?"], raised: [] }),
+      "utf-8",
+    );
+
+    const all = await vaultIndex(tempDir);
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    const open = all.value.entries.find((e) => e.path === "open.md");
+    expect(open?.questionsRaised).toEqual(["still open?"]);
+    expect(open?.questionsAnswered).toEqual(["settled?"]);
+
+    const unanswered = await vaultIndex(tempDir, { hasUnanswered: true });
+    expect(unanswered.ok).toBe(true);
+    if (!unanswered.ok) return;
+    expect(unanswered.value.entries.map((e) => e.path)).toEqual(["open.md"]);
+
+    const answered = await vaultIndex(tempDir, { hasUnanswered: false });
+    expect(answered.ok).toBe(true);
+    if (!answered.ok) return;
+    expect(answered.value.entries.map((e) => e.path)).toEqual(["closed.md"]);
+  });
+
+  it("maps the has_unanswered tool argument through the vault_index handler", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "daftari-index-q-"));
+    writeFileSync(
+      join(tempDir, "open.md"),
+      questionsDoc({ answered: [], raised: ["still open?"] }),
+      "utf-8",
+    );
+    writeFileSync(
+      join(tempDir, "closed.md"),
+      questionsDoc({ answered: ["done?"], raised: [] }),
+      "utf-8",
+    );
+
+    const indexTool = readTools.find((t) => t.name === "vault_index");
+    expect(indexTool).toBeDefined();
+    if (!indexTool) return;
+
+    // The boolean arg must reach the filter.
+    const unanswered = await indexTool.handler(tempDir, { has_unanswered: true });
+    expect(unanswered.ok).toBe(true);
+    if (!unanswered.ok) return;
+    expect((unanswered.value as VaultIndexResult).entries.map((e) => e.path)).toEqual(["open.md"]);
+
+    const answered = await indexTool.handler(tempDir, { has_unanswered: false });
+    expect(answered.ok).toBe(true);
+    if (!answered.ok) return;
+    expect((answered.value as VaultIndexResult).entries.map((e) => e.path)).toEqual(["closed.md"]);
+
+    // A non-boolean / absent arg must be ignored, not coerced — all docs returned.
+    const noFilter = await indexTool.handler(tempDir, {});
+    expect(noFilter.ok).toBe(true);
+    if (!noFilter.ok) return;
+    expect((noFilter.value as VaultIndexResult).count).toBe(2);
   });
 });
 

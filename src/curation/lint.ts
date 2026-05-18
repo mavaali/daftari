@@ -1,7 +1,7 @@
 // vault_lint's engine — advisory cross-vault curation checks.
 //
 // Lint loads every document once, builds the inter-document link graph, then
-// runs five checks. It only ever *reports*: no file is edited, no status is
+// runs six checks. It only ever *reports*: no file is edited, no status is
 // changed, nothing is auto-fixed. The output is a structured report grouped by
 // check, for a human (or an agent acting on a human's behalf) to triage.
 
@@ -18,6 +18,7 @@ export const LINT_CHECKS = [
   "oldDrafts",
   "stagnantLowConfidence",
   "deprecatedStillLinked",
+  "unansweredQuestions",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -90,6 +91,15 @@ function resolveLink(
   return byBasename.get(base) ?? null;
 }
 
+// --- question matching ----------------------------------------------------
+
+// Normalizes a question for cross-document matching: trimmed, lower-cased,
+// internal whitespace collapsed. Exact (normalized) equality is the matching
+// rule — a question answered elsewhere must be phrased the same way.
+function normalizeQuestion(q: string): string {
+  return q.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 // --- check orchestration --------------------------------------------------
 
 async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
@@ -150,12 +160,24 @@ export async function runLint(
   const inbound = buildInboundMap(docs);
   const byPath = new Map(docs.map((d) => [d.path, d]));
 
+  // The set of every question answered anywhere in the vault, normalized. A
+  // question raised in one document counts as answered if any document — that
+  // one or another — lists it under questions_answered.
+  const answeredQuestions = new Set<string>();
+  for (const d of docs) {
+    for (const q of d.frontmatter.questions_answered) {
+      const n = normalizeQuestion(q);
+      if (n) answeredQuestions.add(n);
+    }
+  }
+
   const checks: Record<LintCheckName, LintFinding[]> = {
     staleFiles: [],
     orphanFiles: [],
     oldDrafts: [],
     stagnantLowConfidence: [],
     deprecatedStillLinked: [],
+    unansweredQuestions: [],
   };
 
   for (const doc of docs) {
@@ -215,6 +237,21 @@ export async function runLint(
           detail: `still linked from canonical: ${linkers.sort().join(", ")}`,
         });
       }
+    }
+
+    // 6. Unanswered questions: questions raised here that no vault document
+    // lists as answered. Turns the questions_raised field into a coverage map.
+    const orphanQuestions = fm.questions_raised.filter((q) => {
+      const n = normalizeQuestion(q);
+      return n.length > 0 && !answeredQuestions.has(n);
+    });
+    if (orphanQuestions.length > 0) {
+      checks.unansweredQuestions.push({
+        path: doc.path,
+        detail:
+          `${orphanQuestions.length} question(s) raised but not answered in ` +
+          `any document: ${orphanQuestions.join("; ")}`,
+      });
     }
   }
 

@@ -76,6 +76,10 @@ sources:
 superseded_by: null
 ttl_days: 120
 tags: [aurora, ingestion, competitive]
+questions_answered:
+  - "How does Aurora frame the ingestion-vs-transformation boundary?"
+questions_raised:
+  - "Does an authored-pipeline model slow teams down at small scale?"
 ---
 
 # Aurora Pipelines — Positioning Overview
@@ -108,6 +112,10 @@ sources:
 superseded_by: null
 ttl_days: 45
 tags: [helios, pricing, consumption]
+questions_answered:
+  - "What is the unit of consumption billing?"
+questions_raised:
+  - "How predictable is monthly spend for spiky, agent-driven workloads?"
 ---
 
 # Helios Consumption Pricing (Compute Credit Model)
@@ -138,6 +146,9 @@ sources: []
 superseded_by: null
 ttl_days: 30
 tags: [moonshot, ingestion, speculative]
+questions_answered: []
+questions_raised:
+  - "What would ingestion look like with no authored schema at all?"
 ---
 
 # Moonshot: Zero-Config Ingestion

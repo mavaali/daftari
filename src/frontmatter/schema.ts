@@ -120,6 +120,8 @@ export function validateFrontmatter(data: Record<string, unknown>): FrontmatterV
     superseded_by: optionalString("superseded_by"),
     ttl_days: optionalNumber("ttl_days"),
     tags: optionalStringArray("tags"),
+    questions_answered: optionalStringArray("questions_answered"),
+    questions_raised: optionalStringArray("questions_raised"),
   };
 
   return {

@@ -61,6 +61,8 @@ function serializeDocument(fm: Frontmatter, body: string): string {
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
     tags: fm.tags,
+    questions_answered: fm.questions_answered,
+    questions_raised: fm.questions_raised,
   };
   return matter.stringify(body.startsWith("\n") ? body : `\n${body}`, ordered);
 }

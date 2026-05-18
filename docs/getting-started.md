@@ -117,7 +117,7 @@ documents — useful before writing, to find what the vault already knows.
 
 ## 6. Lint the vault
 
-`vault_lint` runs five advisory curation checks across the whole vault:
+`vault_lint` runs six advisory curation checks across the whole vault:
 
 ```jsonc
 // vault_lint
@@ -131,6 +131,7 @@ It reports — never fixes:
 - **oldDrafts** — drafts that have sat unpromoted too long
 - **stagnantLowConfidence** — low-confidence documents that have not improved
 - **deprecatedStillLinked** — deprecated documents still cited by canonical ones
+- **unansweredQuestions** — questions in `questions_raised` that no document answers
 
 Pass `{ "filter": "oldDrafts" }` to restrict the report to one check.
 
@@ -183,4 +184,5 @@ it did, and it knows *how* it came to know it.
 ## Next
 
 - [architecture.md](architecture.md) — how the layers fit together.
+- [curation-workflow.md](curation-workflow.md) — the reference loop for acting on `vault_lint` output.
 - [file-format.md](file-format.md) — the complete frontmatter reference.
