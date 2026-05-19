@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chunkText,
   cosineSimilarity,
+  EMBED_BATCH_SIZE,
   EMBEDDING_DIM,
   embed,
   meanEmbedding,
@@ -77,5 +78,24 @@ describe("embed", () => {
     const similar = cosineSimilarity(catA, catB);
     const dissimilar = cosineSimilarity(catA, budget);
     expect(similar).toBeGreaterThan(dissimilar);
+  }, 60_000);
+
+  it("embeds inputs spanning multiple batches and reports incremental progress", async () => {
+    const n = EMBED_BATCH_SIZE * 2 + 5;
+    const texts = Array.from({ length: n }, (_, i) => `progress probe sentence number ${i}`);
+    const calls: Array<[number, number]> = [];
+    const result = await embed(texts, (done, total) => calls.push([done, total]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value).toHaveLength(n);
+    expect(result.value.every((v) => v.length === EMBEDDING_DIM)).toBe(true);
+
+    // Batching is observable through progress: more than one callback, the
+    // final call reports completion, and `done` is strictly increasing.
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls[calls.length - 1]).toEqual([n, n]);
+    expect(calls.every(([done], i) => i === 0 || done > (calls[i - 1]?.[0] ?? 0))).toBe(true);
+    expect(calls.every(([, total]) => total === n)).toBe(true);
   }, 60_000);
 });
