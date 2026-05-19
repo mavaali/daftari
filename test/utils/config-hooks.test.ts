@@ -24,7 +24,7 @@ describe("loadConfig — hooks", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.hooks).toEqual({ preWrite: [] });
+    expect(result.value.hooks).toEqual({ preWrite: [], preWriteTransform: [] });
   });
 
   it("yields an empty hook list when the block is omitted", () => {
@@ -32,7 +32,7 @@ describe("loadConfig — hooks", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.hooks).toEqual({ preWrite: [] });
+    expect(result.value.hooks).toEqual({ preWrite: [], preWriteTransform: [] });
   });
 
   it("parses an ordered list of pre_write hook declarations", () => {
@@ -63,6 +63,46 @@ describe("loadConfig — hooks", () => {
     expect(result.value.hooks.preWrite).toEqual([]);
   });
 
+  it("parses an ordered list of pre_write_transform hook declarations", () => {
+    writeConfig(
+      [
+        "version: 1",
+        "hooks:",
+        "  pre_write_transform:",
+        "    - path: .daftari/hooks/derive-a.mjs",
+        "    - path: .daftari/hooks/derive-b.mjs",
+        "",
+      ].join("\n"),
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hooks.preWriteTransform).toEqual([
+      { path: ".daftari/hooks/derive-a.mjs" },
+      { path: ".daftari/hooks/derive-b.mjs" },
+    ]);
+  });
+
+  it("parses pre_write and pre_write_transform as independent lists", () => {
+    writeConfig(
+      [
+        "hooks:",
+        "  pre_write_transform:",
+        "    - path: .daftari/hooks/transform.mjs",
+        "  pre_write:",
+        "    - path: .daftari/hooks/validate.mjs",
+        "",
+      ].join("\n"),
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hooks.preWrite).toEqual([{ path: ".daftari/hooks/validate.mjs" }]);
+    expect(result.value.hooks.preWriteTransform).toEqual([
+      { path: ".daftari/hooks/transform.mjs" },
+    ]);
+  });
+
   describe("malformed", () => {
     const cases: { name: string; yaml: string; contains: string }[] = [
       {
@@ -89,6 +129,21 @@ describe("loadConfig — hooks", () => {
         name: "pre_write entry path missing",
         yaml: "hooks:\n  pre_write:\n    - other: x\n",
         contains: "path",
+      },
+      {
+        name: "pre_write_transform must be a list",
+        yaml: "hooks:\n  pre_write_transform: not-a-list\n",
+        contains: "'hooks.pre_write_transform' must be a list",
+      },
+      {
+        name: "pre_write_transform entry must be a mapping",
+        yaml: "hooks:\n  pre_write_transform:\n    - just-a-string\n",
+        contains: "'hooks.pre_write_transform[0]' must be a mapping",
+      },
+      {
+        name: "pre_write_transform entry path must be a non-empty string",
+        yaml: "hooks:\n  pre_write_transform:\n    - path: ''\n",
+        contains: "non-empty string",
       },
       {
         name: "unrecognised hook surface key",

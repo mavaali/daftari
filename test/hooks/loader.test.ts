@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadHook, loadHooks } from "../../src/hooks/loader.js";
+import {
+  loadHook,
+  loadHooks,
+  loadPreWriteTransformHook,
+  loadPreWriteTransformHooks,
+} from "../../src/hooks/loader.js";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const tsxBin = join(projectRoot, "node_modules", ".bin", "tsx");
@@ -130,6 +135,86 @@ describe("hooks loader", () => {
   it("loadHooks fails fast on the first broken declaration", async () => {
     writeHookFile(vault, ".daftari/hooks/ok.mjs", "export default function ok() { return []; }\n");
     const result = await loadHooks(vault, [
+      { path: ".daftari/hooks/ok.mjs" },
+      { path: ".daftari/hooks/missing.mjs" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("missing.mjs");
+  });
+});
+
+describe("pre-write transform hooks loader", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-transform-loader-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("loads a transform hook whose default export is a function", async () => {
+    writeHookFile(
+      vault,
+      ".daftari/hooks/derive.mjs",
+      "export default function derive() { return {}; }\n",
+    );
+    const result = await loadPreWriteTransformHook(vault, { path: ".daftari/hooks/derive.mjs" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(typeof result.value.hook).toBe("function");
+    expect(result.value.declaration.path).toBe(".daftari/hooks/derive.mjs");
+  });
+
+  it("rejects a transform hook file that does not exist", async () => {
+    const result = await loadPreWriteTransformHook(vault, { path: ".daftari/hooks/missing.mjs" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("not found");
+  });
+
+  it("rejects a transform hook whose default export is not a function", async () => {
+    writeHookFile(vault, ".daftari/hooks/not-a-fn.mjs", "export default { not: 'a function' };\n");
+    const result = await loadPreWriteTransformHook(vault, { path: ".daftari/hooks/not-a-fn.mjs" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("must export a default function");
+  });
+
+  it("rejects a transform hook path that escapes the vault root", async () => {
+    const result = await loadPreWriteTransformHook(vault, { path: "../escape.mjs" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("escapes vault root");
+  });
+
+  it("rejects an absolute transform hook path", async () => {
+    const result = await loadPreWriteTransformHook(vault, { path: "/etc/passwd" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("vault-root-relative");
+  });
+
+  it("loadPreWriteTransformHooks loads multiple in declared order", async () => {
+    writeHookFile(vault, ".daftari/hooks/a.mjs", "export default function a() { return {}; }\n");
+    writeHookFile(vault, ".daftari/hooks/b.mjs", "export default function b() { return {}; }\n");
+    const result = await loadPreWriteTransformHooks(vault, [
+      { path: ".daftari/hooks/b.mjs" },
+      { path: ".daftari/hooks/a.mjs" },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.map((h) => h.declaration.path)).toEqual([
+      ".daftari/hooks/b.mjs",
+      ".daftari/hooks/a.mjs",
+    ]);
+  });
+
+  it("loadPreWriteTransformHooks fails fast on the first broken declaration", async () => {
+    writeHookFile(vault, ".daftari/hooks/ok.mjs", "export default function ok() { return {}; }\n");
+    const result = await loadPreWriteTransformHooks(vault, [
       { path: ".daftari/hooks/ok.mjs" },
       { path: ".daftari/hooks/missing.mjs" },
     ]);

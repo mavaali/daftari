@@ -26,8 +26,8 @@ import {
   type ValidationIssue,
   type ValidationReport,
 } from "../frontmatter/types.js";
-import { loadHooks } from "../hooks/loader.js";
-import { runPreWriteHooks } from "../hooks/runner.js";
+import { loadHooks, loadPreWriteTransformHooks } from "../hooks/loader.js";
+import { runPreWriteHooks, runPreWriteTransformHooks } from "../hooks/runner.js";
 import type { HookOperation } from "../hooks/types.js";
 import { indexDocument } from "../search/reindex.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
@@ -328,6 +328,7 @@ export async function vaultWrite(
     if (parsed.ok) oldFrontmatter = parsed.value.frontmatter;
   }
   const isUpdate = oldFrontmatter !== null;
+  const hookOperation: HookOperation = isUpdate ? "update" : "create";
 
   // Config-declared schema extensions participate in validation and
   // serialization. A malformed config fails the write loudly, matching the
@@ -335,6 +336,25 @@ export async function vaultWrite(
   const config = loadConfig(vaultRoot);
   if (!config.ok) return config;
   const extensions = config.value.schemaExtensions;
+
+  // Pre-write transform hooks run BEFORE schema validation, so they can
+  // derive or override built-in frontmatter fields the validator would
+  // otherwise reject. Each returns a Partial<Frontmatter>; the runner merges
+  // them Object.assign-style (shallow, last-writer-wins) and the result is
+  // merged back into rawFrontmatter so validation, hooks, and serialization
+  // all see the transformed values. A transform throw or non-object return
+  // becomes a synthetic blocking issue. The loader fails loud, same as the
+  // pre_write loader.
+  const loadedTransformHooks = await loadPreWriteTransformHooks(
+    vaultRoot,
+    config.value.hooks.preWriteTransform,
+  );
+  if (!loadedTransformHooks.ok) return loadedTransformHooks;
+  const transformResult = runPreWriteTransformHooks(loadedTransformHooks.value, rawFrontmatter, {
+    path: path.value,
+    operation: hookOperation,
+  });
+  Object.assign(rawFrontmatter, transformResult.merged);
 
   const { frontmatter, report } = validateFrontmatter(rawFrontmatter, extensions);
 
@@ -344,12 +364,15 @@ export async function vaultWrite(
   // fails loud — a missing or malformed hook module is a config error.
   const loadedHooks = await loadHooks(vaultRoot, config.value.hooks.preWrite);
   if (!loadedHooks.ok) return loadedHooks;
-  const hookOperation: HookOperation = isUpdate ? "update" : "create";
   const hookIssues = runPreWriteHooks(loadedHooks.value, rawFrontmatter, {
     path: path.value,
     operation: hookOperation,
   });
-  const mergedIssues: ValidationIssue[] = [...report.issues, ...hookIssues];
+  const mergedIssues: ValidationIssue[] = [
+    ...transformResult.issues,
+    ...report.issues,
+    ...hookIssues,
+  ];
   const mergedReport: ValidationReport = {
     valid: mergedIssues.length === 0,
     issues: mergedIssues,
@@ -442,9 +465,25 @@ export async function vaultAppend(
   };
   const newBody = `${parsed.value.content.replace(/\s+$/, "")}\n\n${section.value.trim()}\n`;
 
-  // Pre-write hooks see the post-stamp frontmatter (the same shape a
-  // subsequent vault_read would return). Issues block the append, same as
-  // for vault_write.
+  // Pre-write transform hooks run before the pre_write validators; their
+  // Partial<Frontmatter> patch is merged Object.assign-style into the
+  // post-stamp frontmatter so the validators below see the transformed
+  // values. A transform throw or non-object return blocks the append.
+  const loadedTransformHooks = await loadPreWriteTransformHooks(
+    vaultRoot,
+    config.value.hooks.preWriteTransform,
+  );
+  if (!loadedTransformHooks.ok) return loadedTransformHooks;
+  const transformResult = runPreWriteTransformHooks(
+    loadedTransformHooks.value,
+    newFrontmatter as unknown as Record<string, unknown>,
+    { path: path.value, operation: "append" },
+  );
+  Object.assign(newFrontmatter, transformResult.merged);
+
+  // Pre-write hooks see the post-stamp, post-transform frontmatter (the same
+  // shape a subsequent vault_read would return). Issues block the append,
+  // same as for vault_write.
   const loadedHooks = await loadHooks(vaultRoot, config.value.hooks.preWrite);
   if (!loadedHooks.ok) return loadedHooks;
   const hookIssues = runPreWriteHooks(
@@ -452,8 +491,9 @@ export async function vaultAppend(
     newFrontmatter as unknown as Record<string, unknown>,
     { path: path.value, operation: "append" },
   );
-  if (hookIssues.length > 0) {
-    const summary = hookIssues.map((i) => `${i.field}: ${i.message}`).join("; ");
+  const appendIssues = [...transformResult.issues, ...hookIssues];
+  if (appendIssues.length > 0) {
+    const summary = appendIssues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return err(new Error(`invalid frontmatter: ${summary}`));
   }
 

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pre-write transform hooks** (#32). New `pre_write_transform` hook phase
+  runs before `validateFrontmatter` and can derive or override frontmatter
+  fields. Returns `Partial<Frontmatter>`. Refuses via throw. Existing
+  `pre_write` validators continue to run unchanged after validation. Closes
+  the gap where v1.6.0 hooks could observe and reject but could not derive
+  built-in fields. Declared under `hooks.pre_write_transform` in
+  `.daftari/config.yaml`; the runner merges each hook's patch Object.assign
+  style — shallow, last-writer-wins. Phase order is rigid:
+  `pre_write_transform` (declaration order), then `validateFrontmatter`, then
+  `pre_write` (declaration order), regardless of config layout. Fires for
+  `vault_write` and `vault_append`; `vault_promote` and `vault_deprecate`
+  bypass it, matching the `pre_write` bypass.
+
+### Changed
+
+- The existing `pre_write` hook surface continues to half-mutate: a mutation
+  to `rawFrontmatter` inside a `pre_write` hook propagates for extension
+  fields but not for built-in fields. This behavior is preserved for
+  backward compatibility but is now implementation detail — new mutations
+  should use `pre_write_transform`.
+
 ## [1.6.0] - 2026-05-19
 
 ### Added
