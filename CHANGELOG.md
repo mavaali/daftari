@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-05-18
+
+### Fixed
+
+- **Reindex no longer exhausts memory on mid-sized vaults** (#25). `reindexVault`
+  embedded every chunk across the whole vault in a single model call, which
+  padded the batch to its longest sequence and allocated activation tensors
+  proportional to the total chunk count — so peak memory scaled with vault
+  size. Past ~200 documents the allocation exceeded RAM and the process
+  stalled in a GC/swap death spiral with no output. Embedding now runs in
+  fixed-size sub-batches, keeping peak memory flat regardless of vault size
+  (a 600-chunk embed dropped from ~3.5 GB to ~325 MB peak RSS).
+- **Reindex reports progress instead of running silent.** On an interactive
+  terminal, `--reindex` now prints a single-line `embedding N/M chunks`
+  counter, so a large-vault reindex can be distinguished from a hang.
+
 ## [1.5.0] - 2026-05-18
 
 ### Added
@@ -140,6 +156,7 @@ vault to AI agents, exposing 13 tools over stdio.
   example documents, git history, search index); `daftari --vault` serves it.
 - 160 tests covering all 13 tools and their supporting modules.
 
+[1.5.1]: https://github.com/mavaali/daftari/releases/tag/v1.5.1
 [1.4.0]: https://github.com/mavaali/daftari/releases/tag/v1.4.0
 [1.1.1]: https://github.com/mavaali/daftari/releases/tag/v1.1.1
 [1.1.0]: https://github.com/mavaali/daftari/releases/tag/v1.1.0
