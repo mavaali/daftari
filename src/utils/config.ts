@@ -45,12 +45,16 @@ export interface SchemaExtension {
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
+  // When false, write tools skip the auto-commit step — the file is still
+  // written, indexed, and provenance-logged, but the caller owns git. Defaults
+  // to true: a standalone vault's git history *is* its document history.
+  autoCommit: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
 // config file — both are valid, not malformed.
 function emptyConfig(): DaftariConfig {
-  return { roles: {}, schemaExtensions: [] };
+  return { roles: {}, schemaExtensions: [], autoCommit: true };
 }
 
 export function configPath(vaultRoot: string): string {
@@ -294,5 +298,13 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
 
-  return ok({ roles, schemaExtensions: extensions.value });
+  let autoCommit = true;
+  if (root.auto_commit !== undefined) {
+    if (typeof root.auto_commit !== "boolean") {
+      return err(new Error("malformed config: 'auto_commit' must be true or false"));
+    }
+    autoCommit = root.auto_commit;
+  }
+
+  return ok({ roles, schemaExtensions: extensions.value, autoCommit });
 }

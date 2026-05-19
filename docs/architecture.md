@@ -46,7 +46,9 @@ Three things sit alongside the markdown:
 
 - **Git.** The vault root is a git work tree. Every write auto-commits, so the
   files' git history *is* the document history. There is no second versioning
-  system.
+  system. A vault nested in a larger repo can set `auto_commit: false` in
+  `.daftari/config.yaml` to opt out: writes still produce durable, indexed,
+  provenance-logged files, but staging and committing are left to the caller.
 - **SQLite index** (`.daftari/index.db`). Holds the BM25 term statistics and
   the vector embeddings that power hybrid search. It is **ephemeral** — it can
   be rebuilt from the markdown files at any time with `vault_reindex`, and it
@@ -92,7 +94,10 @@ makes those writes *safe and attributable* — it does not orchestrate them.
   mechanism — single-writer-per-file — not a coordination protocol.
 - **Auto-commit.** Every successful write is committed to git, authored by the
   acting identity. The history is complete and attributable without anyone
-  having to remember to commit.
+  having to remember to commit. Vaults that set `auto_commit: false` skip this
+  step — the write is still durable and provenance-logged, but the caller owns
+  git (useful when the vault is a subdirectory of a larger repo with its own
+  branching and PR workflow).
 - **Provenance log.** Beyond git, each mutation is appended to a structured
   provenance log: which tool, which agent, which file, what changed in the
   frontmatter. `vault_provenance` reads it back.

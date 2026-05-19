@@ -118,7 +118,10 @@ export function serializeDocument(
 export interface WriteResult {
   path: string;
   action: "create" | "update" | "append" | "promote" | "deprecate";
-  commit: string; // short commit hash
+  // Short commit hash when the write was auto-committed; null when the vault
+  // is configured with `auto_commit: false` and the caller owns git.
+  commit: string | null;
+  committed: boolean;
   status: string;
   updated: string;
   validation: ValidationReport;
@@ -139,6 +142,10 @@ function shortHash(h: string): string {
 // provenance failures are not — the index is a rebuildable cache and the log
 // is advisory — so they are reported via `indexUpdated` rather than aborting.
 //
+// When `autoCommit` is false the commit step is skipped entirely: the file is
+// still written, indexed, and provenance-logged, but `commit` is null and
+// `committed` is false. The caller owns staging and committing.
+//
 // Optimistic concurrency: when `baseVersion` is supplied, the file on disk is
 // hashed inside the lock and compared before any write. A mismatch (including
 // a file that no longer exists, or never did) rejects the write as stale —
@@ -157,6 +164,7 @@ async function performWrite(params: {
   oldFrontmatter: Frontmatter | null;
   validation: ValidationReport;
   commitMessage: string;
+  autoCommit: boolean;
   baseVersion?: string;
 }): Promise<Result<WriteResult, Error>> {
   const lockDbResult = openLockDb(params.vaultRoot);
@@ -192,13 +200,17 @@ async function performWrite(params: {
 
       const indexed = await indexDocument(params.vaultRoot, params.relPath);
 
-      const committed = await commit(
-        params.vaultRoot,
-        [params.relPath],
-        params.commitMessage,
-        params.agent,
-      );
-      if (!committed.ok) return committed;
+      let commitHash: string | null = null;
+      if (params.autoCommit) {
+        const committed = await commit(
+          params.vaultRoot,
+          [params.relPath],
+          params.commitMessage,
+          params.agent,
+        );
+        if (!committed.ok) return committed;
+        commitHash = committed.value.hash;
+      }
 
       await recordProvenance(params.vaultRoot, {
         tool: params.tool,
@@ -211,7 +223,8 @@ async function performWrite(params: {
       return ok({
         path: params.relPath,
         action: params.action,
-        commit: committed.value.hash,
+        commit: commitHash,
+        committed: params.autoCommit,
         status: params.newFrontmatter.status,
         updated: params.newFrontmatter.updated,
         validation: params.validation,
@@ -350,6 +363,7 @@ export async function vaultWrite(
     validation: report,
     commitMessage:
       `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
+    autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
   });
 }
@@ -419,6 +433,7 @@ export async function vaultAppend(
     oldFrontmatter,
     validation: parsed.value.validation,
     commitMessage: `vault_append: ${path.value} by ${agent.value}`,
+    autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
   });
 }
@@ -504,6 +519,7 @@ export async function vaultPromote(
     oldFrontmatter,
     validation: parsed.value.validation,
     commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
+    autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
   });
 }
@@ -585,6 +601,7 @@ export async function vaultDeprecate(
     commitMessage:
       `vault_deprecate: ${path.value} by ${agent.value} — ${reason.value}` +
       (supersededBy ? ` (superseded by ${supersededBy})` : ""),
+    autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
   });
 }

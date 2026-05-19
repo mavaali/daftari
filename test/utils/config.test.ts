@@ -50,6 +50,39 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("auto_commit (issue #22)", () => {
+    it("defaults to true when no config file exists", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.autoCommit).toBe(true);
+    });
+
+    it("defaults to true when the key is omitted", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.autoCommit).toBe(true);
+    });
+
+    it("parses auto_commit: false", () => {
+      writeConfig("version: 1\nvault_name: v\nauto_commit: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.autoCommit).toBe(false);
+    });
+
+    it("rejects a non-boolean auto_commit value", () => {
+      writeConfig("version: 1\nvault_name: v\nauto_commit: nope\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("auto_commit");
+    });
+  });
+
   describe("type primitives", () => {
     it("parses every supported extension type", () => {
       writeConfig(

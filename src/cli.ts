@@ -53,6 +53,10 @@ const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files — ne
 .daftari/locks.db-journal
 .daftari/locks.db-wal
 .daftari/locks.db-shm
+# Local audit state — advisory, not vault content. Matters most when a vault
+# runs with auto_commit: false inside a larger repo: keeps the host repo's
+# git status clean of Daftari's per-write log churn.
+.daftari/curation-log.jsonl
 `;
 
 // Example documents written by --init. Content is fictional: "Aurora" and
