@@ -19,8 +19,13 @@ export interface ProvenanceEntry {
   tool: string; // the write tool that ran, e.g. "vault_write"
   file: string; // vault-relative path
   agent: string; // acting identity, e.g. "agent:claude-code"
-  action: string; // "create" | "update" | "append" | "promote" | "deprecate"
+  // "create" | "update" | "append" | "promote" | "deprecate" for a write that
+  // landed; "rejected_stale" for a write refused by the base_version check.
+  action: string;
   frontmatter_diff?: FrontmatterDiff;
+  // Free-text explanation, set on rejected writes (e.g. the stale-version
+  // mismatch). Absent on writes that landed.
+  reason?: string;
 }
 
 export function curationLogPath(vaultRoot: string): string {
@@ -58,6 +63,7 @@ export async function recordProvenance(
     ...(entry.frontmatter_diff && Object.keys(entry.frontmatter_diff).length > 0
       ? { frontmatter_diff: entry.frontmatter_diff }
       : {}),
+    ...(entry.reason ? { reason: entry.reason } : {}),
   };
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });

@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-05-18
+
+### Added
+
+- **Optimistic concurrency for the write path** — `vault_read` now returns a
+  `version` token (the SHA-256 of the file as read), and the write tools
+  (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`) accept an
+  optional `base_version`. When supplied, the server re-hashes the file inside
+  the write lock and rejects the write with a `stale write:` error if it no
+  longer matches — closing the stale-write gap the file lock could not catch.
+  Rejected stale writes are recorded in the provenance log with a
+  `rejected_stale` action. Omitting `base_version` preserves last-write-wins
+  behavior, so the change is fully backward compatible. (#14)
+
 ## [1.2.0] - 2026-05-17
 
 ### Added
