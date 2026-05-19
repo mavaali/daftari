@@ -68,7 +68,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // Build (or rebuild) the search index. With --reindex this is the whole job.
-  const reindexed = await reindexVault(vaultRoot);
+  // On an interactive terminal, report embedding progress on a single line so
+  // a large-vault reindex is not silent; in non-TTY contexts (CI, pipes) the
+  // final summary line below is the only output.
+  let progressShown = false;
+  const reindexed = await reindexVault(vaultRoot, {
+    onProgress: process.stderr.isTTY
+      ? (done, total) => {
+          progressShown = true;
+          process.stderr.write(`\rdaftari: embedding ${done}/${total} chunks`);
+        }
+      : undefined,
+  });
+  if (progressShown) process.stderr.write("\n");
   if (reindexed.ok) {
     const r = reindexed.value;
     process.stderr.write(

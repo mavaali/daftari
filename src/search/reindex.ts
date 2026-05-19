@@ -4,9 +4,10 @@
 // from scratch — there is no incremental update path to drift out of sync.
 // Called on server start and by the vault_reindex tool / --reindex CLI flag.
 //
-// Embedding is best-effort: every chunk across the whole vault is embedded in
-// one batch. If the model is unavailable the documents (and their BM25 tokens)
-// still index; only the vector column is left NULL and vectorEnabled is false.
+// Embedding is best-effort: every chunk across the whole vault is embedded,
+// in fixed-size sub-batches so peak memory stays flat as the vault grows. If
+// the model is unavailable the documents (and their BM25 tokens) still index;
+// only the vector column is left NULL and vectorEnabled is false.
 
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -31,6 +32,13 @@ export interface ReindexResult {
   vectorEnabled: boolean;
   skipped: string[];
   indexedAt: string;
+}
+
+export interface ReindexOptions {
+  // Fires during the embedding phase (the slow part of a reindex) with the
+  // number of chunks embedded so far and the total. Lets a caller report
+  // progress so a large-vault reindex is not silent.
+  onProgress?: (done: number, total: number) => void;
 }
 
 interface StagedDocument {
@@ -123,16 +131,19 @@ function writeIndex(
   return chunkCount;
 }
 
-export async function reindexVault(vaultRoot: string): Promise<Result<ReindexResult, Error>> {
+export async function reindexVault(
+  vaultRoot: string,
+  opts: ReindexOptions = {},
+): Promise<Result<ReindexResult, Error>> {
   const staging = await stageDocuments(vaultRoot);
   if (!staging.ok) return staging;
   const { staged, skipped } = staging.value;
 
-  // One flat list of every chunk's text, embedded in a single batch.
+  // One flat list of every chunk's text; embed() processes it in sub-batches.
   const allChunkTexts: string[] = [];
   for (const s of staged) allChunkTexts.push(...s.chunks);
 
-  const embedResult = await embed(allChunkTexts);
+  const embedResult = await embed(allChunkTexts, opts.onProgress);
   const vectorEnabled = embedResult.ok;
   const embeddings: (Float32Array | null)[] = embedResult.ok
     ? embedResult.value

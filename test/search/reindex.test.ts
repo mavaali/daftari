@@ -53,6 +53,23 @@ describe("reindexVault", () => {
     expect(second.value.chunkCount).toBe(first.value.chunkCount);
   }, 60_000);
 
+  it("reports embedding progress through the onProgress callback", async () => {
+    const calls: Array<[number, number]> = [];
+    const result = await reindexVault(vault, {
+      onProgress: (done, total) => calls.push([done, total]),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Progress fires during embedding, every call carries the vault's full
+    // chunk count as the total, `done` advances strictly, and the last call
+    // reports completion.
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every(([, total]) => total === result.value.chunkCount)).toBe(true);
+    expect(calls.every(([done], i) => i === 0 || done > (calls[i - 1]?.[0] ?? 0))).toBe(true);
+    expect(calls[calls.length - 1]?.[0]).toBe(result.value.chunkCount);
+  }, 60_000);
+
   it("populates ttlDays, created, and supersededBy from frontmatter after reindex", async () => {
     const result = await reindexVault(vault);
     expect(result.ok).toBe(true);
