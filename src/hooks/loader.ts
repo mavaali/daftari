@@ -5,6 +5,7 @@
 // model; see README "Vault hooks".
 
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -42,7 +43,12 @@ export async function loadHook(
 
   let mod: { default?: unknown };
   try {
-    mod = (await import(pathToFileURL(resolved.value).href)) as { default?: unknown };
+    const { mtimeMs } = await stat(resolved.value);
+    // [HYPOTHESIS] Append mtime as a query suffix so Node's ESM module cache
+    // returns a fresh import after the hook file is edited. Kill condition: if
+    // Node ever stops caching ESM modules by URL, the suffix is harmless overhead.
+    const importUrl = `${pathToFileURL(resolved.value).href}?t=${Math.floor(mtimeMs)}`;
+    mod = (await import(importUrl)) as { default?: unknown };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`failed to load hook '${decl.path}': ${reason}`));

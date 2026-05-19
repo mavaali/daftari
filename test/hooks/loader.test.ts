@@ -1,8 +1,36 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadHook, loadHooks } from "../../src/hooks/loader.js";
+
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const tsxBin = join(projectRoot, "node_modules", ".bin", "tsx");
+const probeScript = join(projectRoot, "test", "fixtures", "hook-loader-probe.mts");
+
+// Drives the hook loader in a real Node process. Vitest's module runner caches
+// dynamic import() by path and ignores the loader's `?t=<mtime>` cache-busting
+// query, so the loader's hot-reload can only be observed outside vitest. The
+// probe writes `v2Source` over the hook mid-run; see hook-loader-probe.mts.
+function runProbe(
+  vault: string,
+  v2Source: string,
+): { message1: string; message2: string; stableRef: boolean } {
+  writeHookFile(
+    vault,
+    ".daftari/hooks/probe.mjs",
+    "export default function probe() { return [{ field: 'v', message: 'first version' }]; }\n",
+  );
+  const out = execFileSync(tsxBin, [probeScript, vault, ".daftari/hooks/probe.mjs", v2Source], {
+    encoding: "utf8",
+  });
+  return JSON.parse(out);
+}
+
+const V2_SOURCE =
+  "export default function probe() { return [{ field: 'v', message: 'second version' }]; }\n";
 
 // Writes a hook module file inside a temp vault and returns the absolute
 // path. Hooks are real .mjs files loaded via dynamic import.
@@ -86,6 +114,17 @@ describe("hooks loader", () => {
       ".daftari/hooks/b.mjs",
       ".daftari/hooks/a.mjs",
     ]);
+  });
+
+  it("picks up edits to a hook file without a server restart", () => {
+    const result = runProbe(vault, V2_SOURCE);
+    expect(result.message1).toBe("first version");
+    expect(result.message2).toBe("second version");
+  });
+
+  it("returns the same hook module when the file is unchanged", () => {
+    const result = runProbe(vault, V2_SOURCE);
+    expect(result.stableRef).toBe(true);
   });
 
   it("loadHooks fails fast on the first broken declaration", async () => {

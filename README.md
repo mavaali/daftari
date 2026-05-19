@@ -347,7 +347,8 @@ register hooks in v1.
   not awaited.
 - **No caching across calls:** hooks are re-imported per write; expect to
   pay one ESM dynamic-import per declared hook per call. The next iteration
-  may cache.
+  may cache. Edits to a hook file are picked up on the next write — no
+  server restart required.
 
 See [issue #29](https://github.com/mavaali/daftari/issues/29) for the design
 rationale and the alternatives that were rejected.
