@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-05-18
+
+### Added
+
+- **`auto_commit` opt-out for the write path** (#22). A vault can set
+  `auto_commit: false` in `.daftari/config.yaml` to suppress the auto-commit
+  step on `vault_write` / `vault_append` / `vault_promote` / `vault_deprecate`.
+  The file is still written, indexed, and provenance-logged; only the git
+  commit is skipped, so the caller owns staging and committing. This lets a
+  vault nested inside a larger repo defer to that repo's branching and PR
+  workflow. `WriteResult` now reports `committed` (boolean) and `commit` is
+  `null` when no commit was made. Backward compatible — `auto_commit` defaults
+  to `true`, the behavior shipped today.
+
 ## [1.4.0] - 2026-05-18
 
 ### Added

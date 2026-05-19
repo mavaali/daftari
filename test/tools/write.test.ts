@@ -7,7 +7,7 @@ import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultAppend, vaultDeprecate, vaultPromote, vaultWrite } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
-import { log } from "../../src/utils/git.js";
+import { isGitRepo, log } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -790,5 +790,104 @@ describe("write tools", () => {
       expect("status_tag" in read.value.raw).toBe(false);
       expect(read.value.content).toContain("Appended.");
     }, 60_000);
+  });
+
+  describe("auto_commit opt-out (issue #22)", () => {
+    function writeConfig(autoCommit: boolean | undefined): void {
+      mkdirSync(`${vault}/.daftari`, { recursive: true });
+      const lines = ["version: 1", "vault_name: sample-vault"];
+      if (autoCommit !== undefined) lines.push(`auto_commit: ${autoCommit}`);
+      writeFileSync(configPath(vault), `${lines.join("\n")}\n`);
+    }
+
+    it("default config commits and reports committed: true", async () => {
+      writeConfig(undefined);
+      const result = await vaultWrite(vault, {
+        path: "pricing/committed.md",
+        body: "# Note\n\nBody.\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.committed).toBe(true);
+      expect(result.value.commit).toMatch(/^[0-9a-f]+$/);
+    }, 60_000);
+
+    it("auto_commit: false writes the file but skips the commit", async () => {
+      writeConfig(false);
+      const result = await vaultWrite(vault, {
+        path: "pricing/uncommitted.md",
+        body: "# Note\n\nBody.\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.committed).toBe(false);
+      expect(result.value.commit).toBeNull();
+
+      // File is durable and indexed despite no commit.
+      const read = await vaultRead(vault, "pricing/uncommitted.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.content).toContain("Body.");
+      expect(result.value.indexUpdated).toBe(true);
+
+      // No git repository was initialized — the commit step was skipped whole.
+      expect(await isGitRepo(vault)).toBe(false);
+
+      // Provenance is still recorded — it is an advisory log, not git.
+      const prov = await readProvenanceLog(vault);
+      expect(prov.ok).toBe(true);
+      if (!prov.ok) return;
+      const entry = prov.value.find(
+        (e) => e.file === "pricing/uncommitted.md" && e.action === "create",
+      );
+      expect(entry?.tool).toBe("vault_write");
+    }, 60_000);
+
+    it("auto_commit: false also applies to vault_append and vault_deprecate", async () => {
+      writeConfig(false);
+
+      const appended = await vaultAppend(vault, {
+        path: "_drafts/moonshot-agentic-etl.md",
+        section: "## Section\n\nText.",
+        agent: AGENT,
+      });
+      expect(appended.ok).toBe(true);
+      if (!appended.ok) return;
+      expect(appended.value.committed).toBe(false);
+      expect(appended.value.commit).toBeNull();
+
+      const deprecated = await vaultDeprecate(vault, {
+        path: "_drafts/moonshot-agentic-etl.md",
+        reason: "no longer relevant",
+        agent: AGENT,
+      });
+      expect(deprecated.ok).toBe(true);
+      if (!deprecated.ok) return;
+      expect(deprecated.value.committed).toBe(false);
+      expect(deprecated.value.commit).toBeNull();
+
+      expect(await isGitRepo(vault)).toBe(false);
+    }, 60_000);
+
+    it("rejects a non-boolean auto_commit value", async () => {
+      mkdirSync(`${vault}/.daftari`, { recursive: true });
+      writeFileSync(
+        configPath(vault),
+        ["version: 1", "vault_name: sample-vault", "auto_commit: maybe", ""].join("\n"),
+      );
+      const result = await vaultWrite(vault, {
+        path: "pricing/note.md",
+        body: "# Note\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("auto_commit");
+    });
   });
 });
