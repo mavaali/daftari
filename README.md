@@ -269,6 +269,92 @@ and serialize in a stable order, with no core schema change. See
 
 ---
 
+## Vault hooks
+
+Hooks are vault-owner-supplied functions that run **before every write** to
+this vault. They let an organisation enforce conventions the built-in
+frontmatter validator does not know about — naming rules, status-transition
+guards, business-specific cross-field invariants, refusal lists — without
+forking daftari or wrapping the MCP server. A hook is a plain ES module that
+exports a default function and returns a list of `ValidationIssue` objects.
+Any issue blocks the write, exactly the way a built-in schema violation does.
+
+Hooks are declared in `.daftari/config.yaml`:
+
+```yaml
+hooks:
+  pre_write:
+    - path: .daftari/hooks/forbid-status-skip.mjs
+    - path: .daftari/hooks/require-decision-id.mjs
+```
+
+The `path` is vault-root-relative. Hooks run in declared order. Every hook
+runs on every write, even if an earlier hook produced issues — the caller
+gets one consolidated list back, not the first failure.
+
+A hook looks like this:
+
+```ts
+// .daftari/hooks/forbid-status-skip.mjs
+//
+// ValidationIssue = { field: string; message: string }
+// context         = { path: string; operation: 'create' | 'update' | 'append' }
+export default function forbidStatusSkip(frontmatter, context) {
+  if (context.operation !== "update") return [];
+  if (frontmatter.status === "canonical" && frontmatter.previous_status === "draft") {
+    return [
+      {
+        field: "status",
+        message: "draft → canonical is not allowed; promote via the dedicated tool",
+      },
+    ];
+  }
+  return [];
+}
+```
+
+A hook is called with the already-stamped frontmatter the write is about to
+land (so `updated` and `updated_by` reflect this call, not the previous
+version on disk). The hook **must not mutate its inputs**; v1 is
+validate-only. Returning a non-array, or an array containing malformed issue
+objects, is itself reported as a blocking issue tagged with the hook path —
+hook bugs surface as loud failures, not silent passes.
+
+### Trust model
+
+Hooks are **trusted code**. They run in the same Node process as the daftari
+server, with the same filesystem and network access. v1 does no sandboxing,
+no permission prompts, no signature checking — the vault owner is responsible
+for the contents of `.daftari/hooks/`. Treat hook files the way you would
+treat `package.json` scripts or git hooks: review every change, never run a
+vault you don't trust, and pin hook code in source control next to the
+config that loads it. If you need stronger isolation than that, don't
+register hooks in v1.
+
+### Scope and limits in v1
+
+- **Surfaces:** only `pre_write`. Future surfaces (`pre_read`, `post_write`,
+  etc.) are reserved — unrecognised keys under `hooks:` are a loud config
+  error, not a silent skip.
+- **Operations:** hooks fire for `vault_write` (create + update) and
+  `vault_append`. `vault_promote` and `vault_deprecate` deliberately bypass
+  hooks — they're narrow metadata mutations the server controls end-to-end.
+- **Validate-only:** the hook return value is a list of issues. Mutation
+  (a hook that patches frontmatter on the way through) is a deliberate
+  follow-up — see issue #29 for the dialogue.
+- **Sync:** hook bodies are synchronous functions. The loader is async
+  (it has to dynamic-import the module), but each individual hook call is
+  not awaited.
+- **No caching across calls:** hooks are re-imported per write; expect to
+  pay one ESM dynamic-import per declared hook per call. The next iteration
+  may cache. Edits to a hook file are picked up on the next write — no
+  server restart required.
+
+See [issue #29](https://github.com/mavaali/daftari/issues/29) for the design
+rationale and the alternatives that were rejected.
+
+---
+
 ## What's not in v1
 
 A few capabilities were deliberately deferred so v1 ships with a tight,

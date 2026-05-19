@@ -16,6 +16,7 @@ import {
   ok,
   type Result,
 } from "../frontmatter/types.js";
+import type { HookConfig, HookDeclaration } from "../hooks/types.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -45,6 +46,10 @@ export interface SchemaExtension {
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
+  // Vault-owner-supplied pre-write hooks. v1 lists pre-write only; future
+  // hook surfaces (read-time, post-write) would extend this block. See the
+  // README "Vault hooks" section for the trust model.
+  hooks: HookConfig;
   // When false, write tools skip the auto-commit step — the file is still
   // written, indexed, and provenance-logged, but the caller owns git. Defaults
   // to true: a standalone vault's git history *is* its document history.
@@ -54,7 +59,7 @@ export interface DaftariConfig {
 // A config with no roles and no extensions. Returned for a missing or empty
 // config file — both are valid, not malformed.
 function emptyConfig(): DaftariConfig {
-  return { roles: {}, schemaExtensions: [], autoCommit: true };
+  return { roles: {}, schemaExtensions: [], hooks: { preWrite: [] }, autoCommit: true };
 }
 
 export function configPath(vaultRoot: string): string {
@@ -250,6 +255,45 @@ function validateExtensions(raw: unknown): Result<SchemaExtension[], Error> {
   return ok(out);
 }
 
+// Parses the optional `hooks` block. v1 recognises a single child key,
+// `pre_write`, which is an ordered list of mappings. Each entry must declare
+// a `path` (vault-root-relative). Declaration order is preserved — hook
+// execution honours it. A missing block yields an empty hook config; a
+// malformed block fails loud, same as schema extensions.
+function validateHooks(raw: unknown): Result<HookConfig, Error> {
+  if (raw === undefined) return ok({ preWrite: [] });
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'hooks' must be a mapping"));
+  }
+  const obj = raw as Record<string, unknown>;
+  const preWrite: HookDeclaration[] = [];
+
+  if (obj.pre_write !== undefined) {
+    if (!Array.isArray(obj.pre_write)) {
+      return err(new Error("'hooks.pre_write' must be a list"));
+    }
+    for (let i = 0; i < obj.pre_write.length; i++) {
+      const entry = obj.pre_write[i];
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        return err(new Error(`'hooks.pre_write[${i}]' must be a mapping`));
+      }
+      const e = entry as Record<string, unknown>;
+      if (typeof e.path !== "string" || e.path.length === 0) {
+        return err(new Error(`'hooks.pre_write[${i}].path' must be a non-empty string`));
+      }
+      preWrite.push({ path: e.path });
+    }
+  }
+
+  for (const key of Object.keys(obj)) {
+    if (key !== "pre_write") {
+      return err(new Error(`'hooks.${key}' is not a recognised hook surface`));
+    }
+  }
+
+  return ok({ preWrite });
+}
+
 // Loads and validates the vault's RBAC config. A missing file is not an error
 // — it produces an empty role set. A file that parses but violates the schema,
 // or fails to parse at all, returns Result.err so the server can refuse to
@@ -298,6 +342,9 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
 
+  const hooks = validateHooks(root.hooks);
+  if (!hooks.ok) return err(new Error(`malformed config: ${hooks.error.message}`));
+
   let autoCommit = true;
   if (root.auto_commit !== undefined) {
     if (typeof root.auto_commit !== "boolean") {
@@ -306,5 +353,10 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     autoCommit = root.auto_commit;
   }
 
-  return ok({ roles, schemaExtensions: extensions.value, autoCommit });
+  return ok({
+    roles,
+    schemaExtensions: extensions.value,
+    hooks: hooks.value,
+    autoCommit,
+  });
 }
