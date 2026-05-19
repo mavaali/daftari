@@ -23,8 +23,12 @@ import {
   type Frontmatter,
   ok,
   type Result,
+  type ValidationIssue,
   type ValidationReport,
 } from "../frontmatter/types.js";
+import { loadHooks } from "../hooks/loader.js";
+import { runPreWriteHooks } from "../hooks/runner.js";
+import type { HookOperation } from "../hooks/types.js";
 import { indexDocument } from "../search/reindex.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
@@ -333,8 +337,25 @@ export async function vaultWrite(
   const extensions = config.value.schemaExtensions;
 
   const { frontmatter, report } = validateFrontmatter(rawFrontmatter, extensions);
-  if (!report.valid) {
-    const summary = report.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
+
+  // Pre-write hooks run after built-in schema validation has filled
+  // defaults. Their issues merge into the report and are treated the same
+  // way built-in issues are: any issue blocks the write. The hook loader
+  // fails loud — a missing or malformed hook module is a config error.
+  const loadedHooks = await loadHooks(vaultRoot, config.value.hooks.preWrite);
+  if (!loadedHooks.ok) return loadedHooks;
+  const hookOperation: HookOperation = isUpdate ? "update" : "create";
+  const hookIssues = runPreWriteHooks(loadedHooks.value, rawFrontmatter, {
+    path: path.value,
+    operation: hookOperation,
+  });
+  const mergedIssues: ValidationIssue[] = [...report.issues, ...hookIssues];
+  const mergedReport: ValidationReport = {
+    valid: mergedIssues.length === 0,
+    issues: mergedIssues,
+  };
+  if (!mergedReport.valid) {
+    const summary = mergedReport.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return err(new Error(`invalid frontmatter: ${summary}`));
   }
 
@@ -360,7 +381,7 @@ export async function vaultWrite(
     ),
     newFrontmatter: stamped,
     oldFrontmatter,
-    validation: report,
+    validation: mergedReport,
     commitMessage:
       `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
     autoCommit: config.value.autoCommit,
@@ -420,6 +441,21 @@ export async function vaultAppend(
     updated_by: agent.value,
   };
   const newBody = `${parsed.value.content.replace(/\s+$/, "")}\n\n${section.value.trim()}\n`;
+
+  // Pre-write hooks see the post-stamp frontmatter (the same shape a
+  // subsequent vault_read would return). Issues block the append, same as
+  // for vault_write.
+  const loadedHooks = await loadHooks(vaultRoot, config.value.hooks.preWrite);
+  if (!loadedHooks.ok) return loadedHooks;
+  const hookIssues = runPreWriteHooks(
+    loadedHooks.value,
+    newFrontmatter as unknown as Record<string, unknown>,
+    { path: path.value, operation: "append" },
+  );
+  if (hookIssues.length > 0) {
+    const summary = hookIssues.map((i) => `${i.field}: ${i.message}`).join("; ");
+    return err(new Error(`invalid frontmatter: ${summary}`));
+  }
 
   return performWrite({
     vaultRoot,
