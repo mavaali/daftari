@@ -216,6 +216,12 @@ function validateExtension(field: string, raw: unknown): Result<SchemaExtension,
     defaultValue = checked.value;
   }
 
+  // A default that violates its own field's pattern would be written silently
+  // when the field is absent — catch it at config load.
+  if (pattern && typeof defaultValue === "string" && !new RegExp(pattern).test(defaultValue)) {
+    return err(new Error(`${where}: 'default' does not match 'pattern' /${pattern}/`));
+  }
+
   const ext: SchemaExtension = { field, type, required };
   if (enumValues) ext.enum = enumValues;
   if (items) ext.items = items;

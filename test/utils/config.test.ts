@@ -279,6 +279,11 @@ describe("loadConfig — schema extensions", () => {
         contains: "'default' must be a number",
       },
       {
+        name: "string default does not match the declared pattern",
+        yaml: 'schema_extensions:\n  f:\n    type: string\n    pattern: "^ADR-"\n    default: nope\n',
+        contains: "'default' does not match 'pattern'",
+      },
+      {
         name: "default is outside the declared enum",
         yaml: "schema_extensions:\n  f:\n    type: enum\n    enum: [a, b]\n    default: c\n",
         contains: "'default' must be one of the declared enum values",
