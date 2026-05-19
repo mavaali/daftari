@@ -7,10 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-19
+
+### Added
+
+- **Pre-write validation hooks** (#29, PR #30). Vault owners can register ES
+  module hooks in `.daftari/config.yaml` under `hooks.pre_write`. Each hook
+  exports a default function `(frontmatter, context) => ValidationIssue[]` and
+  runs before the write completes; any returned issue blocks the write,
+  matching the existing built-in schema-validation contract. Hooks fire for
+  `vault_write` (create + update) and `vault_append`; `vault_promote` and
+  `vault_deprecate` intentionally bypass them — those are narrow,
+  server-controlled metadata mutations, not user-authored content. Run-all
+  ordering: every declared hook runs even if an earlier one returned issues,
+  and the caller gets one consolidated issue list. Loud failure mode: a hook
+  throw becomes a synthetic blocking issue tagged with the hook path; a
+  non-array return or a malformed issue object is also a synthetic blocking
+  issue. Hooks load via ESM dynamic import with vault-root-relative paths
+  only — absolute paths and `..` escapes are rejected. Unrecognised keys
+  under `hooks:` are loud config errors so future surfaces (`pre_read`,
+  `post_write`) can't be silently shadowed by typos. Validate-only in v1;
+  mutation is a deliberate follow-up. Trust model documented in the README:
+  hooks run in-process with full host capability, so vault owner is
+  responsible for the contents of `.daftari/hooks/`.
+
 ### Changed
 
-- Hook loader busts the ESM module cache on each call so hot-edits are picked
-  up without restart.
+- **Hook loader busts the ESM module cache on each call** so hot-edits to a
+  hook file are picked up on the next write without a server restart. The
+  loader appends a `?t=<mtimeMs>` suffix to the import URL; the suffix
+  changes only when the file changes, so unchanged hooks still hit the
+  cache.
 
 ## [1.5.1] - 2026-05-18
 
