@@ -9,7 +9,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load as parseYaml } from "js-yaml";
-import { type ExtensionValue, err, ok, type Result } from "../frontmatter/types.js";
+import {
+  BUILTIN_FRONTMATTER_FIELDS,
+  type ExtensionValue,
+  err,
+  ok,
+  type Result,
+} from "../frontmatter/types.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -129,6 +135,11 @@ function validateDefault(
 // declaration fails config load — the same loud-failure contract as RBAC.
 function validateExtension(field: string, raw: unknown): Result<SchemaExtension, Error> {
   const where = `schema_extensions '${field}'`;
+  // An extension adds a field; it must not reuse a built-in field name —
+  // doing so would let the extension silently override the built-in on write.
+  if ((BUILTIN_FRONTMATTER_FIELDS as readonly string[]).includes(field)) {
+    return err(new Error(`${where} shadows a built-in frontmatter field`));
+  }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return err(new Error(`${where} must be a mapping`));
   }

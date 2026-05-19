@@ -56,6 +56,7 @@ A malformed `schema_extensions` declaration **fails config load** — the server
 refuses to start, the same contract RBAC config errors follow. A broken schema
 is better caught at boot than half-applied at write time. Load fails on:
 
+- a field name that shadows a built-in field (`title`, `status`, `tags`, …)
 - an unknown `type`
 - `type: enum` with no `enum` list, or an empty one
 - `type: array` without `items: string`

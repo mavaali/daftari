@@ -48,6 +48,27 @@ export interface BuiltinFrontmatter {
   questions_raised: string[];
 }
 
+// The built-in field names, as a runtime list. Config-declared schema
+// extensions are rejected if they reuse one of these — an extension adds a
+// field, it never redefines a built-in.
+export const BUILTIN_FRONTMATTER_FIELDS = [
+  "title",
+  "domain",
+  "collection",
+  "status",
+  "confidence",
+  "created",
+  "updated",
+  "updated_by",
+  "provenance",
+  "sources",
+  "superseded_by",
+  "ttl_days",
+  "tags",
+  "questions_answered",
+  "questions_raised",
+] as const;
+
 // The metadata layer for every vault document. Mirrors the YAML frontmatter
 // block. The built-in fields keep their narrow types; the index signature
 // admits any config-declared schema-extension field without a core type

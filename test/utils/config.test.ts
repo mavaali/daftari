@@ -132,10 +132,10 @@ describe("loadConfig — schema extensions", () => {
           "  adr_id:",
           "    type: string",
           '    pattern: "^ADR-[0-9]+$"',
-          "  tags:",
+          "  stakeholders:",
           "    type: array",
           "    items: string",
-          "  status:",
+          "  review_state:",
           "    type: enum",
           "    enum: [proposed, accepted]",
           "",
@@ -144,10 +144,10 @@ describe("loadConfig — schema extensions", () => {
       const result = loadConfig(dir);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      const [adr, tags, status] = result.value.schemaExtensions;
+      const [adr, stakeholders, reviewState] = result.value.schemaExtensions;
       expect(adr?.pattern).toBe("^ADR-[0-9]+$");
-      expect(tags?.items).toBe("string");
-      expect(status?.enum).toEqual(["proposed", "accepted"]);
+      expect(stakeholders?.items).toBe("string");
+      expect(reviewState?.enum).toEqual(["proposed", "accepted"]);
     });
 
     it("normalises a date default to a YYYY-MM-DD string", () => {
@@ -207,6 +207,11 @@ describe("loadConfig — schema extensions", () => {
         name: "an entry is not a mapping",
         yaml: "schema_extensions:\n  adr_id: string\n",
         contains: "must be a mapping",
+      },
+      {
+        name: "field name shadows a built-in field",
+        yaml: "schema_extensions:\n  status:\n    type: string\n",
+        contains: "shadows a built-in frontmatter field",
       },
       {
         name: "unknown extension type",
