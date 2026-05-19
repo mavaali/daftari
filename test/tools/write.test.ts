@@ -746,5 +746,49 @@ describe("write tools", () => {
       expect(read.value.raw.status_tag).toBe("proposed");
       expect(read.value.content).toContain("More detail.");
     });
+
+    it("does not inject extension defaults when appending to a doc that lacks them", async () => {
+      // A document that predates the schema_extensions block — no status_tag,
+      // written straight to disk so vault_write's default-fill never runs.
+      writeFileSync(
+        `${vault}/pricing/legacy.md`,
+        [
+          "---",
+          "title: Legacy ADR",
+          "domain: accumulation",
+          "collection: pricing",
+          "status: draft",
+          "confidence: low",
+          "created: 2026-05-01",
+          "updated: 2026-05-01",
+          "updated_by: agent:seed",
+          "provenance: direct",
+          "sources: []",
+          "superseded_by: null",
+          "ttl_days: null",
+          "tags: []",
+          "---",
+          "",
+          "# Legacy ADR",
+          "",
+          "Body.",
+          "",
+        ].join("\n"),
+      );
+
+      const appended = await vaultAppend(vault, {
+        path: "pricing/legacy.md",
+        section: "## More\n\nAppended.",
+        agent: AGENT,
+      });
+      expect(appended.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/legacy.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      // The default-bearing extension is not injected by an append.
+      expect("status_tag" in read.value.raw).toBe(false);
+      expect(read.value.content).toContain("Appended.");
+    }, 60_000);
   });
 });

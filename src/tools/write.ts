@@ -46,20 +46,39 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
   return fm.collection || (relPath.split("/")[0] ?? "");
 }
 
-// Resolves an extension field's serializable value: the raw frontmatter value
-// (a js-yaml Date normalized to a YYYY-MM-DD string), or the declared default
-// when the field is absent. Returns undefined when absent with no default, so
-// the caller can omit the key entirely.
+// Resolves an extension field's serializable value from the raw frontmatter:
+// the value as written, with a js-yaml Date normalized to a YYYY-MM-DD string.
+// A missing field — `undefined` or `null`, the latter matching how the
+// validator reads it — yields undefined so the caller can omit the key.
+// Defaults are not applied here; see applyExtensionDefaults.
 function extensionValue(
   raw: Record<string, unknown>,
   ext: SchemaExtension,
 ): ExtensionValue | undefined {
   const v = raw[ext.field];
-  if (v === undefined) return ext.default;
+  if (v === undefined || v === null) return undefined;
   if (ext.type === "date" && v instanceof Date && !Number.isNaN(v.getTime())) {
     return v.toISOString().slice(0, 10);
   }
   return v as ExtensionValue;
+}
+
+// Fills missing extension fields from their declared defaults, returning a new
+// record. Used only on the vault_write path — a full-frontmatter write. The
+// append / promote / deprecate tools mutate an existing document and must not
+// inject new fields, so they serialize the document's raw frontmatter as-is.
+export function applyExtensionDefaults(
+  raw: Record<string, unknown>,
+  extensions: SchemaExtension[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
+  for (const ext of extensions) {
+    const v = out[ext.field];
+    if ((v === undefined || v === null) && ext.default !== undefined) {
+      out[ext.field] = ext.default;
+    }
+  }
+  return out;
 }
 
 // Serializes a frontmatter block and markdown body back into file text.
@@ -320,7 +339,12 @@ export async function vaultWrite(
     agent: agent.value,
     tool: "vault_write",
     action: isUpdate ? "update" : "create",
-    fileText: serializeDocument(stamped, body, extensions, rawFrontmatter),
+    fileText: serializeDocument(
+      stamped,
+      body,
+      extensions,
+      applyExtensionDefaults(rawFrontmatter, extensions),
+    ),
     newFrontmatter: stamped,
     oldFrontmatter,
     validation: report,

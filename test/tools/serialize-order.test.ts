@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseDocument } from "../../src/frontmatter/parser.js";
 import type { Frontmatter } from "../../src/frontmatter/types.js";
-import { serializeDocument } from "../../src/tools/write.js";
+import { applyExtensionDefaults, serializeDocument } from "../../src/tools/write.js";
 import type { SchemaExtension } from "../../src/utils/config.js";
 
 // A complete, valid built-in frontmatter block.
@@ -98,7 +98,15 @@ describe("serializeDocument — extension ordering", () => {
     expect(frontmatterKeys(text)).toEqual(BUILTIN_KEYS);
   });
 
-  it("fills an absent extension field from its declared default", () => {
+  it("does not inject defaults on its own — only serializes what raw carries", () => {
+    const extensions: SchemaExtension[] = [
+      ext({ field: "status_tag", type: "string", default: "proposed" }),
+    ];
+    const text = serializeDocument(fm(), "# Body\n", extensions, {});
+    expect(frontmatterKeys(text)).toEqual(BUILTIN_KEYS);
+  });
+
+  it("serializes defaults once they are supplied via applyExtensionDefaults", () => {
     const extensions: SchemaExtension[] = [
       ext({
         field: "status_tag",
@@ -108,9 +116,16 @@ describe("serializeDocument — extension ordering", () => {
       }),
       ext({ field: "ttl_override", type: "number", default: 30 }),
     ];
-    const text = serializeDocument(fm(), "# Body\n", extensions, {});
+    const raw = applyExtensionDefaults({}, extensions);
+    const text = serializeDocument(fm(), "# Body\n", extensions, raw);
     expect(text).toContain("status_tag: proposed");
     expect(text).toContain("ttl_override: 30");
+  });
+
+  it("treats a null extension value as absent and omits the key", () => {
+    const extensions: SchemaExtension[] = [ext({ field: "adr_id", type: "string" })];
+    const text = serializeDocument(fm(), "# Body\n", extensions, { adr_id: null });
+    expect(frontmatterKeys(text)).toEqual(BUILTIN_KEYS);
   });
 
   it("produces output identical to the pre-extension form when none are declared", () => {
@@ -178,5 +193,36 @@ describe("serializeDocument — round-trip preservation", () => {
     );
     expect(text).toContain("decision_date: '2026-04-10'");
     expect(text).not.toContain("T00:00:00");
+  });
+});
+
+describe("applyExtensionDefaults", () => {
+  const extensions: SchemaExtension[] = [
+    ext({ field: "status_tag", type: "string", default: "proposed" }),
+    ext({ field: "adr_id", type: "string" }), // no default
+  ];
+
+  it("fills a missing field from its declared default", () => {
+    expect(applyExtensionDefaults({}, extensions).status_tag).toBe("proposed");
+  });
+
+  it("treats a null value as missing and fills the default", () => {
+    expect(applyExtensionDefaults({ status_tag: null }, extensions).status_tag).toBe("proposed");
+  });
+
+  it("leaves a present value untouched", () => {
+    expect(applyExtensionDefaults({ status_tag: "accepted" }, extensions).status_tag).toBe(
+      "accepted",
+    );
+  });
+
+  it("leaves a missing field with no default absent", () => {
+    expect("adr_id" in applyExtensionDefaults({}, extensions)).toBe(false);
+  });
+
+  it("does not mutate the input record", () => {
+    const input = {};
+    applyExtensionDefaults(input, extensions);
+    expect(input).toEqual({});
   });
 });
