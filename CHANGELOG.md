@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `null` when no commit was made. Backward compatible — `auto_commit` defaults
   to `true`, the behavior shipped today.
 
+### Fixed
+
+- The scaffolded `.gitignore` now excludes `.daftari/curation-log.jsonl`. The
+  provenance log was always documented as local, git-ignored audit state but
+  was never actually listed in the ignore file. This matters most for
+  `auto_commit: false` vaults nested in a larger repo, where the unignored log
+  would otherwise churn the host repo's `git status` on every write.
+
 ## [1.4.0] - 2026-05-18
 
 ### Added
