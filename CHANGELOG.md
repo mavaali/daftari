@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-18
+
+### Added
+
+- **Config-driven schema extensions for domain-specific frontmatter** (#19).
+  Vaults can declare typed extension fields in a `schema_extensions` block of
+  `.daftari/config.yaml` — `string` (with an optional regex `pattern`), `date`,
+  `number`, `boolean`, `array<string>`, and `enum`, each optionally `required`
+  or carrying a `default`. Extensions participate in `vault_write` validation
+  and serialize after the built-in fields in stable config declaration order.
+  Malformed extension declarations fail config load loudly, matching the RBAC
+  config contract. Backward compatible — vaults with no `schema_extensions`
+  block behave exactly as before. See
+  [docs/schema-extensions.md](docs/schema-extensions.md).
+
 ## [1.3.0] - 2026-05-18
 
 ### Added
@@ -103,6 +118,7 @@ vault to AI agents, exposing 13 tools over stdio.
   example documents, git history, search index); `daftari --vault` serves it.
 - 160 tests covering all 13 tools and their supporting modules.
 
+[1.4.0]: https://github.com/mavaali/daftari/releases/tag/v1.4.0
 [1.1.1]: https://github.com/mavaali/daftari/releases/tag/v1.1.1
 [1.1.0]: https://github.com/mavaali/daftari/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mavaali/daftari/releases/tag/v1.0.0

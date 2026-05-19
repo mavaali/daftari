@@ -19,9 +19,15 @@ export type Confidence = (typeof CONFIDENCES)[number];
 export const PROVENANCES = ["direct", "synthesized", "inferred"] as const;
 export type Provenance = (typeof PROVENANCES)[number];
 
-// The metadata layer for every vault document. Mirrors the YAML frontmatter
-// block. Daftari does not maintain any metadata outside frontmatter.
-export interface Frontmatter {
+// The runtime value of a config-declared schema-extension field. `date` and
+// `enum` fields are carried as strings; `array` fields as string[]. A core
+// type so config.ts and the frontmatter layer agree on the shape.
+export type ExtensionValue = string | number | boolean | string[] | null;
+
+// Daftari's built-in frontmatter fields — the core schema every vault shares.
+// Each field keeps a narrow type; `Frontmatter` intersects this with an open
+// index signature so config-declared extension fields are also well-typed.
+export interface BuiltinFrontmatter {
   title: string;
   domain: Domain;
   collection: string;
@@ -41,6 +47,35 @@ export interface Frontmatter {
   questions_answered: string[];
   questions_raised: string[];
 }
+
+// The built-in field names, as a runtime list. Config-declared schema
+// extensions are rejected if they reuse one of these — an extension adds a
+// field, it never redefines a built-in.
+export const BUILTIN_FRONTMATTER_FIELDS = [
+  "title",
+  "domain",
+  "collection",
+  "status",
+  "confidence",
+  "created",
+  "updated",
+  "updated_by",
+  "provenance",
+  "sources",
+  "superseded_by",
+  "ttl_days",
+  "tags",
+  "questions_answered",
+  "questions_raised",
+] as const;
+
+// The metadata layer for every vault document. Mirrors the YAML frontmatter
+// block. The built-in fields keep their narrow types; the index signature
+// admits any config-declared schema-extension field without a core type
+// change. Daftari does not maintain any metadata outside frontmatter.
+export type Frontmatter = BuiltinFrontmatter & {
+  [extensionKey: string]: ExtensionValue;
+};
 
 // A single problem found while validating frontmatter. Advisory only —
 // validation never blocks a read.

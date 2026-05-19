@@ -261,6 +261,12 @@ The matching `## Questions Answered` / `## Questions Raised` body sections are
 an optional human-readable mirror. Full field reference in
 [docs/file-format.md](docs/file-format.md).
 
+Daftari's built-in frontmatter covers most vaults out of the box. For
+domain-specific fields, add a `schema_extensions` block to
+`.daftari/config.yaml` — typed extension fields that participate in validation
+and serialize in a stable order, with no core schema change. See
+[docs/schema-extensions.md](docs/schema-extensions.md).
+
 ---
 
 ## What's not in v1
@@ -291,6 +297,7 @@ deliberately deferred, not forgotten.
 - [docs/architecture.md](docs/architecture.md) — the layered architecture, the request path, and the accumulation-vs-generative domain split.
 - [docs/curation-workflow.md](docs/curation-workflow.md) — the reference curation loop: how an agent acts on `vault_lint` output instead of letting it pile up.
 - [docs/file-format.md](docs/file-format.md) — the complete frontmatter reference and markdown body conventions.
+- [docs/schema-extensions.md](docs/schema-extensions.md) — declaring typed, vault-specific frontmatter fields with a `schema_extensions` config block.
 
 ---
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
@@ -6,6 +6,7 @@ import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultAppend, vaultDeprecate, vaultPromote, vaultWrite } from "../../src/tools/write.js";
+import { configPath } from "../../src/utils/config.js";
 import { log } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -628,6 +629,166 @@ describe("write tools", () => {
       if (!final.ok) return;
       expect(final.value.content).toContain("B's revised pricing notes");
       expect(final.value.content).not.toContain("composed against the pre-B version");
+    }, 60_000);
+  });
+
+  describe("schema extensions", () => {
+    // The temp vault skips the .daftari control dir, so each test that needs
+    // schema extensions writes its own config into the vault.
+    const EXT_CONFIG = [
+      "version: 1",
+      "vault_name: sample-vault",
+      "schema_extensions:",
+      "  adr_id:",
+      "    type: string",
+      '    pattern: "^ADR-[0-9]+$"',
+      "  decision_date:",
+      "    type: date",
+      "  stakeholders:",
+      "    type: array",
+      "    items: string",
+      "  status_tag:",
+      "    type: enum",
+      "    enum: [proposed, accepted, rejected]",
+      "    default: proposed",
+      "",
+    ].join("\n");
+
+    beforeEach(() => {
+      mkdirSync(`${vault}/.daftari`, { recursive: true });
+      writeFileSync(configPath(vault), EXT_CONFIG);
+    });
+
+    it("writes declared extension fields and surfaces them on read", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR\n\nDecision body.\n",
+        frontmatter: newFrontmatter({
+          adr_id: "ADR-019",
+          decision_date: "2026-04-10",
+          stakeholders: ["platform", "data"],
+        }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const read = await vaultRead(vault, "pricing/adr.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      // Extension fields surface in vault_read's raw (exactly-as-parsed) block.
+      expect(read.value.raw.adr_id).toBe("ADR-019");
+      expect(read.value.raw.stakeholders).toEqual(["platform", "data"]);
+      expect(read.value.raw.decision_date).toBe("2026-04-10");
+    });
+
+    it("fills a missing extension field from its declared default", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR\n",
+        frontmatter: newFrontmatter({ adr_id: "ADR-020" }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/adr.md");
+      expect(read.ok && read.value.raw.status_tag).toBe("proposed");
+    });
+
+    it("rejects a write whose extension field violates its declared type", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR\n",
+        frontmatter: newFrontmatter({ adr_id: "not-an-adr-id" }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("invalid frontmatter");
+      expect(result.error.message).toContain("adr_id");
+    });
+
+    it("preserves extension fields across an update and an append", async () => {
+      await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR\n",
+        frontmatter: newFrontmatter({
+          adr_id: "ADR-021",
+          stakeholders: ["platform"],
+        }),
+        agent: AGENT,
+      });
+
+      // Update: extension fields supplied again, must round-trip intact.
+      await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR v2\n",
+        frontmatter: newFrontmatter({
+          adr_id: "ADR-021",
+          stakeholders: ["platform", "security"],
+        }),
+        agent: AGENT,
+      });
+
+      // Append: frontmatter is untouched by the caller; extensions survive.
+      const appended = await vaultAppend(vault, {
+        path: "pricing/adr.md",
+        section: "## Addendum\n\nMore detail.",
+        agent: AGENT,
+      });
+      expect(appended.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/adr.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.raw.adr_id).toBe("ADR-021");
+      expect(read.value.raw.stakeholders).toEqual(["platform", "security"]);
+      expect(read.value.raw.status_tag).toBe("proposed");
+      expect(read.value.content).toContain("More detail.");
+    });
+
+    it("does not inject extension defaults when appending to a doc that lacks them", async () => {
+      // A document that predates the schema_extensions block — no status_tag,
+      // written straight to disk so vault_write's default-fill never runs.
+      writeFileSync(
+        `${vault}/pricing/legacy.md`,
+        [
+          "---",
+          "title: Legacy ADR",
+          "domain: accumulation",
+          "collection: pricing",
+          "status: draft",
+          "confidence: low",
+          "created: 2026-05-01",
+          "updated: 2026-05-01",
+          "updated_by: agent:seed",
+          "provenance: direct",
+          "sources: []",
+          "superseded_by: null",
+          "ttl_days: null",
+          "tags: []",
+          "---",
+          "",
+          "# Legacy ADR",
+          "",
+          "Body.",
+          "",
+        ].join("\n"),
+      );
+
+      const appended = await vaultAppend(vault, {
+        path: "pricing/legacy.md",
+        section: "## More\n\nAppended.",
+        agent: AGENT,
+      });
+      expect(appended.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/legacy.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      // The default-bearing extension is not injected by an append.
+      expect("status_tag" in read.value.raw).toBe(false);
+      expect(read.value.content).toContain("Appended.");
     }, 60_000);
   });
 });
