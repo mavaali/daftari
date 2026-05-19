@@ -59,7 +59,12 @@ export interface DaftariConfig {
 // A config with no roles and no extensions. Returned for a missing or empty
 // config file — both are valid, not malformed.
 function emptyConfig(): DaftariConfig {
-  return { roles: {}, schemaExtensions: [], hooks: { preWrite: [] }, autoCommit: true };
+  return {
+    roles: {},
+    schemaExtensions: [],
+    hooks: { preWrite: [], preWriteTransform: [] },
+    autoCommit: true,
+  };
 }
 
 export function configPath(vaultRoot: string): string {
@@ -255,43 +260,63 @@ function validateExtensions(raw: unknown): Result<SchemaExtension[], Error> {
   return ok(out);
 }
 
-// Parses the optional `hooks` block. v1 recognises a single child key,
-// `pre_write`, which is an ordered list of mappings. Each entry must declare
-// a `path` (vault-root-relative). Declaration order is preserved — hook
-// execution honours it. A missing block yields an empty hook config; a
-// malformed block fails loud, same as schema extensions.
+// Recognised child keys of the `hooks` block. Anything else is a loud config
+// error so a typo can't silently shadow a hook surface.
+const RECOGNISED_HOOK_KEYS = ["pre_write", "pre_write_transform"] as const;
+
+// Parses one hook list (`pre_write` or `pre_write_transform`) from the `hooks`
+// block into an ordered list of declarations. A missing key yields an empty
+// list; a non-list, or an entry without a non-empty `path`, fails loud.
+function parseHookList(
+  obj: Record<string, unknown>,
+  key: string,
+): Result<HookDeclaration[], Error> {
+  const out: HookDeclaration[] = [];
+  const raw = obj[key];
+  if (raw === undefined) return ok(out);
+  if (!Array.isArray(raw)) {
+    return err(new Error(`'hooks.${key}' must be a list`));
+  }
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return err(new Error(`'hooks.${key}[${i}]' must be a mapping`));
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.path !== "string" || e.path.length === 0) {
+      return err(new Error(`'hooks.${key}[${i}].path' must be a non-empty string`));
+    }
+    out.push({ path: e.path });
+  }
+  return ok(out);
+}
+
+// Parses the optional `hooks` block. Two child keys are recognised:
+// `pre_write` (validators that run after schema validation) and
+// `pre_write_transform` (transforms that run before it). Each is an ordered
+// list of mappings, each with a vault-root-relative `path`. Declaration order
+// is preserved within each list — hook execution honours it. A missing block
+// yields an empty hook config; a malformed block fails loud, same as schema
+// extensions.
 function validateHooks(raw: unknown): Result<HookConfig, Error> {
-  if (raw === undefined) return ok({ preWrite: [] });
+  if (raw === undefined) return ok({ preWrite: [], preWriteTransform: [] });
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return err(new Error("'hooks' must be a mapping"));
   }
   const obj = raw as Record<string, unknown>;
-  const preWrite: HookDeclaration[] = [];
-
-  if (obj.pre_write !== undefined) {
-    if (!Array.isArray(obj.pre_write)) {
-      return err(new Error("'hooks.pre_write' must be a list"));
-    }
-    for (let i = 0; i < obj.pre_write.length; i++) {
-      const entry = obj.pre_write[i];
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-        return err(new Error(`'hooks.pre_write[${i}]' must be a mapping`));
-      }
-      const e = entry as Record<string, unknown>;
-      if (typeof e.path !== "string" || e.path.length === 0) {
-        return err(new Error(`'hooks.pre_write[${i}].path' must be a non-empty string`));
-      }
-      preWrite.push({ path: e.path });
-    }
-  }
 
   for (const key of Object.keys(obj)) {
-    if (key !== "pre_write") {
+    if (!(RECOGNISED_HOOK_KEYS as readonly string[]).includes(key)) {
       return err(new Error(`'hooks.${key}' is not a recognised hook surface`));
     }
   }
 
-  return ok({ preWrite });
+  const preWrite = parseHookList(obj, "pre_write");
+  if (!preWrite.ok) return preWrite;
+  const preWriteTransform = parseHookList(obj, "pre_write_transform");
+  if (!preWriteTransform.ok) return preWriteTransform;
+
+  return ok({ preWrite: preWrite.value, preWriteTransform: preWriteTransform.value });
 }
 
 // Loads and validates the vault's RBAC config. A missing file is not an error

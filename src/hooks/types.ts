@@ -3,7 +3,7 @@
 // advisory-as-issues (issues block writes the same way built-in schema
 // validation does), and runs in declared order with every hook always called.
 
-import type { ValidationIssue } from "../frontmatter/types.js";
+import type { Frontmatter, ValidationIssue } from "../frontmatter/types.js";
 
 // The operation the write tool is about to perform. Matches the action that
 // will be recorded in provenance and the auto-commit message. v1 fires hooks
@@ -31,18 +31,33 @@ export type PreWriteHook = (
   context: HookContext,
 ) => ValidationIssue[];
 
-// One declaration in .daftari/config.yaml under `hooks.pre_write`. The path
-// is vault-root-relative; the loader rejects any path that escapes the
-// vault. Each declaration loads its module exactly once per server start.
+// A pre-write *transform* hook. Runs BEFORE built-in schema validation, so it
+// can derive or override frontmatter fields the validator would otherwise
+// reject as missing or wrong. Returns a Partial<Frontmatter> patch — the
+// runner merges it Object.assign-style (shallow, last-writer-wins) into the
+// candidate frontmatter before validation. A transform hook refuses by
+// throwing; it does NOT return ValidationIssue[]. See README "Transform
+// hooks".
+export type PreWriteTransformHook = (
+  frontmatter: Record<string, unknown>,
+  context: HookContext,
+) => Partial<Frontmatter>;
+
+// One declaration in .daftari/config.yaml under `hooks.pre_write` or
+// `hooks.pre_write_transform`. The path is vault-root-relative; the loader
+// rejects any path that escapes the vault. Both hook surfaces share this
+// declaration shape — only the phase the hook runs in differs.
 export interface HookDeclaration {
   path: string;
 }
 
 // The parsed `hooks` block from .daftari/config.yaml. Ordering is
-// significant: hooks run in declared order and each receives the original
-// frontmatter — no hook sees another hook's issues.
+// significant within each list: hooks run in declared order. Across phases
+// the order is fixed regardless of config layout — every pre_write_transform
+// hook runs before validation, every pre_write hook runs after it.
 export interface HookConfig {
   preWrite: HookDeclaration[];
+  preWriteTransform: HookDeclaration[];
 }
 
 // The result of loading a hook module: either a callable hook or a load-time
@@ -51,4 +66,11 @@ export interface HookConfig {
 export interface LoadedHook {
   declaration: HookDeclaration;
   hook: PreWriteHook;
+}
+
+// The result of loading a pre-write transform hook module. Parallel to
+// LoadedHook; the only difference is the hook's call signature.
+export interface LoadedTransformHook {
+  declaration: HookDeclaration;
+  hook: PreWriteTransformHook;
 }

@@ -9,7 +9,13 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import type { HookDeclaration, LoadedHook, PreWriteHook } from "./types.js";
+import type {
+  HookDeclaration,
+  LoadedHook,
+  LoadedTransformHook,
+  PreWriteHook,
+  PreWriteTransformHook,
+} from "./types.js";
 
 // Resolves a vault-relative hook path to an absolute filesystem path,
 // rejecting any path that escapes the vault root via `..` segments or an
@@ -30,14 +36,16 @@ function resolveHookPath(vaultRoot: string, hookPath: string): Result<string, Er
   return ok(abs);
 }
 
-// Loads one hook module. The module's default export must be a function;
-// anything else returns Result.err. The function is not validated beyond
-// being callable — TypeScript types are erased at runtime and v1 does not
-// ship a typed helper (see the optional defineHook polish in #29).
-export async function loadHook(
+// Imports a hook module and returns its default export, which must be a
+// function — anything else returns Result.err. Shared by both the pre_write
+// and pre_write_transform loaders: the import, path-escape, and
+// default-is-function checks are identical; only the typed cast the caller
+// applies differs. The function is not validated beyond being callable —
+// TypeScript types are erased at runtime.
+async function importHookDefault(
   vaultRoot: string,
   decl: HookDeclaration,
-): Promise<Result<LoadedHook, Error>> {
+): Promise<Result<(...args: unknown[]) => unknown, Error>> {
   const resolved = resolveHookPath(vaultRoot, decl.path);
   if (!resolved.ok) return resolved;
 
@@ -60,7 +68,30 @@ export async function loadHook(
     );
   }
 
-  return ok({ declaration: decl, hook: mod.default as PreWriteHook });
+  return ok(mod.default as (...args: unknown[]) => unknown);
+}
+
+// Loads one pre_write hook module. The module's default export must be a
+// function; anything else returns Result.err.
+export async function loadHook(
+  vaultRoot: string,
+  decl: HookDeclaration,
+): Promise<Result<LoadedHook, Error>> {
+  const fn = await importHookDefault(vaultRoot, decl);
+  if (!fn.ok) return fn;
+  return ok({ declaration: decl, hook: fn.value as PreWriteHook });
+}
+
+// Loads one pre_write_transform hook module. Mirrors loadHook — same import,
+// path-escape, and default-is-function checks — but the loaded function is
+// typed as a transform hook (returns Partial<Frontmatter>, not issues).
+export async function loadPreWriteTransformHook(
+  vaultRoot: string,
+  decl: HookDeclaration,
+): Promise<Result<LoadedTransformHook, Error>> {
+  const fn = await importHookDefault(vaultRoot, decl);
+  if (!fn.ok) return fn;
+  return ok({ declaration: decl, hook: fn.value as PreWriteTransformHook });
 }
 
 // Loads every declared hook in order. Returns Result.err on the first load
@@ -73,6 +104,21 @@ export async function loadHooks(
   const loaded: LoadedHook[] = [];
   for (const decl of declarations) {
     const result = await loadHook(vaultRoot, decl);
+    if (!result.ok) return result;
+    loaded.push(result.value);
+  }
+  return ok(loaded);
+}
+
+// Loads every declared pre_write_transform hook in order. Fails fast on the
+// first bad declaration, identical to loadHooks.
+export async function loadPreWriteTransformHooks(
+  vaultRoot: string,
+  declarations: HookDeclaration[],
+): Promise<Result<LoadedTransformHook[], Error>> {
+  const loaded: LoadedTransformHook[] = [];
+  for (const decl of declarations) {
+    const result = await loadPreWriteTransformHook(vaultRoot, decl);
     if (!result.ok) return result;
     loaded.push(result.value);
   }

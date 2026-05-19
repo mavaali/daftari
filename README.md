@@ -320,6 +320,59 @@ validate-only. Returning a non-array, or an array containing malformed issue
 objects, is itself reported as a blocking issue tagged with the hook path —
 hook bugs surface as loud failures, not silent passes.
 
+### Transform hooks
+
+A `pre_write` hook can observe and reject, but it cannot *change* the
+frontmatter a write lands. **Transform hooks** can. A transform hook runs in an
+earlier phase — before built-in schema validation — so it can derive or
+override frontmatter fields the validator would otherwise reject as missing.
+
+Transform hooks are declared under their own key, `pre_write_transform`:
+
+```yaml
+hooks:
+  pre_write_transform:
+    - path: .daftari/hooks/derive-status.mjs
+  pre_write:
+    - path: .daftari/hooks/forbid-status-skip.mjs
+```
+
+The phase order is fixed regardless of how the config lists the blocks: every
+`pre_write_transform` hook runs (in declared order), then built-in schema
+validation, then every `pre_write` validator (in declared order). A transform
+always runs before any validator sees the frontmatter.
+
+A transform hook returns a `Partial<Frontmatter>` patch — *not* a list of
+issues:
+
+```ts
+// .daftari/hooks/derive-status.mjs
+//
+// context = { path: string; operation: 'create' | 'update' | 'append' }
+export default function deriveStatus(frontmatter, context) {
+  if (frontmatter.decision_status === "ACTIVE") {
+    return { status: "canonical" };
+  }
+  return {}; // no change
+}
+```
+
+The runner merges each patch into the candidate frontmatter **`Object.assign`
+style**: shallow, last-writer-wins. A key present in the patch replaces the
+existing value outright — arrays are replaced whole, never appended to or
+merged element-wise. When two transforms target the same field, the
+later-declared one wins. Each transform sees the merged output of every
+transform declared before it.
+
+A transform **refuses by throwing** — it does not return issues. A throw
+becomes a synthetic blocking issue tagged with the hook path, identical to the
+`pre_write` throw mechanism. Returning anything that is not an object (an
+array, a primitive, `null`) is likewise a blocking issue.
+
+Because transforms run before validation, a transform that sets an invalid
+value — a `status` outside the allowed set, say — is caught by the built-in
+validator exactly as a bad user-supplied value would be.
+
 ### Trust model
 
 Hooks are **trusted code**. They run in the same Node process as the daftari
@@ -333,15 +386,18 @@ register hooks in v1.
 
 ### Scope and limits in v1
 
-- **Surfaces:** only `pre_write`. Future surfaces (`pre_read`, `post_write`,
+- **Surfaces:** `pre_write` (validators) and `pre_write_transform`
+  (field-deriving transforms). Future surfaces (`pre_read`, `post_write`,
   etc.) are reserved — unrecognised keys under `hooks:` are a loud config
   error, not a silent skip.
-- **Operations:** hooks fire for `vault_write` (create + update) and
-  `vault_append`. `vault_promote` and `vault_deprecate` deliberately bypass
-  hooks — they're narrow metadata mutations the server controls end-to-end.
-- **Validate-only:** the hook return value is a list of issues. Mutation
-  (a hook that patches frontmatter on the way through) is a deliberate
-  follow-up — see issue #29 for the dialogue.
+- **Operations:** both hook surfaces fire for `vault_write` (create + update)
+  and `vault_append`. `vault_promote` and `vault_deprecate` deliberately
+  bypass hooks — they're narrow metadata mutations the server controls
+  end-to-end.
+- **Two phases:** a `pre_write` hook returns a list of issues and can only
+  reject. A `pre_write_transform` hook returns a `Partial<Frontmatter>` patch
+  and can derive or override fields before validation — see "Transform
+  hooks" above.
 - **Sync:** hook bodies are synchronous functions. The loader is async
   (it has to dynamic-import the module), but each individual hook call is
   not awaited.
