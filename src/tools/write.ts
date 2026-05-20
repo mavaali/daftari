@@ -29,6 +29,7 @@ import {
 import { loadHooks, loadPreWriteTransformHooks } from "../hooks/loader.js";
 import { runPreWriteHooks, runPreWriteTransformHooks } from "../hooks/runner.js";
 import type { HookOperation } from "../hooks/types.js";
+import { getIndexStatus, indexingBusyMessage } from "../search/index-state.js";
 import { indexDocument } from "../search/reindex.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
@@ -42,6 +43,22 @@ import type { ToolDefinition } from "./read.js";
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+// Refuses writes while the index is being (re)built. The write path ends in
+// indexDocument(), which races with a concurrent reindexVault() — the reindex
+// clears the index and re-inserts every document, so a write that lands in
+// between can be wiped or land against a half-built index. Failing fast keeps
+// hooks, locks, and git commits from running for a write we can't index yet.
+function requireIndexReady(): Result<void, Error> {
+  const status = getIndexStatus();
+  if (status.status === "indexing") {
+    return err(new Error(indexingBusyMessage(status)));
+  }
+  if (status.status === "error") {
+    return err(new Error(`vault index is in error state: ${status.error ?? "unknown"}`));
+  }
+  return ok(undefined);
 }
 
 // A document's RBAC collection: its frontmatter `collection`, falling back to
@@ -285,6 +302,8 @@ export async function vaultWrite(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
   const path = requireString(args, "path", "vault_write");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_write");
@@ -423,6 +442,8 @@ export async function vaultAppend(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
   const path = requireString(args, "path", "vault_append");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_append");
@@ -526,6 +547,8 @@ export async function vaultPromote(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
   const path = requireString(args, "path", "vault_promote");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_promote");
@@ -612,6 +635,8 @@ export async function vaultDeprecate(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
   const path = requireString(args, "path", "vault_deprecate");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_deprecate");

@@ -7,7 +7,7 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
-import { ok, type Result } from "../frontmatter/types.js";
+import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   DEFAULT_WEIGHTS,
   type HybridSearchResult,
@@ -16,20 +16,48 @@ import {
   type RelatedSearchResult,
   relatedSearch,
 } from "../search/hybrid.js";
+import {
+  getIndexStatus,
+  indexingBusyMessage,
+  markIndexError,
+  markIndexing,
+  markIndexReady,
+} from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
 import { documentCount, openIndexDb } from "../storage/index-db.js";
 import type { ToolDefinition } from "./read.js";
 
-// Builds the index if it has never been built. A populated index is left as-is
-// — callers wanting a refresh use vault_reindex explicitly.
-async function ensureIndexed(vaultRoot: string): Promise<Result<void, Error>> {
+// Gate every index-backed tool on the current indexing state.
+//
+// - "indexing": refuse with a progress-bearing message. The server is still
+//   embedding the vault from cold; the client should retry shortly.
+// - "error":    refuse with the prior failure so the client sees a real
+//   diagnostic instead of an empty / partial result set.
+// - "ready":    fall through to the per-tool logic, with one fallback: if
+//   the SQLite index is empty (a direct test invocation that never went
+//   through main(), or a vault whose .daftari directory was wiped) trigger
+//   a synchronous reindex so search still works without an explicit
+//   --reindex step.
+async function ensureIndexReady(vaultRoot: string): Promise<Result<void, Error>> {
+  const status = getIndexStatus();
+  if (status.status === "indexing") {
+    return err(new Error(indexingBusyMessage(status)));
+  }
+  if (status.status === "error") {
+    return err(new Error(`vault index is in error state: ${status.error ?? "unknown"}`));
+  }
   const dbResult = openIndexDb(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const empty = documentCount(dbResult.value) === 0;
   dbResult.value.close();
   if (empty) {
+    markIndexing();
     const reindexed = await reindexVault(vaultRoot);
-    if (!reindexed.ok) return reindexed;
+    if (!reindexed.ok) {
+      markIndexError(reindexed.error.message);
+      return reindexed;
+    }
+    markIndexReady();
   }
   return ok(undefined);
 }
@@ -76,7 +104,7 @@ export async function vaultSearch(
     };
   }
 
-  const ready = await ensureIndexed(vaultRoot);
+  const ready = await ensureIndexReady(vaultRoot);
   if (!ready.ok) return ready;
 
   const dbResult = openIndexDb(vaultRoot);
@@ -113,7 +141,7 @@ export async function vaultSearchRelated(
     };
   }
 
-  const ready = await ensureIndexed(vaultRoot);
+  const ready = await ensureIndexReady(vaultRoot);
   if (!ready.ok) return ready;
 
   const dbResult = openIndexDb(vaultRoot);
@@ -142,8 +170,17 @@ export interface VaultReindexResult extends ReindexResult {
 }
 
 export async function vaultReindex(vaultRoot: string): Promise<Result<VaultReindexResult, Error>> {
+  const status = getIndexStatus();
+  if (status.status === "indexing") {
+    return err(new Error(indexingBusyMessage(status)));
+  }
+  markIndexing();
   const result = await reindexVault(vaultRoot);
-  if (!result.ok) return result;
+  if (!result.ok) {
+    markIndexError(result.error.message);
+    return result;
+  }
+  markIndexReady();
   return ok({ ...result.value, vault: vaultRoot });
 }
 

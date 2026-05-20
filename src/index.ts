@@ -1,17 +1,30 @@
 // Daftari MCP server entry point.
 //
 // Parses `--vault <path>`, verifies the vault directory exists, loads the RBAC
-// config, builds the search index, then serves the tools over stdio under the
-// access identity given by `--user` / `--role`. Diagnostics go to stderr so
-// they never corrupt the stdio JSON-RPC stream on stdout.
+// config, opens the MCP stdio transport, then — if the index isn't already
+// current — runs a reindex in the background. Diagnostics go to stderr so they
+// never corrupt the stdio JSON-RPC stream on stdout.
 //
-// `--reindex` rebuilds the search index and exits without starting the server.
+// The transport opens before indexing on purpose: a cold reindex on a large
+// vault is minutes long, and a client must be able to answer `initialize` and
+// list tools immediately. Tools that depend on the index consult
+// `getIndexStatus()` and reply "still indexing — N/M chunks" until the
+// background pass finishes.
+//
+// `--reindex` is the one synchronous mode: rebuild the index, exit, do not
+// start the server.
 
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
-import { reindexVault } from "./search/reindex.js";
+import {
+  markIndexError,
+  markIndexing,
+  markIndexReady,
+  setIndexProgress,
+} from "./search/index-state.js";
+import { isIndexFresh, type ReindexOptions, reindexVault } from "./search/reindex.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig } from "./utils/config.js";
@@ -67,37 +80,37 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
-  // Build (or rebuild) the search index. With --reindex this is the whole job.
-  // On an interactive terminal, report embedding progress on a single line so
-  // a large-vault reindex is not silent; in non-TTY contexts (CI, pipes) the
-  // final summary line below is the only output.
-  let progressShown = false;
-  const reindexed = await reindexVault(vaultRoot, {
-    onProgress: process.stderr.isTTY
-      ? (done, total) => {
-          progressShown = true;
-          process.stderr.write(`\rdaftari: embedding ${done}/${total} chunks`);
-        }
-      : undefined,
-  });
-  if (progressShown) process.stderr.write("\n");
-  if (reindexed.ok) {
-    const r = reindexed.value;
-    process.stderr.write(
-      `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
-        `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
-    );
-  } else {
-    // A failed index is not fatal: lexical search still works and the search
-    // tools retry indexing lazily on first use.
-    process.stderr.write(`daftari: warning: index build failed: ${reindexed.error.message}\n`);
-  }
+  // The persisted index is a derived cache: if every file on disk matches the
+  // manifest written by the last reindex, the on-disk index already reflects
+  // the vault and we can skip the embedding pass entirely (~25 min on a
+  // multi-thousand-file vault). --reindex forces a rebuild even when fresh.
+  const forceReindex = argv.includes("--reindex");
 
-  if (argv.includes("--reindex")) {
-    if (!reindexed.ok) process.exitCode = 1;
+  // --reindex is the one synchronous mode: rebuild and exit. No transport,
+  // no background work. The IndexState is updated for completeness but no
+  // tool runs against it in this mode.
+  if (forceReindex) {
+    markIndexing();
+    const reindexed = await reindexVault(vaultRoot, makeProgressReporter());
+    if (reindexed.ok) {
+      const r = reindexed.value;
+      markIndexReady();
+      process.stderr.write(
+        `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
+          `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
+      );
+    } else {
+      markIndexError(reindexed.error.message);
+      process.stderr.write(`daftari: warning: index build failed: ${reindexed.error.message}\n`);
+      process.exitCode = 1;
+    }
     return;
   }
 
+  // Open MCP transport first so the client can answer `initialize` and
+  // `tools/list` immediately. Indexing — if needed — runs as a background
+  // task; tools that depend on the index will respond "still indexing" until
+  // it completes.
   const server = createServer(vaultRoot, access);
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -105,6 +118,69 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     `daftari: serving vault at ${vaultRoot} (stdio) — ` +
       `user=${access.user} role=${access.roleName}\n`,
   );
+
+  const fresh = await isIndexFresh(vaultRoot);
+  if (fresh) {
+    process.stderr.write(`daftari: index is up to date — skipping reindex\n`);
+    markIndexReady();
+    return;
+  }
+
+  // Background reindex. The promise is intentionally not awaited — main()
+  // returns once the transport is up, and the indexing pass runs to
+  // completion alongside the live server.
+  markIndexing();
+  process.stderr.write(`daftari: starting background reindex…\n`);
+  void runBackgroundReindex(vaultRoot);
+}
+
+async function runBackgroundReindex(vaultRoot: string): Promise<void> {
+  try {
+    const reindexed = await reindexVault(vaultRoot, makeProgressReporter());
+    if (reindexed.ok) {
+      const r = reindexed.value;
+      markIndexReady();
+      process.stderr.write(
+        `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
+          `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
+      );
+    } else {
+      markIndexError(reindexed.error.message);
+      process.stderr.write(
+        `daftari: warning: background index build failed: ${reindexed.error.message}\n`,
+      );
+    }
+  } catch (e) {
+    const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    markIndexError(reason);
+    process.stderr.write(`daftari: warning: background indexer crashed: ${reason}\n`);
+  }
+}
+
+// Builds a ReindexOptions whose onProgress streams to both stderr (for
+// operator visibility) and the in-process IndexState (so tools can return
+// progress to MCP clients). TTY stderr gets a \r-updated single line; piped
+// stderr gets a full line every ~5% so MCP-client logs stay readable instead
+// of going silent for tens of minutes.
+function makeProgressReporter(): ReindexOptions {
+  const PIPE_STEP = 0.05;
+  let nextPipeMark = 0;
+  return {
+    onProgress: (done, total) => {
+      setIndexProgress(done, total);
+      if (total === 0) return;
+      if (process.stderr.isTTY) {
+        process.stderr.write(`\rdaftari: embedding ${done}/${total} chunks`);
+        if (done === total) process.stderr.write("\n");
+        return;
+      }
+      const ratio = done / total;
+      if (ratio >= nextPipeMark || done === total) {
+        process.stderr.write(`daftari: embedding ${done}/${total} chunks\n`);
+        nextPipeMark = Math.floor(ratio / PIPE_STEP + 1) * PIPE_STEP;
+      }
+    },
+  };
 }
 
 // Auto-run only when this module is the process entry point (e.g. `tsx

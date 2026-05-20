@@ -1,5 +1,7 @@
+import { utimes, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { reindexVault } from "../../src/search/reindex.js";
+import { indexDocument, isIndexFresh, reindexVault } from "../../src/search/reindex.js";
 import {
   getAllChunks,
   getAllDocuments,
@@ -68,6 +70,60 @@ describe("reindexVault", () => {
     expect(calls.every(([, total]) => total === result.value.chunkCount)).toBe(true);
     expect(calls.every(([done], i) => i === 0 || done > (calls[i - 1]?.[0] ?? 0))).toBe(true);
     expect(calls[calls.length - 1]?.[0]).toBe(result.value.chunkCount);
+  }, 60_000);
+
+  it("reports fresh after a reindex and stale once a file is touched", async () => {
+    const first = await reindexVault(vault);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    expect(await isIndexFresh(vault)).toBe(true);
+
+    // Touch an existing file so its mtime moves forward past the manifest.
+    const sample = join(vault, "competitive-intel/northwind-data-governance.md");
+    const future = new Date(Date.now() + 5_000);
+    await utimes(sample, future, future);
+
+    expect(await isIndexFresh(vault)).toBe(false);
+  }, 60_000);
+
+  it("reports stale when a new file appears in the vault", async () => {
+    const first = await reindexVault(vault);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(await isIndexFresh(vault)).toBe(true);
+
+    // A new file with no manifest entry must invalidate freshness, otherwise
+    // the search index never learns about content added out-of-band.
+    await writeFile(
+      join(vault, "competitive-intel/new-doc.md"),
+      "---\ntitle: New Doc\n---\n\nBody.\n",
+    );
+
+    expect(await isIndexFresh(vault)).toBe(false);
+  }, 60_000);
+
+  it("reports stale when the index has never been built", async () => {
+    expect(await isIndexFresh(vault)).toBe(false);
+  });
+
+  it("incremental indexDocument keeps the freshness manifest in sync", async () => {
+    const first = await reindexVault(vault);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(await isIndexFresh(vault)).toBe(true);
+
+    // Rewriting a file moves its mtime; the incremental indexer must update
+    // the manifest entry or the very next restart would re-embed the vault.
+    const target = "competitive-intel/northwind-data-governance.md";
+    const future = new Date(Date.now() + 5_000);
+    await utimes(join(vault, target), future, future);
+    expect(await isIndexFresh(vault)).toBe(false);
+
+    const updated = await indexDocument(vault, target);
+    expect(updated.ok).toBe(true);
+
+    expect(await isIndexFresh(vault)).toBe(true);
   }, 60_000);
 
   it("populates ttlDays, created, and supersededBy from frontmatter after reindex", async () => {
