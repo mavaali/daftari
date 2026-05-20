@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-05-19
+
+### Fixed
+
+- **MCP server hang at startup** (#35, PR #36). The server no longer re-embeds
+  the entire vault on every launch and no longer waits for indexing to finish
+  before opening the stdio transport. Three compounding bugs are fixed:
+  (1) `main()` always called `reindexVault` even when `.daftari/index.db`
+  already reflected the files on disk — every restart re-embedded the whole
+  vault (~25 minutes on a 3,500-file vault); now a path→mtime manifest is
+  persisted in the SQLite meta table and compared on startup, so an
+  unchanged vault skips the embedding pass entirely. (2) The
+  `StdioServerTransport` opened only after indexing completed, so MCP
+  clients could not answer `initialize` for the whole duration; the
+  transport now opens first and indexing — when required — runs as a
+  background task. (3) Progress was emitted only on TTY stderr, leaving
+  every real (non-TTY) MCP client with zero output during a cold start;
+  progress now streams on stderr in both TTY (\\r-updated) and pipe (full
+  line every ~5%) modes. A new in-process `IndexState`
+  (`ready`/`indexing`/`error` + progress) gates `vault_search`,
+  `vault_search_related`, `vault_reindex`, `vault_write`, `vault_append`,
+  `vault_promote`, and `vault_deprecate` while indexing — those tools
+  return a progress-bearing busy error so clients can retry. Read tools
+  (`vault_read`, `vault_index`, `vault_status`) are unaffected because
+  they go to the filesystem, not the index. `--reindex` remains the one
+  synchronous mode (rebuild, exit).
+
 ## [1.7.0] - 2026-05-19
 
 ### Added
