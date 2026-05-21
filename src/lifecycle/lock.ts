@@ -3,7 +3,15 @@
 // index.db. See docs/superpowers/plans/2026-05-20-process-lockfile.md (#52).
 
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -179,4 +187,19 @@ export async function acquireLock(
   }
 
   return writeLockfile(vaultRoot, our);
+}
+
+// Idempotent. Removes the lockfile only if it still belongs to us — protects
+// against a race where takeover happens during our shutdown and we'd
+// otherwise delete the new owner's lock. Stays sync because it runs from
+// `process.on("exit")`, which forbids async work.
+export function releaseLock(vaultRoot: string): void {
+  const existing = readLockfile(vaultRoot);
+  if (!existing.ok || existing.value === null) return;
+  if (existing.value.pid !== process.pid) return;
+  try {
+    unlinkSync(lockPath(vaultRoot));
+  } catch {
+    // Best-effort. If the file is already gone, fine.
+  }
 }
