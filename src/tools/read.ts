@@ -19,7 +19,9 @@ import {
   STATUSES,
   type ValidationReport,
 } from "../frontmatter/types.js";
+import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { getProvider } from "../search/vector.js";
 import { sha256Hex } from "../utils/hash.js";
 
 export interface ToolDefinition {
@@ -222,6 +224,12 @@ export interface VaultStatusResult {
   stalenessDistribution: StalenessDistribution;
   unresolvedTensions: UnresolvedTensions;
   recentWrites: RecentWrites;
+  // Number of embedding cache rows for the active model whose stored dim
+  // does not match the current provider's dim. A non-zero value means those
+  // chunks will be silently skipped in vector ranking; this field surfaces
+  // the condition so the operator can investigate rather than wonder why
+  // search quality is degraded.
+  embeddingDimMismatches: number;
 }
 
 // The collection a bare vault-relative path belongs to: its top-level
@@ -297,6 +305,21 @@ export async function vaultStatus(
     ? log.value.filter((e) => canRead(access.role, topCollection(e.file)))
     : log.value;
 
+  // Dim-mismatch counter. A non-zero value means some embedding cache rows
+  // for the active model have the wrong dim and are being silently skipped
+  // by vector ranking. We open the DB defensively — if sqlite-vec isn't
+  // installed or the index hasn't been built yet, the field is 0.
+  const provider = getProvider();
+  let embeddingDimMismatches = 0;
+  const dbResult = openIndexDb(vaultRoot, provider.dim);
+  if (dbResult.ok) {
+    try {
+      embeddingDimMismatches = countDimMismatches(dbResult.value, provider.id, provider.dim);
+    } finally {
+      dbResult.value.close();
+    }
+  }
+
   return ok({
     vault: vaultRoot,
     fileCount: index.value.count,
@@ -312,6 +335,7 @@ export async function vaultStatus(
       count: visibleWrites.length,
       entries: visibleWrites.slice(-10),
     },
+    embeddingDimMismatches,
   });
 }
 
