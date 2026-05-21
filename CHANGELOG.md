@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-05-21
+
+### Fixed
+
+- **sqlite-vec load error triage** (#46). Extension-load failures now
+  surface one of three actionable messages depending on the failure mode:
+  MODULE_NOT_FOUND (re-run `npm install` without `--omit=optional`),
+  extension loading disabled (rebuild better-sqlite3 from source), or ABI /
+  OS error (platform compatibility hint with the OS reason verbatim).
+
+- **sqlite-vec ABI smoke-test** (#48). After `sqliteVec.load()` returns,
+  `openIndexDb` now runs a 1-vector KNN roundtrip against a temp virtual
+  table. A silent ABI mismatch — where the shared library dlopen'd but the
+  SQLite virtual-table machinery is broken — is caught at startup and
+  surfaces a `smoke-test` / `ABI mismatch` error instead of corrupting
+  vectors at query time.
+
+- **Required `expectedVecDim` in `openIndexDb`** (#47). The optional
+  `expectedVecDim` parameter with a silent `?? 384` fallback has been made
+  required. Callers that omit the dimension now get a compile-time error
+  instead of silently creating a wrong-dimension embeddings_vec table.
+
+- **Embedding dim-mismatch counter in `vault_status`** (#49). `vault_status`
+  now includes `embeddingDimMismatches`, a count of rows in the embeddings
+  cache whose recorded `dim` does not match the current provider's dimension.
+  Non-zero values indicate stale cache rows from a previous provider that
+  will be re-embedded on the next reindex.
+
+- **Watcher drain after reindex** (#50). The fs.watch event handler no
+  longer busy-polls during a full reindex. Events that arrive while
+  `vault_reindex` is running are collected in a deferred map and dispatched
+  in a single batch via `onceIndexReady()` after the reindex settles — zero
+  extra timer firings per event during a long reindex.
+
 ## [1.9.0] - 2026-05-21
 
 ### Added
