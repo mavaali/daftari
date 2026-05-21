@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`vault_themes` thematic clustering** (#56). New MCP tool surfaces
+  thematic clusters across the vault. For each document the tool mean-pools
+  its chunk embeddings into one vector, L2-normalises, and clusters the
+  resulting per-document set with hand-rolled k-means (k-means++ init,
+  Lloyd's iterations). Default behaviour sweeps k ∈ {10, 15, 20, 25} and
+  picks the k with the best mean silhouette; an explicit `k` argument
+  skips the sweep. Each theme returns a heuristic label (TF-IDF over
+  titles + tags — no LLM call), a coherence score (mean pairwise cosine
+  inside the cluster), representative documents nearest the centroid, and
+  the most frequent tags. Optional `collection` and `tags` filters scope
+  clustering; RBAC drops documents the caller cannot read. Output is
+  deterministic for the same vault (fixed seed). No new storage — reads
+  the existing `chunks` / `embeddings` tables. v1 is one-doc-one-theme;
+  HDBSCAN, multi-theme docs, seeded-search/coverage mode, and LLM labels
+  are deferred.
+
 ## [1.10.0] - 2026-05-21
 
 ### Added

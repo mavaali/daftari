@@ -12,6 +12,7 @@ import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { curationTools } from "./tools/curation.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { searchTools } from "./tools/search.js";
+import { themesTools } from "./tools/themes.js";
 import { writeTools } from "./tools/write.js";
 
 export const SERVER_NAME = "daftari";
@@ -33,7 +34,13 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
     { capabilities: { tools: {} } },
   );
 
-  const tools: ToolDefinition[] = [...readTools, ...searchTools, ...writeTools, ...curationTools];
+  const tools: ToolDefinition[] = [
+    ...readTools,
+    ...searchTools,
+    ...themesTools,
+    ...writeTools,
+    ...curationTools,
+  ];
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

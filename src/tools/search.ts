@@ -25,14 +25,17 @@ import {
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
 import { getProvider } from "../search/vector.js";
-import { documentCount, openIndexDb } from "../storage/index-db.js";
+import { documentCount, type IndexDb, openIndexDb } from "../storage/index-db.js";
 import type { ToolDefinition } from "./read.js";
 
 // All tool-side opens pass the active provider's dim so the sqlite-vec
 // table matches the embeddings the search will query. A read-only tool
 // that opens after a provider switch would otherwise face a vec table
 // sized for the *previous* provider's vectors.
-function openIndexForActiveProvider(vaultRoot: string) {
+//
+// Exported so other index-backed tools (vault_themes) reuse the same
+// dim-aware open path.
+export function openIndexForActiveProvider(vaultRoot: string): Result<IndexDb, Error> {
   return openIndexDb(vaultRoot, getProvider().dim);
 }
 
@@ -47,7 +50,10 @@ function openIndexForActiveProvider(vaultRoot: string) {
 //   through main(), or a vault whose .daftari directory was wiped) trigger
 //   a synchronous reindex so search still works without an explicit
 //   --reindex step.
-async function ensureIndexReady(vaultRoot: string): Promise<Result<void, Error>> {
+//
+// Exported so other index-backed tools (vault_themes) reuse the same
+// readiness gate.
+export async function ensureIndexReady(vaultRoot: string): Promise<Result<void, Error>> {
   const status = getIndexStatus();
   if (status.status === "indexing") {
     return err(new Error(indexingBusyMessage(status)));

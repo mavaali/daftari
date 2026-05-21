@@ -149,6 +149,39 @@ Three things sit alongside the markdown:
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
+#### Thematic clustering (`vault_themes`)
+
+`vault_themes` reads the existing `chunks` / `embeddings` tables — no new
+storage, no schema change. The unit of clustering is the **document**, not
+the chunk: for each document in scope the tool gathers its chunk
+embeddings (the same `chunks → embeddings` join the search path uses),
+**mean-pools** them into one 384-dimension vector, and L2-normalises so
+the result lives on the unit sphere (cosine distance reduces to Euclidean
+distance there). A document with no embedded chunks is excluded and
+counted in `skippedDocuments`. Pooling collapses ~44K chunk vectors to
+~3.5K document vectors, which makes every downstream algorithm — including
+the O(n²) silhouette — tractable on the full set with no sampling.
+
+Clustering is hand-rolled **k-means** (k-means++ initialisation, Lloyd's
+iterations) driven by a fixed-seed mulberry32 RNG so the same vault
+produces the same themes across runs. By default the tool sweeps k ∈ {10,
+15, 20, 25} and picks the k with the best mean silhouette; passing an
+explicit `k` skips the sweep. Candidate k values are clamped to the
+clusterable document count, so a tiny vault degrades gracefully rather
+than crashing.
+
+Each theme reports a heuristic **label** derived from TF-IDF over the
+cluster's document titles and tags — no LLM call — with a fallback to the
+most common tags. The per-theme **`coherence`** value is the mean pairwise
+cosine similarity inside the cluster (distinct from the silhouette score
+used to pick k). **`representativeDocs`** are the documents nearest the
+cluster centroid; **`relatedTags`** are the most frequent tags. Themes are
+sorted by `documentCount` desc.
+
+v1 is one-doc-one-theme: each document lands in exactly one cluster
+(its pooled centroid). Multi-theme documents, density-aware HDBSCAN, a
+seeded-search / coverage mode, and LLM-generated labels are deferred.
+
 #### Reactive indexing
 
 The index is kept in sync with the markdown files at write time, not just at
