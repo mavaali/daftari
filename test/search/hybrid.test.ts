@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
+import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { reindexVault } from "../../src/search/reindex.js";
 import { type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -20,7 +21,7 @@ describe("hybrid search", () => {
     vault = makeTempVault();
     const reindexed = await reindexVault(vault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(vault);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     if (!opened.ok) throw opened.error;
     db = opened.value;
   }, 60_000);
@@ -212,7 +213,7 @@ Reference material for general use across the vault.
 
     const reindexed = await reindexVault(decayVault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(decayVault);
+    const opened = openIndexDb(decayVault, LOCAL_MINILM_DIM);
     if (!opened.ok) throw opened.error;
     decayDb = opened.value;
   }, 60_000);

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultAppend, vaultDeprecate, vaultPromote, vaultWrite } from "../../src/tools/write.js";
@@ -370,7 +371,7 @@ describe("write tools", () => {
       expect(update.value.commit).toMatch(/^[0-9a-f]+$/);
       // Indexed — the new content is searchable.
       expect(update.value.indexUpdated).toBe(true);
-      const dbResult = openIndexDb(vault);
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const doc = getDocument(dbResult.value, "pricing/oc-note.md");
@@ -423,7 +424,7 @@ describe("write tools", () => {
       if (!commitsAfter.ok) return;
       expect(commitsAfter.value.length).toBe(commitsBefore.value.length);
       // Index still holds the v2 content, not the rejected v3.
-      const dbResult = openIndexDb(vault);
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const doc = getDocument(dbResult.value, path);

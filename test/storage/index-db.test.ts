@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import {
   blobToEmbedding,
   clearIndex,
@@ -48,7 +49,7 @@ describe("index-db", () => {
 
   beforeEach(() => {
     vault = makeTempVault();
-    const opened = openIndexDb(vault);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     if (!opened.ok) throw opened.error;
     db = opened.value;
   });
@@ -168,7 +169,7 @@ describe("index-db", () => {
     // drop documents/chunks/embeddings, recreate them, and write the current
     // schema version. The manifest meta entry is also cleared so the next
     // freshness check sees no stale snapshot.
-    const reopened = openIndexDb(vault);
+    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
     if (!reopened.ok) throw reopened.error;
     db = reopened.value;
 
@@ -192,7 +193,7 @@ describe("index-db", () => {
     expect(documentCount(db)).toBe(1);
     db.close();
 
-    const reopened = openIndexDb(vault);
+    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
     if (!reopened.ok) throw reopened.error;
     db = reopened.value;
 
@@ -416,7 +417,7 @@ describe("index-db", () => {
       // suite-level afterEach has a valid db handle.
       db.close();
       cleanupVault(fresh);
-      const reopened = openIndexDb(vault);
+      const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!reopened.ok) throw reopened.error;
       db = reopened.value;
     });
@@ -463,7 +464,7 @@ describe("index-db", () => {
 
       db.close();
       cleanupVault(fresh);
-      const reopened = openIndexDb(vault);
+      const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!reopened.ok) throw reopened.error;
       db = reopened.value;
     });

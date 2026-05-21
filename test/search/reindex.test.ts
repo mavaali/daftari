@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ok, type Result } from "../../src/frontmatter/types.js";
 import type { EmbeddingProvider } from "../../src/search/embedding-provider.js";
-import { localMinilmProvider } from "../../src/search/providers/local-minilm.js";
+import { LOCAL_MINILM_DIM, localMinilmProvider } from "../../src/search/providers/local-minilm.js";
 import { indexDocument, isIndexFresh, reindexVault } from "../../src/search/reindex.js";
 import {
   EMBEDDING_MODEL,
@@ -40,7 +40,7 @@ describe("reindexVault", () => {
     expect(result.value.skipped).toEqual([]);
     expect(result.value.vectorEnabled).toBe(true);
 
-    const opened = openIndexDb(vault);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -141,7 +141,7 @@ describe("reindexVault", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const opened = openIndexDb(vault);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -207,7 +207,7 @@ describe("reindexVault", () => {
       expect(first.ok).toBe(true);
       if (!first.ok) return;
       const cacheSizeBefore = (() => {
-        const opened = openIndexDb(vault);
+        const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
         if (!opened.ok) throw opened.error;
         try {
           return embeddingCount(opened.value);
@@ -228,7 +228,7 @@ describe("reindexVault", () => {
       // Cache size unchanged — every old hash is still referenced (by the
       // renamed file) so no orphans were reaped.
       const cacheSizeAfter = (() => {
-        const opened = openIndexDb(vault);
+        const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
         if (!opened.ok) throw opened.error;
         try {
           return embeddingCount(opened.value);
@@ -249,7 +249,7 @@ describe("reindexVault", () => {
       // and the body equals exactly one chunk's worth of text, the new
       // file's chunker round-trips to the same content_hash — which the
       // cache already holds.
-      const opened = openIndexDb(vault);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!opened.ok) throw opened.error;
       const chunkText = (() => {
         try {
@@ -279,7 +279,7 @@ describe("reindexVault", () => {
       expect(first.ok).toBe(true);
       if (!first.ok) return;
       const cacheBefore = (() => {
-        const opened = openIndexDb(vault);
+        const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
         if (!opened.ok) throw opened.error;
         try {
           return embeddingCount(opened.value);
@@ -305,7 +305,7 @@ describe("reindexVault", () => {
 
       // After the reindex, every surviving embeddings row must be referenced
       // by at least one chunk row.
-      const opened = openIndexDb(vault);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
@@ -379,7 +379,7 @@ describe("reindexVault", () => {
 
       // Both providers' rows coexist in the cache (the composite PK lets
       // them) — a switch-back to the original id would be all cache hits.
-      const opened = openIndexDb(vault);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
@@ -396,7 +396,7 @@ describe("reindexVault", () => {
       }
 
       // The current provider's id is what gets written to meta.
-      const dbMeta = openIndexDb(vault);
+      const dbMeta = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!dbMeta.ok) throw dbMeta.error;
       try {
         expect(getMeta(dbMeta.value, "embedding_model")).toBe("alt-minilm");
@@ -413,7 +413,7 @@ describe("reindexVault", () => {
       const result = await reindexVault(vault);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      const opened = openIndexDb(vault);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
