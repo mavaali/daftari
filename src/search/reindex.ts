@@ -4,29 +4,42 @@
 // from scratch — there is no incremental update path to drift out of sync.
 // Called on server start and by the vault_reindex tool / --reindex CLI flag.
 //
-// Embedding is best-effort: every chunk across the whole vault is embedded,
-// in fixed-size sub-batches so peak memory stays flat as the vault grows. If
-// the model is unavailable the documents (and their BM25 tokens) still index;
-// only the vector column is left NULL and vectorEnabled is false.
+// Embedding is content-addressed: each chunk's text is hashed (sha256), and
+// the embeddings table is keyed by (content_hash, model). A reindex hashes
+// every chunk, asks the cache which (hash, model) pairs already exist, and
+// only embeds the misses. Edits to one file re-embed that file's changed
+// chunks; renames, moved paragraphs, and identical text in two files all
+// hit the cache and embed zero. Orphaned cache rows (chunks that no longer
+// reference them) are reaped at the end of the pass.
+//
+// If the model is unavailable the documents (and their BM25 tokens) still
+// index; chunks are written with their content_hash but no embedding row is
+// inserted, so the join in vector.ts comes back null and search degrades to
+// lexical-only.
 
 import { stat } from "node:fs/promises";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
+  type ChunkRowInput,
   clearIndex,
   deleteDocument,
   documentCount,
+  existingEmbeddingHashes,
+  gcOrphanedEmbeddings,
   getMeta,
   type IndexDb,
   type IndexedDocument,
-  insertChunk,
+  insertChunkRow,
   insertDocument,
+  insertEmbedding,
   openIndexDb,
   setMeta,
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
-import { chunkText, EMBEDDING_DIM, embed } from "./vector.js";
+import { chunkText, EMBEDDING_DIM, EMBEDDING_MODEL, embed } from "./vector.js";
 
 // Manifest key in the meta table: JSON object mapping vault-relative path to
 // mtime in ms. Written at the end of a successful reindex and updated by
@@ -106,18 +119,27 @@ export interface ReindexResult {
   vectorEnabled: boolean;
   skipped: string[];
   indexedAt: string;
+  // Cache stats: how many chunks needed a fresh embedding vs hit the cache,
+  // and how many orphaned embedding rows the gc pass reaped. Useful for
+  // tests and for surfacing the O(vault) → O(changed chunks) win.
+  embeddedCount: number;
+  cacheHits: number;
+  orphansRemoved: number;
 }
 
 export interface ReindexOptions {
   // Fires during the embedding phase (the slow part of a reindex) with the
   // number of chunks embedded so far and the total. Lets a caller report
-  // progress so a large-vault reindex is not silent.
+  // progress so a large-vault reindex is not silent. Total is the number of
+  // chunks actually being embedded (cache misses), not the whole vault — a
+  // fully-cached reindex calls this zero times.
   onProgress?: (done: number, total: number) => void;
 }
 
 interface StagedDocument {
   doc: IndexedDocument;
   chunks: string[];
+  hashes: string[];
 }
 
 // Reads and parses a single markdown file into the shape the index needs.
@@ -137,6 +159,9 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StagedDocum
   // match still ranks.
   const tokens = tokenize(`${fm.title} ${fm.tags.join(" ")} ${body}`);
 
+  const chunks = chunkText(body);
+  const hashes = chunks.map((t) => sha256Hex(t));
+
   return {
     doc: {
       path: relPath,
@@ -153,7 +178,8 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StagedDocum
       created: fm.created,
       supersededBy: fm.superseded_by,
     },
-    chunks: chunkText(body),
+    chunks,
+    hashes,
   };
 }
 
@@ -178,25 +204,23 @@ async function stageDocuments(
   return ok({ staged, skipped });
 }
 
-function writeIndex(
-  db: IndexDb,
-  staged: StagedDocument[],
-  embeddings: (Float32Array | null)[],
-): number {
+// Inserts the chunk rows in a single transaction. Embeddings are persisted by
+// the caller (with a model identifier) so the chunk write stays oblivious to
+// which model produced the vectors.
+function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
   let chunkCount = 0;
-  let cursor = 0;
   const write = db.transaction(() => {
     clearIndex(db);
-    for (const { doc, chunks } of staged) {
+    for (const { doc, chunks, hashes } of staged) {
       insertDocument(db, doc);
       chunks.forEach((text, chunkIndex) => {
-        insertChunk(db, {
+        const row: ChunkRowInput = {
           path: doc.path,
           chunkIndex,
           text,
-          embedding: embeddings[cursor] ?? null,
-        });
-        cursor += 1;
+          contentHash: hashes[chunkIndex] ?? "",
+        };
+        insertChunkRow(db, row);
         chunkCount += 1;
       });
     }
@@ -213,26 +237,80 @@ export async function reindexVault(
   if (!staging.ok) return staging;
   const { staged, skipped } = staging.value;
 
-  // One flat list of every chunk's text; embed() processes it in sub-batches.
-  const allChunkTexts: string[] = [];
-  for (const s of staged) allChunkTexts.push(...s.chunks);
-
-  const embedResult = await embed(allChunkTexts, opts.onProgress);
-  const vectorEnabled = embedResult.ok;
-  const embeddings: (Float32Array | null)[] = embedResult.ok
-    ? embedResult.value
-    : allChunkTexts.map(() => null);
-
+  // Open the index first so we can ask the embeddings cache which (hash,
+  // model) pairs already exist before deciding what to embed.
   const dbResult = openIndexDb(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
 
   const indexedAt = new Date().toISOString();
   try {
-    const chunkCount = writeIndex(db, staged, embeddings);
+    // Flatten every chunk's text + hash so we can dedupe and query the cache
+    // in one shot. A single hash may appear in multiple files (or repeatedly
+    // in one file) — embed it once.
+    const allHashes: string[] = [];
+    const allTexts: string[] = [];
+    for (const s of staged) {
+      for (let i = 0; i < s.chunks.length; i++) {
+        const h = s.hashes[i] ?? "";
+        const t = s.chunks[i] ?? "";
+        allHashes.push(h);
+        allTexts.push(t);
+      }
+    }
+
+    const cached = existingEmbeddingHashes(db, EMBEDDING_MODEL, allHashes);
+
+    // Build the deduped miss list. Each unique missing hash gets embedded
+    // exactly once; identical chunk text in multiple places shares the row.
+    const missTextByHash = new Map<string, string>();
+    for (let i = 0; i < allHashes.length; i++) {
+      const h = allHashes[i] ?? "";
+      if (cached.has(h)) continue;
+      if (missTextByHash.has(h)) continue;
+      missTextByHash.set(h, allTexts[i] ?? "");
+    }
+    const missHashes = [...missTextByHash.keys()];
+    const missTexts = missHashes.map((h) => missTextByHash.get(h) ?? "");
+
+    const totalChunks = allHashes.length;
+    const cacheHits = totalChunks - allHashes.filter((h) => !cached.has(h)).length;
+
+    let vectorEnabled = true;
+    if (missTexts.length > 0) {
+      const embedResult = await embed(missTexts, opts.onProgress);
+      if (embedResult.ok) {
+        const writeEmbeds = db.transaction(() => {
+          for (let i = 0; i < missHashes.length; i++) {
+            const h = missHashes[i] ?? "";
+            const vec = embedResult.value[i];
+            if (!vec) continue;
+            insertEmbedding(db, h, EMBEDDING_MODEL, vec, indexedAt);
+          }
+        });
+        writeEmbeds();
+      } else {
+        // Model unavailable. We still want documents + chunk rows so BM25
+        // works; vector ranking simply degrades to nothing for this reindex.
+        vectorEnabled = false;
+      }
+    } else if (totalChunks === 0) {
+      // No chunks at all (empty vault). Treat as vectorEnabled=true by
+      // convention — there is nothing to embed but also nothing failed.
+      vectorEnabled = true;
+    } else {
+      // Everything was cached. Vector ranking has data already, so the
+      // reindex did not need to load the model — still vector-enabled.
+      vectorEnabled = true;
+    }
+
+    const chunkCount = writeChunkRows(db, staged);
+    const orphansRemoved = gcOrphanedEmbeddings(db);
+
     setMeta(db, "indexed_at", indexedAt);
     setMeta(db, "vector_enabled", String(vectorEnabled));
     setMeta(db, "embedding_dim", String(EMBEDDING_DIM));
+    setMeta(db, "embedding_model", EMBEDDING_MODEL);
     // Persist a freshness manifest so the next startup can skip this whole
     // pass when nothing on disk has changed.
     const manifest = await buildManifest(vaultRoot);
@@ -243,6 +321,9 @@ export async function reindexVault(
       vectorEnabled,
       skipped,
       indexedAt,
+      embeddedCount: missHashes.length,
+      cacheHits,
+      orphansRemoved,
     });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -261,8 +342,9 @@ export interface IndexDocumentResult {
 //
 // If the index has never been built it falls back to a full reindex, so the
 // first write to a fresh vault still produces a complete index rather than a
-// one-document one. Otherwise it re-stages just `relPath`, evicts its stale
-// rows, and re-inserts — embedding only that document's chunks.
+// one-document one. Otherwise it re-stages just `relPath`, hashes its chunks,
+// embeds only those whose (hash, model) pair is not already in the embeddings
+// cache, evicts the document's stale chunk rows, and re-inserts.
 export async function indexDocument(
   vaultRoot: string,
   relPath: string,
@@ -285,27 +367,52 @@ export async function indexDocument(
   if (!staged) {
     return err(new Error(`cannot index document: ${relPath}`));
   }
-  const { doc, chunks } = staged;
-
-  const embedResult = await embed(chunks);
-  const vectorEnabled = embedResult.ok;
-  const embeddings: (Float32Array | null)[] = embedResult.ok
-    ? embedResult.value
-    : chunks.map(() => null);
+  const { doc, chunks, hashes } = staged;
 
   const dbResult = openIndexDb(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
+  const createdAt = new Date().toISOString();
+
   try {
+    const cached = existingEmbeddingHashes(db, EMBEDDING_MODEL, hashes);
+    const missTextByHash = new Map<string, string>();
+    for (let i = 0; i < hashes.length; i++) {
+      const h = hashes[i] ?? "";
+      if (cached.has(h)) continue;
+      if (missTextByHash.has(h)) continue;
+      missTextByHash.set(h, chunks[i] ?? "");
+    }
+    const missHashes = [...missTextByHash.keys()];
+    const missTexts = missHashes.map((h) => missTextByHash.get(h) ?? "");
+
+    let vectorEnabled = true;
+    if (missTexts.length > 0) {
+      const embedResult = await embed(missTexts);
+      if (embedResult.ok) {
+        const writeEmbeds = db.transaction(() => {
+          for (let i = 0; i < missHashes.length; i++) {
+            const h = missHashes[i] ?? "";
+            const vec = embedResult.value[i];
+            if (!vec) continue;
+            insertEmbedding(db, h, EMBEDDING_MODEL, vec, createdAt);
+          }
+        });
+        writeEmbeds();
+      } else {
+        vectorEnabled = false;
+      }
+    }
+
     const write = db.transaction(() => {
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
       chunks.forEach((text, chunkIndex) => {
-        insertChunk(db, {
+        insertChunkRow(db, {
           path: doc.path,
           chunkIndex,
           text,
-          embedding: embeddings[chunkIndex] ?? null,
+          contentHash: hashes[chunkIndex] ?? "",
         });
       });
     });

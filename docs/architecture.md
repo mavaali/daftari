@@ -60,10 +60,29 @@ Three things sit alongside the markdown:
   `@huggingface/transformers` (Transformers.js). No embedding API is called —
   the only network access is the one-time download of the model weights to the
   Hugging Face cache on first use. Embedding is best-effort: if the model
-  cannot load, a reindex still builds the BM25 side and the vector column is
-  left `NULL` (`vectorEnabled` is `false`), so search degrades to lexical-only
-  rather than failing. The model is pinned in code (`EMBEDDING_MODEL` in
-  `src/search/vector.ts`); v1 has no config-driven embedding-provider hook.
+  cannot load, a reindex still builds the BM25 side and chunks land with no
+  embedding row, so search degrades to lexical-only rather than failing. The
+  model is pinned in code (`EMBEDDING_MODEL` in `src/search/vector.ts`); v1
+  has no config-driven embedding-provider hook.
+
+  Embeddings are stored in a separate, **content-addressed** `embeddings`
+  table keyed by `(content_hash, model)`. A `chunks` row carries the
+  `sha256` of its text and joins to the `embeddings` table for the current
+  model — so an embedding is the property of a chunk's text, not of a file
+  path or its mtime. A reindex hashes every chunk, asks the cache which
+  hashes already have a row for the current model, and only embeds the
+  misses. The cost of a reindex therefore scales with the number of *changed
+  chunks*, not the size of the vault: an edit to one paragraph re-embeds one
+  chunk, a rename re-embeds zero, a paragraph moved verbatim to another file
+  re-embeds zero. On the first reindex after a schema bump the cache is
+  empty, so a one-time full embed populates it; every subsequent reindex is
+  incremental. After writing chunks, the reindex runs an internal `vault_gc`
+  step that drops embeddings rows whose `content_hash` is no longer
+  referenced by any chunk, so the cache does not accumulate orphans across
+  edits. The composite primary key on `(content_hash, model)` is
+  deliberate — a future model migration can keep both the old and new
+  model's embeddings present under the same hash, so a roll-forward does
+  not have to clear the cache first.
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
