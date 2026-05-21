@@ -43,6 +43,13 @@ export interface SchemaExtension {
   pattern?: string; // present only for type === "string"
 }
 
+// Recognised values of `embeddings.provider`. The vault owner picks one;
+// the runtime instantiates the matching backend (see search/vector.ts
+// getProvider). Adding a third provider would mean a new id here AND a new
+// branch in getProvider AND a config-load check if it needs env vars.
+export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
+export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
+
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
@@ -60,6 +67,13 @@ export interface DaftariConfig {
   // read-only roles that never embed or for very low-memory environments.
   // Defaults to true.
   warmEmbeddings: boolean;
+  // Embedding backend selection. "local-minilm" (default) is free and runs
+  // entirely on local CPU; "openai-3-small" calls OpenAI's
+  // text-embedding-3-small endpoint (requires OPENAI_API_KEY in env). The
+  // embeddings cache is keyed by (content_hash, model), so switching
+  // providers preserves both side's rows — the new provider populates a
+  // fresh row set on first reindex, and switching back reuses the old.
+  embeddingProvider: EmbeddingProviderId;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -71,6 +85,7 @@ function emptyConfig(): DaftariConfig {
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     warmEmbeddings: true,
+    embeddingProvider: "local-minilm",
   };
 }
 
@@ -393,11 +408,51 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     warmEmbeddings = root.warm_embeddings;
   }
 
+  // Embedding provider selection. Defaults to local-minilm. Unknown ids fail
+  // loud — the trust model is "vault owner configures the server" so a typo
+  // is a config error, not a fall-through to default. The OPENAI_API_KEY
+  // check happens here too: a paid provider with no key in env can't quietly
+  // degrade to lexical-only after every search; the vault owner needs to
+  // know at startup that the key is missing.
+  let embeddingProvider: EmbeddingProviderId = "local-minilm";
+  if (root.embeddings !== undefined) {
+    if (
+      root.embeddings === null ||
+      typeof root.embeddings !== "object" ||
+      Array.isArray(root.embeddings)
+    ) {
+      return err(new Error("malformed config: 'embeddings' must be a mapping"));
+    }
+    const block = root.embeddings as Record<string, unknown>;
+    if (block.provider !== undefined) {
+      if (typeof block.provider !== "string") {
+        return err(new Error("malformed config: 'embeddings.provider' must be a string"));
+      }
+      if (!(EMBEDDING_PROVIDERS as readonly string[]).includes(block.provider)) {
+        return err(
+          new Error(
+            `malformed config: unknown embeddings.provider ${JSON.stringify(block.provider)} ` +
+              `(expected one of ${EMBEDDING_PROVIDERS.join(", ")})`,
+          ),
+        );
+      }
+      embeddingProvider = block.provider as EmbeddingProviderId;
+    }
+  }
+  if (embeddingProvider === "openai-3-small" && !process.env.OPENAI_API_KEY) {
+    return err(
+      new Error(
+        "embeddings.provider is 'openai-3-small' but OPENAI_API_KEY is not set in the environment",
+      ),
+    );
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
     hooks: hooks.value,
     autoCommit,
     warmEmbeddings,
+    embeddingProvider,
   });
 }

@@ -9,11 +9,16 @@
 //   chunks     — one row per embedded text chunk: the chunk text and a
 //                content_hash (sha256 of the chunk text) that joins to the
 //                embeddings table for the current model.
-//   embeddings — one row per (content_hash, model) pair. Content-addressed,
-//                so identical chunk text shares one row across files and
-//                across reindexes. A model migration can keep the same
-//                content_hash present under two model values at once, which
-//                is why the primary key is composite.
+//   embeddings — one row per (content_hash, model) pair, with a `dim` column
+//                recording the vector dimension. Content-addressed, so
+//                identical chunk text shares one row across files and across
+//                reindexes. The composite (content_hash, model) primary key
+//                lets two providers' vectors (e.g. local-minilm 384 + openai-
+//                3-small 1536) coexist for the same chunk text — handy when
+//                switching providers without losing the old cache. `dim` is
+//                defense-in-depth: callers can detect a corrupt or
+//                cross-provider mix at read time, even though the model id
+//                already scopes the join.
 //
 // A small meta table records index-wide facts (embedding dimension, whether
 // vectors were built, when the index was last rebuilt).
@@ -25,7 +30,10 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 
 export type IndexDb = Database.Database;
 
-const SCHEMA_VERSION = "3";
+// Bumped 3 → 4 to add the `dim` column to embeddings. The index is a derived
+// cache so the bump triggers a clean rebuild (see openIndexDb); no in-place
+// migration needed.
+const SCHEMA_VERSION = "4";
 
 export interface IndexedDocument {
   path: string;
@@ -84,6 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);
 CREATE TABLE IF NOT EXISTS embeddings (
   content_hash TEXT NOT NULL,
   model        TEXT NOT NULL,
+  dim          INTEGER NOT NULL,
   embedding    BLOB NOT NULL,
   created_at   TEXT NOT NULL,
   PRIMARY KEY (content_hash, model)
@@ -108,9 +117,10 @@ export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
     if (stored !== SCHEMA_VERSION) {
       // Schema bump means a clean rebuild: every derived table is dropped and
       // the freshness manifest is cleared so the next reindex repopulates
-      // everything. Trying to ALTER across this change would race the new
-      // composite-PK embeddings table; the markdown files are the source of
-      // truth and the index is cheap to regenerate.
+      // everything. Trying to ALTER across this change would race a column
+      // addition (3 → 4 added embeddings.dim) against composite-PK semantics;
+      // the markdown files are the source of truth and the index is cheap to
+      // regenerate.
       db.exec(
         "DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS embeddings;",
       );
@@ -216,17 +226,28 @@ export function existingEmbeddingHashes(db: IndexDb, model: string, hashes: stri
   return found;
 }
 
+// Persists a vector under (content_hash, model). `dim` is asserted to match
+// `embedding.length` — a mismatch would write a corrupt row that the cosine
+// math reads back as silent garbage. The store stays oblivious to which
+// provider produced the vector; callers pass the provider's `id` and `dim`.
 export function insertEmbedding(
   db: IndexDb,
   contentHash: string,
   model: string,
   embedding: Float32Array,
   createdAt: string,
+  dim: number,
 ): void {
+  if (embedding.length !== dim) {
+    throw new Error(
+      `embedding length ${embedding.length} does not match declared dim ${dim} ` +
+        `for model '${model}' — refusing to write a corrupt cache row`,
+    );
+  }
   db.prepare(
-    `INSERT OR REPLACE INTO embeddings (content_hash, model, embedding, created_at)
-     VALUES (?, ?, ?, ?)`,
-  ).run(contentHash, model, embeddingToBlob(embedding), createdAt);
+    `INSERT OR REPLACE INTO embeddings (content_hash, model, dim, embedding, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(contentHash, model, dim, embeddingToBlob(embedding), createdAt);
 }
 
 // Deletes every embeddings row whose content_hash is referenced by no chunks
@@ -300,15 +321,32 @@ interface ChunkJoinRow {
   text: string;
   content_hash: string;
   embedding: Buffer | null;
+  dim: number | null;
 }
 
-function rowToChunk(row: ChunkJoinRow): IndexedChunk {
+// Converts a join row to the public chunk shape. The embedding is read iff
+// its stored dim matches the active provider's expected dim — a mismatch
+// would only happen if a row was written under different metadata than its
+// blob (a bug or hand-edit), and we'd rather skip it than score with garbage.
+// `expectedDim` may be 0 to opt out of the check (legacy callers in tests).
+function rowToChunk(row: ChunkJoinRow, expectedDim: number): IndexedChunk {
+  let embedding: Float32Array | null = null;
+  if (row.embedding) {
+    const blobOk = expectedDim === 0 || row.embedding.length === expectedDim * 4;
+    const dimOk = expectedDim === 0 || row.dim === expectedDim;
+    if (blobOk && dimOk) {
+      embedding = blobToEmbedding(row.embedding);
+    }
+    // Silent skip — vector ranking just falls back as if this row had no
+    // embedding for the join. A noisy log here would be invoked per-chunk on
+    // a long mismatch; the conditions are bugs surfaced by tests instead.
+  }
   return {
     path: row.path,
     chunkIndex: row.chunk_index,
     text: row.text,
     contentHash: row.content_hash,
-    embedding: row.embedding ? blobToEmbedding(row.embedding) : null,
+    embedding,
   };
 }
 
@@ -316,24 +354,31 @@ function rowToChunk(row: ChunkJoinRow): IndexedChunk {
 // `model`. A chunk whose content_hash has no embeddings row for this model
 // (e.g. the model was unavailable during reindex) comes back with embedding =
 // null and the vector ranker simply skips it, matching the old NULL-blob
-// behaviour.
-export function getAllChunks(db: IndexDb, model: string): IndexedChunk[] {
+// behaviour. `expectedDim` is a defense-in-depth check: any row whose stored
+// dim or blob byte length disagrees is treated as missing, so a corrupt or
+// cross-provider mix can't poison cosine math.
+export function getAllChunks(db: IndexDb, model: string, expectedDim = 0): IndexedChunk[] {
   const rows = db
     .prepare(
-      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding
+      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding, e.dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
         ORDER BY c.path, c.chunk_index`,
     )
     .all(model) as ChunkJoinRow[];
-  return rows.map(rowToChunk);
+  return rows.map((row) => rowToChunk(row, expectedDim));
 }
 
-export function getChunksForPath(db: IndexDb, path: string, model: string): IndexedChunk[] {
+export function getChunksForPath(
+  db: IndexDb,
+  path: string,
+  model: string,
+  expectedDim = 0,
+): IndexedChunk[] {
   const rows = db
     .prepare(
-      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding
+      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding, e.dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
@@ -341,7 +386,7 @@ export function getChunksForPath(db: IndexDb, path: string, model: string): Inde
         ORDER BY c.chunk_index`,
     )
     .all(model, path) as ChunkJoinRow[];
-  return rows.map(rowToChunk);
+  return rows.map((row) => rowToChunk(row, expectedDim));
 }
 
 export function getMeta(db: IndexDb, key: string): string | null {

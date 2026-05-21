@@ -1,31 +1,45 @@
 // Vector (semantic) search half of hybrid search.
 //
-// Documents are split into chunks; each chunk is embedded into a 384-dim
-// vector with the all-MiniLM-L6-v2 sentence-transformer (run locally via
-// @huggingface/transformers — no network at query time once the model is cached).
-// Similarity is cosine distance. Embeddings come back L2-normalised, so cosine
-// reduces to a dot product, but cosineSimilarity stays general for safety.
+// Documents are split into chunks; each chunk is embedded via the active
+// EmbeddingProvider (defaults to local-minilm: 384-dim sentence-transformers
+// all-MiniLM-L6-v2 run locally via @huggingface/transformers). Similarity is
+// cosine distance. Embeddings come back L2-normalised, so cosine reduces to a
+// dot product, but cosineSimilarity stays general for safety.
 //
-// The model loads lazily and is memoised for the process. Loading can fail
-// (e.g. no network on first run, before the model is cached); embed() surfaces
-// that as Result.err so the caller can fall back to lexical-only ranking.
+// The provider is selected by .daftari/config.yaml's `embeddings.provider`
+// key and instantiated once per process (memoised by `setProvider` /
+// `getProvider`). embed/embedQuery/warmModel/isModelLoaded delegate to the
+// active provider, so the rest of the search stack (reindex.ts, hybrid.ts)
+// is provider-agnostic.
 
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { markModelError, markModelReady, markModelWarming } from "./index-state.js";
+import type { EmbeddingProviderId } from "../utils/config.js";
+import type { EmbeddingProvider } from "./embedding-provider.js";
+import {
+  isLocalMinilmLoaded,
+  LOCAL_MINILM_DIM,
+  localMinilmProvider,
+  resetLocalMinilmForTests,
+} from "./providers/local-minilm.js";
+import { makeOpenAi3SmallProvider } from "./providers/openai-3-small.js";
 
-export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
-export const EMBEDDING_DIM = 384;
-
-// Texts are embedded in fixed-size sub-batches rather than one call. The model
-// pads every batch to its longest sequence and allocates activation tensors
-// proportional to the batch size, so an unbounded batch makes peak memory
-// scale with the whole vault — a few hundred documents is enough to exhaust
-// RAM and stall in a GC death spiral. A small fixed batch keeps peak memory
-// flat regardless of vault size.
+// EMBEDDING_MODEL and EMBEDDING_DIM are retained as deprecated plain
+// constants pointing at the local-minilm provider's values. They were the
+// single embedding identity before this PR; reindex.ts, hybrid.ts and the
+// tests imported them as literals (SQL binds, length comparisons). New code
+// must read `getProvider().id` and `getProvider().dim` instead — these
+// exports are scheduled for removal next release.
 //
-// 8 was measured as the sweet spot: on CPU inference larger batches were both
-// heavier (more activation memory) and slower (more compute wasted padding
-// short chunks up to the batch's longest sequence), not faster.
+// @deprecated Use `getProvider().id` instead.
+export const EMBEDDING_MODEL = "local-minilm";
+
+// @deprecated Use `getProvider().dim` instead.
+export const EMBEDDING_DIM = LOCAL_MINILM_DIM;
+
+// Texts are embedded in fixed-size sub-batches; see provider implementations.
+// The constant lives here for tests that probe the local-minilm batching
+// behaviour. (No provider exposes this directly through the interface
+// because batching is an implementation detail.)
 export const EMBED_BATCH_SIZE = 8;
 
 const CHUNK_MAX_CHARS = 800;
@@ -96,112 +110,98 @@ export function meanEmbedding(vectors: Float32Array[]): Float32Array | null {
   return sum;
 }
 
-type Extractor = (
-  texts: string[],
-  opts: { pooling: "mean"; normalize: boolean },
-) => Promise<{ data: Float32Array; dims: number[] }>;
+// --- Provider selection ----------------------------------------------------
 
-let extractorPromise: Promise<Extractor> | null = null;
+// The active provider for this process. Memoised so a server run uses one
+// provider for its whole lifetime; switching providers means restarting the
+// server (and the next reindex populates a fresh row set under the new
+// provider's id — the old rows stay in the cache as cheap insurance for
+// switching back).
+let activeProvider: EmbeddingProvider = localMinilmProvider;
 
-async function getExtractor(): Promise<Extractor> {
-  if (!extractorPromise) {
-    // The model is being loaded for the first time. Surface that in the
-    // process-wide IndexState so tools can tell a "warming embeddings" pause
-    // apart from a real indexing pass. The state is best-effort signal — we
-    // never let a state-machine wobble break embedding.
-    markModelWarming();
-    extractorPromise = (
-      import("@huggingface/transformers").then(({ pipeline }) =>
-        pipeline("feature-extraction", EMBEDDING_MODEL),
-      ) as Promise<Extractor>
-    ).then(
-      (extractor) => {
-        markModelReady();
-        return extractor;
-      },
-      (e) => {
-        // Surface the failure but reset the cached promise so the next call
-        // can try again — useful for the no-network-on-first-run case where
-        // a later retry might succeed. Without the reset a single transient
-        // failure would poison the process for its whole lifetime.
-        const reason = e instanceof Error ? e.message : String(e);
-        markModelError(reason);
-        extractorPromise = null;
-        throw e;
-      },
-    );
+// Resolves the active provider from a config id. The OPENAI_API_KEY presence
+// has already been validated by loadConfig; if it's somehow missing here we
+// fail loud rather than constructing a broken provider.
+function instantiateProvider(id: EmbeddingProviderId): EmbeddingProvider {
+  switch (id) {
+    case "local-minilm":
+      return localMinilmProvider;
+    case "openai-3-small": {
+      const key = process.env.OPENAI_API_KEY;
+      if (!key) {
+        throw new Error("OPENAI_API_KEY is not set — cannot construct openai-3-small provider");
+      }
+      return makeOpenAi3SmallProvider(key);
+    }
   }
-  return extractorPromise;
 }
 
-// Returns true once the model has been loaded into memory (the memoised
-// promise has resolved). Used by tests and by lazy-load coverage to assert
-// that startup paths do not invoke the model when they should not.
+// Called once at server startup (after loadConfig). Idempotent for the same
+// id — subsequent calls with the same id are no-ops, so test code can call
+// it freely without thrashing. A different id replaces the provider; tests
+// rely on this.
+export function setProvider(id: EmbeddingProviderId): void {
+  if (activeProvider.id === id) return;
+  activeProvider = instantiateProvider(id);
+}
+
+// Returns the active provider. Default is local-minilm; setProvider() (which
+// the server's main() invokes after loadConfig) swaps in another.
+export function getProvider(): EmbeddingProvider {
+  return activeProvider;
+}
+
+// Test-only: install an arbitrary provider object. Used by reindex tests
+// that need to simulate a provider switch without paying the network or
+// model-load cost. Resets the local-minilm memoised extractor too so a
+// later swap back to local-minilm starts cold.
+export function setProviderForTests(provider: EmbeddingProvider): void {
+  activeProvider = provider;
+}
+
+// Test-only: revert to the default local-minilm provider and clear its
+// memoised extractor. Production code must not call this.
+export function resetProviderForTests(): void {
+  activeProvider = localMinilmProvider;
+  resetLocalMinilmForTests();
+}
+
+// --- Provider-delegating surface (kept for back-compat) -------------------
+
+// Returns true once the active provider's underlying model is loaded. For
+// providers with no warm-up cost (e.g. the stateless OpenAI HTTP client)
+// this is always true; for local-minilm it tracks the transformers.js
+// extractor promise.
 export function isModelLoaded(): boolean {
-  return extractorPromise !== null;
+  if (activeProvider.id === "local-minilm") return isLocalMinilmLoaded();
+  // Stateless / always-ready providers are "loaded" by definition.
+  return true;
 }
 
-// Eagerly loads the model so the first user search does not pay the cold
-// start. Intended to be invoked as a background `void warmModel()` after
-// startup completes (transport open, freshness check done). Returns Result
-// rather than throwing: a warm-up failure must never crash the server — the
-// next embed() will retry. The IndexState model status is updated by
-// getExtractor() so callers observing it see "warming" → "ready" / "error".
+// Eagerly loads the active provider so the first user search does not pay
+// the cold start. Intended to be invoked as a background `void warmModel()`
+// after startup completes. Returns Result rather than throwing — a warm
+// failure must never crash the server.
 export async function warmModel(): Promise<Result<void, Error>> {
-  try {
-    await getExtractor();
-    return ok(undefined);
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`embedding model warm-up failed: ${reason}`));
-  }
+  return activeProvider.warm();
 }
 
-// Test-only: clear the memoised extractor so a fresh import is forced on
-// the next call. Production code must not invoke this — the model load is
-// expensive and the whole point of the memo is that it survives the process.
+// Test-only: clear the local-minilm memoised extractor so a fresh import is
+// forced on the next call. Production code must not invoke this. Kept under
+// the historic name for the existing lazy-model-load tests.
 export function resetExtractorForTests(): void {
-  extractorPromise = null;
+  resetLocalMinilmForTests();
 }
 
-// Embeds texts in EMBED_BATCH_SIZE sub-batches so peak memory stays flat
-// regardless of how many texts are passed. Returns one Float32Array per input
-// text, in input order. An empty input yields an empty array without loading
-// the model. `onProgress` (if given) fires after each sub-batch with the count
-// embedded so far and the total — used to drive reindex progress output.
+// Embeds texts via the active provider. Returns one Float32Array per input,
+// in input order. An empty input yields an empty array. `onProgress` (if
+// given) fires after each sub-batch.
 export async function embed(
   texts: string[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<Result<Float32Array[], Error>> {
   if (texts.length === 0) return ok([]);
-  try {
-    const extractor = await getExtractor();
-    const vectors: Float32Array[] = [];
-    for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
-      const batch = texts.slice(start, start + EMBED_BATCH_SIZE);
-      const output = await extractor(batch, {
-        pooling: "mean",
-        normalize: true,
-      });
-      const dim = output.dims[output.dims.length - 1] ?? EMBEDDING_DIM;
-      for (let i = 0; i < batch.length; i++) {
-        vectors.push(output.data.slice(i * dim, (i + 1) * dim));
-      }
-      // Progress is a best-effort side channel: a failing reporter (e.g. a
-      // closed stderr pipe) must never abort embedding the vault.
-      if (onProgress) {
-        try {
-          onProgress(vectors.length, texts.length);
-        } catch {
-          // ignore — progress reporting is not load-bearing
-        }
-      }
-    }
-    return ok(vectors);
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`embedding failed: ${reason}`));
-  }
+  return activeProvider.embed(texts, onProgress);
 }
 
 // Convenience wrapper for embedding a single query string.

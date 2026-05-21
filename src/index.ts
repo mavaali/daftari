@@ -25,7 +25,7 @@ import {
   setIndexProgress,
 } from "./search/index-state.js";
 import { isIndexFresh, type ReindexOptions, reindexVault } from "./search/reindex.js";
-import { warmModel } from "./search/vector.js";
+import { setProvider, warmModel } from "./search/vector.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig } from "./utils/config.js";
@@ -66,6 +66,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const config = loadConfig(vaultRoot);
   if (!config.ok) {
     process.stderr.write(`daftari: ${config.error.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Install the configured embedding provider. loadConfig has already
+  // validated the id and (for openai-3-small) the OPENAI_API_KEY env var,
+  // so setProvider should never throw here — but if it does (race-y env
+  // var stripping by a wrapper, say), fail loud rather than serving with
+  // a broken provider.
+  try {
+    setProvider(config.value.embeddingProvider);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`daftari: ${reason}\n`);
     process.exitCode = 1;
     return;
   }
