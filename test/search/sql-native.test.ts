@@ -251,7 +251,7 @@ describe("extension loading guard", () => {
 
     const tmpVault = mkdtempSync(join(tmpdir(), "daftari-vec-fail-"));
     try {
-      const result = scopedOpen(tmpVault);
+      const result = scopedOpen(tmpVault, 384);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       // The error must mention the rebuild guidance — that's the

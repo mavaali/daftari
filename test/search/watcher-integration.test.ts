@@ -19,6 +19,7 @@ import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ok } from "../../src/frontmatter/types.js";
 import { markIndexing, markIndexReady, resetIndexState } from "../../src/search/index-state.js";
+import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { reindexVault } from "../../src/search/reindex.js";
 import { resetSelfWriteState } from "../../src/search/self-write.js";
 import { startWatcher } from "../../src/search/watcher.js";
@@ -71,7 +72,7 @@ describe("watcher integration with index db", () => {
 
     // Sanity: the doc and its manifest entry are present before the unlink.
     const target = "pricing/helios-consumption-pricing.md";
-    const opened = openIndexDb(vault);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     expect(getDocument(opened.value, target)).not.toBeNull();
@@ -82,7 +83,7 @@ describe("watcher integration with index db", () => {
     fake.emit("unlink", osPath(join(vault, target)));
     await sleep(80);
 
-    const opened2 = openIndexDb(vault);
+    const opened2 = openIndexDb(vault, LOCAL_MINILM_DIM);
     expect(opened2.ok).toBe(true);
     if (!opened2.ok) return;
     expect(getDocument(opened2.value, target)).toBeNull();
@@ -169,7 +170,7 @@ ${marker} body content.
     // and SQLite write).
     await sleep(800);
 
-    const opened = openIndexDb(vault);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const doc = getDocument(opened.value, target);

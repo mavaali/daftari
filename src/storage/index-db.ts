@@ -49,14 +49,6 @@ export type IndexDb = Database.Database;
 // bump triggers a clean rebuild (see openIndexDb); no in-place migration.
 const SCHEMA_VERSION = "5";
 
-// Default dim used when openIndexDb is invoked without an explicit
-// `embeddings_vec` dim — e.g. legacy tests that don't go through the
-// reindex path. The vec table's column type is fixed at CREATE-TABLE time,
-// so any subsequent call with a different dim will rebuild the virtual
-// table. Set to the local-minilm dim so the common case (default provider,
-// no explicit dim) creates a usable table on the first open.
-const DEFAULT_VEC_DIM = 384;
-
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
 // switch). The durable `embeddings` cache is per-(model, dim) so it survives
@@ -246,8 +238,10 @@ function deleteEmbeddingsVecForHash(db: IndexDb, contentHash: string): void {
 // `embeddings_vec` was created at a different dim (or doesn't exist yet),
 // it is dropped and recreated at the expected dim — the durable `embeddings`
 // cache is untouched, so a switch back to the previous provider is all
-// cache hits. When omitted, falls back to `DEFAULT_VEC_DIM` (local-minilm).
-export function openIndexDb(vaultRoot: string, expectedVecDim?: number): Result<IndexDb, Error> {
+// cache hits. `expectedVecDim` is required — pass the active provider's dim
+// (e.g. `getProvider().dim`). Tests that don't exercise vector queries should
+// use `LOCAL_MINILM_DIM` from `src/search/providers/local-minilm.ts`.
+export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<IndexDb, Error> {
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     const db = new Database(indexDbPath(vaultRoot));
@@ -292,11 +286,9 @@ export function openIndexDb(vaultRoot: string, expectedVecDim?: number): Result<
     db.exec(SCHEMA);
     db.exec(FTS_SCHEMA);
 
-    // Decide which dim to create `embeddings_vec` at: caller's expected dim,
-    // or DEFAULT_VEC_DIM if the caller opted out. If the persisted dim
-    // matches AND the virtual table already exists, we leave it alone —
-    // recreating would drop all the indexed vectors for no reason.
-    const targetDim = expectedVecDim ?? DEFAULT_VEC_DIM;
+    // If the persisted dim matches AND the virtual table already exists, leave
+    // it alone — recreating would drop all the indexed vectors for no reason.
+    const targetDim = expectedVecDim;
     const persistedDimRaw = getMeta(db, VEC_DIM_META_KEY);
     const persistedDim = persistedDimRaw ? Number.parseInt(persistedDimRaw, 10) : null;
     const vecTableExists =
