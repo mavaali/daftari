@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type LockData, readLockfile, writeLockfile } from "../../src/lifecycle/lock.js";
+import {
+  isDaftariProcess,
+  isProcessAlive,
+  type LockData,
+  readLockfile,
+  writeLockfile,
+} from "../../src/lifecycle/lock.js";
 
 describe("lockfile I/O", () => {
   let vault: string;
@@ -47,5 +53,26 @@ describe("lockfile I/O", () => {
     writeFileSync(join(vault, ".daftari", "process.lock"), JSON.stringify({ pid: 42 }), "utf-8");
     const r = readLockfile(vault);
     if (r.ok) expect(r.value).toBeNull();
+  });
+});
+
+describe("isProcessAlive", () => {
+  it("returns true for the current process", () => {
+    expect(isProcessAlive(process.pid)).toBe(true);
+  });
+
+  it("returns false for an unused PID (very high number)", () => {
+    expect(isProcessAlive(2 ** 30)).toBe(false);
+  });
+});
+
+describe("isDaftariProcess", () => {
+  it("returns a boolean for the current process", () => {
+    const result = isDaftariProcess(process.pid, "/some/vault");
+    expect(typeof result).toBe("boolean");
+  });
+
+  it("returns false for an unused PID", () => {
+    expect(isDaftariProcess(2 ** 30, "/some/vault")).toBe(false);
   });
 });
