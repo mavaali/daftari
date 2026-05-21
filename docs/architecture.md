@@ -100,6 +100,38 @@ Three things sit alongside the markdown:
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
+#### Reactive indexing
+
+The index is kept in sync with the markdown files at write time, not just at
+startup. The write-path tools (`vault_write`, `vault_append`,
+`vault_promote`, `vault_deprecate`) call `indexDocument()` in-process after
+each successful write, and a `chokidar` watcher runs over the vault root for
+**out-of-band** edits — an editor save, a sync engine pull, a scripted
+writer. The watcher is on by default; set `watch: false` in
+`.daftari/config.yaml` to disable it for read-only or batch-script
+environments.
+
+Events are debounced per-path with a 500ms window: an editor's atomic-rename
+save burst (write temp, rename onto target, delete temp) coalesces into a
+single `indexDocument()` call for that file. `unlink` events re-stat the
+path before deleting, so the phantom `unlink` + `add` pairs FSEvents
+(macOS), iCloud, and Dropbox emit during atomic-rename saves are treated as
+a change rather than a delete. On a confirmed delete the document and its
+chunks are evicted from the index *and* the path is removed from the
+freshness manifest — so the next startup's manifest-vs-disk check does not
+see the missing entry as drift.
+
+Daftari's own writes are suppressed from the watcher path: after a
+write-path tool's in-process `indexDocument()` returns, the absolute path
+is added to a short-lived "self-write" set, and the watcher silently drops
+the chokidar event that follows. Without this the file would be indexed
+twice.
+
+The startup freshness check (#36 — manifest mtimes vs. disk) remains as
+the reconciliation backstop: if the watcher drops events (chokidar /
+FSEvents are not 100% reliable on large vaults), the next startup catches
+the drift and triggers a full reindex.
+
 The markdown files are the single source of truth. Delete every `.db` file and
 the vault loses nothing — rebuild and continue.
 
