@@ -5,6 +5,9 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension } from "../../src/curation/tension.js";
+import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
+import { embeddingToBlob, insertEmbedding, openIndexDb } from "../../src/storage/index-db.js";
+import { sha256Hex } from "../../src/utils/hash.js";
 import {
   readTools,
   type VaultIndexResult,
@@ -411,6 +414,62 @@ describe("vaultStatus", () => {
       if (!result.ok) return;
       expect(result.value.recentWrites.count).toBe(2);
       expect(result.value.recentWrites.entries.map((e) => e.action)).toEqual(["create", "promote"]);
+    });
+  });
+
+  describe("embeddingDimMismatches", () => {
+    let vault: string;
+
+    afterEach(() => {
+      if (vault) cleanupVault(vault);
+    });
+
+    it("is 0 for a vault with no embeddings", async () => {
+      vault = makeTempVault();
+      const result = await vaultStatus(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.embeddingDimMismatches).toBe(0);
+    });
+
+    it("is 0 when all cached embeddings match the active provider dim", async () => {
+      vault = makeTempVault();
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
+      expect(dbResult.ok).toBe(true);
+      if (!dbResult.ok) return;
+      const db = dbResult.value;
+      const hash = sha256Hex("some chunk text");
+      insertEmbedding(db, hash, "local-minilm", new Float32Array(LOCAL_MINILM_DIM), new Date().toISOString(), LOCAL_MINILM_DIM);
+      db.close();
+
+      const result = await vaultStatus(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.embeddingDimMismatches).toBe(0);
+    });
+
+    it("is non-zero when cached embeddings have the wrong dim for the active model", async () => {
+      vault = makeTempVault();
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
+      expect(dbResult.ok).toBe(true);
+      if (!dbResult.ok) return;
+      const db = dbResult.value;
+      // Insert an embedding for the active model but stamp it with dim=8 to
+      // simulate a corrupt cache row. insertEmbedding validates embedding.length
+      // === dim, so we bypass it with a raw INSERT to create the mismatch.
+      const hash = sha256Hex("chunk with wrong dim");
+      const wrongDim = 8;
+      const blob = embeddingToBlob(new Float32Array(LOCAL_MINILM_DIM)); // correct-length blob
+      db.prepare(
+        "INSERT INTO embeddings(content_hash, model, embedding, created_at, dim) VALUES (?,?,?,?,?)"
+      ).run(hash, "local-minilm", blob, new Date().toISOString(), wrongDim); // wrong dim in metadata
+      db.close();
+
+      const result = await vaultStatus(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // The mismatch must be visible to the operator.
+      expect(result.value.embeddingDimMismatches).toBeGreaterThan(0);
     });
   });
 });

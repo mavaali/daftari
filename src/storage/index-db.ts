@@ -622,3 +622,19 @@ export function embeddingCount(db: IndexDb): number {
   const row = db.prepare("SELECT COUNT(*) AS n FROM embeddings").get() as { n: number };
   return row.n;
 }
+
+// Counts embedding cache rows for `model` whose stored `dim` does not match
+// `expectedDim`. A non-zero result means some cached vectors will be silently
+// skipped by `rowToChunk`'s dim-guard, so vector search falls back to
+// keyword-only for those chunks. Exposed via vault_status so operators can
+// detect a corrupt cache without digging through logs.
+export function countDimMismatches(
+  db: IndexDb,
+  model: string,
+  expectedDim: number,
+): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ? AND dim != ?")
+    .get(model, expectedDim) as { n: number };
+  return row.n;
+}
