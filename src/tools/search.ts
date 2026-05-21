@@ -24,8 +24,17 @@ import {
   markIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { getProvider } from "../search/vector.js";
 import { documentCount, openIndexDb } from "../storage/index-db.js";
 import type { ToolDefinition } from "./read.js";
+
+// All tool-side opens pass the active provider's dim so the sqlite-vec
+// table matches the embeddings the search will query. A read-only tool
+// that opens after a provider switch would otherwise face a vec table
+// sized for the *previous* provider's vectors.
+function openIndexForActiveProvider(vaultRoot: string) {
+  return openIndexDb(vaultRoot, getProvider().dim);
+}
 
 // Gate every index-backed tool on the current indexing state.
 //
@@ -46,7 +55,7 @@ async function ensureIndexReady(vaultRoot: string): Promise<Result<void, Error>>
   if (status.status === "error") {
     return err(new Error(`vault index is in error state: ${status.error ?? "unknown"}`));
   }
-  const dbResult = openIndexDb(vaultRoot);
+  const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const empty = documentCount(dbResult.value) === 0;
   dbResult.value.close();
@@ -107,7 +116,7 @@ export async function vaultSearch(
   const ready = await ensureIndexReady(vaultRoot);
   if (!ready.ok) return ready;
 
-  const dbResult = openIndexDb(vaultRoot);
+  const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
@@ -144,7 +153,7 @@ export async function vaultSearchRelated(
   const ready = await ensureIndexReady(vaultRoot);
   if (!ready.ok) return ready;
 
-  const dbResult = openIndexDb(vaultRoot);
+  const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {

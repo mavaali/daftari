@@ -36,7 +36,7 @@ part.
 
 | Layer | Concern | What Daftari provides |
 |------:|---------|-----------------------|
-| 1 | **Storage** | Markdown + YAML frontmatter on disk, a git history, a rebuildable SQLite index for hybrid BM25 + vector search. |
+| 1 | **Storage** | Markdown + YAML frontmatter on disk, a git history, a rebuildable SQLite index — FTS5 for lexical ranking, sqlite-vec for vector search. |
 | 2 | **Multi-tenant ACL** | Config-driven RBAC. Roles and per-collection read/write/promote permissions declared in `.daftari/config.yaml`. |
 | 3 | **Write safety** ⭐ | File-level write locks (SQLite-backed, 60s TTL) give single-writer-per-document safety — a competing writer fails cleanly instead of corrupting the file. This is a safety mechanism, not a coordination protocol. The ⭐ is for what is genuinely differentiated: every write auto-committed to git with a provenance log of who changed what and when. |
 | 4 | **Curation decay** ⭐ | The draft → canonical → deprecated lifecycle, TTL-based staleness, tension logging for contradictions, and an advisory linter. Knowledge that stops being true is surfaced, not silently trusted. |
@@ -152,9 +152,36 @@ by name with JSON arguments; the server replies with a JSON text block. Here is
 ## Search internals
 
 `vault_search` is **hybrid**: a BM25 lexical score and a vector (semantic)
-score, blended with tunable weights. The vector half is worth being explicit
-about, because a local-first tool should never leave you guessing whether a
-query leaves your machine.
+score, blended with tunable weights. Both halves are SQL-native — they
+run inside SQLite, not in JavaScript.
+
+- **Lexical half.** An FTS5 virtual table (`documents_fts`) over title,
+  tags, and body. SQLite's built-in BM25 ranks every MATCH'd row.
+  Triggers on the regular `documents` table keep the FTS index in sync
+  on every write, so the indexer never touches the virtual table
+  directly. Free-text queries are tokenised, stopword-filtered, and
+  prefix-OR'd (`cirrus pricing` becomes `cirrus* OR pricing*`) so a
+  partial-keystroke or stem variation still matches.
+
+- **Vector half.** A sqlite-vec `vec0` virtual table
+  (`embeddings_vec`), sized at the active provider's dim and indexed for
+  KNN cosine queries. The durable `embeddings` cache (one row per
+  `(content_hash, model)`) is the source of truth; `embeddings_vec`
+  mirrors it for query-time access. Switching embedding providers
+  triggers a drop-and-rebuild of the vec table at the new dim — the
+  durable cache survives, so switching back is all cache hits.
+
+**Prerequisite.** sqlite-vec is a loadable SQLite extension. The
+`sqlite-vec` npm package ships pre-built binaries for darwin / linux /
+windows on x64 and arm64; `better-sqlite3`'s npm prebuilt enables
+extension loading by default. In the common case `npm install` is the
+only setup step. If a custom `better-sqlite3` build with extension
+loading disabled is in use, Daftari refuses to start with an actionable
+error: `npm rebuild better-sqlite3 --build-from-source`.
+
+The vector half is worth being explicit about, because a local-first
+tool should never leave you guessing whether a query leaves your
+machine.
 
 ### Embedding providers
 
@@ -193,15 +220,15 @@ embeddings:
 - **Graceful degradation.** Whichever provider is active, if it cannot
   reach the model (no network on the very first `local-minilm` run, before
   the weights are cached; or OpenAI unreachable), `vault_reindex` still
-  builds the BM25 index. The vector column is left empty, `vectorUsed`
-  reports `false`, and search transparently falls back to lexical-only
-  ranking.
+  builds the FTS5 lexical index. The vector column is left empty,
+  `vectorUsed` reports `false`, and search transparently falls back to
+  lexical-only ranking.
 
 - **Quality tradeoff.** MiniLM is small and fast, which keeps Daftari
   dependency-light and snappy, but its recall/precision is below larger
   hosted embedding models. `openai-3-small` is the obvious next step.
-  Pairing either with BM25 covers the common case where a small model
-  misses an exact-term match.
+  Pairing either with FTS5 BM25 covers the common case where a small
+  model misses an exact-term match.
 
 ---
 

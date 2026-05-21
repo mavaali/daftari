@@ -2,38 +2,67 @@
 //
 // The index is a derived cache: it holds nothing the markdown files don't
 // already hold, so .daftari/index.db can be deleted and rebuilt at any time
-// (see search/reindex.ts). Three tables carry the search payload:
+// (see search/reindex.ts). Five tables carry the search payload:
 //
-//   documents  — one row per markdown file: frontmatter fields, the full body,
-//                and the BM25 token list (JSON).
-//   chunks     — one row per embedded text chunk: the chunk text and a
-//                content_hash (sha256 of the chunk text) that joins to the
-//                embeddings table for the current model.
-//   embeddings — one row per (content_hash, model) pair, with a `dim` column
-//                recording the vector dimension. Content-addressed, so
-//                identical chunk text shares one row across files and across
-//                reindexes. The composite (content_hash, model) primary key
-//                lets two providers' vectors (e.g. local-minilm 384 + openai-
-//                3-small 1536) coexist for the same chunk text — handy when
-//                switching providers without losing the old cache. `dim` is
-//                defense-in-depth: callers can detect a corrupt or
-//                cross-provider mix at read time, even though the model id
-//                already scopes the join.
+//   documents      — one row per markdown file: frontmatter fields, the full
+//                    body, and the (legacy) BM25 token list (JSON).
+//   chunks         — one row per embedded text chunk: the chunk text and a
+//                    content_hash (sha256 of the chunk text) that joins to the
+//                    embeddings table for the current model.
+//   embeddings     — one row per (content_hash, model) pair, with a `dim`
+//                    column recording the vector dimension. Content-addressed,
+//                    so identical chunk text shares one row across files and
+//                    across reindexes. The composite (content_hash, model)
+//                    primary key lets two providers' vectors (e.g. local-
+//                    minilm 384 + openai-3-small 1536) coexist for the same
+//                    chunk text — handy when switching providers without
+//                    losing the old cache. `dim` is defense-in-depth: callers
+//                    can detect a corrupt or cross-provider mix at read time,
+//                    even though the model id already scopes the join.
+//   documents_fts  — FTS5 virtual table (contentless link to `documents`).
+//                    Title, tags, and body tokens, ranked with BM25. Kept in
+//                    sync by AFTER INSERT / UPDATE / DELETE triggers on
+//                    `documents`, so writes never touch the virtual table
+//                    directly. Replaces the hand-rolled BM25 over the legacy
+//                    `documents.tokens` column.
+//   embeddings_vec — sqlite-vec `vec0` virtual table, an indexed mirror of
+//                    `embeddings` for vector queries. Rebuilt at the active
+//                    provider's dim — switching providers between server runs
+//                    triggers a drop-and-recreate (the durable `embeddings`
+//                    table is untouched). Population is the reindex path's
+//                    job; this file just exposes the schema.
 //
 // A small meta table records index-wide facts (embedding dimension, whether
-// vectors were built, when the index was last rebuilt).
+// vectors were built, when the index was last rebuilt, the dim that
+// `embeddings_vec` was created at).
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 export type IndexDb = Database.Database;
 
-// Bumped 3 → 4 to add the `dim` column to embeddings. The index is a derived
-// cache so the bump triggers a clean rebuild (see openIndexDb); no in-place
-// migration needed.
-const SCHEMA_VERSION = "4";
+// Bumped 4 → 5 to add FTS5 (`documents_fts`) and sqlite-vec (`embeddings_vec`)
+// virtual tables for SQL-native search. The index is a derived cache so the
+// bump triggers a clean rebuild (see openIndexDb); no in-place migration.
+const SCHEMA_VERSION = "5";
+
+// Default dim used when openIndexDb is invoked without an explicit
+// `embeddings_vec` dim — e.g. legacy tests that don't go through the
+// reindex path. The vec table's column type is fixed at CREATE-TABLE time,
+// so any subsequent call with a different dim will rebuild the virtual
+// table. Set to the local-minilm dim so the common case (default provider,
+// no explicit dim) creates a usable table on the first open.
+const DEFAULT_VEC_DIM = 384;
+
+// Meta key that records the dim at which `embeddings_vec` was created. Used
+// on every open to decide whether to rebuild the virtual table (provider
+// switch). The durable `embeddings` cache is per-(model, dim) so it survives
+// the vec-table rebuild and a switch-back to the previous provider is all
+// cache hits.
+const VEC_DIM_META_KEY = "embeddings_vec_dim";
 
 export interface IndexedDocument {
   path: string;
@@ -65,6 +94,9 @@ export function indexDbPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "index.db");
 }
 
+// Non-virtual schema. Virtual tables (`documents_fts`, `embeddings_vec`) are
+// created separately because their CREATE statements depend on runtime values
+// (the active provider's dim) and need the sqlite-vec extension loaded first.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS documents (
   path          TEXT PRIMARY KEY,
@@ -103,11 +135,133 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
-export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
+// FTS5 virtual table over the `documents` body + title + tags. The
+// `content='documents'` link is a "contentless" external-content FTS5
+// index — the virtual table stores tokens, not its own copy of the text,
+// so writes pay one storage cost, not two. AFTER INSERT/UPDATE/DELETE
+// triggers on `documents` keep the FTS index in sync so the write path
+// never touches the virtual table directly. Porter + unicode61 is the
+// stock English stemming pipeline; it lowercases, strips diacritics, and
+// folds plurals / -ing forms.
+const FTS_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+  title, tags, content_body,
+  content='documents',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+  INSERT INTO documents_fts(rowid, title, tags, content_body)
+  VALUES (new.rowid, new.title, new.tags, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+  INSERT INTO documents_fts(documents_fts, rowid, title, tags, content_body)
+  VALUES('delete', old.rowid, old.title, old.tags, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+  INSERT INTO documents_fts(documents_fts, rowid, title, tags, content_body)
+  VALUES('delete', old.rowid, old.title, old.tags, old.content);
+  INSERT INTO documents_fts(rowid, title, tags, content_body)
+  VALUES (new.rowid, new.title, new.tags, new.content);
+END;
+`;
+
+// Loads the sqlite-vec loadable extension. The npm-distributed
+// `better-sqlite3` ships with extension loading enabled in current
+// versions, so this is normally a no-op success — but some custom builds
+// or distro packages strip the capability, and we want a clear,
+// actionable error in that case rather than a confusing later failure
+// when a query references `embeddings_vec`. Returns Result so the caller
+// (openIndexDb) can surface the message to the operator.
+function loadVecExtension(db: IndexDb): Result<void, Error> {
+  try {
+    sqliteVec.load(db);
+    return ok(undefined);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(
+      new Error(
+        `cannot load sqlite-vec extension: ${reason}. ` +
+          "If this is the better-sqlite3 prebuilt without extension loading, " +
+          "rebuild it from source: `npm rebuild better-sqlite3 --build-from-source`.",
+      ),
+    );
+  }
+}
+
+// Creates the sqlite-vec virtual table at the given dim, dropping any
+// existing copy first. `dim` is fixed at CREATE TABLE time for vec0, so a
+// provider switch (which changes the active dim) means dropping and
+// recreating; the durable `embeddings` cache survives, and the next reindex
+// repopulates `embeddings_vec` from it.
+function createVecTable(db: IndexDb, dim: number): void {
+  if (!Number.isInteger(dim) || dim <= 0) {
+    throw new Error(
+      `cannot create embeddings_vec at non-positive dim ${dim} — ` +
+        "the active embedding provider must declare a positive integer dim",
+    );
+  }
+  db.exec("DROP TABLE IF EXISTS embeddings_vec;");
+  db.exec(
+    `CREATE VIRTUAL TABLE embeddings_vec USING vec0(
+       content_hash TEXT NOT NULL,
+       model        TEXT NOT NULL,
+       embedding    FLOAT[${dim}] distance_metric=cosine
+     );`,
+  );
+  setMeta(db, VEC_DIM_META_KEY, String(dim));
+}
+
+// Drops every row from `embeddings_vec`. Called by the reindex path when
+// it needs to repopulate the vec table from scratch (e.g. after a dim
+// rebuild). Cheaper and clearer than a per-row delete in the common case.
+export function clearEmbeddingsVec(db: IndexDb): void {
+  db.exec("DELETE FROM embeddings_vec;");
+}
+
+// Inserts a vector row into the sqlite-vec mirror. Separate from
+// `insertEmbedding` because the durable cache and the vec index are two
+// stores — the cache survives a vec-table rebuild on provider switch.
+export function insertEmbeddingVec(
+  db: IndexDb,
+  contentHash: string,
+  model: string,
+  embedding: Float32Array,
+): void {
+  db.prepare("INSERT INTO embeddings_vec(content_hash, model, embedding) VALUES (?, ?, ?)").run(
+    contentHash,
+    model,
+    embeddingToBlob(embedding),
+  );
+}
+
+// Deletes the vec-mirror rows for a single content_hash. Used by the
+// orphan gc pass so the vec index never carries vectors whose chunks are
+// gone.
+function deleteEmbeddingsVecForHash(db: IndexDb, contentHash: string): void {
+  db.prepare("DELETE FROM embeddings_vec WHERE content_hash = ?").run(contentHash);
+}
+
+// `expectedVecDim` is the active embedding provider's dim. If the persisted
+// `embeddings_vec` was created at a different dim (or doesn't exist yet),
+// it is dropped and recreated at the expected dim — the durable `embeddings`
+// cache is untouched, so a switch back to the previous provider is all
+// cache hits. When omitted, falls back to `DEFAULT_VEC_DIM` (local-minilm).
+export function openIndexDb(vaultRoot: string, expectedVecDim?: number): Result<IndexDb, Error> {
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     const db = new Database(indexDbPath(vaultRoot));
     db.pragma("journal_mode = WAL");
+
+    // Load sqlite-vec BEFORE any CREATE VIRTUAL TABLE that uses `vec0` runs.
+    // A failure here is loud and actionable — the server refuses to start
+    // rather than silently falling back to brute-force cosine.
+    const loaded = loadVecExtension(db);
+    if (!loaded.ok) {
+      db.close();
+      return loaded;
+    }
+
     // Ensure the meta table exists before reading schema_version from it.
     db.exec(`CREATE TABLE IF NOT EXISTS meta (
       key   TEXT PRIMARY KEY,
@@ -117,16 +271,44 @@ export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
     if (stored !== SCHEMA_VERSION) {
       // Schema bump means a clean rebuild: every derived table is dropped and
       // the freshness manifest is cleared so the next reindex repopulates
-      // everything. Trying to ALTER across this change would race a column
-      // addition (3 → 4 added embeddings.dim) against composite-PK semantics;
+      // everything. Trying to ALTER across this change would race column
+      // additions (3 → 4 added embeddings.dim) and virtual-table creations
+      // (4 → 5 added documents_fts + embeddings_vec) against existing rows;
       // the markdown files are the source of truth and the index is cheap to
       // regenerate.
       db.exec(
-        "DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS embeddings;",
+        "DROP TRIGGER IF EXISTS documents_ai;" +
+          "DROP TRIGGER IF EXISTS documents_ad;" +
+          "DROP TRIGGER IF EXISTS documents_au;" +
+          "DROP TABLE IF EXISTS documents_fts;" +
+          "DROP TABLE IF EXISTS embeddings_vec;" +
+          "DROP TABLE IF EXISTS documents;" +
+          "DROP TABLE IF EXISTS chunks;" +
+          "DROP TABLE IF EXISTS embeddings;",
       );
       db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
+      db.prepare("DELETE FROM meta WHERE key = ?").run(VEC_DIM_META_KEY);
     }
     db.exec(SCHEMA);
+    db.exec(FTS_SCHEMA);
+
+    // Decide which dim to create `embeddings_vec` at: caller's expected dim,
+    // or DEFAULT_VEC_DIM if the caller opted out. If the persisted dim
+    // matches AND the virtual table already exists, we leave it alone —
+    // recreating would drop all the indexed vectors for no reason.
+    const targetDim = expectedVecDim ?? DEFAULT_VEC_DIM;
+    const persistedDimRaw = getMeta(db, VEC_DIM_META_KEY);
+    const persistedDim = persistedDimRaw ? Number.parseInt(persistedDimRaw, 10) : null;
+    const vecTableExists =
+      (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name=?")
+          .get("embeddings_vec") as { n: number }
+      ).n > 0;
+    if (!vecTableExists || persistedDim !== targetDim) {
+      createVecTable(db, targetDim);
+    }
+
     setMeta(db, "schema_version", SCHEMA_VERSION);
     return ok(db);
   } catch (e) {
@@ -168,11 +350,30 @@ export function blobToEmbedding(blob: Buffer): Float32Array {
 // --- writes ----------------------------------------------------------------
 
 export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
+  // ON CONFLICT(path) DO UPDATE (rather than INSERT OR REPLACE) is required
+  // so the AFTER UPDATE trigger on `documents` fires and keeps
+  // `documents_fts` in sync. SQLite's OR REPLACE conflict resolution does
+  // NOT fire DELETE/UPDATE triggers for the conflicting row — using it
+  // would leave the FTS5 index pointing at stale terms after every
+  // document overwrite.
   db.prepare(
-    `INSERT OR REPLACE INTO documents
+    `INSERT INTO documents
        (path, title, collection, domain, status, confidence, updated, tags, content, tokens,
         ttl_days, created, superseded_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(path) DO UPDATE SET
+       title         = excluded.title,
+       collection    = excluded.collection,
+       domain        = excluded.domain,
+       status        = excluded.status,
+       confidence    = excluded.confidence,
+       updated       = excluded.updated,
+       tags          = excluded.tags,
+       content       = excluded.content,
+       tokens        = excluded.tokens,
+       ttl_days      = excluded.ttl_days,
+       created       = excluded.created,
+       superseded_by = excluded.superseded_by`,
   ).run(
     doc.path,
     doc.title,
@@ -251,16 +452,32 @@ export function insertEmbedding(
 }
 
 // Deletes every embeddings row whose content_hash is referenced by no chunks
-// row. Called at the end of a reindex to reap entries for chunks that no
-// longer exist anywhere in the vault. Returns the number of rows deleted.
+// row, and removes the matching rows from the sqlite-vec mirror. Called at
+// the end of a reindex to reap entries for chunks that no longer exist
+// anywhere in the vault. Returns the number of `embeddings` rows deleted —
+// the vec-mirror counts piggy-back and are not reported separately.
 export function gcOrphanedEmbeddings(db: IndexDb): number {
-  const info = db
+  // Collect the orphan hashes first so we can drop them from both stores in
+  // one pass. The `embeddings_vec` virtual table doesn't support correlated
+  // subqueries on its meta columns reliably, so we go through prepared
+  // deletes by hash.
+  const orphans = db
     .prepare(
-      `DELETE FROM embeddings
-       WHERE content_hash NOT IN (SELECT content_hash FROM chunks)`,
+      `SELECT content_hash
+         FROM embeddings
+        WHERE content_hash NOT IN (SELECT content_hash FROM chunks)`,
     )
-    .run();
-  return info.changes;
+    .all() as { content_hash: string }[];
+  if (orphans.length === 0) return 0;
+  const drop = db.transaction(() => {
+    const dropEmb = db.prepare("DELETE FROM embeddings WHERE content_hash = ?");
+    for (const { content_hash } of orphans) {
+      dropEmb.run(content_hash);
+      deleteEmbeddingsVecForHash(db, content_hash);
+    }
+  });
+  drop();
+  return orphans.length;
 }
 
 export function setMeta(db: IndexDb, key: string, value: string): void {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Bm25Document, buildBm25, searchBm25, tokenize } from "../../src/search/bm25.js";
+import { buildMatchQuery, tokenize } from "../../src/search/bm25.js";
 
 describe("tokenize", () => {
   it("lowercases and splits on non-alphanumeric runs", () => {
@@ -17,38 +17,37 @@ describe("tokenize", () => {
   });
 });
 
-describe("buildBm25 + searchBm25", () => {
-  const docs: Bm25Document[] = [
-    { path: "a.md", tokens: tokenize("helios credit consumption pricing model") },
-    { path: "b.md", tokens: tokenize("cirrus pooled capacity tier pricing") },
-    { path: "c.md", tokens: tokenize("vega insight llm governance story") },
-  ];
-
-  it("ranks the document with the strongest term overlap first", () => {
-    const model = buildBm25(docs);
-    const hits = searchBm25(model, tokenize("credit consumption pricing"));
-    expect(hits[0]?.path).toBe("a.md");
+describe("buildMatchQuery", () => {
+  it("turns a free-text query into a prefix-OR'd FTS5 MATCH string", () => {
+    expect(buildMatchQuery("cirrus pricing")).toBe("cirrus* OR pricing*");
   });
 
-  it("omits documents with zero query-term overlap", () => {
-    const model = buildBm25(docs);
-    const hits = searchBm25(model, tokenize("insight governance"));
-    expect(hits.map((h) => h.path)).toEqual(["c.md"]);
+  it("deduplicates repeated tokens", () => {
+    expect(buildMatchQuery("pricing PRICING pricing model")).toBe("pricing* OR model*");
   });
 
-  it("returns no hits when nothing matches", () => {
-    const model = buildBm25(docs);
-    expect(searchBm25(model, tokenize("kubernetes helm chart"))).toEqual([]);
+  it("strips stopwords and 1-character fragments before assembling", () => {
+    expect(buildMatchQuery("the cost of a credit is high")).toBe("cost* OR credit* OR high*");
   });
 
-  it("scores rarer terms higher via IDF", () => {
-    // 'pricing' appears in two of three docs; 'insight' in one. A query on the
-    // rarer term should rank its document above the common-term match.
-    const model = buildBm25(docs);
-    const hits = searchBm25(model, tokenize("insight"));
-    const common = searchBm25(model, tokenize("pricing"));
-    const insightScore = hits[0]?.score ?? 0;
-    const pricingTop = common[0]?.score ?? 0;
-    expect(insightScore).toBeGreaterThan(pricingTop);
+  it("returns null when the query has no usable tokens", () => {
+    expect(buildMatchQuery("   ")).toBeNull();
+    expect(buildMatchQuery("a the of")).toBeNull(); // all stopwords
+    expect(buildMatchQuery("?? !! ##")).toBeNull(); // all punctuation
+  });
+
+  it("does not throw on FTS5-meaningful characters in the user query", () => {
+    // The tokenizer strips every non-alphanumeric, so quotes, hyphens,
+    // wildcards, and the bare reserved words AND/OR/NOT all collapse to
+    // safe lowercase barewords before the MATCH string is assembled.
+    // The token 'or' (FTS5's operator in uppercase) is a stopword and
+    // gets dropped; the surviving tokens are joined with literal ' OR '
+    // operators.
+    expect(() => buildMatchQuery(`"cirrus" AND "pricing"`)).not.toThrow();
+    expect(() => buildMatchQuery(`cirrus-pricing*`)).not.toThrow();
+    expect(() => buildMatchQuery(`NOT pricing`)).not.toThrow();
+    // The shape of the output is well-defined: tokens lowercased,
+    // alphanumeric-only, OR-joined.
+    expect(buildMatchQuery(`"cirrus" AND "pricing"`)).toBe("cirrus* OR pricing*");
   });
 });

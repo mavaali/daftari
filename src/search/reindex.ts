@@ -22,6 +22,7 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   type ChunkRowInput,
+  clearEmbeddingsVec,
   clearIndex,
   deleteDocument,
   documentCount,
@@ -33,6 +34,7 @@ import {
   insertChunkRow,
   insertDocument,
   insertEmbedding,
+  insertEmbeddingVec,
   openIndexDb,
   setMeta,
 } from "../storage/index-db.js";
@@ -40,6 +42,41 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
 import { chunkText, embed, getProvider } from "./vector.js";
+
+// Opens the index DB with the active embedding provider's dim, so the
+// sqlite-vec virtual table is created (or rebuilt) at the right
+// dimensionality. Every reindex / index-document path opens the DB this
+// way; a caller that doesn't care about vectors (a freshness probe,
+// say) can fall back to `openIndexDb(vault)` which uses a default dim.
+function openIndexForActiveProvider(vaultRoot: string) {
+  return openIndexDb(vaultRoot, getProvider().dim);
+}
+
+// Repopulates the sqlite-vec mirror from the durable `embeddings` cache
+// for the given model. Called at the end of every full reindex so the vec
+// table always reflects the current vault. The previous mirror contents
+// are dropped wholesale — simpler and faster than a diff for the sizes
+// this index reaches in practice.
+function rebuildEmbeddingsVec(db: IndexDb, modelId: string): void {
+  const rebuild = db.transaction(() => {
+    clearEmbeddingsVec(db);
+    const rows = db
+      .prepare(
+        `SELECT e.content_hash AS content_hash, e.embedding AS embedding
+           FROM embeddings AS e
+          WHERE e.model = ?
+            AND e.content_hash IN (SELECT content_hash FROM chunks)`,
+      )
+      .all(modelId) as { content_hash: string; embedding: Buffer }[];
+    const insert = db.prepare(
+      "INSERT INTO embeddings_vec(content_hash, model, embedding) VALUES (?, ?, ?)",
+    );
+    for (const row of rows) {
+      insert.run(row.content_hash, modelId, row.embedding);
+    }
+  });
+  rebuild();
+}
 
 // Manifest key in the meta table: JSON object mapping vault-relative path to
 // mtime in ms. Written at the end of a successful reindex and updated by
@@ -98,7 +135,7 @@ function manifestsMatch(a: Record<string, number>, b: Record<string, number>): b
 // matches the stored value. Used by `main()` to skip a 20+ minute re-embed
 // pass on every restart of a vault that hasn't changed.
 export async function isIndexFresh(vaultRoot: string): Promise<boolean> {
-  const dbResult = openIndexDb(vaultRoot);
+  const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return false;
   const db = dbResult.value;
   try {
@@ -238,8 +275,10 @@ export async function reindexVault(
   const { staged, skipped } = staging.value;
 
   // Open the index first so we can ask the embeddings cache which (hash,
-  // model) pairs already exist before deciding what to embed.
-  const dbResult = openIndexDb(vaultRoot);
+  // model) pairs already exist before deciding what to embed. Pass the
+  // active provider's dim so the sqlite-vec mirror is sized correctly
+  // (rebuilt if a previous reindex used a different provider).
+  const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
 
@@ -308,6 +347,14 @@ export async function reindexVault(
     const chunkCount = writeChunkRows(db, staged);
     const orphansRemoved = gcOrphanedEmbeddings(db);
 
+    // Rebuild the sqlite-vec mirror from the durable `embeddings` cache.
+    // The cache is per-(model, content_hash) and is the source of truth;
+    // the mirror is a SQL-queryable index of it. We rebuild rather than
+    // diff because (a) it's small (one row per active-model chunk) and
+    // (b) a vec-table rebuild on provider switch lands here with an empty
+    // table, so we need a full repopulation anyway.
+    rebuildEmbeddingsVec(db, provider.id);
+
     setMeta(db, "indexed_at", indexedAt);
     setMeta(db, "vector_enabled", String(vectorEnabled));
     setMeta(db, "embedding_dim", String(provider.dim));
@@ -350,7 +397,7 @@ export async function indexDocument(
   vaultRoot: string,
   relPath: string,
 ): Promise<Result<IndexDocumentResult, Error>> {
-  const dbCheck = openIndexDb(vaultRoot);
+  const dbCheck = openIndexForActiveProvider(vaultRoot);
   if (!dbCheck.ok) return dbCheck;
   const indexEmpty = documentCount(dbCheck.value) === 0;
   dbCheck.value.close();
@@ -370,7 +417,7 @@ export async function indexDocument(
   }
   const { doc, chunks, hashes } = staged;
 
-  const dbResult = openIndexDb(vaultRoot);
+  const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   const createdAt = new Date().toISOString();
@@ -389,6 +436,7 @@ export async function indexDocument(
     const missTexts = missHashes.map((h) => missTextByHash.get(h) ?? "");
 
     let vectorEnabled = true;
+    const newlyEmbedded: Array<{ hash: string; vec: Float32Array }> = [];
     if (missTexts.length > 0) {
       const embedResult = await embed(missTexts);
       if (embedResult.ok) {
@@ -398,6 +446,7 @@ export async function indexDocument(
             const vec = embedResult.value[i];
             if (!vec) continue;
             insertEmbedding(db, h, provider.id, vec, createdAt, provider.dim);
+            newlyEmbedded.push({ hash: h, vec });
           }
         });
         writeEmbeds();
@@ -417,6 +466,14 @@ export async function indexDocument(
           contentHash: hashes[chunkIndex] ?? "",
         });
       });
+      // Mirror only the newly-embedded vectors into `embeddings_vec`.
+      // Hashes that were already cached are already in the vec table from
+      // a prior reindex / indexDocument call — re-inserting them would be
+      // duplicates. INSERT OR IGNORE isn't supported on vec0 virtual
+      // tables, so we keep this list to just the new vectors.
+      for (const { hash, vec } of newlyEmbedded) {
+        insertEmbeddingVec(db, hash, provider.id, vec);
+      }
     });
     write();
     // Keep the freshness manifest in sync with this single write so the next

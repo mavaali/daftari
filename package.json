@@ -58,7 +58,8 @@
     "chokidar": "^4.0.3",
     "glob": "^13.0.6",
     "gray-matter": "^4.0.3",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

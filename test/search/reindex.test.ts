@@ -315,6 +315,16 @@ describe("reindexVault", () => {
           )
           .get() as { n: number };
         expect(orphanCount.n).toBe(0);
+        // The sqlite-vec mirror is also reaped: no `embeddings_vec` row
+        // references a content_hash that has no chunk row. (Direct
+        // correlated subqueries on vec0 columns are awkward, so we count
+        // via a LEFT JOIN sanity check.)
+        const vecOrphans = db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM embeddings_vec v LEFT JOIN chunks c ON c.content_hash = v.content_hash WHERE c.content_hash IS NULL",
+          )
+          .get() as { n: number };
+        expect(vecOrphans.n).toBe(0);
       } finally {
         db.close();
       }

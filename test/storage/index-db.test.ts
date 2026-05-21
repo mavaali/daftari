@@ -17,6 +17,7 @@ import {
   insertChunkRow,
   insertDocument,
   insertEmbedding,
+  insertEmbeddingVec,
   openIndexDb,
   setMeta,
 } from "../../src/storage/index-db.js";
@@ -173,16 +174,16 @@ describe("index-db", () => {
 
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("4");
+    expect(getMeta(db, "schema_version")).toBe("5");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
-  it("schema 3 → 4 rebuild: a v3 index is dropped and recreated cleanly", () => {
-    // Simulate a vault that was last indexed by a v1.8.0 server (schema "3",
-    // no `dim` column on embeddings). The 3 → 4 bump must drop the legacy
-    // table and let openIndexDb recreate it with the new column — no manual
+  it("schema 4 → 5 rebuild: a v4 index is dropped and recreated cleanly", () => {
+    // Simulate a vault that was last indexed by a v1.8.x server (schema "4",
+    // no FTS5 / sqlite-vec virtual tables). The 4 → 5 bump must drop every
+    // derived table and let openIndexDb recreate the schema — no manual
     // migration needed because the cache is rebuildable from disk.
-    setMeta(db, "schema_version", "3");
+    setMeta(db, "schema_version", "4");
     // Insert a row resembling the legacy embeddings shape: no dim column.
     // The actual on-disk v3 table won't have the column at all, but the
     // important assertion is that openIndexDb DROPS and recreates, so any
@@ -196,7 +197,21 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("4");
+    expect(getMeta(db, "schema_version")).toBe("5");
+    // All five expected tables now exist on a fresh v5 index: three
+    // regular tables (documents, chunks, embeddings, meta) plus two
+    // virtual tables (documents_fts, embeddings_vec).
+    const tables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
+      .all() as { name: string }[];
+    const names = new Set(tables.map((t) => t.name));
+    expect(names.has("documents")).toBe(true);
+    expect(names.has("chunks")).toBe(true);
+    expect(names.has("embeddings")).toBe(true);
+    expect(names.has("documents_fts")).toBe(true);
+    expect(names.has("embeddings_vec")).toBe(true);
     // The new embeddings table now has a `dim` column — confirm via a write
     // that requires the dim parameter (the old API didn't take one).
     const text = "hello";
@@ -281,6 +296,176 @@ describe("index-db", () => {
       expect(existingEmbeddingHashes(db, MODEL, [referencedHash, orphanHash])).toEqual(
         new Set([referencedHash]),
       );
+    });
+  });
+
+  describe("FTS5 sync", () => {
+    it("creates the documents_fts virtual table and keeps it in sync via triggers", () => {
+      // No direct write to documents_fts: the AFTER INSERT trigger on
+      // `documents` populates the FTS index. Word stems from the body
+      // ('pricing', 'consumption') must be matchable through MATCH.
+      insertDocument(db, {
+        ...sampleDoc,
+        path: "pricing/cirrus-pricing.md",
+        title: "Cirrus Pooled Capacity Pricing",
+        content: "Pooled capacity tier pricing for Cirrus customers.",
+      });
+      insertDocument(db, {
+        ...sampleDoc,
+        path: "pricing/helios.md",
+        title: "Helios Consumption",
+        content: "Helios consumption credit model with per-second billing.",
+      });
+
+      const rows = db
+        .prepare(
+          "SELECT d.path AS path FROM documents_fts JOIN documents AS d ON d.rowid = documents_fts.rowid WHERE documents_fts MATCH ?",
+        )
+        .all("cirrus*") as { path: string }[];
+      expect(rows.map((r) => r.path)).toEqual(["pricing/cirrus-pricing.md"]);
+    });
+
+    it("delete trigger removes the FTS5 row when a document is deleted", () => {
+      insertDocument(db, {
+        ...sampleDoc,
+        path: "pricing/ephemeral.md",
+        title: "Ephemeral",
+        content: "Ephemeral content that will be removed.",
+      });
+      // Before: the document is matchable via FTS5.
+      const beforeCount = (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM documents_fts WHERE documents_fts MATCH ?")
+          .get("ephemeral*") as { n: number }
+      ).n;
+      expect(beforeCount).toBe(1);
+
+      // Delete the document — the AFTER DELETE trigger must cascade into
+      // the contentless FTS5 mirror.
+      db.prepare("DELETE FROM documents WHERE path = ?").run("pricing/ephemeral.md");
+
+      const afterCount = (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM documents_fts WHERE documents_fts MATCH ?")
+          .get("ephemeral*") as { n: number }
+      ).n;
+      expect(afterCount).toBe(0);
+    });
+
+    it("update trigger refreshes the FTS5 row on document INSERT OR REPLACE", () => {
+      insertDocument(db, {
+        ...sampleDoc,
+        path: "pricing/mutating.md",
+        title: "Cirrus Pricing",
+        content: "Initial body about cirrus pricing.",
+      });
+      // Replace with a body that has no overlap with the original.
+      insertDocument(db, {
+        ...sampleDoc,
+        path: "pricing/mutating.md",
+        title: "Helios Pricing",
+        content: "Replacement body about helios consumption.",
+      });
+
+      const oldHits = db
+        .prepare("SELECT COUNT(*) AS n FROM documents_fts WHERE documents_fts MATCH ?")
+        .all("cirrus*") as { n: number }[];
+      expect(oldHits[0]?.n).toBe(0);
+
+      const newHits = db
+        .prepare("SELECT COUNT(*) AS n FROM documents_fts WHERE documents_fts MATCH ?")
+        .all("helios*") as { n: number }[];
+      expect(newHits[0]?.n).toBe(1);
+    });
+  });
+
+  describe("sqlite-vec mirror", () => {
+    it("ranks indexed vectors by cosine distance for a KNN query", () => {
+      // Three unit-ish vectors; the query is identical to v1, so we expect
+      // v1 closest (distance 0), then v3 (near v1), then v2 (orthogonal).
+      const v1 = new Float32Array([1, 0, 0, 0]);
+      const v2 = new Float32Array([0, 1, 0, 0]);
+      const v3 = new Float32Array([0.9, 0.1, 0, 0]);
+      // The vec table dim is 384 by default; this test needs a 4-dim table
+      // so it can verify the ranking math directly. Use a fresh vault that
+      // opens at the right dim. We swap the outer `db` for the duration of
+      // the assertions and restore it before returning so the suite's
+      // afterEach has a live handle to close.
+      db.close();
+      const fresh = makeTempVault();
+      const opened = openIndexDb(fresh, 4);
+      if (!opened.ok) throw opened.error;
+      db = opened.value;
+      insertEmbeddingVec(db, "h1", MODEL, v1);
+      insertEmbeddingVec(db, "h2", MODEL, v2);
+      insertEmbeddingVec(db, "h3", MODEL, v3);
+
+      const queryBlob = embeddingToBlob(v1);
+      const rows = db
+        .prepare(
+          `SELECT content_hash, distance
+             FROM embeddings_vec
+            WHERE embedding MATCH ? AND model = ? AND k = ?
+            ORDER BY distance`,
+        )
+        .all(queryBlob, MODEL, 3) as { content_hash: string; distance: number }[];
+      expect(rows.map((r) => r.content_hash)).toEqual(["h1", "h3", "h2"]);
+      expect(rows[0]?.distance).toBeCloseTo(0);
+
+      // Restore: tear down the fresh vault, reopen the original so the
+      // suite-level afterEach has a valid db handle.
+      db.close();
+      cleanupVault(fresh);
+      const reopened = openIndexDb(vault);
+      if (!reopened.ok) throw reopened.error;
+      db = reopened.value;
+    });
+
+    it("rebuilds embeddings_vec when the expected dim changes", () => {
+      // First open creates the vec table at dim=4.
+      db.close();
+      const fresh = makeTempVault();
+      let opened = openIndexDb(fresh, 4);
+      if (!opened.ok) throw opened.error;
+      db = opened.value;
+      expect(getMeta(db, "embeddings_vec_dim")).toBe("4");
+      // Insert a 4-dim vector; it must survive the first round-trip.
+      insertEmbeddingVec(db, "h1", MODEL, new Float32Array([1, 0, 0, 0]));
+      expect(
+        (
+          db.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(1);
+
+      db.close();
+      // Reopen at a different dim — the vec table is dropped and recreated;
+      // any rows in it are gone (the durable cache survives — `embeddings`
+      // and `chunks` tables are not touched).
+      opened = openIndexDb(fresh, 8);
+      if (!opened.ok) throw opened.error;
+      db = opened.value;
+      expect(getMeta(db, "embeddings_vec_dim")).toBe("8");
+      expect(
+        (
+          db.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(0);
+
+      // The new dim must actually be the column type — a wrong-length insert
+      // is rejected by sqlite-vec.
+      expect(() => insertEmbeddingVec(db, "h1", MODEL, new Float32Array([1, 0, 0, 0]))).toThrow();
+      // A correctly-sized vector goes through.
+      insertEmbeddingVec(db, "h2", MODEL, new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]));
+
+      db.close();
+      cleanupVault(fresh);
+      const reopened = openIndexDb(vault);
+      if (!reopened.ok) throw reopened.error;
+      db = reopened.value;
     });
   });
 });
