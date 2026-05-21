@@ -75,15 +75,18 @@ describe("daftari --vault", () => {
         "admin",
       ]);
       let stderr = "";
-      const finish = (ok: boolean) => {
+      // Resolve only from the exit handler so cleanupVault never races the
+      // child's background work (the lazy-model warm in #38 PR 2/5 actively
+      // touches the vault directory after "serving vault at" is printed,
+      // which previously raced rmSync to ENOTEMPTY).
+      const finish = () => {
         clearTimeout(timer);
         proc.kill();
-        resolveBoot({ ok, stderr });
       };
-      const timer = setTimeout(() => finish(false), 50_000);
+      const timer = setTimeout(finish, 50_000);
       proc.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
-        if (stderr.includes("serving vault at")) finish(true);
+        if (stderr.includes("serving vault at")) finish();
       });
       proc.on("exit", () => {
         clearTimeout(timer);

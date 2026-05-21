@@ -65,6 +65,20 @@ Three things sit alongside the markdown:
   model is pinned in code (`EMBEDDING_MODEL` in `src/search/vector.ts`); v1
   has no config-driven embedding-provider hook.
 
+  The model loads **lazily**: `getExtractor()` is invoked only when
+  `embed()` actually has texts to embed, not at startup. With the
+  content-addressed cache above, a startup that finds every chunk hash
+  already in the cache (the common case — nothing in the vault changed
+  since the last run) never loads the model at all. After the transport
+  is open and the freshness check has finished, the server kicks off a
+  background `warmModel()` so the first user search does not pay the
+  ~500ms cold start. The warm-up is gated by the optional
+  `warm_embeddings` flag in `.daftari/config.yaml` (default `true`); set
+  it to `false` for read-only roles that never embed or for low-memory
+  deployments where the ~100MB model footprint is unwelcome. A warm-up
+  failure (no network on first run, model download blocked) is logged
+  but never crashes the server — the next `embed()` call retries.
+
   Embeddings are stored in a separate, **content-addressed** `embeddings`
   table keyed by `(content_hash, model)`. A `chunks` row carries the
   `sha256` of its text and joins to the `embeddings` table for the current
