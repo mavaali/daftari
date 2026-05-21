@@ -7,26 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-05-20
+
 ### Changed
 
-- **Content-addressed embedding cache** (#38). Embeddings are no longer keyed
-  by `(path, chunk_index)` — they now live in a separate `embeddings` table
-  keyed by `(content_hash, model)`, where `content_hash` is the SHA-256 of
-  the chunk's text. `chunks` rows carry a `content_hash` column and join to
-  `embeddings` for the current model. A reindex now hashes every chunk,
-  asks the cache which hashes already have a row, and only embeds the
-  misses — so the cost of a reindex scales with the number of *changed
-  chunks*, not the size of the vault. An edit to one paragraph re-embeds
-  one chunk; a rename re-embeds zero; a paragraph moved verbatim to
-  another file re-embeds zero. The composite primary key on
-  `(content_hash, model)` is intentional: a future model migration can
-  keep both the old and new model's embeddings present under the same
-  hash. After writing chunks, the reindex runs an internal `vault_gc`
-  step that drops embeddings rows whose `content_hash` is no longer
-  referenced by any chunk, so the cache does not accumulate orphans.
-  `index.db` rebuilds cleanly on the schema bump (the index is a derived
-  cache); the first reindex after upgrade is a one-time full embed that
-  populates the cache, and every reindex after that is incremental.
+- **Content-addressed embedding cache** (#38, PR #39). Embeddings are no
+  longer keyed by `(path, chunk_index)` — they now live in a separate
+  `embeddings` table keyed by `(content_hash, model)`, where
+  `content_hash` is the SHA-256 of the chunk's text. `chunks` rows carry
+  a `content_hash` column and join to `embeddings` for the current model.
+  A reindex now hashes every chunk, asks the cache which hashes already
+  have a row, and only embeds the misses — so the cost of a reindex
+  scales with the number of *changed chunks*, not the size of the vault.
+  An edit to one paragraph re-embeds one chunk; a rename re-embeds zero;
+  a paragraph moved verbatim to another file re-embeds zero. The
+  composite primary key on `(content_hash, model)` is intentional: a
+  future model migration can keep both the old and new model's
+  embeddings present under the same hash. After writing chunks, the
+  reindex runs an internal `vault_gc` step that drops embeddings rows
+  whose `content_hash` is no longer referenced by any chunk, so the
+  cache does not accumulate orphans. `index.db` rebuilds cleanly on the
+  schema bump (the index is a derived cache); the first reindex after
+  upgrade is a one-time full embed that populates the cache, and every
+  reindex after that is incremental. This is PR 1 of the #38 unbundle;
+  fs.watch reactive indexing, lazy model load, FTS5, sqlite-vec, and
+  pluggable embedding backends are tracked as separate follow-ups.
+
+## [1.7.1] - 2026-05-19
 
 ### Fixed
 
