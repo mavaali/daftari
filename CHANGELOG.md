@@ -57,6 +57,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **SQL-native search via FTS5 and sqlite-vec** (#38, PR 5 of 5 — closes
+  the #38 unbundle). The hand-rolled BM25 ranker (a JavaScript scan over
+  a JSON tokens column) and the brute-force JavaScript cosine loop are
+  both gone; lexical search now runs through an FTS5 virtual table
+  (`documents_fts`) and vector search through a sqlite-vec `vec0`
+  virtual table (`embeddings_vec`). Both halves are one prepared
+  statement; SQLite's built-in BM25 ranks FTS5 matches, sqlite-vec's
+  cosine KNN ranks vector matches. AFTER INSERT / UPDATE / DELETE
+  triggers on the `documents` table keep the FTS5 mirror in sync — the
+  indexer never writes to the virtual table directly. Schema bumped
+  4 → 5; the index is a derived cache so the bump triggers a clean
+  rebuild from the markdown files. The vec table is sized at the active
+  embedding provider's dim and rebuilt on provider switch (the durable
+  `embeddings` cache is per-`(content_hash, model)` and survives the
+  vec-table rebuild, so a switch back to the previous provider is all
+  cache hits). New dependency: `sqlite-vec`. New prerequisite:
+  `better-sqlite3` with extension loading enabled — the npm prebuilt
+  has it on by default, so `npm install` is the only setup step in the
+  common case; a custom build with it disabled is a hard startup error
+  with actionable text (`npm rebuild better-sqlite3 --build-from-source`).
+  This is the final follow-up in the #38 unbundle; v1.9.0 ships as a
+  grouped release covering all five.
+
 - **Lazy embedding model load with background warm-up** (#38, PR 2 of 5).
   The MiniLM embedding model no longer loads at server startup. With the
   v1.8.0 content-addressed cache, a startup whose freshness manifest matches

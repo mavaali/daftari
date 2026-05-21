@@ -1,20 +1,20 @@
-// BM25 lexical ranking, hand-rolled and dependency-free.
+// Lexical ranking — now a thin shim over SQLite FTS5.
 //
-// BM25 scores a document for a query by summing, over each query term, an IDF
-// weight times a saturating term-frequency factor. It is the lexical half of
-// hybrid search: it rewards exact word overlap, which embeddings tend to blur.
+// Until v1.9 this file held a hand-rolled BM25 implementation that scanned
+// every document's JSON-tokens column in JavaScript. SQLite's built-in FTS5
+// virtual table is faster, scales further, and ships with its own (Okapi)
+// BM25 ranker — so this file is now reduced to (a) a query-side tokenizer
+// used by snippet building and `relatedSearch`, and (b) a helper that turns
+// a free-text query into the prefix-OR'd MATCH string FTS5 expects.
 //
-// The vault is a curated knowledge base (tens to low-hundreds of documents),
-// so the whole corpus is ranked in memory on every query. No inverted index.
+// The FTS5 virtual table (`documents_fts`) is declared in
+// `src/storage/index-db.ts`; AFTER INSERT/UPDATE/DELETE triggers on the
+// `documents` table keep it in sync.
 
-// Okapi BM25 free parameters. k1 controls term-frequency saturation; b controls
-// how strongly document length normalises the score. These are the standard
-// defaults and need no tuning at this corpus size.
-const K1 = 1.5;
-const B = 0.75;
-
-// Common English words carry no discriminating signal; dropping them keeps IDF
-// meaningful and snippets pointed at content words.
+// Common English words carry no discriminating signal; dropping them keeps
+// the query side aligned with FTS5's porter/unicode61 tokenizer (which also
+// drops stopwords from BM25 scoring via low IDF) and gives snippet building
+// a cleaner highlight list.
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -56,8 +56,8 @@ const STOPWORDS = new Set([
 ]);
 
 // Lowercases, splits on any non-alphanumeric run, and drops stopwords and
-// 1-character fragments. Used identically for documents and queries so the
-// term spaces line up.
+// 1-character fragments. Used for snippet highlighting and as the BM25
+// query-side tokens fed into FTS5's MATCH parser.
 export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
@@ -65,78 +65,30 @@ export function tokenize(text: string): string[] {
     .filter((t) => t.length > 1 && !STOPWORDS.has(t));
 }
 
-export interface Bm25Document {
-  path: string;
-  tokens: string[];
-}
-
-export interface Bm25Model {
-  // path -> (term -> count in that document)
-  termFreqs: Map<string, Map<string, number>>;
-  // term -> number of documents containing it
-  docFreqs: Map<string, number>;
-  // path -> token count of that document
-  docLengths: Map<string, number>;
-  docCount: number;
-  avgDocLength: number;
-}
-
-export function buildBm25(docs: Bm25Document[]): Bm25Model {
-  const termFreqs = new Map<string, Map<string, number>>();
-  const docFreqs = new Map<string, number>();
-  const docLengths = new Map<string, number>();
-  let totalLength = 0;
-
-  for (const doc of docs) {
-    const tf = new Map<string, number>();
-    for (const term of doc.tokens) {
-      tf.set(term, (tf.get(term) ?? 0) + 1);
-    }
-    termFreqs.set(doc.path, tf);
-    docLengths.set(doc.path, doc.tokens.length);
-    totalLength += doc.tokens.length;
-    for (const term of tf.keys()) {
-      docFreqs.set(term, (docFreqs.get(term) ?? 0) + 1);
-    }
-  }
-
-  return {
-    termFreqs,
-    docFreqs,
-    docLengths,
-    docCount: docs.length,
-    avgDocLength: docs.length > 0 ? totalLength / docs.length : 0,
-  };
-}
-
-export interface Bm25Hit {
-  path: string;
-  score: number;
-}
-
-// Scores every document against the query terms and returns the matches
-// (score > 0) sorted high to low. A document with zero query-term overlap is
-// omitted entirely rather than returned with a zero score.
-export function searchBm25(model: Bm25Model, queryTokens: string[]): Bm25Hit[] {
-  const hits: Bm25Hit[] = [];
-  const uniqueQueryTerms = [...new Set(queryTokens)];
-
-  for (const [path, tf] of model.termFreqs) {
-    const docLength = model.docLengths.get(path) ?? 0;
-    let score = 0;
-    for (const term of uniqueQueryTerms) {
-      const freq = tf.get(term) ?? 0;
-      if (freq === 0) continue;
-      const df = model.docFreqs.get(term) ?? 0;
-      // IDF with the +1 inside the log keeps it non-negative even for terms
-      // that appear in more than half the corpus.
-      const idf = Math.log(1 + (model.docCount - df + 0.5) / (df + 0.5));
-      const denom = freq + K1 * (1 - B + (B * docLength) / (model.avgDocLength || 1));
-      score += idf * ((freq * (K1 + 1)) / denom);
-    }
-    if (score > 0) hits.push({ path, score });
-  }
-
-  hits.sort((a, b) => b.score - a.score);
-  return hits;
+// Builds an FTS5 MATCH query from a free-text user query.
+//
+// We tokenize the same way as `tokenize()`, then OR every term together as
+// a prefix match (`cirrus*`). Prefix matching is friendly to partial
+// keystrokes ("pric" → "pricing", "prices") and to morphologically related
+// words; FTS5's porter tokenizer already collapses many of these on the
+// document side, so the prefix is mostly a query-side recall booster.
+//
+// FTS5 query syntax is fragile in the face of user input: quotes, hyphens,
+// the bare words AND / OR / NOT, and the trailing `*` operator all have
+// meaning to the parser. We strip every character outside [a-zA-Z0-9_]
+// during tokenization (already done), so the only remaining hazard is the
+// reserved words. We bypass that by lower-casing every token — FTS5's
+// reserved words are matched case-sensitively in upper case, so `or` is
+// just a search term.
+//
+// Returns null when the query yields no usable tokens (all-whitespace or
+// all-stopwords). Callers must treat null as "no lexical match possible"
+// rather than passing an empty string to MATCH, which is a syntax error.
+export function buildMatchQuery(query: string): string | null {
+  const tokens = tokenize(query);
+  if (tokens.length === 0) return null;
+  // Deduplicate to keep the MATCH string short. Prefix every token with `*`
+  // for partial matches.
+  const unique = [...new Set(tokens)];
+  return unique.map((t) => `${t}*`).join(" OR ");
 }

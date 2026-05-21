@@ -49,10 +49,31 @@ Three things sit alongside the markdown:
   system. A vault nested in a larger repo can set `auto_commit: false` in
   `.daftari/config.yaml` to opt out: writes still produce durable, indexed,
   provenance-logged files, but staging and committing are left to the caller.
-- **SQLite index** (`.daftari/index.db`). Holds the BM25 term statistics and
-  the vector embeddings that power hybrid search. It is **ephemeral** — it can
-  be rebuilt from the markdown files at any time with `vault_reindex`, and it
-  is git-ignored.
+- **SQLite index** (`.daftari/index.db`). Holds the lexical (FTS5) and
+  vector (sqlite-vec) indexes that power hybrid search. It is **ephemeral**
+  — it can be rebuilt from the markdown files at any time with
+  `vault_reindex`, and it is git-ignored.
+
+  Lexical ranking lives in an FTS5 virtual table (`documents_fts`) over
+  title, tags, and body. SQLite's built-in BM25 ranks results and AFTER
+  INSERT / UPDATE / DELETE triggers on the regular `documents` table keep
+  the FTS index in sync without any extra write path. Vector ranking
+  lives in a sqlite-vec `embeddings_vec` virtual table that mirrors the
+  durable `embeddings` cache and exposes KNN queries via `MATCH ... AND
+  k = ?` with cosine distance. Both indexes are SQL-native — search is
+  one prepared statement per ranker, not a JavaScript scan.
+
+  **Prerequisite.** sqlite-vec ships a loadable extension (`vec0.dylib`
+  / `.so` / `.dll`) and Daftari loads it at index-db open time via
+  `better-sqlite3`'s `db.loadExtension()`. The `sqlite-vec` npm package
+  contains pre-built binaries for darwin/linux/windows on x64 and arm64,
+  and the `better-sqlite3` npm prebuilt enables extension loading by
+  default — so for the common case `npm install` is the only step
+  needed. If a custom `better-sqlite3` build with extension loading
+  disabled is installed, `openIndexDb` returns a Result.err with
+  actionable text: `npm rebuild better-sqlite3 --build-from-source`.
+  The server refuses to start on this failure rather than silently
+  falling back to JavaScript cosine.
 
   The vector embeddings are produced by a configurable
   **`EmbeddingProvider`** (see `src/search/embedding-provider.ts`). Each
@@ -83,7 +104,7 @@ Three things sit alongside the markdown:
   An unknown provider id, or `openai-3-small` with no `OPENAI_API_KEY`
   in env, is a hard config error — the server refuses to start. Embedding
   is best-effort at runtime: if the model cannot load (local) or the API
-  is unreachable (paid), a reindex still builds the BM25 side and chunks
+  is unreachable (paid), a reindex still builds the FTS5 lexical index and chunks
   land with no embedding row, so search degrades to lexical-only rather
   than failing.
 
