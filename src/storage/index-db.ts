@@ -158,8 +158,9 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
 END;
 `;
 
-// Loads the sqlite-vec loadable extension. Returns Result so the caller
-// (openIndexDb) can surface an actionable message to the operator.
+// Loads the sqlite-vec loadable extension and runs a 1-vector roundtrip to
+// confirm ABI compatibility. Returns Result so the caller (openIndexDb) can
+// surface an actionable message to the operator.
 // Three realistic failure modes, each with a different fix:
 //   1. Platform binary not installed — happens when `npm install` was run
 //      with `--omit=optional`, so the per-platform sqlite-vec package was
@@ -170,10 +171,12 @@ END;
 //   3. ABI / dlopen error — native library found but refused by the OS
 //      (e.g. wrong architecture, missing dylib dependency). Message carries
 //      the OS reason verbatim.
+// After load() returns, a 1-vector KNN roundtrip catches the case where the
+// extension was dlopen'd but the SQLite virtual-table machinery is broken —
+// a silent ABI mismatch that `load()` itself would not detect.
 function loadVecExtension(db: IndexDb): Result<void, Error> {
   try {
     sqliteVec.load(db);
-    return ok(undefined);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     let hint: string;
@@ -197,6 +200,46 @@ function loadVecExtension(db: IndexDb): Result<void, Error> {
     }
     return err(new Error(`cannot load sqlite-vec extension: ${reason}. ${hint}`));
   }
+
+  // ABI smoke-test: insert one vector and retrieve it. Uses temp.schema
+  // (CREATE VIRTUAL TABLE temp._vec_smoke) because SQLite does not allow
+  // CREATE TEMP VIRTUAL TABLE syntax, but does allow schema-qualified names
+  // that target the temp database. The table is dropped after the test so no
+  // permanent schema changes land.
+  const smokeBlob = Buffer.from(new Float32Array([1.0]).buffer);
+  try {
+    db.exec(
+      "CREATE VIRTUAL TABLE temp._vec_smoke USING vec0(v FLOAT[1] distance_metric=cosine);",
+    );
+    db.prepare("INSERT INTO temp._vec_smoke(v) VALUES (?)").run(smokeBlob);
+    const rows = db
+      .prepare("SELECT * FROM temp._vec_smoke WHERE v MATCH ? AND k = ?")
+      .all(smokeBlob, 1) as unknown[];
+    db.exec("DROP TABLE IF EXISTS temp._vec_smoke;");
+    if (rows.length !== 1) {
+      return err(
+        new Error(
+          "sqlite-vec loaded but smoke-test returned no rows — " +
+            "possible ABI mismatch between the sqlite-vec binary and this build of better-sqlite3",
+        ),
+      );
+    }
+  } catch (e) {
+    try {
+      db.exec("DROP TABLE IF EXISTS _vec_smoke;");
+    } catch {
+      // best-effort cleanup; ignore secondary failure
+    }
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(
+      new Error(
+        `sqlite-vec loaded but smoke-test failed: ${reason} — ` +
+          "possible ABI mismatch between the sqlite-vec binary and this build of better-sqlite3",
+      ),
+    );
+  }
+
+  return ok(undefined);
 }
 
 // Creates the sqlite-vec virtual table at the given dim, dropping any
