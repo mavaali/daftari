@@ -166,26 +166,44 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
 END;
 `;
 
-// Loads the sqlite-vec loadable extension. The npm-distributed
-// `better-sqlite3` ships with extension loading enabled in current
-// versions, so this is normally a no-op success — but some custom builds
-// or distro packages strip the capability, and we want a clear,
-// actionable error in that case rather than a confusing later failure
-// when a query references `embeddings_vec`. Returns Result so the caller
-// (openIndexDb) can surface the message to the operator.
+// Loads the sqlite-vec loadable extension. Returns Result so the caller
+// (openIndexDb) can surface an actionable message to the operator.
+// Three realistic failure modes, each with a different fix:
+//   1. Platform binary not installed — happens when `npm install` was run
+//      with `--omit=optional`, so the per-platform sqlite-vec package was
+//      never downloaded. Fix: re-run `npm install` without that flag.
+//   2. Extension loading disabled — better-sqlite3 was compiled with
+//      SQLITE_OMIT_LOAD_EXTENSION or the feature was stripped by a distro
+//      package. Fix: rebuild from source.
+//   3. ABI / dlopen error — native library found but refused by the OS
+//      (e.g. wrong architecture, missing dylib dependency). Message carries
+//      the OS reason verbatim.
 function loadVecExtension(db: IndexDb): Result<void, Error> {
   try {
     sqliteVec.load(db);
     return ok(undefined);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
-    return err(
-      new Error(
-        `cannot load sqlite-vec extension: ${reason}. ` +
-          "If this is the better-sqlite3 prebuilt without extension loading, " +
-          "rebuild it from source: `npm rebuild better-sqlite3 --build-from-source`.",
-      ),
-    );
+    let hint: string;
+    if (reason.includes("Cannot find module") || reason.includes("not found")) {
+      // require.resolve threw MODULE_NOT_FOUND — the per-platform binary
+      // package was never installed (most commonly: npm install --omit=optional).
+      hint =
+        "The sqlite-vec platform binary was not installed. " +
+        "Re-run `npm install` without --omit=optional.";
+    } else if (
+      reason.includes("not authorized") ||
+      reason.includes("extension loading") ||
+      reason.includes("SQLITE_ERROR")
+    ) {
+      // db.loadExtension threw because the better-sqlite3 build has
+      // extension loading compiled out.
+      hint = "Rebuild better-sqlite3 with extension loading enabled: `npm rebuild better-sqlite3 --build-from-source`.";
+    } else {
+      // ABI mismatch, OS security policy, or other native-load error.
+      hint = "Check that the sqlite-vec binary is compatible with this platform.";
+    }
+    return err(new Error(`cannot load sqlite-vec extension: ${reason}. ${hint}`));
   }
 }
 

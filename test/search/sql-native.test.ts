@@ -232,11 +232,7 @@ describe("provider switch rebuilds embeddings_vec at the new dim", () => {
 });
 
 describe("extension loading guard", () => {
-  it("surfaces a clear, actionable error when sqlite-vec cannot load", async () => {
-    // Stub the sqlite-vec module so `load()` throws — simulating the
-    // failure mode where better-sqlite3 was built without extension
-    // loading. openIndexDb must turn this into a Result.err with the
-    // documented rebuild instructions, not crash with a stack trace.
+  it("surfaces rebuild guidance when better-sqlite3 has extension loading disabled", async () => {
     vi.resetModules();
     vi.doMock("sqlite-vec", () => ({
       load: () => {
@@ -245,8 +241,6 @@ describe("extension loading guard", () => {
       getLoadablePath: () => "/nonexistent/path",
     }));
 
-    // Dynamic import after the mock is installed so the storage module
-    // picks up the stubbed sqlite-vec.
     const { openIndexDb: scopedOpen } = await import("../../src/storage/index-db.js?reload");
 
     const tmpVault = mkdtempSync(join(tmpdir(), "daftari-vec-fail-"));
@@ -254,10 +248,39 @@ describe("extension loading guard", () => {
       const result = scopedOpen(tmpVault);
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      // The error must mention the rebuild guidance — that's the
-      // operator-facing actionable next step.
       expect(result.error.message).toContain("sqlite-vec");
       expect(result.error.message).toContain("npm rebuild better-sqlite3");
+    } finally {
+      rmSync(tmpVault, { recursive: true, force: true });
+      vi.doUnmock("sqlite-vec");
+      vi.resetModules();
+    }
+  });
+
+  it("surfaces reinstall guidance when the platform binary was not installed (--omit=optional)", async () => {
+    vi.resetModules();
+    vi.doMock("sqlite-vec", () => ({
+      load: () => {
+        throw new Error("Cannot find module 'sqlite-vec-darwin-arm64/vec0.dylib'");
+      },
+      getLoadablePath: () => {
+        throw new Error("Cannot find module 'sqlite-vec-darwin-arm64/vec0.dylib'");
+      },
+    }));
+
+    const { openIndexDb: scopedOpen } = await import("../../src/storage/index-db.js?reload");
+
+    const tmpVault = mkdtempSync(join(tmpdir(), "daftari-vec-omit-"));
+    try {
+      const result = scopedOpen(tmpVault);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("sqlite-vec");
+      // Must NOT tell the user to rebuild — wrong next step for this failure mode.
+      expect(result.error.message).not.toContain("--build-from-source");
+      // Must tell the user to reinstall without --omit=optional.
+      expect(result.error.message).toContain("npm install");
+      expect(result.error.message).toContain("--omit=optional");
     } finally {
       rmSync(tmpVault, { recursive: true, force: true });
       vi.doUnmock("sqlite-vec");
