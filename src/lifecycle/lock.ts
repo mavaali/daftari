@@ -3,8 +3,9 @@
 // index.db. See docs/superpowers/plans/2026-05-20-process-lockfile.md (#52).
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 export type LockData = {
@@ -63,12 +64,17 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-// Best-effort check that PID belongs to a daftari/node process running this
-// vault. Protects against PID recycling — if the original daftari died and the
-// OS reassigned its PID to e.g. vim, we must NOT SIGTERM the unrelated process.
+// Best-effort check that PID belongs to a daftari process running THIS vault.
+// Protects against PID recycling — if the original daftari died and the OS
+// reassigned its PID to e.g. vim, we must NOT SIGTERM the unrelated process.
 //
-// Uses `ps -p PID -o command=` which is POSIX-portable. If ps fails or the
-// command line doesn't look like daftari, returns false (treat as stale).
+// Uses `ps -p PID -o command=` which is POSIX-portable. Match requires the
+// exact vault path to appear in the command line: daftari's CLI requires
+// `--vault <path>` as a positional argument, so the path is always in argv.
+// We deliberately do NOT match on the substring "daftari" anywhere in the
+// output, because the daftari repo's own path contains that string and would
+// falsely match any node process whose cwd or argv includes the repo root
+// (e.g. vitest workers).
 export function isDaftariProcess(pid: number, vaultRoot: string): boolean {
   if (!isProcessAlive(pid)) return false;
   try {
@@ -77,9 +83,100 @@ export function isDaftariProcess(pid: number, vaultRoot: string): boolean {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (out.length === 0) return false;
-    if (out.includes(vaultRoot)) return true;
-    return /node|tsx/.test(out) && /daftari/.test(out);
+    return out.includes(vaultRoot);
   } catch {
     return false;
   }
+}
+
+// Wait until pid exits or until timeoutMs elapses. Returns true if pid is
+// gone. Polled with setTimeout so we don't peg a CPU core during the grace
+// window.
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const POLL_MS = 100;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return true;
+    await sleep(POLL_MS);
+  }
+  return !isProcessAlive(pid);
+}
+
+const SIGTERM_GRACE_MS = 3000;
+
+// Atomic O_EXCL create. Returns ok(true) if we created the lockfile (sole
+// owner), ok(false) on EEXIST (caller must read and resolve).
+function tryCreateExclusive(vaultRoot: string, data: LockData): Result<boolean, Error> {
+  try {
+    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    const fd = openSync(lockPath(vaultRoot), "wx");
+    try {
+      writeSync(fd, JSON.stringify(data, null, 2));
+    } finally {
+      closeSync(fd);
+    }
+    return ok(true);
+  } catch (e) {
+    const errno = e as NodeJS.ErrnoException;
+    if (errno.code === "EEXIST") return ok(false);
+    return err(errno);
+  }
+}
+
+// Acquire the per-vault process lock. Behavior:
+//   - No existing lock → atomic O_EXCL create, return ok.
+//   - Existing lock with dead PID → stale, overwrite.
+//   - Existing lock with live PID that does not look like a daftari for this
+//     vault (PID recycled) → stale, overwrite.
+//   - Existing lock with live daftari for this vault → SIGTERM it, wait up to
+//     3s for exit, then overwrite. If it does not exit, log a warning and
+//     overwrite anyway.
+//
+// Logs go to stderr (MCP convention; stdout is reserved for JSON-RPC).
+export async function acquireLock(
+  vaultRoot: string,
+  version: string,
+): Promise<Result<void, Error>> {
+  const our: LockData = {
+    daftari: true,
+    pid: process.pid,
+    vaultRoot,
+    startedAt: new Date().toISOString(),
+    version,
+  };
+
+  const created = tryCreateExclusive(vaultRoot, our);
+  if (!created.ok) return created;
+  if (created.value) return ok(undefined);
+
+  const existing = readLockfile(vaultRoot);
+  if (!existing.ok) return existing;
+
+  if (existing.value !== null) {
+    const prior = existing.value;
+    if (isDaftariProcess(prior.pid, vaultRoot)) {
+      process.stderr.write(
+        `daftari: another instance is holding this vault (pid=${prior.pid}, ` +
+          `started=${prior.startedAt}); sending SIGTERM and taking over\n`,
+      );
+      try {
+        process.kill(prior.pid, "SIGTERM");
+      } catch {
+        // Died between check and signal — fine.
+      }
+      const exited = await waitForExit(prior.pid, SIGTERM_GRACE_MS);
+      if (!exited) {
+        process.stderr.write(
+          `daftari: warning: pid ${prior.pid} did not exit within ` +
+            `${SIGTERM_GRACE_MS}ms; proceeding anyway\n`,
+        );
+      }
+    } else {
+      process.stderr.write(
+        `daftari: removing stale lockfile (pid=${prior.pid} not a live daftari instance)\n`,
+      );
+    }
+  }
+
+  return writeLockfile(vaultRoot, our);
 }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  acquireLock,
   isDaftariProcess,
   isProcessAlive,
   type LockData,
@@ -74,5 +75,54 @@ describe("isDaftariProcess", () => {
 
   it("returns false for an unused PID", () => {
     expect(isDaftariProcess(2 ** 30, "/some/vault")).toBe(false);
+  });
+});
+
+describe("acquireLock", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-acquire-"));
+  });
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("writes a fresh lock when none exists", async () => {
+    const r = await acquireLock(vault, "1.10.0");
+    expect(r.ok).toBe(true);
+    const read = readLockfile(vault);
+    expect(read.ok).toBe(true);
+    if (read.ok && read.value) {
+      expect(read.value.pid).toBe(process.pid);
+      expect(read.value.vaultRoot).toBe(vault);
+    }
+  });
+
+  it("overwrites a stale lock (dead PID)", async () => {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeLockfile(vault, {
+      daftari: true,
+      pid: 2 ** 30,
+      vaultRoot: vault,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      version: "1.9.1",
+    });
+    const r = await acquireLock(vault, "1.10.0");
+    expect(r.ok).toBe(true);
+    const read = readLockfile(vault);
+    if (read.ok && read.value) expect(read.value.pid).toBe(process.pid);
+  });
+
+  it("overwrites a lock whose vaultRoot points elsewhere (PID recycled to unrelated process)", async () => {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeLockfile(vault, {
+      daftari: true,
+      pid: process.pid,
+      vaultRoot: "/some/other/vault",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      version: "1.9.1",
+    });
+    const r = await acquireLock(vault, "1.10.0");
+    expect(r.ok).toBe(true);
   });
 });
