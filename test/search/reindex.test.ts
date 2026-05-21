@@ -1,8 +1,15 @@
 import { readFile, rename, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ok, type Result } from "../../src/frontmatter/types.js";
+import type { EmbeddingProvider } from "../../src/search/embedding-provider.js";
+import { localMinilmProvider } from "../../src/search/providers/local-minilm.js";
 import { indexDocument, isIndexFresh, reindexVault } from "../../src/search/reindex.js";
-import { EMBEDDING_MODEL } from "../../src/search/vector.js";
+import {
+  EMBEDDING_MODEL,
+  resetProviderForTests,
+  setProviderForTests,
+} from "../../src/search/vector.js";
 import {
   embeddingCount,
   getAllChunks,
@@ -308,6 +315,105 @@ describe("reindexVault", () => {
           )
           .get() as { n: number };
         expect(orphanCount.n).toBe(0);
+      } finally {
+        db.close();
+      }
+    }, 120_000);
+  });
+
+  // Provider switch: when the active provider's `id` changes between two
+  // reindexes, the second reindex sees zero cache hits for the new id and
+  // re-embeds the whole vault under it. This is the "natural" behaviour
+  // claimed by the design — the composite (content_hash, model) PK scopes
+  // the cache lookup to the active provider's id. We exercise it with a
+  // wrapper around local-minilm (different `id`, same embedder) so the test
+  // doesn't pay the cost of two real model loads or hit the network.
+  describe("provider switch", () => {
+    afterEach(() => {
+      // Always restore the default provider so the next test starts clean.
+      resetProviderForTests();
+    });
+
+    it("a provider switch invalidates the cache for the new id and re-embeds everything", async () => {
+      // First reindex under the default local-minilm provider. This loads
+      // the model once and populates rows under model='local-minilm'.
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.value.embeddedCount).toBeGreaterThan(0);
+      expect(first.value.cacheHits).toBe(0);
+
+      // Wrap local-minilm in a different id ("alt-minilm") to simulate a
+      // provider switch. The vectors are identical (so cosine math stays
+      // valid), but the cache lookup scopes by id — so every chunk is a
+      // cache miss under the new id and re-embedding happens for all of them.
+      const altProvider: EmbeddingProvider = {
+        id: "alt-minilm",
+        dim: localMinilmProvider.dim,
+        async warm(): Promise<Result<void, Error>> {
+          return ok(undefined);
+        },
+        embed: localMinilmProvider.embed.bind(localMinilmProvider),
+      };
+      setProviderForTests(altProvider);
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+
+      // Headline: the new id has no cached rows, so every chunk is a miss
+      // and the second reindex embeds the whole vault again under it.
+      expect(second.value.cacheHits).toBe(0);
+      expect(second.value.embeddedCount).toBeGreaterThan(0);
+      expect(second.value.embeddedCount).toBe(first.value.embeddedCount);
+
+      // Both providers' rows coexist in the cache (the composite PK lets
+      // them) — a switch-back to the original id would be all cache hits.
+      const opened = openIndexDb(vault);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+      try {
+        const localCount = db
+          .prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ?")
+          .get("local-minilm") as { n: number };
+        const altCount = db
+          .prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ?")
+          .get("alt-minilm") as { n: number };
+        expect(localCount.n).toBeGreaterThan(0);
+        expect(altCount.n).toBeGreaterThan(0);
+      } finally {
+        db.close();
+      }
+
+      // The current provider's id is what gets written to meta.
+      const dbMeta = openIndexDb(vault);
+      if (!dbMeta.ok) throw dbMeta.error;
+      try {
+        expect(getMeta(dbMeta.value, "embedding_model")).toBe("alt-minilm");
+        expect(getMeta(dbMeta.value, "embedding_dim")).toBe(String(localMinilmProvider.dim));
+      } finally {
+        dbMeta.value.close();
+      }
+    }, 240_000);
+
+    it("embeddings written under the active provider carry the provider's dim", async () => {
+      // After a reindex under local-minilm (default), every embeddings row
+      // must have dim = 384. This proves insertEmbedding is being called
+      // with the provider's dim rather than a hard-coded constant.
+      const result = await reindexVault(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const opened = openIndexDb(vault);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+      try {
+        const wrongDim = db
+          .prepare("SELECT COUNT(*) AS n FROM embeddings WHERE dim != ?")
+          .get(384) as { n: number };
+        expect(wrongDim.n).toBe(0);
+        // EMBEDDING_MODEL is the deprecated alias still pointing at the
+        // local-minilm id; suppress the "import unused" lint hint via use.
+        expect(EMBEDDING_MODEL).toBe("local-minilm");
       } finally {
         db.close();
       }

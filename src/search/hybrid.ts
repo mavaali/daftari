@@ -18,7 +18,7 @@ import {
   type IndexDb,
 } from "../storage/index-db.js";
 import { buildBm25, searchBm25, tokenize } from "./bm25.js";
-import { cosineSimilarity, EMBEDDING_MODEL, embedQuery, meanEmbedding } from "./vector.js";
+import { cosineSimilarity, embedQuery, getProvider, meanEmbedding } from "./vector.js";
 
 export interface HybridWeights {
   bm25: number;
@@ -113,7 +113,12 @@ function rankDocuments(
   const vectorRaw = new Map<string, number>();
   let vectorUsed = false;
   if (queryEmbedding) {
-    for (const chunk of getAllChunks(db, EMBEDDING_MODEL)) {
+    const provider = getProvider();
+    // Pass `provider.dim` so getAllChunks skips any cached row whose stored
+    // dim or blob byte length disagrees — defense-in-depth against a
+    // corrupted or cross-provider mix that shouldn't be possible but would
+    // produce silent garbage scores if it slipped through.
+    for (const chunk of getAllChunks(db, provider.id, provider.dim)) {
       if (!chunk.embedding) continue;
       vectorUsed = true;
       const sim = cosineSimilarity(queryEmbedding, chunk.embedding);
@@ -225,7 +230,8 @@ export function relatedSearch(
     };
   }
 
-  const chunkVectors = getChunksForPath(db, path, EMBEDDING_MODEL)
+  const provider = getProvider();
+  const chunkVectors = getChunksForPath(db, path, provider.id, provider.dim)
     .map((c) => c.embedding)
     .filter((e): e is Float32Array => e !== null);
   const queryEmbedding = meanEmbedding(chunkVectors);

@@ -29,6 +29,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check (manifest mtimes vs disk, see #36) remains as the reconciliation
   backstop for events the watcher drops.
 
+- **Pluggable embedding backend** (#38, PR 4 of 5). The embedding model is
+  no longer hard-coded; a new `EmbeddingProvider` interface lets the vault
+  owner choose between two backends in `.daftari/config.yaml`:
+
+  ```yaml
+  embeddings:
+    provider: local-minilm   # default. Other values: openai-3-small.
+  ```
+
+  - **`local-minilm`** (default, 384-dim) is the existing
+    `all-MiniLM-L6-v2` path run via `@huggingface/transformers` — free,
+    fully local, slow on cold-start.
+  - **`openai-3-small`** (1536-dim) calls OpenAI's `text-embedding-3-small`
+    endpoint. ~10x faster on large vaults but paid. Requires
+    `OPENAI_API_KEY` in the server's environment; a missing key is a hard
+    config error at startup, not a silent fallback. Batches at 96 inputs
+    per request with exponential backoff on 429 / 5xx (up to 3 retries).
+
+  The `embeddings` table gains a `dim` column (schema bump 3 → 4) as
+  defense-in-depth against a corrupt or cross-provider mix. The schema
+  bump rebuilds the index cleanly — derived from the markdown files, no
+  manual migration needed. Switching providers between server runs is
+  safe: the `(content_hash, model)` composite PK lets both providers'
+  rows coexist, and the new provider's first reindex naturally populates
+  its own row set without re-embedding under the old id.
+
 ### Changed
 
 - **Lazy embedding model load with background warm-up** (#38, PR 2 of 5).

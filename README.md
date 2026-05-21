@@ -156,30 +156,52 @@ score, blended with tunable weights. The vector half is worth being explicit
 about, because a local-first tool should never leave you guessing whether a
 query leaves your machine.
 
-- **Embedding model.** `all-MiniLM-L6-v2` (the `Xenova/all-MiniLM-L6-v2`
-  build), a 384-dimension sentence-transformer.
-- **Where it runs.** Entirely **local**. Embeddings are computed in-process by
+### Embedding providers
+
+Daftari ships with two embedding backends. Pick one in
+`.daftari/config.yaml`:
+
+```yaml
+embeddings:
+  provider: local-minilm   # default. Other values: openai-3-small.
+```
+
+- **`local-minilm`** (default). `all-MiniLM-L6-v2` (the
+  `Xenova/all-MiniLM-L6-v2` build), a 384-dimension sentence-transformer.
+  Runs entirely **local**: embeddings are computed in-process by
   [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers)
-  (Transformers.js). There is **no external embedding API** — nothing is sent
-  to Hugging Face, OpenAI, or anyone else at index or query time.
-- **Dependencies.** Just `npm install`. No Python, no separate ONNX runtime, no
-  GPU, no API key — the ONNX runtime ships as a dependency of
-  `@huggingface/transformers`. The **first** reindex downloads the model
-  weights (~25 MB) from the Hugging Face hub and caches them on disk; every run
-  after that is fully offline.
-- **Graceful degradation.** If the model cannot load — e.g. no network on the
-  very first run, before the weights are cached — `vault_reindex` still builds
-  the BM25 index. The vector column is left empty, `vectorUsed` reports
-  `false`, and search transparently falls back to lexical-only ranking.
+  (Transformers.js). No external embedding API — nothing is sent to
+  Hugging Face, OpenAI, or anyone else at index or query time. Just
+  `npm install` — no Python, no API key. The **first** reindex downloads
+  the model weights (~25 MB) from the Hugging Face hub and caches them on
+  disk; every run after that is fully offline. Slow on cold start
+  (~25 min CPU on a 44k-chunk vault), but free.
+
+- **`openai-3-small`**. OpenAI's `text-embedding-3-small`, a 1536-dimension
+  hosted embedding. **Sends chunk text to OpenAI** at reindex time —
+  enable this only if you're comfortable with that. Requires
+  `OPENAI_API_KEY` in the server's environment (it is never read from
+  config files). ~10x faster than `local-minilm` on large vaults; on the
+  44k-chunk benchmark above, ~2 minutes and ~$0.10. Because Daftari's
+  embedding cache is content-addressed by `(content_hash, model)`, the
+  paid cost is a **one-time event per chunk text** — re-running
+  `vault_reindex` on an unchanged vault embeds zero new chunks. Switching
+  providers between server runs is safe: the cache keeps both providers'
+  rows, so switching back to the other later re-uses what was previously
+  embedded.
+
+- **Graceful degradation.** Whichever provider is active, if it cannot
+  reach the model (no network on the very first `local-minilm` run, before
+  the weights are cached; or OpenAI unreachable), `vault_reindex` still
+  builds the BM25 index. The vector column is left empty, `vectorUsed`
+  reports `false`, and search transparently falls back to lexical-only
+  ranking.
+
 - **Quality tradeoff.** MiniLM is small and fast, which keeps Daftari
-  dependency-light and snappy, but its recall/precision is below larger hosted
-  embedding models. Pairing it with BM25 covers the common case where a small
-  model misses an exact-term match.
-- **Swappability.** v1 pins the model as a constant (`EMBEDDING_MODEL` in
-  [`src/search/vector.ts`](src/search/vector.ts)). Any model the Transformers.js
-  feature-extraction pipeline supports can be substituted by editing that
-  constant (and `EMBEDDING_DIM` to match) and running `vault_reindex`. A
-  config-driven bring-your-own-embedding hook is not in v1.
+  dependency-light and snappy, but its recall/precision is below larger
+  hosted embedding models. `openai-3-small` is the obvious next step.
+  Pairing either with BM25 covers the common case where a small model
+  misses an exact-term match.
 
 ---
 

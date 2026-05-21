@@ -54,16 +54,43 @@ Three things sit alongside the markdown:
   be rebuilt from the markdown files at any time with `vault_reindex`, and it
   is git-ignored.
 
-  The vector embeddings are produced **locally**. Each document body is split
-  into ~800-character chunks; every chunk is embedded into a 384-dimension
-  vector by the `all-MiniLM-L6-v2` sentence-transformer, run in-process via
-  `@huggingface/transformers` (Transformers.js). No embedding API is called —
-  the only network access is the one-time download of the model weights to the
-  Hugging Face cache on first use. Embedding is best-effort: if the model
-  cannot load, a reindex still builds the BM25 side and chunks land with no
-  embedding row, so search degrades to lexical-only rather than failing. The
-  model is pinned in code (`EMBEDDING_MODEL` in `src/search/vector.ts`); v1
-  has no config-driven embedding-provider hook.
+  The vector embeddings are produced by a configurable
+  **`EmbeddingProvider`** (see `src/search/embedding-provider.ts`). Each
+  document body is split into ~800-character chunks; every chunk is embedded
+  into a fixed-dimension vector by the active provider. Two providers ship
+  with v1.9:
+
+  - **`local-minilm`** (default) — runs `all-MiniLM-L6-v2` in-process via
+    `@huggingface/transformers` (Transformers.js). 384-dimension vectors,
+    fully local, no embedding API call. The only network access is the
+    one-time download of the model weights to the Hugging Face cache on
+    first use. Slow on cold-start (multi-minute on large vaults) but free.
+
+  - **`openai-3-small`** — calls OpenAI's `text-embedding-3-small`
+    (1536-dim) over HTTPS. Fast (~2 min for a 44k-chunk vault vs ~25 min
+    locally) but paid. Requires `OPENAI_API_KEY` in the server's
+    environment; the key is never read from config files. Batched at 96
+    inputs per request, with exponential backoff on 429 / 5xx (up to 3
+    retries).
+
+  The active provider is set in `.daftari/config.yaml`:
+
+  ```yaml
+  embeddings:
+    provider: local-minilm   # or: openai-3-small
+  ```
+
+  An unknown provider id, or `openai-3-small` with no `OPENAI_API_KEY`
+  in env, is a hard config error — the server refuses to start. Embedding
+  is best-effort at runtime: if the model cannot load (local) or the API
+  is unreachable (paid), a reindex still builds the BM25 side and chunks
+  land with no embedding row, so search degrades to lexical-only rather
+  than failing.
+
+  Switching providers between server runs is safe: the `embeddings` table
+  is keyed by `(content_hash, model)`, so the new provider populates a
+  fresh row set on first reindex while the previous provider's rows stay
+  in the cache as cheap insurance for switching back.
 
   The model loads **lazily**: `getExtractor()` is invoked only when
   `embed()` actually has texts to embed, not at startup. With the
@@ -80,10 +107,11 @@ Three things sit alongside the markdown:
   but never crashes the server — the next `embed()` call retries.
 
   Embeddings are stored in a separate, **content-addressed** `embeddings`
-  table keyed by `(content_hash, model)`. A `chunks` row carries the
-  `sha256` of its text and joins to the `embeddings` table for the current
-  model — so an embedding is the property of a chunk's text, not of a file
-  path or its mtime. A reindex hashes every chunk, asks the cache which
+  table keyed by `(content_hash, model)`, with a `dim` column recording
+  the vector dimension as defense-in-depth against a corrupt or cross-
+  provider mix. A `chunks` row carries the `sha256` of its text and joins
+  to the `embeddings` table for the current model — so an embedding is
+  the property of a chunk's text, not of a file path or its mtime. A reindex hashes every chunk, asks the cache which
   hashes already have a row for the current model, and only embeds the
   misses. The cost of a reindex therefore scales with the number of *changed
   chunks*, not the size of the vault: an edit to one paragraph re-embeds one

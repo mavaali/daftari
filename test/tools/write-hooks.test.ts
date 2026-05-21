@@ -1,10 +1,18 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDocument } from "../../src/frontmatter/parser.js";
 import { vaultAppend, vaultWrite } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
+
+// Each test in this file goes through the full write path — dynamic hook
+// ESM import, frontmatter validation, indexDocument (which now hits the
+// pluggable embedding provider's lookup + lazy model warm). Under heavy
+// parallel test load on CI the default 5s timeout is occasionally too
+// tight on the slowest runners. 30s is well below the reindex/embedding
+// tests' 60s ceiling and gives consistent headroom.
+vi.setConfig({ testTimeout: 30_000 });
 
 const AGENT = "agent:claude-code";
 

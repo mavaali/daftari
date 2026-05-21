@@ -75,7 +75,7 @@ describe("index-db", () => {
       text,
       contentHash: hash,
     });
-    insertEmbedding(db, hash, MODEL, embedding, "2026-05-20T00:00:00Z");
+    insertEmbedding(db, hash, MODEL, embedding, "2026-05-20T00:00:00Z", embedding.length);
     const chunks = getChunksForPath(db, "pricing/foo.md", MODEL);
     expect(chunks).toHaveLength(1);
     expect(chunks[0]?.contentHash).toBe(hash);
@@ -111,7 +111,7 @@ describe("index-db", () => {
       text,
       contentHash: hash,
     });
-    insertEmbedding(db, hash, MODEL, new Float32Array([1, 2, 3]), "2026-05-20T00:00:00Z");
+    insertEmbedding(db, hash, MODEL, new Float32Array([1, 2, 3]), "2026-05-20T00:00:00Z", 3);
     clearIndex(db);
     expect(documentCount(db)).toBe(0);
     expect(getAllChunks(db, MODEL)).toEqual([]);
@@ -173,8 +173,59 @@ describe("index-db", () => {
 
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("3");
+    expect(getMeta(db, "schema_version")).toBe("4");
     expect(getMeta(db, "vault_manifest")).toBeNull();
+  });
+
+  it("schema 3 → 4 rebuild: a v3 index is dropped and recreated cleanly", () => {
+    // Simulate a vault that was last indexed by a v1.8.0 server (schema "3",
+    // no `dim` column on embeddings). The 3 → 4 bump must drop the legacy
+    // table and let openIndexDb recreate it with the new column — no manual
+    // migration needed because the cache is rebuildable from disk.
+    setMeta(db, "schema_version", "3");
+    // Insert a row resembling the legacy embeddings shape: no dim column.
+    // The actual on-disk v3 table won't have the column at all, but the
+    // important assertion is that openIndexDb DROPS and recreates, so any
+    // pre-existing content is gone.
+    insertDocument(db, sampleDoc);
+    expect(documentCount(db)).toBe(1);
+    db.close();
+
+    const reopened = openIndexDb(vault);
+    if (!reopened.ok) throw reopened.error;
+    db = reopened.value;
+
+    expect(documentCount(db)).toBe(0);
+    expect(getMeta(db, "schema_version")).toBe("4");
+    // The new embeddings table now has a `dim` column — confirm via a write
+    // that requires the dim parameter (the old API didn't take one).
+    const text = "hello";
+    const hash = sha256Hex(text);
+    const vec = new Float32Array([0.5, 0.5]);
+    insertEmbedding(db, hash, MODEL, vec, "2026-05-20T00:00:00Z", 2);
+    const rows = db.prepare("SELECT dim FROM embeddings WHERE content_hash = ?").all(hash) as {
+      dim: number;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.dim).toBe(2);
+  });
+
+  it("rejects an insert whose vector length does not match the declared dim", () => {
+    const hash = sha256Hex("bad");
+    const vec = new Float32Array([1, 2, 3, 4]);
+    expect(() =>
+      // dim=384 but vector is length 4 — caller is lying about its provider.
+      insertEmbedding(db, hash, MODEL, vec, "2026-05-20T00:00:00Z", 384),
+    ).toThrow(/does not match declared dim/);
+  });
+
+  it("stores and reads the dim column for every embedding", () => {
+    const h = sha256Hex("dim probe");
+    insertEmbedding(db, h, MODEL, new Float32Array([1, 2, 3, 4, 5]), "2026-05-20T00:00:00Z", 5);
+    const row = db
+      .prepare("SELECT dim FROM embeddings WHERE content_hash = ? AND model = ?")
+      .get(h, MODEL) as { dim: number } | undefined;
+    expect(row?.dim).toBe(5);
   });
 
   describe("embeddings cache", () => {
@@ -183,8 +234,8 @@ describe("index-db", () => {
       const hash = sha256Hex(text);
       const v1 = new Float32Array([1, 0, 0]);
       const v2 = new Float32Array([0, 1, 0]);
-      insertEmbedding(db, hash, "model-a", v1, "2026-05-20T00:00:00Z");
-      insertEmbedding(db, hash, "model-b", v2, "2026-05-20T00:00:00Z");
+      insertEmbedding(db, hash, "model-a", v1, "2026-05-20T00:00:00Z", v1.length);
+      insertEmbedding(db, hash, "model-b", v2, "2026-05-20T00:00:00Z", v2.length);
       expect(embeddingCount(db)).toBe(2);
 
       const aFound = existingEmbeddingHashes(db, "model-a", [hash]);
@@ -198,10 +249,10 @@ describe("index-db", () => {
       const h2 = sha256Hex("two");
       const h3 = sha256Hex("three");
       const vec = new Float32Array([1, 2, 3]);
-      insertEmbedding(db, h1, MODEL, vec, "2026-05-20T00:00:00Z");
-      insertEmbedding(db, h2, MODEL, vec, "2026-05-20T00:00:00Z");
+      insertEmbedding(db, h1, MODEL, vec, "2026-05-20T00:00:00Z", vec.length);
+      insertEmbedding(db, h2, MODEL, vec, "2026-05-20T00:00:00Z", vec.length);
       // h3 has a row under a DIFFERENT model — must not count as a hit.
-      insertEmbedding(db, h3, "other-model", vec, "2026-05-20T00:00:00Z");
+      insertEmbedding(db, h3, "other-model", vec, "2026-05-20T00:00:00Z", vec.length);
 
       const found = existingEmbeddingHashes(db, MODEL, [h1, h2, h3]);
       expect(found.size).toBe(2);
@@ -214,8 +265,8 @@ describe("index-db", () => {
       const referencedHash = sha256Hex("referenced");
       const orphanHash = sha256Hex("orphan");
       const vec = new Float32Array([1, 2, 3]);
-      insertEmbedding(db, referencedHash, MODEL, vec, "2026-05-20T00:00:00Z");
-      insertEmbedding(db, orphanHash, MODEL, vec, "2026-05-20T00:00:00Z");
+      insertEmbedding(db, referencedHash, MODEL, vec, "2026-05-20T00:00:00Z", vec.length);
+      insertEmbedding(db, orphanHash, MODEL, vec, "2026-05-20T00:00:00Z", vec.length);
       insertChunkRow(db, {
         path: "pricing/foo.md",
         chunkIndex: 0,

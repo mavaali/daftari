@@ -39,7 +39,7 @@ import {
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
-import { chunkText, EMBEDDING_DIM, EMBEDDING_MODEL, embed } from "./vector.js";
+import { chunkText, embed, getProvider } from "./vector.js";
 
 // Manifest key in the meta table: JSON object mapping vault-relative path to
 // mtime in ms. Written at the end of a successful reindex and updated by
@@ -259,7 +259,8 @@ export async function reindexVault(
       }
     }
 
-    const cached = existingEmbeddingHashes(db, EMBEDDING_MODEL, allHashes);
+    const provider = getProvider();
+    const cached = existingEmbeddingHashes(db, provider.id, allHashes);
 
     // Build the deduped miss list. Each unique missing hash gets embedded
     // exactly once; identical chunk text in multiple places shares the row.
@@ -285,7 +286,7 @@ export async function reindexVault(
             const h = missHashes[i] ?? "";
             const vec = embedResult.value[i];
             if (!vec) continue;
-            insertEmbedding(db, h, EMBEDDING_MODEL, vec, indexedAt);
+            insertEmbedding(db, h, provider.id, vec, indexedAt, provider.dim);
           }
         });
         writeEmbeds();
@@ -309,8 +310,8 @@ export async function reindexVault(
 
     setMeta(db, "indexed_at", indexedAt);
     setMeta(db, "vector_enabled", String(vectorEnabled));
-    setMeta(db, "embedding_dim", String(EMBEDDING_DIM));
-    setMeta(db, "embedding_model", EMBEDDING_MODEL);
+    setMeta(db, "embedding_dim", String(provider.dim));
+    setMeta(db, "embedding_model", provider.id);
     // Persist a freshness manifest so the next startup can skip this whole
     // pass when nothing on disk has changed.
     const manifest = await buildManifest(vaultRoot);
@@ -375,7 +376,8 @@ export async function indexDocument(
   const createdAt = new Date().toISOString();
 
   try {
-    const cached = existingEmbeddingHashes(db, EMBEDDING_MODEL, hashes);
+    const provider = getProvider();
+    const cached = existingEmbeddingHashes(db, provider.id, hashes);
     const missTextByHash = new Map<string, string>();
     for (let i = 0; i < hashes.length; i++) {
       const h = hashes[i] ?? "";
@@ -395,7 +397,7 @@ export async function indexDocument(
             const h = missHashes[i] ?? "";
             const vec = embedResult.value[i];
             if (!vec) continue;
-            insertEmbedding(db, h, EMBEDDING_MODEL, vec, createdAt);
+            insertEmbedding(db, h, provider.id, vec, createdAt, provider.dim);
           }
         });
         writeEmbeds();
