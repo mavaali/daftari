@@ -27,9 +27,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `watch` config flag (default `true`) lets read-only or scripted
   environments disable the watcher entirely. The startup freshness
   check (manifest mtimes vs disk, see #36) remains as the reconciliation
-  backstop for events the watcher drops. PR 2 of #38 (lazy model load)
-  is in flight on a separate branch; pluggable embedding backends and
-  SQL-native search are still queued.
+  backstop for events the watcher drops.
+
+### Changed
+
+- **Lazy embedding model load with background warm-up** (#38, PR 2 of 5).
+  The MiniLM embedding model no longer loads at server startup. With the
+  v1.8.0 content-addressed cache, a startup whose freshness manifest matches
+  disk skips the reindex pass, and a reindex whose chunk hashes are all
+  cached skips `embed()` entirely — so the model load (~100MB, ~500ms cold)
+  is now deferred until something actually needs to embed. A read-only role
+  that only calls `vault_read` / `vault_search` against a fully-cached
+  index never loads the model at all. After the MCP transport opens and the
+  freshness check / background reindex begins, the server kicks off a
+  `warmModel()` in a `void` background promise so the first user search
+  does not pay the cold-start cost. A warm-up failure (no network on the
+  first run, model download blocked) is logged to stderr but never crashes
+  the server — the next `embed()` call retries. The warm-up is gated by a
+  new optional `warm_embeddings` flag in `.daftari/config.yaml` (default
+  `true`); set it to `false` for read-only deployments or memory-constrained
+  environments. The transport-open-before-indexing ordering from v1.7.1
+  is preserved — no startup hang regression. A new `modelStatus` field on
+  the in-process `IndexState` (`cold` / `warming` / `ready` / `error`) lets
+  tools surface "embeddings warming" context when a client retries against
+  a warming model rather than misreporting an indexing pass.
 
 ## [1.8.0] - 2026-05-20
 

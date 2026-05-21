@@ -62,6 +62,12 @@ export interface DaftariConfig {
   // check (manifest mtimes vs disk) still runs regardless and remains the
   // reconciliation backstop when events are dropped.
   watch: boolean;
+  // When true, the server kicks off a background load of the embedding model
+  // after startup so the first user search doesn't pay the cold-start cost.
+  // When false, the model loads lazily only on the first miss — useful for
+  // read-only roles that never embed or for very low-memory environments.
+  // Defaults to true.
+  warmEmbeddings: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -73,6 +79,7 @@ function emptyConfig(): DaftariConfig {
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,
+    warmEmbeddings: true,
   };
 }
 
@@ -395,11 +402,20 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     watch = root.watch;
   }
 
+  let warmEmbeddings = true;
+  if (root.warm_embeddings !== undefined) {
+    if (typeof root.warm_embeddings !== "boolean") {
+      return err(new Error("malformed config: 'warm_embeddings' must be true or false"));
+    }
+    warmEmbeddings = root.warm_embeddings;
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
     hooks: hooks.value,
     autoCommit,
     watch,
+    warmEmbeddings,
   });
 }

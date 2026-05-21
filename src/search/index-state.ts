@@ -6,8 +6,23 @@
 // they consult this module to decide whether to serve or to reply "still
 // indexing — N/M chunks". A single in-process snapshot is enough because the
 // server is one Node process per vault.
+//
+// Embedding model load is tracked separately from indexing because the two
+// are orthogonal: a fully-cached reindex (every chunk hash already has an
+// embedding row) never loads the model at all, while a search may need to
+// load the model even when the index is "ready". The `modelStatus` lets a
+// tool report "embeddings warming" instead of misleading a client with a
+// generic indexing message when the slow operation is actually the model
+// load.
 
 export type IndexStatus = "ready" | "indexing" | "error";
+
+// Model lifecycle separate from index lifecycle:
+//   "cold"    — model has not been touched this process. embed() will load.
+//   "warming" — load is in flight (background warm-up or first embed()).
+//   "ready"   — load resolved; subsequent embed() calls are hot-path only.
+//   "error"   — last load attempt failed; next embed() may retry.
+export type ModelStatus = "cold" | "warming" | "ready" | "error";
 
 export interface IndexSnapshot {
   status: IndexStatus;
@@ -16,6 +31,8 @@ export interface IndexSnapshot {
   error: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  modelStatus: ModelStatus;
+  modelError: string | null;
 }
 
 function freshState(): IndexSnapshot {
@@ -26,6 +43,8 @@ function freshState(): IndexSnapshot {
     error: null,
     startedAt: null,
     finishedAt: null,
+    modelStatus: "cold",
+    modelError: null,
   };
 }
 
@@ -37,6 +56,7 @@ export function getIndexStatus(): IndexSnapshot {
 
 export function markIndexing(): void {
   state = {
+    ...state,
     status: "indexing",
     done: 0,
     total: 0,
@@ -67,6 +87,22 @@ export function markIndexError(message: string): void {
     error: message,
     finishedAt: new Date().toISOString(),
   };
+}
+
+// Model lifecycle transitions. Called by vector.ts as the memoised
+// extractor promise progresses; the warm-up entry point and the lazy
+// first-embed path both flow through the same getExtractor() so callers
+// here do not need to special-case the trigger.
+export function markModelWarming(): void {
+  state = { ...state, modelStatus: "warming", modelError: null };
+}
+
+export function markModelReady(): void {
+  state = { ...state, modelStatus: "ready", modelError: null };
+}
+
+export function markModelError(message: string): void {
+  state = { ...state, modelStatus: "error", modelError: message };
 }
 
 // Tests load tools without running main(); resetting the singleton between
@@ -104,10 +140,19 @@ export function getInflightPaths(): string[] {
 
 // Formatted message tools return to clients while indexing is in progress.
 // One place so the phrasing is consistent across vault_search, vault_write,
-// vault_reindex, etc.
+// vault_reindex, etc. When the model is warming and the index is otherwise
+// ready, the message says so explicitly — the slow operation is the model
+// load, not an indexing pass, and a client that retries blindly against an
+// "indexing" message is missing useful context.
 export function indexingBusyMessage(snapshot: IndexSnapshot): string {
-  if (snapshot.total > 0) {
-    return `vault is still indexing (${snapshot.done}/${snapshot.total} chunks) — try again shortly`;
+  if (snapshot.status === "indexing") {
+    if (snapshot.total > 0) {
+      return `vault is still indexing (${snapshot.done}/${snapshot.total} chunks) — try again shortly`;
+    }
+    return `vault is still indexing — try again shortly`;
+  }
+  if (snapshot.modelStatus === "warming") {
+    return `embedding model is warming — try again shortly`;
   }
   return `vault is still indexing — try again shortly`;
 }
