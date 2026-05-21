@@ -71,6 +71,34 @@ export function setIndexProgress(done: number, total: number): void {
   state = { ...state, done, total };
 }
 
+// Callbacks registered via onceIndexReady that fire when the current
+// indexing pass completes (successfully or with an error). Cleared on each
+// transition out of "indexing" so each callback fires at most once.
+const indexReadyCallbacks: Array<() => void> = [];
+
+// Register a one-shot callback that fires the next time the global index
+// status leaves "indexing" (either markIndexReady or markIndexError). If the
+// index is already not indexing, the callback fires on the next event-loop
+// tick so the caller can finish its current synchronous work first.
+export function onceIndexReady(cb: () => void): void {
+  if (state.status !== "indexing") {
+    setTimeout(cb, 0);
+  } else {
+    indexReadyCallbacks.push(cb);
+  }
+}
+
+function flushIndexReadyCallbacks(): void {
+  const cbs = indexReadyCallbacks.splice(0);
+  for (const cb of cbs) {
+    try {
+      cb();
+    } catch {
+      // callbacks must not crash the state machine
+    }
+  }
+}
+
 export function markIndexReady(): void {
   state = {
     ...state,
@@ -78,6 +106,7 @@ export function markIndexReady(): void {
     error: null,
     finishedAt: new Date().toISOString(),
   };
+  flushIndexReadyCallbacks();
 }
 
 export function markIndexError(message: string): void {
@@ -87,6 +116,7 @@ export function markIndexError(message: string): void {
     error: message,
     finishedAt: new Date().toISOString(),
   };
+  flushIndexReadyCallbacks();
 }
 
 // Model lifecycle transitions. Called by vector.ts as the memoised
@@ -110,6 +140,7 @@ export function markModelError(message: string): void {
 export function resetIndexState(): void {
   state = freshState();
   inflightPaths.clear();
+  indexReadyCallbacks.splice(0); // discard any leftover callbacks from previous tests
 }
 
 // Per-path "currently indexing this one file" tracker. The global `status`

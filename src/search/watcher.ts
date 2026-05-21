@@ -34,7 +34,7 @@ import { default as chokidar, type FSWatcher } from "chokidar";
 import { ok, type Result } from "../frontmatter/types.js";
 import { deleteDocument, openIndexDb } from "../storage/index-db.js";
 import { resolveVaultPath } from "../storage/local.js";
-import { getIndexStatus, markPathIndexing, markPathReady } from "./index-state.js";
+import { getIndexStatus, markPathIndexing, markPathReady, onceIndexReady } from "./index-state.js";
 import { indexDocument } from "./reindex.js";
 import { consumeSelfWrite } from "./self-write.js";
 import { getProvider } from "./vector.js";
@@ -190,6 +190,15 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
   }
   const pending = new Map<string, Pending>();
 
+  // Events that arrived while a full reindex was running and could not be
+  // dispatched immediately (dispatch would race the bulk clearIndex write).
+  // Drained as a single batch when markIndexReady/markIndexError fires.
+  // Unlike the old busy-poll approach (re-schedule a debounceMs timer until
+  // reindex finishes), this accumulates at most one entry per path and fires
+  // zero timers per event during a long reindex.
+  const deferred = new Map<string, PendingEvent>();
+  let drainScheduled = false;
+
   // Spawn chokidar (or the injected fake). The ignored pattern mirrors
   // listFiles in storage/local.ts so the watcher and listing agree on
   // "what's vault content".
@@ -231,20 +240,35 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
 
     // While a full reindex is running, the indexer is rebuilding from
     // scratch — a per-file index call would race the bulk write and may
-    // be wiped by clearIndex(). Defer the event by re-scheduling a fresh
-    // debounce window; if the reindex finishes before the next event, the
-    // already-current-on-disk content will be picked up on the next external
-    // change anyway, and the manifest's mtime will match either way.
+    // be wiped by clearIndex(). Park the event in `deferred` (no timer) and
+    // register a one-shot drain that fires when the reindex settles. At most
+    // one timer fires per event per path (when the debounce window elapses),
+    // versus the old busy-poll that re-scheduled a new debounceMs timer on
+    // every dispatch call until the reindex finished.
     const status = getIndexStatus();
     if (status.status === "indexing") {
-      pending.delete(relPath);
-      const timer = setTimeout(() => {
-        const p = pending.get(relPath);
-        if (!p) return;
+      // Cancel any active debounce timer for this path — the deferred map
+      // entry will hold the event until drain.
+      const existing = pending.get(relPath);
+      if (existing) {
+        clearTimeout(existing.timer);
         pending.delete(relPath);
-        void dispatch(relPath, p.lastEvent);
-      }, resolved.debounceMs);
-      pending.set(relPath, { timer, lastEvent });
+      }
+      deferred.set(relPath, lastEvent);
+      if (!drainScheduled) {
+        drainScheduled = true;
+        onceIndexReady(() => {
+          drainScheduled = false;
+          if (closed) {
+            deferred.clear();
+            return;
+          }
+          for (const [p, e] of deferred) {
+            deferred.delete(p);
+            void dispatch(p, e);
+          }
+        });
+      }
       return;
     }
 
@@ -335,6 +359,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
       closed = true;
       for (const { timer } of pending.values()) clearTimeout(timer);
       pending.clear();
+      deferred.clear();
       await watcher.close();
     },
   };

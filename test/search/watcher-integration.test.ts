@@ -116,8 +116,9 @@ describe("watcher integration with index db", () => {
     // While indexing, the watcher should have deferred — no indexFn call yet.
     expect(calls).toEqual([]);
 
-    // Reindex completes; the deferred event re-runs its own debounce and
-    // then fires.
+    // Reindex completes; the onceIndexReady drain fires and dispatches
+    // directly (no re-debounce — one timer per event, not one per debounceMs
+    // interval until the reindex finishes).
     markIndexReady();
     await sleep(80);
     expect(calls).toEqual(["pricing/helios-consumption-pricing.md"]);
