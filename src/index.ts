@@ -25,6 +25,7 @@ import {
   setIndexProgress,
 } from "./search/index-state.js";
 import { isIndexFresh, type ReindexOptions, reindexVault } from "./search/reindex.js";
+import { startWatcher, type VaultWatcher } from "./search/watcher.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig } from "./utils/config.js";
@@ -123,6 +124,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (fresh) {
     process.stderr.write(`daftari: index is up to date — skipping reindex\n`);
     markIndexReady();
+    maybeStartWatcher(vaultRoot, config.value.watch);
     return;
   }
 
@@ -131,10 +133,42 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // completion alongside the live server.
   markIndexing();
   process.stderr.write(`daftari: starting background reindex…\n`);
-  void runBackgroundReindex(vaultRoot);
+  void runBackgroundReindex(vaultRoot, () => {
+    maybeStartWatcher(vaultRoot, config.value.watch);
+  });
 }
 
-async function runBackgroundReindex(vaultRoot: string): Promise<void> {
+// Reference held so a SIGTERM / SIGINT can close the watcher cleanly. One
+// per process — the server runs against one vault for its lifetime.
+let activeWatcher: VaultWatcher | null = null;
+
+// Spawns the chokidar watcher when config.watch !== false. Wired here, not
+// at module load, so the test entry points (which import main) can run with
+// a config that disables it. Idempotent: a second call is a no-op while the
+// first watcher is still alive.
+function maybeStartWatcher(vaultRoot: string, watchEnabled: boolean): void {
+  if (!watchEnabled) {
+    process.stderr.write(`daftari: vault watcher disabled (watch: false in config)\n`);
+    return;
+  }
+  if (activeWatcher) return;
+  activeWatcher = startWatcher(vaultRoot);
+  process.stderr.write(`daftari: watching vault for out-of-band edits\n`);
+
+  // Clean shutdown on the signals stdio MCP servers receive when their
+  // parent process closes the pipe. Without this the chokidar handles can
+  // keep the event loop alive past the transport close.
+  const onShutdown = () => {
+    if (!activeWatcher) return;
+    const w = activeWatcher;
+    activeWatcher = null;
+    void w.close();
+  };
+  process.once("SIGTERM", onShutdown);
+  process.once("SIGINT", onShutdown);
+}
+
+async function runBackgroundReindex(vaultRoot: string, onDone?: () => void): Promise<void> {
   try {
     const reindexed = await reindexVault(vaultRoot, makeProgressReporter());
     if (reindexed.ok) {
@@ -154,6 +188,13 @@ async function runBackgroundReindex(vaultRoot: string): Promise<void> {
     const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
     markIndexError(reason);
     process.stderr.write(`daftari: warning: background indexer crashed: ${reason}\n`);
+  } finally {
+    // Start the watcher only after the full reindex pass finishes — the
+    // dispatch() guard inside watcher.ts would queue events while the
+    // global status is "indexing", but starting after avoids the
+    // bookkeeping and keeps the startup ordering obvious: transport,
+    // freshness/reindex, watcher.
+    onDone?.();
   }
 }
 

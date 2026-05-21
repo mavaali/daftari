@@ -73,6 +73,33 @@ export function markIndexError(message: string): void {
 // suites keeps cross-test pollution out of the state machine.
 export function resetIndexState(): void {
   state = freshState();
+  inflightPaths.clear();
+}
+
+// Per-path "currently indexing this one file" tracker. The global `status`
+// above describes whole-vault reindex passes (startup / vault_reindex). The
+// fs.watch path drives many concurrent per-file re-indexes that must not
+// block unrelated writes or searches; their in-flight membership lives here.
+// Membership is advisory: searches that read a slightly-stale row for a few
+// hundred ms while a per-file index is mid-write is acceptable. The
+// per-path *serialisation* between an external edit and a Daftari write is
+// the file-level write lock in src/access/locks.ts.
+const inflightPaths = new Set<string>();
+
+export function markPathIndexing(relPath: string): void {
+  inflightPaths.add(relPath);
+}
+
+export function markPathReady(relPath: string): void {
+  inflightPaths.delete(relPath);
+}
+
+export function isPathIndexing(relPath: string): boolean {
+  return inflightPaths.has(relPath);
+}
+
+export function getInflightPaths(): string[] {
+  return [...inflightPaths];
 }
 
 // Formatted message tools return to clients while indexing is in progress.

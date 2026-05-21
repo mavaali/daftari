@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **fs.watch reactive indexing** (#38, PR 3 of 5). The server now keeps the
+  search index in sync with the markdown files at write time, not just at
+  startup. A chokidar watcher runs over the vault root after the MCP
+  transport is up and the cold-start reindex (if any) has finished;
+  `add` / `change` events trigger an `indexDocument()` pass for the
+  affected file, and `unlink` evicts the document and patches the
+  freshness manifest so the next startup does not see a missing file as
+  drift. Events are debounced per-path with a 500ms window — an
+  editor's atomic-rename save burst coalesces into one indexer call —
+  and `unlink` events re-stat before deleting, so FSEvents / iCloud /
+  Dropbox phantom unlink+add pairs during atomic-rename saves are
+  treated as a change instead of a delete. Daftari's own writes are
+  suppressed from the watcher path: the write-path tools register the
+  absolute path after their in-process `indexDocument()` returns, and
+  the watcher silently drops the chokidar event that follows. The new
+  `watch` config flag (default `true`) lets read-only or scripted
+  environments disable the watcher entirely. The startup freshness
+  check (manifest mtimes vs disk, see #36) remains as the reconciliation
+  backstop for events the watcher drops. PR 2 of #38 (lazy model load)
+  is in flight on a separate branch; pluggable embedding backends and
+  SQL-native search are still queued.
+
 ## [1.8.0] - 2026-05-20
 
 ### Changed

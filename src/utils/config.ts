@@ -54,6 +54,14 @@ export interface DaftariConfig {
   // written, indexed, and provenance-logged, but the caller owns git. Defaults
   // to true: a standalone vault's git history *is* its document history.
   autoCommit: boolean;
+  // When true (the default), the server starts an fs.watch loop over the
+  // vault root and re-indexes documents on out-of-band edits (an editor save,
+  // a sync engine, a scripted writer). Set false to disable — useful for
+  // read-only or batch-script environments where the watcher's debounce
+  // timers and chokidar handles are pure overhead. The startup freshness
+  // check (manifest mtimes vs disk) still runs regardless and remains the
+  // reconciliation backstop when events are dropped.
+  watch: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -64,6 +72,7 @@ function emptyConfig(): DaftariConfig {
     schemaExtensions: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
+    watch: true,
   };
 }
 
@@ -378,10 +387,19 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     autoCommit = root.auto_commit;
   }
 
+  let watch = true;
+  if (root.watch !== undefined) {
+    if (typeof root.watch !== "boolean") {
+      return err(new Error("malformed config: 'watch' must be true or false"));
+    }
+    watch = root.watch;
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
     hooks: hooks.value,
     autoCommit,
+    watch,
   });
 }
