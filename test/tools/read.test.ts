@@ -7,7 +7,6 @@ import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension } from "../../src/curation/tension.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { embeddingToBlob, insertEmbedding, openIndexDb } from "../../src/storage/index-db.js";
-import { sha256Hex } from "../../src/utils/hash.js";
 import {
   readTools,
   type VaultIndexResult,
@@ -15,6 +14,7 @@ import {
   vaultRead,
   vaultStatus,
 } from "../../src/tools/read.js";
+import { sha256Hex } from "../../src/utils/hash.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
@@ -439,7 +439,14 @@ describe("vaultStatus", () => {
       if (!dbResult.ok) return;
       const db = dbResult.value;
       const hash = sha256Hex("some chunk text");
-      insertEmbedding(db, hash, "local-minilm", new Float32Array(LOCAL_MINILM_DIM), new Date().toISOString(), LOCAL_MINILM_DIM);
+      insertEmbedding(
+        db,
+        hash,
+        "local-minilm",
+        new Float32Array(LOCAL_MINILM_DIM),
+        new Date().toISOString(),
+        LOCAL_MINILM_DIM,
+      );
       db.close();
 
       const result = await vaultStatus(vault);
@@ -461,7 +468,7 @@ describe("vaultStatus", () => {
       const wrongDim = 8;
       const blob = embeddingToBlob(new Float32Array(LOCAL_MINILM_DIM)); // correct-length blob
       db.prepare(
-        "INSERT INTO embeddings(content_hash, model, embedding, created_at, dim) VALUES (?,?,?,?,?)"
+        "INSERT INTO embeddings(content_hash, model, embedding, created_at, dim) VALUES (?,?,?,?,?)",
       ).run(hash, "local-minilm", blob, new Date().toISOString(), wrongDim); // wrong dim in metadata
       db.close();
 

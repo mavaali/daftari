@@ -193,7 +193,8 @@ function loadVecExtension(db: IndexDb): Result<void, Error> {
     ) {
       // db.loadExtension threw because the better-sqlite3 build has
       // extension loading compiled out.
-      hint = "Rebuild better-sqlite3 with extension loading enabled: `npm rebuild better-sqlite3 --build-from-source`.";
+      hint =
+        "Rebuild better-sqlite3 with extension loading enabled: `npm rebuild better-sqlite3 --build-from-source`.";
     } else {
       // ABI mismatch, OS security policy, or other native-load error.
       hint = "Check that the sqlite-vec binary is compatible with this platform.";
@@ -208,9 +209,7 @@ function loadVecExtension(db: IndexDb): Result<void, Error> {
   // permanent schema changes land.
   const smokeBlob = Buffer.from(new Float32Array([1.0]).buffer);
   try {
-    db.exec(
-      "CREATE VIRTUAL TABLE temp._vec_smoke USING vec0(v FLOAT[1] distance_metric=cosine);",
-    );
+    db.exec("CREATE VIRTUAL TABLE temp._vec_smoke USING vec0(v FLOAT[1] distance_metric=cosine);");
     db.prepare("INSERT INTO temp._vec_smoke(v) VALUES (?)").run(smokeBlob);
     const rows = db
       .prepare("SELECT * FROM temp._vec_smoke WHERE v MATCH ? AND k = ?")
@@ -681,11 +680,7 @@ export function embeddingCount(db: IndexDb): number {
 // skipped by `rowToChunk`'s dim-guard, so vector search falls back to
 // keyword-only for those chunks. Exposed via vault_status so operators can
 // detect a corrupt cache without digging through logs.
-export function countDimMismatches(
-  db: IndexDb,
-  model: string,
-  expectedDim: number,
-): number {
+export function countDimMismatches(db: IndexDb, model: string, expectedDim: number): number {
   const row = db
     .prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ? AND dim != ?")
     .get(model, expectedDim) as { n: number };

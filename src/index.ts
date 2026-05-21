@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
+import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import {
   markIndexError,
   markIndexing,
@@ -30,6 +31,10 @@ import { startWatcher, type VaultWatcher } from "./search/watcher.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig } from "./utils/config.js";
+
+// Kept in sync with package.json. Surfaced in the process lockfile for
+// operator diagnostics. Bump both together on a release.
+const DAFTARI_VERSION = "1.10.0";
 
 // Reads `--name value` or `--name=value` from argv; null if absent.
 export function parseFlag(argv: string[], name: string): string | null {
@@ -61,6 +66,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exitCode = 1;
     return;
   }
+
+  // Acquire the per-vault process lock BEFORE any heavy work. If another
+  // daftari is holding this vault, SIGTERM it and wait briefly for it to
+  // exit. See docs/superpowers/plans/2026-05-20-process-lockfile.md (#52).
+  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION);
+  if (!lockResult.ok) {
+    process.stderr.write(`daftari: failed to acquire vault lock: ${lockResult.error.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  // Install shutdown handlers immediately so the lock is released even if
+  // startup fails between here and the transport opening.
+  installShutdownHandlers(vaultRoot);
 
   // Load the RBAC config. A malformed config fails loud: the server must not
   // start serving content under a policy it could not parse.
@@ -164,6 +182,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 // per process — the server runs against one vault for its lifetime.
 let activeWatcher: VaultWatcher | null = null;
 
+// Install once, regardless of whether the watcher starts. The lock release
+// must run for all exit paths:
+//   - SIGTERM / SIGINT (parent MCP client closing the pipe, or another
+//     daftari instance taking over): onShutdown explicitly releases.
+//   - Normal completion of --reindex mode: main() returns, the event loop
+//     drains, Node emits 'exit', the registered listener releases.
+// The 'exit' listener is sync-only (Node guarantees the loop is closed by
+// then), which is why releaseLock is sync.
+function installShutdownHandlers(vaultRoot: string): void {
+  const onShutdown = () => {
+    if (activeWatcher) {
+      const w = activeWatcher;
+      activeWatcher = null;
+      void w.close();
+    }
+    releaseLock(vaultRoot);
+  };
+  process.once("SIGTERM", onShutdown);
+  process.once("SIGINT", onShutdown);
+  process.once("exit", () => releaseLock(vaultRoot));
+}
+
 // Spawns the chokidar watcher when config.watch !== false. Wired here, not
 // at module load, so the test entry points (which import main) can run with
 // a config that disables it. Idempotent: a second call is a no-op while the
@@ -176,18 +216,6 @@ function maybeStartWatcher(vaultRoot: string, watchEnabled: boolean): void {
   if (activeWatcher) return;
   activeWatcher = startWatcher(vaultRoot);
   process.stderr.write(`daftari: watching vault for out-of-band edits\n`);
-
-  // Clean shutdown on the signals stdio MCP servers receive when their
-  // parent process closes the pipe. Without this the chokidar handles can
-  // keep the event loop alive past the transport close.
-  const onShutdown = () => {
-    if (!activeWatcher) return;
-    const w = activeWatcher;
-    activeWatcher = null;
-    void w.close();
-  };
-  process.once("SIGTERM", onShutdown);
-  process.once("SIGINT", onShutdown);
 }
 
 // Loads the embedding model in the background so the first user search does

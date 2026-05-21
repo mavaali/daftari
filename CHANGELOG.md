@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-05-21
+
+### Added
+
+- **Per-vault process lockfile** (#52). Daftari now acquires
+  `.daftari/process.lock` on startup and refuses to share a vault with
+  another live daftari process. If a live instance is already holding the
+  vault, the new instance sends SIGTERM to the holder, waits up to 3
+  seconds for it to exit, then takes over. Stale lockfiles (dead PID, or
+  PID recycled to an unrelated process) are overwritten silently. This is
+  defense-in-depth against MCP clients that leak server subprocesses on
+  timeout/reconnect — the reported symptom was 112 daftari processes
+  accumulating against one vault. With the lock, at most one process
+  holds the vault at any time.
+
+  **Known limitation:** the takeover interrupts in-flight reindex. On
+  first run against a large vault, if the MCP client is in a tight
+  retry/respawn loop, the index may be repeatedly aborted before it
+  completes. Workaround: run `daftari --vault <path> --reindex` once
+  manually from the shell. Resumable reindex is tracked as a follow-up.
+
 ## [1.9.1] - 2026-05-21
 
 ### Fixed
