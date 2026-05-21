@@ -1,8 +1,10 @@
-import { utimes, writeFile } from "node:fs/promises";
+import { readFile, rename, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { indexDocument, isIndexFresh, reindexVault } from "../../src/search/reindex.js";
+import { EMBEDDING_MODEL } from "../../src/search/vector.js";
 import {
+  embeddingCount,
   getAllChunks,
   getAllDocuments,
   getDocument,
@@ -37,7 +39,7 @@ describe("reindexVault", () => {
     const db = opened.value;
     try {
       expect(getAllDocuments(db)).toHaveLength(10);
-      const chunks = getAllChunks(db);
+      const chunks = getAllChunks(db, EMBEDDING_MODEL);
       expect(chunks.every((c) => c.embedding !== null)).toBe(true);
       expect(getMeta(db, "vector_enabled")).toBe("true");
       expect(getMeta(db, "indexed_at")).not.toBeNull();
@@ -63,13 +65,14 @@ describe("reindexVault", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // Progress fires during embedding, every call carries the vault's full
-    // chunk count as the total, `done` advances strictly, and the last call
-    // reports completion.
+    // Progress fires during embedding, every call carries the same total
+    // (the number of cache misses being embedded — on a cold reindex of a
+    // fresh vault that equals embeddedCount), `done` advances strictly, and
+    // the last call reports completion.
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every(([, total]) => total === result.value.chunkCount)).toBe(true);
+    expect(calls.every(([, total]) => total === result.value.embeddedCount)).toBe(true);
     expect(calls.every(([done], i) => i === 0 || done > (calls[i - 1]?.[0] ?? 0))).toBe(true);
-    expect(calls[calls.length - 1]?.[0]).toBe(result.value.chunkCount);
+    expect(calls[calls.length - 1]?.[0]).toBe(result.value.embeddedCount);
   }, 60_000);
 
   it("reports fresh after a reindex and stale once a file is touched", async () => {
@@ -148,4 +151,166 @@ describe("reindexVault", () => {
       db.close();
     }
   }, 60_000);
+
+  describe("content-addressed embedding cache", () => {
+    it("cache hit on unchanged content: a second reindex embeds zero new chunks", async () => {
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.value.embeddedCount).toBeGreaterThan(0);
+      expect(first.value.cacheHits).toBe(0);
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      // No file changed → every chunk hashes to a cached row → zero embeds.
+      expect(second.value.embeddedCount).toBe(0);
+      expect(second.value.cacheHits).toBe(second.value.chunkCount);
+      // Orphans are zero too: clearIndex preserved the cache and every row
+      // still has a referencing chunk after the rewrite.
+      expect(second.value.orphansRemoved).toBe(0);
+    }, 120_000);
+
+    it("edit re-embeds only the changed chunks; the rest are cache hits", async () => {
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      const initialEmbeds = first.value.embeddedCount;
+
+      // Change the body of one file by appending a fresh paragraph. The
+      // unchanged paragraphs still hash to cached rows; only the new
+      // chunk(s) need embedding.
+      const target = join(vault, "pricing/cirrus-capacity-tiers.md");
+      const original = await readFile(target, "utf-8");
+      const edited = `${original}\n\nThis is a new paragraph that did not previously exist anywhere in the vault and so its sha256 is uncached.\n`;
+      await writeFile(target, edited);
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      // Strictly fewer embeds than the cold reindex.
+      expect(second.value.embeddedCount).toBeLessThan(initialEmbeds);
+      // And strictly less than the whole vault — most chunks still cached.
+      expect(second.value.embeddedCount).toBeLessThan(second.value.chunkCount);
+      expect(second.value.cacheHits).toBeGreaterThan(0);
+    }, 120_000);
+
+    it("rename re-embeds zero: content hashes do not depend on path", async () => {
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      const cacheSizeBefore = (() => {
+        const opened = openIndexDb(vault);
+        if (!opened.ok) throw opened.error;
+        try {
+          return embeddingCount(opened.value);
+        } finally {
+          opened.value.close();
+        }
+      })();
+
+      // Move a file to a new path inside the same collection. Body unchanged.
+      const from = join(vault, "competitive-intel/cirrus-realtime-early-read.md");
+      const to = join(vault, "competitive-intel/cirrus-realtime-renamed.md");
+      await rename(from, to);
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.value.embeddedCount).toBe(0);
+      // Cache size unchanged — every old hash is still referenced (by the
+      // renamed file) so no orphans were reaped.
+      const cacheSizeAfter = (() => {
+        const opened = openIndexDb(vault);
+        if (!opened.ok) throw opened.error;
+        try {
+          return embeddingCount(opened.value);
+        } finally {
+          opened.value.close();
+        }
+      })();
+      expect(cacheSizeAfter).toBe(cacheSizeBefore);
+    }, 120_000);
+
+    it("moved paragraph re-embeds zero: identical chunk text in a different file is a cache hit", async () => {
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      // Grab an actual chunk's text from the index and use it verbatim as
+      // the body of a brand-new file. Because chunkText is deterministic
+      // and the body equals exactly one chunk's worth of text, the new
+      // file's chunker round-trips to the same content_hash — which the
+      // cache already holds.
+      const opened = openIndexDb(vault);
+      if (!opened.ok) throw opened.error;
+      const chunkText = (() => {
+        try {
+          const all = getAllChunks(opened.value, EMBEDDING_MODEL);
+          return all[0]?.text ?? "";
+        } finally {
+          opened.value.close();
+        }
+      })();
+      expect(chunkText.length).toBeGreaterThan(0);
+
+      await writeFile(
+        join(vault, "competitive-intel/clone-paragraph.md"),
+        `---\ntitle: Clone\ndomain: positioning\nstatus: draft\nconfidence: low\nupdated: 2026-05-20\ntags: []\n---\n\n${chunkText}\n`,
+      );
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      // No new embedding work — the cloned chunk hashes to a cached row.
+      expect(second.value.embeddedCount).toBe(0);
+      expect(second.value.documentCount).toBe(first.value.documentCount + 1);
+    }, 120_000);
+
+    it("vault_gc reaps embeddings whose chunks no longer reference them", async () => {
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      const cacheBefore = (() => {
+        const opened = openIndexDb(vault);
+        if (!opened.ok) throw opened.error;
+        try {
+          return embeddingCount(opened.value);
+        } finally {
+          opened.value.close();
+        }
+      })();
+      expect(cacheBefore).toBeGreaterThan(0);
+
+      // Rewrite a file with completely fresh text so its OLD chunks become
+      // orphans in the embeddings cache. The new chunks add new rows; the
+      // gc pass should remove the orphan rows the file used to reference.
+      const target = join(vault, "pricing/cirrus-capacity-tiers.md");
+      await writeFile(
+        target,
+        "---\ntitle: Cirrus Capacity Tiers\ndomain: pricing\nstatus: draft\nconfidence: low\nupdated: 2026-05-20\ntags: []\n---\n\nentirely new prose that shares no chunk with the prior version of this file.\n",
+      );
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.value.orphansRemoved).toBeGreaterThan(0);
+
+      // After the reindex, every surviving embeddings row must be referenced
+      // by at least one chunk row.
+      const opened = openIndexDb(vault);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+      try {
+        const orphanCount = db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM embeddings WHERE content_hash NOT IN (SELECT content_hash FROM chunks)",
+          )
+          .get() as { n: number };
+        expect(orphanCount.n).toBe(0);
+      } finally {
+        db.close();
+      }
+    }, 120_000);
+  });
 });

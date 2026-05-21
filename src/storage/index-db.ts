@@ -2,12 +2,18 @@
 //
 // The index is a derived cache: it holds nothing the markdown files don't
 // already hold, so .daftari/index.db can be deleted and rebuilt at any time
-// (see search/reindex.ts). Two tables carry the search payload:
+// (see search/reindex.ts). Three tables carry the search payload:
 //
-//   documents — one row per markdown file: frontmatter fields, the full body,
-//               and the BM25 token list (JSON).
-//   chunks    — one row per embedded text chunk: the chunk text and its vector
-//               embedding (Float32 BLOB, or NULL when embedding was skipped).
+//   documents  — one row per markdown file: frontmatter fields, the full body,
+//                and the BM25 token list (JSON).
+//   chunks     — one row per embedded text chunk: the chunk text and a
+//                content_hash (sha256 of the chunk text) that joins to the
+//                embeddings table for the current model.
+//   embeddings — one row per (content_hash, model) pair. Content-addressed,
+//                so identical chunk text shares one row across files and
+//                across reindexes. A model migration can keep the same
+//                content_hash present under two model values at once, which
+//                is why the primary key is composite.
 //
 // A small meta table records index-wide facts (embedding dimension, whether
 // vectors were built, when the index was last rebuilt).
@@ -19,7 +25,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 
 export type IndexDb = Database.Database;
 
-const SCHEMA_VERSION = "2";
+const SCHEMA_VERSION = "3";
 
 export interface IndexedDocument {
   path: string;
@@ -41,6 +47,7 @@ export interface IndexedChunk {
   path: string;
   chunkIndex: number;
   text: string;
+  contentHash: string;
   embedding: Float32Array | null;
 }
 
@@ -67,11 +74,19 @@ CREATE TABLE IF NOT EXISTS documents (
   superseded_by TEXT
 );
 CREATE TABLE IF NOT EXISTS chunks (
-  path         TEXT NOT NULL,
-  chunk_index  INTEGER NOT NULL,
-  text         TEXT NOT NULL,
-  embedding    BLOB,
+  path          TEXT NOT NULL,
+  chunk_index   INTEGER NOT NULL,
+  text          TEXT NOT NULL,
+  content_hash  TEXT NOT NULL,
   PRIMARY KEY (path, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);
+CREATE TABLE IF NOT EXISTS embeddings (
+  content_hash TEXT NOT NULL,
+  model        TEXT NOT NULL,
+  embedding    BLOB NOT NULL,
+  created_at   TEXT NOT NULL,
+  PRIMARY KEY (content_hash, model)
 );
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -91,7 +106,15 @@ export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
     );`);
     const stored = getMeta(db, "schema_version");
     if (stored !== SCHEMA_VERSION) {
-      db.exec("DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS chunks;");
+      // Schema bump means a clean rebuild: every derived table is dropped and
+      // the freshness manifest is cleared so the next reindex repopulates
+      // everything. Trying to ALTER across this change would race the new
+      // composite-PK embeddings table; the markdown files are the source of
+      // truth and the index is cheap to regenerate.
+      db.exec(
+        "DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS embeddings;",
+      );
+      db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
     }
     db.exec(SCHEMA);
     setMeta(db, "schema_version", SCHEMA_VERSION);
@@ -103,7 +126,9 @@ export function openIndexDb(vaultRoot: string): Result<IndexDb, Error> {
 }
 
 // Drops every indexed row. Called at the start of a rebuild so a reindex never
-// leaves rows for files that have since been deleted.
+// leaves rows for files that have since been deleted. Embeddings are NOT
+// cleared here — they are content-addressed and a subsequent gc pass deletes
+// only the orphaned ones, preserving the cache across reindexes.
 export function clearIndex(db: IndexDb): void {
   db.exec("DELETE FROM documents; DELETE FROM chunks;");
 }
@@ -155,16 +180,66 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   );
 }
 
-export function insertChunk(db: IndexDb, chunk: IndexedChunk): void {
+export interface ChunkRowInput {
+  path: string;
+  chunkIndex: number;
+  text: string;
+  contentHash: string;
+}
+
+export function insertChunkRow(db: IndexDb, chunk: ChunkRowInput): void {
   db.prepare(
-    `INSERT OR REPLACE INTO chunks (path, chunk_index, text, embedding)
+    `INSERT OR REPLACE INTO chunks (path, chunk_index, text, content_hash)
      VALUES (?, ?, ?, ?)`,
-  ).run(
-    chunk.path,
-    chunk.chunkIndex,
-    chunk.text,
-    chunk.embedding ? embeddingToBlob(chunk.embedding) : null,
-  );
+  ).run(chunk.path, chunk.chunkIndex, chunk.text, chunk.contentHash);
+}
+
+// Returns the set of content_hash values that already have a row for `model`
+// in the embeddings cache. Used by the reindex pass to skip re-embedding any
+// chunk whose text hash is already known.
+export function existingEmbeddingHashes(db: IndexDb, model: string, hashes: string[]): Set<string> {
+  if (hashes.length === 0) return new Set();
+  // SQLite has a finite SQL variable limit (default 999), so chunk the IN()
+  // list to stay well under it.
+  const found = new Set<string>();
+  const BATCH = 500;
+  for (let start = 0; start < hashes.length; start += BATCH) {
+    const slice = hashes.slice(start, start + BATCH);
+    const placeholders = slice.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT content_hash FROM embeddings WHERE model = ? AND content_hash IN (${placeholders})`,
+      )
+      .all(model, ...slice) as { content_hash: string }[];
+    for (const r of rows) found.add(r.content_hash);
+  }
+  return found;
+}
+
+export function insertEmbedding(
+  db: IndexDb,
+  contentHash: string,
+  model: string,
+  embedding: Float32Array,
+  createdAt: string,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO embeddings (content_hash, model, embedding, created_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(contentHash, model, embeddingToBlob(embedding), createdAt);
+}
+
+// Deletes every embeddings row whose content_hash is referenced by no chunks
+// row. Called at the end of a reindex to reap entries for chunks that no
+// longer exist anywhere in the vault. Returns the number of rows deleted.
+export function gcOrphanedEmbeddings(db: IndexDb): number {
+  const info = db
+    .prepare(
+      `DELETE FROM embeddings
+       WHERE content_hash NOT IN (SELECT content_hash FROM chunks)`,
+    )
+    .run();
+  return info.changes;
 }
 
 export function setMeta(db: IndexDb, key: string, value: string): void {
@@ -219,31 +294,53 @@ export function getDocument(db: IndexDb, path: string): IndexedDocument | null {
   return row ? rowToDocument(row) : null;
 }
 
-interface ChunkRow {
+interface ChunkJoinRow {
   path: string;
   chunk_index: number;
   text: string;
+  content_hash: string;
   embedding: Buffer | null;
 }
 
-function rowToChunk(row: ChunkRow): IndexedChunk {
+function rowToChunk(row: ChunkJoinRow): IndexedChunk {
   return {
     path: row.path,
     chunkIndex: row.chunk_index,
     text: row.text,
+    contentHash: row.content_hash,
     embedding: row.embedding ? blobToEmbedding(row.embedding) : null,
   };
 }
 
-export function getAllChunks(db: IndexDb): IndexedChunk[] {
-  const rows = db.prepare("SELECT * FROM chunks ORDER BY path, chunk_index").all() as ChunkRow[];
+// Reads every chunk LEFT JOINed against the embeddings cache, filtered to
+// `model`. A chunk whose content_hash has no embeddings row for this model
+// (e.g. the model was unavailable during reindex) comes back with embedding =
+// null and the vector ranker simply skips it, matching the old NULL-blob
+// behaviour.
+export function getAllChunks(db: IndexDb, model: string): IndexedChunk[] {
+  const rows = db
+    .prepare(
+      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding
+         FROM chunks c
+         LEFT JOIN embeddings e
+           ON e.content_hash = c.content_hash AND e.model = ?
+        ORDER BY c.path, c.chunk_index`,
+    )
+    .all(model) as ChunkJoinRow[];
   return rows.map(rowToChunk);
 }
 
-export function getChunksForPath(db: IndexDb, path: string): IndexedChunk[] {
+export function getChunksForPath(db: IndexDb, path: string, model: string): IndexedChunk[] {
   const rows = db
-    .prepare("SELECT * FROM chunks WHERE path = ? ORDER BY chunk_index")
-    .all(path) as ChunkRow[];
+    .prepare(
+      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding
+         FROM chunks c
+         LEFT JOIN embeddings e
+           ON e.content_hash = c.content_hash AND e.model = ?
+        WHERE c.path = ?
+        ORDER BY c.chunk_index`,
+    )
+    .all(model, path) as ChunkJoinRow[];
   return rows.map(rowToChunk);
 }
 
@@ -256,5 +353,10 @@ export function getMeta(db: IndexDb, key: string): string | null {
 
 export function documentCount(db: IndexDb): number {
   const row = db.prepare("SELECT COUNT(*) AS n FROM documents").get() as { n: number };
+  return row.n;
+}
+
+export function embeddingCount(db: IndexDb): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM embeddings").get() as { n: number };
   return row.n;
 }
