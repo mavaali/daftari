@@ -272,7 +272,7 @@ describe("extension loading guard", () => {
 
     const tmpVault = mkdtempSync(join(tmpdir(), "daftari-vec-omit-"));
     try {
-      const result = scopedOpen(tmpVault);
+      const result = scopedOpen(tmpVault, 384);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error.message).toContain("sqlite-vec");
@@ -281,6 +281,36 @@ describe("extension loading guard", () => {
       // Must tell the user to reinstall without --omit=optional.
       expect(result.error.message).toContain("npm install");
       expect(result.error.message).toContain("--omit=optional");
+    } finally {
+      rmSync(tmpVault, { recursive: true, force: true });
+      vi.doUnmock("sqlite-vec");
+      vi.resetModules();
+    }
+  });
+
+  it("detects ABI mismatch when load() succeeds but vec0 virtual table is non-functional", async () => {
+    // Stub load() as a no-op (simulates a case where the dylib was dlopen'd
+    // but the SQLite virtual-table machinery is broken due to an ABI mismatch).
+    // The smoke-test in loadVecExtension will then fail to CREATE the vec0
+    // TEMP table and return an actionable error.
+    vi.resetModules();
+    vi.doMock("sqlite-vec", () => ({
+      load: () => {
+        // deliberate no-op: load "succeeds" but vec0 is not registered
+      },
+      getLoadablePath: () => "/nonexistent/path",
+    }));
+
+    const { openIndexDb: scopedOpen } = await import("../../src/storage/index-db.js?reload");
+
+    const tmpVault = mkdtempSync(join(tmpdir(), "daftari-vec-abi-"));
+    try {
+      const result = scopedOpen(tmpVault, 384);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // The smoke-test must surface an ABI-mismatch hint, not a silent success.
+      expect(result.error.message).toContain("smoke-test");
+      expect(result.error.message).toContain("ABI mismatch");
     } finally {
       rmSync(tmpVault, { recursive: true, force: true });
       vi.doUnmock("sqlite-vec");
