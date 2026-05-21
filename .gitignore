@@ -13,3 +13,4 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/locks.db-shm
 **/.daftari/curation-log.jsonl
 **/.daftari/tensions.md
+**/.daftari/process.lock
