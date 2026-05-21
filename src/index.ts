@@ -25,6 +25,7 @@ import {
   setIndexProgress,
 } from "./search/index-state.js";
 import { isIndexFresh, type ReindexOptions, reindexVault } from "./search/reindex.js";
+import { warmModel } from "./search/vector.js";
 import { createServer } from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig } from "./utils/config.js";
@@ -123,6 +124,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (fresh) {
     process.stderr.write(`daftari: index is up to date — skipping reindex\n`);
     markIndexReady();
+    // Background warm-up only. With the content-addressed cache, a fresh
+    // index has every chunk's embedding row already populated, so
+    // reindexVault did not load the model. A user search would still pay
+    // the ~500ms cold start on the first vault_search; warm in the
+    // background so it does not.
+    if (config.value.warmEmbeddings) {
+      void runBackgroundWarm();
+    }
     return;
   }
 
@@ -131,10 +140,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // completion alongside the live server.
   markIndexing();
   process.stderr.write(`daftari: starting background reindex…\n`);
-  void runBackgroundReindex(vaultRoot);
+  void runBackgroundReindex(vaultRoot, config.value.warmEmbeddings);
 }
 
-async function runBackgroundReindex(vaultRoot: string): Promise<void> {
+// Loads the embedding model in the background so the first user search does
+// not pay the cold-start latency. Failures (no network on first run, model
+// download blocked) are logged but never crash the server — the next embed()
+// call will retry. Intended to be invoked as a `void` from main().
+async function runBackgroundWarm(): Promise<void> {
+  const result = await warmModel();
+  if (result.ok) {
+    process.stderr.write(`daftari: embedding model warm — ready for search\n`);
+  } else {
+    process.stderr.write(`daftari: warning: embedding warm-up failed: ${result.error.message}\n`);
+  }
+}
+
+async function runBackgroundReindex(vaultRoot: string, warmEmbeddings: boolean): Promise<void> {
   try {
     const reindexed = await reindexVault(vaultRoot, makeProgressReporter());
     if (reindexed.ok) {
@@ -144,6 +166,13 @@ async function runBackgroundReindex(vaultRoot: string): Promise<void> {
         `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
           `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
       );
+      // If the reindex was fully cache-hit (no chunks needed embedding) the
+      // model was never loaded — warm it now so the first user search isn't
+      // a cold start. A reindex that did embed already loaded the model; no
+      // extra warm is necessary in that path.
+      if (warmEmbeddings && r.embeddedCount === 0) {
+        void runBackgroundWarm();
+      }
     } else {
       markIndexError(reindexed.error.message);
       process.stderr.write(

@@ -54,6 +54,12 @@ export interface DaftariConfig {
   // written, indexed, and provenance-logged, but the caller owns git. Defaults
   // to true: a standalone vault's git history *is* its document history.
   autoCommit: boolean;
+  // When true, the server kicks off a background load of the embedding model
+  // after startup so the first user search doesn't pay the cold-start cost.
+  // When false, the model loads lazily only on the first miss — useful for
+  // read-only roles that never embed or for very low-memory environments.
+  // Defaults to true.
+  warmEmbeddings: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -64,6 +70,7 @@ function emptyConfig(): DaftariConfig {
     schemaExtensions: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
+    warmEmbeddings: true,
   };
 }
 
@@ -378,10 +385,19 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     autoCommit = root.auto_commit;
   }
 
+  let warmEmbeddings = true;
+  if (root.warm_embeddings !== undefined) {
+    if (typeof root.warm_embeddings !== "boolean") {
+      return err(new Error("malformed config: 'warm_embeddings' must be true or false"));
+    }
+    warmEmbeddings = root.warm_embeddings;
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
     hooks: hooks.value,
     autoCommit,
+    warmEmbeddings,
   });
 }

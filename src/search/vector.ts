@@ -11,6 +11,7 @@
 // that as Result.err so the caller can fall back to lexical-only ranking.
 
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { markModelError, markModelReady, markModelWarming } from "./index-state.js";
 
 export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_DIM = 384;
@@ -104,11 +105,63 @@ let extractorPromise: Promise<Extractor> | null = null;
 
 async function getExtractor(): Promise<Extractor> {
   if (!extractorPromise) {
-    extractorPromise = import("@huggingface/transformers").then(({ pipeline }) =>
-      pipeline("feature-extraction", EMBEDDING_MODEL),
-    ) as Promise<Extractor>;
+    // The model is being loaded for the first time. Surface that in the
+    // process-wide IndexState so tools can tell a "warming embeddings" pause
+    // apart from a real indexing pass. The state is best-effort signal — we
+    // never let a state-machine wobble break embedding.
+    markModelWarming();
+    extractorPromise = (
+      import("@huggingface/transformers").then(({ pipeline }) =>
+        pipeline("feature-extraction", EMBEDDING_MODEL),
+      ) as Promise<Extractor>
+    ).then(
+      (extractor) => {
+        markModelReady();
+        return extractor;
+      },
+      (e) => {
+        // Surface the failure but reset the cached promise so the next call
+        // can try again — useful for the no-network-on-first-run case where
+        // a later retry might succeed. Without the reset a single transient
+        // failure would poison the process for its whole lifetime.
+        const reason = e instanceof Error ? e.message : String(e);
+        markModelError(reason);
+        extractorPromise = null;
+        throw e;
+      },
+    );
   }
   return extractorPromise;
+}
+
+// Returns true once the model has been loaded into memory (the memoised
+// promise has resolved). Used by tests and by lazy-load coverage to assert
+// that startup paths do not invoke the model when they should not.
+export function isModelLoaded(): boolean {
+  return extractorPromise !== null;
+}
+
+// Eagerly loads the model so the first user search does not pay the cold
+// start. Intended to be invoked as a background `void warmModel()` after
+// startup completes (transport open, freshness check done). Returns Result
+// rather than throwing: a warm-up failure must never crash the server — the
+// next embed() will retry. The IndexState model status is updated by
+// getExtractor() so callers observing it see "warming" → "ready" / "error".
+export async function warmModel(): Promise<Result<void, Error>> {
+  try {
+    await getExtractor();
+    return ok(undefined);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`embedding model warm-up failed: ${reason}`));
+  }
+}
+
+// Test-only: clear the memoised extractor so a fresh import is forced on
+// the next call. Production code must not invoke this — the model load is
+// expensive and the whole point of the memo is that it survives the process.
+export function resetExtractorForTests(): void {
+  extractorPromise = null;
 }
 
 // Embeds texts in EMBED_BATCH_SIZE sub-batches so peak memory stays flat

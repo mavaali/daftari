@@ -83,6 +83,50 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("warm_embeddings (issue #38 PR 2)", () => {
+    it("defaults to true when no config file exists", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Background warm-up is on by default — the first user search should
+      // not pay the cold-start cost. Opt-out is for read-only or memory-
+      // constrained deployments.
+      expect(result.value.warmEmbeddings).toBe(true);
+    });
+
+    it("defaults to true when the key is omitted", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.warmEmbeddings).toBe(true);
+    });
+
+    it("parses warm_embeddings: false", () => {
+      writeConfig("version: 1\nvault_name: v\nwarm_embeddings: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.warmEmbeddings).toBe(false);
+    });
+
+    it("parses warm_embeddings: true explicitly", () => {
+      writeConfig("version: 1\nvault_name: v\nwarm_embeddings: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.warmEmbeddings).toBe(true);
+    });
+
+    it("rejects a non-boolean warm_embeddings value", () => {
+      writeConfig("version: 1\nvault_name: v\nwarm_embeddings: maybe\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("warm_embeddings");
+    });
+  });
+
   describe("type primitives", () => {
     it("parses every supported extension type", () => {
       writeConfig(
