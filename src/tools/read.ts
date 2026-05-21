@@ -19,9 +19,9 @@ import {
   STATUSES,
   type ValidationReport,
 } from "../frontmatter/types.js";
+import { getProvider } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
-import { getProvider } from "../search/vector.js";
 import { sha256Hex } from "../utils/hash.js";
 
 export interface ToolDefinition {
