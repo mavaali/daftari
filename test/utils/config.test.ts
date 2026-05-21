@@ -83,6 +83,39 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("watch (issue #38 PR 3)", () => {
+    it("defaults to true when no config file exists", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.watch).toBe(true);
+    });
+
+    it("defaults to true when the key is omitted", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.watch).toBe(true);
+    });
+
+    it("parses watch: false", () => {
+      writeConfig("version: 1\nvault_name: v\nwatch: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.watch).toBe(false);
+    });
+
+    it("rejects a non-boolean watch value", () => {
+      writeConfig("version: 1\nvault_name: v\nwatch: sure\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("watch");
+    });
+  });
+
   describe("warm_embeddings (issue #38 PR 2)", () => {
     it("defaults to true when no config file exists", () => {
       const result = loadConfig(dir);

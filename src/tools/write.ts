@@ -31,6 +31,7 @@ import { runPreWriteHooks, runPreWriteTransformHooks } from "../hooks/runner.js"
 import type { HookOperation } from "../hooks/types.js";
 import { getIndexStatus, indexingBusyMessage } from "../search/index-state.js";
 import { indexDocument } from "../search/reindex.js";
+import { noteSelfWrite } from "../search/self-write.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
@@ -220,6 +221,14 @@ async function performWrite(params: {
       await writeFile(params.absPath, params.fileText, "utf-8");
 
       const indexed = await indexDocument(params.vaultRoot, params.relPath);
+      // Tell the fs.watch reactive indexer (search/watcher.ts) that this
+      // path was just written by Daftari itself, so the chokidar `add` /
+      // `change` event the writeFile above will trigger is dropped instead
+      // of queuing a redundant indexDocument() call. The TTL is short
+      // (~1s), so a *real* external edit that lands a moment later is at
+      // worst skipped once and picked up by the next edit — last-writer
+      // wins, like every other path here.
+      noteSelfWrite(params.absPath);
 
       let commitHash: string | null = null;
       if (params.autoCommit) {

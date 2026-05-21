@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **fs.watch reactive indexing** (#38, PR 3 of 5). The server now keeps the
+  search index in sync with the markdown files at write time, not just at
+  startup. A chokidar watcher runs over the vault root after the MCP
+  transport is up and the cold-start reindex (if any) has finished;
+  `add` / `change` events trigger an `indexDocument()` pass for the
+  affected file, and `unlink` evicts the document and patches the
+  freshness manifest so the next startup does not see a missing file as
+  drift. Events are debounced per-path with a 500ms window — an
+  editor's atomic-rename save burst coalesces into one indexer call —
+  and `unlink` events re-stat before deleting, so FSEvents / iCloud /
+  Dropbox phantom unlink+add pairs during atomic-rename saves are
+  treated as a change instead of a delete. Daftari's own writes are
+  suppressed from the watcher path: the write-path tools register the
+  absolute path after their in-process `indexDocument()` returns, and
+  the watcher silently drops the chokidar event that follows. The new
+  `watch` config flag (default `true`) lets read-only or scripted
+  environments disable the watcher entirely. The startup freshness
+  check (manifest mtimes vs disk, see #36) remains as the reconciliation
+  backstop for events the watcher drops.
+
 - **Pluggable embedding backend** (#38, PR 4 of 5). The embedding model is
   no longer hard-coded; a new `EmbeddingProvider` interface lets the vault
   owner choose between two backends in `.daftari/config.yaml`:
@@ -34,10 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   safe: the `(content_hash, model)` composite PK lets both providers'
   rows coexist, and the new provider's first reindex naturally populates
   its own row set without re-embedding under the old id.
-
-  PR 4 of 5 in the #38 unbundle. PR 2 (lazy model load, #41) and PR 3
-  (content-addressed cache, #39) are merged; SQL-native FTS5 +
-  `sqlite-vec` is the last follow-up.
 
 ### Changed
 
