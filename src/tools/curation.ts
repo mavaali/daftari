@@ -167,6 +167,8 @@ export async function vaultProvenance(
 export const curationTools: ToolDefinition[] = [
   {
     name: "vault_tension_log",
+    title: "Log a contradiction",
+    annotations: { destructiveHint: true },
     description:
       "Record a tension — a contradiction or unresolved pull between two " +
       "vault documents — to the advisory tension log. Records the tension; " +
@@ -206,6 +208,8 @@ export const curationTools: ToolDefinition[] = [
   },
   {
     name: "vault_lint",
+    title: "Run curation checks",
+    annotations: { readOnlyHint: true },
     description:
       "Run the advisory curation checks across the vault: stale files past " +
       "TTL, orphan files with no inbound links, old drafts, stagnant " +
@@ -227,6 +231,8 @@ export const curationTools: ToolDefinition[] = [
   },
   {
     name: "vault_provenance",
+    title: "View document write history",
+    annotations: { readOnlyHint: true },
     description:
       "Return the write history of a single document from the provenance " +
       "log: every create, update, append, promote, and deprecate recorded " +

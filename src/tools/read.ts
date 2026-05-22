@@ -24,10 +24,25 @@ import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
 
+// Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
+// *hints* — clients must not gate behavior on them — but directory reviewers
+// require every tool to declare its safety profile, so we set them
+// deliberately on each definition.
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface ToolDefinition {
   name: string;
+  // Human-readable title surfaced in UIs (Claude Desktop, the connectors
+  // directory). `name` stays machine-style; `title` is for humans.
+  title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: ToolAnnotations;
   // `access` is supplied by the server transport on every call. When omitted
   // (a direct in-process call, e.g. from a test) RBAC is not enforced.
   handler: (
@@ -356,6 +371,8 @@ function asStringArray(v: unknown): string[] | undefined {
 export const readTools: ToolDefinition[] = [
   {
     name: "vault_read",
+    title: "Read a vault document",
+    annotations: { readOnlyHint: true },
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
       "frontmatter, a validation report, a decay assessment (null when " +
@@ -378,6 +395,8 @@ export const readTools: ToolDefinition[] = [
   },
   {
     name: "vault_index",
+    title: "List vault documents",
+    annotations: { readOnlyHint: true },
     description:
       "List vault documents with their metadata, including each document's " +
       "questions_answered / questions_raised. Optionally filter by collection, " +
@@ -425,6 +444,8 @@ export const readTools: ToolDefinition[] = [
   },
   {
     name: "vault_status",
+    title: "Vault health dashboard",
+    annotations: { readOnlyHint: true },
     description:
       "Vault health dashboard: total file count, per-collection counts, " +
       "count of documents with invalid frontmatter, a staleness distribution " +

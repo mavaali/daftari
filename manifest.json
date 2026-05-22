@@ -1,0 +1,76 @@
+{
+  "manifest_version": "0.2",
+  "name": "daftari",
+  "version": "1.11.0",
+  "display_name": "Daftari",
+  "description": "A persistent knowledge vault for AI agents. Agents read, write, and curate markdown documents that compound over time.",
+  "long_description": "Daftari is an MCP server that exposes a curated markdown vault to AI agents. The vault is plain text on disk (markdown with YAML frontmatter, versioned in git) and indexed for hybrid BM25 + vector search. Agents can read, search, write, promote drafts to canonical knowledge, log tensions between documents, and lint the vault for staleness. RBAC is config-driven via .daftari/config.yaml. The default embedding provider runs fully offline on local CPU; an optional OpenAI provider can be enabled in the vault's config.yaml (embeddings.provider: openai-3-small), which requires the OPENAI_API_KEY environment variable.",
+  "author": {
+    "name": "Mihir Wagle",
+    "url": "https://github.com/mavaali"
+  },
+  "homepage": "https://github.com/mavaali/daftari",
+  "documentation": "https://github.com/mavaali/daftari#readme",
+  "support": "https://github.com/mavaali/daftari/issues",
+  "icons": {
+    "default": "icon.png"
+  },
+  "license": "MIT",
+  "keywords": ["mcp", "knowledge-vault", "markdown", "agents", "rag"],
+  "privacy_policies": [
+    "https://github.com/mavaali/daftari/blob/main/PRIVACY.md"
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtime": {
+      "type": "node",
+      "min_version": "20.0.0"
+    }
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/index.js",
+        "--vault",
+        "${user_config.vault_path}",
+        "--user",
+        "${user_config.user}",
+        "--role",
+        "${user_config.role}"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${user_config.openai_api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "vault_path": {
+      "type": "directory",
+      "title": "Vault path",
+      "description": "Absolute path to the daftari vault directory.",
+      "required": true
+    },
+    "user": {
+      "type": "string",
+      "title": "User",
+      "description": "Your identity for provenance tracking (e.g. 'mihir'). Recorded on every write.",
+      "required": true
+    },
+    "role": {
+      "type": "string",
+      "title": "Role",
+      "description": "Your role as defined in .daftari/config.yaml (e.g. 'admin', 'analyst'). Determines read/write permissions per collection.",
+      "required": true
+    },
+    "openai_api_key": {
+      "type": "string",
+      "title": "OpenAI API key (optional)",
+      "description": "OpenAI API key. Required only if the vault's embeddings.provider is set to openai-3-small. Used solely for embedding generation; leave blank for the default local provider.",
+      "required": false,
+      "sensitive": true
+    }
+  }
+}
