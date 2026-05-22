@@ -402,3 +402,86 @@ export function pickK(
   // `best` is non-null because ks has at least one entry.
   return best as PickKResult;
 }
+
+// --- Secondary memberships ------------------------------------------------
+
+// A doc's secondary membership in a cluster other than its primary. The
+// `docIndex` is into the original input vector array; `sim` is the cosine
+// similarity (dot product for L2-normalised vectors) between the doc and
+// the secondary cluster's centroid.
+export interface SecondaryMembership {
+  docIndex: number;
+  sim: number;
+}
+
+export interface SecondaryOptions {
+  // A doc's similarity to a secondary cluster must be within `delta` of
+  // its similarity to its primary. Tighter delta = fewer secondaries.
+  delta: number;
+  // Absolute floor on secondary similarity. Filters out "noise" docs whose
+  // primary alignment itself is weak — surfacing them as secondaries
+  // everywhere would just clutter the output.
+  minSimilarity: number;
+  // Hard cap on how many secondaries any one doc may join, preventing
+  // pathological cases (e.g., a centroid-of-mass doc landing in every
+  // cluster).
+  maxPerDoc: number;
+}
+
+// For each doc, finds the clusters (other than its primary) whose centroid
+// is close enough that the doc plausibly belongs there too. Returns a map
+// from cluster index → ordered (by sim desc) list of secondary docs.
+//
+// This implements the "soft reporting" path on top of the hard partition
+// produced by k-means: `documentCount` still partitions by primary, but
+// the secondary list surfaces the cross-cutting documents the partition
+// hides. See `docs/architecture.md` for the rationale.
+export function selectSecondaryMemberships(
+  vectors: Float32Array[],
+  assignments: number[],
+  centroids: Float32Array[],
+  options: SecondaryOptions,
+): Map<number, SecondaryMembership[]> {
+  const out = new Map<number, SecondaryMembership[]>();
+  const { delta, minSimilarity, maxPerDoc } = options;
+  if (vectors.length === 0 || centroids.length < 2 || maxPerDoc <= 0) return out;
+
+  for (let i = 0; i < vectors.length; i++) {
+    const vec = vectors[i] as Float32Array;
+    const primary = assignments[i] as number;
+    const primaryCentroid = centroids[primary];
+    if (!primaryCentroid) continue;
+    const primarySim = cosineSimilarityNormalized(vec, primaryCentroid);
+
+    // Score every non-primary cluster; collect those passing both bars.
+    const candidates: { cluster: number; sim: number }[] = [];
+    for (let c = 0; c < centroids.length; c++) {
+      if (c === primary) continue;
+      const cv = centroids[c];
+      if (!cv) continue;
+      const sim = cosineSimilarityNormalized(vec, cv);
+      if (sim < minSimilarity) continue;
+      if (sim < primarySim - delta) continue;
+      candidates.push({ cluster: c, sim });
+    }
+    if (candidates.length === 0) continue;
+
+    // Take the doc's top `maxPerDoc` secondaries (highest-sim wins ties
+    // first; stable cluster index for a deterministic ordering otherwise).
+    candidates.sort((a, b) => b.sim - a.sim || a.cluster - b.cluster);
+    const top = candidates.slice(0, maxPerDoc);
+    for (const { cluster, sim } of top) {
+      const list = out.get(cluster);
+      const entry: SecondaryMembership = { docIndex: i, sim };
+      if (list) list.push(entry);
+      else out.set(cluster, [entry]);
+    }
+  }
+
+  // Order each cluster's secondaries by sim desc; stable on docIndex so the
+  // map serialises deterministically across runs.
+  for (const list of out.values()) {
+    list.sort((a, b) => b.sim - a.sim || a.docIndex - b.docIndex);
+  }
+  return out;
+}

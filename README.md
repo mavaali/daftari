@@ -87,7 +87,7 @@ Daftari exposes 13 tools, grouped by layer.
 |------|-------------|
 | `vault_search` | Hybrid BM25 + vector search across the vault, with tunable ranking weights; each hit carries an inline decay assessment. |
 | `vault_search_related` | Find documents thematically related to a given document. |
-| `vault_themes` | Surface thematic clusters across the vault via k-means over document-pooled embeddings. Heuristic labels (TF-IDF), per-theme coherence, representative docs, deterministic output. |
+| `vault_themes` | Surface thematic clusters across the vault via k-means over document-pooled embeddings. Heuristic labels (TF-IDF), per-theme coherence, representative docs, secondary docs (cross-cutting documents from other clusters that also align here), deterministic output. |
 | `vault_reindex` | Rebuild the SQLite search index from the markdown files. |
 
 **Write safety**

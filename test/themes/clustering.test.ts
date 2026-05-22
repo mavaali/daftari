@@ -7,6 +7,7 @@ import {
   meanPoolL2,
   pickK,
   seededRng,
+  selectSecondaryMemberships,
   silhouetteScore,
 } from "../../src/themes/clustering.js";
 
@@ -262,5 +263,123 @@ describe("pickK", () => {
     const b = pickK(data, [2, 3, 4], seededRng(21), 50);
     expect(a.k).toBe(b.k);
     expect(a.assignments).toEqual(b.assignments);
+  });
+});
+
+describe("selectSecondaryMemberships", () => {
+  // Two centroids, well-separated. Three docs:
+  //   doc 0: clearly belongs to centroid 0 (sim 0 ≈ 1, sim 1 ≈ 0).
+  //   doc 1: clearly belongs to centroid 1.
+  //   doc 2: a "cross-cutting" doc midway between the two — its sim to
+  //          centroid 0 (its primary) is close to its sim to centroid 1.
+  function twoClusterFixture(): {
+    vectors: Float32Array[];
+    centroids: Float32Array[];
+    assignments: number[];
+  } {
+    const c0 = l2Normalize(v(1, 0));
+    const c1 = l2Normalize(v(-1, 0));
+    return {
+      vectors: [
+        l2Normalize(v(1, 0.01)), // doc 0: dead-on c0
+        l2Normalize(v(-1, 0.01)), // doc 1: dead-on c1
+        l2Normalize(v(0.5, 0.866)), // doc 2: 60deg from c0, 120deg from c1
+      ],
+      centroids: [c0, c1],
+      assignments: [0, 1, 0],
+    };
+  }
+
+  it("flags a cross-cutting doc as a secondary member of the other cluster", () => {
+    // Build a fixture where doc 2's similarity to its primary and to the
+    // other cluster are both meaningful (above the minimum) AND within
+    // delta of each other. Pick coordinates explicitly so the math is
+    // transparent.
+    const c0 = l2Normalize(v(1, 0));
+    const c1 = l2Normalize(v(0, 1));
+    const doc0 = l2Normalize(v(1, 0.05)); // ~1 with c0, ~0.05 with c1
+    const doc1 = l2Normalize(v(0.05, 1)); // ~0.05 with c0, ~1 with c1
+    const doc2 = l2Normalize(v(0.8, 0.7)); // ~0.75 with c0, ~0.65 with c1 (cross-cutting)
+    const result = selectSecondaryMemberships([doc0, doc1, doc2], [0, 1, 0], [c0, c1], {
+      delta: 0.2,
+      minSimilarity: 0.4,
+      maxPerDoc: 2,
+    });
+    // Doc 2 (primary 0) should appear as a secondary of cluster 1.
+    const secondsOfCluster1 = result.get(1) ?? [];
+    expect(secondsOfCluster1.map((s) => s.docIndex)).toContain(2);
+  });
+
+  it("does not flag a strongly-aligned doc as a secondary anywhere", () => {
+    const fx = twoClusterFixture();
+    const result = selectSecondaryMemberships(fx.vectors, fx.assignments, fx.centroids, {
+      delta: 0.05,
+      minSimilarity: 0.5,
+      maxPerDoc: 2,
+    });
+    // Doc 0 is essentially identical to its primary centroid and orthogonal
+    // to the other — should never be a secondary.
+    for (const [, list] of result) {
+      expect(list.map((s) => s.docIndex)).not.toContain(0);
+    }
+  });
+
+  it("does not list a doc as a secondary of its own primary cluster", () => {
+    const fx = twoClusterFixture();
+    const result = selectSecondaryMemberships(fx.vectors, fx.assignments, fx.centroids, {
+      delta: 0.5,
+      minSimilarity: 0,
+      maxPerDoc: 5,
+    });
+    // Each entry in cluster C's secondaries must have its primary != C.
+    for (const [cluster, list] of result) {
+      for (const item of list) {
+        expect(fx.assignments[item.docIndex]).not.toBe(cluster);
+      }
+    }
+  });
+
+  it("respects the maxPerDoc cap", () => {
+    // Build 4 centroids and one doc roughly equidistant from all of them.
+    // Without a cap, the doc would join 3 secondaries; with cap=1, only one.
+    const c0 = l2Normalize(v(1, 0, 0, 0));
+    const c1 = l2Normalize(v(0, 1, 0, 0));
+    const c2 = l2Normalize(v(0, 0, 1, 0));
+    const c3 = l2Normalize(v(0, 0, 0, 1));
+    const doc = l2Normalize(v(0.5, 0.5, 0.5, 0.5));
+    const result = selectSecondaryMemberships(
+      [doc],
+      [0], // primary = c0
+      [c0, c1, c2, c3],
+      { delta: 0.5, minSimilarity: 0, maxPerDoc: 1 },
+    );
+    let total = 0;
+    for (const [, list] of result) {
+      for (const item of list) if (item.docIndex === 0) total += 1;
+    }
+    expect(total).toBe(1);
+  });
+
+  it("orders each cluster's secondaries by similarity desc", () => {
+    // Cluster 1 receives two secondaries with distinct similarities; the
+    // returned list must be sorted desc by sim.
+    const c0 = l2Normalize(v(1, 0));
+    const c1 = l2Normalize(v(0, 1));
+    const docA = l2Normalize(v(0.9, 0.4)); // primary 0; sim to c1 ≈ 0.4
+    const docB = l2Normalize(v(0.7, 0.7)); // primary 0; sim to c1 ≈ 0.7
+    const docC = l2Normalize(v(0.1, 1)); // primary 1
+    const result = selectSecondaryMemberships([docA, docB, docC], [0, 0, 1], [c0, c1], {
+      delta: 1,
+      minSimilarity: 0,
+      maxPerDoc: 5,
+    });
+    const seconds = result.get(1) ?? [];
+    expect(seconds.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < seconds.length; i++) {
+      const a = seconds[i - 1];
+      const b = seconds[i];
+      if (!a || !b) continue;
+      expect(a.sim).toBeGreaterThanOrEqual(b.sim);
+    }
   });
 });

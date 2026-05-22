@@ -17,13 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picks the k with the best mean silhouette; an explicit `k` argument
   skips the sweep. Each theme returns a heuristic label (TF-IDF over
   titles + tags — no LLM call), a coherence score (mean pairwise cosine
-  inside the cluster), representative documents nearest the centroid, and
-  the most frequent tags. Optional `collection` and `tags` filters scope
-  clustering; RBAC drops documents the caller cannot read. Output is
-  deterministic for the same vault (fixed seed). No new storage — reads
-  the existing `chunks` / `embeddings` tables. v1 is one-doc-one-theme;
-  HDBSCAN, multi-theme docs, seeded-search/coverage mode, and LLM labels
-  are deferred.
+  inside the cluster — `null` for singleton clusters, where there are no
+  pairs to average), representative documents nearest the centroid, the
+  most frequent tags, and `secondaryDocs`: documents whose primary
+  cluster is elsewhere but whose pooled vector also aligns with this
+  theme's centroid (surfaces cross-cutting documents that the hard
+  one-doc-one-theme partition would otherwise hide). Optional
+  `collection` and `tags` filters scope clustering; RBAC drops documents
+  the caller cannot read. Output is deterministic for the same vault
+  (fixed seed). No new storage — reads the existing `chunks` /
+  `embeddings` tables. v1 is one-doc-one-theme at the partition level
+  (`documentCount` still partitions by primary); true multi-theme
+  membership, HDBSCAN, seeded-search/coverage mode, and LLM labels are
+  deferred.
 
 ## [1.10.0] - 2026-05-21
 

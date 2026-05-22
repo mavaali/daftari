@@ -19,7 +19,14 @@ import { type AccessContext, canRead } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { getProvider } from "../search/vector.js";
 import { blobToEmbedding, type IndexDb, type IndexedDocument } from "../storage/index-db.js";
-import { clusterCoherence, kmeans, meanPoolL2, pickK, seededRng } from "../themes/clustering.js";
+import {
+  clusterCoherence,
+  kmeans,
+  meanPoolL2,
+  pickK,
+  seededRng,
+  selectSecondaryMemberships,
+} from "../themes/clustering.js";
 import type { ToolDefinition } from "./read.js";
 import { ensureIndexReady, openIndexForActiveProvider } from "./search.js";
 
@@ -44,11 +51,36 @@ const REPRESENTATIVE_DOCS_PER_THEME = 5;
 // without burying the user in noise.
 const RELATED_TAGS_PER_THEME = 5;
 
+// Secondary-membership tuning. A doc qualifies as a secondary member of a
+// non-primary cluster when its centroid similarity is BOTH within DELTA of
+// the primary AND above MIN_ABS_SIMILARITY. The cap prevents a centroid-
+// of-mass doc from showing up in every cluster. Defaults are deliberately
+// conservative — secondaries should surface cross-cutting docs, not bury
+// the primary signal.
+const SECONDARY_DELTA = 0.1;
+const SECONDARY_MIN_SIMILARITY = 0.5;
+const SECONDARY_MAX_PER_DOC = 2;
+
+// Hard cap on secondaries reported per theme. Same UX rationale as
+// REPRESENTATIVE_DOCS_PER_THEME — enough to be useful, bounded enough to
+// not bury the user.
+const SECONDARY_DOCS_PER_THEME = 5;
+
 export interface VaultTheme {
   label: string;
   documentCount: number;
-  coherence: number;
+  // coherence is the mean pairwise cosine similarity inside the cluster.
+  // For a single-doc cluster there are no pairs to average, so the field
+  // is null rather than 1.0 — reporting 1.0 would imply tightness that
+  // does not exist (a singleton has no internal structure to measure).
+  coherence: number | null;
   representativeDocs: string[];
+  // Documents whose PRIMARY cluster is elsewhere but whose pooled vector
+  // is close enough to this theme's centroid to plausibly also belong.
+  // Surfaces the cross-cutting docs the hard one-doc-one-theme partition
+  // hides. Always disjoint from representativeDocs (a doc cannot be a
+  // secondary of its own primary cluster).
+  secondaryDocs: string[];
   relatedTags: string[];
 }
 
@@ -389,18 +421,36 @@ export async function vaultThemes(
 
     const globalDf = buildGlobalDf(scoped);
 
+    // Secondary memberships: for each doc, find non-primary clusters its
+    // pooled vector also aligns with. This is the soft-reporting layer on
+    // top of the hard partition — it does NOT change documentCount, which
+    // still reflects primary membership only.
+    const secondaryByCluster = selectSecondaryMemberships(vectors, assignments, centroids, {
+      delta: SECONDARY_DELTA,
+      minSimilarity: SECONDARY_MIN_SIMILARITY,
+      maxPerDoc: SECONDARY_MAX_PER_DOC,
+    });
+
     const themes: VaultTheme[] = [];
     let themeIndex = 0;
     for (const [clusterIdx, clusterDocs] of byCluster) {
       if (clusterDocs.length === 0) continue;
       const centroid = centroids[clusterIdx];
       if (!centroid) continue;
-      const coherence = clusterCoherence(clusterDocs.map((d) => d.vector));
+      // Singleton clusters have no pairs to average — return null rather
+      // than the mathematically-trivial 1.0, which would falsely imply
+      // tightness.
+      const coherence =
+        clusterDocs.length < 2 ? null : clusterCoherence(clusterDocs.map((d) => d.vector));
+      const secondaries = (secondaryByCluster.get(clusterIdx) ?? [])
+        .slice(0, SECONDARY_DOCS_PER_THEME)
+        .map((s) => (scoped[s.docIndex] as ScopedDoc).path);
       themes.push({
         label: buildLabel(clusterDocs, scoped.length, globalDf, themeIndex),
         documentCount: clusterDocs.length,
         coherence,
         representativeDocs: representativesForCluster(clusterDocs, centroid),
+        secondaryDocs: secondaries,
         relatedTags: topTagsForCluster(clusterDocs),
       });
       themeIndex += 1;

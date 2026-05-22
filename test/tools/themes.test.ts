@@ -42,10 +42,17 @@ describe("vault_themes", () => {
     for (const theme of v.themes) {
       expect(typeof theme.label).toBe("string");
       expect(typeof theme.documentCount).toBe("number");
-      expect(typeof theme.coherence).toBe("number");
-      expect(theme.coherence).toBeGreaterThanOrEqual(-1);
-      expect(theme.coherence).toBeLessThanOrEqual(1);
+      // coherence is null for single-doc clusters (no pairs to average),
+      // otherwise a number in [-1, 1].
+      if (theme.coherence !== null) {
+        expect(typeof theme.coherence).toBe("number");
+        expect(theme.coherence).toBeGreaterThanOrEqual(-1);
+        expect(theme.coherence).toBeLessThanOrEqual(1);
+      } else {
+        expect(theme.documentCount).toBe(1);
+      }
       expect(Array.isArray(theme.representativeDocs)).toBe(true);
+      expect(Array.isArray(theme.secondaryDocs)).toBe(true);
       expect(Array.isArray(theme.relatedTags)).toBe(true);
     }
     // Sorted desc by documentCount.
@@ -80,8 +87,13 @@ describe("vault_themes", () => {
       expect(ta.documentCount).toBe(tb.documentCount);
       expect(ta.label).toBe(tb.label);
       expect(ta.representativeDocs).toEqual(tb.representativeDocs);
+      expect(ta.secondaryDocs).toEqual(tb.secondaryDocs);
       expect(ta.relatedTags).toEqual(tb.relatedTags);
-      expect(ta.coherence).toBeCloseTo(tb.coherence, 8);
+      if (ta.coherence === null || tb.coherence === null) {
+        expect(ta.coherence).toBe(tb.coherence);
+      } else {
+        expect(ta.coherence).toBeCloseTo(tb.coherence, 8);
+      }
     }
   }, 60_000);
 
@@ -126,6 +138,18 @@ describe("vault_themes", () => {
     expect(result.value.totalDocuments).toBeLessThanOrEqual(unfiltered.value.totalDocuments);
   }, 60_000);
 
+  it("returns zero docs when the filter tag matches nothing", async () => {
+    // A no-op filter implementation would silently return every doc; this
+    // test would fail if that ever regressed.
+    const result = await vaultThemes(vault, {
+      tags: ["definitely-not-a-real-tag-zzzz"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.totalDocuments).toBe(0);
+    expect(result.value.themes.length).toBe(0);
+  }, 60_000);
+
   it("respects RBAC: the analyst sees no moonshot/_drafts docs in any theme", async () => {
     const result = await vaultThemes(vault, {}, analyst);
     expect(result.ok).toBe(true);
@@ -150,6 +174,9 @@ describe("vault_themes", () => {
     try {
       const reindex = await vaultReindex(isolated);
       expect(reindex.ok).toBe(true);
+      if (!reindex.ok) return;
+      const indexedCount = reindex.value.documentCount;
+      expect(indexedCount).toBeGreaterThan(0);
 
       // Strip every embeddings-table row so each indexed document loses its
       // (chunk → embedding) join. Every doc should then be `skipped`.
@@ -164,7 +191,9 @@ describe("vault_themes", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.totalDocuments).toBe(0);
-      expect(result.value.skippedDocuments).toBeGreaterThan(0);
+      // skippedDocuments must equal the indexed doc count — every doc lost
+      // its embeddings and therefore every doc must be counted as skipped.
+      expect(result.value.skippedDocuments).toBe(indexedCount);
       expect(result.value.themes.length).toBe(0);
     } finally {
       cleanupVault(isolated);
@@ -179,4 +208,19 @@ describe("vault_themes", () => {
     const notInt = await vaultThemes(vault, { k: 2.5 });
     expect(notInt.ok).toBe(false);
   });
+
+  it("includes a secondaryDocs array on every theme", async () => {
+    const result = await vaultThemes(vault, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const theme of result.value.themes) {
+      expect(Array.isArray(theme.secondaryDocs)).toBe(true);
+      // A doc that is a primary member of theme T cannot also be a
+      // secondary member of T.
+      const primarySet = new Set(theme.representativeDocs);
+      for (const doc of theme.secondaryDocs) {
+        expect(primarySet.has(doc)).toBe(false);
+      }
+    }
+  }, 60_000);
 });

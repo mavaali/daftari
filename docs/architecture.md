@@ -178,9 +178,23 @@ used to pick k). **`representativeDocs`** are the documents nearest the
 cluster centroid; **`relatedTags`** are the most frequent tags. Themes are
 sorted by `documentCount` desc.
 
-v1 is one-doc-one-theme: each document lands in exactly one cluster
-(its pooled centroid). Multi-theme documents, density-aware HDBSCAN, a
-seeded-search / coverage mode, and LLM-generated labels are deferred.
+v1's partition is one-doc-one-theme: each document's `documentCount`
+contribution lives in exactly one cluster (its pooled centroid). To
+surface the cross-cutting documents the partition hides, each theme
+also reports **`secondaryDocs`** — documents whose primary cluster is
+elsewhere but whose pooled vector is close enough to this theme's
+centroid (within a similarity delta of the primary alignment, above an
+absolute floor, capped per doc) that the doc plausibly belongs here
+too. This is soft reporting on top of a hard partition; it does not
+change `documentCount`. Density-aware HDBSCAN, true multi-theme
+membership (where a doc's chunks live in genuinely different topic
+regions), a seeded-search / coverage mode, and LLM-generated labels are
+deferred.
+
+`coherence` is `null` for singleton clusters — a one-doc cluster has no
+pairs to average, and reporting 1.0 would falsely imply tightness. For
+multi-doc clusters it is the mean pairwise cosine similarity inside the
+cluster, distinct from the silhouette score used to pick k.
 
 #### Reactive indexing
 
