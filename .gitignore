@@ -14,3 +14,9 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/curation-log.jsonl
 **/.daftari/tensions.md
 **/.daftari/process.lock
+
+# The reviewer test vault ships .daftari/config.yaml and a curated tensions.md
+# as part of the bundled fixture. Negate the broad ignores above so they are
+# tracked. Database files, the process lock, and the curation log stay ignored.
+!templates/reviewer-vault/.daftari/config.yaml
+!templates/reviewer-vault/.daftari/tensions.md
