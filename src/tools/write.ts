@@ -740,6 +740,8 @@ const baseVersionProperty = {
 export const writeTools: ToolDefinition[] = [
   {
     name: "vault_write",
+    title: "Create or update a document",
+    annotations: { destructiveHint: true },
     description:
       "Create a new vault document or overwrite an existing one. Supply the " +
       "full frontmatter and markdown body; the server stamps 'updated' and " +
@@ -769,6 +771,8 @@ export const writeTools: ToolDefinition[] = [
   },
   {
     name: "vault_append",
+    title: "Append to a document",
+    annotations: { destructiveHint: true },
     description:
       "Append a markdown section to an existing vault document. Frontmatter " +
       "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits.",
@@ -793,6 +797,8 @@ export const writeTools: ToolDefinition[] = [
   },
   {
     name: "vault_promote",
+    title: "Promote draft to canonical",
+    annotations: { destructiveHint: true },
     description:
       "Promote a draft document to canonical status. Refuses unless the " +
       "document is currently a draft, its frontmatter is complete, and a " +
@@ -814,6 +820,8 @@ export const writeTools: ToolDefinition[] = [
   },
   {
     name: "vault_deprecate",
+    title: "Deprecate a document",
+    annotations: { destructiveHint: true },
     description:
       "Mark a document deprecated. A reason is required; optionally record " +
       "the document that supersedes it. Auto-commits.",

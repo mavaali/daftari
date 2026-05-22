@@ -477,6 +477,8 @@ export async function vaultThemes(
 export const themesTools: ToolDefinition[] = [
   {
     name: "vault_themes",
+    title: "Cluster vault themes",
+    annotations: { readOnlyHint: true },
     description:
       "Surface thematic clusters across the vault using k-means over " +
       "document-pooled embeddings. Each document's chunk vectors are " +

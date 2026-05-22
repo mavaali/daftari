@@ -46,8 +46,10 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((t) => ({
       name: t.name,
+      ...(t.title ? { title: t.title } : {}),
       description: t.description,
       inputSchema: t.inputSchema,
+      ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
 

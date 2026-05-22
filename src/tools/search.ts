@@ -216,6 +216,8 @@ const weightsSchema = {
 export const searchTools: ToolDefinition[] = [
   {
     name: "vault_search",
+    title: "Search the vault",
+    annotations: { readOnlyHint: true },
     description:
       "Hybrid search across the vault: BM25 lexical ranking combined with " +
       "vector semantic similarity. Returns ranked documents with snippets. " +
@@ -237,6 +239,8 @@ export const searchTools: ToolDefinition[] = [
   },
   {
     name: "vault_search_related",
+    title: "Find related documents",
+    annotations: { readOnlyHint: true },
     description:
       "Find documents related to a given vault document. Uses that " +
       "document's own text and embeddings as the query; the document itself " +
@@ -261,6 +265,11 @@ export const searchTools: ToolDefinition[] = [
   },
   {
     name: "vault_reindex",
+    title: "Rebuild search index",
+    // Not read-only — it writes the SQLite index. But it operates on a
+    // rebuildable derived cache, not the markdown source of truth, so
+    // destructiveHint is false.
+    annotations: { destructiveHint: false, idempotentHint: true },
     description:
       "Rebuild the search index from the markdown files on disk. The index " +
       "is a derived cache; this clears and rebuilds it, re-embedding all " +
