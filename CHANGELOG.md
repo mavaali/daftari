@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-05-21
+
 ### Added
 
 - **`vault_themes` thematic clustering** (#56). New MCP tool surfaces
