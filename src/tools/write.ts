@@ -384,6 +384,19 @@ export async function vaultWrite(
   });
   Object.assign(rawFrontmatter, transformResult.merged);
 
+  // `updated` and `updated_by` are server-managed: performWrite re-stamps them
+  // unconditionally after validation. Fill them in here too, so a caller who
+  // (reasonably) omits them does not trip validateFrontmatter's required-field
+  // checks. Anything the caller supplied — or a transform hook produced — is
+  // left alone; the post-validation stamp still wins, so behavior is unchanged
+  // for callers that do supply these fields.
+  if (rawFrontmatter.updated === undefined || rawFrontmatter.updated === null) {
+    rawFrontmatter.updated = todayISO();
+  }
+  if (rawFrontmatter.updated_by === undefined || rawFrontmatter.updated_by === null) {
+    rawFrontmatter.updated_by = agent.value;
+  }
+
   const { frontmatter, report } = validateFrontmatter(rawFrontmatter, extensions);
 
   // Pre-write hooks run after built-in schema validation has filled
@@ -745,8 +758,9 @@ export const writeTools: ToolDefinition[] = [
     description:
       "Create a new vault document or overwrite an existing one. Supply the " +
       "full frontmatter and markdown body; the server stamps 'updated' and " +
-      "'updated_by', preserves 'created' on updates, refreshes the search " +
-      "index, and auto-commits the change to git.",
+      "'updated_by' (omit them — anything supplied is overwritten), preserves " +
+      "'created' on updates, refreshes the search index, and auto-commits the " +
+      "change to git.",
     inputSchema: {
       type: "object",
       properties: {
@@ -759,7 +773,9 @@ export const writeTools: ToolDefinition[] = [
           type: "object",
           description:
             "Full frontmatter block. Required: title, domain, collection, " +
-            "status, confidence, created, provenance.",
+            "status, confidence, created, provenance. The 'updated' and " +
+            "'updated_by' fields are server-managed — omit them; anything " +
+            "supplied is overwritten by the server stamp.",
         },
         agent: agentProperty,
         base_version: baseVersionProperty,

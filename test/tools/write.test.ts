@@ -144,6 +144,26 @@ describe("write tools", () => {
       const read = await vaultRead(vault, "pricing/bad.md");
       expect(read.ok).toBe(false);
     });
+
+    it("accepts frontmatter that omits server-managed updated / updated_by", async () => {
+      const fm = newFrontmatter() as Record<string, unknown>;
+      delete fm.updated;
+      delete fm.updated_by;
+      const result = await vaultWrite(vault, {
+        path: "pricing/no-stamps.md",
+        body: "# Notes\n\nBody.\n",
+        frontmatter: fm,
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const read = await vaultRead(vault, "pricing/no-stamps.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.frontmatter.updated).toBe(TODAY);
+      expect(read.value.frontmatter.updated_by).toBe(AGENT);
+    }, 60_000);
   });
 
   describe("vault_append", () => {
