@@ -20,3 +20,4 @@ test/fixtures/sample-vault/.daftari/index.db
 # tracked. Database files, the process lock, and the curation log stay ignored.
 !templates/reviewer-vault/.daftari/config.yaml
 !templates/reviewer-vault/.daftari/tensions.md
+*.mcpb

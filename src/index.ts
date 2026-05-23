@@ -14,8 +14,9 @@
 // `--reindex` is the one synchronous mode: rebuild the index, exit, do not
 // start the server.
 
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
@@ -300,8 +301,24 @@ function makeProgressReporter(): ReindexOptions {
 
 // Auto-run only when this module is the process entry point (e.g. `tsx
 // src/index.ts`). When imported (by cli.ts or tests) it stays inert.
-const entryUrl = pathToFileURL(process.argv[1] ?? "").href;
-if (import.meta.url === entryUrl) {
+//
+// process.argv[1] may be a symlink: an MCPB bundle on macOS unpacks under
+// /var/folders/... which is a symlink to /private/var/folders/..., and
+// `node` resolves the file URL through realpath while pathToFileURL does
+// not — so a naive string compare silently fails and main() never runs.
+// Both sides are realpath'd before comparing, matching the same guard in
+// cli.ts.
+function isProcessEntryPoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isProcessEntryPoint()) {
   main().catch((e) => {
     const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
     process.stderr.write(`daftari: fatal: ${reason}\n`);

@@ -1,0 +1,49 @@
+# Internal AI-agent project doc.
+CLAUDE.md
+
+# Source — only the compiled dist/ is shipped.
+src/
+
+# Tests and fixtures.
+test/
+
+# Dev/contributor docs (PRIVACY.md and README.md are kept at the root).
+docs/
+
+# Project tooling that has no role at runtime.
+.github/
+.husky/
+.claude/
+.vscode/
+.idea/
+
+# Build/test config.
+biome.json
+vitest.config.ts
+vitest.config.js
+.lintstagedrc*
+.editorconfig
+
+# CI / release noise.
+CHANGELOG.md.bak
+*.tgz
+coverage/
+.nyc_output/
+
+# Local-only state inside the reviewer vault. The reviewer-vault config and
+# seed markdown ships; SQLite indices, locks, and the per-vault process lock
+# are runtime artifacts that must not.
+templates/**/.daftari/index.db*
+templates/**/.daftari/locks.db*
+templates/**/.daftari/process.lock
+templates/**/.daftari/curation-log.jsonl
+
+# onnxruntime-node ships native binaries for linux/darwin/win32. The
+# manifest declares darwin + win32 as supported platforms, so the linux
+# tree is dead weight (~52 MB).
+node_modules/onnxruntime-node/bin/napi-v6/linux/
+
+# Downloaded model cache from running tests against the embedding provider
+# (~87 MB). The server downloads what it needs on first run; shipping a
+# cached copy bloats the bundle without saving anything reproducible.
+node_modules/@huggingface/transformers/.cache/
