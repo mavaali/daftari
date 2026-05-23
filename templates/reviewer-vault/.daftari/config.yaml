@@ -1,0 +1,25 @@
+# .daftari/config.yaml — vault configuration for the reviewer test vault.
+#
+# RBAC is config-driven: roles and their per-collection permissions are
+# declared here. The server is started with --role <name>; that role's
+# entry governs what every tool may read, write, and promote.
+#
+#   read    — collections whose documents the role may read/search
+#   write   — collections the role may create/append/deprecate documents in
+#   promote — whether the role may promote a draft to canonical
+#
+# "*" in a read or write list is a wildcard matching every collection.
+version: 1
+vault_name: reviewer-vault
+
+roles:
+  analyst:
+    read: [competitive-intel, pricing]
+    write: [competitive-intel, _drafts]
+  researcher:
+    read: [competitive-intel, pricing, _drafts]
+    write: [_drafts]
+  admin:
+    read: ["*"]
+    write: ["*"]
+    promote: true
