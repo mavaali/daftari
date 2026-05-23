@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`vault_write` no longer rejects writes that omit `updated` /
+  `updated_by`.** The server stamps both fields on every write, so requiring
+  callers to also supply them was redundant — and a caller who omitted them
+  (reasonably) got `invalid frontmatter: updated: missing required field;
+  updated_by: missing required field`. The fields are now filled in before
+  built-in schema validation runs, then re-stamped post-validation by
+  `performWrite` as before. Callers that still supply them keep working — the
+  server-side stamp wins, identical to the previous behavior. The MCP input
+  schema description now flags both fields as server-managed.
+
 ## [1.11.0] - 2026-05-21
 
 ### Added
