@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-05-23
+
+### Added
+
+- **MCP tool annotations.** All 14 tools now carry a `title` and the
+  appropriate safety hint — `readOnlyHint` for read/search/analysis
+  tools, `destructiveHint` for write and curation tools. MCP clients
+  use these to label tools and to decide when to prompt for
+  confirmation before a call.
+
 ### Fixed
 
 - **`vault_write` no longer rejects writes that omit `updated` /
