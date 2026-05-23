@@ -1,0 +1,18 @@
+# Internal AI-agent project doc.
+CLAUDE.md
+
+# Source — only the compiled dist/ is shipped.
+src/
+
+# Tests and fixtures.
+test/
+
+# Dev/contributor docs (PRIVACY.md and README.md are kept at the root).
+docs/
+
+# Project tooling that has no role at runtime.
+.github/
+.husky/
+.claude/
+.vscode/
+.idea/
