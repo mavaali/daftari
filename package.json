@@ -34,6 +34,7 @@
     "lint": "biome check src test",
     "lint:fix": "biome check --write src test",
     "format": "biome format --write src test",
+    "pack:mcpb": "node scripts/pack-mcpb.mjs",
     "prepublishOnly": "npm run build",
     "prepare": "husky"
   },
