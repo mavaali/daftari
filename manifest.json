@@ -19,7 +19,7 @@
     "https://github.com/mavaali/daftari/blob/main/PRIVACY.md"
   ],
   "compatibility": {
-    "platforms": ["darwin"],
+    "platforms": ["darwin", "win32"],
     "runtimes": {
       "node": ">=20.0.0"
     }
