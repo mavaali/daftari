@@ -181,6 +181,18 @@ Design tenets: functions and types, no classes; tool handlers return
 - <docs/architecture.md> — layered design, request path, accumulation vs. generative domains
 - <docs/file-format.md> — complete frontmatter reference
 
+## Privacy
+
+Daftari is a local MCP server. It runs on your machine, against vault files on
+your machine. The default configuration makes no network calls — vault content
+stays on your local filesystem and is read or written only through tools the
+MCP client invokes. The only optional egress is the OpenAI embedding provider,
+which the user must explicitly opt into per vault.
+
+Full policy: [PRIVACY.md](./PRIVACY.md) — covers data collection (none),
+storage (local-only), the OpenAI opt-in, third-party integrations (none),
+retention, and contact.
+
 ## License
 
 MIT.
