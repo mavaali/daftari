@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.5] - 2026-05-26
+
+### Changed
+
+- **Submission-ready prep for the Anthropic Connectors Directory.** Three
+  changes bundled into one release in preparation for desktop-extension
+  submission:
+
+  - **Privacy Policy section added to `README.md`.** The Anthropic
+    submission policy requires the privacy notice to appear in three
+    places: the standalone policy file (`PRIVACY.md`, already present),
+    the `manifest.json` `privacy_policies` array (already present), and a
+    section in `README.md` (missing until now). The README section
+    links to `PRIVACY.md` for the full text.
+
+  - **Frontmatter enum constraints exposed in MCP input schemas (#74).**
+    `vault_write`'s `frontmatter` argument was previously typed as a
+    generic `object` with a prose description listing required field
+    names but not allowed values. Agents discovered the `domain` /
+    `status` / `confidence` / `provenance` enum constraints only by
+    submitting an invalid value and parsing the rejection message, then
+    retrying. The input schema now declares each field as a typed
+    property with the proper `enum` constraint sourced from the
+    canonical TypeScript constants in `src/frontmatter/types.ts` —
+    single source of truth, no drift. MCP clients that introspect tool
+    schemas (Claude Desktop does) surface the valid values to the model
+    up front, killing the rejection-and-retry round trip.
+
+  - **Tool description audit for prompt-injection patterns.** Read all
+    14 tool descriptions against Anthropic's review criteria. None
+    instruct Claude to call unrequested software, interfere with other
+    tool invocations, pull behavioral instructions externally, contain
+    hidden directives, or override system instructions. No changes
+    required — sweep documented here for the record.
+
 ## [1.12.4] - 2026-05-26
 
 ### Fixed

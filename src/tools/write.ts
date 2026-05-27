@@ -18,11 +18,14 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
   CONFIDENCES,
+  DOMAINS,
   type ExtensionValue,
   err,
   type Frontmatter,
   ok,
+  PROVENANCES,
   type Result,
+  STATUSES,
   type ValidationIssue,
   type ValidationReport,
 } from "../frontmatter/types.js";
@@ -750,6 +753,93 @@ const baseVersionProperty = {
     "last-write-wins behavior.",
 };
 
+// Built-in frontmatter properties, projected from the canonical TS constants
+// in src/frontmatter/types.ts so the MCP input schema, the runtime validator,
+// and the source-of-truth enums never drift. `additionalProperties: true`
+// allows config-declared schema extensions (the index signature on
+// `Frontmatter`) without listing them here.
+const frontmatterProperty = {
+  type: "object",
+  description:
+    "Document frontmatter. 'updated' and 'updated_by' are server-managed — " +
+    "omit them; anything supplied is overwritten by the server stamp.",
+  properties: {
+    title: {
+      type: "string",
+      description: "Human-readable document title",
+    },
+    domain: {
+      type: "string",
+      enum: [...DOMAINS],
+      description:
+        "Whether this document accumulates knowledge over time " +
+        "('accumulation') or is generated fresh from a snapshot ('generative')",
+    },
+    collection: {
+      type: "string",
+      description: "Vault collection name — must match a top-level directory in the vault",
+    },
+    status: {
+      type: "string",
+      enum: [...STATUSES],
+      description: "Lifecycle state of the document",
+    },
+    confidence: {
+      type: "string",
+      enum: [...CONFIDENCES],
+      description: "Author's calibrated confidence in the document's claims",
+    },
+    created: {
+      type: "string",
+      description: "ISO date the document was first created (YYYY-MM-DD)",
+    },
+    provenance: {
+      type: "string",
+      enum: [...PROVENANCES],
+      description:
+        "How the content originated: 'direct' (typed or pasted in by a human " +
+        "or agent), 'synthesized' (composed by an agent from other sources), " +
+        "or 'inferred' (derived from analysis, not stated outright anywhere)",
+    },
+    sources: {
+      type: "array",
+      items: { type: "string" },
+      description: "URLs or vault paths the content draws on",
+    },
+    superseded_by: {
+      type: ["string", "null"],
+      description:
+        "Vault path of a document that replaces this one (status=superseded), " +
+        "or null if not superseded",
+    },
+    ttl_days: {
+      type: ["number", "null"],
+      description:
+        "Number of days after which this document is considered stale and " +
+        "should be reviewed. null = no TTL.",
+    },
+    tags: {
+      type: "array",
+      items: { type: "string" },
+      description: "Free-form tags (lowercase, hyphenated, no spaces)",
+    },
+    questions_answered: {
+      type: "array",
+      items: { type: "string" },
+      description: "Questions this document answers (mirrors ## Questions Answered)",
+    },
+    questions_raised: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Open questions this document raises (mirrors ## Questions Raised). " +
+        "Surfaced by vault_lint's `unanswered-questions` check.",
+    },
+  },
+  required: ["title", "domain", "collection", "status", "confidence", "created", "provenance"],
+  additionalProperties: true,
+};
+
 export const writeTools: ToolDefinition[] = [
   {
     name: "vault_write",
@@ -769,14 +859,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Vault-relative path of the markdown file to write",
         },
         body: { type: "string", description: "Markdown body (no frontmatter)" },
-        frontmatter: {
-          type: "object",
-          description:
-            "Full frontmatter block. Required: title, domain, collection, " +
-            "status, confidence, created, provenance. The 'updated' and " +
-            "'updated_by' fields are server-managed — omit them; anything " +
-            "supplied is overwritten by the server stamp.",
-        },
+        frontmatter: frontmatterProperty,
         agent: agentProperty,
         base_version: baseVersionProperty,
       },
