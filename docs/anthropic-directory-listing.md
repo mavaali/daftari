@@ -10,10 +10,12 @@ ships only in the source repo — not to end users.
 
 ## Tagline
 
-> A persistent knowledge vault Claude reads, writes, and curates over time.
+> A persistent cortex Claude reads, writes, and curates over time.
 
-75 characters. Verb-led; "over time" carries the compounding implication
-without forcing the word "compounds".
+64 characters. Verb-led; "over time" carries the compounding implication
+without forcing the word "compounds". "Cortex" echoes the README's signature
+framing ("a cortex, not a clipboard") so the card view and the detail page
+speak with one voice.
 
 ## Use cases
 
