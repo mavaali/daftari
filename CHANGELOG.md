@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-05-26
+
+### Added
+
+- **Cross-platform MCPB packaging (#66).** The `.mcpb` artifact now
+  boots on both macOS (arm64) and Windows (x64). A single universal
+  package bundles platform-tagged native binaries for `better-sqlite3`
+  (under `build/Release-${platform}-${arch}/`) and `sharp`, and a
+  one-line loader patch in `better-sqlite3`'s `lib/database.js`
+  selects the right binary at runtime from `process.platform` /
+  `process.arch`. The manifest's `compatibility.platforms` is back
+  to `["darwin", "win32"]`. `npm run pack:mcpb` (new) builds the
+  universal artifact from a darwin-arm64 host.
+
+- **MCP tool annotations.** All 14 tools now carry a `title` and the
+  appropriate safety hint — `readOnlyHint` for read/search/analysis
+  tools, `destructiveHint` for write and curation tools. MCP clients
+  use these to label tools and to decide when to prompt for
+  confirmation before a call.
+
 ### Fixed
 
 - **`vault_write` no longer rejects writes that omit `updated` /
