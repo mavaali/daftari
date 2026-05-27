@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-05-26
+
+### Fixed
+
+- **MCPB now runs on Node 24 hosts.** The v1.12.0 `.mcpb` only shipped
+  `better-sqlite3` binaries built against Node 22 (ABI v127); on a Node
+  24 host (ABI v137) the loader failed with `NODE_MODULE_VERSION`
+  mismatch and the server never booted. `scripts/pack-mcpb.mjs` now
+  fetches both ABIs for both platforms (4 binaries total: darwin-arm64
+  × {v127, v137} + win32-x64 × {v127, v137}) and stages each under
+  `build/Release-${platform}-${arch}-${modules}/`. The loader patch in
+  `better-sqlite3`'s `lib/database.js` now includes
+  `process.versions.modules` in the path, so the right binary is
+  selected at runtime for the host's Node version. Sharp and
+  onnxruntime-node are NAPI-based (ABI-stable across Node versions)
+  and don't need this treatment.
+
 ## [1.12.0] - 2026-05-26
 
 ### Added
