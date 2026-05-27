@@ -1,19 +1,27 @@
 #!/usr/bin/env node
-// Build a cross-platform daftari MCPB (darwin-arm64 + win32-x64).
+// Build a cross-platform, multi-ABI daftari MCPB.
+//
+// Targets:
+//   darwin-arm64 × Node 22 (ABI v127)
+//   darwin-arm64 × Node 24 (ABI v137)
+//   win32-x64    × Node 22 (ABI v127)
+//   win32-x64    × Node 24 (ABI v137)
 //
 // Why this script exists:
-//   better-sqlite3 v12.10.0 ships exactly one native binary (.node) per
-//   install — for the host platform — and resolves it via the `bindings`
-//   package, which has no platform/arch-aware default path. To ship a
-//   single MCPB that boots on both macOS (arm64) and Windows (x64), we
-//   stage both binaries under platform-tagged directories and patch
-//   better-sqlite3's loader to pick by process.platform + process.arch.
+//   better-sqlite3 v12.10.0 ships one .node binary per (platform, arch, ABI)
+//   and resolves it via the `bindings` package, which has no platform-/arch-
+//   /ABI-aware default path. To ship a single MCPB that boots on both macOS
+//   (arm64) and Windows (x64), under either Node 22 or Node 24, we stage all
+//   four binaries under Release-${platform}-${arch}-${modules}/ directories
+//   and patch better-sqlite3's loader to pick by process.platform,
+//   process.arch, and process.versions.modules.
 //
 //   sharp resolves its native addon via @img/sharp-<platform>-<arch>
-//   packages, so we just install the win32 binary package alongside the
-//   darwin one — no loader patch needed there.
+//   packages (NAPI-based, ABI-stable across Node versions), so we install
+//   the win32 binary package alongside the darwin one — one set covers both
+//   ABIs. No loader patch needed there.
 //
-//   onnxruntime-node already bundles all platforms.
+//   onnxruntime-node already bundles all platforms; also NAPI, ABI-stable.
 //
 // Idempotent: safe to re-run after `npm install`.
 
@@ -35,16 +43,29 @@ process.chdir(ROOT);
 
 const SHARP_WIN32_VERSION = '0.34.5'; // pinned: must match sharp's optionalDependencies
 
+// (platform, arch, ABI) matrix — each row is one binary we stage.
+//   target  = Node version passed to prebuild-install (any patch in that major works)
+//   modules = process.versions.modules value that selects this binary at runtime
+const TARGETS = [
+	{ platform: 'darwin', arch: 'arm64', target: '22.0.0', modules: '127' },
+	{ platform: 'darwin', arch: 'arm64', target: '24.0.0', modules: '137' },
+	{ platform: 'win32', arch: 'x64', target: '22.0.0', modules: '127' },
+	{ platform: 'win32', arch: 'x64', target: '24.0.0', modules: '137' },
+];
+
 const SQLITE_DIR = 'node_modules/better-sqlite3';
 const RELEASE_DIR = join(SQLITE_DIR, 'build', 'Release');
 const RELEASE_BIN = join(RELEASE_DIR, 'better_sqlite3.node');
-const DARWIN_DIR = join(SQLITE_DIR, 'build', 'Release-darwin-arm64');
-const DARWIN_BIN = join(DARWIN_DIR, 'better_sqlite3.node');
-const WIN_DIR = join(SQLITE_DIR, 'build', 'Release-win32-x64');
-const WIN_BIN = join(WIN_DIR, 'better_sqlite3.node');
 const DATABASE_JS = join(SQLITE_DIR, 'lib', 'database.js');
 
 const SHARP_WIN32_DIR = 'node_modules/@img/sharp-win32-x64';
+
+function stagedDir({ platform, arch, modules }) {
+	return join(SQLITE_DIR, 'build', `Release-${platform}-${arch}-${modules}`);
+}
+function stagedBin(target) {
+	return join(stagedDir(target), 'better_sqlite3.node');
+}
 
 function run(cmd, opts = {}) {
 	console.log(`$ ${cmd}`);
@@ -55,8 +76,8 @@ function section(msg) {
 	console.log(`\n=== ${msg} ===`);
 }
 
-// 1. Host sanity check. The Release/ binary is the host's; we only know how
-//    to ship a single host shape (darwin-arm64). To support a different host,
+// 1. Host sanity check. Pack runs on darwin-arm64 by convention — every
+//    install/build/curl/tar path here is POSIX. To support a different host,
 //    extend this script.
 section('Verify host platform');
 if (process.platform !== 'darwin' || process.arch !== 'arm64') {
@@ -65,48 +86,50 @@ if (process.platform !== 'darwin' || process.arch !== 'arm64') {
 	);
 }
 
-// 2. Refresh deps and compile. The npm install also resets any in-tree edits
-//    inside node_modules (notably the database.js patch from a prior run), so
-//    each pack starts from a clean baseline.
+// 2. Refresh deps and compile. We force-remove node_modules/better-sqlite3
+//    first — npm install is a no-op on already-installed packages, so
+//    without this step a prior pack run's in-tree edits to database.js
+//    (and stale Release-*/ dirs) would survive into the new artifact.
 section('Install + build');
+rmSync(SQLITE_DIR, { recursive: true, force: true });
 run('npm install');
 run('npm run build');
 
-// 3. Stage darwin-arm64 better-sqlite3 binary out of Release/.
-section('Stage better-sqlite3 darwin-arm64 binary');
-mkdirSync(DARWIN_DIR, { recursive: true });
-if (existsSync(RELEASE_BIN)) {
-	copyFileSync(RELEASE_BIN, DARWIN_BIN);
-	console.log(`Copied ${RELEASE_BIN} -> ${DARWIN_BIN}`);
-} else if (existsSync(DARWIN_BIN)) {
-	console.log('Already staged.');
-} else {
-	throw new Error(
-		`No darwin binary found at ${RELEASE_BIN} or ${DARWIN_BIN}. Run 'npm install' on darwin-arm64 first.`,
-	);
-}
-
-// 4. Fetch win32-x64 prebuild. prebuild-install drops it at Release/, so we
-//    immediately move it to Release-win32-x64/ and then wipe Release/ so it
-//    can't shadow our staged copies at runtime.
-section('Fetch better-sqlite3 win32-x64 prebuild');
-mkdirSync(WIN_DIR, { recursive: true });
+// 3. Fetch every (platform, arch, ABI) prebuild. prebuild-install drops each
+//    one at build/Release/, so we immediately move it to its tagged directory
+//    before the next fetch overwrites it. After the loop, Release/ is wiped
+//    so it can't shadow the staged copies at runtime.
+section('Fetch better-sqlite3 prebuilds (4 binaries: 2 platforms × 2 ABIs)');
 const PREBUILD_INSTALL = join(ROOT, 'node_modules', '.bin', 'prebuild-install');
-run(`${PREBUILD_INSTALL} --platform=win32 --arch=x64 --tag-prefix=v --force`, {
-	cwd: SQLITE_DIR,
-});
-if (!existsSync(RELEASE_BIN)) {
-	throw new Error(
-		`prebuild-install did not produce ${RELEASE_BIN}. Check network / release availability.`,
+for (const target of TARGETS) {
+	const dir = stagedDir(target);
+	const bin = stagedBin(target);
+	if (existsSync(bin)) {
+		console.log(`Already staged: ${bin}`);
+		continue;
+	}
+	mkdirSync(dir, { recursive: true });
+	if (existsSync(RELEASE_BIN)) rmSync(RELEASE_BIN);
+	run(
+		`${PREBUILD_INSTALL} --platform=${target.platform} --arch=${target.arch} --target=${target.target} --runtime=node --tag-prefix=v --force`,
+		{ cwd: SQLITE_DIR },
 	);
+	if (!existsSync(RELEASE_BIN)) {
+		throw new Error(
+			`prebuild-install did not produce ${RELEASE_BIN} for ${JSON.stringify(target)}. Check network / release availability.`,
+		);
+	}
+	copyFileSync(RELEASE_BIN, bin);
+	console.log(`Staged ${bin} (Node ${target.target} / ABI v${target.modules})`);
 }
-copyFileSync(RELEASE_BIN, WIN_BIN);
-console.log(`Copied ${RELEASE_BIN} -> ${WIN_BIN}`);
-rmSync(RELEASE_BIN);
-console.log(`Removed ${RELEASE_BIN} (use Release-<platform>-<arch>/ instead)`);
+if (existsSync(RELEASE_BIN)) {
+	rmSync(RELEASE_BIN);
+	console.log(`Removed ${RELEASE_BIN} (use Release-<platform>-<arch>-<abi>/ instead)`);
+}
 
-// 5. Patch lib/database.js so DEFAULT_ADDON loads from the platform-tagged
-//    directory rather than going through bindings(). One line. Idempotent.
+// 4. Patch lib/database.js so DEFAULT_ADDON loads from the platform+arch+ABI-
+//    tagged directory rather than going through bindings(). One line.
+//    Idempotent — marker comment guards against double-patching.
 section('Patch better-sqlite3 loader');
 const MARKER = '// PATCHED:cross-platform-mcpb';
 let dbSrc = readFileSync(DATABASE_JS, 'utf8');
@@ -116,7 +139,7 @@ if (dbSrc.includes(MARKER)) {
 	const original =
 		"addon = DEFAULT_ADDON || (DEFAULT_ADDON = require('bindings')('better_sqlite3.node'));";
 	const patched =
-		'addon = DEFAULT_ADDON || (DEFAULT_ADDON = require(path.join(__dirname, "..", "build", `Release-${process.platform}-${process.arch}`, "better_sqlite3.node"))); ' +
+		'addon = DEFAULT_ADDON || (DEFAULT_ADDON = require(path.join(__dirname, "..", "build", `Release-${process.platform}-${process.arch}-${process.versions.modules}`, "better_sqlite3.node"))); ' +
 		MARKER;
 	if (!dbSrc.includes(original)) {
 		throw new Error(`Could not find binding load site in ${DATABASE_JS}`);
@@ -126,11 +149,12 @@ if (dbSrc.includes(MARKER)) {
 	console.log(`Patched ${DATABASE_JS}`);
 }
 
-// 6. Install @img/sharp-win32-x64 alongside the host's darwin-arm64 sharp.
+// 5. Install @img/sharp-win32-x64 alongside the host's darwin-arm64 sharp.
 //    Sharp resolves via require('@img/sharp-<platform>-<arch>/sharp.node'),
 //    so as long as the package directory exists with the .node and DLLs,
-//    sharp picks it on Windows. The Windows tarball bundles its own libvips
-//    DLLs (no separate @img/sharp-libvips-win32-x64 needed at runtime).
+//    sharp picks it on Windows. NAPI -> ABI-stable; one set covers Node
+//    22 and 24. The Windows tarball bundles its own libvips DLLs (no
+//    separate @img/sharp-libvips-win32-x64 needed at runtime).
 section('Install @img/sharp-win32-x64');
 const sharpNode = join(SHARP_WIN32_DIR, 'lib', 'sharp-win32-x64.node');
 if (existsSync(sharpNode)) {
@@ -147,7 +171,7 @@ if (existsSync(sharpNode)) {
 	});
 }
 
-// 7. Validate manifest and pack.
+// 6. Validate manifest and pack.
 section('Validate manifest');
 run('npx --yes @anthropic-ai/mcpb validate manifest.json');
 
