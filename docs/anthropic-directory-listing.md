@@ -8,6 +8,69 @@ when polishing the listing; submit at
 `docs/` is excluded from the `.mcpb` bundle via `.mcpbignore`, so this file
 ships only in the source repo — not to end users.
 
+---
+
+## Pick up here next session
+
+**Last touched 2026-05-26.** v1.12.5 (the submission artifact) is shipped:
+- Tag: `v1.12.5`
+- Release: <https://github.com/mavaali/daftari/releases/tag/v1.12.5>
+- Artifact: `daftari-1.12.5.mcpb` (sha256 `bed6abd10b290be5838562f8d0fec1a239524f3c`)
+
+All code-side prep is done. What's left is your-judgment / your-machine work,
+in this order:
+
+1. **Install v1.12.5 on Windows / Claude Desktop.** If upgrading from an
+   earlier v1.12.x install that may be half-broken:
+   ```powershell
+   # Quit Claude Desktop completely (tray → Quit)
+   Remove-Item -Recurse -Force "$env:APPDATA\Claude\Claude Extensions\local.mcpb.mihir-wagle.daftari"
+   # Relaunch Claude Desktop, install daftari-1.12.5.mcpb fresh
+   ```
+
+2. **MCP Inspector pass on all 14 tools.** Required by Anthropic's submission
+   guide:
+   ```bash
+   npx @modelcontextprotocol/inspector node dist/index.js \
+     --vault <path> --user me --role admin
+   ```
+   Click through each tool, exercise with realistic inputs, confirm clean
+   responses and useful error messages on bad input. The 14 tools are listed
+   in the table below.
+
+3. **Capture 2–4 screenshots.** Claude Desktop using daftari — e.g. a
+   `vault_search` result, a `vault_write` round-trip, the tool list showing
+   the new annotations. Drop the paths in here when you have them.
+
+4. **Open the submission form** at
+   <https://clau.de/desktop-extention-submission> and copy the content of
+   this file into the right fields. The form-fields table below maps each
+   field to its source.
+
+5. **Pick the unfilled items as they come up in the form:**
+   - **Category** — from the form's dropdown
+   - **GA date** — your call
+   - **Icon dimensions check** — `icon.png` is 370KB; if the form rejects it,
+     ask Claude to resize
+
+6. **Optional but worth doing:** `npm login` then `npm publish` from main at
+   the v1.12.5 tag. Brings the npm registry (currently 1.11.0) up to match
+   the released artifact. Independent of the submission.
+
+Recent context that's useful to know going in:
+- **Five patch versions** (v1.12.0 → v1.12.5) shipped 2026-05-26 chasing
+  cross-platform / Electron-ABI / Windows-install issues uncovered by smoke
+  testing. Full story in `CHANGELOG.md`. All real fixes; v1.12.5 is the
+  artifact to submit.
+- **#72** tracks the long-term structural debt (better-sqlite3 →
+  `node:sqlite` to eliminate Electron-ABI tracking). Not a submission
+  blocker.
+- **#73** (DuckDB) was closed as premature.
+- **#74** (frontmatter enum schema discoverability) was the smoke-test
+  finding; fixed and shipped in v1.12.5.
+
+---
+
 ## Tagline
 
 > A persistent cortex Claude reads, writes, and curates over time.
