@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.4] - 2026-05-26
+
+### Fixed
+
+- **MCPB now runs inside Claude Desktop's Electron runtime.** The
+  v1.12.0–v1.12.3 `.mcpb`s shipped only **Node** prebuilds of
+  `better-sqlite3` (ABI v127 for Node 22, ABI v137 for Node 24). Claude
+  Desktop is an Electron app and spawns MCP servers inside its bundled
+  Electron Node runtime, where `process.versions.modules` reflects the
+  **Electron** ABI (e.g. 145 for Electron 42), not the standalone Node
+  ABI. The loader couldn't find a matching binary, and `vault_write`
+  / any other call into the SQLite layer failed at first use with
+  "Release-win32-x64-145 not found".
+
+  `scripts/pack-mcpb.mjs` now fetches Electron prebuilds in addition to
+  Node prebuilds: v140 (Electron 39), v143 (Electron 41), v145
+  (Electron 42), each for both `darwin-arm64` and `win32-x64`. Combined
+  with the existing Node v127 / v137 binaries, the artifact now ships
+  10 `better-sqlite3` binaries covering Node 22, Node 24, and the
+  current ~3 Electron majors that Claude Desktop releases plausibly
+  target. Sharp and onnxruntime-node are NAPI-based (ABI-stable across
+  Node + Electron) so they don't need this treatment; sqlite-vec is a
+  loadable SQLite extension, not a Node addon, so it doesn't either.
+
+  Adding support for a future Electron version is now a one-line
+  TARGETS table entry — the script fetches the right tarball straight
+  from the `better-sqlite3` GitHub release.
+
 ## [1.12.3] - 2026-05-26
 
 ### Fixed
