@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-05-26
+
+### Fixed
+
+- **Slimmer MCPB — drops devDependencies from the artifact.**
+  Previously, `mcpb pack` packed whatever was in `node_modules`,
+  including ~75 MB of devDependencies (typescript, vitest, vite, tsx,
+  biome, etc.) and their thousands of transitives. The bloat had two
+  real consequences:
+  - On Windows, Claude Desktop's extension-upgrade flow recursively
+    deletes the prior install. Large file counts hit
+    `ENOTEMPTY: directory not empty, rmdir …` races in the rmdir step
+    (failure mode reproduced against `picocolors`, a transitive of
+    several dev tools), leaving the install half-complete.
+  - Pointless download size for every install/upgrade.
+
+  `scripts/pack-mcpb.mjs` now runs `npm prune --omit=dev` after
+  `npm run build` and before extracting the win32-specific tarballs.
+  The build's TypeScript compilation still has its devDeps available;
+  the runtime artifact does not. PR #66 had flagged this as
+  out-of-scope at the time.
+
 ## [1.12.2] - 2026-05-26
 
 ### Fixed

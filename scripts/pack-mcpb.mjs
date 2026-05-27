@@ -97,6 +97,19 @@ rmSync(SQLITE_DIR, { recursive: true, force: true });
 run('npm install');
 run('npm run build');
 
+// 2a. Drop devDependencies (typescript, vitest, vite, tsx, biome, etc.) and
+//     their transitives from node_modules — they have no role at runtime
+//     and shipping them bloats the .mcpb by ~75 MB and ~thousands of files.
+//     The artifact size matters: large extension uninstalls hit ENOTEMPTY
+//     races on Windows during Claude Desktop upgrades.
+//
+//     Order matters: prune BEFORE we extract the win32 tarballs below,
+//     because npm prune removes packages it doesn't recognise as part of
+//     the dep tree — and those tarballs aren't installed via npm, they're
+//     curled in. If we pruned after, they'd be deleted.
+section('Prune devDependencies');
+run('npm prune --omit=dev');
+
 // 3. Fetch every (platform, arch, ABI) prebuild. prebuild-install drops each
 //    one at build/Release/, so we immediately move it to its tagged directory
 //    before the next fetch overwrites it. After the loop, Release/ is wiped
