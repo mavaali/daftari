@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-05-26
+
+### Fixed
+
+- **MCPB now bundles `sqlite-vec-windows-x64`.** The v1.12.1 `.mcpb`
+  shipped fine on macOS but failed on Windows during scaffold /
+  reindex with `Cannot find package 'sqlite-vec-windows-x64'`. Same
+  root cause as the v1.10.0 sharp / better-sqlite3 problem: `sqlite-vec`
+  publishes per-platform binaries as `optionalDependencies`, so a
+  darwin-arm64 pack host only installs `sqlite-vec-darwin-arm64`.
+  `scripts/pack-mcpb.mjs` now also fetches the
+  `sqlite-vec-windows-x64@0.1.9` tarball and extracts `vec0.dll` into
+  `node_modules/sqlite-vec-windows-x64/`. No loader patch needed —
+  sqlite-vec's own loader resolves the right subpackage via
+  `import.meta.resolve()` based on `process.platform` /
+  `process.arch`. SQLite extensions are not NAPI / not ABI-bound, so
+  one binary per platform covers all Node versions.
+
 ## [1.12.1] - 2026-05-26
 
 ### Fixed

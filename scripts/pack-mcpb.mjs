@@ -42,6 +42,7 @@ const ROOT = dirname(SCRIPT_DIR);
 process.chdir(ROOT);
 
 const SHARP_WIN32_VERSION = '0.34.5'; // pinned: must match sharp's optionalDependencies
+const SQLITE_VEC_VERSION = '0.1.9'; // pinned: must match sqlite-vec's optionalDependencies
 
 // (platform, arch, ABI) matrix — each row is one binary we stage.
 //   target  = Node version passed to prebuild-install (any patch in that major works)
@@ -59,6 +60,7 @@ const RELEASE_BIN = join(RELEASE_DIR, 'better_sqlite3.node');
 const DATABASE_JS = join(SQLITE_DIR, 'lib', 'database.js');
 
 const SHARP_WIN32_DIR = 'node_modules/@img/sharp-win32-x64';
+const SQLITE_VEC_WIN32_DIR = 'node_modules/sqlite-vec-windows-x64';
 
 function stagedDir({ platform, arch, modules }) {
 	return join(SQLITE_DIR, 'build', `Release-${platform}-${arch}-${modules}`);
@@ -171,7 +173,28 @@ if (existsSync(sharpNode)) {
 	});
 }
 
-// 6. Validate manifest and pack.
+// 6. Install sqlite-vec-windows-x64 alongside the host's sqlite-vec-darwin-arm64.
+//    sqlite-vec resolves via `import.meta.resolve('sqlite-vec-windows-x64/vec0.dll')`
+//    (its own loader, see node_modules/sqlite-vec/index.mjs), so as long as
+//    the package directory exists with vec0.dll and a package.json, the
+//    loader picks it on Windows. SQLite extensions are not NAPI / not ABI-
+//    bound — one binary covers all Node versions.
+section('Install sqlite-vec-windows-x64');
+const sqliteVecDll = join(SQLITE_VEC_WIN32_DIR, 'vec0.dll');
+if (existsSync(sqliteVecDll)) {
+	console.log('Already installed.');
+} else {
+	mkdirSync(SQLITE_VEC_WIN32_DIR, { recursive: true });
+	const tarball = execSync(
+		`npm view sqlite-vec-windows-x64@${SQLITE_VEC_VERSION} dist.tarball`,
+		{ encoding: 'utf8' },
+	).trim();
+	console.log(`Downloading ${tarball}`);
+	run(`curl -sSfL ${tarball} | tar -xz --strip-components=1 -C ${SQLITE_VEC_WIN32_DIR}`, {
+		shell: '/bin/bash',
+	});
+}
+
 section('Validate manifest');
 run('npx --yes @anthropic-ai/mcpb validate manifest.json');
 
