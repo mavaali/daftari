@@ -154,7 +154,7 @@ listing-page editor. Keep ready so we're not scrambling.
 | Health data access | None |
 | Third-party connections | None by default. Optional: OpenAI `text-embedding-3-small` if user explicitly enables it in `.daftari/config.yaml` |
 | Logo / icon | `icon.png` (370KB) — dimensions check happens if the listing UI rejects |
-| Screenshots | 2–4 of Claude Desktop using daftari (capture when needed) |
+| Screenshots | 3 captured 2026-05-27 in `~/Downloads/`: `daftari-ss1.jpg` (tool list — 14 tools rendered with annotations, Read & Search vs Write & Mutate grouping), `daftari-ss2.jpg` (`vault_index` output — 10 docs across 3 collections with status / confidence / updated metadata), `daftari-ss3.jpg` (`vault_lint` curation pass — Claude reasoning about stale + invalid + orphan docs). Covers tool surface, metadata richness, curation honesty. |
 | Category | Likely Productivity / Knowledge / Developer Tools; pick from dropdown |
 | GA date | Pick when prompted |
 
