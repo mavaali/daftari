@@ -12,50 +12,53 @@ ships only in the source repo — not to end users.
 
 ## Pick up here next session
 
-**Last touched 2026-05-26.** v1.12.5 (the submission artifact) is shipped:
+**Last touched 2026-05-26 (late evening).** v1.12.5 (the submission artifact)
+is shipped and both verification surfaces are exercised:
 - Tag: `v1.12.5`
 - Release: <https://github.com/mavaali/daftari/releases/tag/v1.12.5>
 - Artifact: `daftari-1.12.5.mcpb` (sha256 `bed6abd10b290be5838562f8d0fec1a239524f3c`)
+- ✅ Windows + Claude Desktop smoke test (vault_write round-trip succeeded,
+  commit `927573c` proves git auto-commit working with Git for Windows
+  installed)
+- ✅ MCP Inspector pass + custom-connector-in-Claude exercise done
 
-All code-side prep is done. What's left is your-judgment / your-machine work,
-in this order:
+What's left in order:
 
-1. **Install v1.12.5 on Windows / Claude Desktop.** If upgrading from an
-   earlier v1.12.x install that may be half-broken:
-   ```powershell
-   # Quit Claude Desktop completely (tray → Quit)
-   Remove-Item -Recurse -Force "$env:APPDATA\Claude\Claude Extensions\local.mcpb.mihir-wagle.daftari"
-   # Relaunch Claude Desktop, install daftari-1.12.5.mcpb fresh
-   ```
-
-2. **MCP Inspector pass on all 14 tools.** Required by Anthropic's submission
-   guide:
-   ```bash
-   npx @modelcontextprotocol/inspector node dist/index.js \
-     --vault <path> --user me --role admin
-   ```
-   Click through each tool, exercise with realistic inputs, confirm clean
-   responses and useful error messages on bad input. The 14 tools are listed
-   in the table below.
-
-3. **Capture 2–4 screenshots.** Claude Desktop using daftari — e.g. a
+1. **Capture 2–4 screenshots.** Claude Desktop using daftari — e.g. a
    `vault_search` result, a `vault_write` round-trip, the tool list showing
    the new annotations. Drop the paths in here when you have them.
 
-4. **Open the submission form** at
+2. **Open the submission form** at
    <https://clau.de/desktop-extention-submission> and copy the content of
    this file into the right fields. The form-fields table below maps each
    field to its source.
 
-5. **Pick the unfilled items as they come up in the form:**
+3. **Pick the unfilled items as they come up in the form:**
    - **Category** — from the form's dropdown
    - **GA date** — your call
    - **Icon dimensions check** — `icon.png` is 370KB; if the form rejects it,
      ask Claude to resize
 
-6. **Optional but worth doing:** `npm login` then `npm publish` from main at
+4. **Optional but worth doing:** `npm login` then `npm publish` from main at
    the v1.12.5 tag. Brings the npm registry (currently 1.11.0) up to match
    the released artifact. Independent of the submission.
+
+5. **Housekeeping from tonight's testing.** Your MCP Inspector / connector
+   exercise auto-committed 4 writes onto local `main` (daftari working as
+   designed — every write commits to git, and the test vault you pointed
+   at was inside this repo). They sit ahead of `origin/main`:
+   ```
+   d87b620 vault_deprecate: pricing/aurora-pipelines-vs-helios-connect-2026-v3.md
+   085c409 vault_promote:  pricing/aurora-pipelines-vs-helios-connect-2026-v3.md draft→canonical
+   75eeceb vault_append:   pricing/aurora-pipelines-vs-helios-connect-2026-v3.md
+   d9444c4 vault_write:    create aurora-pipelines-vs-helios-connect-2026-v3.md
+   ```
+   Plus unstaged changes in `test/helpers/temp-vault.ts` and
+   `test/lifecycle/lock-integration.test.ts`, and deleted files under
+   `test/fixtures/sample-vault/…aurora…`. Decide whether to:
+   (a) drop them — `git reset --hard origin/main` + `git restore .`
+   (b) keep them on a side branch as evidence of working tools
+   (c) point daftari at a vault outside the repo next time
 
 Recent context that's useful to know going in:
 - **Five patch versions** (v1.12.0 → v1.12.5) shipped 2026-05-26 chasing
