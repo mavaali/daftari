@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.6] - 2026-05-27
+
+### Changed
+
+- **`manifest.json` `description` and `long_description` rewritten to
+  lead with the cortex framing.** Brings the `.mcpb` install UI (which
+  Claude Desktop shows when a user installs the extension) into sync
+  with the Anthropic Connectors Directory listing copy. Previously,
+  the listing leads with "an external cortex for AI agents…" while the
+  install UI led with "an MCP server that exposes a curated markdown
+  vault" — same facts, different framing. Same product describing
+  itself two ways was a coherence cost worth paying down.
+
+  - `description` is now the tagline ("A persistent cortex Claude
+    reads, writes, and curates over time.") instead of the older
+    knowledge-vault opener.
+  - `long_description` is the 47-word cortex-led version used in the
+    directory listing form (which caps at 50 words). Trims the
+    `OPENAI_API_KEY` env-var hint and the `embeddings.provider:
+    openai-3-small` config path from the long copy — both still live
+    in `PRIVACY.md` and the README for anyone wiring up the OpenAI
+    embedding provider.
+
+  No functional change. The `.mcpb` artifact is repacked from this
+  commit so the bundled manifest matches what's submitted to the
+  directory.
+
 ## [1.12.5] - 2026-05-26
 
 ### Changed

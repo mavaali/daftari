@@ -83,6 +83,33 @@ without forcing the word "compounds". "Cortex" echoes the README's signature
 framing ("a cortex, not a clipboard") so the card view and the detail page
 speak with one voice.
 
+## Description (for the form — 50-word cap)
+
+> An external cortex for AI agents: a persistent markdown vault that
+> agents read, write, and curate over time. Plain text on disk,
+> git-versioned, indexed for BM25 + vector search. Agents promote
+> drafts to canonical knowledge, surface contradictions as tensions,
+> and lint for staleness. Runs offline by default.
+
+47 words. Form caps at 50.
+
+Differs from `manifest.json`'s `long_description` (which still leads
+with "an MCP server that exposes a curated markdown vault") in three
+ways: leads with the cortex framing to harmonize with the tagline and
+use cases; trims engineering trivia (the `OPENAI_API_KEY` env-var
+name, the `embeddings.provider: openai-3-small` config path, RBAC
+specifics) that belongs in the README; cuts redundancy ("hybrid"
+modifying "BM25 + vector"; "read and search, write new documents"
+when the lead already has the verbs).
+
+**Discrepancy note:** `manifest.json`'s `long_description` is what
+Claude Desktop's install UI shows when a user installs the `.mcpb`.
+The directory-listing version above is what reviewers and browsers
+see in the directory. Same facts, different framing. If we want them
+to match exactly, that's a `manifest.json` edit + a v1.12.6 release.
+For now, they diverge — directory leads with cortex, install UI uses
+the existing MCP-server-and-vault opener.
+
 ## Use cases
 
 1. **Compile knowledge that compounds.**
@@ -121,7 +148,7 @@ If the form caps at fewer than five, drop #5 first, then #4.
 | Name | Daftari | ready |
 | Tagline | (above) | ready |
 | Description (short) | `manifest.json` `description` | ready |
-| Long description | `manifest.json` `long_description` | ready |
+| Long description | (above — cortex-led, differs slightly from `manifest.json`) | ready |
 | Use cases | (above) | ready |
 | Documentation URL | <https://github.com/mavaali/daftari#readme> | ready |
 | Privacy policy URL | <https://github.com/mavaali/daftari/blob/main/PRIVACY.md> | ready |
