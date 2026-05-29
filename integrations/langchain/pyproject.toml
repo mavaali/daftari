@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-daftari"
+version = "0.1.0"
+description = "LangChain integration for Daftari — wrap a Daftari MCP vault as LangChain tools."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Mihir Wagle", email = "mihir.wagle@gmail.com" },
+]
+keywords = ["langchain", "mcp", "daftari", "knowledge", "vault", "rag"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "langchain-core>=0.3.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "mcp>=1.0.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+demo = [
+    "langgraph>=0.2.0",
+    "langchain-anthropic>=0.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mavaali/daftari"
+Repository = "https://github.com/mavaali/daftari"
+Issues = "https://github.com/mavaali/daftari/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langchain_daftari"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires the daftari binary on PATH (deselect with -m 'not integration')",
+]
