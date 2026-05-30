@@ -414,6 +414,11 @@ One test file per module under `test/audit/` mirroring `src/audit/`:
 2. **`git log` output stability.** The `--pretty=format` we use should be safe, but verify against the daftari root repo's git version pin (Node 20 ships with whichever git the system has). Pin in the test environment.
 3. **Where do `--repo` flags' anonymous repos get their URL patterns?** Likely answer: they don't get any, and any URL match against them returns "no match", so URL-based cross-refs to anonymous repos go silently unflagged. Document in the README; defer to plan whether to support `--repo-with-url`.
 4. **PR comment templates.** Out of scope for v1, but if a follow-up wants a "compact summary" report variant, the JSON structure should already support it (counts in `totals`, full detail in arrays — consumers can render either).
+5. **`git log --all` performance trap at monorepo scale.** §9.1's batched `git log --all --name-only` walks full commit history. On a 4000-doc repo embedded in a 100k-commit monorepo, the git process itself can dominate the budget; the §11.3 benchmark uses a shallow fresh repo and won't catch this. Plan should benchmark against a real-world large repo and decide between `git log --all -- <pathspec>` (limit to docs glob), `git log -1` per file with a bounded worker pool, or accepting the cost and documenting it.
+6. **URL match specificity in §7.1.** Pattern `github.com/org/service-a` could substring-match `github.com/org/service-a-tools`. Plan must pick exact-prefix match (with a boundary char check), glob, or substring — and add a unit test fixture for the boundary case.
+7. **CLI/config conflict resolution consistency.** §10.1 mostly throws exit-2 on bad config, but the `--output` conflict path emits a warning to stderr and uses CLI value. Plan decides whether that's the right inconsistency (it probably is — CLI wins is standard) and documents it deliberately, or hardens to "throw on conflict."
+8. **`--help` text as a deliverable.** Not blocking but easy to forget. Plan must include `daftari audit --help` text in the task list.
+9. **`DocSnapshot.frontmatter` is currently dead weight in v1** — §5 declares it but no check reads it. Either remove from the v1 type (cleanest) or document what's reserving it (e.g., "Phase 2 contradiction detection will use it"). Lean: remove for v1, add back when a consumer needs it.
 
 ---
 
