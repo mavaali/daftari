@@ -1,9 +1,9 @@
 ---
-title: "Aurora Pipelines — Positioning Overview"
+title: "Aurora Pipelines — Competitive Analysis (Vault B)"
 domain: accumulation
 collection: competitive-intel
 status: canonical
-confidence: medium
+confidence: high
 created: 2026-05-30
 updated: 2026-05-30
 updated_by: agent:daftari-init
@@ -12,21 +12,23 @@ sources:
   - aurora-product-page
 superseded_by: null
 ttl_days: 120
-tags: [aurora, ingestion, competitive]
+tags: [aurora, competitive, vault-b-fixture]
 questions_answered:
-  - "How does Aurora frame the ingestion-vs-transformation boundary?"
+  - "How does Aurora handle schema drift in live pipelines?"
 questions_raised:
-  - "Does an authored-pipeline model slow teams down at small scale?"
+  - "Is Aurora's schema-lock model viable at enterprise scale?"
 ---
 
-# Aurora Pipelines — Positioning Overview
+# Aurora Pipelines — Competitive Analysis (Vault B)
 
-Aurora Pipelines is a fictional data-movement product used here as an example.
-Its pitch: ingestion is an authored artifact you version and review, not a
-managed black box.
+Aurora Pipelines (vault-b fixture) — distinct content to verify fan-out search
+returns results from both vaults with the correct vault prefix in hit paths.
+
+Aurora's schema-lock approach forces explicit migration scripts for every schema
+change, unlike zero-copy ingestion competitors.
 
 ## Questions Answered
-- How does Aurora frame the ingestion-vs-transformation boundary?
+- How does Aurora handle schema drift in live pipelines?
 
 ## Questions Raised
-- Does an authored-pipeline model slow teams down at small scale?
+- Is Aurora's schema-lock model viable at enterprise scale?

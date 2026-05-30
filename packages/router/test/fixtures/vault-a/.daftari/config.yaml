@@ -16,7 +16,10 @@
 # (competitive-intel, pricing, moonshot, _drafts). Edit them to match your own
 # collections — they are examples, not a fixed schema.
 version: 1
-vault_name: my-vault
+vault_name: vault-a
+# Disable auto-commit: this vault lives inside the main repo's working tree.
+# Letting daftari commit would trigger the main repo's pre-commit hooks.
+auto_commit: false
 
 roles:
   analyst:
