@@ -1,0 +1,23 @@
+name: Publish langchain-daftari
+
+on:
+  push:
+    tags:
+      - 'langchain-daftari/v*'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Build sdist and wheel
+        working-directory: integrations/langchain
+        run: uv build
+      - name: Publish to PyPI via trusted publisher
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: integrations/langchain/dist/
