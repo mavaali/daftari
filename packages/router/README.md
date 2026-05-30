@@ -4,10 +4,17 @@ Multi-vault MCP router — fan out across N Daftari vaults from one MCP connecti
 
 ## Quick start
 
+The router is part of the [daftari repo](https://github.com/mavaali/daftari) and not yet published independently to npm. To run from source:
+
 ```bash
-npm i -g daftari daftari-router
-daftari-router --config vaults.yaml
+git clone https://github.com/mavaali/daftari.git
+cd daftari/packages/router
+npm install
+npm run build
+node dist/cli.js --config vaults.yaml
 ```
+
+(A `daftari-router` npm package and `npx` quick-start will land in a follow-up release.)
 
 The router speaks MCP over stdio. Point any MCP client (Claude Code, Claude Desktop, custom LangGraph agent) at the `daftari-router` binary instead of `daftari`, and it transparently spans multiple vaults.
 
@@ -54,7 +61,9 @@ defaults:
 | `vault_provenance` | error: path is vault-specific | provenance in that vault |
 | `vault_themes` | merges themes from all vaults | themes from that vault |
 
-For paths, you can use either explicit `vault: "name"` arg or vault-prefixed paths like `devops:runbooks/k8s.md` — the router strips the prefix before forwarding to the child.
+For tools that take a `path` argument, you can use either explicit `vault: "name"` arg or vault-prefixed paths like `devops:runbooks/k8s.md` — the router strips the prefix before forwarding to the child.
+
+Tools with other path-shaped arguments (`vault_provenance` uses `filePath`, `vault_tension_log` uses `sourceA`/`sourceB`) require the explicit `vault:` arg.
 
 ## Architecture
 
