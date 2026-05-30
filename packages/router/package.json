@@ -16,7 +16,7 @@
     "lint:fix": "biome check --write src test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "yaml": "^2.5.0"
   },
   "devDependencies": {
