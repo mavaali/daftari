@@ -1,0 +1,15 @@
+router:
+  transport: stdio
+vaults:
+  vault-a:
+    path: ./test/fixtures/vault-a
+    user: agent
+    role: admin
+    description: "Vault A — test fixture (created in T11)"
+  vault-b:
+    path: ./test/fixtures/vault-b
+    user: agent
+    role: admin
+    description: "Vault B — test fixture (created in T11)"
+defaults:
+  search_limit: 5
