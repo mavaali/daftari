@@ -3,7 +3,7 @@
 // Boots vault-a and vault-b from test/fixtures/ as real daftari subprocesses,
 // then exercises the router via InMemoryTransport (no network, no extra port).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -18,6 +18,12 @@ import { parseConfig } from "../src/config.js";
 import { createRouterServer } from "../src/server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Unique identifiers per test run so repeated runs always exercise the success
+// path and never accumulate state in the fixture vaults.
+const RUN_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const TEST_DRAFT_PATH = `_drafts/router-test-${RUN_ID}.md`;
+const TEST_READ_PATH = `_drafts/router-read-${RUN_ID}.md`;
 
 // The daftari binary in this worktree.
 // DAFTARI_BIN env may point to the built cli.js; we always exec via `node`.
@@ -98,23 +104,27 @@ describe("router integration", () => {
     client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
     await client.connect(clientSide);
 
-    // Force a synchronous reindex on all vaults before running search tests.
-    // vault-b had its aurora doc modified out-of-band after init, so daftari
-    // starts a background reindex. Calling vault_reindex here ensures both
-    // vaults have a complete, up-to-date index before any search assertions run.
+    // Daftari runs its index build in the background after `initialize` returns.
+    // On a fresh checkout (no persisted .daftari/index.db) the search test would
+    // race the background indexer. Calling vault_reindex synchronously here
+    // blocks until both indexes are fully built and queryable — deterministic
+    // across local re-runs AND fresh CI runs.
     await client.callTool({ name: "vault_reindex", arguments: {} });
   }, 90_000);
 
   afterAll(async () => {
-    try {
-      if (client) await client.close();
-    } catch {
-      /* ignore */
-    }
-    try {
-      if (pool) await pool.close();
-    } catch {
-      /* ignore */
+    if (client) await client.close().catch(() => {});
+    if (pool) await pool.close().catch(() => {});
+    // Best-effort cleanup of per-run test artifacts.
+    for (const p of [
+      resolve(__dirname, "fixtures/vault-a", TEST_DRAFT_PATH),
+      resolve(__dirname, "fixtures/vault-a", TEST_READ_PATH),
+    ]) {
+      try {
+        rmSync(p, { force: true });
+      } catch {
+        /* best effort */
+      }
     }
   });
 
@@ -169,61 +179,55 @@ describe("router integration", () => {
     expect((r.content?.[0] as { text: string }).text).toMatch(/requires a vault/i);
   });
 
-  it("vault_write with explicit vault succeeds (or file already exists)", async () => {
+  it("vault_write with explicit vault succeeds", async () => {
     const r = await client.callTool({
       name: "vault_write",
       arguments: {
         vault: "vault-a",
-        path: "_drafts/router-test.md",
-        agent: "test-agent",
-        body: "Hello router integration test",
+        path: TEST_DRAFT_PATH,
         frontmatter: {
           title: "Router Test",
-          collection: "_drafts",
           domain: "accumulation",
+          collection: "_drafts",
           status: "draft",
           confidence: "low",
           provenance: "direct",
           created: "2026-05-30",
           tags: [],
         },
+        body: "# Hi",
+        agent: "test-agent",
       },
     });
-    // Accept either success or "already exists" — repeated test runs will hit
-    // the second branch after the first run created the file.
-    if (r.isError) {
-      const text = (r.content?.[0] as { text: string }).text;
-      expect(text).toMatch(/already exists/i);
-    } else {
-      expect(r.isError).toBeFalsy();
-    }
+    expect(r.isError).toBeFalsy();
   });
 
   it("vault_read uses a vault-prefixed path", async () => {
-    // Write first to ensure the file exists (idempotent — error on duplicate is fine).
-    await client.callTool({
+    // Write a unique file for this run, then read it back.
+    const writeResult = await client.callTool({
       name: "vault_write",
       arguments: {
         vault: "vault-a",
-        path: "_drafts/router-read-test.md",
-        agent: "test-agent",
-        body: "Hello router read test",
+        path: TEST_READ_PATH,
         frontmatter: {
           title: "Router Read Test",
-          collection: "_drafts",
           domain: "accumulation",
+          collection: "_drafts",
           status: "draft",
           confidence: "low",
           provenance: "direct",
           created: "2026-05-30",
           tags: [],
         },
+        body: "Hello router read test",
+        agent: "test-agent",
       },
     });
+    expect(writeResult.isError).toBeFalsy();
 
     const r = await client.callTool({
       name: "vault_read",
-      arguments: { path: "vault-a:_drafts/router-read-test.md" },
+      arguments: { path: `vault-a:${TEST_READ_PATH}` },
     });
     expect(r.isError).toBeFalsy();
     const text = (r.content?.[0] as { text: string }).text;
