@@ -181,6 +181,13 @@ Design tenets: functions and types, no classes; tool handlers return
 - <docs/architecture.md> — layered design, request path, accumulation vs. generative domains
 - <docs/file-format.md> — complete frontmatter reference
 
+## Integrations
+
+- [`integrations/langchain/`](integrations/langchain/) — `langchain-daftari`, a
+  Python package that exposes the 14 daftari tools as LangChain `BaseTool`s
+  for use with LangGraph / `create_react_agent`. Sync + async, schemas pulled
+  live from `tools/list`.
+
 ## Privacy
 
 Daftari is a local MCP server. It runs on your machine, against vault files on
