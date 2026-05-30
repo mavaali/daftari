@@ -145,4 +145,44 @@ repos:
     if (result.ok) return;
     expect(result.error.kind).toBe("config");
   });
+
+  it("CLI --output-json overrides YAML output.json and warns to stderr", () => {
+    const a = join(tmp, "a");
+    mkdirSync(a);
+    const yamlText = `
+repos:
+  - name: alpha
+    path: ${a}
+output:
+  json: from-yaml.json
+`;
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const result = parseAuditConfig(
+      [`--config`, "ignored", `--output-json`, "from-cli.json"],
+      () => yamlText,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.output.json).toBe("from-cli.json");
+    expect(stderr).toHaveBeenCalledWith(
+      expect.stringContaining("warning: --output-json overrides output.json"),
+    );
+    stderr.mockRestore();
+  });
+
+  it("returns config-kind error on malformed YAML", () => {
+    const result = parseAuditConfig([`--config`, "ignored"], () => "{ broken");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("config");
+    expect(result.error.message).toContain("malformed YAML");
+  });
+
+  it("returns config-kind error when YAML is not a map at the top level", () => {
+    const result = parseAuditConfig([`--config`, "ignored"], () => "just-a-string");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("config");
+    expect(result.error.message).toContain("expected a YAML map");
+  });
 });

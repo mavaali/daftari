@@ -12,7 +12,11 @@ import { type AuditConfig, type AuditError, configError, type RepoConfig } from 
 // Inner helpers throw tagged AuditError objects (not class instances). The
 // top-level parseAuditConfig wraps in try/catch and converts to Result.
 function isAuditError(e: unknown): e is AuditError {
-  return typeof e === "object" && e !== null && (e as { kind?: unknown }).kind === "config";
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    ((e as { kind?: unknown }).kind === "config" || (e as { kind?: unknown }).kind === "runtime")
+  );
 }
 
 const DEFAULTS = {
@@ -122,8 +126,18 @@ export function parseAuditConfig(
         throw configError(`cannot read --config ${configPath}: ${reason}`);
       }
       try {
-        yamlRaw = (yaml.load(text) ?? {}) as RawYaml;
+        const raw = yaml.load(text);
+        if (raw === null || raw === undefined) {
+          yamlRaw = {};
+        } else if (typeof raw !== "object" || Array.isArray(raw)) {
+          throw configError(
+            `${configPath}: expected a YAML map at top level, got ${Array.isArray(raw) ? "array" : typeof raw}`,
+          );
+        } else {
+          yamlRaw = raw as RawYaml;
+        }
       } catch (e) {
+        if (isAuditError(e)) throw e;
         const reason = e instanceof Error ? e.message : String(e);
         throw configError(`malformed YAML in ${configPath}: ${reason}`);
       }
