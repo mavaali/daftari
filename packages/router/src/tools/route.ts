@@ -12,6 +12,9 @@ export async function routeToVault(pool: ChildPool, tool: string, args: Args): P
   const rest: Args = { ...args };
   delete rest.vault;
 
+  // Prefix-parsing of args.path only runs when no explicit vault was provided.
+  // If both args.vault and a vault-prefixed args.path are set, the prefix is
+  // forwarded verbatim — the caller chose explicit, so we trust them.
   if (!vault && typeof args.path === "string") {
     const parsed = parseVaultPath(args.path);
     if (parsed.vault && parsed.vault.length > 0) {
@@ -27,13 +30,11 @@ export async function routeToVault(pool: ChildPool, tool: string, args: Args): P
   }
   const child = pool.get(vault);
   if (!child) {
-    const all = pool.all() ?? [];
-    const names = all.map((c) => c.name);
-    // Truncate to 20 to keep error messages readable at large pool sizes.
     const known =
-      names.length > 20
-        ? `${names.slice(0, 20).join(", ")} … (${names.length} total)`
-        : names.join(", ") || "(none)";
+      pool
+        .all()
+        .map((c) => c.name)
+        .join(", ") || "(none)";
     return err(`${tool}: unknown vault '${vault}'. Known vaults: ${known}`);
   }
   return child.callTool(tool, rest);
