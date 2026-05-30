@@ -33,7 +33,7 @@ function edge(
   targetRepo: string,
   targetPath: string,
   targetAnchor: string | null = null,
-  rawHref = `${targetPath}${targetAnchor ? "#" + targetAnchor : ""}`,
+  rawHref = `${targetPath}${targetAnchor ? `#${targetAnchor}` : ""}`,
 ): LinkEdge {
   return { sourceRepo, sourcePath, targetRepo, targetPath, targetAnchor, rawHref };
 }

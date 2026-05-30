@@ -40,7 +40,7 @@ export function checkBrokenRefs(snapshots: RepoSnapshot[], edges: LinkEdge[]): B
     if (targetSnap.docs.has(edge.targetPath)) {
       resolvedPath = edge.targetPath;
     } else if (!edge.targetPath.endsWith(".md")) {
-      const withMd = edge.targetPath + ".md";
+      const withMd = `${edge.targetPath}.md`;
       if (targetSnap.docs.has(withMd)) {
         resolvedPath = withMd;
       }
@@ -58,8 +58,8 @@ export function checkBrokenRefs(snapshots: RepoSnapshot[], edges: LinkEdge[]): B
 
     // File found. Check anchor if present.
     if (edge.targetAnchor !== null) {
-      const doc = targetSnap.docs.get(resolvedPath)!;
-      if (!doc.headings.has(edge.targetAnchor)) {
+      const doc = targetSnap.docs.get(resolvedPath);
+      if (doc && !doc.headings.has(edge.targetAnchor)) {
         findings.push({
           kind: "missing_anchor",
           source: { repo: edge.sourceRepo, path: edge.sourcePath },
