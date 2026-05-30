@@ -24,20 +24,23 @@ export type ChildToolDescriptor = {
   // from the SDK's `unknown` should structurally check before passing.
   inputSchema: {
     type: "object";
-    properties: Record<string, { type: string; description?: string }>;
+    properties: Record<string, unknown>;
     required?: string[];
+    additionalProperties?: boolean;
   };
 };
 
-export type CatalogTool = ChildToolDescriptor;
+export type CatalogTool = ChildToolDescriptor & { routing: Routing };
+
+const VAULT_DESC_FANOUT =
+  "Optional. Limit operation to one vault by name. Omit to fan out to all vaults and merge results.";
+const VAULT_DESC_REQUIRED =
+  "Vault name (required). Alternatively pass a vault-prefixed path like 'devops:runbooks/k8s.md'.";
 
 function vaultProp(routing: Routing): { type: string; description: string } {
   return {
     type: "string",
-    description:
-      routing === "fanout"
-        ? "Optional. Limit operation to one vault by name. Omit to fan out to all vaults and merge results."
-        : "Vault name (required). Alternatively pass a vault-prefixed path like 'devops:runbooks/k8s.md'.",
+    description: routing === "fanout" ? VAULT_DESC_FANOUT : VAULT_DESC_REQUIRED,
   };
 }
 
@@ -45,11 +48,18 @@ export function buildCatalog(childTools: ChildToolDescriptor[]): CatalogTool[] {
   return childTools
     .filter((t) => t.name in ROUTING)
     .map((t) => {
+      if ("vault" in t.inputSchema.properties) {
+        throw new Error(
+          `tool '${t.name}' already defines a 'vault' property; router cannot add its own vault parameter`,
+        );
+      }
       const routing = ROUTING[t.name];
       const props = { ...t.inputSchema.properties, vault: vaultProp(routing) };
       return {
         ...t,
+        routing,
         inputSchema: {
+          ...t.inputSchema, // preserves additionalProperties etc.
           type: "object" as const,
           properties: props,
           required: t.inputSchema.required ?? [],

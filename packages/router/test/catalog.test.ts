@@ -40,7 +40,8 @@ describe("catalog", () => {
   it("describes vault parameter semantics in description", () => {
     const cat = buildCatalog(childTools);
     const read = cat.find((t) => t.name === "vault_read");
-    expect(read?.inputSchema.properties.vault.description).toMatch(/vault/i);
+    const vault = read?.inputSchema.properties.vault as { description?: string } | undefined;
+    expect(vault?.description).toMatch(/vault/i);
   });
 
   it("filters out tools not in ROUTING", () => {
@@ -53,5 +54,43 @@ describe("catalog", () => {
       },
     ]);
     expect(cat.find((t) => t.name === "vault_unknown_tool")).toBeUndefined();
+  });
+
+  it("attaches routing policy to each catalog entry", () => {
+    const cat = buildCatalog(childTools);
+    expect(cat.find((t) => t.name === "vault_read")?.routing).toBe("require-vault");
+    expect(cat.find((t) => t.name === "vault_search")?.routing).toBe("fanout");
+  });
+
+  it("throws if a child tool already defines a 'vault' property", () => {
+    expect(() =>
+      buildCatalog([
+        {
+          name: "vault_read",
+          description: "Read.",
+          inputSchema: {
+            type: "object" as const,
+            properties: { vault: { type: "string" }, path: { type: "string" } },
+            required: ["path"],
+          },
+        },
+      ]),
+    ).toThrow(/vault/);
+  });
+
+  it("preserves additionalProperties from the source schema", () => {
+    const cat = buildCatalog([
+      {
+        name: "vault_read",
+        description: "Read a doc.",
+        inputSchema: {
+          type: "object" as const,
+          properties: { path: { type: "string" } },
+          required: ["path"],
+          additionalProperties: false,
+        },
+      },
+    ]);
+    expect(cat[0]?.inputSchema.additionalProperties).toBe(false);
   });
 });
