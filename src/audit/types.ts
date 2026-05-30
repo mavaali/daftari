@@ -75,17 +75,18 @@ export type AuditReport = {
   staleness: StalenessFinding[];
 };
 
-// Sentinel errors. runAudit catches these and maps to exit codes 2 / 3.
-export class AuditConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AuditConfigError";
-  }
-}
+// Tagged error union. runAudit branches on .kind to translate to exit codes
+// (config → 2, runtime → 3). No throws at the API boundary, no classes
+// (project rule from CLAUDE.md). Inner helpers may throw these tagged objects
+// for control flow; the public entry points catch and convert to Result.
+export type AuditError = { kind: "config"; message: string } | { kind: "runtime"; message: string };
 
-export class AuditRuntimeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AuditRuntimeError";
-  }
-}
+export const configError = (message: string): AuditError => ({
+  kind: "config",
+  message,
+});
+
+export const runtimeError = (message: string): AuditError => ({
+  kind: "runtime",
+  message,
+});
