@@ -12,7 +12,7 @@ export type CallToolResult = {
 
 export type ToolDescriptor = {
   name: string;
-  description: string;
+  description?: string;
   inputSchema: unknown;
 };
 
@@ -46,18 +46,15 @@ export async function startChild(
     args: ["--vault", vault.path, "--user", vault.user, "--role", vault.role],
   });
   const mcp = new Client({ name: "daftari-router", version: "0.1.0" }, { capabilities: {} });
-  const connectPromise = mcp.connect(transport);
   try {
     await withTimeout(
-      connectPromise,
+      mcp.connect(transport),
       startTimeoutMs,
       () => mcp.close().catch(() => {}),
       `vault '${vault.name}' did not complete MCP handshake in ${startTimeoutMs}ms`,
     );
   } catch (err) {
-    process.stderr.write(
-      `[daftari-router] startChild failed for vault '${vault.name}': ${err instanceof Error ? err.message : String(err)}\n`,
-    );
+    await mcp.close().catch(() => {});
     throw err;
   }
   return wrapChildClient(vault.name, mcp);

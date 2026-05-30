@@ -61,8 +61,8 @@ describe("withTimeout", () => {
   });
 
   it("clears the timer when the promise resolves before the deadline", async () => {
-    // If timer is not cleared, vitest would see a hanging timer; this test
-    // verifies the finally-branch fires correctly on fast resolution.
+    // Verifies cleanup is NOT invoked on the fast-resolve path — only the
+    // finally-branch fires (to clearTimeout), not the timeout callback.
     const cleanup = vi.fn();
     await withTimeout(Promise.resolve(42), 1000, cleanup, "should not fire");
     expect(cleanup).not.toHaveBeenCalled();
