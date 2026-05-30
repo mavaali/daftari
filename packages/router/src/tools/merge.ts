@@ -23,7 +23,7 @@ export type VaultResult<T> =
 
 export type VaultError = { vault: string; error: string };
 
-function splitOks<T>(rows: VaultResult<T>[]): {
+export function splitOks<T>(rows: VaultResult<T>[]): {
   oks: { vault: string; value: T }[];
   errors: VaultError[];
 } {
@@ -56,7 +56,9 @@ export function mergeSearch(rows: VaultResult<{ count: number; hits: SearchHit[]
   const hits = oks.flatMap(({ vault, value }) =>
     value.hits.map((h) => ({ ...h, vault, path: formatVaultPath(vault, h.path) })),
   );
-  hits.sort((a, b) => b.score - a.score);
+  hits.sort(
+    (a, b) => b.score - a.score || a.vault.localeCompare(b.vault) || a.path.localeCompare(b.path),
+  );
   return { count: hits.length, hits, errors };
 }
 
@@ -110,6 +112,9 @@ export function mergeStatus(rows: VaultResult<StatusValue>[]): {
   errors: VaultError[];
 } {
   const { oks, errors } = splitOks(rows);
+  // byVault[name] preserves the child's raw result shape — any nested paths
+  // inside byVault entries are NOT prefixed with vault: form. Consumers should
+  // scope by the byVault key or use the flat top-level fields.
   const byVault: Record<string, StatusValue> = {};
   let fileCount = 0;
   let invalidCount = 0;
@@ -160,6 +165,9 @@ export function mergeLint(rows: VaultResult<LintValue>[]): {
 } {
   const { oks, errors } = splitOks(rows);
   const checks: Record<string, (LintFinding & { vault: string })[]> = {};
+  // byVault[name] preserves the child's raw result shape — any nested paths
+  // inside byVault entries are NOT prefixed with vault: form. Consumers should
+  // scope by the byVault key or use the flat top-level fields.
   const byVault: Record<string, LintValue> = {};
   let totalFindings = 0;
   for (const { vault, value } of oks) {
@@ -251,6 +259,9 @@ export function mergeReindex(rows: VaultResult<ReindexValue>[]): {
   errors: VaultError[];
 } {
   const { oks, errors } = splitOks(rows);
+  // byVault[name] preserves the child's raw result shape — any nested paths
+  // inside byVault entries are NOT prefixed with vault: form. Consumers should
+  // scope by the byVault key or use the flat top-level fields.
   const byVault: Record<string, ReindexValue> = {};
   let documentCount = 0;
   let chunkCount = 0;

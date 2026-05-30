@@ -5,7 +5,7 @@ export const ROUTING: Record<string, Routing> = {
   vault_index: "fanout",
   vault_status: "fanout",
   vault_search: "fanout",
-  vault_search_related: "fanout",
+  vault_search_related: "require-vault",
   vault_reindex: "fanout",
   vault_write: "require-vault",
   vault_append: "require-vault",

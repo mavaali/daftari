@@ -35,6 +35,7 @@ describe("catalog", () => {
     expect(ROUTING.vault_read).toBe("require-vault");
     expect(ROUTING.vault_search).toBe("fanout");
     expect(ROUTING.vault_write).toBe("require-vault");
+    expect(ROUTING.vault_search_related).toBe("require-vault");
   });
 
   it("describes vault parameter semantics in description", () => {

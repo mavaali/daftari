@@ -84,6 +84,28 @@ describe("mergeSearch", () => {
     ]);
     expect(out.hits[0]).toMatchObject({ vault: "myvault", path: "myvault:doc.md" });
   });
+
+  it("uses vault then path as tiebreakers when scores match", () => {
+    const out = mergeSearch([
+      {
+        vault: "z",
+        ok: true,
+        value: { count: 1, hits: [{ path: "x.md", score: 0.5, collection: "c" }] },
+      },
+      {
+        vault: "a",
+        ok: true,
+        value: {
+          count: 2,
+          hits: [
+            { path: "z.md", score: 0.5, collection: "c" },
+            { path: "a.md", score: 0.5, collection: "c" },
+          ],
+        },
+      },
+    ]);
+    expect(out.hits.map((h) => h.path)).toEqual(["a:a.md", "a:z.md", "z:x.md"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -193,8 +215,8 @@ describe("mergeStatus", () => {
       { vault: "a", ok: true, value: { ...baseStatus } },
       { vault: "b", ok: true, value: { ...baseStatus, fileCount: 3 } },
     ]);
-    expect(out.byVault["a"]).toBeDefined();
-    expect(out.byVault["b"]?.fileCount).toBe(3);
+    expect(out.byVault.a).toBeDefined();
+    expect(out.byVault.b?.fileCount).toBe(3);
   });
 
   it("surfaces per-vault errors without failing the merge", () => {
@@ -236,8 +258,8 @@ describe("mergeLint", () => {
       },
     ]);
     expect(out.totalFindings).toBe(2);
-    expect(out.checks["staleFiles"]).toHaveLength(2);
-    expect(out.checks["staleFiles"]?.map((f) => f.path)).toEqual(["a:old.md", "b:also-old.md"]);
+    expect(out.checks.staleFiles).toHaveLength(2);
+    expect(out.checks.staleFiles?.map((f) => f.path)).toEqual(["a:old.md", "b:also-old.md"]);
     expect(out.errors).toEqual([]);
   });
 
@@ -258,8 +280,8 @@ describe("mergeLint", () => {
       },
     ]);
     expect(out.totalFindings).toBe(2);
-    expect(out.checks["staleFiles"]?.[0]?.path).toBe("a:s.md");
-    expect(out.checks["orphanFiles"]?.[0]?.path).toBe("a:o.md");
+    expect(out.checks.staleFiles?.[0]?.path).toBe("a:s.md");
+    expect(out.checks.orphanFiles?.[0]?.path).toBe("a:o.md");
   });
 
   it("surfaces per-vault errors without failing the merge", () => {
@@ -293,7 +315,7 @@ describe("mergeLint", () => {
         },
       },
     ]);
-    expect(out.checks["staleFiles"]?.[0]).toMatchObject({ vault: "myvault" });
+    expect(out.checks.staleFiles?.[0]).toMatchObject({ vault: "myvault" });
   });
 });
 
@@ -439,8 +461,8 @@ describe("mergeReindex", () => {
     ]);
     expect(out.documentCount).toBe(15);
     expect(out.chunkCount).toBe(70);
-    expect(out.byVault["a"]).toBeDefined();
-    expect(out.byVault["b"]).toBeDefined();
+    expect(out.byVault.a).toBeDefined();
+    expect(out.byVault.b).toBeDefined();
     expect(out.errors).toEqual([]);
   });
 
