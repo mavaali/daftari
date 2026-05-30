@@ -81,4 +81,18 @@ describe("checkStaleness", () => {
     const a = findings.find((f) => f.path === "a.md" && f.kind === "transitive");
     expect(a?.staleChain?.length).toBe(3); // a -> d -> stale
   });
+
+  it("classifies each node at most once across multiple roots", () => {
+    // Two fresh roots a.md and b.md both link to c.md, which links to stale.
+    const snaps = [
+      repo("r", [doc("a.md", 1), doc("b.md", 1), doc("c.md", 1), doc("stale.md", 1000)]),
+    ];
+    const edges = [e("a.md", "c.md"), e("b.md", "c.md"), e("c.md", "stale.md")];
+    const findings = checkStaleness(snaps, edges, 540, NOW);
+    const paths = findings.map((f) => `${f.kind}:${f.path}`);
+    const uniquePaths = [...new Set(paths)];
+    expect(paths).toEqual(uniquePaths); // no duplicates
+    // And c.md is transitively stale; a.md and b.md too; stale.md is direct.
+    expect(findings.map((f) => f.path).sort()).toEqual(["a.md", "b.md", "c.md", "stale.md"].sort());
+  });
 });

@@ -5,8 +5,8 @@
 
 import type { LinkEdge, RepoSnapshot, StalenessFinding } from "../types.js";
 
-type NodeKey = string; // "repo\0relPath"
-const key = (repo: string, path: string): NodeKey => `${repo}${path}`;
+type NodeKey = string; // "repo\x20relPath" (space-separated to avoid collisions)
+const key = (repo: string, path: string): NodeKey => `${repo} ${path}`;
 
 function isDirectlyStale(mtimeIso: string, now: Date, thresholdDays: number): boolean {
   const ms = now.getTime() - new Date(mtimeIso).getTime();

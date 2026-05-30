@@ -116,4 +116,41 @@ fail_on:
     expect(code).toBe(2);
     stderr.mockRestore();
   });
+
+  it("detects cross-repo relative-path escape and does not flag valid targets", async () => {
+    // repo-a/cross-rel.md links to ../repo-b/api.md — escapes repo-a root,
+    // resolves into repo-b/api.md (which exists in beforeEach setup).
+    writeFileSync(join(repoA, "cross-rel.md"), `# Cross\n\nsee [api](../repo-b/api.md)\n`);
+    git(repoA, ["add", "."]);
+    git(repoA, ["commit", "-q", "-m", "add cross-rel"]);
+
+    const yamlPath = join(tmp, "audit.yaml");
+    writeFileSync(
+      yamlPath,
+      `
+repos:
+  - name: a
+    path: ${repoA}
+  - name: b
+    path: ${repoB}
+    urls:
+      - github.com/org/service-b
+output:
+  json: ${join(tmp, "report-rel.json")}
+staleness:
+  threshold_days: 540
+fail_on:
+  broken_refs: 1
+  transitive_staleness: 1
+`,
+    );
+    await runAudit(["--config", yamlPath]);
+    const report = JSON.parse(readFileSync(join(tmp, "report-rel.json"), "utf-8"));
+    // The cross-repo escape edge from cross-rel.md to repo-b/api.md should
+    // NOT appear in brokenRefs (api.md exists).
+    const crossRelFindings = report.brokenRefs.filter(
+      (r: { source: { path: string } }) => r.source.path === "cross-rel.md",
+    );
+    expect(crossRelFindings).toEqual([]);
+  });
 });
