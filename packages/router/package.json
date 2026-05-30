@@ -1,0 +1,28 @@
+{
+  "name": "daftari-router",
+  "version": "0.1.0",
+  "description": "Multi-vault MCP router for Daftari — fans out across N vaults.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": { "daftari-router": "./dist/cli.js" },
+  "engines": { "node": ">=20" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "dev": "tsx watch src/cli.ts --config test/fixtures/vaults.yaml",
+    "lint": "biome check src test",
+    "lint:fix": "biome check --write src test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
