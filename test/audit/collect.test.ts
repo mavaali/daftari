@@ -1,9 +1,9 @@
 // test/audit/collect.test.ts
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { collectRepos } from "../../src/audit/collect.js";
 
 const git = (cwd: string, args: string[]) =>
@@ -70,6 +70,36 @@ describe("collectRepos", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value[0]?.docs.get("a.md")?.mtimeSource).toBe("fs");
+  });
+
+  it("warns and skips an unreadable file but continues the repo", async () => {
+    const repo = join(tmp, "r");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "good.md"), `# Good\n`);
+    // Create an unreadable file (chmod 000). Skip on Windows/runners that
+    // don't honor chmod (vitest will mark expected failure).
+    const badPath = join(repo, "bad.md");
+    writeFileSync(badPath, `# Bad\n`);
+    chmodSync(badPath, 0o000);
+
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const result = await collectRepos({
+        repos: [{ name: "r", path: repo, docsGlob: "**/*.md", urls: [] }],
+        output: {},
+        staleness: { thresholdDays: 540 },
+        failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const docs = result.value[0]?.docs;
+      expect(docs?.has("good.md")).toBe(true);
+      expect(docs?.has("bad.md")).toBe(false);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("unreadable doc bad.md"));
+    } finally {
+      chmodSync(badPath, 0o644); // so afterEach can clean it up
+      stderr.mockRestore();
+    }
   });
 
   it("skips files outside the docs glob", async () => {

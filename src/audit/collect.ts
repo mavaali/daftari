@@ -6,7 +6,7 @@
 import { type ExecFileSyncOptions, execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve as nodeResolve, posix } from "node:path";
+import { resolve as nodeResolve } from "node:path";
 import { glob } from "glob";
 import matter from "gray-matter";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -116,8 +116,13 @@ async function collectOne(config: RepoConfig): Promise<RepoSnapshot> {
   const docs = new Map<string, DocSnapshot>();
   for (const rel of onlyMd) {
     const posixRel = rel.split(/[\\/]/).join("/");
-    const snap = await loadDoc(config.path, posixRel, mtimes?.get(posixRel));
-    docs.set(posixRel, snap);
+    try {
+      const snap = await loadDoc(config.path, posixRel, mtimes?.get(posixRel));
+      docs.set(posixRel, snap);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`daftari audit: warning: unreadable doc ${posixRel}: ${msg}\n`);
+    }
   }
   return { config, docs };
 }
