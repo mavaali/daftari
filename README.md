@@ -187,6 +187,7 @@ Design tenets: functions and types, no classes; tool handlers return
   Python package that exposes the 14 daftari tools as LangChain `BaseTool`s
   for use with LangGraph / `create_react_agent`. Sync + async, schemas pulled
   live from `tools/list`.
+- [`packages/router`](packages/router) — multi-vault MCP router that fans out across N Daftari vaults
 
 ## Privacy
 
