@@ -107,6 +107,26 @@ describe("daftari --vault", () => {
   }, 60_000);
 });
 
+describe("daftari audit subcommand", () => {
+  it("prints audit help on `daftari audit --help`", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    await run(["audit", "--help"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining("daftari audit"));
+    out.mockRestore();
+  });
+
+  it("prints audit help on bare `daftari audit` with no args", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    await run(["audit"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining("daftari audit"));
+    out.mockRestore();
+  });
+});
+
 describe("daftari invoked through a symlink (npm/npx bin shim)", () => {
   // npm/npx bin shims and `npm i -g` invoke the CLI through a symlinked
   // launcher, so process.argv[1] is the symlink path, not cli.ts's real path.
