@@ -1,16 +1,33 @@
-// Curation-path tools: vault_tension_log, vault_lint, vault_provenance.
+// Curation-path tools: vault_tension_log, vault_tension_resolve, vault_lint,
+// vault_provenance.
 //
 // These are the advisory surface of the curation engine. vault_lint reports
 // problems but fixes nothing; vault_tension_log records a contradiction but
-// resolves nothing; vault_provenance just reads back write history. Each tool
-// exposes a pure logic function (returns Result, never throws) plus an MCP
-// ToolDefinition, mirroring the read- and write-path tools.
+// resolves nothing automatically; vault_tension_resolve records a deliberate
+// closure (Phase 1 of the tension graph plan); vault_provenance just reads
+// back write history. Each tool exposes a pure logic function (returns
+// Result, never throws) plus an MCP ToolDefinition, mirroring the read- and
+// write-path tools.
 
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
-import { LINT_CHECKS, type LintCheckName, type LintFinding, runLint } from "../curation/lint.js";
+import {
+  LINT_CHECKS,
+  type LintCheckName,
+  type LintFinding,
+  runLint,
+  type TensionHealth,
+} from "../curation/lint.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
-import { addTension, type TensionEntry } from "../curation/tension.js";
-import { ok, type Result } from "../frontmatter/types.js";
+import {
+  addTension,
+  LOGGABLE_TENSION_KINDS,
+  RESOLUTION_KINDS,
+  type ResolutionKind,
+  resolveTension,
+  type TensionEntry,
+  type TensionResolution,
+} from "../curation/tension.js";
+import { err, ok, type Result } from "../frontmatter/types.js";
 import type { ToolDefinition } from "./read.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
@@ -60,6 +77,16 @@ export async function vaultTensionLog(
   if (!claimB.ok) return claimB;
   const agent = str("agent");
   if (!agent.ok) return agent;
+  const kindRaw = str("kind");
+  if (!kindRaw.ok) return kindRaw;
+  if (!(LOGGABLE_TENSION_KINDS as readonly string[]).includes(kindRaw.value)) {
+    return err(
+      new Error(
+        `vault_tension_log 'kind' must be one of: ${LOGGABLE_TENSION_KINDS.join(", ")} ` +
+          `(unspecified is for legacy entries only and is never loggable)`,
+      ),
+    );
+  }
 
   return addTension(vaultRoot, {
     title: title.value,
@@ -68,7 +95,80 @@ export async function vaultTensionLog(
     claimA: claimA.value,
     claimB: claimB.value,
     loggedBy: agent.value,
+    kind: kindRaw.value as (typeof LOGGABLE_TENSION_KINDS)[number],
   });
+}
+
+// ---------------------------------------------------------------------------
+// vault_tension_resolve
+// ---------------------------------------------------------------------------
+
+// Records the closure of a tension. `resolved_at` is stamped from the current
+// clock; `resolved_by` comes from the server's access identity (the --user
+// the server was started with). Errors if the id is unknown or the tension
+// is already resolved.
+export async function vaultTensionResolve(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<TensionEntry, Error>> {
+  const allowed = requireReadAccess("vault_tension_resolve", access);
+  if (!allowed.ok) return allowed;
+
+  const id = args.id;
+  if (typeof id !== "string" || id.trim().length === 0) {
+    return err(new Error("vault_tension_resolve requires a non-empty 'id' argument"));
+  }
+  const kindRaw = args.kind;
+  if (typeof kindRaw !== "string" || kindRaw.trim().length === 0) {
+    return err(new Error("vault_tension_resolve requires a non-empty 'kind' argument"));
+  }
+  if (!(RESOLUTION_KINDS as readonly string[]).includes(kindRaw)) {
+    return err(
+      new Error(`vault_tension_resolve 'kind' must be one of: ${RESOLUTION_KINDS.join(", ")}`),
+    );
+  }
+
+  let rationale: string | undefined;
+  if (args.rationale !== undefined && args.rationale !== null) {
+    if (typeof args.rationale !== "string") {
+      return err(new Error("vault_tension_resolve 'rationale' must be a string"));
+    }
+    const trimmed = args.rationale.trim();
+    if (trimmed.length > 0) rationale = trimmed;
+  }
+
+  let references: string[] | undefined;
+  if (args.references !== undefined && args.references !== null) {
+    if (!Array.isArray(args.references)) {
+      return err(new Error("vault_tension_resolve 'references' must be an array of strings"));
+    }
+    const refs: string[] = [];
+    for (const r of args.references) {
+      if (typeof r !== "string" || r.trim().length === 0) {
+        return err(
+          new Error("vault_tension_resolve 'references' must be an array of non-empty strings"),
+        );
+      }
+      refs.push(r.trim());
+    }
+    if (refs.length > 0) references = refs;
+  }
+
+  // [DATA] resolved_by is taken from the server's access identity (set via
+  // --user at server start). When called without an access context (direct
+  // in-process call from a test) we fall back to a generic marker.
+  const resolvedBy = access?.user ?? "unknown";
+
+  const resolution: TensionResolution = {
+    resolved_at: new Date().toISOString(),
+    resolved_by: resolvedBy,
+    kind: kindRaw as ResolutionKind,
+  };
+  if (rationale !== undefined) resolution.rationale = rationale;
+  if (references !== undefined) resolution.references = references;
+
+  return resolveTension(vaultRoot, id.trim(), resolution);
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +180,7 @@ export interface VaultLintResult {
   filter: LintCheckName | null;
   checks: Partial<Record<LintCheckName, LintFinding[]>>;
   totalFindings: number;
+  tensionHealth: TensionHealth;
 }
 
 export async function vaultLint(
@@ -114,6 +215,7 @@ export async function vaultLint(
       filter,
       checks: { [filter]: findings },
       totalFindings: findings.length,
+      tensionHealth: report.value.tensionHealth,
     });
   }
 
@@ -122,6 +224,7 @@ export async function vaultLint(
     filter: null,
     checks: report.value.checks,
     totalFindings: report.value.totalFindings,
+    tensionHealth: report.value.tensionHealth,
   });
 }
 
@@ -172,7 +275,9 @@ export const curationTools: ToolDefinition[] = [
     description:
       "Record a tension — a contradiction or unresolved pull between two " +
       "vault documents — to the advisory tension log. Records the tension; " +
-      "does not resolve it. Entries are logged with status 'unresolved'.",
+      "does not resolve it. The 'kind' parameter classifies the disagreement " +
+      "(temporal: succession; factual: one is wrong; interpretive: same facts, " +
+      "different conclusions). New entries are logged with status 'unresolved'.",
     inputSchema: {
       type: "object",
       properties: {
@@ -200,11 +305,63 @@ export const curationTools: ToolDefinition[] = [
           type: "string",
           description: "Identity logging the tension, e.g. 'agent:claude-code'",
         },
+        kind: {
+          type: "string",
+          enum: [...LOGGABLE_TENSION_KINDS],
+          description:
+            "Taxonomy of the disagreement: 'temporal' (A was true, B is true now), " +
+            "'factual' (one is wrong; needs investigation), or 'interpretive' " +
+            "(same facts, different conclusions). 'unspecified' is reserved for " +
+            "legacy entries and is not loggable.",
+        },
       },
-      required: ["title", "sourceA", "claimA", "sourceB", "claimB", "agent"],
+      required: ["title", "sourceA", "claimA", "sourceB", "claimB", "agent", "kind"],
       additionalProperties: false,
     },
     handler: (vaultRoot, args, access) => vaultTensionLog(vaultRoot, args, access),
+  },
+  {
+    name: "vault_tension_resolve",
+    title: "Resolve a logged tension",
+    annotations: { destructiveHint: true },
+    description:
+      "Record the closure of a previously logged tension. The 'kind' parameter " +
+      "records HOW the tension was resolved: 'superseded' (older doc deprecated), " +
+      "'corrected' (one side was wrong; fixes applied), 'accepted' (both views " +
+      "stand as a deliberately persistent disagreement), or 'invalid' (false " +
+      "alarm). Optional 'rationale' and 'references' record the reasoning and " +
+      "any supporting documents. Errors if the tension id is unknown or already " +
+      "resolved. 'resolved_at' is stamped server-side; 'resolved_by' is taken " +
+      "from the server's access identity.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Id of the tension to resolve, e.g. 'tension-007'",
+        },
+        kind: {
+          type: "string",
+          enum: [...RESOLUTION_KINDS],
+          description:
+            "How the tension was resolved: 'superseded' | 'corrected' | " +
+            "'accepted' | 'invalid'.",
+        },
+        rationale: {
+          type: "string",
+          description:
+            "Optional but strongly recommended: the audit trail explaining the decision.",
+        },
+        references: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional list of vault-relative paths central to the resolution.",
+        },
+      },
+      required: ["id", "kind"],
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultTensionResolve(vaultRoot, args, access),
   },
   {
     name: "vault_lint",
@@ -215,7 +372,10 @@ export const curationTools: ToolDefinition[] = [
       "TTL, orphan files with no inbound links, old drafts, stagnant " +
       "low-confidence files, deprecated files still linked from canonical " +
       "ones, and questions raised but unanswered anywhere in the vault. " +
-      "Reports problems; never auto-fixes. Optionally filter to a single check.",
+      "Also reports tension health (counts by kind and resolution kind, " +
+      "stable acknowledged persistent disagreements, and legacy unspecified " +
+      "entries). Reports problems; never auto-fixes. Optionally filter to a " +
+      "single check.",
     inputSchema: {
       type: "object",
       properties: {

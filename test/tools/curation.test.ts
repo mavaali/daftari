@@ -53,11 +53,13 @@ describe("curation tools", () => {
         sourceB: "pricing/b.md",
         claimB: "consumption is cheaper at scale",
         agent: "agent:claude-code",
+        kind: "factual",
       });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.status).toBe("unresolved");
       expect(result.value.loggedBy).toBe("agent:claude-code");
+      expect(result.value.kind).toBe("factual");
 
       const logged = await listTensions(vault);
       expect(logged.ok && logged.value).toHaveLength(1);
@@ -68,6 +70,7 @@ describe("curation tools", () => {
         title: "Incomplete",
         sourceA: "pricing/a.md",
         agent: "agent:claude-code",
+        kind: "factual",
       });
       expect(result.ok).toBe(false);
     });
