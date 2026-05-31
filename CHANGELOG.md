@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Blast radius of stale tensions** (Step 5 of the Tension Graph plan,
+  cross-feature integration). `vault_lint`'s tension health surface now
+  reports `blastRadiusOfStaleTensions`: the cardinality of the
+  deduplicated `primary_blast` set (sources channel only — the same
+  primary set `vault_tension_blast` returns) over the union of contested
+  docs from every entry where `resolved: false` AND
+  `agingTier === "stale"`. Renders as "Blast radius of stale tensions: N
+  downstream documents". When there are no stale unresolved tensions the
+  metric is 0; the line always renders for consistency with the rest of
+  the tension health section. Reuses `computeBlast` from
+  `tension-blast.ts` — advisory link edges still participate in BFS
+  traversal, but the published metric stays disciplined to the primary
+  channel.
+
 - **Tension blast radius** (Phase 3 of the Tension Graph plan). New
   `vault_tension_blast` tool computes the transitive closure of
   downstream documents that cite or link a contested document — or the
