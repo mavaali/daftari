@@ -5,10 +5,7 @@
 // changed, nothing is auto-fixed. The output is a structured report grouped by
 // check, for a human (or an agent acting on a human's behalf) to triage.
 
-import { posix } from "node:path";
-import { parseDocument } from "../frontmatter/parser.js";
-import { type Frontmatter, ok, type Result } from "../frontmatter/types.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { ok, type Result } from "../frontmatter/types.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { ageInDays, computeStaleness } from "./staleness.js";
 import {
@@ -21,6 +18,13 @@ import {
   type TensionKind,
 } from "./tension.js";
 import { computeTensionClusters } from "./tension-clusters.js";
+import {
+  buildPathIndexes,
+  extractLinks,
+  type LoadedDoc,
+  loadDocuments,
+  resolveLink,
+} from "./vault-docs.js";
 
 export const LINT_CHECKS = [
   "staleFiles",
@@ -104,58 +108,6 @@ export interface LintOptions {
   lowConfidenceMaxDays?: number; // a low-confidence doc unchanged this long is flagged
 }
 
-interface LoadedDoc {
-  path: string;
-  frontmatter: Frontmatter;
-  content: string;
-}
-
-// --- link extraction ------------------------------------------------------
-
-// Pulls every internal link target out of a markdown body: both [[wikilinks]]
-// and [text](target) markdown links. External URLs and anchors are dropped.
-export function extractLinks(content: string): string[] {
-  const targets: string[] = [];
-
-  for (const m of content.matchAll(/\[\[([^\]]+)\]\]/g)) {
-    // A wikilink may carry a |display alias and/or a #heading anchor.
-    const raw = (m[1] as string).split("|")[0]?.split("#")[0]?.trim();
-    if (raw) targets.push(raw);
-  }
-
-  for (const m of content.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
-    const raw = (m[1] as string).split("#")[0]?.trim();
-    if (!raw) continue;
-    if (/^(https?:|mailto:|#)/i.test(raw)) continue;
-    targets.push(raw);
-  }
-
-  return targets;
-}
-
-// Resolves a raw link target to a vault-relative path, or null if it points
-// nowhere. Tries, in order: the target as-is, with a .md suffix, resolved
-// relative to the linking file's directory, then a bare basename match (the
-// common [[note-name]] wikilink form).
-function resolveLink(
-  rawTarget: string,
-  fromPath: string,
-  byPath: Set<string>,
-  byBasename: Map<string, string>,
-): string | null {
-  const withMd = (p: string) => (p.endsWith(".md") ? p : `${p}.md`);
-
-  if (byPath.has(rawTarget)) return rawTarget;
-  if (byPath.has(withMd(rawTarget))) return withMd(rawTarget);
-
-  const relual = posix.normalize(posix.join(posix.dirname(fromPath), rawTarget));
-  if (byPath.has(relual)) return relual;
-  if (byPath.has(withMd(relual))) return withMd(relual);
-
-  const base = posix.basename(rawTarget).replace(/\.md$/, "");
-  return byBasename.get(base) ?? null;
-}
-
 // --- question matching ----------------------------------------------------
 
 // Normalizes a question for cross-document matching: trimmed, lower-cased,
@@ -167,36 +119,9 @@ function normalizeQuestion(q: string): string {
 
 // --- check orchestration --------------------------------------------------
 
-async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
-  const list = await listFiles(vaultRoot);
-  if (!list.ok) return list;
-
-  const docs: LoadedDoc[] = [];
-  for (const relPath of list.value) {
-    const resolved = resolveVaultPath(vaultRoot, relPath);
-    if (!resolved.ok) continue;
-    const file = await readFile(resolved.value);
-    if (!file.ok) continue;
-    const parsed = parseDocument(file.value);
-    if (!parsed.ok) continue;
-    docs.push({
-      path: relPath,
-      frontmatter: parsed.value.frontmatter,
-      content: parsed.value.content,
-    });
-  }
-  return ok(docs);
-}
-
 // Maps each document to the set of documents that link to it.
 function buildInboundMap(docs: LoadedDoc[]): Map<string, Set<string>> {
-  const byPath = new Set(docs.map((d) => d.path));
-  const byBasename = new Map<string, string>();
-  for (const d of docs) {
-    const base = posix.basename(d.path).replace(/\.md$/, "");
-    // First write wins, so a basename collision resolves deterministically.
-    if (!byBasename.has(base)) byBasename.set(base, d.path);
-  }
+  const { byPath, byBasename } = buildPathIndexes(docs);
 
   const inbound = new Map<string, Set<string>>();
   for (const d of docs) {

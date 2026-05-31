@@ -27,6 +27,7 @@ import {
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
+import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { ToolDefinition } from "./read.js";
@@ -187,6 +188,47 @@ export async function vaultTensionClusters(
   const allowed = requireReadAccess("vault_tension_clusters", access);
   if (!allowed.ok) return allowed;
   return loadTensionClusters(vaultRoot);
+}
+
+// ---------------------------------------------------------------------------
+// vault_tension_blast
+// ---------------------------------------------------------------------------
+
+// Phase 3 of the tension graph plan (2026-05-31). Computes the transitive
+// closure of downstream documents that cite or link a contested document, or
+// the union over a contested cluster. Accepts exactly one of `document` or
+// `cluster_id` — both or neither is an error. Read-only: never edits the
+// tension log or any document.
+export async function vaultTensionBlast(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<TensionBlastResult, Error>> {
+  const allowed = requireReadAccess("vault_tension_blast", access);
+  if (!allowed.ok) return allowed;
+
+  // Coerce each argument independently so we can deliver one consolidated
+  // "exactly one of" error in computeTensionBlast rather than two cascading
+  // type errors.
+  let document: string | undefined;
+  if (args.document !== undefined && args.document !== null) {
+    if (typeof args.document !== "string") {
+      return err(new Error("vault_tension_blast 'document' must be a string"));
+    }
+    const trimmed = args.document.trim();
+    if (trimmed.length > 0) document = trimmed;
+  }
+
+  let cluster_id: string | undefined;
+  if (args.cluster_id !== undefined && args.cluster_id !== null) {
+    if (typeof args.cluster_id !== "string") {
+      return err(new Error("vault_tension_blast 'cluster_id' must be a string"));
+    }
+    const trimmed = args.cluster_id.trim();
+    if (trimmed.length > 0) cluster_id = trimmed;
+  }
+
+  return computeTensionBlast(vaultRoot, { document, cluster_id });
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +442,41 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     handler: (vaultRoot, args, access) => vaultTensionClusters(vaultRoot, args, access),
+  },
+  {
+    name: "vault_tension_blast",
+    title: "Compute tension blast radius",
+    annotations: { readOnlyHint: true },
+    description:
+      "Compute the transitive closure of downstream documents that cite or " +
+      "link a contested document — or the union over a contested cluster. " +
+      "Accepts exactly one of 'document' (vault-relative path) or " +
+      "'cluster_id' (a content-addressed id from vault_tension_clusters); " +
+      "both or neither is an error. Two confidence channels: 'primary_blast' " +
+      "counts docs reached via the frontmatter 'sources' edge (authoritative " +
+      "provenance), 'advisory_blast' counts docs reached only via in-vault " +
+      "markdown links (suggestive). A doc reachable via both edge types " +
+      "counts as primary. 'superseded_by' is not a blast edge: the doc that " +
+      "supersedes a contested doc is the replacement, not an inheritor. The " +
+      "response identifies the containing cluster (if any) so the agent sees " +
+      "the broader region without a second call. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          description: "Vault-relative path of a contested document",
+        },
+        cluster_id: {
+          type: "string",
+          description:
+            "A content-addressed cluster id from vault_tension_clusters " +
+            "(format: 'cluster:<8 hex chars>')",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultTensionBlast(vaultRoot, args, access),
   },
   {
     name: "vault_lint",

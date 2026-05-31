@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { extractLinks, runLint } from "../../src/curation/lint.js";
+import { runLint } from "../../src/curation/lint.js";
 import { addTension, resolveTension, tensionsPath } from "../../src/curation/tension.js";
+import { extractLinks } from "../../src/curation/vault-docs.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
 

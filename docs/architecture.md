@@ -336,7 +336,14 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   produces a fresh id by construction. `vault_lint` reports the cluster
   count, the max cluster size, and flags clusters that are large (>5
   docs, a composability smell) or aged (oldest tension >90 days, tech
-  debt).
+  debt). `vault_tension_blast` computes the **blast radius** of a
+  contested doc or cluster — the transitive closure of downstream docs
+  that cite or link a contested node. Two confidence channels:
+  `primary_blast` counts docs reached via the frontmatter `sources` edge
+  (authoritative provenance); `advisory_blast` counts docs reached only
+  via in-vault markdown links (suggestive). `superseded_by` is not a
+  blast edge — the doc that supersedes a contested doc is the
+  replacement, not an inheritor.
 - **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
   old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
   questions raised but unanswered anywhere in the vault) and produces a report.

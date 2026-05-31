@@ -8,6 +8,7 @@ import {
   curationTools,
   vaultLint,
   vaultProvenance,
+  vaultTensionBlast,
   vaultTensionClusters,
   vaultTensionLog,
 } from "../../src/tools/curation.js";
@@ -150,6 +151,31 @@ describe("curation tools", () => {
       expect(def).toBeDefined();
       expect(def?.annotations?.readOnlyHint).toBe(true);
       // No required arguments — accepts an empty object.
+      expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
+    });
+  });
+
+  describe("vault_tension_blast", () => {
+    it("rejects calls that supply neither document nor cluster_id", async () => {
+      const result = await vaultTensionBlast(vault, {});
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects calls that supply both document and cluster_id", async () => {
+      const result = await vaultTensionBlast(vault, {
+        document: "a.md",
+        cluster_id: "cluster:00000000",
+      });
+      expect(result.ok).toBe(false);
+    });
+
+    it("registers vault_tension_blast as a read-only MCP tool", () => {
+      const def = curationTools.find((t) => t.name === "vault_tension_blast");
+      expect(def).toBeDefined();
+      expect(def?.annotations?.readOnlyHint).toBe(true);
+      // Neither argument is required at the schema level — the exactly-one-of
+      // constraint is enforced in the handler so the error message stays
+      // consolidated and informative.
       expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
     });
   });
