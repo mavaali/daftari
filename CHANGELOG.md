@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tension aging tiers** (Phase 4 of the Tension Graph plan). Tensions
+  in the tension log now report aging tiers (Fresh 0–30d / Aging 31–90d
+  / Stale 90+d) in `vault_lint`, with kind-specific lint copy at the
+  stale tier. Unspecified tensions and tensions resolved with kind
+  `accepted` are excluded from the aging pipeline — the former because
+  they predate classification, the latter because explicitly accepted
+  persistent disagreements are stable epistemic features rather than
+  debt.
+
 ## [1.14.0] - 2026-05-31
 
 ### Added

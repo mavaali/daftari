@@ -322,7 +322,13 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   persistent disagreement — the tension stays in the log as a stable
   acknowledged feature of the vault rather than a defect. `vault_lint`
   reports the distribution by kind, by resolution kind, and the stable
-  acknowledged count.
+  acknowledged count. Unresolved tensions also carry an **aging tier**
+  derived from their logged date (Fresh ≤30d, Aging 31–90d, Stale >90d).
+  Stale tensions get kind-specific lint copy — the temporal smell is
+  "deprecate the older doc"; the factual smell is "investigate"; the
+  interpretive smell is "decide explicitly" (`accepted` vs `invalid`).
+  `unspecified` legacy entries and `accepted` resolutions are excluded
+  from aging by design.
 - **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
   old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
   questions raised but unanswered anywhere in the vault) and produces a report.

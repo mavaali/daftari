@@ -22,6 +22,7 @@ import { mkdirSync } from "node:fs";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { ageInDays } from "./staleness.js";
 
 export const DEFAULT_TENSION_STATUS = "unresolved";
 export const RESOLVED_TENSION_STATUS = "resolved";
@@ -370,4 +371,60 @@ export async function resolveTension(
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot write tension log: ${reason}`));
   }
+}
+
+// --- Phase 4: aging -------------------------------------------------------
+//
+// Phase 4 (2026-05-31 plan) layers basic age-based tiering on top of the
+// taxonomy. The tier is computed from each entry's logged date and is purely
+// advisory — lint reports it; no entry is ever auto-edited.
+//
+// Tier boundaries (calendar-day inclusive on the low side, exclusive on the
+// high side as documented in `agingTier`):
+//
+//   age ≤ 30 days  → "fresh"
+//   30 < age ≤ 90  → "aging"
+//   age > 90       → "stale"
+//
+// Two carve-outs short-circuit the computation to `null`:
+//
+//   1. `kind === "unspecified"` — legacy entries are not aged. They predate
+//      classification; warning on age would punish the absence of a feature
+//      that didn't exist when the entry was logged.
+//   2. `resolution.kind === "accepted"` — an explicitly accepted persistent
+//      disagreement is a stable epistemic feature of the vault, not debt.
+//      Spec: Locked Resolutions Index, Gap 4.
+//
+// `agingTier` itself does NOT filter by resolved status — a resolved
+// superseded/corrected/invalid entry still receives a tier. The lint
+// aggregation in `computeTensionHealth` is what scopes aging counts to
+// unresolved entries (the "active surface"); the function stays pure so it
+// can be tested per-entry against the exact spec rules.
+
+export const AGING_TIERS = ["fresh", "aging", "stale"] as const;
+export type AgingTier = (typeof AGING_TIERS)[number];
+
+// Stale-tier lint copy by kind. `unspecified` is absent on purpose — it isn't
+// aged, so it never produces a stale-tier message. The strings are the
+// verbatim Phase 1 / Phase 4 spec copy; if these change, update the plan too.
+export const STALE_TIER_LINT_COPY: Record<Exclude<TensionKind, "unspecified">, string> = {
+  temporal: "Unresolved temporal tension — likely just needs the older doc deprecated.",
+  factual: "Unresolved factual tension — investigation overdue.",
+  interpretive:
+    "Unresolved interpretive tension — decide explicitly: `accepted` if both views stand, " +
+    "`invalid` if it was mis-logged. Long-running unacknowledged disagreement is the smell, " +
+    "not the disagreement itself.",
+};
+
+// Boundary inclusivity: a tension exactly 30 days old is fresh, 31 days is
+// aging, 90 days is aging, 91 days is stale. The thresholds in the table match
+// the spec's "0–30 / 31–90 / 90+" buckets read as "≤30 / 31–90 / >90".
+export function agingTier(entry: TensionEntry, now: Date = new Date()): AgingTier | null {
+  if (entry.kind === "unspecified") return null;
+  if (entry.resolution?.kind === "accepted") return null;
+
+  const age = ageInDays(entry.date, now);
+  if (age <= 30) return "fresh";
+  if (age <= 90) return "aging";
+  return "stale";
 }

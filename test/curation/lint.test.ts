@@ -310,4 +310,255 @@ Body.
       expect(report.value.totalFindings).toBe(0);
     });
   });
+
+  // ----- Phase 4: aging -------------------------------------------------
+  //
+  // The lint-level tests exercise the aggregator: which entries land in which
+  // tier, kind-specific stale copy gating, and the explicit exclusions for
+  // accepted resolutions and unspecified entries.
+
+  describe("tensionHealth aging (Phase 4)", () => {
+    let dir: string;
+    const NOW = new Date("2026-06-01T00:00:00Z");
+
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const baseTension = {
+      sourceA: "pricing/a.md",
+      claimA: "A",
+      sourceB: "pricing/b.md",
+      claimB: "B",
+      loggedBy: "agent:claude-code",
+    };
+
+    // Logged dates relative to NOW (2026-06-01):
+    //   2026-05-22 →  10 days  (fresh)
+    //   2026-05-01 →  31 days  (aging)
+    //   2026-03-02 →  91 days  (stale)
+    //   2025-11-13 → 200 days  (stale)
+
+    it("counts a single fresh, aging, and stale tension across kinds", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      await addTension(dir, { ...baseTension, title: "t1", kind: "factual", date: "2026-05-22" });
+      await addTension(dir, { ...baseTension, title: "t2", kind: "factual", date: "2026-05-01" });
+      await addTension(dir, { ...baseTension, title: "t3", kind: "factual", date: "2026-03-02" });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const a = report.value.tensionHealth.aging;
+      expect(a.fresh).toBe(1);
+      expect(a.aging).toBe(1);
+      expect(a.stale).toBe(1);
+      expect(a.staleByKind.factual).toBe(1);
+      expect(a.staleByKind.temporal).toBe(0);
+      expect(a.staleByKind.interpretive).toBe(0);
+      expect(a.staleByKind.unspecified).toBe(0);
+    });
+
+    it("renders kind-specific stale copy only for kinds with a nonzero stale count", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      // One stale of each loggable kind.
+      await addTension(dir, { ...baseTension, title: "t1", kind: "temporal", date: "2026-03-02" });
+      await addTension(dir, { ...baseTension, title: "t2", kind: "factual", date: "2026-03-02" });
+      await addTension(dir, {
+        ...baseTension,
+        title: "t3",
+        kind: "interpretive",
+        date: "2026-03-02",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const a = report.value.tensionHealth.aging;
+      expect(a.staleMessages.temporal).toMatch(/temporal tension/);
+      expect(a.staleMessages.temporal).toMatch(/older doc deprecated/);
+      expect(a.staleMessages.factual).toMatch(/factual tension/);
+      expect(a.staleMessages.factual).toMatch(/investigation overdue/);
+      expect(a.staleMessages.interpretive).toMatch(/interpretive tension/);
+      // Gap 4: interpretive copy names the right resolution paths and avoids
+      // the "garbage collect" framing.
+      expect(a.staleMessages.interpretive).toContain("`accepted`");
+      expect(a.staleMessages.interpretive).toContain("`invalid`");
+      expect(a.staleMessages.interpretive).not.toMatch(/garbage collect/i);
+    });
+
+    it("omits per-kind stale copy when that kind has no stale entries", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      // Stale factual only; temporal/interpretive should produce no message.
+      await addTension(dir, { ...baseTension, title: "t1", kind: "factual", date: "2026-03-02" });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const a = report.value.tensionHealth.aging;
+      expect(a.staleMessages.factual).toBeDefined();
+      expect(a.staleMessages.temporal).toBeUndefined();
+      expect(a.staleMessages.interpretive).toBeUndefined();
+    });
+
+    it("excludes accepted-resolution tensions from every aging tier", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      const t = await addTension(dir, {
+        ...baseTension,
+        title: "stable disagreement",
+        kind: "interpretive",
+        date: "2025-11-13", // 200 days ago
+      });
+      if (!t.ok) return;
+      await resolveTension(dir, t.value.id as string, {
+        resolved_at: "2026-02-01T00:00:00Z",
+        resolved_by: "mihir",
+        kind: "accepted",
+        rationale: "Both views stand",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const h = report.value.tensionHealth;
+      // Still reported via Phase 1's stable-acknowledged bucket.
+      expect(h.stableAcknowledged).toBe(1);
+      // But absent from every aging tier.
+      expect(h.aging.fresh).toBe(0);
+      expect(h.aging.aging).toBe(0);
+      expect(h.aging.stale).toBe(0);
+      expect(h.aging.staleByKind.interpretive).toBe(0);
+      expect(h.aging.staleMessages.interpretive).toBeUndefined();
+    });
+
+    it("excludes unspecified (legacy) tensions from every aging tier", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      // 200-day-old legacy entry: no kind, no id, no warning expected.
+      mkdirSync(join(dir, ".daftari"), { recursive: true });
+      const legacy =
+        "\n## 2025-11-13 — Legacy ancient\n" +
+        "- **Source A:** legacy/a.md says X\n" +
+        "- **Source B:** legacy/b.md says Y\n" +
+        "- **Status:** unresolved\n" +
+        "- **Logged by:** agent:legacy\n";
+      writeFileSync(tensionsPath(dir), legacy, "utf-8");
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const h = report.value.tensionHealth;
+      expect(h.unspecifiedLegacy).toBe(1);
+      expect(h.aging.fresh).toBe(0);
+      expect(h.aging.aging).toBe(0);
+      expect(h.aging.stale).toBe(0);
+      expect(h.aging.staleByKind.unspecified).toBe(0);
+      // Unspecified is not in staleMessages' key set at all.
+      expect(Object.keys(h.aging.staleMessages)).not.toContain("unspecified");
+    });
+
+    it("excludes resolved-corrected and resolved-superseded entries from aging counts", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      // Both would be stale if unresolved (200 days old) — but they're closed.
+      const a = await addTension(dir, {
+        ...baseTension,
+        title: "old factual",
+        kind: "factual",
+        date: "2025-11-13",
+      });
+      const b = await addTension(dir, {
+        ...baseTension,
+        title: "old temporal",
+        kind: "temporal",
+        date: "2025-11-13",
+      });
+      if (!a.ok || !b.ok) return;
+      await resolveTension(dir, a.value.id as string, {
+        resolved_at: "2026-02-01T00:00:00Z",
+        resolved_by: "mihir",
+        kind: "corrected",
+      });
+      await resolveTension(dir, b.value.id as string, {
+        resolved_at: "2026-02-01T00:00:00Z",
+        resolved_by: "mihir",
+        kind: "superseded",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const h = report.value.tensionHealth;
+      expect(h.aging.fresh).toBe(0);
+      expect(h.aging.aging).toBe(0);
+      expect(h.aging.stale).toBe(0);
+      // But Phase 1 totals still reflect them.
+      expect(h.resolvedLifetime).toBe(2);
+    });
+
+    it("snapshots a mixed fixture covering every tier and kind", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-aging-"));
+      // Fresh: one of each loggable kind.
+      await addTension(dir, { ...baseTension, title: "f-t", kind: "temporal", date: "2026-05-22" });
+      await addTension(dir, { ...baseTension, title: "f-f", kind: "factual", date: "2026-05-22" });
+      await addTension(dir, {
+        ...baseTension,
+        title: "f-i",
+        kind: "interpretive",
+        date: "2026-05-22",
+      });
+      // Aging: one of each.
+      await addTension(dir, { ...baseTension, title: "a-t", kind: "temporal", date: "2026-04-15" });
+      await addTension(dir, { ...baseTension, title: "a-f", kind: "factual", date: "2026-04-15" });
+      await addTension(dir, {
+        ...baseTension,
+        title: "a-i",
+        kind: "interpretive",
+        date: "2026-04-15",
+      });
+      // Stale: one of each.
+      await addTension(dir, { ...baseTension, title: "s-t", kind: "temporal", date: "2026-01-01" });
+      await addTension(dir, { ...baseTension, title: "s-f", kind: "factual", date: "2026-01-01" });
+      await addTension(dir, {
+        ...baseTension,
+        title: "s-i",
+        kind: "interpretive",
+        date: "2026-01-01",
+      });
+      // Legacy unspecified (200d): counted toward totals only.
+      mkdirSync(join(dir, ".daftari"), { recursive: true });
+      const existing = readFileSync(tensionsPath(dir), "utf-8");
+      writeFileSync(
+        tensionsPath(dir),
+        `${existing}\n## 2025-11-13 — Legacy U\n` +
+          "- **Source A:** legacy/a.md says X\n" +
+          "- **Source B:** legacy/b.md says Y\n" +
+          "- **Status:** unresolved\n" +
+          "- **Logged by:** agent:legacy\n",
+        "utf-8",
+      );
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const h = report.value.tensionHealth;
+      expect(h.total).toBe(10);
+      expect(h.byKind).toEqual({
+        temporal: 3,
+        factual: 3,
+        interpretive: 3,
+        unspecified: 1,
+      });
+      expect(h.aging.fresh).toBe(3);
+      expect(h.aging.aging).toBe(3);
+      expect(h.aging.stale).toBe(3);
+      expect(h.aging.staleByKind).toEqual({
+        temporal: 1,
+        factual: 1,
+        interpretive: 1,
+        unspecified: 0,
+      });
+      // All three stale-tier messages render.
+      expect(h.aging.staleMessages.temporal).toBeDefined();
+      expect(h.aging.staleMessages.factual).toBeDefined();
+      expect(h.aging.staleMessages.interpretive).toBeDefined();
+    });
+  });
 });

@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addTension,
+  agingTier,
   listTensions,
   resolveTension,
+  STALE_TIER_LINT_COPY,
+  type TensionEntry,
   tensionsPath,
 } from "../../src/curation/tension.js";
 
@@ -252,5 +255,123 @@ describe("tension", () => {
       expect(list.value.find((e) => e.title === sampleInput.title)?.resolved).toBe(false);
       expect(list.value.find((e) => e.title === "Third")?.resolved).toBe(false);
     });
+  });
+});
+
+// --- Phase 4 (aging) suites ----------------------------------------------
+//
+// Lives outside the Phase 1 describe so the fixtures and clock are scoped
+// tightly. `agingTier` is a pure function — these tests pass synthetic
+// entries directly rather than round-tripping through the file system.
+
+const buildEntry = (overrides: Partial<TensionEntry>): TensionEntry => ({
+  id: "tension-001",
+  date: "2026-01-01",
+  title: "test",
+  kind: "factual",
+  sourceA: "a.md",
+  claimA: "A",
+  sourceB: "b.md",
+  claimB: "B",
+  status: "unresolved",
+  loggedBy: "agent:claude-code",
+  resolved: false,
+  ...overrides,
+});
+
+describe("agingTier (Phase 4)", () => {
+  const NOW = new Date("2026-06-01T00:00:00Z");
+
+  it("returns null for unspecified entries regardless of age", () => {
+    // 200 days ago — would be stale if it were aged.
+    const e = buildEntry({ kind: "unspecified", date: "2025-11-13" });
+    expect(agingTier(e, NOW)).toBeNull();
+  });
+
+  it("returns null when the resolution kind is accepted", () => {
+    const e = buildEntry({
+      kind: "interpretive",
+      date: "2025-11-13", // 200 days ago
+      resolved: true,
+      resolution: {
+        resolved_at: "2026-02-01T00:00:00Z",
+        resolved_by: "mihir",
+        kind: "accepted",
+      },
+    });
+    expect(agingTier(e, NOW)).toBeNull();
+  });
+
+  it("returns fresh for an entry ≤ 30 days old", () => {
+    // 10 days before NOW.
+    expect(agingTier(buildEntry({ date: "2026-05-22" }), NOW)).toBe("fresh");
+    // Same day.
+    expect(agingTier(buildEntry({ date: "2026-06-01" }), NOW)).toBe("fresh");
+  });
+
+  it("returns aging for an entry 31..90 days old", () => {
+    // 31 days before NOW.
+    expect(agingTier(buildEntry({ date: "2026-05-01" }), NOW)).toBe("aging");
+    // 60 days.
+    expect(agingTier(buildEntry({ date: "2026-04-02" }), NOW)).toBe("aging");
+  });
+
+  it("returns stale for an entry > 90 days old", () => {
+    // 91 days before NOW.
+    expect(agingTier(buildEntry({ date: "2026-03-02" }), NOW)).toBe("stale");
+    // 200 days.
+    expect(agingTier(buildEntry({ date: "2025-11-13" }), NOW)).toBe("stale");
+  });
+
+  describe("boundary inclusivity", () => {
+    // Boundaries documented in agingTier: age ≤ 30 → fresh, age ≤ 90 → aging,
+    // age > 90 → stale. Calendar-day arithmetic via ageInDays.
+    it("treats exactly 30 days as fresh", () => {
+      // 2026-06-01 - 30 days = 2026-05-02.
+      expect(agingTier(buildEntry({ date: "2026-05-02" }), NOW)).toBe("fresh");
+    });
+    it("treats exactly 31 days as aging", () => {
+      expect(agingTier(buildEntry({ date: "2026-05-01" }), NOW)).toBe("aging");
+    });
+    it("treats exactly 90 days as aging", () => {
+      // 2026-06-01 - 90 days = 2026-03-03.
+      expect(agingTier(buildEntry({ date: "2026-03-03" }), NOW)).toBe("aging");
+    });
+    it("treats exactly 91 days as stale", () => {
+      expect(agingTier(buildEntry({ date: "2026-03-02" }), NOW)).toBe("stale");
+    });
+  });
+
+  it("computes a tier for resolved-but-not-accepted entries (filtering is the aggregator's job)", () => {
+    // Per spec: agingTier returns null only for unspecified or accepted. A
+    // corrected/superseded/invalid resolution is closed but the function still
+    // reports its tier — the lint aggregation is what excludes resolved
+    // entries from the active-surface counts.
+    const e = buildEntry({
+      kind: "factual",
+      date: "2025-11-13", // 200 days ago
+      resolved: true,
+      resolution: {
+        resolved_at: "2026-02-01T00:00:00Z",
+        resolved_by: "mihir",
+        kind: "corrected",
+      },
+    });
+    expect(agingTier(e, NOW)).toBe("stale");
+  });
+});
+
+describe("STALE_TIER_LINT_COPY", () => {
+  it("exposes the three loggable kinds and omits unspecified", () => {
+    expect(Object.keys(STALE_TIER_LINT_COPY).sort()).toEqual([
+      "factual",
+      "interpretive",
+      "temporal",
+    ]);
+    // The interpretive copy must name the accepted/invalid resolution paths —
+    // this is the load-bearing line from Gap 4 of the spec.
+    expect(STALE_TIER_LINT_COPY.interpretive).toContain("`accepted`");
+    expect(STALE_TIER_LINT_COPY.interpretive).toContain("`invalid`");
+    expect(STALE_TIER_LINT_COPY.interpretive).not.toMatch(/garbage collect/i);
   });
 });
