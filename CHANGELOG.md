@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-05-30
+
+### Added
+
+- `daftari audit` CLI subcommand. Scans N markdown repos and reports broken
+  cross-repo references and link-graph transitive staleness. Outputs markdown
+  (default: stdout) and optional JSON. Exit code 1 if `fail_on.broken_refs` or
+  `fail_on.transitive_staleness` thresholds are exceeded. Anonymous repos passed
+  via `--repo` get no URL patterns — URL-based cross-refs into them aren't
+  detected; use `--config` with an `urls:` block to enable them. See issue #85.
+
 ## [1.12.6] - 2026-05-27
 
 ### Changed

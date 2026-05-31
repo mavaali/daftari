@@ -1,0 +1,145 @@
+// src/audit/collect.ts
+// The only IO stage of the audit pipeline. Per repo: glob docs, strip
+// frontmatter, extract headings (GitHub-slugged) and links, then batch
+// git log to populate mtimes; on any git failure, fall back to fs mtime.
+
+import { type ExecFileSyncOptions, execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { resolve as nodeResolve } from "node:path";
+import { glob } from "glob";
+import matter from "gray-matter";
+import { err, ok, type Result } from "../frontmatter/types.js";
+import { extractLinksFromBody } from "./links.js";
+import type { AuditConfig, AuditError, DocSnapshot, RepoConfig, RepoSnapshot } from "./types.js";
+import { runtimeError } from "./types.js";
+
+function slugify(heading: string): string {
+  // GitHub slug: lowercase, strip non-alphanumeric (keep `-_`), whitespace -> `-`.
+  return heading
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9\-_]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function extractHeadings(body: string): Set<string> {
+  const out = new Set<string>();
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (m) out.add(slugify(m[1] as string));
+  }
+  return out;
+}
+
+function gitMtimes(repoPath: string, docsGlob: string): Map<string, string> | null {
+  const opts: ExecFileSyncOptions = {
+    cwd: repoPath,
+    maxBuffer: 256 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+  };
+  try {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], opts);
+  } catch {
+    return null;
+  }
+  let out: string;
+  try {
+    // Use the :(glob) pathspec magic so git's internal glob matcher handles
+    // "**/*.md" correctly on all platforms and git configurations, including
+    // matching top-level files (bare "**/*.md" without the magic prefix skips
+    // files at depth 0 on some git versions).
+    const pathspec = docsGlob.startsWith(":(") ? docsGlob : `:(glob)${docsGlob}`;
+    out = execFileSync(
+      "git",
+      ["log", "--all", "--name-only", `--pretty=format:COMMIT %aI`, "--", pathspec],
+      opts,
+    ).toString();
+  } catch {
+    return null;
+  }
+  const mtimes = new Map<string, string>();
+  let currentIso: string | null = null;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("COMMIT ")) {
+      currentIso = line.slice("COMMIT ".length).trim() || null;
+      continue;
+    }
+    const path = line.trim();
+    if (!path || !currentIso) continue;
+    // First time we see a path is its newest commit (git log is newest-first).
+    if (!mtimes.has(path)) mtimes.set(path, currentIso);
+  }
+  return mtimes;
+}
+
+async function loadDoc(
+  repoPath: string,
+  relPath: string,
+  mtimeFromGit: string | undefined,
+): Promise<DocSnapshot> {
+  const absPath = nodeResolve(repoPath, relPath);
+  const text = await readFile(absPath, "utf-8");
+  const parsed = matter(text);
+  const body = parsed.content;
+
+  let mtime: string;
+  let mtimeSource: "git" | "fs";
+  if (mtimeFromGit) {
+    mtime = mtimeFromGit;
+    mtimeSource = "git";
+  } else {
+    mtime = statSync(absPath).mtime.toISOString();
+    mtimeSource = "fs";
+  }
+
+  return {
+    relPath: relPath.split(/[\\/]/).join("/"),
+    absPath,
+    mtime,
+    mtimeSource,
+    headings: extractHeadings(body),
+    links: extractLinksFromBody(body),
+  };
+}
+
+async function collectOne(config: RepoConfig): Promise<RepoSnapshot> {
+  const files = await glob(config.docsGlob, {
+    cwd: config.path,
+    nodir: true,
+    posix: true,
+    dot: false,
+  });
+  const onlyMd = files.filter((f) => /\.(md|markdown)$/i.test(f));
+  const mtimes = gitMtimes(config.path, config.docsGlob);
+  const docs = new Map<string, DocSnapshot>();
+  for (const rel of onlyMd) {
+    const posixRel = rel.split(/[\\/]/).join("/");
+    try {
+      const snap = await loadDoc(config.path, posixRel, mtimes?.get(posixRel));
+      docs.set(posixRel, snap);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`daftari audit: warning: unreadable doc ${posixRel}: ${msg}\n`);
+    }
+  }
+  return { config, docs };
+}
+
+export async function collectRepos(
+  config: AuditConfig,
+): Promise<Result<RepoSnapshot[], AuditError>> {
+  // Sequential per-repo; concurrency would help but is out of scope until the
+  // 30s budget gets squeezed (see plan §perf).
+  const out: RepoSnapshot[] = [];
+  for (const r of config.repos) {
+    try {
+      out.push(await collectOne(r));
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return err(runtimeError(`collect failed for repo ${r.name}: ${reason}`));
+    }
+  }
+  return ok(out);
+}

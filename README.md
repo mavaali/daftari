@@ -164,6 +164,54 @@ Deliberately deferred to keep the surface tight:
 
 Each is a clean increment on a surface that already works.
 
+## Coherence audit
+
+`daftari audit` runs a read-only, deterministic check across one or more
+markdown repos for broken cross-repo references and link-graph transitive
+staleness. It does **not** create a `.daftari/` vault on disk and does not
+write to the audited repos.
+
+```bash
+# Anonymous repos (no URL patterns):
+daftari audit --repo ~/repos/service-a --repo ~/repos/service-b
+
+# Or with a config file (recommended; see daftari audit --help for the schema):
+daftari audit --config audit.yaml
+```
+
+Anonymous repos passed via `--repo` do not get URL patterns, so cross-repo
+references that take the form of GitHub URLs (e.g.
+`https://github.com/org/service-a/blob/main/docs/api.md`) into them will be
+silently treated as external. Declare repos in `audit.yaml` with their `urls`
+field to detect these.
+
+`audit.yaml` schema:
+
+```yaml
+repos:
+  - name: service-a
+    path: ~/repos/service-a
+    docs_glob: "docs/**/*.md"       # default: "**/*.md"
+    urls:                            # optional; enables URL-pattern matching
+      - "github.com/org/service-a"
+
+  - name: service-b
+    path: ~/repos/service-b
+    urls:
+      - "github.com/org/service-b"
+
+output:
+  markdown: coherence-report.md      # default: stdout
+  json: coherence-report.json        # default: not emitted
+
+staleness:
+  threshold_days: 540                # default: 540 (18 months)
+
+fail_on:
+  broken_refs: 1                     # default: fail on any broken ref
+  transitive_staleness: 100          # default: generous; teams tune
+```
+
 ## Development
 
 ```

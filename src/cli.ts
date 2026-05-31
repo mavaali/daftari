@@ -30,6 +30,7 @@ const USAGE = `daftari — an MCP server that exposes a curated markdown vault t
 Usage:
   daftari --init [path]               Scaffold a new vault (default: ./daftari-vault)
   daftari --vault <path> [options]    Start the MCP server (stdio) against a vault
+  daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
@@ -235,6 +236,12 @@ export async function initVault(targetPath: string): Promise<number> {
 }
 
 export async function run(argv: string[]): Promise<void> {
+  if (argv[0] === "audit") {
+    const { runAudit } = await import("./audit/index.js");
+    process.exitCode = await runAudit(argv.slice(1));
+    return;
+  }
+
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(USAGE);
     return;
