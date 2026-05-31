@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-05-31
+
 ### Added
+
+- **Multi-vault MCP router** (`packages/router/`, published as
+  `daftari-router` v0.1.0). One MCP connection that spans N daftari
+  vaults: read/write tools dispatch to the named vault; search, status,
+  lint, themes, index, and reindex fan out across every child and merge
+  results. Vault selection via explicit `vault:` arg or vault-prefixed
+  paths (e.g. `devops:runbooks/k8s.md`). Catalog seeded from the first
+  child; heterogeneous tool surfaces are warned to stderr. Phase 1 — no
+  HTTP transport, no auth, no cross-vault lint, no score normalization
+  across heterogeneous embedding models. See
+  [docs/multi-vault-howto.md](docs/multi-vault-howto.md) for the
+  task-oriented walkthrough and
+  [packages/router/README.md](packages/router/README.md) for the
+  reference.
 
 - **Tension taxonomy and resolution** (Phase 1 of the Tension Graph plan).
   Tensions now carry a `kind` (temporal | factual | interpretive |
@@ -17,6 +33,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and resolution kind, and surfaces a separate "stable acknowledged"
   count for explicitly accepted persistent disagreements. Legacy entries
   without a `kind` field read as `unspecified` and produce no warnings.
+
+### Changed
+
+- **`vault_reindex` coalesces with an in-flight indexing pass** instead
+  of returning a busy error. When a reindex is already running (e.g. the
+  startup-time background pass kicked off when daftari boots a fresh
+  vault), `vault_reindex` now awaits it and then runs the caller's
+  requested reindex against a hot cache. Previously, an agent that
+  asked for a reindex during that startup window got a "still indexing"
+  refusal — a footgun the router stress-tested into a real test failure.
+
+### Fixed
+
+- Test helper `temp-vault.ts` `cpSync` filter now skips `.git/` as well
+  as `.daftari/`. The sample-vault fixture is itself a real git repo;
+  without this, the fixture's `.git` was being copied into every temp
+  vault, making `isGitRepo(vault)` return true for what was supposed to
+  be a fresh directory. Three pre-existing test-helper failures in
+  `test/utils/git.test.ts` and `test/tools/write.test.ts` are fixed in
+  passing.
 
 ## [1.13.1] - 2026-05-30
 
