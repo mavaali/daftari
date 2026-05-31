@@ -27,7 +27,15 @@ at `daftari` directly.
 The router spawns one `daftari` child process per vault, so daftari must be
 findable. Either `npm install -g daftari` (it'll be on PATH), or pass
 `--daftari-bin /absolute/path/to/daftari/dist/cli.js` when starting the
-router below.
+router below. If you point `--daftari-bin` at a `dist/cli.js` you built
+yourself, `chmod +x` it first — `tsc` doesn't set the execute bit.
+
+The `role:` you set on each vault below must exist in that vault's
+`.daftari/config.yaml`. The `--init` scaffold ships with `analyst`,
+`researcher`, and `admin`; using a role name that isn't declared makes
+the server treat the agent as a deny-all guest. Customize each vault's
+`config.yaml` to add `reader`/`writer`/whatever before pointing the
+router at it.
 
 ```bash
 # 1. Initialize each vault (skip any that already exist)
@@ -49,12 +57,12 @@ vaults:
   product:
     path: ~/vaults/product
     user: agent
-    role: writer
+    role: admin
     description: "Product specs, roadmap decisions, customer research"
   intel:
     path: ~/vaults/intel
     user: agent
-    role: reader
+    role: admin
     description: "Competitive analysis, market positioning, pricing"
 
 defaults:
