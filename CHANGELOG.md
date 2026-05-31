@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-05-30
+
+### Changed
+
+- Expanded README `Coherence audit` section: multi-repo case promoted to the
+  headline, sample output added, transitive staleness defined in plain
+  language, GitHub Actions CI snippet added, exit-code table added, CLI flags
+  documented separately from `audit.yaml`. No code changes — docs only.
+
 ## [1.13.0] - 2026-05-30
 
 ### Added
