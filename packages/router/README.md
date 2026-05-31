@@ -4,19 +4,16 @@ Multi-vault MCP router — fan out across N Daftari vaults from one MCP connecti
 
 ## Quick start
 
-The router is part of the [daftari repo](https://github.com/mavaali/daftari) and not yet published independently to npm. To run from source:
-
 ```bash
-git clone https://github.com/mavaali/daftari.git
-cd daftari/packages/router
-npm install
-npm run build
-node dist/cli.js --config vaults.yaml
+npm install -g daftari        # the router shells out to `daftari` per vault
+npx daftari-router --config vaults.yaml
 ```
 
-(A `daftari-router` npm package and `npx` quick-start will land in a follow-up release.)
+The router speaks MCP over stdio. Point any MCP client (Claude Code, Claude Desktop, custom LangGraph agent) at `npx daftari-router --config <path>` instead of `daftari`, and it transparently spans multiple vaults.
 
-The router speaks MCP over stdio. Point any MCP client (Claude Code, Claude Desktop, custom LangGraph agent) at the `daftari-router` binary instead of `daftari`, and it transparently spans multiple vaults.
+To develop against a local daftari build instead, pass `--daftari-bin /absolute/path/to/dist/cli.js`.
+
+See [docs/multi-vault-howto.md](https://github.com/mavaali/daftari/blob/main/docs/multi-vault-howto.md) for a task-oriented walkthrough.
 
 ## Example vaults.yaml
 
