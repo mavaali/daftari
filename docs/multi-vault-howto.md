@@ -24,6 +24,11 @@ at `daftari` directly.
 
 ## Quick start (3 steps)
 
+The router spawns one `daftari` child process per vault, so daftari must be
+findable. Either `npm install -g daftari` (it'll be on PATH), or pass
+`--daftari-bin /absolute/path/to/daftari/dist/cli.js` when starting the
+router below.
+
 ```bash
 # 1. Initialize each vault (skip any that already exist)
 npx daftari --init ~/vaults/devops
@@ -148,7 +153,7 @@ For tools that take a `path`, you can also use a **vault-prefixed path**:
 
 ```jsonc
 // vault_read
-{ "path": "devops:runbooks/k8s-autoscaler.md", "agent": "agent:claude-code" }
+{ "path": "devops:runbooks/k8s-autoscaler.md" }
 ```
 
 The router strips the `devops:` prefix before forwarding to the child. Vault
@@ -191,9 +196,15 @@ explicit `vault:` arg — the prefix shorthand doesn't apply.
 {}
 ```
 
-Returns an aggregate health roll-up plus a per-vault breakdown
-(`{ vaults: { devops: {...}, product: {...}, intel: {...} } }`). Same shape
-for `vault_lint`, `vault_index`, `vault_themes`.
+Returns an aggregate health roll-up (summed `fileCount`, `invalidCount`,
+`stalenessDistribution`, etc.) plus a per-vault breakdown under
+`byVault.{name}`. `vault_lint` has the same shape: top-level aggregates
+plus `byVault.{name}` with the raw per-child result.
+
+`vault_index` and `vault_themes` are different — they return a **flat list**
+(`entries` or `themes`) where each row carries a `vault:` field and a
+vault-prefixed path. There is no `byVault` map; consumers group by the
+`vault` field on each row.
 
 ### Pattern 5 — Reindex one vault, not all
 
@@ -301,8 +312,10 @@ need to know in one block:
 - `vault_reindex` with no `vault` arg reindexes every vault. Slow — only do
   this if you mean it.
 - When a tool errors with "vault required", retry with `vault:` filled in.
-- Vault names appear in `vault_status` output under `vaults.{name}`. Use
+- Vault names appear in `vault_status` output under `byVault.{name}`. Use
   that as the source of truth for which vault names are valid.
+- For `vault_index` and `vault_themes`, group results by the `vault:` field
+  on each row rather than looking for a `byVault` map.
 ```
 
 ---
