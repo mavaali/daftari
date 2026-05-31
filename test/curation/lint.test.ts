@@ -561,4 +561,113 @@ Body.
       expect(h.aging.staleMessages.interpretive).toBeDefined();
     });
   });
+
+  // ----- Phase 2: clusters ----------------------------------------------
+  //
+  // Cluster metrics added to the tension-health surface — counts only,
+  // never flagging anything as a defect. `large` (>5 docs) and `aged` (>90d
+  // oldest tension) are the two smell thresholds named in the spec.
+
+  describe("tensionHealth clusters (Phase 2)", () => {
+    let dir: string;
+    const NOW = new Date("2026-06-01T00:00:00Z");
+
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const baseTension = {
+      sourceA: "pricing/a.md",
+      claimA: "A",
+      sourceB: "pricing/b.md",
+      claimB: "B",
+      loggedBy: "agent:claude-code",
+    };
+
+    it("reports zero clusters when nothing has been logged", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-clusters-"));
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const c = report.value.tensionHealth.clusters;
+      expect(c.count).toBe(0);
+      expect(c.maxSize).toBe(0);
+      expect(c.large).toBe(0);
+      expect(c.aged).toBe(0);
+    });
+
+    it("counts clusters, flags large (>5 docs) and aged (>90d oldest tension)", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-clusters-"));
+      // Cluster A: 6 documents (large), oldest tension 95 days old (aged).
+      // hub + 5 spokes = 6 documents total.
+      await addTension(dir, {
+        ...baseTension,
+        title: "old hub",
+        sourceA: "a/hub.md",
+        sourceB: "a/spoke1.md",
+        kind: "factual",
+        date: "2026-02-26", // 95 days before NOW (triggers `aged` flag)
+      });
+      for (let i = 2; i <= 5; i++) {
+        await addTension(dir, {
+          ...baseTension,
+          title: `hub spoke ${i}`,
+          sourceA: "a/hub.md",
+          sourceB: `a/spoke${i}.md`,
+          kind: "factual",
+          date: "2026-05-22", // 10 days before NOW (fresh)
+        });
+      }
+
+      // Cluster B: 3 documents, all fresh (not large, not aged).
+      await addTension(dir, {
+        ...baseTension,
+        title: "b1",
+        sourceA: "b/x.md",
+        sourceB: "b/y.md",
+        kind: "interpretive",
+        date: "2026-05-22",
+      });
+      await addTension(dir, {
+        ...baseTension,
+        title: "b2",
+        sourceA: "b/y.md",
+        sourceB: "b/z.md",
+        kind: "interpretive",
+        date: "2026-05-22",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const c = report.value.tensionHealth.clusters;
+      expect(c.count).toBe(2);
+      expect(c.maxSize).toBe(6);
+      expect(c.large).toBe(1);
+      expect(c.aged).toBe(1);
+    });
+
+    it("excludes accepted-resolution tensions from cluster metrics", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-clusters-"));
+      const t = await addTension(dir, {
+        ...baseTension,
+        title: "accepted",
+        kind: "interpretive",
+        date: "2026-05-22",
+      });
+      if (!t.ok) return;
+      await resolveTension(dir, t.value.id as string, {
+        resolved_at: "2026-05-23T00:00:00Z",
+        resolved_by: "mihir",
+        kind: "accepted",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const c = report.value.tensionHealth.clusters;
+      expect(c.count).toBe(0);
+      expect(c.maxSize).toBe(0);
+    });
+  });
 });

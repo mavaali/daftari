@@ -3,8 +3,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { recordProvenance } from "../../src/curation/provenance.js";
-import { listTensions } from "../../src/curation/tension.js";
-import { vaultLint, vaultProvenance, vaultTensionLog } from "../../src/tools/curation.js";
+import { listTensions, resolveTension } from "../../src/curation/tension.js";
+import {
+  curationTools,
+  vaultLint,
+  vaultProvenance,
+  vaultTensionClusters,
+  vaultTensionLog,
+} from "../../src/tools/curation.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
 
@@ -73,6 +79,78 @@ describe("curation tools", () => {
         kind: "factual",
       });
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("vault_tension_clusters", () => {
+    it("returns zero clusters when nothing has been logged", async () => {
+      const result = await vaultTensionClusters(vault, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.cluster_count).toBe(0);
+      expect(result.value.clusters).toEqual([]);
+    });
+
+    it("groups two transitively-connected tensions into one cluster", async () => {
+      await vaultTensionLog(vault, {
+        title: "t1",
+        sourceA: "a.md",
+        claimA: "A",
+        sourceB: "b.md",
+        claimB: "B",
+        agent: "agent:claude-code",
+        kind: "factual",
+      });
+      await vaultTensionLog(vault, {
+        title: "t2",
+        sourceA: "b.md",
+        claimA: "B",
+        sourceB: "c.md",
+        claimB: "C",
+        agent: "agent:claude-code",
+        kind: "interpretive",
+      });
+
+      const result = await vaultTensionClusters(vault, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.cluster_count).toBe(1);
+      const [cluster] = result.value.clusters;
+      expect(cluster?.documents).toEqual(["a.md", "b.md", "c.md"]);
+      expect(cluster?.id).toMatch(/^cluster:[0-9a-f]{8}$/);
+      expect(cluster?.tension_count).toBe(2);
+    });
+
+    it("drops accepted-resolution tensions from cluster scope", async () => {
+      const logged = await vaultTensionLog(vault, {
+        title: "stable",
+        sourceA: "a.md",
+        claimA: "A",
+        sourceB: "b.md",
+        claimB: "B",
+        agent: "agent:claude-code",
+        kind: "interpretive",
+      });
+      expect(logged.ok).toBe(true);
+      if (!logged.ok) return;
+      await resolveTension(vault, logged.value.id as string, {
+        resolved_at: "2026-05-15T00:00:00Z",
+        resolved_by: "human:mihir",
+        kind: "accepted",
+      });
+
+      const result = await vaultTensionClusters(vault, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.cluster_count).toBe(0);
+    });
+
+    it("registers vault_tension_clusters as a read-only MCP tool", () => {
+      const def = curationTools.find((t) => t.name === "vault_tension_clusters");
+      expect(def).toBeDefined();
+      expect(def?.annotations?.readOnlyHint).toBe(true);
+      // No required arguments — accepts an empty object.
+      expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
     });
   });
 
