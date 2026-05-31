@@ -25,10 +25,15 @@ at `daftari` directly.
 ## Quick start (3 steps)
 
 The router spawns one `daftari` child process per vault, so daftari must be
-findable. Either `npm install -g daftari` (it'll be on PATH), or pass
-`--daftari-bin /absolute/path/to/daftari/dist/cli.js` when starting the
-router below. If you point `--daftari-bin` at a `dist/cli.js` you built
-yourself, `chmod +x` it first — `tsc` doesn't set the execute bit.
+findable on PATH. Install it globally first:
+
+```bash
+npm install -g daftari
+```
+
+(If you want to develop against a local daftari build, pass
+`--daftari-bin /absolute/path/to/dist/cli.js` to the router below.
+`chmod +x` that file first — `tsc` doesn't set the execute bit.)
 
 The `role:` you set on each vault below must exist in that vault's
 `.daftari/config.yaml`. The `--init` scaffold ships with `analyst`,
@@ -70,9 +75,7 @@ defaults:
 EOF
 
 # 3. Start the router
-cd path/to/daftari/packages/router
-npm install && npm run build
-node dist/cli.js --config ~/vaults.yaml
+npx daftari-router --config ~/vaults.yaml
 ```
 
 The router now speaks MCP over stdio. Point any MCP client at this command
@@ -114,9 +117,9 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "daftari": {
-      "command": "node",
+      "command": "npx",
       "args": [
-        "/absolute/path/to/daftari/packages/router/dist/cli.js",
+        "daftari-router",
         "--config",
         "/absolute/path/to/vaults.yaml"
       ]
@@ -125,8 +128,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Use absolute paths. Restart Claude Desktop. The 14 `vault_*` tools appear and
-each one transparently routes to the right child.
+Use an absolute path for the `--config` arg. Restart Claude Desktop. The 14
+`vault_*` tools appear and each one transparently routes to the right child.
 
 ---
 
