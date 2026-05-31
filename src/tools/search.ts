@@ -22,6 +22,7 @@ import {
   markIndexError,
   markIndexing,
   markIndexReady,
+  onceIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
 import { getProvider } from "../search/vector.js";
@@ -185,9 +186,13 @@ export interface VaultReindexResult extends ReindexResult {
 }
 
 export async function vaultReindex(vaultRoot: string): Promise<Result<VaultReindexResult, Error>> {
-  const status = getIndexStatus();
-  if (status.status === "indexing") {
-    return err(new Error(indexingBusyMessage(status)));
+  // Coalesce with any in-flight indexing pass — e.g. the startup-time
+  // background reindex from main(). An agent that calls vault_reindex should
+  // not get a busy error just because the server is finishing its own
+  // startup work; wait for that pass to settle, then run the requested
+  // reindex (which is cheap and idempotent against a hot cache).
+  if (getIndexStatus().status === "indexing") {
+    await new Promise<void>((resolve) => onceIndexReady(resolve));
   }
   markIndexing();
   const result = await reindexVault(vaultRoot);
