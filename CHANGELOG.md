@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tension blast radius** (Phase 3 of the Tension Graph plan). New
+  `vault_tension_blast` tool computes the transitive closure of
+  downstream documents that cite or link a contested document — or the
+  union over a contested cluster. Accepts exactly one of `document` or
+  `cluster_id`. Two confidence channels: `primary_blast` (via `sources`
+  frontmatter) is authoritative; `advisory_blast` (via in-vault markdown
+  links) is suggestive. `superseded_by` is not a blast edge — the doc
+  that supersedes a contested doc is the replacement, not an inheritor.
+
 - **Tension clusters** (Phase 2 of the Tension Graph plan). New
   `vault_tension_clusters` tool computes connected components of the
   tension graph over unresolved, non-accepted tensions. Cluster IDs are
