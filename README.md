@@ -166,26 +166,137 @@ Each is a clean increment on a surface that already works.
 
 ## Coherence audit
 
-`daftari audit` runs a read-only, deterministic check across one or more
-markdown repos for broken cross-repo references and link-graph transitive
-staleness. It does **not** create a `.daftari/` vault on disk and does not
-write to the audited repos.
+`daftari audit` is a read-only, deterministic check across one or more
+markdown repos for **broken cross-repo references** and **link-graph
+transitive staleness**. It works against any markdown tree — daftari-managed
+or not. The audit creates no `.daftari/` directory and writes nothing to the
+audited repos.
+
+### Multi-repo (the headline use case)
+
+When two or more repos link to each other, the audit detects broken
+references that neither repo's own lint could see — because each repo only
+knows about itself.
 
 ```bash
-# Anonymous repos (no URL patterns):
-daftari audit --repo ~/repos/service-a --repo ~/repos/service-b
+daftari audit \
+  --repo ~/repos/service-a \
+  --repo ~/repos/service-b
+```
 
-# Or with a config file (recommended; see daftari audit --help for the schema):
+That works for relative-path links (`../service-b/docs/api.md`). For
+GitHub-style URL links between repos (`https://github.com/org/service-b/...`),
+declare each repo's URL patterns in an `audit.yaml` so the resolver can map
+them back to the local repo:
+
+```yaml
+# audit.yaml
+repos:
+  - name: service-a
+    path: ~/repos/service-a
+    urls: ["github.com/org/service-a"]
+  - name: service-b
+    path: ~/repos/service-b
+    urls: ["github.com/org/service-b"]
+```
+
+```bash
 daftari audit --config audit.yaml
 ```
 
-Anonymous repos passed via `--repo` do not get URL patterns, so cross-repo
-references that take the form of GitHub URLs (e.g.
-`https://github.com/org/service-a/blob/main/docs/api.md`) into them will be
-silently treated as external. Declare repos in `audit.yaml` with their `urls`
-field to detect these.
+### Single repo
 
-`audit.yaml` schema:
+The same command, one `--repo`:
+
+```bash
+daftari audit --repo ./docs
+```
+
+In single-repo mode the cross-repo check trivially has no work, but the
+staleness check still runs over the in-repo link graph.
+
+### What gets detected
+
+- **Missing files.** A link from `service-a/intro.md` to `../service-b/api.md`
+  or `https://github.com/org/service-b/blob/main/api.md` — flagged if `api.md`
+  doesn't exist in `service-b`.
+- **Missing anchors.** Same link with `#run` — flagged if `api.md` has no
+  `## Run` heading.
+- **Direct staleness.** Any doc whose git mtime is older than
+  `staleness.threshold_days` (default 540, ~18 months).
+- **Transitive staleness.** A fresh doc that links — directly or through a
+  chain — to a stale doc is itself flagged, with the shortest chain reported.
+  Catches the case where you keep touching an index page while the docs it
+  links to are rotting.
+
+### Sample output
+
+```markdown
+# Coherence Audit Report
+
+## Totals
+- repos scanned: **2**
+- docs scanned: **47**
+- broken cross-repo refs: **2**
+- directly stale docs: **3**
+- transitively stale docs: **5**
+
+## Broken cross-repo references
+| kind           | source                    | target                  | href |
+|----------------|---------------------------|-------------------------|------|
+| missing_anchor | service-a/intro.md        | service-b/api.md#run    | `https://github.com/org/service-b/blob/main/api.md#run` |
+| missing_file   | service-a/architecture.md | service-b/deleted.md    | `../service-b/deleted.md` |
+
+## Staleness
+| kind       | doc                      | mtime      | chain |
+|------------|--------------------------|------------|-------|
+| transitive | service-a/onboarding.md  | 2026-04-01 | service-a/onboarding.md → service-b/legacy-flow.md |
+```
+
+JSON output (`--output-json` or `output.json` in config) carries the same
+structure with full detail in `brokenRefs[]` and `staleness[]` arrays plus a
+`totals` summary block for compact downstream rendering.
+
+### CI integration
+
+The audit's exit code is designed to gate CI:
+
+```yaml
+# .github/workflows/docs-audit.yml
+name: Docs audit
+on: [pull_request]
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # full history so git mtime works
+      - run: npx daftari@latest audit --config audit.yaml
+```
+
+Exit codes:
+
+| code | meaning |
+|------|---------|
+| `0`  | clean run, all findings within `fail_on` thresholds |
+| `1`  | clean run but a threshold was exceeded — CI fails |
+| `2`  | config error (missing required fields, bad paths, malformed YAML) |
+| `3`  | runtime error (IO failure during collection) |
+
+### CLI flags
+
+`audit.yaml` and CLI flags overlap; CLI wins. A warning is printed to stderr
+when `--output` or `--output-json` displaces a value from the config.
+
+- `--repo <path>` — add a repo. May be repeated. Anonymous CLI repos get no
+  URL patterns; URL-based cross-refs into them won't be detected. Use
+  `--config` for URL-aware repos.
+- `--config <path>` — load an `audit.yaml`.
+- `--output <md>` — markdown report destination (default: stdout).
+- `--output-json <json>` — JSON report destination (default: not written).
+- `--help` — full help text.
+
+### Full `audit.yaml` schema
 
 ```yaml
 repos:
