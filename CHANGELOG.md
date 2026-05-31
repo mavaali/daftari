@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tension clusters** (Phase 2 of the Tension Graph plan). New
+  `vault_tension_clusters` tool computes connected components of the
+  tension graph over unresolved, non-accepted tensions. Cluster IDs are
+  content-addressed (`cluster:` + first 8 hex chars of sha256 of
+  canonical-sorted member paths) — stable across runs for unchanged
+  membership; a different ID encodes a different membership. `vault_lint`
+  reports cluster count, max size, and flags clusters that are large
+  (>5 docs, smell) or aged (oldest tension >90 days, tech debt).
+
 - **Tension aging tiers** (Phase 4 of the Tension Graph plan). Tensions
   in the tension log now report aging tiers (Fresh 0–30d / Aging 31–90d
   / Stale 90+d) in `vault_lint`, with kind-specific lint copy at the

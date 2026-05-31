@@ -27,6 +27,7 @@ import {
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
+import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { ToolDefinition } from "./read.js";
 
@@ -169,6 +170,23 @@ export async function vaultTensionResolve(
   if (references !== undefined) resolution.references = references;
 
   return resolveTension(vaultRoot, id.trim(), resolution);
+}
+
+// ---------------------------------------------------------------------------
+// vault_tension_clusters
+// ---------------------------------------------------------------------------
+
+// Phase 2 of the tension graph plan (2026-05-31). Computes connected
+// components of the live tension graph and returns content-addressed cluster
+// IDs. Read-only: never edits the tension log or any document.
+export async function vaultTensionClusters(
+  vaultRoot: string,
+  _args: Record<string, unknown> = {},
+  access?: AccessContext,
+): Promise<Result<TensionClustersResult, Error>> {
+  const allowed = requireReadAccess("vault_tension_clusters", access);
+  if (!allowed.ok) return allowed;
+  return loadTensionClusters(vaultRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +380,26 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     handler: (vaultRoot, args, access) => vaultTensionResolve(vaultRoot, args, access),
+  },
+  {
+    name: "vault_tension_clusters",
+    title: "Compute tension clusters",
+    annotations: { readOnlyHint: true },
+    description:
+      "Compute connected components of the tension graph: groups of vault " +
+      "documents joined transitively by unresolved tensions. The scope is " +
+      "live contested regions only — resolved tensions and stable-acknowledged " +
+      "disagreements (resolution.kind: accepted) do not form edges. Cluster " +
+      "IDs are content-addressed (cluster:<8 hex chars>), stable across runs " +
+      "for unchanged membership and different when membership changes. Each " +
+      "cluster reports its members, in-scope tension count, tally by kind, " +
+      "and the age range of its tensions in days. Read-only; never edits.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultTensionClusters(vaultRoot, args, access),
   },
   {
     name: "vault_lint",

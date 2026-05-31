@@ -20,6 +20,7 @@ import {
   TENSION_KINDS,
   type TensionKind,
 } from "./tension.js";
+import { computeTensionClusters } from "./tension-clusters.js";
 
 export const LINT_CHECKS = [
   "staleFiles",
@@ -67,6 +68,18 @@ export interface TensionAging {
   staleMessages: Partial<Record<Exclude<TensionKind, "unspecified">, string>>;
 }
 
+// Cluster metrics (Phase 2 of the tension graph plan, 2026-05-31). The two
+// flag counts mirror the spec's stale-smell thresholds: a cluster with more
+// than 5 documents is large enough to warrant investigation, and a cluster
+// whose oldest tension is more than 90 days old is tech debt. Counts only —
+// `vault_lint` never auto-acts on them.
+export interface TensionClustersHealth {
+  count: number;
+  maxSize: number;
+  large: number; // clusters where size > 5
+  aged: number; // clusters where oldest_tension_age_days > 90
+}
+
 export interface TensionHealth {
   total: number;
   byKind: Record<TensionKind, number>;
@@ -75,6 +88,7 @@ export interface TensionHealth {
   stableAcknowledged: number;
   unspecifiedLegacy: number;
   aging: TensionAging;
+  clusters: TensionClustersHealth;
 }
 
 export interface LintReport {
@@ -385,6 +399,25 @@ async function computeTensionHealth(
     }
   }
 
+  // Cluster surface (Phase 2). computeTensionClusters applies the same scope
+  // filter the cluster tool does — unresolved AND non-accepted — so the lint
+  // metrics line up exactly with what `vault_tension_clusters` reports.
+  const clusterResult = computeTensionClusters(tensions.value, now);
+  let maxSize = 0;
+  let large = 0;
+  let aged = 0;
+  for (const c of clusterResult.clusters) {
+    if (c.size > maxSize) maxSize = c.size;
+    if (c.size > 5) large += 1;
+    if (c.oldest_tension_age_days > 90) aged += 1;
+  }
+  const clusters: TensionClustersHealth = {
+    count: clusterResult.cluster_count,
+    maxSize,
+    large,
+    aged,
+  };
+
   return ok({
     total,
     byKind,
@@ -393,5 +426,6 @@ async function computeTensionHealth(
     stableAcknowledged,
     unspecifiedLegacy,
     aging: { fresh, aging, stale, staleByKind, staleMessages },
+    clusters,
   });
 }

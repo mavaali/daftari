@@ -328,7 +328,15 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   "deprecate the older doc"; the factual smell is "investigate"; the
   interpretive smell is "decide explicitly" (`accepted` vs `invalid`).
   `unspecified` legacy entries and `accepted` resolutions are excluded
-  from aging by design.
+  from aging by design. `vault_tension_clusters` computes connected
+  components over the live tension graph (unresolved, non-accepted edges
+  only). Cluster IDs are content-addressed — the first 8 hex chars of
+  `sha256(canonical-sorted member paths)` — so identical membership
+  always renders the identical id across runs, and any membership change
+  produces a fresh id by construction. `vault_lint` reports the cluster
+  count, the max cluster size, and flags clusters that are large (>5
+  docs, a composability smell) or aged (oldest tension >90 days, tech
+  debt).
 - **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
   old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
   questions raised but unanswered anywhere in the vault) and produces a report.
