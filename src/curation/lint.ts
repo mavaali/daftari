@@ -12,9 +12,11 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { ageInDays, computeStaleness } from "./staleness.js";
 import {
+  agingTier,
   listTensions,
   RESOLUTION_KINDS,
   type ResolutionKind,
+  STALE_TIER_LINT_COPY,
   TENSION_KINDS,
   type TensionKind,
 } from "./tension.js";
@@ -49,6 +51,22 @@ export interface LintFinding {
 //   Tracked in a dedicated bucket because aging (Phase 4) excludes them.
 // - unspecifiedLegacy: count of entries without a `kind` field. Reported
 //   for visibility; never lint-flagged.
+// Aging surface (Phase 4 of the tension graph plan, 2026-05-31). Counts are
+// taken over the active surface only — unresolved tensions excluding the
+// taxonomy carve-outs (`unspecified` and `resolution.kind: accepted`). The
+// per-kind stale breakdown surfaces which kinds the stale tier is hitting;
+// `staleMessages` carries the kind-specific lint copy when that kind's stale
+// count is nonzero. `unspecified` is omitted from `staleMessages` on purpose
+// (legacy entries are not aged) and is reported as 0 in `staleByKind` for
+// clarity, never lint-flagged.
+export interface TensionAging {
+  fresh: number;
+  aging: number;
+  stale: number;
+  staleByKind: Record<TensionKind, number>;
+  staleMessages: Partial<Record<Exclude<TensionKind, "unspecified">, string>>;
+}
+
 export interface TensionHealth {
   total: number;
   byKind: Record<TensionKind, number>;
@@ -56,6 +74,7 @@ export interface TensionHealth {
   byResolutionKind: Record<ResolutionKind, number>;
   stableAcknowledged: number;
   unspecifiedLegacy: number;
+  aging: TensionAging;
 }
 
 export interface LintReport {
@@ -289,7 +308,7 @@ export async function runLint(
 
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
-  const tensionHealth = await computeTensionHealth(vaultRoot);
+  const tensionHealth = await computeTensionHealth(vaultRoot, now);
   if (!tensionHealth.ok) return tensionHealth;
 
   return ok({
@@ -300,9 +319,19 @@ export async function runLint(
   });
 }
 
-// Aggregates the tension log into the Phase 1 health summary. A missing log
-// is not an error — every counter is just zero.
-async function computeTensionHealth(vaultRoot: string): Promise<Result<TensionHealth, Error>> {
+// Aggregates the tension log into the Phase 1 health summary plus the Phase 4
+// aging breakdown. A missing log is not an error — every counter is zero.
+//
+// Aging scope: tiers are counted over the active surface only. An entry
+// contributes to fresh / aging / stale iff it is unresolved AND `agingTier`
+// returns a non-null tier (which already excludes `unspecified`). Resolved
+// entries — including `resolution.kind: accepted` — do not appear in any
+// aging tier; they show up in the Phase 1 stable-acknowledged and resolved
+// totals instead.
+async function computeTensionHealth(
+  vaultRoot: string,
+  now: Date,
+): Promise<Result<TensionHealth, Error>> {
   const tensions = await listTensions(vaultRoot);
   if (!tensions.ok) return tensions;
 
@@ -314,10 +343,17 @@ async function computeTensionHealth(vaultRoot: string): Promise<Result<TensionHe
     ResolutionKind,
     number
   >;
+  const staleByKind = Object.fromEntries(TENSION_KINDS.map((k) => [k, 0])) as Record<
+    TensionKind,
+    number
+  >;
   let total = 0;
   let resolvedLifetime = 0;
   let stableAcknowledged = 0;
   let unspecifiedLegacy = 0;
+  let fresh = 0;
+  let aging = 0;
+  let stale = 0;
 
   for (const t of tensions.value) {
     total += 1;
@@ -328,6 +364,25 @@ async function computeTensionHealth(vaultRoot: string): Promise<Result<TensionHe
       byResolutionKind[t.resolution.kind] += 1;
       if (t.resolution.kind === "accepted") stableAcknowledged += 1;
     }
+
+    if (t.resolved) continue;
+    const tier = agingTier(t, now);
+    if (tier === "fresh") fresh += 1;
+    else if (tier === "aging") aging += 1;
+    else if (tier === "stale") {
+      stale += 1;
+      staleByKind[t.kind] += 1;
+    }
+  }
+
+  // Render kind-specific stale-tier copy only for kinds with a nonzero count.
+  // `unspecified` never produces a message even if the count somehow appears
+  // (it can't, since unspecified entries get tier null — defense in depth).
+  const staleMessages: Partial<Record<Exclude<TensionKind, "unspecified">, string>> = {};
+  for (const kind of ["temporal", "factual", "interpretive"] as const) {
+    if (staleByKind[kind] > 0) {
+      staleMessages[kind] = STALE_TIER_LINT_COPY[kind];
+    }
   }
 
   return ok({
@@ -337,5 +392,6 @@ async function computeTensionHealth(vaultRoot: string): Promise<Result<TensionHe
     byResolutionKind,
     stableAcknowledged,
     unspecifiedLegacy,
+    aging: { fresh, aging, stale, staleByKind, staleMessages },
   });
 }
