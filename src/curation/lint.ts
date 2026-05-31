@@ -17,6 +17,7 @@ import {
   TENSION_KINDS,
   type TensionKind,
 } from "./tension.js";
+import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tension-blast.js";
 import { computeTensionClusters } from "./tension-clusters.js";
 import {
   buildPathIndexes,
@@ -93,6 +94,12 @@ export interface TensionHealth {
   unspecifiedLegacy: number;
   aging: TensionAging;
   clusters: TensionClustersHealth;
+  // Step 5 of the tension graph plan (2026-05-31). Cardinality of the
+  // deduplicated `primary_blast` set (sources channel only) over the
+  // union of contested docs from every entry where `resolved: false`
+  // AND `agingTier === "stale"`. Zero when there are no stale
+  // unresolved tensions. Reuses computeBlast — see tension-blast.ts.
+  blastRadiusOfStaleTensions: number;
 }
 
 export interface LintReport {
@@ -247,7 +254,7 @@ export async function runLint(
 
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
-  const tensionHealth = await computeTensionHealth(vaultRoot, now);
+  const tensionHealth = await computeTensionHealth(vaultRoot, docs, now);
   if (!tensionHealth.ok) return tensionHealth;
 
   return ok({
@@ -269,6 +276,7 @@ export async function runLint(
 // totals instead.
 async function computeTensionHealth(
   vaultRoot: string,
+  docs: LoadedDoc[],
   now: Date,
 ): Promise<Result<TensionHealth, Error>> {
   const tensions = await listTensions(vaultRoot);
@@ -343,6 +351,30 @@ async function computeTensionHealth(
     aged,
   };
 
+  // Step 5 of the tension graph plan (2026-05-31). Collect every contested
+  // doc from every entry where `resolved: false` AND `agingTier === "stale"`,
+  // then reuse computeBlast to walk the dependency graph from that union as
+  // seeds. We report the count of the `primary_blast` channel — the same
+  // sources-only primary set that vault_tension_blast returns. Advisory link
+  // edges still participate in BFS traversal (so a doc reached via a link
+  // edge can still gain `source` classification from a separate incoming
+  // source edge), but the published metric is the primary count only — the
+  // top-level lint metric stays disciplined against advisory inflation.
+  const staleSeeds = new Set<string>();
+  for (const t of tensions.value) {
+    if (t.resolved) continue;
+    if (agingTier(t, now) !== "stale") continue;
+    if (t.sourceA) staleSeeds.add(t.sourceA);
+    if (t.sourceB) staleSeeds.add(t.sourceB);
+  }
+  const reverseSource = buildReverseSourceMap(docs);
+  const reverseLink = buildReverseLinkMap(docs);
+  const blast = computeBlast({
+    seeds: [...staleSeeds],
+    reverseSource,
+    reverseLink,
+  });
+
   return ok({
     total,
     byKind,
@@ -352,5 +384,6 @@ async function computeTensionHealth(
     unspecifiedLegacy,
     aging: { fresh, aging, stale, staleByKind, staleMessages },
     clusters,
+    blastRadiusOfStaleTensions: blast.primary_blast,
   });
 }

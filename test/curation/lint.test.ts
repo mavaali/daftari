@@ -671,4 +671,136 @@ Body.
       expect(c.maxSize).toBe(0);
     });
   });
+
+  // ----- Step 5: cross-feature blast radius of stale tensions ----------
+  //
+  // The final line of the tension health section. Definition (spec):
+  // take every entry where resolved=false AND agingTier=stale, collect
+  // each entry's two contested docs (sourceA, sourceB), dedupe the union,
+  // run the primary-blast computation (sources channel only — the same
+  // primary set vault_tension_blast returns) over that union as seeds,
+  // and report the cardinality.
+  //
+  // Tests cover: zero stale tensions, a single stale tension with a
+  // downstream source chain, and multiple stale tensions with overlapping
+  // downstream sets (verifying the deduplicated union behaviour).
+
+  describe("tensionHealth blast radius of stale tensions (Step 5)", () => {
+    let dir: string;
+    const NOW = new Date("2026-06-01T00:00:00Z");
+
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    // Minimal frontmatter doc with an optional `sources` list. Mirrors the
+    // shape used by other lint/blast fixtures — the loader picks it up
+    // unconditionally because none of the lint carve-outs apply.
+    const writeDoc = (relPath: string, sources: string[] = []): void => {
+      const sourcesYaml =
+        sources.length === 0
+          ? "sources: []"
+          : `sources:\n${sources.map((s) => `  - ${s}`).join("\n")}`;
+      const fm = [
+        "---",
+        `title: "${relPath}"`,
+        "domain: accumulation",
+        "collection: blast",
+        "status: canonical",
+        "confidence: high",
+        "created: 2026-05-01",
+        "updated: 2026-05-01",
+        "updated_by: agent:test",
+        "provenance: direct",
+        sourcesYaml,
+        "superseded_by: null",
+        "ttl_days: null",
+        "tags: []",
+        "---",
+        "",
+      ].join("\n");
+      const abs = join(dir, relPath);
+      mkdirSync(join(abs, ".."), { recursive: true });
+      writeFileSync(abs, `${fm}\n`, "utf-8");
+    };
+
+    const baseTension = {
+      claimA: "A",
+      claimB: "B",
+      loggedBy: "agent:claude-code",
+    };
+
+    it("reports zero when there are no stale unresolved tensions", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-blast-"));
+      // No tensions, no docs — the line should still render with N=0.
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      expect(report.value.tensionHealth.blastRadiusOfStaleTensions).toBe(0);
+    });
+
+    it("counts primary-blast downstream of a single stale unresolved tension", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-blast-"));
+      // a.md is contested; b.md sources a.md; c.md sources b.md.
+      // Primary blast from {a.md, other.md} as seeds = {b.md, c.md} = 2.
+      // other.md has no downstream, so it contributes 0 to the union.
+      writeDoc("a.md");
+      writeDoc("other.md");
+      writeDoc("b.md", ["a.md"]);
+      writeDoc("c.md", ["b.md"]);
+
+      // 200-day-old factual tension between a.md and other.md → stale.
+      await addTension(dir, {
+        ...baseTension,
+        title: "stale chain",
+        sourceA: "a.md",
+        sourceB: "other.md",
+        kind: "factual",
+        date: "2025-11-13",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      expect(report.value.tensionHealth.aging.stale).toBe(1);
+      expect(report.value.tensionHealth.blastRadiusOfStaleTensions).toBe(2);
+    });
+
+    it("deduplicates the primary-blast union across multiple stale tensions", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-blast-"));
+      // Two stale tensions whose contested docs share a single downstream:
+      //   tension1: (a.md, x.md)
+      //   tension2: (b.md, y.md)
+      // downstream.md sources BOTH a.md AND b.md. Without dedup the count
+      // would be 2; with dedup it should be 1.
+      writeDoc("a.md");
+      writeDoc("b.md");
+      writeDoc("x.md");
+      writeDoc("y.md");
+      writeDoc("downstream.md", ["a.md", "b.md"]);
+
+      await addTension(dir, {
+        ...baseTension,
+        title: "stale 1",
+        sourceA: "a.md",
+        sourceB: "x.md",
+        kind: "factual",
+        date: "2025-11-13",
+      });
+      await addTension(dir, {
+        ...baseTension,
+        title: "stale 2",
+        sourceA: "b.md",
+        sourceB: "y.md",
+        kind: "factual",
+        date: "2025-11-13",
+      });
+
+      const report = await runLint(dir, { now: NOW });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      expect(report.value.tensionHealth.aging.stale).toBe(2);
+      expect(report.value.tensionHealth.blastRadiusOfStaleTensions).toBe(1);
+    });
+  });
 });
