@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   markIndexError,
   markIndexing,
+  markIndexReady,
   resetIndexState,
   setIndexProgress,
 } from "../../src/search/index-state.js";
@@ -75,12 +76,16 @@ describe("index-state guards", () => {
       expect(result.error.message).toContain("still indexing");
     });
 
-    it("vault_reindex refuses when one is already running", async () => {
+    it("vault_reindex coalesces with an in-flight pass and then runs", async () => {
+      // Contract: rather than refusing when a reindex is already in flight
+      // (e.g. the startup-time background pass), vault_reindex awaits the
+      // in-flight pass and then runs the requested reindex. An agent that
+      // asks to rebuild the index should not get a busy error just because
+      // the server is finishing its own startup work.
+      setTimeout(() => markIndexReady(), 50);
       const result = await vaultReindex(vault);
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error.message).toContain("still indexing");
-    });
+      expect(result.ok).toBe(true);
+    }, 30_000);
 
     it("vault_write returns a busy error and writes nothing", async () => {
       const result = await vaultWrite(vault, {
