@@ -371,6 +371,7 @@ describe("vaultStatus", () => {
         claimB: "serverless billing tracks actual consumption",
         loggedBy: "agent:claude-code",
         date: "2026-05-01",
+        kind: "interpretive",
       });
       await addTension(vault, {
         title: "Newer tension",
@@ -380,6 +381,7 @@ describe("vaultStatus", () => {
         claimB: "Aurora leads on integration breadth",
         loggedBy: "agent:claude-code",
         date: "2026-05-15",
+        kind: "factual",
       });
 
       const result = await vaultStatus(vault);

@@ -11,6 +11,13 @@ import { type Frontmatter, ok, type Result } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { ageInDays, computeStaleness } from "./staleness.js";
+import {
+  listTensions,
+  RESOLUTION_KINDS,
+  type ResolutionKind,
+  TENSION_KINDS,
+  type TensionKind,
+} from "./tension.js";
 
 export const LINT_CHECKS = [
   "staleFiles",
@@ -27,10 +34,35 @@ export interface LintFinding {
   detail: string;
 }
 
+// Tension health: aggregate counts for the curation engine's tension log.
+// Added in Phase 1 of the tension graph plan (2026-05-31). Surfaces the
+// taxonomy and resolution distribution without flagging anything as a
+// defect — the advisory posture matches the rest of vault_lint.
+//
+// - total: every entry in the tension log, resolved or not.
+// - byKind: count of entries grouped by taxonomy. Legacy entries land in
+//   `unspecified`.
+// - resolvedLifetime: count of all resolutions across the lifetime of the
+//   log, with a breakdown by resolution kind.
+// - stableAcknowledged: tensions resolved with `kind: accepted` —
+//   persistent disagreements that the curator has explicitly chosen to keep.
+//   Tracked in a dedicated bucket because aging (Phase 4) excludes them.
+// - unspecifiedLegacy: count of entries without a `kind` field. Reported
+//   for visibility; never lint-flagged.
+export interface TensionHealth {
+  total: number;
+  byKind: Record<TensionKind, number>;
+  resolvedLifetime: number;
+  byResolutionKind: Record<ResolutionKind, number>;
+  stableAcknowledged: number;
+  unspecifiedLegacy: number;
+}
+
 export interface LintReport {
   generatedAt: string;
   checks: Record<LintCheckName, LintFinding[]>;
   totalFindings: number;
+  tensionHealth: TensionHealth;
 }
 
 export interface LintOptions {
@@ -257,5 +289,53 @@ export async function runLint(
 
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
-  return ok({ generatedAt: now.toISOString(), checks, totalFindings });
+  const tensionHealth = await computeTensionHealth(vaultRoot);
+  if (!tensionHealth.ok) return tensionHealth;
+
+  return ok({
+    generatedAt: now.toISOString(),
+    checks,
+    totalFindings,
+    tensionHealth: tensionHealth.value,
+  });
+}
+
+// Aggregates the tension log into the Phase 1 health summary. A missing log
+// is not an error — every counter is just zero.
+async function computeTensionHealth(vaultRoot: string): Promise<Result<TensionHealth, Error>> {
+  const tensions = await listTensions(vaultRoot);
+  if (!tensions.ok) return tensions;
+
+  const byKind = Object.fromEntries(TENSION_KINDS.map((k) => [k, 0])) as Record<
+    TensionKind,
+    number
+  >;
+  const byResolutionKind = Object.fromEntries(RESOLUTION_KINDS.map((k) => [k, 0])) as Record<
+    ResolutionKind,
+    number
+  >;
+  let total = 0;
+  let resolvedLifetime = 0;
+  let stableAcknowledged = 0;
+  let unspecifiedLegacy = 0;
+
+  for (const t of tensions.value) {
+    total += 1;
+    byKind[t.kind] += 1;
+    if (t.kind === "unspecified") unspecifiedLegacy += 1;
+    if (t.resolution) {
+      resolvedLifetime += 1;
+      byResolutionKind[t.resolution.kind] += 1;
+      if (t.resolution.kind === "accepted") stableAcknowledged += 1;
+    }
+  }
+
+  return ok({
+    total,
+    byKind,
+    resolvedLifetime,
+    byResolutionKind,
+    stableAcknowledged,
+    unspecifiedLegacy,
+  });
 }

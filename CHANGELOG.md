@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tension taxonomy and resolution** (Phase 1 of the Tension Graph plan).
+  Tensions now carry a `kind` (temporal | factual | interpretive |
+  unspecified). New tool `vault_tension_resolve` records how a tension was
+  closed (superseded | corrected | accepted | invalid) with optional
+  rationale and references. `vault_lint` reports tension counts by kind
+  and resolution kind, and surfaces a separate "stable acknowledged"
+  count for explicitly accepted persistent disagreements. Legacy entries
+  without a `kind` field read as `unspecified` and produce no warnings.
+
 ## [1.13.1] - 2026-05-30
 
 ### Changed

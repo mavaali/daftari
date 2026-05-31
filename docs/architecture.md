@@ -314,7 +314,15 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   human or agent should re-verify this."
 - **Tensions.** When two documents contradict each other, `vault_tension_log`
   records the contradiction — both sources, both claims — with status
-  `unresolved`. It records; it does not resolve.
+  `unresolved`. It records; it does not resolve. Each entry carries a `kind`
+  (`temporal` | `factual` | `interpretive` | `unspecified` for legacy
+  entries), and closure is a deliberate act via `vault_tension_resolve` with
+  a `resolution` block of its own kind (`superseded` | `corrected` |
+  `accepted` | `invalid`). `accepted` resolutions mark a deliberately
+  persistent disagreement — the tension stays in the log as a stable
+  acknowledged feature of the vault rather than a defect. `vault_lint`
+  reports the distribution by kind, by resolution kind, and the stable
+  acknowledged count.
 - **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
   old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
   questions raised but unanswered anywhere in the vault) and produces a report.
