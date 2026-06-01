@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-05-31
+
 ### Added
 
 - **Blast radius of stale tensions** (Step 5 of the Tension Graph plan,
