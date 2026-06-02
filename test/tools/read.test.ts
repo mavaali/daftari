@@ -347,11 +347,20 @@ describe("vaultStatus", () => {
   });
 
   it("reports empty tension/write sections for a pristine vault", async () => {
-    const result = await vaultStatus(VAULT);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.unresolvedTensions).toEqual({ count: 0, recent: [] });
-    expect(result.value.recentWrites).toEqual({ count: 0, entries: [] });
+    // makeTempVault copies the fixture WITHOUT its .daftari control dir, so the
+    // copy has no tension log or provenance — a genuinely pristine vault. (The
+    // checked-in fixture itself now carries one seeded tension for the eval
+    // augmentation path, so we can't assert "empty" against VAULT directly.)
+    const vault = makeTempVault();
+    try {
+      const result = await vaultStatus(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.unresolvedTensions).toEqual({ count: 0, recent: [] });
+      expect(result.value.recentWrites).toEqual({ count: 0, entries: [] });
+    } finally {
+      cleanupVault(vault);
+    }
   });
 
   describe("with a seeded curation log", () => {

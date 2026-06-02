@@ -16,6 +16,8 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/curation-log.jsonl
 **/.daftari/tensions.md
 **/.daftari/process.lock
+# Ephemeral eval artifacts (regeneratable from .md sources + LLM calls).
+**/.daftari/eval/
 
 # The reviewer test vault ships .daftari/config.yaml and a curated tensions.md
 # as part of the bundled fixture. Negate the broad ignores above so they are
