@@ -24,7 +24,7 @@ export interface Question {
   question: string;
   expected_answer: string;
   expected_sources: string[]; // absolute-from-vault paths
-  source: "generated" | "augmented"; // augmented = derived from tension_log, no generator LLM
+  origin: "generated" | "augmented"; // augmented = derived from tension_log, no generator LLM. Named `origin` (not `source`) to avoid confusion with `expected_sources` and frontmatter `sources`.
 }
 
 export interface QuestionSet {
@@ -71,13 +71,18 @@ export interface ToolCall {
 
 export type RunStatus = "complete" | "incomplete";
 
-export interface PerRunResult {
+interface PerRunResultBase {
   question_id: string;
   question_index: number;
   k_index: number;
-  status: RunStatus;
-  trace: Trace | null; // null when status === "incomplete" and we haven't run yet
 }
+
+// Discriminated on `status`: a complete run always carries a Trace; an
+// incomplete (not-yet-run) slot always has null. This makes `trace` non-null
+// without a guard once `status === "complete"` is checked.
+export type PerRunResult =
+  | (PerRunResultBase & { status: "complete"; trace: Trace })
+  | (PerRunResultBase & { status: "incomplete"; trace: null });
 
 export interface EvalRun {
   id: string; // <questions-id>-<model>-<timestamp>
@@ -159,6 +164,10 @@ export type EvalError =
 // --- JSON Schema for generator output ---
 // The generator LLM is asked to return JSON matching this schema. Embedded
 // here so the prompt, runtime validator, and types share one source of truth.
+// NOTE: kept in sync MANUALLY with the `Question` interface above — there is no
+// codegen between them. When you add/rename a Question field that the generator
+// produces, update both this schema and `Question` in the same edit. (`id` and
+// `origin` are assigned post-generation, so they are intentionally absent here.)
 
 export const QuestionSetSchema = {
   type: "object",
