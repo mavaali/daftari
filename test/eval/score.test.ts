@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { aggregateScore } from "../../src/eval/score.js";
+import type { LlmClient } from "../../src/eval/llm.js";
+import { aggregateScore, gradeAnswer } from "../../src/eval/score.js";
 import type { Grade, Question, Tier, Trace } from "../../src/eval/types.js";
 
 function q(tier: Tier, i: number): Question {
@@ -103,5 +104,98 @@ describe("aggregateScore", () => {
     ]);
     const s = aggregateScore(grades, qs, { traces });
     expect(s.by_tier.retrieval.trace_efficiency).toBeCloseTo(3);
+  });
+});
+
+function graderClient(verdict: "yes" | "partial" | "no"): LlmClient {
+  return {
+    complete: async () => ({
+      ok: true,
+      value: { text: "", input_tokens: 0, output_tokens: 0, stop_reason: "end_turn" },
+    }),
+    completeJson: async () => ({
+      ok: true,
+      value: {
+        parsed: { correct: verdict, reasoning: "test" },
+        text: "",
+        input_tokens: 0,
+        output_tokens: 0,
+        stop_reason: "end_turn",
+      },
+    }),
+    completeWithTools: async () => ({
+      ok: false,
+      error: { kind: "llm", message: "n/a", retryable: false },
+    }),
+  };
+}
+
+describe("gradeAnswer", () => {
+  it("maps yes/partial/no LLM verdict to Grade", async () => {
+    const q = {
+      id: "q1",
+      tier: "retrieval" as const,
+      question: "?",
+      expected_answer: "a",
+      expected_sources: ["a.md"],
+      origin: "generated" as const,
+    };
+    const trace = {
+      tool_calls: [],
+      final_answer: "x",
+      total_tool_calls: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      wall_ms: 0,
+      stop_reason: "end_turn",
+    };
+    const r = await gradeAnswer(q, 0, 0, trace, graderClient("partial"), {
+      model: "claude-sonnet-fake",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.verdict).toBe("partial");
+  });
+
+  it("marks question ungraded if grader returns malformed JSON", async () => {
+    const q = {
+      id: "q1",
+      tier: "retrieval" as const,
+      question: "?",
+      expected_answer: "a",
+      expected_sources: ["a.md"],
+      origin: "generated" as const,
+    };
+    const trace = {
+      tool_calls: [],
+      final_answer: "x",
+      total_tool_calls: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      wall_ms: 0,
+      stop_reason: "end_turn",
+    };
+    const badClient: LlmClient = {
+      complete: async () => ({
+        ok: true,
+        value: { text: "", input_tokens: 0, output_tokens: 0, stop_reason: "end_turn" },
+      }),
+      completeJson: async () => ({
+        ok: true,
+        value: {
+          parsed: { not_what_we_want: true },
+          text: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "end_turn",
+        },
+      }),
+      completeWithTools: async () => ({
+        ok: false,
+        error: { kind: "llm", message: "n/a", retryable: false },
+      }),
+    };
+    const r = await gradeAnswer(q, 0, 0, trace, badClient, { model: "claude-sonnet-fake" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.verdict).toBe("ungraded");
   });
 });

@@ -3,8 +3,13 @@
 // score. Pure math. The LLM grader is added in Task 10; this v1 only
 // computes scores from already-graded inputs.
 
+import { ok, type Result } from "../frontmatter/types.js";
+import type { LlmClient } from "./llm.js";
+import { GRADER_PROMPT } from "./prompts.js";
 import {
+  type CortexEvalError,
   type Grade,
+  type GradeVerdict,
   type Question,
   type Score,
   TIER_WEIGHT,
@@ -143,4 +148,58 @@ function stddev(xs: number[]): number {
   if (xs.length < 2) return 0;
   const m = avg(xs);
   return Math.sqrt(xs.reduce((acc, x) => acc + (x - m) ** 2, 0) / xs.length);
+}
+
+// --- LLM grader ---
+
+export interface GradeOptions {
+  model: string;
+}
+
+export async function gradeAnswer(
+  question: Question,
+  questionIndex: number,
+  kIndex: number,
+  trace: Trace,
+  llm: LlmClient,
+  opts: GradeOptions,
+): Promise<Result<Grade, CortexEvalError>> {
+  const cited = extractCitations(trace.final_answer);
+  const user = GRADER_PROMPT.replace("{{QUESTION}}", question.question)
+    .replace("{{EXPECTED_ANSWER}}", question.expected_answer)
+    .replace("{{EXPECTED_SOURCES}}", question.expected_sources.join(", "))
+    .replace("{{CLAIMED_ANSWER}}", trace.final_answer)
+    .replace("{{CITED_SOURCES}}", cited.join(", "));
+
+  const schema = {
+    type: "object",
+    required: ["correct", "reasoning"],
+    properties: {
+      correct: { enum: ["yes", "partial", "no"] },
+      reasoning: { type: "string" },
+    },
+  } as const;
+
+  const r = await llm.completeJson({ model: opts.model, system: "", user, schema });
+  if (!r.ok) return r;
+  // biome-ignore lint/suspicious/noExplicitAny: parsed JSON
+  const parsed = r.value.parsed as any;
+  const verdict: GradeVerdict =
+    parsed?.correct === "yes" || parsed?.correct === "partial" || parsed?.correct === "no"
+      ? parsed.correct
+      : "ungraded";
+  return ok({
+    question_id: question.id,
+    question_index: questionIndex,
+    k_index: kIndex,
+    verdict,
+    reasoning: typeof parsed?.reasoning === "string" ? parsed.reasoning : "",
+    grader_model: opts.model,
+  });
+}
+
+function extractCitations(answer: string): string[] {
+  const out: string[] = [];
+  for (const m of answer.matchAll(/\[([^\]]+\.md)\]/g)) out.push(m[1]);
+  return out;
 }
