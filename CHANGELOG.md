@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`daftari eval` cortex quality metric** (Sleep Component B). New CLI
+  subcommand that scores how well an LLM can use the Daftari MCP curation
+  surface to answer multi-hop questions about the vault. Three tiers
+  (retrieval, cross-reference, contradiction) with a tier-weighted aggregate
+  (1×/2×/3×) plus per-tier variance and trace-efficiency. The pipeline is
+  seeded subgraph sampling → LLM question generation (with tier-mix top-up
+  and tension-graph augmentation) → in-process answerer over the existing
+  read-only tool surface → LLM grading. Runs persist incrementally, so a
+  failed run is resumable with `--resume`. Generator/answerer/grader are all
+  LLM-mediated via `@anthropic-ai/sdk` (new dependency, isolated to
+  `src/eval/llm.ts`); the rest of the codebase stays LLM-free. Output
+  artifacts live under `.daftari/eval/` (gitignored). Components A (multi-pass
+  curation) and C (dependency-triggered re-curation) are deferred to
+  follow-on specs. See
+  [docs/superpowers/specs/2026-05-31-cortex-quality-metric-design.md](docs/superpowers/specs/2026-05-31-cortex-quality-metric-design.md).
+
 ## [1.15.0] - 2026-05-31
 
 ### Added

@@ -73,6 +73,11 @@ The curation engine is advisory: `vault_lint` reports problems and
 `vault_tension_log` records contradictions. Neither auto-fixes anything. Every
 change is a deliberate, attributable act.
 
+**Evaluate (opt-in, requires an Anthropic API key):** `daftari eval` — scores how
+well an LLM can use the curation surface to answer multi-hop questions about the
+vault. See the [design spec](docs/superpowers/specs/2026-05-31-cortex-quality-metric-design.md)
+for the rationale and the cortex framing.
+
 ## Two kinds of knowledge
 
 Every document declares a `domain`. The distinction drives how the curation
