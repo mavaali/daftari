@@ -19,9 +19,7 @@ import { listTensions } from "../curation/tension.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { openIndexForActiveProvider } from "../tools/search.js";
-// Aliased: an unaliased `EvalError` import would shadow the DOM global of the
-// same name (biome lint/suspicious/noShadowRestrictedNames).
-import type { EvalError as CortexEvalError, SubgraphEdge } from "./types.js";
+import type { CortexEvalError, SubgraphEdge } from "./types.js";
 
 export interface SubgraphOptions {
   maxNodes?: number; // default 5

@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
-  type EvalError as EvalErr,
+  type CortexEvalError,
   type EvalRun,
   HISTORY_RETENTION,
   type HistoryEntry,
@@ -30,7 +30,7 @@ function writeJson<T>(path: string, value: T): Promise<void> {
   return writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-async function readJson<T>(path: string): Promise<Result<T, EvalErr>> {
+async function readJson<T>(path: string): Promise<Result<T, CortexEvalError>> {
   try {
     const raw = await readFile(path, "utf8");
     return ok(JSON.parse(raw) as T);
@@ -45,7 +45,10 @@ export async function writeQuestionSet(vault: string, qs: QuestionSet): Promise<
   await writeJson(join(QS_DIR(vault), `${qs.id}.json`), qs);
 }
 
-export function readQuestionSet(vault: string, id: string): Promise<Result<QuestionSet, EvalErr>> {
+export function readQuestionSet(
+  vault: string,
+  id: string,
+): Promise<Result<QuestionSet, CortexEvalError>> {
   return readJson<QuestionSet>(join(QS_DIR(vault), `${id}.json`));
 }
 
@@ -54,7 +57,7 @@ export async function writeResults(vault: string, run: EvalRun): Promise<void> {
   await writeJson(join(RES_DIR(vault), `${run.id}.json`), run);
 }
 
-export function readResults(vault: string, id: string): Promise<Result<EvalRun, EvalErr>> {
+export function readResults(vault: string, id: string): Promise<Result<EvalRun, CortexEvalError>> {
   return readJson<EvalRun>(join(RES_DIR(vault), `${id}.json`));
 }
 
@@ -72,7 +75,7 @@ export async function appendHistory(vault: string, entry: HistoryEntry): Promise
   await writeJson(HIST_FILE(vault), out);
 }
 
-export async function readHistory(vault: string): Promise<Result<HistoryFile, EvalErr>> {
+export async function readHistory(vault: string): Promise<Result<HistoryFile, CortexEvalError>> {
   const path = HIST_FILE(vault);
   if (!existsSync(path)) return ok({ version: 1, runs: [] });
   const r = await readJson<HistoryFile>(path);

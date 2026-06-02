@@ -156,7 +156,11 @@ export const SPEC_VERSION = 1;
 
 // --- Errors ---
 
-export type EvalError =
+// Named `CortexEvalError` rather than `EvalError` so eval modules can import it
+// directly: the bare name `EvalError` shadows the JS built-in of the same name,
+// which biome's noShadowRestrictedNames rejects (forcing every consumer to
+// invent its own import alias). One canonical non-shadowing name avoids that.
+export type CortexEvalError =
   | { kind: "config"; message: string }
   | { kind: "runtime"; message: string }
   | { kind: "llm"; message: string; retryable: boolean };
