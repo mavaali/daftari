@@ -113,4 +113,22 @@ describe("runAnswerer", () => {
     expect(r.ok).toBe(true);
     expect(calls).toBe(1); // only the incomplete pair re-ran
   });
+
+  it("returns err when the answerer call fails (incomplete branch)", async () => {
+    // A client whose tool loop fails exercises the !ok path: the pair is
+    // recorded incomplete and the error is surfaced (run aborts).
+    const failing: LlmClient = {
+      ...mockClient(),
+      completeWithTools: async () => ({
+        ok: false,
+        error: { kind: "llm", message: "answerer exploded", retryable: false },
+      }),
+    };
+    const r = await runAnswerer(sampleQs, "/tmp/fake-vault", failing, {
+      k: 2,
+      model: "claude-sonnet-fake",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe("llm");
+  });
 });
