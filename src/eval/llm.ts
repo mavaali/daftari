@@ -192,7 +192,10 @@ const MAX_RETRIES = 5;
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 60_000;
 
-async function retry<T>(
+// Exported for unit testing — these two pure helpers carry the trickiest logic
+// in this module (retry arithmetic/predicate, fence stripping) and would
+// otherwise be unreachable, since createAnthropicClient news up the SDK.
+export async function retry<T>(
   fn: () => Promise<Result<T, CortexEvalError>>,
 ): Promise<Result<T, CortexEvalError>> {
   let lastErr: CortexEvalError | null = null;
@@ -209,13 +212,17 @@ async function retry<T>(
       if (!retryable) return err({ kind: "llm", message: msg, retryable: false });
       lastErr = { kind: "llm", message: msg, retryable: true };
     }
-    const backoff = Math.min(BASE_BACKOFF_MS * 2 ** i, MAX_BACKOFF_MS);
-    await new Promise((res) => setTimeout(res, backoff));
+    // Don't sleep after the final attempt — the loop is about to exit and
+    // surface the error; a trailing backoff would just delay the failure.
+    if (i < MAX_RETRIES - 1) {
+      const backoff = Math.min(BASE_BACKOFF_MS * 2 ** i, MAX_BACKOFF_MS);
+      await new Promise((res) => setTimeout(res, backoff));
+    }
   }
   return err(lastErr ?? { kind: "llm", message: "retries exhausted", retryable: false });
 }
 
-function stripCodeFence(s: string): string {
+export function stripCodeFence(s: string): string {
   const m = s.match(/^```(?:json)?\n([\s\S]*?)\n```\s*$/);
   return m ? m[1] : s;
 }
