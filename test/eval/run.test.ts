@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LlmClient } from "../../src/eval/llm.js";
 import { runAnswerer } from "../../src/eval/run.js";
-import type { Question, QuestionSet } from "../../src/eval/types.js";
+import type { EvalRun, Question, QuestionSet } from "../../src/eval/types.js";
 
 const sampleQs: QuestionSet = {
   id: "qs-1",
@@ -130,5 +130,65 @@ describe("runAnswerer", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe("llm");
+  });
+
+  it("persist is called after each completed (q,k) pair", async () => {
+    const saved: EvalRun[] = [];
+    const r = await runAnswerer(sampleQs, "/tmp/fake-vault", mockClient(), {
+      k: 2,
+      model: "claude-sonnet-fake",
+      persist: async (run) => {
+        // structuredClone so each snapshot is captured independently — `runs`
+        // mutates in place across iterations.
+        saved.push(structuredClone(run));
+      },
+    });
+    expect(r.ok).toBe(true);
+    // One persist per completed (q,k) pair: k=2, one question → 2.
+    expect(saved.length).toBe(2);
+    const last = saved[saved.length - 1];
+    expect(last.runs["0:0"].status).toBe("complete");
+    expect(last.runs["0:1"].status).toBe("complete");
+  });
+
+  it("persist captures partial progress before a failure", async () => {
+    // Client succeeds on the first call, fails on the second. With k=2 the
+    // first (0:0) completes and (0:1) fails — proving partial progress is
+    // saved before the error, i.e. the run is resumable.
+    let calls = 0;
+    const flaky: LlmClient = {
+      ...mockClient(),
+      completeWithTools: async () => {
+        calls++;
+        if (calls === 1) {
+          return {
+            ok: true,
+            value: {
+              text: "X is foo [a.md]",
+              input_tokens: 1,
+              output_tokens: 1,
+              stop_reason: "end_turn",
+              tool_calls: [],
+            },
+          };
+        }
+        return {
+          ok: false,
+          error: { kind: "llm", message: "answerer exploded", retryable: false },
+        };
+      },
+    };
+    const saved: EvalRun[] = [];
+    const r = await runAnswerer(sampleQs, "/tmp/fake-vault", flaky, {
+      k: 2,
+      model: "claude-sonnet-fake",
+      persist: async (run) => {
+        saved.push(structuredClone(run));
+      },
+    });
+    expect(r.ok).toBe(false);
+    const last = saved[saved.length - 1];
+    expect(last.runs["0:0"].status).toBe("complete");
+    expect(last.runs["0:1"].status).toBe("incomplete");
   });
 });
