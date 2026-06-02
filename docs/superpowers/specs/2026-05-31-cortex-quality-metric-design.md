@@ -147,11 +147,14 @@ The smoke test (`smoke.test.ts`, opt-in, real LLM) uses the in-process path too.
 The generator needs a connected slice of the vault to write questions about. Random doc selection would produce questions whose answers require docs not in scope — useless. The sampler walks the existing structure:
 
 1. Pick a **seed doc** deterministically from `--seed` (default: hash of vault path + UTC date). Stratification is an input to seed derivation, not a per-run rotation: the seed deterministically picks a stratum (e.g., a tag bucket or theme cluster) and then deterministically picks a doc within that stratum. Two runs on the same UTC date with the same vault produce the same seed → same stratum → same doc. The stratification exists to avoid pathological seed collisions on a small set of "central" docs, not to vary seeds across runs.
-2. Walk **1–2 hops** from the seed via three edge types:
+2. Walk **1–2 hops** from the seed via these edge types:
    - `sources:` frontmatter references (primary edges, authoritative)
    - In-vault markdown links (advisory edges)
    - `vault_tension_log` entries that name the seed doc (tension edges)
+   - `superseded_by:` frontmatter references (revision edges, authoritative; walked bidirectionally)
 3. Cap subgraph size at **3–5 docs**. If the walk produces more, prune to nearest-neighbors by edge count.
+
+> **Implementation note (data-model reality).** In Daftari's actual data model `sources:` holds *external* citation slugs (e.g. `helios-pricing-page-2026-05`), not in-vault `.md` paths, so it never connects two vault docs. In-vault doc→doc revision links live in `superseded_by:` (a scalar path). The walk therefore also follows `superseded_by` bidirectionally — landing on either the old or the new doc reaches its counterpart — giving the `cross_reference` (2–3 hop) tier real in-vault coverage.
 4. Return: `{seed: path, nodes: Map<path, DocSnapshot>, edges: Edge[]}`.
 
 The walk is deterministic given the same seed and the same vault state. Re-running `daftari eval` with the same seed reproduces the same subgraph (and hence eligibility for the same question set, up to LLM non-determinism in question generation).

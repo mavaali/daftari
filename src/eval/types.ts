@@ -47,7 +47,7 @@ export interface QuestionSet {
 export interface SubgraphEdge {
   from: string;
   to: string;
-  kind: "sources" | "link" | "tension";
+  kind: "sources" | "link" | "tension" | "superseded";
 }
 
 // --- Run shapes ---

@@ -61,4 +61,28 @@ describe("sampleSubgraph", () => {
     }
     expect(sawSourcesEdge).toBe(true);
   });
+
+  it("walks superseded_by revision edges and includes both endpoints as nodes", async () => {
+    // The fixture's one supersede edge: pricing/cirrus-capacity-tiers.md is
+    // superseded_by pricing/cirrus-capacity-tiers-2026.md. The edge is walked
+    // bidirectionally, so a seed landing on either cirrus doc reaches the other.
+    const OLD = "pricing/cirrus-capacity-tiers.md";
+    const NEW = "pricing/cirrus-capacity-tiers-2026.md";
+    // A spread of seeds; several land on a cirrus doc (e.g. "s0", "s6", "s7").
+    // The bidirectional edge means any seed landing on either cirrus doc
+    // connects both endpoints into the returned subgraph.
+    const seeds = ["s0", "s6", "s7", "s9", "s13", "seed-a", "seed-b", "seed-c"];
+    let connected = false;
+    for (const seed of seeds) {
+      const r = await sampleSubgraph(vault, seed, { maxNodes: 5 });
+      if (!r.ok) continue;
+      const hasEdge = r.value.edges.some((e) => e.kind === "superseded");
+      const paths = new Set(r.value.nodes.map((n) => n.path));
+      if (hasEdge && paths.has(OLD) && paths.has(NEW)) {
+        connected = true;
+        break;
+      }
+    }
+    expect(connected).toBe(true);
+  });
 });

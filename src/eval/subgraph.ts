@@ -3,8 +3,11 @@
 // Given a vault and a seed string, derive a small connected subgraph rooted at
 // one "seed doc". The seed→doc mapping is stratified by collection so a vault
 // with one dense collection cannot dominate every sample. From the seed we hop
-// along three edge kinds — frontmatter `sources`, in-body markdown links, and
-// logged tensions — collecting neighbours until a node cap is reached.
+// along four edge kinds — frontmatter `sources`, in-body markdown links, logged
+// tensions, and `superseded_by` revision links — collecting neighbours until a
+// node cap is reached. In Daftari's data model `sources:` holds external
+// citation slugs (not in-vault paths), so the real in-vault doc→doc revision
+// edge lives in `superseded_by:`, walked bidirectionally below.
 //
 // Pure given (vault state + seed): the same inputs always yield the same
 // subgraph. All randomness is replaced by SHA-256 indexing over sorted inputs.
@@ -48,9 +51,12 @@ export async function sampleSubgraph(
   }
   const db = indexRes.value;
 
-  let docs: { path: string }[];
+  let docs: { path: string; superseded_by: string | null }[];
   try {
-    docs = db.prepare("SELECT path FROM documents").all() as { path: string }[];
+    docs = db.prepare("SELECT path, superseded_by FROM documents").all() as {
+      path: string;
+      superseded_by: string | null;
+    }[];
   } finally {
     db.close();
   }
@@ -71,12 +77,23 @@ export async function sampleSubgraph(
 
   const tensionsByDoc = await loadTensionEdges(vaultRoot);
 
+  // Bidirectional supersede map, built from the already-materialized SQL rows
+  // (no extra file reads). Bidirectional so a seed landing on EITHER the old or
+  // the new doc reaches its counterpart.
+  const supersededByDoc = new Map<string, Array<{ other: string }>>();
+  for (const d of docs) {
+    if (typeof d.superseded_by === "string" && d.superseded_by.length > 0) {
+      pushTo(supersededByDoc, d.path, { other: d.superseded_by });
+      pushTo(supersededByDoc, d.superseded_by, { other: d.path });
+    }
+  }
+
   await loadNode(vaultRoot, seedDoc, visited);
-  await walkHop(vaultRoot, seedDoc, visited, edges, tensionsByDoc);
+  await walkHop(vaultRoot, seedDoc, visited, edges, tensionsByDoc, supersededByDoc);
   const firstHopNeighbors = [...visited.keys()].filter((p) => p !== seedDoc);
   for (const n of firstHopNeighbors) {
     if (visited.size >= maxNodes) break;
-    await walkHop(vaultRoot, n, visited, edges, tensionsByDoc);
+    await walkHop(vaultRoot, n, visited, edges, tensionsByDoc, supersededByDoc);
   }
 
   const nodes = trimToCap(seedDoc, visited, edges, maxNodes);
@@ -90,9 +107,10 @@ export async function sampleSubgraph(
 }
 
 // An edge is kept when its `from` survived the node cap, and:
-//  - for `link`/`tension` edges, the `to` is also a retained in-vault node —
-//    these reference other vault documents, so a dangling target means the
-//    neighbour was trimmed or never existed and the edge is meaningless.
+//  - for `link`/`tension`/`superseded` edges, the `to` is also a retained
+//    in-vault node — these reference other vault documents, so a dangling
+//    target means the neighbour was trimmed or never existed and the edge is
+//    meaningless.
 //  - for `sources` edges, the `to` is a provenance citation that is, by the
 //    vault's frontmatter convention, an external source slug rather than an
 //    in-vault `.md` path. Such an edge records real provenance off the seed
@@ -168,6 +186,7 @@ async function walkHop(
   visited: Map<string, SubgraphNode>,
   edges: SubgraphEdge[],
   tensionsByDoc: Map<string, Array<{ other: string }>>,
+  supersededByDoc: Map<string, Array<{ other: string }>>,
 ): Promise<void> {
   const node = visited.get(from);
   if (!node) return;
@@ -191,6 +210,12 @@ async function walkHop(
   for (const t of tensions) {
     edges.push({ from, to: t.other, kind: "tension" });
     await loadNode(vaultRoot, t.other, visited);
+  }
+
+  const superseded = supersededByDoc.get(from) ?? [];
+  for (const s of superseded) {
+    edges.push({ from, to: s.other, kind: "superseded" });
+    await loadNode(vaultRoot, s.other, visited);
   }
 }
 
