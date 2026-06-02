@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { aggregateScore } from "../../src/eval/score.js";
-import type { Grade, Question, Tier } from "../../src/eval/types.js";
+import type { Grade, Question, Tier, Trace } from "../../src/eval/types.js";
 
 function q(tier: Tier, i: number): Question {
   return {
@@ -20,6 +20,17 @@ function g(question: Question, k: number, v: "yes" | "partial" | "no" | "ungrade
     verdict: v,
     reasoning: "",
     grader_model: "claude-sonnet-fake",
+  };
+}
+function tr(totalToolCalls: number): Trace {
+  return {
+    tool_calls: [],
+    final_answer: "",
+    total_tool_calls: totalToolCalls,
+    input_tokens: 0,
+    output_tokens: 0,
+    wall_ms: 0,
+    stop_reason: "end_turn",
   };
 }
 
@@ -66,5 +77,31 @@ describe("aggregateScore", () => {
     const s = aggregateScore(grades, qs, { traces: new Map() });
     expect(s.by_tier.retrieval.mean).toBeCloseTo(1.0);
     expect(s.by_tier.retrieval.n).toBe(1);
+  });
+
+  it("tier std is the population stddev of per-question means", () => {
+    // Two retrieval questions: one all-correct (mean 1.0), one all-wrong
+    // (mean 0.0). Per-question means [1.0, 0.0] → tier mean 0.5, population
+    // std = sqrt(((1-0.5)² + (0-0.5)²)/2) = 0.5.
+    const qs = [q("retrieval", 0), q("retrieval", 1)];
+    const grades = [g(qs[0], 0, "yes"), g(qs[0], 1, "yes"), g(qs[1], 0, "no"), g(qs[1], 1, "no")];
+    const s = aggregateScore(grades, qs, { traces: new Map() });
+    expect(s.by_tier.retrieval.mean).toBeCloseTo(0.5);
+    expect(s.by_tier.retrieval.std).toBeCloseTo(0.5);
+    expect(s.by_tier.retrieval.n).toBe(2);
+  });
+
+  it("trace_efficiency averages tool calls over correct/partial runs only", () => {
+    // One question, three runs: yes(4 calls), partial(2 calls), no(100 calls).
+    // Only value>0 runs (yes, partial) count → efficiency = (4+2)/2 = 3.
+    const qs = [q("retrieval", 0)];
+    const grades = [g(qs[0], 0, "yes"), g(qs[0], 1, "partial"), g(qs[0], 2, "no")];
+    const traces = new Map<string, Trace>([
+      [`${qs[0].id}:0`, tr(4)],
+      [`${qs[0].id}:1`, tr(2)],
+      [`${qs[0].id}:2`, tr(100)], // a 'no' run — must be excluded from efficiency
+    ]);
+    const s = aggregateScore(grades, qs, { traces });
+    expect(s.by_tier.retrieval.trace_efficiency).toBeCloseTo(3);
   });
 });
