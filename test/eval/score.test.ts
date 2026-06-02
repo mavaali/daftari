@@ -198,4 +198,53 @@ describe("gradeAnswer", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.verdict).toBe("ungraded");
   });
+
+  it("extracts [path.md] citations from the answer into the grader prompt", async () => {
+    const q = {
+      id: "q1",
+      tier: "retrieval" as const,
+      question: "?",
+      expected_answer: "a",
+      expected_sources: ["a.md"],
+      origin: "generated" as const,
+    };
+    const trace = {
+      tool_calls: [],
+      final_answer: "X is foo [a.md] and also [b.md]",
+      total_tool_calls: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      wall_ms: 0,
+      stop_reason: "end_turn",
+    };
+    let capturedUser = "";
+    const capturing: LlmClient = {
+      complete: async () => ({
+        ok: true,
+        value: { text: "", input_tokens: 0, output_tokens: 0, stop_reason: "end_turn" },
+      }),
+      completeJson: async (opts) => {
+        capturedUser = opts.user;
+        return {
+          ok: true,
+          value: {
+            parsed: { correct: "yes", reasoning: "" },
+            text: "",
+            input_tokens: 0,
+            output_tokens: 0,
+            stop_reason: "end_turn",
+          },
+        };
+      },
+      completeWithTools: async () => ({
+        ok: false,
+        error: { kind: "llm", message: "n/a", retryable: false },
+      }),
+    };
+    const r = await gradeAnswer(q, 0, 0, trace, capturing, { model: "claude-sonnet-fake" });
+    expect(r.ok).toBe(true);
+    // extractCitations pulled both [a.md] and [b.md] and they were joined into
+    // the {{CITED_SOURCES}} slot of the grader prompt.
+    expect(capturedUser).toContain("a.md, b.md");
+  });
 });
