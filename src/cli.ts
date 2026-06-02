@@ -31,6 +31,7 @@ Usage:
   daftari --init [path]               Scaffold a new vault (default: ./daftari-vault)
   daftari --vault <path> [options]    Start the MCP server (stdio) against a vault
   daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
+  daftari eval [options]              Cortex quality metric (see: daftari eval --help)
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
@@ -239,6 +240,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "audit") {
     const { runAudit } = await import("./audit/index.js");
     process.exitCode = await runAudit(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "eval") {
+    const { runEval } = await import("./eval/index.js");
+    process.exitCode = await runEval(argv.slice(1));
     return;
   }
 
