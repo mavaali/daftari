@@ -233,10 +233,20 @@ function trimToCap(
   }
   const ranked = [...visited.entries()]
     .map(([path, node]) => ({ path, node, degree: degree.get(path) ?? 0 }))
-    .sort((a, b) => (a.path === seed ? -1 : b.path === seed ? 1 : b.degree - a.degree));
+    .sort((a, b) => {
+      if (a.path === seed) return -1;
+      if (b.path === seed) return 1;
+      // Higher degree wins; path tiebreak keeps the cut deterministic
+      // independent of engine sort stability.
+      return b.degree - a.degree || a.path.localeCompare(b.path);
+    });
   return ranked.slice(0, cap).map((r) => r.node);
 }
 
+// Deliberately matches only standard markdown links to in-vault `.md` files —
+// `[text](path.md)` / `[text](path.md#anchor)`, skipping web/mailto and
+// absolute-rooted hrefs. Wiki-style `[[links]]` are not a Daftari vault
+// convention and are intentionally unsupported.
 function extractInVaultLinks(body: string): string[] {
   const out: string[] = [];
   const re = /\[[^\]]*\]\(([^)]+\.md)(?:#[^)]*)?\)/g;

@@ -51,15 +51,24 @@ describe("sampleSubgraph", () => {
     // when one is the seed. Asserted softly: edges of kind 'sources' exist
     // somewhere in the returned subgraph for at least one of three seeds.
     const seeds = ["seed-a", "seed-b", "seed-c"];
+    const landedOn: string[] = [];
     let sawSourcesEdge = false;
     for (const seed of seeds) {
       const r = await sampleSubgraph(vault, seed, { maxNodes: 5 });
-      if (r.ok && r.value.edges.some((e) => e.kind === "sources")) {
+      if (!r.ok) continue;
+      landedOn.push(r.value.seed_doc);
+      if (r.value.edges.some((e) => e.kind === "sources")) {
         sawSourcesEdge = true;
         break;
       }
     }
-    expect(sawSourcesEdge).toBe(true);
+    // If this fails, the message disambiguates a broken walker from seed drift:
+    // check whether `landedOn` includes any source-bearing doc before assuming
+    // the walker regressed.
+    expect(
+      sawSourcesEdge,
+      `no 'sources' edge across seeds [${seeds.join(", ")}]; seed docs landed on: [${landedOn.join(", ")}]`,
+    ).toBe(true);
   });
 
   it("walks superseded_by revision edges and includes both endpoints as nodes", async () => {
@@ -72,10 +81,12 @@ describe("sampleSubgraph", () => {
     // The bidirectional edge means any seed landing on either cirrus doc
     // connects both endpoints into the returned subgraph.
     const seeds = ["s0", "s6", "s7", "s9", "s13", "seed-a", "seed-b", "seed-c"];
+    const landedOn: string[] = [];
     let connected = false;
     for (const seed of seeds) {
       const r = await sampleSubgraph(vault, seed, { maxNodes: 5 });
       if (!r.ok) continue;
+      landedOn.push(r.value.seed_doc);
       const hasEdge = r.value.edges.some((e) => e.kind === "superseded");
       const paths = new Set(r.value.nodes.map((n) => n.path));
       if (hasEdge && paths.has(OLD) && paths.has(NEW)) {
@@ -83,6 +94,11 @@ describe("sampleSubgraph", () => {
         break;
       }
     }
-    expect(connected).toBe(true);
+    // On failure, `landedOn` shows where the seeds resolved: if none is a cirrus
+    // doc this is seed drift (widen the list), not a walker regression.
+    expect(
+      connected,
+      `no superseded edge connecting both cirrus docs across seeds [${seeds.join(", ")}]; seed docs landed on: [${landedOn.join(", ")}]`,
+    ).toBe(true);
   });
 });
