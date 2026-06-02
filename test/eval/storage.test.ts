@@ -6,17 +6,12 @@ import {
   appendHistory,
   readHistory,
   readQuestionSet,
-  readResults,
   writeQuestionSet,
-  writeResults,
-  writeScore,
 } from "../../src/eval/storage.js";
 import {
-  type EvalRun,
   HISTORY_RETENTION,
   type HistoryEntry,
   type QuestionSet,
-  type Score,
   SPEC_VERSION,
 } from "../../src/eval/types.js";
 

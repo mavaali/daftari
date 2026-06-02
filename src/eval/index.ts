@@ -1,6 +1,6 @@
 // src/eval/index.ts
 // Top-level CLI dispatcher for `daftari eval`. Parses flags, routes to
-// generate/run/score/top-level, translates Result<T, EvalError> to exit
+// generate/run/score/top-level, translates Result<T, CortexEvalError> to exit
 // codes (2 = config, 3 = runtime/llm).
 
 import { createHash } from "node:crypto";
@@ -32,9 +32,12 @@ const HELP = `daftari eval — cortex quality metric.
 
 Usage:
   daftari eval [--vault <path>] [--n <count>] [--k <count>] [--seed <str>]
-  daftari eval generate [--vault <path>] [--n <count>] [--seed <str>] [--output <path>]
-  daftari eval run      [--questions <path>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>]
-  daftari eval score    [--results <path>] [--grader-model <id>]
+  daftari eval generate [--vault <path>] [--n <count>] [--seed <str>]
+  daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>]
+  daftari eval score    [--results <id>] [--vault <path>] [--grader-model <id>]
+
+  (--questions and --results take the artifact id printed by a prior stage,
+   not a file path; artifacts live under .daftari/eval/.)
 
 Defaults:
   --n 15      total questions across three tiers (5 each)
