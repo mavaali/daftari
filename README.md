@@ -23,8 +23,9 @@ session ends.
 
 Daftari takes the other path: **compilation over retrieval.** The agent
 synthesizes an answer once, writes it back as a durable document, and every
-later read starts from that compiled result. The vault gets better the more it
-is used.
+later read starts from that compiled result. The compiler is the agent;
+Daftari is the substrate that catches and persists what the agent
+consolidates. The vault gets better the more it is used.
 
 A human cortex doesn’t re-derive everything from sensory input each time it
 thinks. It consolidates: experiences become memories, memories become
