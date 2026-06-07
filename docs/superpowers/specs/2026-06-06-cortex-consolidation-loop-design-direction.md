@@ -10,7 +10,15 @@
 > (§3.7, path-irreversibility / trust budget), made §4 concrete (the airlock-envelope + an
 > irreversibility table), fully resolved the §5 keystone via a **two-gate split** (§5.2), and
 > reframed §6 around variance-reduction + a new open empirical question (§6.1, the
-> comprehension-load ablation). Strength-model decisions Q1–Q4 locked (see §3.5 / §5.2).
+> comprehension-load ablation). Strength-model decisions Q1–Q5 locked (see §3.5 / §5.2).
+>
+> **REVISED again 2026-06-06 (scheduler pass):** added §5.3 — the scheduler (Component C):
+> strength-scaled intervals + backstop (C-Q1), compounding-attenuated event-blast (C-Q2),
+> three-tier priority under a compute budget (C-Q3), drain-under-ceiling with self-triggers
+> deferred (C-Q4). A longitudinal "combined-budgets" review surfaced two **ratchets**
+> (entrenchment, periphery starvation); §5.3.1 reopens strength-Q4 to add **strength aging** +
+> **backstop-as-guarantee**, and §6 now requires B to measure **coverage/equity, not just
+> quality** (second-order Goodhart). See §8 #8–#10 for newly-open items.
 
 ---
 
@@ -429,9 +437,93 @@ defeat *both* gates at once (strength inflates, budget passes), reproducing `A�
 - **Q4 — decay:** a **case-2 contradiction** (re-derivation fails with *no* upstream change) =
   **contest-and-revoke** — drop the edge below trigger-authority + log a `tension` (surface, don't
   silently decrement). A **case-1 failure** (re-derivation fails *because* an endpoint changed) is
-  **C's trigger**, not a penalty.
+  **C's trigger**, not a penalty. **(REVISED — see §5.3.1: strength also *ages* with
+  time-since-re-derivation, to make entrenchment structurally impossible.)**
 - **Q5 — autonomy:** **Synergy** (§3.7) — strength-gated envelope auto-write that the pass can see;
   behaves like surface/propose at cold-start (empty ledger) and graduates itself out of fatigue.
+
+---
+
+## 5.3 The scheduler (Component C) — the spaced-repetition layer
+
+C decides **what to re-derive, when**, under a scarce **compute budget** — distinct from §4's
+write/trust budget. Re-derivation is read-path (`I = 0` on the *write* gate) but consumes LLM calls,
+so it needs its own per-session cap. Two clocks: the **event clock** (a `do()` on Y forces
+dependents due) and the **decay clock** (the forgetting curve). Decisions made (scheduler C-Q1..C-Q4):
+
+- **C-Q1 — interval model: strength-scaled + max-interval backstop.** Review interval is a function
+  of an edge's (aged) strength — well-consolidated edges reviewed rarely, fragile ones soon (the
+  spacing economy). A strength-independent **max-interval cap** guarantees even the strongest edge is
+  re-derived at least every N (growth-mindset "nothing is permanently trusted"; defense against
+  silent rot given v1's low-recall dependency graph, §5).
+- **C-Q2 — event-blast: compounding-attenuated.** When Y changes, the "due now" wave propagates but
+  **attenuates by path strength** (∏ of edge strengths along the path from Y) and dies where
+  compounded reliability drops below a floor — the causal blast reaches exactly as far as the signal
+  survives the hops (the ATP path-irreversibility insight on the *trigger* side; third use of the
+  ∏-path-strength primitive). Implemented as `vault_tension_blast` + a path-strength stop condition.
+  Not 1-hop (misses transitive rot); not full-closure (the re-curation storm, §5).
+- **C-Q3 — priority: three tiers under the compute budget.** When more is due than budget allows:
+  (1) **backstop-overdue** edges (non-negotiable — see the guarantee in §5.3.1); (2) **event-
+  triggered** items (a real change is stronger staleness evidence than time); (3) **decay-triggered**
+  items. Within each tier, rank by fragility×blast ≈ `(1 − strength/K) × downstream-conditioning`.
+  Operationalizes §6's confounder (causal trigger outranks mere time).
+- **C-Q4 — stop condition: drain-under-ceiling, self-triggers deferred.** A session drains the
+  prioritized due-queue until empty *or* the compute budget is hit. **Writes produced this session do
+  NOT re-trigger the event clock within the session** — self-generated staleness queues for the
+  *next* session. This terminates by construction (finite, non-replenishing queue), bounds the ATP
+  **iteration mode** (the loop can't feed itself), AND enforces Q3-independence: re-deriving your own
+  just-written edge in the same sitting is **cramming** (correlated, weak) — the inter-session gap
+  *is* what makes the next re-derivation an independent vote. Iteration-safety and anti-cramming are
+  the same rule.
+
+### 5.3.1 Strength dynamics, revised (reopens strength-Q4) — entrenchment is the ratchet to kill
+
+**The longitudinal hazard:** C-Q1 (interval scales with strength) × the original strength-Q4
+(strength changes *only* on re-derivation outcome) **= entrenchment.** A strong edge is reviewed
+least → has the fewest chances to be contested → stays strong almost regardless of continued truth.
+The schedule protects an edge from the re-derivation that could falsify it — rich-get-richer, the
+**fixed-mindset cortex manufactured by the scheduler itself** (contra §3.6). Fix = two mechanisms so
+entrenchment is *structurally impossible*, not merely discouraged:
+
+- **(a) Backstop-as-guarantee, not priority.** Reserve a slice of each session's compute budget for
+  backstop-overdue edges (or let a backstop-overdue edge *force* a session). Makes C-Q1's cap real
+  even in busy sessions.
+- **(b) Strength aging (NEW — the strength-Q4 reopen).** Strength **decays gently with
+  time-since-last-re-derivation.** This is NOT the silent-arithmetic contradiction-penalty rejected
+  in the original Q4 (that was about *failed* re-derivations). Aging asserts nothing about
+  correctness — only that the last verification is old, so confidence is provisional again. It is
+  **observable** (the interval shrinks → the edge surfaces as due sooner), **reversible** (a survived
+  re-derivation restores it), and it is the **forgetting curve made mechanical** = growth-mindset as
+  a scheduling law: nothing stays "known" without re-test. Aging caps how long an interval can grow
+  for an un-retested edge → entrenchment cannot occur.
+
+**Revised strength model (supersedes §5.2 strength-Q4):**
+- survive independent re-derivation → strength += 1 (cap K)
+- **age:** strength decays slowly with time since last re-derivation (gentle; surfaces as due-sooner;
+  not a contradiction)
+- contest (case-2: fails, *no* upstream change) → contest-and-revoke + log tension
+- upstream change (case-1) → C's trigger; mark due; no penalty
+- interval = f(current *aged* strength), hard-capped by the max-interval backstop (guaranteed via
+  reserved budget per (a))
+
+### 5.3.2 Longitudinal / budget-drift hazards (the combined-budget question)
+
+Stacked budgets (write/trust §4, compute §5.3, intervals C-Q1, priority C-Q3) interact over time to
+produce **ratchets** — monotonic drift invisible at the per-session level:
+
+1. **Strength entrenchment** — addressed structurally by §5.3.1 (a)+(b).
+2. **Periphery starvation** — low-blast edges are perpetually deprioritized (low blast →
+   deprioritized → never re-derived → strength stays low → always due → still low blast …). A
+   well-consolidated core beside a silently rotting periphery. Mitigated by §5.3.1(a) + the B
+   coverage instrumentation (§6); **not yet fully solved** — open decision.
+3. **Action-mix drift toward cheap writes** [HYPOTHESIS — weaker] — persistent write-budget pressure
+   could bias the loop toward cheap `link` ops over expensive-but-correct `deprecate`/`merge`. ATP
+   found no within-session "Structural Gaming" at N=10, but the longitudinal version isn't ruled out,
+   and link-inflation feeds the link graph (PageRank-poison adjacency, C-Q2).
+
+**These are second-order Goodhart:** nobody games B directly (forbidden, §3), but the *budget
+structure* produces drift B-as-quality cannot perceive — B would report health *during* decay.
+Therefore B must be instrumented for **coverage/equity, not just quality** (see §6).
 
 ---
 
@@ -443,6 +535,17 @@ airlock < 1.0; *"a deployer who needs a worst-case guarantee gets one from the a
 So Component B, applied to the loop, should **not** headline "did N=2 move the quality number." It
 should show **the envelope bounds worst-case drift** — the variance/tail of cortex quality across
 runs, not just the mean delta. This is more honest and better-supported by the analogous data.
+
+**B must also measure coverage/equity, not only quality (the budget-drift requirement, §5.3.2).**
+The stacked budgets produce ratchets (entrenchment, periphery starvation) that leave *central*
+traversal quality looking fine while the vault drifts — B-as-quality would report health *during*
+decay (second-order Goodhart). So B (or a sibling monitor) must track, across sessions:
+- **strength distribution over time** — is variance widening (core strengthening while periphery
+  flatlines)?
+- **backstop-overdue count** — how many edges are past their guaranteed review and still unserved?
+- **action-mix drift** — is the `do()` mix creeping toward cheap `link` ops over `deprecate`/`merge`?
+These instrument the never-optimize-the-measure invariant in a new way: B must measure what the
+budgets can break, or the budgets break it blind.
 
 ### 6.1 Open empirical question — the consolidation loop as the comprehension-load ablation
 
@@ -512,8 +615,18 @@ The spec must be honest about identifiable vs. aspirational:
    a pass's input/output and the stop condition (fixpoint? N passes? budget-exhaustion? K reached?).
 6. **Effect estimation** (§6) — held-out question set; attribute a *variance*/tail delta (not just
    mean) to a pass; run the §6.1 comprehension-load ablation.
-7. **The scheduler (C) / forgetting curve** — dependency-change vs. TTL/staleness as "due for
-   review"; the spacing economy (don't re-derive everything every pass). *Next brainstorm topic.*
+7. ~~The scheduler (C) / forgetting curve~~ → **RESOLVED** (§5.3): strength-scaled intervals +
+   max-interval backstop (C-Q1); compounding-attenuated event-blast (C-Q2); three-tier priority under
+   a compute budget (C-Q3); drain-under-ceiling with self-triggers deferred (C-Q4). Strength model
+   revised to add **aging** + **backstop-as-guarantee** (§5.3.1) to kill entrenchment.
+
+**Newly open (from the scheduler / longitudinal pass):**
+8. **Compute-budget calibration** — per-session re-derivation cap; the reserved backstop slice; the
+   aging rate and interval function `f(strength)`. Calibrate via B.
+9. **Periphery starvation — full fix** (§5.3.2 #2). Backstop-guarantee + coverage instrumentation
+   *mitigate* but don't *solve* it. Open: a fairness floor in priority? round-robin reserve?
+10. **B coverage/equity instrumentation** (§6) — strength-distribution drift, backstop-overdue count,
+    action-mix drift. Required so budget-drift ratchets are *visible*.
 
 ---
 
