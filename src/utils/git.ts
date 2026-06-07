@@ -105,6 +105,62 @@ export async function commit(
   return ok({ hash: hash.value.trim() });
 }
 
+// Per-file git provenance, used by `daftari backfill` (§11.1) to derive
+// frontmatter dates and authorship from history. Each field is null when git
+// has nothing to say about the file — no repo, an empty/shallow history, or a
+// path that has never been committed — so the caller can fall back to fs mtime.
+//
+//   created   ← first commit that ADDED the file (--diff-filter=A, oldest)
+//   updated   ← most recent commit touching the file
+//   author    ← author (%aN) of that most recent commit
+//
+// Dates are committer dates in YYYY-MM-DD (%cs), matching the frontmatter date
+// format. Two git invocations: one for the add-date, one for the last commit's
+// date+author together.
+export interface FileGitMeta {
+  created: string | null;
+  updated: string | null;
+  author: string | null;
+}
+
+export async function fileGitMeta(vaultRoot: string, relPath: string): Promise<FileGitMeta> {
+  if (!(await isGitRepo(vaultRoot))) {
+    return { created: null, updated: null, author: null };
+  }
+
+  // First add-commit's date. --reverse lists oldest-first; the first line is
+  // the original creation. A renamed file's pre-rename history is not followed
+  // (no --follow): the date reflects when the file appeared at this path.
+  let created: string | null = null;
+  const addLog = await git(vaultRoot, [
+    "log",
+    "--diff-filter=A",
+    "--format=%cs",
+    "--reverse",
+    "--",
+    relPath,
+  ]);
+  if (addLog.ok) {
+    const first = addLog.value.split("\n").find((l) => l.trim().length > 0);
+    created = first ? first.trim() : null;
+  }
+
+  // Last commit's date and author in one record (\x1f-separated).
+  let updated: string | null = null;
+  let author: string | null = null;
+  const lastLog = await git(vaultRoot, ["log", "-1", "--format=%cs%x1f%aN", "--", relPath]);
+  if (lastLog.ok) {
+    const line = lastLog.value.trim();
+    if (line.length > 0) {
+      const [date, name] = line.split("\x1f");
+      updated = date && date.trim().length > 0 ? date.trim() : null;
+      author = name && name.trim().length > 0 ? name.trim() : null;
+    }
+  }
+
+  return { created, updated, author };
+}
+
 // Returns the most recent commits, newest first. `path`, when given, scopes
 // the log to a single file's history.
 export async function log(

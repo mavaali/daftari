@@ -1,7 +1,20 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { commit, ensureGitRepo, gitIdentity, isGitRepo, log } from "../../src/utils/git.js";
+import {
+  commit,
+  ensureGitRepo,
+  fileGitMeta,
+  gitIdentity,
+  isGitRepo,
+  log,
+} from "../../src/utils/git.js";
+import {
+  buildFrontmatterLessVault,
+  cleanupVault as cleanupFmVault,
+} from "../helpers/frontmatter-less-vault.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 describe("git", () => {
@@ -59,5 +72,29 @@ describe("git", () => {
   it("fails a commit with no paths", async () => {
     const result = await commit(vault, [], "empty", "agent:tester");
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("fileGitMeta", () => {
+  it("reads add-date, last-date, and last author from history", async () => {
+    const fmVault = buildFrontmatterLessVault();
+    try {
+      const meta = await fileGitMeta(fmVault, "specs/data-movement/foo.md");
+      expect(meta.created).toBe("2025-04-12"); // first add commit
+      expect(meta.updated).toBe("2025-05-01"); // most recent commit
+      expect(meta.author).toBe("Mihir Wagle");
+    } finally {
+      cleanupFmVault(fmVault);
+    }
+  });
+
+  it("returns nulls outside a git repo", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "daftari-nogit-"));
+    try {
+      const meta = await fileGitMeta(dir, "anything.md");
+      expect(meta).toEqual({ created: null, updated: null, author: null });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

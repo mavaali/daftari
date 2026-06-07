@@ -82,6 +82,13 @@ export interface DaftariConfig {
   // providers preserves both side's rows — the new provider populates a
   // fresh row set on first reindex, and switching back reuses the old.
   embeddingProvider: EmbeddingProviderId;
+  // Optional git-author → identity mapping consumed by `daftari backfill`
+  // (§11.1) when deriving the `updated_by` frontmatter field from a doc's git
+  // history. Keys are raw git author names (`%aN`); values are Daftari
+  // identities (e.g. `human:mihir`). A git author absent from the map falls
+  // back to a slugified `human:<author>` default. Empty when the optional
+  // `backfill.identity_map` block is absent.
+  backfillIdentityMap: Record<string, string>;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -95,6 +102,7 @@ function emptyConfig(): DaftariConfig {
     watch: true,
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
+    backfillIdentityMap: {},
   };
 }
 
@@ -350,6 +358,31 @@ function validateHooks(raw: unknown): Result<HookConfig, Error> {
   return ok({ preWrite: preWrite.value, preWriteTransform: preWriteTransform.value });
 }
 
+// Parses the optional `backfill` block, returning its `identity_map` as a
+// flat string→string record. A missing block yields an empty map. The block,
+// the map, and every entry must be the right shape — a malformed declaration
+// fails config load, the same loud-failure contract as RBAC and extensions.
+function validateBackfillIdentityMap(raw: unknown): Result<Record<string, string>, Error> {
+  if (raw === undefined) return ok({});
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'backfill' must be a mapping"));
+  }
+  const block = raw as Record<string, unknown>;
+  const rawMap = block.identity_map;
+  if (rawMap === undefined) return ok({});
+  if (rawMap === null || typeof rawMap !== "object" || Array.isArray(rawMap)) {
+    return err(new Error("'backfill.identity_map' must be a mapping"));
+  }
+  const out: Record<string, string> = {};
+  for (const [author, identity] of Object.entries(rawMap as Record<string, unknown>)) {
+    if (typeof identity !== "string" || identity.length === 0) {
+      return err(new Error(`'backfill.identity_map.${author}' must be a non-empty string`));
+    }
+    out[author] = identity;
+  }
+  return ok(out);
+}
+
 // Loads and validates the vault's RBAC config. A missing file is not an error
 // — it produces an empty role set. A file that parses but violates the schema,
 // or fails to parse at all, returns Result.err so the server can refuse to
@@ -400,6 +433,11 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
 
   const hooks = validateHooks(root.hooks);
   if (!hooks.ok) return err(new Error(`malformed config: ${hooks.error.message}`));
+
+  const backfillIdentityMap = validateBackfillIdentityMap(root.backfill);
+  if (!backfillIdentityMap.ok) {
+    return err(new Error(`malformed config: ${backfillIdentityMap.error.message}`));
+  }
 
   let autoCommit = true;
   if (root.auto_commit !== undefined) {
@@ -472,5 +510,6 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     watch,
     warmEmbeddings,
     embeddingProvider,
+    backfillIdentityMap: backfillIdentityMap.value,
   });
 }

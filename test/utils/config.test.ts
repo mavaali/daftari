@@ -429,4 +429,47 @@ describe("loadConfig — schema extensions", () => {
     if (result.ok) return;
     expect(result.error.message).toContain("malformed config");
   });
+
+  describe("backfill.identity_map", () => {
+    it("yields an empty map when the block is absent", () => {
+      writeConfig("roles:\n  admin:\n    read: ['*']\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.backfillIdentityMap).toEqual({});
+    });
+
+    it("parses git-author → identity mappings", () => {
+      writeConfig(
+        [
+          "backfill:",
+          "  identity_map:",
+          '    "Mihir Wagle": human:mihir',
+          '    "github-actions[bot]": agent:github-actions',
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.backfillIdentityMap).toEqual({
+        "Mihir Wagle": "human:mihir",
+        "github-actions[bot]": "agent:github-actions",
+      });
+    });
+
+    it("rejects a non-mapping identity_map", () => {
+      writeConfig("backfill:\n  identity_map:\n    - not-a-mapping\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("backfill.identity_map");
+    });
+
+    it("rejects an empty identity value", () => {
+      writeConfig('backfill:\n  identity_map:\n    "Mihir Wagle": ""\n');
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+    });
+  });
 });

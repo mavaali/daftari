@@ -32,6 +32,7 @@ Usage:
   daftari --vault <path> [options]    Start the MCP server (stdio) against a vault
   daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
+  daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
@@ -59,6 +60,9 @@ const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files — ne
 # runs with auto_commit: false inside a larger repo: keeps the host repo's
 # git status clean of Daftari's per-write log churn.
 .daftari/curation-log.jsonl
+# Transient backfill staging surface (daftari backfill --plan). The apply
+# commit is the durable audit trail — the plan itself is never committed.
+.daftari/backfill-plan.jsonl
 `;
 
 // Example documents written by --init. Content is fictional: "Aurora" and
@@ -246,6 +250,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "eval") {
     const { runEval } = await import("./eval/index.js");
     process.exitCode = await runEval(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "backfill") {
+    const { runBackfill } = await import("./backfill/index.js");
+    process.exitCode = await runBackfill(argv.slice(1));
     return;
   }
 
