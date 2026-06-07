@@ -648,10 +648,8 @@ direction doc.
 - Mihir's blog corpus as design DNA: *Hallucinated Intent & the Envelope Problem* (the envelope),
   *The Inference Trap* / *The Clean Data Trap* (correlation≠truth), *Trust Is a Ledger, Not a
   Feeling* (reversibility/audit over feelings).
-- **Mihir's *Agentic Trust Protocol* paper** (`~/projects/agentic-trust-protocol`) — the formal
-  spine for §3.7/§4: path irreversibility `I*`, the visibility asymmetry, the four composition
-  modes, the trust budget, the irreversibility table, the Visibility×Enforcement 2×2, and the `A₃`
-  finding that grounds the two-gate split. *Note:* `STATUS.md` and `docs/paper/draft.md` currently
-  disagree on how much multi-replicate data exists (STATUS: "zero replicates for B1/B2/C1/D1, run
-  truncated"; draft §6.3: full N=10 with bootstrap CIs) — reconcile before that paper's preprint;
-  does not affect this design, which leans on the paper's *argument*, not its effect sizes.
+- **Mihir's *Agentic Trust Protocol* paper** — the formal spine for §3.7/§4: path irreversibility
+  `I*`, the visibility asymmetry, the four composition modes, the trust budget, the irreversibility
+  table, the Visibility×Enforcement 2×2, and the `A₃` finding that grounds the two-gate split. This
+  design leans on the paper's *argument* (the visibility-asymmetry / two-gate structure), not its
+  effect sizes.
