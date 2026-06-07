@@ -4,6 +4,13 @@
 > working document that re-establishes the frameworks and captures decisions reached so a
 > fresh session can resume the brainstorm cold and move to a real spec. Written 2026-06-06
 > after the cortex quality metric (Component B) shipped in v1.16.0 (PR #99).
+>
+> **REVISED 2026-06-06 (same day):** grounded the autonomy/blast-radius design in Mihir's
+> *Agentic Trust Protocol* paper (`~/projects/agentic-trust-protocol`). This added Framework 4
+> (§3.7, path-irreversibility / trust budget), made §4 concrete (the airlock-envelope + an
+> irreversibility table), fully resolved the §5 keystone via a **two-gate split** (§5.2), and
+> reframed §6 around variance-reduction + a new open empirical question (§6.1, the
+> comprehension-load ablation). Strength-model decisions Q1–Q4 locked (see §3.5 / §5.2).
 
 ---
 
@@ -197,23 +204,123 @@ If it can't be reduced to those, it's metaphor and gets cut.
 
 ---
 
-## 4. The envelope (working definition)
+## 3.7 Framework 4 — Path Irreversibility & the Trust Budget (Mihir's *Agentic Trust Protocol*)
 
-The envelope is a **small, opinionated, pre-declared policy over interventions.** Inside it, a
-pass may act without per-item review; outside it, the pass stops and surfaces.
+Source: `~/projects/agentic-trust-protocol` — paper *"Two-Way Doors, One-Way Trajectories: A
+Compositional Account of LLM Agent Safety"* (`docs/paper/draft.md`), `docs/formal-model.md`,
+`docs/failure-catalog.md`, `STATUS.md`. This is the framework that makes §4 concrete.
 
-**Candidate invariants (the "small opinionated set" — to be finalized in the spec):**
+**The load-bearing theorem.** Per-action irreversibility `I(w) ∈ [0,1]` is distinct from **path
+irreversibility** `I*(π, W₀)`. *A series of two-way doors composes into a one-way door whenever
+the world moves between steps* — `I*(π)` can equal 1 even when every `I(aᵢ) < 1`. **The visibility
+asymmetry:** a single forward pass is *structurally* incapable of computing `I*` — it cannot see
+undecided future actions, the session-start state `W₀`, or counterfactual reversal trajectories.
+This is an input-availability argument, not a model-quality argument: *better models do not fix
+it.* (This is the paper's foundation, and it is a priori — it needs no experiment.)
+
+**Four composition modes** (the failure catalog), and the Daftari loop-failure each maps to:
+- **Accumulation** — too many doors before retreat is feasible → the **consolidation storm** (many
+  small curation writes compound).
+- **Premise** — subsequent doors are one-way given a wrong premise → a pass acts on a
+  wrong-but-asserted edge; later passes condition on it.
+- **Classification** — a one-way door misjudged as two-way → `merge` treated as cheap.
+- **Iteration** — a locally-reversible loop exits the recoverable region → **C re-triggers itself.**
+
+**THE TWO-GATE SPLIT (this is what the paper buys us — see §5.2).** The paper's `A₃` result is the
+sharpest finding for us: the airlock did *worse* than naive because the "propose comprehensively,
+gate later" pattern *reached higher-blast action types the naive baseline never got to*, and the
+budget waved it through (3 × 0.9 = 2.7 < B₀ = 3.0). **The budget gates path *shape* (count,
+audience, action-type), never content *veracity*.** Therefore two non-substitutable gates, catching
+disjoint failure modes:
+
+1. **Strength / independence gate (§3.5, Q1–Q4)** — the *only* defense against **premise-wrong-as-
+   fact** (`A₃`). If re-derivations are *correlated* (share the wrong premise), strength climbs AND
+   the budget passes it — `A₃` at the graph level. This is why Q3's "blind + varied axis"
+   independence is load-bearing, not hygiene: the budget *cannot* supply this defense.
+2. **Trust-budget gate (§4)** — the *only* defense against **accumulation + iteration**, which no
+   single strong pass can see (the visibility asymmetry). `Σ I(aᵢ)` under-estimates `I*`, so the
+   budget gates *early* = the correct error direction (conservative by construction).
+
+**The justification shift (Daftari-specific — load-bearing, [HYPOTHESIS]).** The paper's budget is
+motivated by *irreversibility* (you can't un-send an email). Daftari is git-backed + never-delete,
+so *mechanical* reversal is free and that motivation **evaporates.** What remains is the *other*
+justification — **reviewer comprehension load** (the Envelope essay, §2: "assessment requires
+comprehension; comprehension requires time"). So in Daftari **the trust budget bounds epistemic
+coherence-restoration cost + reviewer comprehension load, not irreversibility.** The metric ports;
+its justification changes — which fuses the *Trust Protocol* and the *Envelope* essays, because
+Daftari removes the one variable (irreversibility) that distinguished them. See §6.1 for why this
+makes the consolidation loop a clean *ablation* the email setup could not run.
+
+**Visibility × Enforcement (the paper's §7.9 — resolves our autonomy/fatigue question).** Four
+cells: *Naive* (neither), *Hard-Gate* (enforcement, no visibility — safety floor, doesn't use the
+model's reasoning to avoid the gate), *Prompted-Budget* (visibility, no enforcement — *"necessary
+but insufficient,"* same accumulation failures), and **Synergy** (both — the pass *sees its
+remaining budget before the gate fires* and self-limits). **Target = Synergy.** This is the answer
+to "pure-advisory has the fatigue issue": the fix is not removing the gate (Naive) nor pure
+surfacing (Prompted-Budget, insufficient) — it is a hard budget the pass can see, so it stops on
+its own and the human is rarely interrupted. The paper's §6.8 corroborates: the architecture is
+*cheaper, not more expensive* (read-path clarification short-circuits multi-step chains).
+
+**Premise-freshness is mandatory and already in Daftari.** The paper's `B₁` narrative: the airlock
+*fell into a trap naive caught* until premise-validity + information-sufficiency were *explicitly*
+added to the read-path prompt. Daftari's `vault_read` already returns a **decay assessment +
+validation report** — that is the premise-freshness hook; wire it into the pass's read path
+(satisfies §4's provenance-required + tension-respect invariants from existing machinery).
+
+**Compensation / Saga = v2.** The architecture is *preventive only* (gates before firing); the
+paper defers compensating transactions (Saga; semantic, time-decaying; the compensator itself
+consumes budget) to its paper 2. Daftari's advantage: `git revert` is a *genuine* compensator, not
+the lossy "un-inform a recipient." But the epistemic-irreversibility point survives — reverting
+pass 1 after pass 2 conditioned on it requires unwinding pass 2 (the Saga *combined-transaction*
+problem). **v1 = preventive (budget + staging). v2 = compensation-aware multi-pass rollback.**
+
+---
+
+## 4. The envelope (the airlock, made concrete)
+
+The envelope is the **airlock**: a read path that *proposes*, a staging area that *holds*, and a
+write path that *gates*. It is a **small, opinionated, pre-declared policy over interventions** —
+the human ratifies the policy once (policy-time), the pass acts within it, and surfaces at the
+boundary. It has two parts: **invariants** (the premise/veracity gates) and a **trust budget** (the
+accumulation gate). Per §3.7 these are non-substitutable.
+
+**Part 1 — Invariants (the "small opinionated set" — to be finalized in the spec):**
 - **Never-delete.** Curation never reaps. Deprecate/supersede/annotate only. (Existing charter.)
 - **Provenance-required.** No `do()` on a doc whose provenance/derivation is unknown or broken.
+- **Premise-freshness.** Read `vault_read`'s decay/validation report into the pass's read path
+  (the `B₁` lesson — without an explicit freshness hook the loop walks into traps a naive pass
+  catches). Stale/decayed premise → surface, don't act.
 - **Tension-respect.** No auto-action on a doc touched by an *unresolved* tension; surface instead.
-- **Reversible-only.** Only interventions that git + provenance make cleanly reversible may
-  auto-apply. (Daftari already auto-commits every write → git is the reversibility substrate.)
 - **Never-optimize-the-measure.** No intervention whose justification is "this should raise B."
-- **Confidence + blast-radius gate.** Auto-act only above a confidence threshold AND below a
-  blast-radius threshold (how many downstream docs the change touches). Big blast → surface.
 
-**Open:** what "confidence" and "blast radius" mean concretely for a *knowledge* intervention
-(unlike a $-amount on a trade) — see §6.
+**Part 2 — The trust budget (the accumulation gate, ported from §3.7's formal model):**
+A monotonically-decreasing per-consolidation-session scalar `Bₜ`. Each approved `do()` deducts its
+irreversibility weight `I`. When `Bₜ < I(next)`, the pass **checkpoints → surfaces** (does not
+auto-write). In **Synergy** mode the pass *sees* `Bₜ` and self-limits before the gate fires. The
+budget bounds *comprehension/coherence load* (§3.7 justification shift), not literal reversibility.
+
+**The Daftari irreversibility table (`I`), ported from the paper's §4.5 [HYPOTHESIS — calibrate
+later via B, see §6]:**
+
+| Daftari `do()` | Base `I` | Blast scaling |
+|---|---|---|
+| read / search / lint | 0.0 | — |
+| annotate / `tension_log` | 0.1 | — |
+| `link` (add edge) | 0.2 | downstream-conditioning count |
+| `promote` / `deprecate` | 0.6 | downstream-conditioning count |
+| `supersede` | 0.7 | downstream-conditioning count |
+| **`merge`** | **1.0** | — (always staged, any strength) |
+
+**Blast radius = an `I`-weight, not a standalone count.** It is the paper's audience-scaling with
+"recipients" → **count of downstream edges/docs that condition on this one** (the recompute wave).
+`I = min(I_base + k·(blast − 1), 1.0)`. A `do()` over a strong edge with a *large* downstream wave
+still costs more budget → surfaces sooner. (Closes §4's old open question about what "blast radius"
+means for a knowledge intervention.)
+
+**Strength-gated autonomy ladder (Q5, corrected — see §5.2):** an action auto-writes only if **both
+gates pass** — the edge is strength-earned (Q1–Q4) *and* the budget can absorb its `I`. v1 caps the
+auto-write tier at low-`I` ops; `merge` and any contested edge always stage regardless of strength
+(the `A₃` lesson: the gate meant to catch high-blast can be the thing that *reaches* it).
 
 ---
 
@@ -295,9 +402,62 @@ candidate graph (not the wrong existing edges); let high-confidence, ratified ed
 trigger-bearing as they prove out; never auto-act on an unratified inferred edge. Earn autonomy;
 don't assume it.
 
+### 5.2 The keystone, fully resolved — two gates, not one (locked)
+
+§3.5 retired the declared-vs-inferred binary (trust = survived independent re-derivations, not how
+an edge was born). §3.7's `A₃` result completes the resolution by showing **strength alone is not
+enough** — and *why*. The strength model and the trust budget are **two non-substitutable gates
+catching disjoint failure modes:**
+
+- **Strength / independence** (Q1–Q4) catches **premise-wrong-as-fact** (`A₃`) — content veracity.
+- **Trust budget** (§4) catches **accumulation + iteration** — path shape, which the visibility
+  asymmetry proves no single pass can see.
+
+An edge earns autonomy only when **both** clear. This is the empirical (not aesthetic) justification
+for the split, and it makes Q3's independence requirement load-bearing: correlated re-derivations
+defeat *both* gates at once (strength inflates, budget passes), reproducing `A₃` on the graph.
+
+**Strength model, locked (Q1–Q4):**
+- **Q1 — unit:** strength lives on **edges** (PageRank analogy: earned from structure, not declared).
+- **Q2 — accrual:** **flat count of independent re-derivations** (cap K), **recomputed from the
+  provenance trail** (not a mutable counter), schema kept weight-ready for future recursive/PageRank
+  weighting. *Caveat:* literal PageRank over the *link* topology is Rung-1-as-Rung-2 poison — any
+  weighting must run over the **re-derivation graph**, not the link graph.
+- **Q3 — independence:** **blind** (a pass never sees the edge's prior existence/strength) **+ ≥1
+  varied axis per vote** (prompt framing / input neighborhood / model), recording *which* axis
+  varied. Tighten to enforced model-diversity later if single-model votes prove correlated.
+- **Q4 — decay:** a **case-2 contradiction** (re-derivation fails with *no* upstream change) =
+  **contest-and-revoke** — drop the edge below trigger-authority + log a `tension` (surface, don't
+  silently decrement). A **case-1 failure** (re-derivation fails *because* an endpoint changed) is
+  **C's trigger**, not a penalty.
+- **Q5 — autonomy:** **Synergy** (§3.7) — strength-gated envelope auto-write that the pass can see;
+  behaves like surface/propose at cold-start (empty ledger) and graduates itself out of fatigue.
+
 ---
 
-## 6. The hard problem — identification
+## 6. The hard problem — identification (and what B should actually measure)
+
+**What B measures, corrected (from §3.7's empirical headline).** The *Agentic Trust Protocol*
+paper's cleanest signal is **variance reduction, not mean** (naive write-count std up to 2.9 vs
+airlock < 1.0; *"a deployer who needs a worst-case guarantee gets one from the architecture"*).
+So Component B, applied to the loop, should **not** headline "did N=2 move the quality number." It
+should show **the envelope bounds worst-case drift** — the variance/tail of cortex quality across
+runs, not just the mean delta. This is more honest and better-supported by the analogous data.
+
+### 6.1 Open empirical question — the consolidation loop as the comprehension-load ablation
+
+The §3.7 justification shift is a [HYPOTHESIS] the email paper **cannot test**: in email,
+irreversibility and comprehension-load are *confounded* (every `send` is both hard to undo and hard
+to review). Daftari git-zeroes the irreversibility variable, leaving comprehension-load standing
+alone. **If a trust budget still improves curation quality/variance in a domain where nothing is
+irreversible, that isolates comprehension-load as the active ingredient** — a result the email setup
+gestures at but cannot reach. The loop is therefore not just a consumer of the metric; it is the
+ablation that decouples the two justifications, and a genuine contribution back to the trust-protocol
+line. *Kill condition for the justification shift:* if the budget shows no effect on quality/variance
+in Daftari, then comprehension-load was *not* the active ingredient and the budget was riding on
+irreversibility all along — in which case it has no role in a git-backed never-delete vault.
+
+### 6.2 The remaining identification problems
 
 Causal framing is the right spine, but a knowledge vault gives little to *identify* the graph with.
 The spec must be honest about identifiable vs. aspirational:
@@ -330,20 +490,30 @@ The spec must be honest about identifiable vs. aspirational:
 
 ## 8. Open decisions for the spec (in rough dependency order)
 
-1. **Envelope autonomy level for C** (surface-only ↔ auto-act). *Everything else keys off this.*
-2. **Declared vs. inferred graph** (§5) — likely "inference proposes / envelope ratifies / loop
-   re-validates," but pin the v1 cut.
-3. **Edge typing** — which relations are causal-derivation vs. contradiction vs. reference, and how
+**RESOLVED this session:**
+- ~~Envelope autonomy level for C~~ → **Synergy** (§3.7, §5.2 Q5): strength-gated, budget-bounded,
+  budget-visible to the pass. Not a single dial — graduated per-edge by strength.
+- ~~Envelope "confidence" + "blast radius"~~ → strength (Q1–Q4) is confidence; **blast radius = an
+  `I`-weight = downstream-conditioning count** (§4 table).
+- ~~Strength model~~ → Q1–Q4 locked (§5.2).
+
+**Still open:**
+1. **Declared vs. inferred graph** (§5) — "inference proposes / envelope ratifies / loop
+   re-validates." Pin the v1 cut (recommended: content-inferred candidate graph + surface-only C).
+2. **Edge typing** — which relations are causal-derivation vs. contradiction vs. reference, and how
    each *triggers* (a new tension should re-examine; a supersede should propagate; a "see also"
    should do neither).
-4. **Envelope contents** (§4) — finalize the invariants + define "confidence" and "blast radius"
-   for a knowledge intervention.
-5. **A's permitted `do()` set** — promote / deprecate / link / merge? merge is the scariest
-   (erases distinctions); maybe out of v1.
-6. **The multi-pass mechanic** — each pass reads the *prior* pass's annotations/tensions, not raw
-   docs ("sleep loops"; arXiv 2605.26099 / 2605.08538). Define a pass's input/output and the stop
-   condition (fixpoint? N passes? envelope-boundary-hit?).
-7. **Effect estimation** (§6) — held-out question set; how to attribute a score delta to a pass.
+3. **`I`-table calibration** (§4) — finalize per-`do()` `I`, the blast-scaling constant `k`, and
+   `B₀` per session. Calibrate empirically via B (the paper's `B₀ = 3.0` was re-tuned after `B₁`).
+4. **A's permitted `do()` set** — promote / deprecate / link in v1; `merge` always-staged (out of
+   v1 auto-write); contested edges always-staged.
+5. **The multi-pass mechanic** — each pass reads the *prior* pass's annotations/tensions, not raw
+   docs ("sleep loops"; arXiv 2605.26099 / 2605.08538), under blind+varied independence (Q3). Define
+   a pass's input/output and the stop condition (fixpoint? N passes? budget-exhaustion? K reached?).
+6. **Effect estimation** (§6) — held-out question set; attribute a *variance*/tail delta (not just
+   mean) to a pass; run the §6.1 comprehension-load ablation.
+7. **The scheduler (C) / forgetting curve** — dependency-change vs. TTL/staleness as "due for
+   review"; the spacing economy (don't re-derive everything every pass). *Next brainstorm topic.*
 
 ---
 
@@ -365,3 +535,10 @@ direction doc.
 - Mihir's blog corpus as design DNA: *Hallucinated Intent & the Envelope Problem* (the envelope),
   *The Inference Trap* / *The Clean Data Trap* (correlation≠truth), *Trust Is a Ledger, Not a
   Feeling* (reversibility/audit over feelings).
+- **Mihir's *Agentic Trust Protocol* paper** (`~/projects/agentic-trust-protocol`) — the formal
+  spine for §3.7/§4: path irreversibility `I*`, the visibility asymmetry, the four composition
+  modes, the trust budget, the irreversibility table, the Visibility×Enforcement 2×2, and the `A₃`
+  finding that grounds the two-gate split. *Note:* `STATUS.md` and `docs/paper/draft.md` currently
+  disagree on how much multi-replicate data exists (STATUS: "zero replicates for B1/B2/C1/D1, run
+  truncated"; draft §6.3: full N=10 with bootstrap CIs) — reconcile before that paper's preprint;
+  does not affect this design, which leans on the paper's *argument*, not its effect sizes.
