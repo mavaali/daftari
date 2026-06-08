@@ -1,0 +1,199 @@
+import { describe, expect, it } from "vitest";
+import {
+  classifyDoc,
+  deriveProposed,
+  firstH1,
+  mapIdentity,
+  parseQuestionSection,
+  slugify,
+  titleFromFilename,
+} from "../../src/backfill/derive.js";
+import type { Frontmatter } from "../../src/frontmatter/types.js";
+
+describe("slugify", () => {
+  it("kebab-cases names", () => {
+    expect(slugify("Mihir Wagle")).toBe("mihir-wagle");
+    expect(slugify("Data  Movement")).toBe("data-movement");
+    expect(slugify("  Trim_me! ")).toBe("trim-me");
+  });
+});
+
+describe("firstH1", () => {
+  it("returns the first single-hash heading", () => {
+    expect(firstH1("# Title\n\n## Sub\n")).toBe("Title");
+  });
+  it("ignores deeper headings and returns null when absent", () => {
+    expect(firstH1("## Not a title\n\nbody")).toBeNull();
+    expect(firstH1("no headings here")).toBeNull();
+  });
+});
+
+describe("titleFromFilename", () => {
+  it("strips .md, splits on -/_ and title-cases", () => {
+    expect(titleFromFilename("specs/data-movement/foo-bar.md")).toBe("Foo Bar");
+    expect(titleFromFilename("notes/quick_note.md")).toBe("Quick Note");
+    expect(titleFromFilename("bar.md")).toBe("Bar");
+  });
+});
+
+describe("parseQuestionSection", () => {
+  const body = `# Doc
+
+## Questions Answered
+- How does it work?
+- What does it cost?
+
+## Questions Raised
+- Does it scale?
+- (none yet — placeholder)
+
+## Other
+- not a question
+`;
+  it("extracts bullets under the matching heading only", () => {
+    expect(parseQuestionSection(body, "Questions Answered")).toEqual([
+      "How does it work?",
+      "What does it cost?",
+    ]);
+  });
+  it("stops at the next heading and drops parenthetical placeholders", () => {
+    expect(parseQuestionSection(body, "Questions Raised")).toEqual(["Does it scale?"]);
+  });
+  it("returns empty when the section is absent", () => {
+    expect(parseQuestionSection(body, "Nonexistent")).toEqual([]);
+  });
+});
+
+describe("mapIdentity", () => {
+  const map = { "Mihir Wagle": "human:mihir", "github-actions[bot]": "agent:github-actions" };
+  it("uses an explicit mapping when present", () => {
+    expect(mapIdentity("Mihir Wagle", map)).toBe("human:mihir");
+    expect(mapIdentity("github-actions[bot]", map)).toBe("agent:github-actions");
+  });
+  it("falls back to a slugified human: default", () => {
+    expect(mapIdentity("Priya Patel", map)).toBe("human:priya-patel");
+    expect(mapIdentity("Priya Patel", {})).toBe("human:priya-patel");
+  });
+});
+
+describe("classifyDoc", () => {
+  it("flags an empty frontmatter as missing", () => {
+    expect(classifyDoc({})).toBe("missing");
+  });
+  it("flags an incomplete frontmatter as partial", () => {
+    expect(classifyDoc({ title: "x" })).toBe("partial");
+  });
+  it("flags a complete frontmatter as conformant", () => {
+    const full = {
+      title: "x",
+      domain: "accumulation",
+      collection: "c",
+      status: "canonical",
+      confidence: "high",
+      created: "2025-01-01",
+      updated: "2025-01-01",
+      updated_by: "human:mihir",
+      provenance: "direct",
+    };
+    expect(classifyDoc(full)).toBe("conformant");
+  });
+});
+
+describe("deriveProposed", () => {
+  const emptyCoerced = {} as Frontmatter;
+
+  it("derives a full frontmatter from git + body + path defaults", () => {
+    const { proposed, derivation } = deriveProposed({
+      relPath: "specs/data-movement/foo.md",
+      body: "# Foo Title\n\n## Questions Answered\n- Q1?\n",
+      raw: {},
+      coerced: emptyCoerced,
+      git: { created: "2025-04-12", updated: "2025-05-01", author: "Mihir Wagle" },
+      mtimeDate: "2026-06-07",
+      identityMap: { "Mihir Wagle": "human:mihir" },
+      invoker: "human:tester",
+    });
+
+    expect(proposed.title).toBe("Foo Title");
+    expect(proposed.collection).toBe("specs");
+    expect(proposed.status).toBe("canonical");
+    expect(proposed.confidence).toBe("medium");
+    expect(proposed.provenance).toBe("direct");
+    expect(proposed.domain).toBe("accumulation");
+    expect(proposed.created).toBe("2025-04-12");
+    expect(proposed.updated).toBe("2025-05-01");
+    expect(proposed.updated_by).toBe("human:mihir");
+    expect(proposed.questions_answered).toEqual(["Q1?"]);
+    expect(proposed.sources).toEqual([]);
+    expect(proposed.ttl_days).toBeNull();
+    expect(proposed.superseded_by).toBeNull();
+
+    expect(derivation.created).toBe("git-first-commit");
+    expect(derivation.updated).toBe("git-last-commit");
+    expect(derivation.updated_by).toBe("git-author + identity-map");
+    expect(derivation.collection).toBe("parent-folder");
+    expect(derivation.status).toBe("default");
+    expect(derivation.title).toBe("body-h1");
+  });
+
+  it("derives the title from the filename when there is no H1", () => {
+    const { proposed, derivation } = deriveProposed({
+      relPath: "specs/data-movement/bar.md",
+      body: "no heading here",
+      raw: {},
+      coerced: emptyCoerced,
+      git: { created: "2025-03-02", updated: "2025-03-02", author: "Priya Patel" },
+      mtimeDate: "2026-06-07",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.title).toBe("Bar");
+    expect(derivation.title).toBe("filename");
+    expect(proposed.updated_by).toBe("human:priya-patel");
+  });
+
+  it("falls back to file mtime and invoker when git has no history", () => {
+    const { proposed, derivation } = deriveProposed({
+      relPath: "notes/x.md",
+      body: "# X",
+      raw: {},
+      coerced: emptyCoerced,
+      git: { created: null, updated: null, author: null },
+      mtimeDate: "2026-06-07",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.created).toBe("2026-06-07");
+    expect(proposed.updated).toBe("2026-06-07");
+    expect(proposed.updated_by).toBe("human:tester");
+    expect(derivation.created).toBe("file-mtime");
+    expect(derivation.updated_by).toBe("invoker-fallback");
+  });
+
+  it("preserves present fields and fills only the missing ones", () => {
+    const raw = { title: "Existing Baz Title", created: "2024-12-01" };
+    const coerced = { title: "Existing Baz Title", created: "2024-12-01" } as Frontmatter;
+    const { proposed, derivation } = deriveProposed({
+      relPath: "specs/pricing/baz.md",
+      body: "# Baz body heading\n\nbody",
+      raw,
+      coerced,
+      git: { created: "2025-02-10", updated: "2025-02-10", author: "Mihir Wagle" },
+      mtimeDate: "2026-06-07",
+      identityMap: { "Mihir Wagle": "human:mihir" },
+      invoker: "human:tester",
+    });
+
+    // Present fields preserved verbatim, not overwritten by git/body.
+    expect(proposed.title).toBe("Existing Baz Title");
+    expect(proposed.created).toBe("2024-12-01");
+    expect(derivation.title).toBe("preserved");
+    expect(derivation.created).toBe("preserved");
+
+    // Missing fields filled.
+    expect(proposed.updated).toBe("2025-02-10");
+    expect(proposed.collection).toBe("specs");
+    expect(proposed.status).toBe("canonical");
+    expect(derivation.updated).toBe("git-last-commit");
+  });
+});

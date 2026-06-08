@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`daftari backfill` git-driven frontmatter migration** (cortex consolidation
+  loop §11.1). A CLI command that adopts an existing wiki into Daftari without a
+  manual migration sprint: it walks the vault, derives frontmatter defaults
+  deterministically (no LLM calls) from git history and body conventions, and
+  writes them per-folder on human ratification. Two-step plan/apply:
+  `daftari backfill --plan [--scope <folder>]` derives proposals and stages them
+  to `.daftari/backfill-plan.jsonl` (modifying no markdown), and
+  `daftari backfill --apply --scope <folder> [--yes]` writes the proposals for
+  one folder and commits them in a single commit (honoring the vault's
+  `auto_commit` setting — with `auto_commit: false` the files are written but
+  the caller owns git, matching the other write tools). `--scope` is required on
+  apply so a whole-vault write can never happen by accident. Derivation: `title`
+  from the first H1 (else the filename), `created`/`updated`/`updated_by` from
+  git (`--diff-filter=A` first-add, last-commit, author through an optional
+  `backfill.identity_map` in `.daftari/config.yaml`), `collection` from the
+  parent folder, and `status: canonical` / `confidence: medium` /
+  `provenance: direct` / `domain: accumulation` defaults — explicitly suggested,
+  ratified by a human, never asserted. Existing frontmatter is preserved
+  field-by-field; a doc whose frontmatter already validates is reported
+  conformant and skipped. The plan is transient: backfill never stages or
+  commits it (apply stages only the doc paths), the apply commit is the durable
+  audit trail, and `.daftari/backfill-plan.jsonl` is added to the `daftari
+  --init` .gitignore template (a `--plan` run also prints a reminder to gitignore
+  it on wikis not scaffolded by Daftari). CLI-only for v1 — no MCP tool. See
+  [docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md](docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md)
+  §11.1.
+
 ## [1.16.0] - 2026-06-02
 
 ### Added
