@@ -15,9 +15,11 @@ import {
   type LintCheckName,
   type LintFinding,
   runLint,
+  type StagedActionLintItem,
   type TensionHealth,
 } from "../curation/lint.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+import { sweepExpiredActions } from "../curation/staged-actions.js";
 import {
   addTension,
   LOGGABLE_TENSION_KINDS,
@@ -241,6 +243,7 @@ export interface VaultLintResult {
   checks: Partial<Record<LintCheckName, LintFinding[]>>;
   totalFindings: number;
   tensionHealth: TensionHealth;
+  stagedActions: StagedActionLintItem[];
 }
 
 export async function vaultLint(
@@ -265,6 +268,14 @@ export async function vaultLint(
     filter = args.filter as LintCheckName;
   }
 
+  // Periodic cleanup (spec §11.2): expire any staged action past its TTL before
+  // reporting, so the "Staged actions" section reflects post-sweep state. The
+  // sweep mutates the canonical jsonl; the sqlite index is reconciled on the
+  // next reindex. A sweep failure means .daftari is unwritable — surface it
+  // loudly rather than silently reporting a stale queue.
+  const swept = await sweepExpiredActions(vaultRoot);
+  if (!swept.ok) return swept;
+
   const report = await runLint(vaultRoot);
   if (!report.ok) return report;
 
@@ -276,6 +287,7 @@ export async function vaultLint(
       checks: { [filter]: findings },
       totalFindings: findings.length,
       tensionHealth: report.value.tensionHealth,
+      stagedActions: report.value.stagedActions,
     });
   }
 
@@ -285,6 +297,7 @@ export async function vaultLint(
     checks: report.value.checks,
     totalFindings: report.value.totalFindings,
     tensionHealth: report.value.tensionHealth,
+    stagedActions: report.value.stagedActions,
   });
 }
 
@@ -480,8 +493,10 @@ export const curationTools: ToolDefinition[] = [
   },
   {
     name: "vault_lint",
-    title: "Run curation checks",
-    annotations: { readOnlyHint: true },
+    // Not read-only: the staged-action sweep (§11.2) expires actions past
+    // their TTL, appending expiry records to .daftari/staged-actions.jsonl.
+    // It never edits vault content — only the staging queue's own lifecycle.
+    annotations: { readOnlyHint: false },
     description:
       "Run the advisory curation checks across the vault: stale files past " +
       "TTL, orphan files with no inbound links, old drafts, stagnant " +
@@ -489,8 +504,9 @@ export const curationTools: ToolDefinition[] = [
       "ones, and questions raised but unanswered anywhere in the vault. " +
       "Also reports tension health (counts by kind and resolution kind, " +
       "stable acknowledged persistent disagreements, and legacy unspecified " +
-      "entries). Reports problems; never auto-fixes. Optionally filter to a " +
-      "single check.",
+      "entries) and lists pending staged actions awaiting ratification. " +
+      "Never auto-fixes vault content; it does, as housekeeping, expire " +
+      "staged actions past their TTL. Optionally filter to a single check.",
     inputSchema: {
       type: "object",
       properties: {

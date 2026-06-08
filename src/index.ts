@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
+import { materializeStagedActions } from "./curation/staged-actions.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import {
   markIndexError,
@@ -157,6 +158,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (fresh) {
     process.stderr.write(`daftari: index is up to date — skipping reindex\n`);
     markIndexReady();
+    // A fresh index skips the reindex that would otherwise rebuild the
+    // staged-actions table from its jsonl, so do that one cheap step here:
+    // the queue may have grown since the last reindex without any file
+    // changing. Best-effort — the jsonl is the source of truth, and v1 read
+    // paths use it directly — so a failure is logged, not fatal.
+    const materialized = materializeStagedActions(vaultRoot);
+    if (!materialized.ok) {
+      process.stderr.write(
+        `daftari: warning: could not rebuild staged-actions index: ${materialized.error.message}\n`,
+      );
+    }
     // Fresh index means a fully-cached state: no embedding work was done, so
     // the model is still cold. Warm it in the background (if config allows)
     // so the first user search does not pay the ~500ms cold start. Then

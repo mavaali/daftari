@@ -125,6 +125,23 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS staged_actions (
+  id                  TEXT PRIMARY KEY,
+  action_type         TEXT NOT NULL,
+  target_path         TEXT NOT NULL,
+  proposed_by         TEXT NOT NULL,
+  proposed_at         TEXT NOT NULL,
+  expires_at          TEXT NOT NULL,
+  status              TEXT NOT NULL,
+  rationale           TEXT NOT NULL,
+  proposed_diff       TEXT NOT NULL,
+  ratified_at         TEXT,
+  ratified_by         TEXT,
+  ratification_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_staged_status ON staged_actions(status);
+CREATE INDEX IF NOT EXISTS idx_staged_target ON staged_actions(target_path);
+CREATE INDEX IF NOT EXISTS idx_staged_expires ON staged_actions(expires_at);
 `;
 
 // FTS5 virtual table over the `documents` body + title + tags. The
@@ -685,4 +702,89 @@ export function countDimMismatches(db: IndexDb, model: string, expectedDim: numb
     .prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ? AND dim != ?")
     .get(model, expectedDim) as { n: number };
   return row.n;
+}
+
+// --- staged actions --------------------------------------------------------
+//
+// The staged_actions table is a derived index of the append-only canonical
+// log .daftari/staged-actions.jsonl (see src/curation/staged-actions.ts).
+// Like every table in this file it is rebuildable: a reindex collapses the
+// jsonl to current state and repopulates the table. These functions are the
+// SQL primitives the collapse uses; the curation layer owns the jsonl and the
+// lifecycle logic. The row shape mirrors the jsonl record one-for-one.
+
+export interface StagedActionRow {
+  id: string;
+  action_type: string;
+  target_path: string;
+  proposed_by: string;
+  proposed_at: string;
+  expires_at: string;
+  status: string;
+  rationale: string;
+  proposed_diff: string; // JSON-encoded delta or write payload
+  ratified_at: string | null;
+  ratified_by: string | null;
+  ratification_reason: string | null;
+}
+
+// Inserts or replaces a staged-action row by id. Used by the jsonl→sqlite
+// rebuild; the proposal and its later decision collapse to one current row.
+export function upsertStagedAction(db: IndexDb, row: StagedActionRow): void {
+  db.prepare(
+    `INSERT INTO staged_actions
+       (id, action_type, target_path, proposed_by, proposed_at, expires_at, status,
+        rationale, proposed_diff, ratified_at, ratified_by, ratification_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       action_type         = excluded.action_type,
+       target_path         = excluded.target_path,
+       proposed_by         = excluded.proposed_by,
+       proposed_at         = excluded.proposed_at,
+       expires_at          = excluded.expires_at,
+       status              = excluded.status,
+       rationale           = excluded.rationale,
+       proposed_diff       = excluded.proposed_diff,
+       ratified_at         = excluded.ratified_at,
+       ratified_by         = excluded.ratified_by,
+       ratification_reason = excluded.ratification_reason`,
+  ).run(
+    row.id,
+    row.action_type,
+    row.target_path,
+    row.proposed_by,
+    row.proposed_at,
+    row.expires_at,
+    row.status,
+    row.rationale,
+    row.proposed_diff,
+    row.ratified_at,
+    row.ratified_by,
+    row.ratification_reason,
+  );
+}
+
+// Drops every staged-action row. Called at the start of a rebuild so a
+// reindex never leaves rows for actions the jsonl no longer reflects.
+export function clearStagedActions(db: IndexDb): void {
+  db.exec("DELETE FROM staged_actions;");
+}
+
+export function getStagedAction(db: IndexDb, id: string): StagedActionRow | null {
+  const row = db.prepare("SELECT * FROM staged_actions WHERE id = ?").get(id) as
+    | StagedActionRow
+    | undefined;
+  return row ?? null;
+}
+
+export function getAllStagedActions(db: IndexDb): StagedActionRow[] {
+  return db.prepare("SELECT * FROM staged_actions ORDER BY id").all() as StagedActionRow[];
+}
+
+// Returns rows in a given status, soonest-to-expire first — the order the
+// lint surface and the future loop want.
+export function getStagedActionsByStatus(db: IndexDb, status: string): StagedActionRow[] {
+  return db
+    .prepare("SELECT * FROM staged_actions WHERE status = ? ORDER BY expires_at")
+    .all(status) as StagedActionRow[];
 }

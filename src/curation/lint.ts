@@ -7,6 +7,10 @@
 
 import { ok, type Result } from "../frontmatter/types.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
+import { listPendingForLint, type StagedActionLintItem } from "./staged-actions.js";
+
+export type { StagedActionLintItem } from "./staged-actions.js";
+
 import { ageInDays, computeStaleness } from "./staleness.js";
 import {
   agingTier,
@@ -107,6 +111,11 @@ export interface LintReport {
   checks: Record<LintCheckName, LintFinding[]>;
   totalFindings: number;
   tensionHealth: TensionHealth;
+  // Pending staged actions awaiting ratification (spec §11.2), soonest-to-
+  // expire first. Empty when nothing is staged. Reported, not flagged — like
+  // the rest of vault_lint. The actual expiry sweep is a side effect of the
+  // vault_lint tool, not of runLint (which stays read-only).
+  stagedActions: StagedActionLintItem[];
 }
 
 export interface LintOptions {
@@ -257,11 +266,15 @@ export async function runLint(
   const tensionHealth = await computeTensionHealth(vaultRoot, docs, now);
   if (!tensionHealth.ok) return tensionHealth;
 
+  const stagedActions = await listPendingForLint(vaultRoot, now);
+  if (!stagedActions.ok) return stagedActions;
+
   return ok({
     generatedAt: now.toISOString(),
     checks,
     totalFindings,
     tensionHealth: tensionHealth.value,
+    stagedActions: stagedActions.value,
   });
 }
 

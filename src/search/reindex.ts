@@ -18,6 +18,7 @@
 // lexical-only.
 
 import { stat } from "node:fs/promises";
+import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
@@ -346,6 +347,12 @@ export async function reindexVault(
 
     const chunkCount = writeChunkRows(db, staged);
     const orphansRemoved = gcOrphanedEmbeddings(db);
+
+    // Rebuild the staged-actions index from its canonical jsonl. Like every
+    // table here it is a derived cache of an on-disk source of truth; this
+    // keeps it in sync after a cold start or a manual index wipe. Best-effort:
+    // the staging queue lives in the jsonl, so a rebuild miss never loses data.
+    rebuildStagedActionsIndex(db, vaultRoot);
 
     // Rebuild the sqlite-vec mirror from the durable `embeddings` cache.
     // The cache is per-(model, content_hash) and is the source of truth;
