@@ -35,6 +35,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it on wikis not scaffolded by Daftari). CLI-only for v1 — no MCP tool. See
   [docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md](docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md)
   §11.1.
+- **Staged-action queue + `vault_ratify`** (cortex loop §11.2). A persistent
+  queue of proposed vault changes awaiting human ratification — the foundation
+  for the consolidation loop's "always-stage" tier. Two new MCP tools:
+  `vault_stage_action` (producer; normally the curation loop, exposed for
+  testing and future callers) records a proposed `promote` / `deprecate` /
+  `supersede` / `merge` / `confidence-up` action with a rationale, a proposed
+  diff, and a TTL (default 14 days); `vault_ratify` (consumer) lets a human
+  `approve` or `reject` one pending action. On approve, it dispatches to the
+  existing write path — `promote` → `vault_promote`, `deprecate` →
+  `vault_deprecate` (both auto-commit). `supersede` / `merge` / `confidence-up`
+  are staged only in v1 (their write tools are deferred to §11.4); approving
+  one returns `applied: false` with `deferred_to: "§11.4"` and a
+  `ratified-pending-tool` status. Storage mirrors the rest of Daftari: an
+  append-only canonical log at `.daftari/staged-actions.jsonl` (the source of
+  truth) plus a derived `staged_actions` table in the ephemeral
+  `.daftari/index.db`, rebuilt from the jsonl on reindex and startup.
+  `vault_lint` gains a "Staged actions" section listing pending actions
+  soonest-to-expire first, and expires actions past their TTL as a housekeeping
+  sweep on each invocation. See
+  [docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md](docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md)
+  §11.2.
 
 ## [1.16.0] - 2026-06-02
 

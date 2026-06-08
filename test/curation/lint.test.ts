@@ -3,8 +3,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runLint } from "../../src/curation/lint.js";
+import {
+  listStagedActions,
+  type StageActionInput,
+  stageAction,
+} from "../../src/curation/staged-actions.js";
 import { addTension, resolveTension, tensionsPath } from "../../src/curation/tension.js";
 import { extractLinks } from "../../src/curation/vault-docs.js";
+import { vaultLint } from "../../src/tools/curation.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
 
@@ -801,6 +807,69 @@ Body.
       if (!report.ok) return;
       expect(report.value.tensionHealth.aging.stale).toBe(2);
       expect(report.value.tensionHealth.blastRadiusOfStaleTensions).toBe(1);
+    });
+  });
+
+  // ----- §11.2: staged actions ------------------------------------------
+  //
+  // runLint reports pending staged actions soonest-to-expire first; the
+  // vault_lint tool additionally sweeps actions past their TTL into expired.
+
+  describe("staged actions (§11.2)", () => {
+    let dir: string;
+
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const base: StageActionInput = {
+      actionType: "promote",
+      targetPath: "pricing/foo.md",
+      proposedBy: "agent:curation-loop",
+      rationale: "First sentence. Second sentence.",
+      proposedDiff: {},
+    };
+
+    it("reports an empty section when nothing is staged", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+      const report = await runLint(dir);
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      expect(report.value.stagedActions).toEqual([]);
+    });
+
+    it("lists pending actions soonest-to-expire first with derived fields", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+      await stageAction(dir, { ...base, proposedAt: "2026-06-01T00:00:00Z", ttlDays: 14 }); // exp 06-15
+      await stageAction(dir, { ...base, proposedAt: "2026-06-01T00:00:00Z", ttlDays: 5 }); // exp 06-06
+      await stageAction(dir, { ...base, proposedAt: "2026-06-01T00:00:00Z", ttlDays: 30 }); // exp 07-01
+
+      const report = await runLint(dir, { now: new Date("2026-06-02T00:00:00Z") });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const staged = report.value.stagedActions;
+      expect(staged.map((s) => s.id)).toEqual(["stage-002", "stage-001", "stage-003"]);
+      const soonest = staged[0];
+      expect(soonest?.expiresInDays).toBe(4); // 06-02 → 06-06
+      expect(soonest?.ageDays).toBe(1); // 06-01 → 06-02
+      expect(soonest?.rationale).toBe("First sentence."); // first sentence only
+    });
+
+    it("vault_lint sweeps actions past their TTL into expired, dropping them from the section", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+      // Long past its TTL relative to real now.
+      await stageAction(dir, { ...base, proposedAt: "2026-01-01T00:00:00Z", ttlDays: 14 });
+      // Fresh (default proposedAt = now): stays pending.
+      await stageAction(dir, base);
+
+      const result = await vaultLint(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Only the fresh action remains pending in the report.
+      expect(result.value.stagedActions.map((s) => s.id)).toEqual(["stage-002"]);
+
+      const expired = await listStagedActions(dir, "expired");
+      expect(expired.ok && expired.value.map((a) => a.id)).toEqual(["stage-001"]);
     });
   });
 });

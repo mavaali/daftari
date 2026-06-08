@@ -12,6 +12,7 @@ import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { curationTools } from "./tools/curation.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { searchTools } from "./tools/search.js";
+import { stagedActionTools } from "./tools/staged-actions.js";
 import { themesTools } from "./tools/themes.js";
 import { writeTools } from "./tools/write.js";
 
@@ -40,6 +41,7 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
     ...themesTools,
     ...writeTools,
     ...curationTools,
+    ...stagedActionTools,
   ];
   const byName = new Map(tools.map((t) => [t.name, t]));
 
