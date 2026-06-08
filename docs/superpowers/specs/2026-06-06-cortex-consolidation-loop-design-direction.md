@@ -637,6 +637,219 @@ brainstorming → writing-plans flow. The spec lands at
 `docs/superpowers/specs/YYYY-MM-DD-cortex-consolidation-loop-design.md` and supersedes this
 direction doc.
 
+---
+
+## 10. Decisions locked (2026-06-07)
+
+After a Jugalbandi adversarial review (`docs/superpowers/drafts/jugalbandi-review.md`) found
+the original decision-set was locked against substrate that doesn't exist in `src/`, this
+session locks the design-level decisions explicitly and moves the substrate-dependent items
+onto a build-list (§11). The locked decisions are durable; the build-list is what makes them
+executable.
+
+Supporting artifacts:
+- `docs/superpowers/drafts/seeding-pipeline-draft.md` — blocker→matcher indexing pipeline
+- `docs/superpowers/drafts/jugalbandi-review.md` — adversarial review against the codebase
+- `docs/superpowers/drafts/copilot-frontmatter-contract.md` — Copilot's authoring contract
+
+### 10.1 Authoring posture — Branch A + progressive enrichment
+
+- Daftari owns the write path. All entries are conformant to `vault_write`'s output.
+- For existing wikis adopted into Daftari, frontmatter conformance is grown, not assumed.
+  A new `vault_backfill` command (see §11.1) derives frontmatter defaults from git metadata
+  + body conventions; humans ratify per-folder.
+- Copilot's wiki-authoring skills follow the contract at
+  `docs/superpowers/drafts/copilot-frontmatter-contract.md`.
+- The two-tier vault (Daftari-conformant vs. legacy entries) is a transition state, not a
+  permanent feature.
+
+### 10.2 Seeding pipeline (Decision 1) — blocker→matcher indexing architecture
+
+See `docs/superpowers/drafts/seeding-pipeline-draft.md`.
+
+- **Stack:** existing `Xenova/all-MiniLM-L6-v2` (384-d) + `sqlite-vec`. Decision: stay with
+  the tree; do NOT introduce bge-m3 / jina-v3 / HNSW. The "fits existing infra" claim in
+  the draft is corrected — the *shape* fits; the named components do not. The 384-d ceiling
+  is gated by the recall@20 ≥ 0.70 kill condition.
+- **Kill conditions** instrumented from day one: embedding recall@20 < 0.70 → switch model;
+  LLM direction accuracy < 70% → fine-tune; wikilink recall > 70% of true edges → seeding
+  effort unnecessary.
+
+### 10.3 Edge typing (Decision 2)
+
+- **Three classes, three trigger semantics:**
+  - Forward-temporal (`supersede`): propagates to descendants in the `derives_from` graph.
+  - Backward-causal (`derives_from` invalidation, from premise change): same propagator,
+    opposite direction.
+  - Symmetric re-examine (tension first-appearance, sources decay): wakes endpoint(s) only;
+    no graph walk.
+- **Strength-attenuated reach per class** — strength is the attenuator; the type determines
+  mechanism. Below a per-class floor, propagation stops.
+- **Wikilinks are NOT inert in v1.** They are a first-class advisory edge class. (Corrects
+  §5 of this doc and §5.3.1's wikilink treatment.) The original "inert" framing contradicts
+  shipped v1.14–16 behavior (`vault_tension_blast` and `vault_lint` parse wikilinks via
+  `src/curation/vault-docs.ts:46-53`) and would blind C on the canonical FabricSpecs vault
+  shape (95.1% wikilink-resolvable, 1,987 refs).
+- **Out-of-vault `sources` entries** (the ~60% of `sources` on FabricSpecs that point to
+  repo files outside the wiki subtree) are treated as **external citation slugs**: used for
+  premise-freshness checks via `vault_read`'s decay/validation report; not blast-traversable.
+  `resolveLink` scope remains in-vault. Author intent for out-of-vault references is
+  preserved without expanding traversal scope.
+- **§3.5's "trust earned per edge" prior supersedes §4's I-table channel weighting.** The
+  I-table's static "sources > links" prior contradicts the §3.5 standard (trust = survived
+  independent re-derivations, not how an edge was born). Drop the static prior — strength
+  accrues per edge regardless of birth channel.
+
+### 10.4 I-table calibration (Decision 3)
+
+- **Convex blast scaling:** `I = min(I_base + k·(blast−1)^α, 1)` with `α ≈ 1.5` as a
+  starting point. Linear scaling under-prices high-blast actions; convex is the right
+  direction.
+- **`B₀` as a vault-state function**, not a constant. Suggested form: proportional to
+  queue depth with a `log(N)` ceiling. The fixed-`B₀` import from the ATP paper
+  over/under-constrains by vault state.
+- **Full action-type table including `derives_from` operations** (add candidate, ratify,
+  contest-and-revoke, age-decay). Half the original table referenced non-existent
+  operations.
+- **Shadow-mode required from day one** — calibration before action. Shadow mode is a
+  prerequisite build (§11.5), not a config flag.
+- **Quarterly re-calibration cadence**; trigger driver TBD (carried to §12).
+
+### 10.5 A's permitted `do()` set (Decision 4)
+
+- **Auto-write tier (v1):**
+  - `link` — add ratified `derives_from` edge
+  - `confidence-down` — nudge confidence one rung lower when re-derivation fails ratification
+    (paired with a tension entry citing the failure)
+  - `tension_log` — record contradictions (existing behavior)
+  - `contested-edge revoke` — drop edge below trigger-bearing strength on multi-pass failure
+    agreement; surfaces a tension (not silent)
+- **Always-stage tier:**
+  - `promote` (any → `canonical`) | `deprecate` | `supersede` | `merge` | `confidence-up`
+  - any action on a doc with an unresolved tension
+  - any action on an edge below trigger-bearing strength
+- **Forbidden in v1:**
+  - content writes (authorship — A is curation, not authorship)
+  - `provenance: direct` tagging on auto-actions (auto-actions are `inferred` or
+    `synthesized` only — clarification: this is enforced via the curation-log's `agent`
+    stamp, not the frontmatter enum)
+  - multi-action passes (one `do()` per pass; composability deferred to v2)
+- **Charter amendment required.** `CLAUDE.md` currently asserts "The curation engine is
+  advisory. `vault_lint` reports problems. It does not auto-fix." Decision 4's auto-write
+  tier amends this. The amendment must be made explicit, not implicit.
+
+### 10.6 Cross-feature commitments
+
+- **Q3 independence:** blind + varied-axis per re-derivation, minimum one varied axis per
+  vote (prompt framing, input neighborhood, or model). The hinge between "loop consolidates
+  human knowledge" and "loop launders single-exposure assertions."
+- **Authoring intent ≠ independent re-derivation.** Human-directed-LLM-authored docs are
+  single-exposure *inputs* to the loop, not pre-verified content. This is §3.5's canonical
+  use case, not a stress case the loop must survive.
+- **A 50-pair labeled recall set** is required for seeding kill-conditions and cannot be
+  mined from existing vault structure. Construction protocol carried to §12.
+
+---
+
+## 11. Build-list (presumed substrate)
+
+Five substrate builds the locked decisions presume but that do not exist in `src/` today.
+The spec cannot finalize until these are sequenced. Each item lists what it unlocks.
+
+### 11.1 `vault_backfill` — git-driven frontmatter migration
+
+Walks an existing wiki, derives frontmatter defaults from git metadata + body conventions,
+writes them as a staged set of changes for human per-folder ratification. Derivable
+deterministically without LLM calls:
+
+- `title` ← first H1 in body
+- `created` ← `git log --diff-filter=A --format=%cs --reverse <file> | head -1`
+- `updated` ← `git log -1 --format=%cs <file>`
+- `updated_by` ← `git log -1 --format=%aN <file>` (mapped through identity config)
+- `collection` ← parent folder path
+- `status` ← `canonical` (assumed default for adopted docs)
+- `confidence` ← `medium` (calibrated humility on inherited content)
+- `provenance` ← `direct` (original author wrote it directly)
+- `domain` ← `accumulation` (default)
+- `tags` / `sources` / `ttl_days` ← empty / null
+
+Independent of all other builds. Unblocks adoption.
+
+### 11.2 Staged-action queue + `vault_ratify` tool
+
+A persistent store for proposed actions awaiting human ratification, plus a `vault_ratify`
+tool that approves or rejects. Surfaces via `vault_lint`'s output (new section: "Staged
+actions"). Auto-expire after N days (TBD) with escalation.
+
+Unblocks Decision 4's always-stage tier. Without it, "always-stage" collapses to "don't
+do it" and the loop has only the auto-write tier.
+
+### 11.3 `derives_from` edge store with strength column
+
+A new edge table (separate from frontmatter; the matcher's output lives here, not in the
+docs). Schema: `(from_path, to_path, strength, k_survived, first_observed, last_rederived,
+last_age_decay, status: candidate|trigger-bearing|revoked)`. Supports concurrent reads
+from the loop's traversal engine and the lint surface.
+
+Unblocks Decision 2 (typed edges, strength-attenuated reach), Decision 3 (I for
+`derives_from` ops), Decision 4 (`link` auto-write).
+
+### 11.4 `merge`, `supersede`, `confidence-set` write tools
+
+Three new write tools matching the I-table's enumerated operations:
+
+- `vault_merge(path_a, path_b, target_path, …)` — combine two docs; always-staged at v1.
+- `vault_supersede(old_path, new_path, …)` — explicitly mark `status = "superseded"` +
+  set `superseded_by`. Distinct from `vault_deprecate` (which sets `status = "deprecated"`
+  + *optional* successor).
+- `vault_set_confidence(path, confidence, reason, …)` — narrow confidence-set tool. Avoids
+  full-document overwrite for a nudge.
+
+Unblocks Decision 4's always-stage operations beyond `promote`/`deprecate`.
+
+### 11.5 Shadow-mode execution path
+
+A "compute-but-don't-write" execution mode on the write tools. The pass computes the
+`do()`, its `I`, and the proposed diff; logs them to a shadow-action store; writes nothing.
+Surfaces weekly via a new lint section: "Would-have-gated actions."
+
+Unblocks Decision 3's "calibrate from day 1" — without it, calibration requires acting in
+production, which inverts the risk posture.
+
+### 11.6 A principal in RBAC
+
+A first-class agent identity (`agent:curation-loop` or similar) declared in
+`.daftari/config.yaml` with `read | write | promote | ratify` grants. Provenance log
+attributes loop actions to this principal.
+
+Cheap — config-only — but blocks any auto-write action without it.
+
+---
+
+## 12. Still open (deferred to the loop spec)
+
+Items not blocking the codification but required before the spec at
+`docs/superpowers/specs/YYYY-MM-DD-cortex-consolidation-loop.md` can finalize:
+
+- **Multi-pass mechanic (sleep loops; arXiv 2605.26099 / 2605.08538):** pass input/output
+  schema, stop condition (fixpoint? N passes? budget-exhaustion? K reached?).
+- **Effect estimation:** held-out question-set protocol; variance/tail attribution (not
+  mean); the §6.1 comprehension-load ablation.
+- **Periphery starvation full fix** beyond §5.3.1's backstop-as-guarantee.
+- **Compute-budget calibration:** per-session re-derivation cap; reserved backstop slice;
+  aging rate; interval function `f(strength)`.
+- **B coverage/equity instrumentation:** strength distribution, backstop-overdue count,
+  action-mix drift.
+- **Quarterly re-calibration cadence driver** — human, cron, or loop-self-triggered? (§5.3
+  C-Q4 defers self-triggers; cadence needs an external driver.)
+- **50-pair labeled recall-set construction protocol** — who labels, on what protocol,
+  refresh cadence.
+- **A's RBAC role specifics** — what grants exactly; how `updated_by` renders.
+- **`vault_backfill` ratification UX details** — per-folder cadence, escalation if a folder
+  is never ratified.
+
+---
+
 ## Appendix — connections to existing machinery & prior thinking
 
 - `vault_tension_blast` / `vault_tension_clusters` — C's trigger engine (forward-pointed blast).
