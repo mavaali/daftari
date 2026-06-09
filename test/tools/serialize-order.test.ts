@@ -128,11 +128,17 @@ describe("serializeDocument — extension ordering", () => {
     expect(frontmatterKeys(text)).toEqual(BUILTIN_KEYS);
   });
 
-  it("produces output identical to the pre-extension form when none are declared", () => {
+  it("produces the pre-extension form when no frontmatter is carried in raw", () => {
     const withDefault = serializeDocument(fm(), "# Body\n");
-    const withEmpty = serializeDocument(fm(), "# Body\n", [], { stray: "ignored" });
+    const withEmpty = serializeDocument(fm(), "# Body\n", [], {});
     expect(withEmpty).toBe(withDefault);
     expect(frontmatterKeys(withDefault)).toEqual(BUILTIN_KEYS);
+  });
+
+  it("preserves an undeclared key carried in raw, written last (#113)", () => {
+    const text = serializeDocument(fm(), "# Body\n", [], { stray: "kept" });
+    expect(frontmatterKeys(text)).toEqual([...BUILTIN_KEYS, "stray"]);
+    expect(text).toContain("stray: kept");
   });
 });
 

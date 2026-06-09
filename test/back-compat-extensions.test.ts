@@ -65,14 +65,16 @@ describe("back-compat — no schema_extensions block", () => {
       expect(fourArgEmpty).toBe(twoArg);
     });
 
-    it("ignores raw frontmatter entirely when no extensions are declared", () => {
-      const baseline = serializeDocument(fm(), "# Body\n");
-      const withStrayRaw = serializeDocument(fm(), "# Body\n", [], {
+    it("preserves undeclared raw frontmatter even when no extensions are declared (#113)", () => {
+      // A vault with no schema_extensions block still round-trips any custom
+      // fields a document carries — writes are non-destructive. The undeclared
+      // keys follow the built-ins, in raw insertion order, untyped.
+      const text = serializeDocument(fm(), "# Body\n", [], {
         adr_id: "ADR-1",
         anything: ["leaked"],
       });
-      expect(withStrayRaw).toBe(baseline);
-      expect(frontmatterKeys(baseline)).toEqual(BUILTIN_KEYS);
+      expect(frontmatterKeys(text)).toEqual([...BUILTIN_KEYS, "adr_id", "anything"]);
+      expect(text).toContain("adr_id: ADR-1");
     });
 
     it("round-trips a serialized document byte-for-byte", () => {

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Frontmatter writes are now non-destructive** ([#113]). A tool-mediated write
+  no longer silently drops frontmatter fields that are absent from the write
+  payload. Two parts: (1) `serializeDocument` preserves any field a document
+  already carries that is neither built-in nor a declared schema extension —
+  undeclared custom fields now round-trip untyped instead of being stripped,
+  which fixes the same loss on `vault_append` / `vault_promote` / `vault_deprecate`
+  and `daftari backfill` (the path that dropped fields across 197 files in a
+  single run); and (2) on the `vault_write` update path, the document's existing
+  frontmatter is merged under the payload — every existing field (built-in,
+  declared extension, or undeclared) is preserved, the payload wins per key, and
+  an explicit `null` in the payload removes a key (opt-in deletion). The create
+  path is unchanged. This makes the 1.17.0 changelog claim that existing
+  frontmatter is "preserved field-by-field" actually hold. Critical-priority:
+  1.17.0 shipped with this bug.
+
+[#113]: https://github.com/mavaali/daftari/issues/113
+
 ## [1.17.0] - 2026-06-07
 
 ### Added

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
@@ -810,6 +810,284 @@ describe("write tools", () => {
       // The default-bearing extension is not injected by an append.
       expect("status_tag" in read.value.raw).toBe(false);
       expect(read.value.content).toContain("Appended.");
+    }, 60_000);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Frontmatter merge on update (#113). A tool-mediated write must never
+  // silently drop a frontmatter field the author put there. On the update path,
+  // the document's existing frontmatter is merged under the write payload:
+  // every existing field is preserved, the payload wins per-key, and an
+  // explicit null in the payload removes the key (opt-in deletion). The create
+  // path is unchanged — there is no existing frontmatter to preserve.
+  // ---------------------------------------------------------------------------
+  describe("vault_write — frontmatter merge on update (#113)", () => {
+    // Seeds a document straight to disk so the test controls the exact
+    // on-disk frontmatter, independent of any write-path behavior.
+    function seed(relPath: string, frontmatterLines: string[]): void {
+      const abs = join(vault, relPath);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, `---\n${frontmatterLines.join("\n")}\n---\n\n# Seed\n\nOriginal body.\n`);
+    }
+
+    // A full, valid built-in frontmatter block, optionally extended with extra
+    // (custom / undeclared) lines.
+    function builtinLines(extra: string[] = []): string[] {
+      return [
+        "title: Service Architecture",
+        "domain: accumulation",
+        "collection: pricing",
+        "status: canonical",
+        "confidence: low",
+        "created: 2026-05-01",
+        "updated: 2026-05-01",
+        "updated_by: agent:seed",
+        "provenance: direct",
+        "sources: []",
+        "superseded_by: null",
+        "ttl_days: null",
+        "tags: [pricing]",
+        ...extra,
+      ];
+    }
+
+    it("preserves an undeclared custom field when the payload omits it", async () => {
+      seed("pricing/svc.md", builtinLines(['co_curator: "@jsmith"']));
+
+      const result = await vaultWrite(vault, {
+        path: "pricing/svc.md",
+        body: "# Service Architecture\n\nUpdated body.\n",
+        frontmatter: newFrontmatter({
+          title: "Service Architecture",
+          collection: "pricing",
+          status: "canonical",
+          confidence: "high",
+        }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/svc.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.raw.co_curator).toBe("@jsmith");
+    }, 60_000);
+
+    it("lets the payload win for a standard field it supplies", async () => {
+      seed("pricing/svc.md", builtinLines());
+
+      const result = await vaultWrite(vault, {
+        path: "pricing/svc.md",
+        body: "# Service Architecture\n",
+        frontmatter: newFrontmatter({
+          title: "Service Architecture",
+          collection: "pricing",
+          status: "canonical",
+          confidence: "high",
+        }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/svc.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.frontmatter.confidence).toBe("high");
+    }, 60_000);
+
+    it("removes a key the payload sets to null, while preserving the rest", async () => {
+      // `temperature` is set to null in the payload (opt-in deletion); `stakes`
+      // is omitted entirely and must survive (preservation, not deletion).
+      seed("pricing/svc.md", builtinLines(["temperature: cold", "stakes: high"]));
+
+      const result = await vaultWrite(vault, {
+        path: "pricing/svc.md",
+        body: "# Service Architecture\n",
+        frontmatter: newFrontmatter({
+          title: "Service Architecture",
+          collection: "pricing",
+          status: "canonical",
+          temperature: null,
+        }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/svc.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect("temperature" in read.value.raw).toBe(false);
+      expect(read.value.raw.stakes).toBe("high");
+    }, 60_000);
+
+    it("leaves the create path unchanged — only payload fields are written", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/brand-new.md",
+        body: "# Brand New\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/brand-new.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      // No custom keys appear out of nowhere: the raw block is exactly the
+      // built-in field set.
+      const BUILTIN_KEYS = [
+        "title",
+        "domain",
+        "collection",
+        "status",
+        "confidence",
+        "created",
+        "updated",
+        "updated_by",
+        "provenance",
+        "sources",
+        "superseded_by",
+        "ttl_days",
+        "tags",
+        "questions_answered",
+        "questions_raised",
+      ];
+      expect(Object.keys(read.value.raw).sort()).toEqual([...BUILTIN_KEYS].sort());
+    }, 60_000);
+
+    it("preserves all six custom fields from the issue #113 repro at once", async () => {
+      seed(
+        "architecture/service-arch.md",
+        builtinLines([
+          "type: decision-record",
+          "lifecycle: active",
+          "curation: quarterly",
+          "temperature: cold",
+          "stakes: high",
+          'co_curator: "@jsmith"',
+        ]),
+      );
+
+      const result = await vaultWrite(vault, {
+        path: "architecture/service-arch.md",
+        body: "# Service Architecture\n\nUpdated.\n",
+        frontmatter: newFrontmatter({
+          title: "Service Architecture",
+          collection: "pricing",
+          status: "canonical",
+          confidence: "high",
+        }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "architecture/service-arch.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.raw.type).toBe("decision-record");
+      expect(read.value.raw.lifecycle).toBe("active");
+      expect(read.value.raw.curation).toBe("quarterly");
+      expect(read.value.raw.temperature).toBe("cold");
+      expect(read.value.raw.stakes).toBe("high");
+      expect(read.value.raw.co_curator).toBe("@jsmith");
+    }, 60_000);
+
+    it("refuses to overwrite an existing file whose frontmatter does not parse", async () => {
+      // Malformed YAML on disk: a create-style clobber here would discard
+      // whatever the document holds — the field-loss class #113 guards against.
+      const abs = join(vault, "pricing/corrupt.md");
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, "---\ntitle: [unterminated\ncustom: keep-me\n---\n\n# Body\n");
+
+      const result = await vaultWrite(vault, {
+        path: "pricing/corrupt.md",
+        body: "# Replacement\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("could not be");
+      // The original bytes are untouched.
+      expect(readFileSync(abs, "utf-8")).toContain("custom: keep-me");
+    }, 60_000);
+
+    it("applies a partial frontmatter update and records an accurate provenance diff", async () => {
+      seed("pricing/svc.md", builtinLines());
+
+      // A realistic partial write: only the changed field is supplied. The
+      // merge fills the rest from the existing document, so the write validates.
+      const result = await vaultWrite(vault, {
+        path: "pricing/svc.md",
+        body: "# Service Architecture\n",
+        frontmatter: { confidence: "high" },
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/svc.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      // The changed field changed; an omitted optional built-in survived intact.
+      expect(read.value.frontmatter.confidence).toBe("high");
+      expect(read.value.frontmatter.tags).toEqual(["pricing"]);
+
+      const prov = await readProvenanceLog(vault);
+      expect(prov.ok).toBe(true);
+      if (!prov.ok) return;
+      const entry = prov.value.find((e) => e.file === "pricing/svc.md" && e.action === "update");
+      // The diff reflects the actual change, not a wholesale rewrite.
+      expect(entry?.frontmatter_diff?.confidence?.before).toBe("low");
+      expect(entry?.frontmatter_diff?.confidence?.after).toBe("high");
+      expect(entry?.frontmatter_diff?.title).toBeUndefined();
+    }, 60_000);
+  });
+
+  describe("vault_write — declared schema extensions survive an omitting update (#113)", () => {
+    const EXT_CONFIG = [
+      "version: 1",
+      "vault_name: sample-vault",
+      "schema_extensions:",
+      "  adr_id:",
+      "    type: string",
+      '    pattern: "^ADR-[0-9]+$"',
+      "  stakeholders:",
+      "    type: array",
+      "    items: string",
+      "",
+    ].join("\n");
+
+    beforeEach(() => {
+      mkdirSync(`${vault}/.daftari`, { recursive: true });
+      writeFileSync(configPath(vault), EXT_CONFIG);
+    });
+
+    it("preserves a declared extension field the update payload omits", async () => {
+      // Seed a conformant doc carrying declared extension values.
+      await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR\n",
+        frontmatter: newFrontmatter({
+          adr_id: "ADR-021",
+          stakeholders: ["platform", "security"],
+        }),
+        agent: AGENT,
+      });
+
+      // Update with standard fields only — the extension fields are NOT in the
+      // payload. They must survive.
+      const result = await vaultWrite(vault, {
+        path: "pricing/adr.md",
+        body: "# ADR v2\n",
+        frontmatter: newFrontmatter({ confidence: "high" }),
+        agent: AGENT,
+      });
+      expect(result.ok).toBe(true);
+
+      const read = await vaultRead(vault, "pricing/adr.md");
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.raw.adr_id).toBe("ADR-021");
+      expect(read.value.raw.stakeholders).toEqual(["platform", "security"]);
     }, 60_000);
   });
 

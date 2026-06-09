@@ -133,9 +133,22 @@ export function serializeDocument(
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
   };
+  const handled = new Set<string>(Object.keys(ordered));
   for (const ext of extensions) {
+    handled.add(ext.field);
     const value = extensionValue(raw, ext);
     if (value !== undefined) ordered[ext.field] = value;
+  }
+  // Preserve any remaining frontmatter the document already carries — fields
+  // that are neither built-in nor a declared extension. They are written last,
+  // in their raw insertion order, untyped. This keeps every serialize path
+  // non-destructive: a tool-mediated write never silently drops a field the
+  // author put there (#113). A null value is treated as absent (the same
+  // convention declared extensions follow) and the key is omitted.
+  for (const [key, value] of Object.entries(raw)) {
+    if (handled.has(key)) continue;
+    if (value === undefined || value === null) continue;
+    ordered[key] = value;
   }
   return matter.stringify(body.startsWith("\n") ? body : `\n${body}`, ordered);
 }
@@ -354,12 +367,48 @@ export async function vaultWrite(
 
   const existing = await readFile(resolved.value);
   let oldFrontmatter: Frontmatter | null = null;
+  let oldRaw: Record<string, unknown> | null = null;
   if (existing.ok) {
     const parsed = parseDocument(existing.value);
-    if (parsed.ok) oldFrontmatter = parsed.value.frontmatter;
+    if (!parsed.ok) {
+      // The file exists but its frontmatter does not parse. Treating this as a
+      // create would silently overwrite — and discard — whatever the document
+      // already holds, the exact field-loss class #113 is about. Refuse loudly
+      // instead: the caller must repair or remove the file before a write can
+      // proceed.
+      return err(
+        new Error(
+          `vault_write: ${path.value} exists but its frontmatter could not be ` +
+            `parsed (${parsed.error.message}); refusing to overwrite it. ` +
+            `Fix or remove the file first.`,
+        ),
+      );
+    }
+    oldFrontmatter = parsed.value.frontmatter;
+    oldRaw = parsed.value.raw;
   }
   const isUpdate = oldFrontmatter !== null;
   const hookOperation: HookOperation = isUpdate ? "update" : "create";
+
+  // On update, merge the document's existing frontmatter under the payload, so
+  // a tool-mediated write never silently drops a field the author put there
+  // (#113). `oldRaw` is the frontmatter exactly as parsed — built-in fields,
+  // declared schema extensions, and undeclared custom keys alike (unlike
+  // `oldFrontmatter`, which the validator coerces down to the built-in set).
+  // Every existing key is preserved; a key the payload supplies wins; an
+  // explicit null in the payload removes the key (opt-in deletion). The merged
+  // object is written back into `rawFrontmatter` in place, so transform hooks,
+  // validation, and serialization all operate on it. The create path is
+  // unchanged — there is no existing frontmatter to preserve.
+  if (isUpdate && oldRaw !== null) {
+    const merged: Record<string, unknown> = { ...oldRaw };
+    for (const [key, value] of Object.entries(rawFrontmatter)) {
+      if (value === null) delete merged[key];
+      else merged[key] = value;
+    }
+    for (const key of Object.keys(rawFrontmatter)) delete rawFrontmatter[key];
+    Object.assign(rawFrontmatter, merged);
+  }
 
   // Config-declared schema extensions participate in validation and
   // serialization. A malformed config fails the write loudly, matching the
