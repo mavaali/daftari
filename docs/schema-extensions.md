@@ -80,11 +80,25 @@ but a read is never blocked.
   is filled with that default. A required field with a default is therefore
   never "missing".
 - **Serialization.** Built-in fields are written first, in their fixed schema
-  order; extension fields follow, in config declaration order. Output is stable
-  and round-trippable regardless of the input object's key order.
+  order; declared extension fields follow, in config declaration order. Any
+  *undeclared* frontmatter the document already carries is preserved after
+  those, in its existing order, untyped — writes are non-destructive and never
+  silently drop a field an author put there (see [Undeclared fields](#undeclared-fields)).
+  Output is stable and round-trippable regardless of the input object's key
+  order.
 - **Reads.** Extension fields are preserved in the file, so they surface in
   `vault_read`'s parsed frontmatter automatically. No read-path configuration
   is needed.
+
+### Undeclared fields
+
+A field that is neither built-in nor a declared extension is still **preserved**
+on every write. Declaring it as a schema extension adds validation, typed
+serialization, and defaults; leaving it undeclared means it round-trips as-is,
+untyped, with no validation. Either way a tool-mediated write (`vault_write`,
+`vault_append`, `vault_promote`, `vault_deprecate`, `daftari backfill`) carries
+it forward rather than dropping it. To remove an undeclared field on a
+`vault_write`, set it to `null` in the payload (opt-in deletion).
 
 What does **not** change: the built-in field set (this release ships zero new
 core fields), RBAC, write locks, git auto-commit, the provenance log, and the
@@ -162,11 +176,12 @@ What the schema enforces here:
 ## Back-compat for existing vaults
 
 Schema extensions are opt-in. A vault whose `.daftari/config.yaml` has no
-`schema_extensions` block — or has no config file at all — is unaffected: write
-output is byte-identical to the pre-extension behavior. Adopting extensions is
-a matter of adding the block; existing documents keep working, and an extension
-field is simply absent (or filled from its `default`) until a write supplies
-it.
+`schema_extensions` block — or has no config file at all — is unaffected:
+built-in frontmatter serializes exactly as before, and any custom fields a
+document carries are preserved untyped (see [Undeclared fields](#undeclared-fields)).
+Adopting extensions is a matter of adding the block; existing documents keep
+working, and an extension field is simply absent (or filled from its `default`)
+until a write supplies it.
 
 ## Out of scope (v1)
 
