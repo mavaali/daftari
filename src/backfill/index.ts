@@ -179,7 +179,10 @@ export function renderApplyResult(r: ApplyResult): string {
     for (const s of r.skipped) out.push(`    ${s.path}: ${s.reason}`);
   }
   if (r.commit) out.push(`  commit:    ${r.commit}`);
-  else if (r.applied.length === 0) out.push("  (no changes — already applied)");
+  // Only a genuine no-op (nothing written, nothing skipped) is "already applied".
+  // When docs were skipped, the cataloged line above already explains the outcome.
+  else if (r.applied.length === 0 && r.skipped.length === 0)
+    out.push("  (no changes — already applied)");
   return `${out.join("\n")}\n`;
 }
 

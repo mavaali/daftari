@@ -52,6 +52,19 @@ describe("renderApplyResult", () => {
     expect(out).toContain("decisions/b.md");
   });
 
+  it("does not call an all-skipped run 'already applied'", () => {
+    const r: ApplyResult = {
+      scope: "decisions",
+      applied: [],
+      unchanged: [],
+      skipped: [{ path: "decisions/b.md", reason: "collision: ..." }],
+      commit: null,
+    };
+    const out = renderApplyResult(r);
+    expect(out).toContain("cataloged 0 of 1");
+    expect(out).not.toContain("already applied");
+  });
+
   it("reports an idempotent re-apply as fully cataloged with no commit", () => {
     const r: ApplyResult = {
       scope: "decisions",
