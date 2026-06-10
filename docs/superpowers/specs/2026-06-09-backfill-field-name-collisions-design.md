@@ -14,7 +14,7 @@ Make backfill **non-destructive and self-explaining** for these collisions: neve
 
 ## 2. Root cause (verified against code)
 
-The loss is one line. In [`src/backfill/derive.ts:126`](../../../src/backfill/derive.ts) `resolve()` preserves a present field by returning `coerced[field]`, where `coerced = validateFrontmatter(raw).frontmatter`. For an enum field, `requireEnum` ([`src/frontmatter/schema.ts:118`](../../../src/frontmatter/schema.ts)) returns the **fallback** for any out-of-enum value:
+The loss is one line. In [`src/backfill/derive.ts`](../../../src/backfill/derive.ts), `resolve()` (declared at line 126) preserves a present field by returning `coerced[field]` (line 133), where `coerced = validateFrontmatter(raw).frontmatter`. For an enum field, `requireEnum` ([`src/frontmatter/schema.ts:118`](../../../src/frontmatter/schema.ts)) returns the **fallback** for any out-of-enum value:
 
 - `status: ACTIVE` → not in `STATUSES` → coerced to `"draft"`
 - `confidence: EXPLICIT` → coerced to `"low"`
@@ -36,7 +36,7 @@ So `entry.proposed.status` is already the *valid fallback* before it reaches the
 - **No auto-rename and no fuzzy/auto-casing** (`Draft` → `draft` is a collision, not a silent fix). Resolution is the operator's deliberate act.
 - **No partial-field backfill.** A doc with a collision is skipped whole; we do not write a doc that fails validation. (Decided during brainstorming: the operator's real workflow is rename-first, so the apply-on-unrenamed case is a safety net that should push toward the rename, not leave a half-applied doc.)
 - **No new config, no MCP tool, no schema change.** CLI-only, like backfill itself.
-- **Extension shadowing is already impossible** — [`types.ts:51`](../../../src/frontmatter/types.ts) rejects a schema extension that reuses a built-in name, so a present `status` is unambiguously the built-in.
+- **Extension shadowing is already impossible** — documented at [`types.ts:51`](../../../src/frontmatter/types.ts) and *enforced* at [`config.ts:193`](../../../src/utils/config.ts) (`BUILTIN_FRONTMATTER_FIELDS.includes(field)` → config error), so a present `status` is unambiguously the built-in, never a declared custom field.
 
 ## 4. Design
 
@@ -107,6 +107,7 @@ Tests mirror `src/` structure (per CLAUDE.md), one file per unit.
 - **`test/backfill/collisions.test.ts`** — each enum built-in with a foreign value → collision; valid enum value → none; non-string enum value → collision; missing/empty → none; non-enum built-in malformed → not reported as a collision.
 - **`derive` tests** — out-of-enum present field preserved as raw (not the fallback); present YAML `Date` `created` still normalized to `YYYY-MM-DD`; derivation label `"collision"` for the colliding field; the issue's three-field repro (`status`/`confidence`/`domain`) all preserved.
 - **`apply` tests** — a colliding doc is skipped whole with the collision-specific reason; non-colliding docs in the same scope are unaffected; after a simulated rename the doc backfills conformant; a doc whose *only* problem is a malformed date (not a collision) is skipped with the generic reason (regression of the existing guard).
+- **Universal-fix tests** — a present malformed *non-enum* built-in (e.g. `tags: "foo"` as a string, or a non-string `title`) is now preserved as raw and skipped+reported by the guard, rather than silently coerced to `[]`/`""`. This covers the §4.4 newly-reported population — the behavior change with the widest blast radius.
 - **`plan` / summary tests** — collisions counted and listed; the rename guidance renders.
 - **Regression** — existing backfill tests (conformant skip, missing/partial fill, idempotence, root-skip) all pass unchanged.
 
