@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyPlan } from "../../src/backfill/apply.js";
@@ -106,5 +106,36 @@ describe("applyPlan", () => {
     if (!replan.ok) return;
     expect(replan.value.summary.planned).toBe(0);
     expect(replan.value.summary.conformant).toBe(1);
+  });
+
+  it("skips a colliding doc with a rename-guidance reason, preserving its value", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/decision.md"),
+      "---\nstatus: ACTIVE\n---\n# Decision\n",
+    );
+    const plan = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    if (!plan.ok) throw plan.error;
+    const result = await applyPlan(vault, "specs", "human:migrator");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const skip = result.value.skipped.find((s) => s.path === "specs/data-movement/decision.md");
+    expect(skip).toBeDefined();
+    expect(skip?.reason).toContain("collision");
+    expect(skip?.reason).toContain("status");
+    const text = readFileSync(join(vault, "specs/data-movement/decision.md"), "utf-8");
+    expect(text).toContain("status: ACTIVE");
+  });
+
+  it("skips a non-collision invalid doc with the generic reason", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/baddate.md"),
+      "---\ncreated: not-a-date\n---\n# Bad\n",
+    );
+    const plan = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    if (!plan.ok) throw plan.error;
+    const result = await applyPlan(vault, "specs", "human:migrator");
+    if (!result.ok) return;
+    const skip = result.value.skipped.find((s) => s.path === "specs/data-movement/baddate.md");
+    expect(skip?.reason).toContain("proposed frontmatter is invalid");
   });
 });
