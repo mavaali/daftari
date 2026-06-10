@@ -9,6 +9,15 @@
 
 import type { Frontmatter } from "../frontmatter/types.js";
 
+// One frontmatter field-name collision (#116): a present field whose name is a
+// built-in ENUM field but whose value is outside that field's enum — foreign
+// vocabulary that backfill must not launder into a Daftari default.
+export interface Collision {
+  field: string; // built-in enum field name, e.g. "status"
+  value: string; // the author's value, stringified for display
+  expected: readonly string[]; // the built-in enum, e.g. STATUSES
+}
+
 // Per-field record of HOW each proposed value was arrived at, surfaced in the
 // plan and on stdout so a human ratifying a folder can see what is preserved
 // from existing frontmatter versus derived. Values are short source labels,
