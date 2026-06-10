@@ -52,6 +52,18 @@ export interface PlanEntry {
 //   missing    — no frontmatter at all
 export type DocClassification = "conformant" | "partial" | "missing";
 
+// Projected (plan-time) or actual coverage for one scope. willCatalog uses the
+// EXACT predicate the apply guard uses, so projection cannot diverge from what
+// --apply writes. A blocked entry counts in exactly one bucket; a collision
+// takes precedence over other invalidity.
+// Invariant: willCatalog + blockedByCollision + blockedByOther === planned.
+export interface ScopeCoverage {
+  planned: number;
+  willCatalog: number;
+  blockedByCollision: number;
+  blockedByOther: number;
+}
+
 // Stdout summary of a `--plan` run.
 export interface BackfillSummary {
   missing: number;
