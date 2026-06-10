@@ -191,6 +191,22 @@ it("normalizes a present YAML Date to a YYYY-MM-DD string", () => {
   });
   expect(proposed.created).toBe("2024-12-01");
 });
+
+it("preserves a present malformed non-enum built-in as raw, not a coerced default (§4.4)", () => {
+  // The universal-fix consequence: a present `tags` that is a string (not an
+  // array) is preserved verbatim so the apply guard reports it, rather than
+  // being silently coerced to []. (Apply-side skip is covered in Task 6.)
+  const { proposed } = deriveProposed({
+    relPath: "specs/x.md",
+    body: "# X",
+    raw: { tags: "foo" },
+    git: { created: null, updated: null, author: null },
+    mtimeDate: "2026-06-09",
+    identityMap: {},
+    invoker: "human:tester",
+  });
+  expect(proposed.tags).toBe("foo" as unknown as string[]);
+});
 ```
 
 Also UPDATE every existing `deriveProposed({ ... })` call in this file to remove the `coerced: ...` property (the interface no longer accepts it). There are calls around lines 106, 140, 156, 173+ — remove `coerced: emptyCoerced,` / `coerced: ...,` from each, and delete the now-unused `const emptyCoerced = {} as Frontmatter;` and the `Frontmatter` import if it becomes unused.
