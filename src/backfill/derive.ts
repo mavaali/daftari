@@ -120,7 +120,11 @@ export interface DerivedFrontmatter {
 // serialization. Everything else (including an out-of-enum value) is returned
 // as-is, so it survives to the apply guard instead of being coerced away (#116).
 function normalizeRawValue(v: unknown): unknown {
-  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  // A Date never leaves as an object: a valid one becomes YYYY-MM-DD; an invalid
+  // one becomes its string form ("Invalid Date") so it stays serializable and is
+  // cleanly rejected by the apply guard rather than written as a broken object.
+  if (v instanceof Date)
+    return Number.isNaN(v.getTime()) ? String(v) : v.toISOString().slice(0, 10);
   return v;
 }
 

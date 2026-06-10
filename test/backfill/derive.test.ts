@@ -221,6 +221,20 @@ describe("deriveProposed", () => {
     expect(proposed.created).toBe("2024-12-01");
   });
 
+  it("does not let an invalid Date escape as an object", () => {
+    const { proposed } = deriveProposed({
+      relPath: "specs/x.md",
+      body: "# X",
+      raw: { created: new Date("not-a-date") },
+      git: { created: null, updated: null, author: null },
+      mtimeDate: "2026-06-09",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.created).not.toBeInstanceOf(Date);
+    expect(typeof proposed.created).toBe("string");
+  });
+
   it("preserves a present malformed non-enum built-in as raw, not a coerced default (§4.4)", () => {
     const { proposed } = deriveProposed({
       relPath: "specs/x.md",
