@@ -26,8 +26,9 @@ import type { AuditConfig, AuditReport } from "./types.js";
 const DEFAULT_SEMANTIC_MODEL = "claude-sonnet-4-6";
 
 // Dependencies that production wires to real implementations but tests inject.
-// The Anthropic SDK is only constructed when --semantic runs without an
-// injected client, so the default audit never touches it.
+// The Anthropic client (and the ANTHROPIC_API_KEY requirement) is only
+// constructed when --semantic runs without an injected client, so the default
+// audit needs no key, makes no network calls, and reads no LLM config.
 export interface AuditOverrides {
   llm?: LlmClient;
 }
@@ -114,6 +115,14 @@ export async function runAudit(argv: string[], overrides: AuditOverrides = {}): 
 
   const semantic = argv.includes("--semantic");
   const autoTension = argv.includes("--auto-tension");
+
+  // --auto-tension only acts on semantic findings; without --semantic there are
+  // none, so it would be a silent no-op. Warn rather than do nothing quietly.
+  if (autoTension && !semantic) {
+    process.stderr.write(
+      "daftari audit: --auto-tension has no effect without --semantic (no findings to log)\n",
+    );
+  }
 
   // Fail fast on semantic preconditions, before any collection work.
   let tensionVault: string | null = null;

@@ -227,6 +227,22 @@ fail_on:
     expect(code).toBe(0);
   });
 
+  it("warns instead of silently no-op'ing when --auto-tension is passed without --semantic", async () => {
+    const writes: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    const yamlPath = join(tmp, "audit-at.yaml");
+    writeFileSync(yamlPath, `repos:\n  - name: a\n    path: ${repoA}\n`);
+    try {
+      await runAudit(["--config", yamlPath, "--auto-tension"]);
+      expect(writes.join("")).toContain("--auto-tension has no effect without --semantic");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("returns config error (exit 2) for --auto-tension without a single docs vault", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     // Two docs repos → ambiguous vault root for tension logging.

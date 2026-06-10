@@ -93,4 +93,11 @@ describe("classifyDescribesEdges", () => {
     const snaps = [repo("docs", "docs", [doc("a.md", [])])];
     expect(classifyDescribesEdges(snaps)).toEqual([]);
   });
+
+  it("skips blank / whitespace-only describes entries", () => {
+    const snaps = [repo("docs", "docs", [doc("a.md", ["", "   ", "svc:x.ts"])])];
+    const edges = classifyDescribesEdges(snaps);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.targetPath).toBe("x.ts");
+  });
 });

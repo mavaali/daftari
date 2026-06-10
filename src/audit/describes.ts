@@ -43,6 +43,9 @@ export function classifyDescribesEdges(snapshots: RepoSnapshot[]): DescribesEdge
     for (const doc of snap.docs.values()) {
       for (const raw of doc.describes ?? []) {
         const parsed = parseDescribesEntry(raw, sourceRepo);
+        // A blank or whitespace-only entry resolves to an empty target path —
+        // skip it rather than emit a confusing "missing file: repo/" finding.
+        if (parsed.path.length === 0) continue;
         edges.push({
           sourceRepo,
           sourcePath: doc.relPath,
