@@ -7,11 +7,19 @@ describe("detectCollisions", () => {
       status: "ACTIVE",
       confidence: "EXPLICIT",
       domain: "Architecture",
+      provenance: "GUESSED",
     });
-    expect(collisions.map((c) => c.field).sort()).toEqual(["confidence", "domain", "status"]);
+    expect(collisions.map((c) => c.field).sort()).toEqual([
+      "confidence",
+      "domain",
+      "provenance",
+      "status",
+    ]);
     const status = collisions.find((c) => c.field === "status");
     expect(status?.value).toBe("ACTIVE");
     expect(status?.expected).toContain("canonical");
+    const provenance = collisions.find((c) => c.field === "provenance");
+    expect(provenance?.expected).toContain("direct");
   });
 
   it("ignores valid enum values and absent/empty fields", () => {
