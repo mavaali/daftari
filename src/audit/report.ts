@@ -1,6 +1,7 @@
 // src/audit/report.ts
 // Pure formatters over AuditReport. No IO.
 
+import type { SemanticFinding } from "./semantic.js";
 import type {
   AuditReport,
   BrokenRefFinding,
@@ -43,13 +44,32 @@ function renderDescribesRefs(rows: DescribesRefFinding[]): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderSemantic(rows: SemanticFinding[]): string {
+  // Only non-coherent verdicts are worth surfacing (drifted, contradicted, skipped).
+  const notable = rows.filter((r) => r.verdict !== "coherent");
+  if (notable.length === 0) return "_all checked bindings are coherent._\n";
+  const lines = ["| verdict | source | target | detail |", "|---|---|---|---|"];
+  for (const r of notable) {
+    const sym = r.target.symbol ? `::${r.target.symbol}` : "";
+    const detail =
+      r.verdict === "skipped"
+        ? (r.reason ?? "skipped")
+        : r.contradictions.join("; ") || "(no detail)";
+    lines.push(
+      `| ${r.verdict} | ${r.source.repo}/${r.source.path} | ${r.target.repo}/${r.target.path}${sym} | ${detail} |`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 export function renderMarkdown(report: AuditReport): string {
   const t = report.totals;
   const empty =
     t.brokenRefs === 0 &&
     t.directlyStale === 0 &&
     t.transitivelyStale === 0 &&
-    t.brokenDescribes === 0;
+    t.brokenDescribes === 0 &&
+    report.semantic.length === 0;
   const head = [
     "# Coherence Audit Report",
     "",
@@ -63,6 +83,7 @@ export function renderMarkdown(report: AuditReport): string {
     `- directly stale docs: **${t.directlyStale}**`,
     `- transitively stale docs: **${t.transitivelyStale}**`,
     `- broken doc-to-code bindings: **${t.brokenDescribes}**`,
+    `- doc-to-code semantic drift: **${t.semanticDrifted}**`,
     "",
   ];
   if (empty) {
@@ -80,6 +101,9 @@ export function renderMarkdown(report: AuditReport): string {
     "## Broken doc-to-code bindings",
     "",
     renderDescribesRefs(report.describesRefs),
+    ...(report.semantic.length > 0
+      ? ["## Semantic coherence", "", renderSemantic(report.semantic)]
+      : []),
   ].join("\n");
 }
 

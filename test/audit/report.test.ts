@@ -18,6 +18,7 @@ const REPORT: AuditReport = {
     directlyStale: 1,
     transitivelyStale: 1,
     brokenDescribes: 1,
+    semanticDrifted: 0,
   },
   brokenRefs: [
     {
@@ -47,6 +48,7 @@ const REPORT: AuditReport = {
       raw: "svc:src/gone.ts::validateCredentials",
     },
   ],
+  semantic: [],
 };
 
 describe("renderMarkdown", () => {

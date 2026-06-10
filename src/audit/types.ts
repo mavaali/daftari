@@ -1,6 +1,8 @@
 // src/audit/types.ts
 // Shared types for the coherence audit. Pure data shapes; no logic.
 
+import type { SemanticFinding } from "./semantic.js";
+
 export type AuditConfig = {
   repos: RepoConfig[];
   output: { markdown?: string; json?: string };
@@ -97,10 +99,15 @@ export type AuditReport = {
     directlyStale: number;
     transitivelyStale: number;
     brokenDescribes: number;
+    // drifted + contradicted bindings from the opt-in --semantic check; 0 when
+    // the check did not run.
+    semanticDrifted: number;
   };
   brokenRefs: BrokenRefFinding[];
   staleness: StalenessFinding[];
   describesRefs: DescribesRefFinding[];
+  // Populated only when --semantic ran; [] otherwise.
+  semantic: SemanticFinding[];
 };
 
 // Tagged error union. runAudit branches on .kind to translate to exit codes

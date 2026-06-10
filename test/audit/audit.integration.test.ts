@@ -5,6 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAudit } from "../../src/audit/index.js";
+import { listTensions } from "../../src/curation/tension.js";
+import type { LlmClient } from "../../src/eval/llm.js";
+import { ok } from "../../src/frontmatter/types.js";
+
+// An LlmClient whose completeJson always returns the given verdict object.
+const stubLlm = (parsed: unknown): LlmClient =>
+  ({
+    completeJson: vi.fn(async () =>
+      ok({ text: "", input_tokens: 1, output_tokens: 1, stop_reason: "end_turn", parsed }),
+    ),
+  }) as unknown as LlmClient;
 
 const git = (cwd: string, args: string[]) =>
   execFileSync("git", args, {
@@ -155,6 +166,79 @@ fail_on:
     });
     // broken_describes threshold of 1 is hit → non-zero exit.
     expect(code).toBe(1);
+  });
+
+  it("runs the semantic drift check and logs a tension with --auto-tension (#120)", async () => {
+    const repoC = join(tmp, "svc");
+    mkdirSync(repoC);
+    mkdirSync(join(repoC, "src"));
+    writeFileSync(join(repoC, "src", "login.ts"), `export function login(token: string) {}\n`);
+
+    writeFileSync(
+      join(repoA, "auth-doc.md"),
+      `---\ntitle: Auth\ndescribes:\n  - svc:src/login.ts\n---\n# Auth\n\nCalls validateCredentials(email, password).\n`,
+    );
+    git(repoA, ["add", "."]);
+    git(repoA, ["commit", "-q", "-m", "add auth-doc"]);
+
+    const yamlPath = join(tmp, "audit-sem.yaml");
+    writeFileSync(
+      yamlPath,
+      `
+repos:
+  - name: a
+    path: ${repoA}
+  - name: svc
+    path: ${repoC}
+    type: code
+output:
+  json: ${join(tmp, "report-sem.json")}
+fail_on:
+  broken_refs: 1000
+  transitive_staleness: 1000
+  broken_describes: 1000
+`,
+    );
+
+    const llm = stubLlm({
+      verdict: "drifted",
+      contradictions: ["doc says validateCredentials(email, password); code takes a token"],
+    });
+    const code = await runAudit(["--config", yamlPath, "--semantic", "--auto-tension"], { llm });
+
+    const report = JSON.parse(readFileSync(join(tmp, "report-sem.json"), "utf-8"));
+    expect(report.totals.semanticDrifted).toBe(1);
+    expect(report.semantic).toHaveLength(1);
+    expect(report.semantic[0]).toMatchObject({
+      source: { repo: "a", path: "auth-doc.md" },
+      target: { repo: "svc", path: "src/login.ts" },
+      verdict: "drifted",
+    });
+    expect(llm.completeJson).toHaveBeenCalledTimes(1);
+
+    // --auto-tension logged a factual tension into repo-a's vault.
+    const tensions = await listTensions(repoA);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    expect(tensions.value).toHaveLength(1);
+    expect(tensions.value[0]?.sourceA).toBe("auth-doc.md");
+
+    // Semantic is advisory: drift alone does not fail the build.
+    expect(code).toBe(0);
+  });
+
+  it("returns config error (exit 2) for --auto-tension without a single docs vault", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    // Two docs repos → ambiguous vault root for tension logging.
+    const yamlPath = join(tmp, "audit-amb.yaml");
+    writeFileSync(
+      yamlPath,
+      `repos:\n  - name: a\n    path: ${repoA}\n  - name: b\n    path: ${repoB}\n`,
+    );
+    const llm = stubLlm({ verdict: "coherent", contradictions: [] });
+    const code = await runAudit(["--config", yamlPath, "--semantic", "--auto-tension"], { llm });
+    expect(code).toBe(2);
+    stderr.mockRestore();
   });
 
   it("returns 2 on a config error", async () => {
