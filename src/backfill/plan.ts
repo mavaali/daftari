@@ -15,6 +15,8 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { fileGitMeta } from "../utils/git.js";
+import { detectCollisions } from "./collisions.js";
+import { projectCoverage } from "./coverage.js";
 import { classifyDoc, deriveProposed } from "./derive.js";
 import type { BackfillSummary, PlanEntry } from "./types.js";
 
@@ -73,6 +75,8 @@ export async function generatePlan(
     rootSkipped: 0,
     byScope: {},
     planned: 0,
+    coverage: {},
+    collisions: [],
   };
 
   const total = listed.value.length;
@@ -117,16 +121,34 @@ export async function generatePlan(
       relPath,
       body: parsed.value.content,
       raw: parsed.value.raw,
-      coerced: parsed.value.frontmatter,
       git,
       mtimeDate: await mtimeDate(resolved.value),
       identityMap: opts.identityMap,
       invoker: opts.invoker,
     });
 
-    entries.push({ path: relPath, current: parsed.value.raw, proposed, derivation, scope });
+    entries.push({
+      path: relPath,
+      current: parsed.value.raw,
+      proposed,
+      derivation,
+      scope,
+      collisions: detectCollisions(parsed.value.raw),
+    });
     summary.byScope[scope] = (summary.byScope[scope] ?? 0) + 1;
     summary.planned += 1;
+  }
+
+  // Per-scope coverage + a flat collision list for the summary (#116).
+  const byScopeEntries = new Map<string, PlanEntry[]>();
+  for (const e of entries) {
+    const list = byScopeEntries.get(e.scope) ?? [];
+    list.push(e);
+    byScopeEntries.set(e.scope, list);
+    for (const c of e.collisions) summary.collisions.push({ ...c, path: e.path });
+  }
+  for (const [scope, scoped] of byScopeEntries) {
+    summary.coverage[scope] = projectCoverage(scoped);
   }
 
   const path = planPath(vaultRoot);
@@ -185,7 +207,9 @@ export async function readPlan(path: string): Promise<Result<PlanEntry[], Error>
     ) {
       return err(new Error(`malformed backfill plan: line ${i + 1} is missing required fields`));
     }
-    entries.push(parsed as PlanEntry);
+    const entry = parsed as PlanEntry;
+    if (!Array.isArray(entry.collisions)) entry.collisions = [];
+    entries.push(entry);
   }
   return ok(entries);
 }

@@ -9,6 +9,18 @@
 
 import type { Frontmatter } from "../frontmatter/types.js";
 
+// One frontmatter field-name collision (#116): a present field whose name is a
+// built-in ENUM field but whose value is outside that field's enum — foreign
+// vocabulary that backfill must not launder into a Daftari default.
+export interface Collision {
+  field: string; // built-in enum field name, e.g. "status"
+  value: string; // the author's value, stringified for display
+  expected: readonly string[]; // the built-in enum, e.g. STATUSES
+}
+
+// A collision plus the doc it lives on — the flat list the plan summary renders.
+export type CollisionReport = Collision & { path: string };
+
 // Per-field record of HOW each proposed value was arrived at, surfaced in the
 // plan and on stdout so a human ratifying a folder can see what is preserved
 // from existing frontmatter versus derived. Values are short source labels,
@@ -31,6 +43,10 @@ export interface PlanEntry {
   // First path component — the folder this entry is ratified under. `--apply
   // --scope <folder>` writes only entries whose scope matches.
   scope: string;
+  // Field-name collisions on this doc (#116): present built-in fields whose
+  // value is foreign vocabulary. Empty when none. Required, but absent in plan
+  // files written before #116 — readPlan defaults those to [] on load.
+  collisions: Collision[];
 }
 
 // Whether a document needs backfilling, and how much.
@@ -38,6 +54,18 @@ export interface PlanEntry {
 //   partial    — some frontmatter present, missing fields filled
 //   missing    — no frontmatter at all
 export type DocClassification = "conformant" | "partial" | "missing";
+
+// Projected (plan-time) or actual coverage for one scope. willCatalog uses the
+// EXACT predicate the apply guard uses, so projection cannot diverge from what
+// --apply writes. A blocked entry counts in exactly one bucket; a collision
+// takes precedence over other invalidity.
+// Invariant: willCatalog + blockedByCollision + blockedByOther === planned.
+export interface ScopeCoverage {
+  planned: number;
+  willCatalog: number;
+  blockedByCollision: number;
+  blockedByOther: number;
+}
 
 // Stdout summary of a `--plan` run.
 export interface BackfillSummary {
@@ -52,4 +80,8 @@ export interface BackfillSummary {
   byScope: Record<string, number>;
   // Total entries written (missing + partial).
   planned: number;
+  // Per-scope projected coverage (#116).
+  coverage: Record<string, ScopeCoverage>;
+  // Flat list of every collision across all planned docs (#116).
+  collisions: CollisionReport[];
 }

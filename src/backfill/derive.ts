@@ -3,12 +3,16 @@
 // No LLM calls: every value comes from git metadata, body conventions, the
 // path, or a fixed default. The contract is "suggest, don't assert" — adopted
 // docs are proposed as canonical/medium/direct, but a human ratifies per folder
-// before anything is written. Existing frontmatter is never overwritten: a
-// present field is preserved verbatim, only missing fields are filled.
+// before anything is written. Existing frontmatter is never overwritten: a present
+// field is preserved as the author wrote it (Dates normalized to YYYY-MM-DD
+// strings), only missing fields are filled. A present built-in field whose value
+// is foreign vocabulary (#116) is preserved too and labeled a "collision" — the
+// apply guard then skips it.
 
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import type { Frontmatter } from "../frontmatter/types.js";
 import type { FileGitMeta } from "../utils/git.js";
+import { detectCollisions } from "./collisions.js";
 import type { DerivationMap, DocClassification } from "./types.js";
 
 // kebab-case a free-form string: lowercase, non-alphanumerics → single hyphen,
@@ -97,9 +101,6 @@ export interface DeriveInputs {
   body: string;
   // Frontmatter exactly as parsed from YAML (`{}` when absent).
   raw: Record<string, unknown>;
-  // The same frontmatter coerced by the validator — used to read present
-  // fields with their normalized types (e.g. a YAML Date → YYYY-MM-DD string).
-  coerced: Frontmatter;
   git: FileGitMeta;
   // YYYY-MM-DD fallback for created/updated when git has no history.
   mtimeDate: string;
@@ -114,23 +115,41 @@ export interface DerivedFrontmatter {
   derivation: DerivationMap;
 }
 
-// Builds the full proposed frontmatter for a non-conformant doc plus a per-field
-// derivation map. Present fields are preserved (coerced value, label
-// "preserved"); missing fields are derived from git / body / path / defaults.
-export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
-  const { relPath, body, raw, coerced, git, mtimeDate, identityMap, invoker } = input;
-  const derivation: DerivationMap = {};
+// A present field is kept verbatim, with one normalization: js-yaml parses an
+// unquoted ISO date into a Date, which must become a YYYY-MM-DD string for
+// serialization. Everything else (including an out-of-enum value) is returned
+// as-is, so it survives to the apply guard instead of being coerced away (#116).
+function normalizeRawValue(v: unknown): unknown {
+  // A Date never leaves as an object: a valid one becomes YYYY-MM-DD; an invalid
+  // one becomes its string form ("Invalid Date") so it stays serializable and is
+  // cleanly rejected by the apply guard rather than written as a broken object.
+  if (v instanceof Date)
+    return Number.isNaN(v.getTime()) ? String(v) : v.toISOString().slice(0, 10);
+  return v;
+}
 
-  // Resolves one field: if present in raw, preserve the coerced value; else use
-  // the derived value. Records the chosen source label either way.
+// Builds the full proposed frontmatter for a non-conformant doc plus a per-field
+// derivation map. Present fields are preserved as the author wrote them (Dates
+// normalized to YYYY-MM-DD; out-of-enum values labeled "collision"); missing
+// fields are derived from git / body / path / defaults.
+export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
+  const { relPath, body, raw, git, mtimeDate, identityMap, invoker } = input;
+  const derivation: DerivationMap = {};
+  const collisionFields = new Set(detectCollisions(raw).map((c) => c.field));
+
+  // Resolves one field: if present in raw, preserve the normalized raw value
+  // (labeling it "collision" when the value is foreign vocabulary); else use the
+  // derived value. Records the chosen source label either way.
   function resolve<K extends keyof Frontmatter>(
     field: K,
     derivedValue: Frontmatter[K],
     derivedLabel: string,
   ): Frontmatter[K] {
     if (isPresent(raw, field as string)) {
-      derivation[field as string] = "preserved";
-      return coerced[field] as Frontmatter[K];
+      derivation[field as string] = collisionFields.has(field as string)
+        ? "collision"
+        : "preserved";
+      return normalizeRawValue(raw[field as string]) as Frontmatter[K];
     }
     derivation[field as string] = derivedLabel;
     return derivedValue;

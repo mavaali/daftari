@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generatePlan, planPath, readPlan, scopeOf } from "../../src/backfill/plan.js";
 import { loadConfig } from "../../src/utils/config.js";
@@ -95,6 +95,41 @@ describe("generatePlan", () => {
     expect(result.value.entries.map((e) => e.path)).toEqual(["notes/orphan.md"]);
   });
 
+  it("attaches collisions to a doc that reuses a built-in field name", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/decision.md"),
+      "---\nstatus: ACTIVE\n---\n# Decision\n",
+    );
+    const result = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const entry = result.value.entries.find((e) => e.path === "specs/data-movement/decision.md");
+    expect(entry?.collisions).toEqual([
+      { field: "status", value: "ACTIVE", expected: expect.arrayContaining(["canonical"]) },
+    ]);
+  });
+
+  it("aggregates per-scope coverage and a flat collision list onto the summary", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/decision.md"),
+      "---\nstatus: ACTIVE\n---\n# Decision\n",
+    );
+    const result = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const cov = result.value.summary.coverage.specs;
+    expect(cov.planned).toBe(result.value.summary.byScope.specs);
+    expect(cov.blockedByCollision).toBe(1);
+    expect(cov.willCatalog + cov.blockedByCollision + cov.blockedByOther).toBe(cov.planned);
+    expect(result.value.summary.collisions).toContainEqual(
+      expect.objectContaining({
+        path: "specs/data-movement/decision.md",
+        field: "status",
+        value: "ACTIVE",
+      }),
+    );
+  });
+
   it("is idempotent — re-running overwrites the plan cleanly", async () => {
     await generatePlan(vault, { identityMap, invoker: "human:tester" });
     const first = readFileSync(planPath(vault), "utf-8");
@@ -132,6 +167,29 @@ describe("readPlan", () => {
     try {
       const result = await readPlan(planPath(vault));
       expect(result.ok).toBe(false);
+    } finally {
+      cleanupVault(vault);
+    }
+  });
+
+  it("defaults collisions to [] for a legacy plan entry written without the field", async () => {
+    const vault = buildFrontmatterLessVault();
+    try {
+      const p = planPath(vault);
+      mkdirSync(dirname(p), { recursive: true });
+      // A plan line written before #116 — no `collisions` key.
+      const legacy = {
+        path: "specs/x.md",
+        current: {},
+        proposed: { title: "X" },
+        derivation: {},
+        scope: "specs",
+      };
+      writeFileSync(p, `${JSON.stringify(legacy)}\n`);
+      const result = await readPlan(p);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value[0]?.collisions).toEqual([]);
     } finally {
       cleanupVault(vault);
     }

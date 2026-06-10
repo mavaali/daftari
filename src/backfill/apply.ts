@@ -21,6 +21,7 @@ import { readFile, resolveVaultPath } from "../storage/local.js";
 import { serializeDocument } from "../tools/write.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
+import { detectCollisions } from "./collisions.js";
 import { planPath, readPlan } from "./plan.js";
 import type { PlanEntry } from "./types.js";
 
@@ -58,6 +59,25 @@ function renderEntry(
   // bad value through) is reported, not written.
   const { report } = validateFrontmatter(entry.proposed as unknown as Record<string, unknown>);
   if (!report.valid) {
+    // The skip decision uses plan-time `proposed`; the message re-derives from
+    // current disk (`parsed.value.raw`). For an unmodified file these agree. If
+    // the file was edited (e.g. the field renamed) without re-planning, the doc
+    // is still correctly skipped but the message falls back to the generic one —
+    // re-plan is the contract (the body is also read from disk at apply time).
+    const collisions = detectCollisions(parsed.value.raw);
+    if (collisions.length > 0) {
+      const c = collisions[0] as (typeof collisions)[number];
+      const more = collisions.length > 1 ? ` (and ${collisions.length - 1} more)` : "";
+      return {
+        ok: false,
+        error: new Error(
+          `collision: '${c.field}: ${c.value}' conflicts with Daftari's built-in ${c.field} ` +
+            `(one of: ${c.expected.join(", ")})${more} — rename the field ` +
+            `(e.g. ${c.field} → wiki_${c.field}) to keep your value; Daftari's ${c.field} ` +
+            `then applies on re-run`,
+        ),
+      };
+    }
     const summary = report.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return { ok: false, error: new Error(`proposed frontmatter is invalid: ${summary}`) };
   }
