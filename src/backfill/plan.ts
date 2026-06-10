@@ -16,6 +16,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { fileGitMeta } from "../utils/git.js";
 import { detectCollisions } from "./collisions.js";
+import { projectCoverage } from "./coverage.js";
 import { classifyDoc, deriveProposed } from "./derive.js";
 import type { BackfillSummary, PlanEntry } from "./types.js";
 
@@ -74,6 +75,8 @@ export async function generatePlan(
     rootSkipped: 0,
     byScope: {},
     planned: 0,
+    coverage: {},
+    collisions: [],
   };
 
   const total = listed.value.length;
@@ -134,6 +137,18 @@ export async function generatePlan(
     });
     summary.byScope[scope] = (summary.byScope[scope] ?? 0) + 1;
     summary.planned += 1;
+  }
+
+  // Per-scope coverage + a flat collision list for the summary (#116).
+  const byScopeEntries = new Map<string, PlanEntry[]>();
+  for (const e of entries) {
+    const list = byScopeEntries.get(e.scope) ?? [];
+    list.push(e);
+    byScopeEntries.set(e.scope, list);
+    for (const c of e.collisions) summary.collisions.push({ path: e.path, ...c });
+  }
+  for (const [scope, scoped] of byScopeEntries) {
+    summary.coverage[scope] = projectCoverage(scoped);
   }
 
   const path = planPath(vaultRoot);

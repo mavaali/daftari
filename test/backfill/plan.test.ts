@@ -109,6 +109,27 @@ describe("generatePlan", () => {
     ]);
   });
 
+  it("aggregates per-scope coverage and a flat collision list onto the summary", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/decision.md"),
+      "---\nstatus: ACTIVE\n---\n# Decision\n",
+    );
+    const result = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const cov = result.value.summary.coverage.specs;
+    expect(cov.planned).toBe(result.value.summary.byScope.specs);
+    expect(cov.blockedByCollision).toBe(1);
+    expect(cov.willCatalog + cov.blockedByCollision + cov.blockedByOther).toBe(cov.planned);
+    expect(result.value.summary.collisions).toContainEqual(
+      expect.objectContaining({
+        path: "specs/data-movement/decision.md",
+        field: "status",
+        value: "ACTIVE",
+      }),
+    );
+  });
+
   it("is idempotent — re-running overwrites the plan cleanly", async () => {
     await generatePlan(vault, { identityMap, invoker: "human:tester" });
     const first = readFileSync(planPath(vault), "utf-8");

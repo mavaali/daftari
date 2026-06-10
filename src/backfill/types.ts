@@ -18,6 +18,9 @@ export interface Collision {
   expected: readonly string[]; // the built-in enum, e.g. STATUSES
 }
 
+// A collision plus the doc it lives on — the flat list the plan summary renders.
+export type CollisionReport = Collision & { path: string };
+
 // Per-field record of HOW each proposed value was arrived at, surfaced in the
 // plan and on stdout so a human ratifying a folder can see what is preserved
 // from existing frontmatter versus derived. Values are short source labels,
@@ -77,4 +80,8 @@ export interface BackfillSummary {
   byScope: Record<string, number>;
   // Total entries written (missing + partial).
   planned: number;
+  // Per-scope projected coverage (#116).
+  coverage: Record<string, ScopeCoverage>;
+  // Flat list of every collision across all planned docs (#116).
+  collisions: CollisionReport[];
 }
