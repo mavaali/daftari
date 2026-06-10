@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-06-09
+
+### Added
+
+- **`daftari backfill` field-name collision detection + coverage reporting**
+  ([#116]). A wiki that predates Daftari often reuses one of the reserved enum
+  field names — `status`, `confidence`, `domain`, `provenance` — with its own
+  vocabulary (`status: ACTIVE`, `domain: Architecture`). Backfill now *detects*
+  these collisions (a present built-in enum field whose value is outside that
+  field's enum) and surfaces them so the operator can resolve them. `--plan`
+  lists every collision (`path · field: value`) and reports per-scope
+  **coverage** — how many docs will catalog cleanly versus be blocked
+  (collision vs. other) — so a mostly-colliding folder can't look silently
+  cataloged. `--apply` skips a colliding doc whole with a rename-guidance
+  message, prints an actual-coverage line (`cataloged N of M · K skipped`), and
+  states projected coverage in the confirmation prompt. The resolution is the
+  operator's: rename the field (`status` → `wiki_status`) and on re-run the
+  value rides along as a preserved custom field while Daftari's built-in
+  `status` takes its default. No auto-rename, no skip-rate threshold/abort, no
+  config or schema change — detection and reporting only.
+
+### Fixed
+
+- **Backfill no longer launders foreign vocabulary into Daftari defaults**
+  ([#116]). `daftari backfill --apply` silently overwrote a present built-in
+  field whose value was outside the field's enum: `deriveProposed` preserved
+  the *validator-coerced* value, and `requireEnum` returns the enum fallback for
+  an out-of-enum value, so `status: ACTIVE` became `status: draft`,
+  `confidence: EXPLICIT` became `low`, and `domain: Architecture` became
+  `accumulation`. The fix preserves the **raw** author value (normalizing only a
+  YAML `Date` to a `YYYY-MM-DD` string); the existing apply guard then skips the
+  doc rather than clobbering it. This is universal across fields — a present
+  malformed value of any kind is now reported, not silently coerced. A
+  data-loss class sibling to [#113] (which dropped *undeclared* fields; this
+  dropped the *meaning* of declared ones).
+
+[#116]: https://github.com/mavaali/daftari/issues/116
+
 ## [1.17.1] - 2026-06-08
 
 ### Fixed
