@@ -30,12 +30,14 @@ So `entry.proposed.status` is already the *valid fallback* before it reaches the
 - **Collision detection:** a pure `detectCollisions(raw)` over the four enum built-ins (`domain`, `status`, `confidence`, `provenance`).
 - **Plan reporting:** `collisions[]` on each `PlanEntry`; a collision count + listing in the plan summary; a derivation label of `"collision"` for colliding fields.
 - **Apply reporting:** the existing whole-doc skip, with a collision-specific reason that models the rename resolution.
+- **Coverage reporting:** per-scope counts of how many docs will catalog cleanly vs. be blocked (split: blocked-by-collision vs. blocked-by-other-invalidity), surfaced at the three decision points — the plan summary (projected), the interactive apply confirmation (projected, for the chosen scope), and the apply output (actual). Reporting only; no threshold and no abort.
 
 ### Out of scope / non-goals
 
 - **No auto-rename and no fuzzy/auto-casing** (`Draft` → `draft` is a collision, not a silent fix). Resolution is the operator's deliberate act.
 - **No partial-field backfill.** A doc with a collision is skipped whole; we do not write a doc that fails validation. (Decided during brainstorming: the operator's real workflow is rename-first, so the apply-on-unrenamed case is a safety net that should push toward the rename, not leave a half-applied doc.)
 - **No new config, no MCP tool, no schema change.** CLI-only, like backfill itself.
+- **No skip-rate threshold or abort.** We considered a coverage floor (hard default or opt-in `--min-coverage`) that aborts apply when too many docs are skipped; rejected in favor of **reporting only**. Rationale: a skipped doc is untouched and reported, so this is an *awareness* risk, not an *integrity* risk; the skip count is fully known at plan time (the natural review point in a plan→ratify→apply flow); and a percentage threshold either blocks legitimate partial progress (e.g. 200 of 500 docs cataloging cleanly) or gives false comfort. Coverage is made loud at every decision point instead of blocking.
 - **Extension shadowing is already impossible** — documented at [`types.ts:51`](../../../src/frontmatter/types.ts) and *enforced* at [`config.ts:193`](../../../src/utils/config.ts) (`BUILTIN_FRONTMATTER_FIELDS.includes(field)` → config error), so a present `status` is unambiguously the built-in, never a declared custom field.
 
 ## 4. Design
@@ -46,10 +48,11 @@ So `entry.proposed.status` is already the *valid fallback* before it reaches the
 |------|--------|----------------|
 | `src/backfill/collisions.ts` | **new** | `detectCollisions(raw): Collision[]` — pure, deterministic. Depends only on the enum tables. |
 | `src/backfill/derive.ts` | modify | `resolve()` preserves `normalizeRawValue(raw[field])`; colliding fields labeled `"collision"`. |
-| `src/backfill/types.ts` | modify | `Collision` type; `PlanEntry.collisions`; collision listing on `BackfillSummary`. |
-| `src/backfill/plan.ts` | modify | populate `collisions` per entry and aggregate into the summary. |
-| `src/backfill/apply.ts` | modify | `renderEntry` emits a collision-specific skip reason. |
-| `src/backfill/index.ts` | modify | `renderSummary` prints the collisions section; apply output already prints skip reasons. |
+| `src/backfill/coverage.ts` | **new** | `projectCoverage(entries): ScopeCoverage` — for a set of plan entries, count how many would catalog cleanly (`validateFrontmatter(proposed).valid`) vs. blocked-by-collision vs. blocked-by-other. Pure; shared by plan summary and the apply confirmation so the projection logic lives in one place. |
+| `src/backfill/types.ts` | modify | `Collision` type; `PlanEntry.collisions`; `ScopeCoverage` type; per-scope coverage on `BackfillSummary`. |
+| `src/backfill/plan.ts` | modify | populate `collisions` per entry; aggregate collisions + per-scope coverage into the summary. |
+| `src/backfill/apply.ts` | modify | `renderEntry` emits a collision-specific skip reason; `ApplyResult` already carries `applied`/`unchanged`/`skipped`, enough to render actual coverage. |
+| `src/backfill/index.ts` | modify | `renderSummary` prints the collisions section and per-scope coverage; the interactive apply confirmation states projected coverage for the chosen scope; the apply output adds an actual-coverage line. |
 
 ### 4.2 Data shape
 
@@ -62,6 +65,17 @@ interface Collision {
 ```
 
 One `Collision` per colliding field. `PlanEntry` gains `collisions: Collision[]` (empty when none). `BackfillSummary` gains a flat list (entries carry `path` + the `Collision`) so the summary renders without re-reading the plan.
+
+```ts
+interface ScopeCoverage {
+  planned: number;            // in-scope plan entries
+  willCatalog: number;        // proposed frontmatter validates → applies cleanly
+  blockedByCollision: number; // skipped: has ≥1 collision
+  blockedByOther: number;     // skipped: invalid for a non-collision reason (e.g. malformed date)
+}
+```
+
+`willCatalog + blockedByCollision + blockedByOther === planned`. A blocked entry is counted in exactly one blocked bucket — `blockedByCollision` takes precedence when an entry has both a collision and another fault, so the two never double-count. Coverage % is `willCatalog / planned`. `BackfillSummary` carries `ScopeCoverage` keyed by scope.
 
 ### 4.3 `detectCollisions(raw)`
 
@@ -83,9 +97,15 @@ Consequence (intended): this makes preservation non-destructive for **every** fi
 
 ### 4.5 Behavior
 
-**`--plan`** — unchanged derivation; attaches `collisions[]`; the summary reports `Field-name collisions (N)` listing `path · field: value`, followed by the rename guidance so the operator can fix before applying.
+**`--plan`** — unchanged derivation; attaches `collisions[]`; the summary reports `Field-name collisions (N)` listing `path · field: value`, followed by the rename guidance so the operator can fix before applying. The summary also prints **per-scope coverage** so incompleteness is visible at ratification time, e.g.:
 
-**`--apply`** — the existing guard skips a colliding doc whole (it fails validation on the preserved raw value); `renderEntry` produces a collision-specific reason rather than the generic "proposed frontmatter is invalid":
+```
+  decisions: 50 planned · 2 will catalog · 48 blocked by collisions · 0 other  (4% coverage)
+```
+
+**Apply confirmation** — the interactive prompt states projected coverage for the chosen scope before the operator commits, e.g. `Apply to 'decisions' — 2 of 50 docs will catalog (48 blocked by collisions). Proceed? [y/N]`. (With `--yes` the prompt is skipped; the actual coverage still prints in the apply output below.)
+
+**`--apply`** — the existing guard skips a colliding doc whole (it fails validation on the preserved raw value); the output adds an actual-coverage line (`cataloged 2 of 50 · 48 blocked by collisions`); `renderEntry` produces a collision-specific reason rather than the generic "proposed frontmatter is invalid":
 
 ```
 collision: 'status: ACTIVE' conflicts with Daftari's built-in status
@@ -109,6 +129,7 @@ Tests mirror `src/` structure (per CLAUDE.md), one file per unit.
 - **`apply` tests** — a colliding doc is skipped whole with the collision-specific reason; non-colliding docs in the same scope are unaffected; after a simulated rename the doc backfills conformant; a doc whose *only* problem is a malformed date (not a collision) is skipped with the generic reason (regression of the existing guard).
 - **Universal-fix tests** — a present malformed *non-enum* built-in (e.g. `tags: "foo"` as a string, or a non-string `title`) is now preserved as raw and skipped+reported by the guard, rather than silently coerced to `[]`/`""`. This covers the §4.4 newly-reported population — the behavior change with the widest blast radius.
 - **`plan` / summary tests** — collisions counted and listed; the rename guidance renders.
+- **`coverage` tests** — `projectCoverage` over a mixed set: a clean doc, a collision doc, and a malformed-date doc yield `willCatalog`/`blockedByCollision`/`blockedByOther` of 1/1/1; a doc with *both* a collision and another fault counts once, under `blockedByCollision`; the three buckets sum to `planned`. Plus: the plan summary renders the per-scope coverage line, and the apply output renders the actual-coverage line.
 - **Regression** — existing backfill tests (conformant skip, missing/partial fill, idempotence, root-skip) all pass unchanged.
 
 ## 6. Open questions
