@@ -134,8 +134,23 @@ describe("applyPlan", () => {
     const plan = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
     if (!plan.ok) throw plan.error;
     const result = await applyPlan(vault, "specs", "human:migrator");
+    expect(result.ok).toBe(true);
     if (!result.ok) return;
     const skip = result.value.skipped.find((s) => s.path === "specs/data-movement/baddate.md");
     expect(skip?.reason).toContain("proposed frontmatter is invalid");
+  });
+
+  it("summarizes additional collisions with '(and N more)'", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/multi.md"),
+      "---\nstatus: ACTIVE\ndomain: Architecture\n---\n# Multi\n",
+    );
+    const plan = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    if (!plan.ok) throw plan.error;
+    const result = await applyPlan(vault, "specs", "human:migrator");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const skip = result.value.skipped.find((s) => s.path === "specs/data-movement/multi.md");
+    expect(skip?.reason).toContain("(and 1 more)");
   });
 });
