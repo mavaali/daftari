@@ -51,4 +51,13 @@ describe("projectCoverage", () => {
     const cov = projectCoverage([both]);
     expect(cov).toEqual({ planned: 1, willCatalog: 0, blockedByCollision: 1, blockedByOther: 0 });
   });
+
+  it("returns zero coverage for an empty entry list", () => {
+    expect(projectCoverage([])).toEqual({
+      planned: 0,
+      willCatalog: 0,
+      blockedByCollision: 0,
+      blockedByOther: 0,
+    });
+  });
 });
