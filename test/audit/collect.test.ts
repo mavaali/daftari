@@ -141,6 +141,31 @@ describe("collectRepos", () => {
       expect(new Set(docs?.keys())).toEqual(new Set(["src/login.ts", "data.json", "README.md"]));
     });
 
+    it("captures describes frontmatter on a docs-repo doc (#119)", async () => {
+      const repo = join(tmp, "d");
+      mkdirSync(repo);
+      writeFileSync(
+        join(repo, "a.md"),
+        `---\ntitle: A\ndescribes:\n  - svc:src/login.ts\n  - svc:src/login.ts::validateCredentials\n---\n# A\n`,
+      );
+      writeFileSync(join(repo, "b.md"), `---\ntitle: B\n---\n# B\n`);
+
+      const result = await collectRepos({
+        repos: [{ name: "d", path: repo, docsGlob: "**/*.md", urls: [], type: "docs" }],
+        output: {},
+        staleness: { thresholdDays: 540 },
+        failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value[0]?.docs.get("a.md")?.describes).toEqual([
+        "svc:src/login.ts",
+        "svc:src/login.ts::validateCredentials",
+      ]);
+      // absent describes defaults to []
+      expect(result.value[0]?.docs.get("b.md")?.describes).toEqual([]);
+    });
+
     it("does not parse frontmatter, headings, or links in a code repo", async () => {
       const repo = join(tmp, "svc");
       mkdirSync(repo);

@@ -9,9 +9,11 @@
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { checkBrokenRefs } from "./checks/broken_refs.js";
+import { checkDescribesRefs } from "./checks/describes_refs.js";
 import { checkStaleness } from "./checks/staleness.js";
 import { collectRepos } from "./collect.js";
 import { parseAuditConfig } from "./config.js";
+import { classifyDescribesEdges } from "./describes.js";
 import { computeExitCode } from "./exit.js";
 import { classifyEdges } from "./links.js";
 import { renderJson, renderMarkdown } from "./report.js";
@@ -67,13 +69,19 @@ export async function runAudit(argv: string[]): Promise<number> {
   const edges = classifyEdges(snapshots);
   const brokenRefs = checkBrokenRefs(snapshots, edges);
   const staleness = checkStaleness(snapshots, edges, config.staleness.thresholdDays, new Date());
+  const describesEdges = classifyDescribesEdges(snapshots);
+  const describesRefs = checkDescribesRefs(snapshots, describesEdges);
 
   const totals = {
     reposScanned: snapshots.length,
-    docsScanned: snapshots.reduce((n, s) => n + s.docs.size, 0),
+    // Only docs repos hold managed documents; code repos are reference targets.
+    docsScanned: snapshots
+      .filter((s) => s.config.type !== "code")
+      .reduce((n, s) => n + s.docs.size, 0),
     brokenRefs: brokenRefs.length,
     directlyStale: staleness.filter((f) => f.kind === "direct").length,
     transitivelyStale: staleness.filter((f) => f.kind === "transitive").length,
+    brokenDescribes: describesRefs.length,
   };
 
   const report: AuditReport = {
@@ -82,6 +90,7 @@ export async function runAudit(argv: string[]): Promise<number> {
     totals,
     brokenRefs,
     staleness,
+    describesRefs,
   };
 
   const md = renderMarkdown(report);

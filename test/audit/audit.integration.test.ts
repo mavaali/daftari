@@ -110,6 +110,53 @@ fail_on:
     expect(report.totals.directlyStale).toBeGreaterThanOrEqual(1);
   });
 
+  it("resolves describes bindings against a code repo and flags broken ones (#119)", async () => {
+    const repoC = join(tmp, "svc");
+    mkdirSync(repoC);
+    mkdirSync(join(repoC, "src"));
+    writeFileSync(join(repoC, "src", "login.ts"), `export function login() {}\n`);
+
+    // A docs-repo doc that describes one real and one missing code file.
+    writeFileSync(
+      join(repoA, "auth-doc.md"),
+      `---\ntitle: Auth\ndescribes:\n  - svc:src/login.ts\n  - svc:src/gone.ts::validateCredentials\n---\n# Auth\n`,
+    );
+    git(repoA, ["add", "."]);
+    git(repoA, ["commit", "-q", "-m", "add auth-doc"]);
+
+    const yamlPath = join(tmp, "audit-desc.yaml");
+    writeFileSync(
+      yamlPath,
+      `
+repos:
+  - name: a
+    path: ${repoA}
+  - name: svc
+    path: ${repoC}
+    type: code
+output:
+  json: ${join(tmp, "report-desc.json")}
+staleness:
+  threshold_days: 540
+fail_on:
+  broken_refs: 1000
+  transitive_staleness: 1000
+  broken_describes: 1
+`,
+    );
+    const code = await runAudit(["--config", yamlPath]);
+    const report = JSON.parse(readFileSync(join(tmp, "report-desc.json"), "utf-8"));
+
+    expect(report.totals.brokenDescribes).toBe(1);
+    expect(report.describesRefs).toHaveLength(1);
+    expect(report.describesRefs[0]).toMatchObject({
+      source: { repo: "a", path: "auth-doc.md" },
+      target: { repo: "svc", path: "src/gone.ts", symbol: "validateCredentials" },
+    });
+    // broken_describes threshold of 1 is hit → non-zero exit.
+    expect(code).toBe(1);
+  });
+
   it("returns 2 on a config error", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const code = await runAudit(["--repo", "/no/such/path"]);

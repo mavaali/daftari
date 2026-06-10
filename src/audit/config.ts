@@ -30,7 +30,7 @@ const DEFAULTS = {
   docsGlob: "**/*.md",
   codeGlob: "**/*",
   thresholdDays: 540,
-  failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+  failOn: { brokenRefs: 1, transitiveStaleness: 100, brokenDescribes: 1 },
 };
 
 type RawRepoYaml = {
@@ -45,7 +45,11 @@ type RawYaml = {
   repos?: unknown;
   output?: { markdown?: unknown; json?: unknown };
   staleness?: { threshold_days?: unknown };
-  fail_on?: { broken_refs?: unknown; transitive_staleness?: unknown };
+  fail_on?: {
+    broken_refs?: unknown;
+    transitive_staleness?: unknown;
+    broken_describes?: unknown;
+  };
 };
 
 function readArg(argv: string[], flag: string): string | undefined {
@@ -228,6 +232,10 @@ export function parseAuditConfig(
         typeof yamlRaw.fail_on?.transitive_staleness === "number"
           ? yamlRaw.fail_on.transitive_staleness
           : DEFAULTS.failOn.transitiveStaleness,
+      brokenDescribes:
+        typeof yamlRaw.fail_on?.broken_describes === "number"
+          ? yamlRaw.fail_on.broken_describes
+          : DEFAULTS.failOn.brokenDescribes,
     };
 
     return ok({ repos, output, staleness: { thresholdDays }, failOn });

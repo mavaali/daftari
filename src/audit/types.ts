@@ -5,7 +5,7 @@ export type AuditConfig = {
   repos: RepoConfig[];
   output: { markdown?: string; json?: string };
   staleness: { thresholdDays: number };
-  failOn: { brokenRefs: number; transitiveStaleness: number };
+  failOn: { brokenRefs: number; transitiveStaleness: number; brokenDescribes: number };
 };
 
 // `docs` repos carry Daftari frontmatter and are scanned for links / staleness.
@@ -29,6 +29,7 @@ export type DocSnapshot = {
   mtimeSource: "git" | "fs";
   headings: Set<string>; // slugified, for anchor lookup
   links: LinkRef[];
+  describes: string[]; // doc-to-code bindings from frontmatter; [] when absent
 };
 
 export type LinkRef = {
@@ -51,6 +52,24 @@ export type LinkEdge = {
   targetPath: string; // resolved relPath in target repo
   targetAnchor: string | null;
   rawHref: string;
+};
+
+// A doc-to-code binding edge, extracted from a docs-repo doc's `describes`
+// frontmatter (distinct from a markdown LinkEdge). The symbol suffix is parsed
+// and retained but file-level resolution ignores it in v1.
+export type DescribesEdge = {
+  sourceRepo: string;
+  sourcePath: string;
+  targetRepo: string; // resolved repo name (source repo for a bare path)
+  targetPath: string; // repo-relative path of the described code file
+  symbol: string | null; // `::symbol` suffix, retained but unresolved in v1
+  raw: string; // the describes entry exactly as written
+};
+
+export type DescribesRefFinding = {
+  source: { repo: string; path: string };
+  target: { repo: string; path: string; symbol: string | null };
+  raw: string;
 };
 
 export type BrokenRefFinding = {
@@ -77,9 +96,11 @@ export type AuditReport = {
     brokenRefs: number;
     directlyStale: number;
     transitivelyStale: number;
+    brokenDescribes: number;
   };
   brokenRefs: BrokenRefFinding[];
   staleness: StalenessFinding[];
+  describesRefs: DescribesRefFinding[];
 };
 
 // Tagged error union. runAudit branches on .kind to translate to exit codes

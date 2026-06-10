@@ -28,7 +28,7 @@ describe("parseAuditConfig", () => {
     expect(cfg.repos[0]?.docsGlob).toBe("**/*.md");
     expect(cfg.repos[0]?.urls).toEqual([]);
     expect(cfg.staleness.thresholdDays).toBe(540);
-    expect(cfg.failOn).toEqual({ brokenRefs: 1, transitiveStaleness: 100 });
+    expect(cfg.failOn).toEqual({ brokenRefs: 1, transitiveStaleness: 100, brokenDescribes: 1 });
   });
 
   it("loads YAML and applies defaults to omitted fields", () => {

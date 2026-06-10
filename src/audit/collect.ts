@@ -84,6 +84,14 @@ async function loadDoc(
   const parsed = matter(text);
   const body = parsed.content;
 
+  // `describes` frontmatter (doc-to-code bindings). The audit reads it as raw
+  // YAML — a string array, dropping any non-string entries — without invoking
+  // the full Daftari schema, so it still works on arbitrary markdown repos.
+  const rawDescribes = (parsed.data as { describes?: unknown }).describes;
+  const describes = Array.isArray(rawDescribes)
+    ? rawDescribes.filter((d): d is string => typeof d === "string")
+    : [];
+
   let mtime: string;
   let mtimeSource: "git" | "fs";
   if (mtimeFromGit) {
@@ -101,6 +109,7 @@ async function loadDoc(
     mtimeSource,
     headings: extractHeadings(body),
     links: extractLinksFromBody(body),
+    describes,
   };
 }
 
@@ -137,6 +146,7 @@ async function collectCodeRepo(config: RepoConfig): Promise<RepoSnapshot> {
       mtimeSource: "fs",
       headings: new Set(),
       links: [],
+      describes: [],
     });
   }
   return { config, docs };
