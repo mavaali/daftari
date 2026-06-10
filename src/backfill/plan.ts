@@ -145,7 +145,7 @@ export async function generatePlan(
     const list = byScopeEntries.get(e.scope) ?? [];
     list.push(e);
     byScopeEntries.set(e.scope, list);
-    for (const c of e.collisions) summary.collisions.push({ path: e.path, ...c });
+    for (const c of e.collisions) summary.collisions.push({ ...c, path: e.path });
   }
   for (const [scope, scoped] of byScopeEntries) {
     summary.coverage[scope] = projectCoverage(scoped);
