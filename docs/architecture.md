@@ -1,15 +1,16 @@
 # Architecture
 
 Daftari is a single MCP server process. It is started against one vault
-directory, runs as one access identity for its lifetime, and serves 13 tools
-over stdio. This document explains how a tool call travels through the system
-and why the design is shaped the way it is.
+directory, runs as one access identity for its lifetime, and serves 19 tools
+over stdio. (A twentieth surface, `daftari backfill`, is CLI-only — see
+[Adoption](#adoption-daftari-backfill).) This document explains how a tool call
+travels through the system and why the design is shaped the way it is.
 
 ## The layered model
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 13 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 19 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -231,6 +232,32 @@ the drift and triggers a full reindex.
 The markdown files are the single source of truth. Delete every `.db` file and
 the vault loses nothing — rebuild and continue.
 
+#### Adoption: `daftari backfill`
+
+An existing wiki rarely arrives with Daftari's frontmatter already in place.
+`daftari backfill` adopts one without a manual migration sprint: it walks the
+vault and derives frontmatter defaults **deterministically** — no LLM calls —
+from git history and body conventions. `title` comes from the first H1 (else the
+filename); `created` / `updated` / `updated_by` from git (`--diff-filter=A`
+first-add, last commit, author mapped through an optional `backfill.identity_map`
+in `.daftari/config.yaml`); `collection` from the parent folder; and
+`status: canonical` / `confidence: medium` / `provenance: direct` /
+`domain: accumulation` as suggested defaults — never asserted, ratified by a
+human.
+
+It is a two-step plan/apply, and the asymmetry is deliberate.
+`daftari backfill --plan [--scope <folder>]` derives proposals and stages them to
+a transient `.daftari/backfill-plan.jsonl`, modifying no markdown.
+`daftari backfill --apply --scope <folder> [--yes]` writes one folder's proposals
+and commits them in a single commit (honoring `auto_commit`). `--scope` is
+**required on apply** so a whole-vault rewrite can never happen by accident. The
+plan file is never staged or committed — the apply commit is the durable audit
+trail. Existing frontmatter is preserved field-by-field (see
+[Non-destructive frontmatter writes](#non-destructive-frontmatter-writes)); a doc
+whose frontmatter already validates is reported conformant and skipped. CLI-only
+for v1 — there is no MCP tool, because adoption is a one-time operator act, not
+something an agent should reach for mid-conversation.
+
 ### Layer 2 — ACL (multi-tenant access control)
 
 RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
@@ -303,6 +330,35 @@ process editing the file directly can still race the check between the hash
 and the write — acceptable, because the lock only ever coordinated Daftari
 writers in the first place.
 
+#### Non-destructive frontmatter writes
+
+A write must never silently drop metadata the caller did not mention. This is a
+data-loss property, not a convenience — the lock and the version check protect a
+file's *bytes*, but neither stops a well-formed write from erasing a frontmatter
+field the payload simply omitted. Two layers enforce non-destructiveness:
+
+- **Serialization preserves the unknown.** `serializeDocument` writes every
+  field a document carries — built-ins, declared schema extensions, *and* any
+  undeclared custom key — with undeclared keys emitted last in their original
+  insertion order, untyped. Round-tripping a document never strips a field just
+  because the schema doesn't know about it. Because `vault_append`,
+  `vault_promote`, `vault_deprecate`, and `daftari backfill` all serialize from
+  the file's *own* parsed frontmatter, this single property makes all of them
+  non-destructive.
+- **`vault_write` merges on update.** The update path merges the existing
+  document's parsed frontmatter *under* the payload: every existing field is
+  preserved, the payload wins per key, and an explicit `null` in the payload
+  removes a key — deletion is opt-in, never a side effect of omission. The
+  create path is unchanged. As hardening, `vault_write` refuses to overwrite an
+  existing file whose frontmatter cannot be parsed, rather than treating it as a
+  create and clobbering it (the same field-loss class, by another route).
+
+The motivating incident: before this was enforced, a single `daftari backfill`
+run dropped fields across 197 files, because the update path serialized the
+payload's frontmatter wholesale instead of merging it over the file's. The
+property above is what makes the lifecycle's "existing frontmatter is preserved
+field-by-field" promise actually hold.
+
 ### Layer 4 — Curation
 
 The second half of the moat. Storing knowledge is easy; keeping a growing vault
@@ -350,10 +406,30 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
+- **Staged actions.** A persistent queue of *proposed* vault changes awaiting
+  human ratification — the "always-stage, never auto-apply" tier that lets a
+  background curation loop suggest changes without ever enacting them.
+  `vault_stage_action` (the producer — normally the loop, exposed for testing and
+  future callers) records a proposed `promote` / `deprecate` / `supersede` /
+  `merge` / `confidence-up` with a rationale, a proposed diff, and a TTL (default
+  14 days). `vault_ratify` (the consumer) lets a human `approve` or `reject` one
+  pending action; on approve it dispatches to the existing write path —
+  `promote` → `vault_promote`, `deprecate` → `vault_deprecate`, both
+  auto-committing. `supersede` / `merge` / `confidence-up` are staged only for
+  now (their write tools are deferred); approving one returns `applied: false`
+  with a `ratified-pending-tool` status rather than failing. Storage mirrors the
+  rest of Daftari: an append-only canonical log at
+  `.daftari/staged-actions.jsonl` is the source of truth, with a derived
+  `staged_actions` table in the ephemeral index rebuilt from it. `vault_lint`
+  surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
+  housekeeping sweep on each run — the queue can grow stale, but it never grows
+  unbounded.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
 process silently rewrites or deletes knowledge. Every change is a deliberate,
-attributable act.
+attributable act. The staged-action queue is the same principle pushed one step
+further — even an autonomous curation loop only ever *proposes*; a human ratifies
+before anything is written.
 
 ## The request path
 
@@ -372,12 +448,17 @@ A **write** (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`):
    promotions).
 3. **Layer 3** acquires the file's write lock. If another holder owns it, the
    call fails cleanly here.
-4. The frontmatter is validated; an invalid write is rejected before anything
-   touches disk.
-5. **Layer 1** writes the markdown file.
-6. **Layer 3** auto-commits to git and appends a provenance entry.
-7. The search index is refreshed for the changed file.
-8. The lock is released.
+4. On an update, the existing document's frontmatter is merged under the payload
+   (payload wins per key; explicit `null` deletes), and — if the caller supplied
+   a `base_version` — the file is re-hashed inside the lock and a stale write is
+   rejected here.
+5. The merged frontmatter is validated; an invalid write is rejected before
+   anything touches disk.
+6. **Layer 1** writes the markdown file, serialized non-destructively (undeclared
+   fields preserved).
+7. **Layer 3** auto-commits to git and appends a provenance entry.
+8. The search index is refreshed for the changed file.
+9. The lock is released.
 
 Every tool handler returns a `Result<T, Error>` — it never throws. A failure at
 any step is a value the server turns into an MCP error response; the stdio

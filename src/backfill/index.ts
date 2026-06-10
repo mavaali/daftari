@@ -18,9 +18,10 @@ import { userInfo } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "../utils/config.js";
-import { applyPlan } from "./apply.js";
+import { type ApplyResult, applyPlan } from "./apply.js";
+import { projectCoverage } from "./coverage.js";
 import { slugify } from "./derive.js";
-import { generatePlan } from "./plan.js";
+import { generatePlan, planPath, readPlan } from "./plan.js";
 import type { BackfillSummary } from "./types.js";
 
 const HELP = `daftari backfill — derive frontmatter for an existing wiki from git history.
@@ -78,7 +79,7 @@ function defaultAgent(): string {
   }
 }
 
-function renderSummary(summary: BackfillSummary, planFile: string): string {
+export function renderSummary(summary: BackfillSummary, planFile: string): string {
   const lines: string[] = [];
   lines.push(`Backfill plan written to ${planFile}`);
   lines.push("");
@@ -95,9 +96,31 @@ function renderSummary(summary: BackfillSummary, planFile: string): string {
     `  ${summary.planned} doc(s) planned across ${Object.keys(summary.byScope).length} folder(s):`,
   );
   for (const scope of Object.keys(summary.byScope).sort()) {
-    lines.push(`    ${scope}: ${summary.byScope[scope]}`);
+    const cov = summary.coverage[scope];
+    lines.push(
+      cov
+        ? `    ${scope}: ${cov.planned} planned · ${cov.willCatalog} will catalog · ` +
+            `${cov.blockedByCollision} blocked by collisions · ${cov.blockedByOther} other`
+        : `    ${scope}: ${summary.byScope[scope]}`,
+    );
   }
   lines.push("");
+  if (summary.collisions.length > 0) {
+    lines.push("");
+    lines.push(
+      `  Field-name collisions (${summary.collisions.length}) — your value clashes with a built-in:`,
+    );
+    for (const c of summary.collisions) {
+      lines.push(
+        `    ${c.path} · ${c.field}: ${c.value}  (built-in ${c.field} ∈ {${c.expected.join(", ")}})`,
+      );
+    }
+    lines.push("");
+    lines.push("  Rename each colliding field (e.g. status → wiki_status) to keep your value;");
+    lines.push(
+      "  Daftari's built-in then applies on re-run. Colliding docs are skipped until renamed.",
+    );
+  }
   if (summary.planned > 0) {
     lines.push("Ratify a folder with:");
     for (const scope of Object.keys(summary.byScope).sort()) {
@@ -139,6 +162,25 @@ async function confirm(prompt: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+export function renderApplyResult(r: ApplyResult): string {
+  const cataloged = r.applied.length + r.unchanged.length;
+  const total = cataloged + r.skipped.length;
+  const out: string[] = [];
+  out.push(`Backfill applied to '${r.scope}':`);
+  out.push(
+    `  cataloged ${cataloged} of ${total}${r.skipped.length > 0 ? ` · ${r.skipped.length} skipped` : ""}`,
+  );
+  out.push(`  written:   ${r.applied.length}`);
+  out.push(`  unchanged: ${r.unchanged.length}`);
+  if (r.skipped.length > 0) {
+    out.push(`  skipped:   ${r.skipped.length}`);
+    for (const s of r.skipped) out.push(`    ${s.path}: ${s.reason}`);
+  }
+  if (r.commit) out.push(`  commit:    ${r.commit}`);
+  else if (r.applied.length === 0) out.push("  (no changes — already applied)");
+  return `${out.join("\n")}\n`;
 }
 
 export async function runBackfill(argv: string[]): Promise<number> {
@@ -209,8 +251,16 @@ export async function runBackfill(argv: string[]): Promise<number> {
       );
       return 1;
     }
+    let coverageNote = "";
+    const planForCoverage = await readPlan(planPath(vaultRoot));
+    if (planForCoverage.ok) {
+      const cov = projectCoverage(planForCoverage.value.filter((e) => e.scope === scope));
+      coverageNote =
+        ` — ${cov.willCatalog} of ${cov.planned} will catalog` +
+        (cov.blockedByCollision > 0 ? `, ${cov.blockedByCollision} blocked by collisions` : "");
+    }
     const proceed = await confirm(
-      `Apply backfilled frontmatter to docs under '${scope}' and commit as ${agent}? [y/N] `,
+      `Apply backfilled frontmatter to docs under '${scope}'${coverageNote} and commit as ${agent}? [y/N] `,
     );
     if (!proceed) {
       process.stderr.write("daftari backfill: aborted\n");
@@ -239,16 +289,6 @@ export async function runBackfill(argv: string[]): Promise<number> {
     return 0;
   }
 
-  const out: string[] = [];
-  out.push(`Backfill applied to '${scope}':`);
-  out.push(`  written:   ${r.applied.length}`);
-  out.push(`  unchanged: ${r.unchanged.length}`);
-  if (r.skipped.length > 0) {
-    out.push(`  skipped:   ${r.skipped.length}`);
-    for (const s of r.skipped) out.push(`    ${s.path}: ${s.reason}`);
-  }
-  if (r.commit) out.push(`  commit:    ${r.commit}`);
-  else if (r.applied.length === 0) out.push("  (no changes — already applied)");
-  process.stdout.write(`${out.join("\n")}\n`);
+  process.stdout.write(renderApplyResult(r));
   return 0;
 }
