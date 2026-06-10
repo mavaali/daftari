@@ -41,7 +41,8 @@ export interface PlanEntry {
   // --scope <folder>` writes only entries whose scope matches.
   scope: string;
   // Field-name collisions on this doc (#116): present built-in fields whose
-  // value is foreign vocabulary. Empty when none.
+  // value is foreign vocabulary. Empty when none. Required, but absent in plan
+  // files written before #116 — readPlan defaults those to [] on load.
   collisions: Collision[];
 }
 
