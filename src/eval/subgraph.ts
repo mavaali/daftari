@@ -14,7 +14,8 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
+import { readTextFile } from "../audit/readtext.js";
 import { listTensions } from "../curation/tension.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -35,7 +36,16 @@ export interface Subgraph {
   seed_doc: string;
   nodes: SubgraphNode[];
   edges: SubgraphEdge[];
+  // Code files reached via `describes` edges (#121), loaded only when the
+  // target resolves inside the vault and is readable text. Kept SEPARATE from
+  // `nodes` so they never enter the generator's citable-source set — the
+  // answerer retrieves vault docs, not code. Grader context only.
+  code_nodes: SubgraphNode[];
 }
+
+// Default cap on code-file size loaded as a code node — mirrors the audit's
+// read-safety budget so a large generated/vendored file can't bloat a sample.
+const CODE_NODE_MAX_BYTES = 256 * 1024;
 
 export async function sampleSubgraph(
   vaultRoot: string,
@@ -72,6 +82,8 @@ export async function sampleSubgraph(
 
   const visited = new Map<string, SubgraphNode>();
   const edges: SubgraphEdge[] = [];
+  // Keyed by resolved vault-relative path; populated only for in-vault targets.
+  const codeNodes = new Map<string, SubgraphNode>();
 
   const tensionsByDoc = await loadTensionEdges(vaultRoot);
 
@@ -86,21 +98,54 @@ export async function sampleSubgraph(
     }
   }
 
+  // Bound code-node memory: at most `maxNodes` code bodies are loaded (each
+  // already ≤ CODE_NODE_MAX_BYTES). All describes EDGES are still recorded, so a
+  // doc binding thousands of files shows up as edges without loading every body
+  // — the gap (describes-edge count vs code_nodes.length) is observable.
+  const codeNodeCap = maxNodes;
+
   await loadNode(vaultRoot, seedDoc, visited);
-  await walkHop(vaultRoot, seedDoc, visited, edges, tensionsByDoc, supersededByDoc);
+  await walkHop(
+    vaultRoot,
+    seedDoc,
+    visited,
+    edges,
+    tensionsByDoc,
+    supersededByDoc,
+    codeNodes,
+    codeNodeCap,
+  );
   const firstHopNeighbors = [...visited.keys()].filter((p) => p !== seedDoc);
   for (const n of firstHopNeighbors) {
     if (visited.size >= maxNodes) break;
-    await walkHop(vaultRoot, n, visited, edges, tensionsByDoc, supersededByDoc);
+    await walkHop(
+      vaultRoot,
+      n,
+      visited,
+      edges,
+      tensionsByDoc,
+      supersededByDoc,
+      codeNodes,
+      codeNodeCap,
+    );
   }
 
   const nodes = trimToCap(seedDoc, visited, edges, maxNodes);
   const nodePaths = new Set(nodes.map((n) => n.path));
 
+  // Retain only code nodes reached from a surviving doc node.
+  const keptCodePaths = new Set(
+    edges
+      .filter((e) => e.kind === "describes" && nodePaths.has(e.from))
+      .map((e) => describesTargetPath(e.to)),
+  );
+  const code_nodes = [...codeNodes.values()].filter((n) => keptCodePaths.has(n.path));
+
   return ok({
     seed_doc: seedDoc,
     nodes,
     edges: edges.filter((e) => keepEdge(e, nodePaths)),
+    code_nodes,
   });
 }
 
@@ -115,8 +160,44 @@ export async function sampleSubgraph(
 //    doc and is retained even though the cited source is not itself a node.
 function keepEdge(e: SubgraphEdge, nodePaths: Set<string>): boolean {
   if (!nodePaths.has(e.from)) return false;
-  if (e.kind === "sources") return true;
+  // `sources` cites external slugs; `describes` cites code paths (possibly in an
+  // external repo). Neither requires an in-vault `to` node — the edge records a
+  // real relationship off a retained doc.
+  if (e.kind === "sources" || e.kind === "describes") return true;
   return nodePaths.has(e.to);
+}
+
+// A `describes` entry is `[repo:]path[::symbol]`. The vault-relative candidate
+// path is the entry with any `repo:` prefix and `::symbol` suffix stripped.
+// (File-level in v1; the symbol is not resolved — mirrors the audit.)
+function describesTargetPath(entry: string): string {
+  const symbolIdx = entry.indexOf("::");
+  const head = symbolIdx === -1 ? entry : entry.slice(0, symbolIdx);
+  const colonIdx = head.indexOf(":");
+  return (colonIdx === -1 ? head : head.slice(colonIdx + 1)).trim();
+}
+
+// Loads a `describes` target as a code node IFF it resolves to a readable text
+// file inside the vault. External-repo targets (the common case) are recorded
+// as edges with no node — cross-repo content loading in eval is deferred
+// (Hold scope, #121). The read is guarded by the audit's read-safety util.
+async function loadCodeNode(
+  vaultRoot: string,
+  entry: string,
+  codeNodes: Map<string, SubgraphNode>,
+  cap: number,
+): Promise<void> {
+  const relPath = describesTargetPath(entry);
+  if (relPath.length === 0) return;
+  if (codeNodes.has(relPath)) return;
+  if (codeNodes.size >= cap) return; // memory bound; edge is still recorded
+  const abs = resolve(vaultRoot, relPath);
+  // Containment check: reject paths that escape the vault root.
+  const rel = relative(vaultRoot, abs);
+  if (rel.startsWith("..") || rel.length === 0) return;
+  const read = await readTextFile(abs, { maxBytes: CODE_NODE_MAX_BYTES });
+  if (!read.ok) return; // missing / external / binary / too-large → no node
+  codeNodes.set(relPath, { path: relPath, body: read.value.text, frontmatter: {} });
 }
 
 async function loadTensionEdges(vaultRoot: string): Promise<Map<string, Array<{ other: string }>>> {
@@ -185,6 +266,8 @@ async function walkHop(
   edges: SubgraphEdge[],
   tensionsByDoc: Map<string, Array<{ other: string }>>,
   supersededByDoc: Map<string, Array<{ other: string }>>,
+  codeNodes: Map<string, SubgraphNode>,
+  codeNodeCap: number,
 ): Promise<void> {
   const node = visited.get(from);
   if (!node) return;
@@ -196,6 +279,17 @@ async function walkHop(
     if (typeof s !== "string") continue;
     edges.push({ from, to: s, kind: "sources" });
     await loadNode(vaultRoot, s, visited);
+  }
+
+  // describes edges: doc-to-code bindings. The edge is always recorded; the
+  // target is loaded as a code node only when it resolves inside the vault.
+  const describes = Array.isArray(node.frontmatter.describes)
+    ? (node.frontmatter.describes as unknown[])
+    : [];
+  for (const d of describes) {
+    if (typeof d !== "string") continue;
+    edges.push({ from, to: d, kind: "describes" });
+    await loadCodeNode(vaultRoot, d, codeNodes, codeNodeCap);
   }
 
   const links = extractInVaultLinks(node.body);

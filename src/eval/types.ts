@@ -47,7 +47,10 @@ export interface QuestionSet {
 export interface SubgraphEdge {
   from: string;
   to: string;
-  kind: "sources" | "link" | "tension" | "superseded";
+  // `describes` connects an in-vault doc to a code file it documents (#121).
+  // Its `to` is the raw describes entry; the code file is loaded as a separate
+  // code node when it resolves inside the vault.
+  kind: "sources" | "link" | "tension" | "superseded" | "describes";
 }
 
 // --- Run shapes ---
