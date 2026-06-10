@@ -30,6 +30,10 @@ describe("renderSummary", () => {
     expect(out).toContain("Field-name collisions (1)");
     expect(out).toContain("decisions/d.md");
     expect(out).toContain("status: ACTIVE");
+    // No double blank lines around the collisions section.
+    expect(out).not.toContain("\n\n\n");
+    // The collisions section is separated from the "Ratify" section by a blank.
+    expect(out).toContain("until renamed.\n\nRatify a folder with:");
   });
 });
 
@@ -46,5 +50,19 @@ describe("renderApplyResult", () => {
     expect(out).toContain("cataloged 1 of 2");
     expect(out).toContain("1 skipped");
     expect(out).toContain("decisions/b.md");
+  });
+
+  it("reports an idempotent re-apply as fully cataloged with no commit", () => {
+    const r: ApplyResult = {
+      scope: "decisions",
+      applied: [],
+      unchanged: ["decisions/a.md", "decisions/b.md"],
+      skipped: [],
+      commit: null,
+    };
+    const out = renderApplyResult(r);
+    expect(out).toContain("cataloged 2 of 2");
+    expect(out).not.toContain("skipped");
+    expect(out).toContain("(no changes — already applied)");
   });
 });

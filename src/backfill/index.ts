@@ -106,7 +106,6 @@ export function renderSummary(summary: BackfillSummary, planFile: string): strin
   }
   lines.push("");
   if (summary.collisions.length > 0) {
-    lines.push("");
     lines.push(
       `  Field-name collisions (${summary.collisions.length}) — your value clashes with a built-in:`,
     );
@@ -120,6 +119,7 @@ export function renderSummary(summary: BackfillSummary, planFile: string): strin
     lines.push(
       "  Daftari's built-in then applies on re-run. Colliding docs are skipped until renamed.",
     );
+    lines.push("");
   }
   if (summary.planned > 0) {
     lines.push("Ratify a folder with:");
@@ -258,6 +258,12 @@ export async function runBackfill(argv: string[]): Promise<number> {
       coverageNote =
         ` — ${cov.willCatalog} of ${cov.planned} will catalog` +
         (cov.blockedByCollision > 0 ? `, ${cov.blockedByCollision} blocked by collisions` : "");
+    } else {
+      // Coverage is advisory here; applyPlan re-reads the plan and surfaces the
+      // real error moments later. Warn so the operator has context up front.
+      process.stderr.write(
+        `daftari backfill: coverage unavailable — ${planForCoverage.error.message}\n`,
+      );
     }
     const proceed = await confirm(
       `Apply backfilled frontmatter to docs under '${scope}'${coverageNote} and commit as ${agent}? [y/N] `,
