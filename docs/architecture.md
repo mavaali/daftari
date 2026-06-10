@@ -258,6 +258,23 @@ whose frontmatter already validates is reported conformant and skipped. CLI-only
 for v1 — there is no MCP tool, because adoption is a one-time operator act, not
 something an agent should reach for mid-conversation.
 
+**Field-name collisions.** A wiki that predates Daftari often uses one of the
+reserved enum field names — `status`, `confidence`, `domain`, `provenance` — with
+its own vocabulary (`status: ACTIVE`, `domain: Architecture`). Backfill preserves
+the author's value rather than laundering it into a Daftari default, then *detects
+the collision*: a present built-in enum field whose value is outside that field's
+enum. `--plan` lists every collision (`path · field: value`) and reports per-scope
+**coverage** — how many docs will catalog cleanly versus be blocked — so the
+operator sees the cost before applying. `--apply` skips a colliding doc whole
+(the apply guard rejects the preserved out-of-enum value) with a rename-guidance
+message, leaving the file untouched on disk; the coverage report keeps a
+mostly-colliding folder from looking silently cataloged. The resolution is the
+operator's: rename the field (`status` → `wiki_status`), and on re-run the value
+rides along as a preserved custom field while Daftari's built-in `status` takes
+its default. This is the missing *semantic* safety check that complements the
+field-by-field preservation above — the bytes are safe, and now the *meaning* is
+too.
+
 ### Layer 2 — ACL (multi-tenant access control)
 
 RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
