@@ -41,6 +41,10 @@ export interface BuiltinFrontmatter {
   superseded_by: string | null;
   ttl_days: number | null;
   tags: string[];
+  // Doc-to-code bindings: code paths this doc describes, each `repo:path` or
+  // `repo:path::symbol` (a bare `path` resolves against the doc's own repo).
+  // A first-class relationship like `sources` / `superseded_by`. Default [].
+  describes: string[];
   // Optional epistemic-surface fields. They mirror the body's `## Questions
   // Answered` / `## Questions Raised` convention as structured, tool-queryable
   // metadata. Default to [] when absent.
@@ -65,6 +69,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "superseded_by",
   "ttl_days",
   "tags",
+  "describes",
   "questions_answered",
   "questions_raised",
 ] as const;

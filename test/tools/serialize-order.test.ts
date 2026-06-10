@@ -20,6 +20,7 @@ function fm(): Frontmatter {
     superseded_by: null,
     ttl_days: 90,
     tags: [],
+    describes: [],
     questions_answered: [],
     questions_raised: [],
   };
@@ -44,6 +45,7 @@ const BUILTIN_KEYS = [
   "superseded_by",
   "ttl_days",
   "tags",
+  "describes",
   "questions_answered",
   "questions_raised",
 ];

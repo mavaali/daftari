@@ -948,6 +948,7 @@ describe("write tools", () => {
         "superseded_by",
         "ttl_days",
         "tags",
+        "describes",
         "questions_answered",
         "questions_raised",
       ];

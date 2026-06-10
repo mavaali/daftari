@@ -60,6 +60,7 @@ always valid even though you never typed those two fields.
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
+| `describes` | list of strings | `[]` | Code paths this document documents — doc-to-code bindings. See [below](#describes--doc-to-code-bindings). |
 | `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
 | `questions_raised` | list of strings | `[]` | Open questions this document leaves. `vault_index` filters on it via `has_unanswered`; `vault_lint` flags any entry no document answers. |
 
@@ -91,6 +92,32 @@ always valid even though you never typed those two fields.
 
 The curation layer holds the two domains to different standards. See
 [architecture.md](architecture.md#accumulation-vs-generative-domains).
+
+### `describes` — doc-to-code bindings
+
+`describes` declares which code paths a document documents. It is the
+machine-traversable edge the coherence audit walks from a doc to the code it
+describes — so the audit can flag a binding when the code file is gone, and
+(with `--semantic`) check whether the doc's claims still match the code.
+
+```yaml
+describes:
+  - auth-service/src/login.ts
+  - auth-service/src/login.ts::validateCredentials
+```
+
+Each entry is one of:
+
+| Form | Meaning |
+|------|---------|
+| `repo:path` | A file in a repo registered with the audit. `repo` is matched against the audit's configured repo names. |
+| `path` | A bare path with no `repo:` prefix resolves against the document's **own** repo. |
+| `repo:path::symbol` | A specific symbol within the file. **v1 resolves at the file level** — the `::symbol` suffix is retained but not yet resolved (reserved for v2). |
+
+`describes` is advisory metadata, not a write-time constraint: a binding to a
+file that does not exist is never an error at write time. The coherence audit is
+what surfaces broken or drifted bindings. The relationship is one-directional —
+docs describe code; code carries no Daftari frontmatter.
 
 ## Markdown body conventions
 

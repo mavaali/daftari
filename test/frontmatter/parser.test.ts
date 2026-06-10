@@ -133,3 +133,92 @@ Body.
     expect(result.error.message).toContain("malformed YAML");
   });
 });
+
+describe("parseDocument — describes field (#117)", () => {
+  const withDescribes = (entries: string) => `---
+title: "Doc"
+domain: accumulation
+collection: c
+status: draft
+confidence: low
+created: 2026-06-10
+updated: 2026-06-10
+updated_by: agent:claude-code
+provenance: direct
+describes:
+${entries}
+---
+
+Body.
+`;
+
+  it("reads a well-formed describes array as a typed string[]", () => {
+    const result = parseDocument(
+      withDescribes(
+        "  - auth-service/src/login.ts\n  - auth-service/src/login.ts::validateCredentials",
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.validation.valid).toBe(true);
+    expect(result.value.frontmatter.describes).toEqual([
+      "auth-service/src/login.ts",
+      "auth-service/src/login.ts::validateCredentials",
+    ]);
+  });
+
+  it("defaults describes to [] when absent", () => {
+    const result = parseDocument(`---
+title: "Doc"
+domain: accumulation
+collection: c
+status: draft
+confidence: low
+created: 2026-06-10
+updated: 2026-06-10
+updated_by: agent:claude-code
+provenance: direct
+---
+
+Body.
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.frontmatter.describes).toEqual([]);
+  });
+
+  it("flags a non-array describes value but still returns content", () => {
+    const result = parseDocument(
+      `---
+title: "Doc"
+domain: accumulation
+collection: c
+status: draft
+confidence: low
+created: 2026-06-10
+updated: 2026-06-10
+updated_by: agent:claude-code
+provenance: direct
+describes: "auth-service/src/login.ts"
+---
+
+Body.
+`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.validation.valid).toBe(false);
+    expect(result.value.validation.issues.map((i) => i.field)).toContain("describes");
+    expect(result.value.frontmatter.describes).toEqual([]);
+  });
+
+  it("flags a non-string element inside describes", () => {
+    const result = parseDocument(withDescribes("  - auth-service/src/login.ts\n  - 42"));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.validation.valid).toBe(false);
+    expect(result.value.validation.issues.map((i) => i.field)).toContain("describes");
+    // the valid element is still retained
+    expect(result.value.frontmatter.describes).toEqual(["auth-service/src/login.ts"]);
+  });
+});

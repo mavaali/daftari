@@ -196,6 +196,7 @@ export function validateFrontmatter(
     superseded_by: optionalString("superseded_by"),
     ttl_days: optionalNumber("ttl_days"),
     tags: optionalStringArray("tags"),
+    describes: optionalStringArray("describes"),
     questions_answered: optionalStringArray("questions_answered"),
     questions_raised: optionalStringArray("questions_raised"),
   };
