@@ -59,6 +59,11 @@ function renderEntry(
   // bad value through) is reported, not written.
   const { report } = validateFrontmatter(entry.proposed as unknown as Record<string, unknown>);
   if (!report.valid) {
+    // The skip decision uses plan-time `proposed`; the message re-derives from
+    // current disk (`parsed.value.raw`). For an unmodified file these agree. If
+    // the file was edited (e.g. the field renamed) without re-planning, the doc
+    // is still correctly skipped but the message falls back to the generic one —
+    // re-plan is the contract (the body is also read from disk at apply time).
     const collisions = detectCollisions(parsed.value.raw);
     if (collisions.length > 0) {
       const c = collisions[0] as (typeof collisions)[number];
