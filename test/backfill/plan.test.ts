@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generatePlan, planPath, readPlan, scopeOf } from "../../src/backfill/plan.js";
@@ -93,6 +93,20 @@ describe("generatePlan", () => {
     if (!result.ok) return;
     expect(result.value.summary.planned).toBe(1);
     expect(result.value.entries.map((e) => e.path)).toEqual(["notes/orphan.md"]);
+  });
+
+  it("attaches collisions to a doc that reuses a built-in field name", async () => {
+    writeFileSync(
+      join(vault, "specs/data-movement/decision.md"),
+      "---\nstatus: ACTIVE\n---\n# Decision\n",
+    );
+    const result = await generatePlan(vault, { identityMap, invoker: "human:migrator" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const entry = result.value.entries.find((e) => e.path === "specs/data-movement/decision.md");
+    expect(entry?.collisions).toEqual([
+      { field: "status", value: "ACTIVE", expected: expect.arrayContaining(["canonical"]) },
+    ]);
   });
 
   it("is idempotent — re-running overwrites the plan cleanly", async () => {

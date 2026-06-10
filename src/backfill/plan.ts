@@ -15,6 +15,7 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { fileGitMeta } from "../utils/git.js";
+import { detectCollisions } from "./collisions.js";
 import { classifyDoc, deriveProposed } from "./derive.js";
 import type { BackfillSummary, PlanEntry } from "./types.js";
 
@@ -123,7 +124,14 @@ export async function generatePlan(
       invoker: opts.invoker,
     });
 
-    entries.push({ path: relPath, current: parsed.value.raw, proposed, derivation, scope });
+    entries.push({
+      path: relPath,
+      current: parsed.value.raw,
+      proposed,
+      derivation,
+      scope,
+      collisions: detectCollisions(parsed.value.raw),
+    });
     summary.byScope[scope] = (summary.byScope[scope] ?? 0) + 1;
     summary.planned += 1;
   }
@@ -184,7 +192,9 @@ export async function readPlan(path: string): Promise<Result<PlanEntry[], Error>
     ) {
       return err(new Error(`malformed backfill plan: line ${i + 1} is missing required fields`));
     }
-    entries.push(parsed as PlanEntry);
+    const entry = parsed as PlanEntry;
+    if (!Array.isArray(entry.collisions)) entry.collisions = [];
+    entries.push(entry);
   }
   return ok(entries);
 }

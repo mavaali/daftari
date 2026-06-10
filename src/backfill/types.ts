@@ -40,6 +40,9 @@ export interface PlanEntry {
   // First path component — the folder this entry is ratified under. `--apply
   // --scope <folder>` writes only entries whose scope matches.
   scope: string;
+  // Field-name collisions on this doc (#116): present built-in fields whose
+  // value is foreign vocabulary. Empty when none.
+  collisions: Collision[];
 }
 
 // Whether a document needs backfilling, and how much.
