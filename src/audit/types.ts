@@ -8,11 +8,18 @@ export type AuditConfig = {
   failOn: { brokenRefs: number; transitiveStaleness: number };
 };
 
+// `docs` repos carry Daftari frontmatter and are scanned for links / staleness.
+// `code` repos are raw reference targets — indexed by path only, never parsed
+// for frontmatter — so doc-to-code `describes` bindings can resolve against them.
+export const REPO_TYPES = ["docs", "code"] as const;
+export type RepoType = (typeof REPO_TYPES)[number];
+
 export type RepoConfig = {
   name: string;
   path: string; // absolute, real path
   docsGlob: string; // glob relative to path; default "**/*.md"
   urls: string[]; // empty if none configured
+  type: RepoType; // "docs" (default) | "code"
 };
 
 export type DocSnapshot = {

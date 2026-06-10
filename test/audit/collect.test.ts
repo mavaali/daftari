@@ -119,4 +119,45 @@ describe("collectRepos", () => {
     if (!result.ok) return;
     expect([...(result.value[0]?.docs.keys() ?? [])]).toEqual(["docs/x.md"]);
   });
+
+  describe("code repos (#118)", () => {
+    it("indexes a code repo by path, including non-markdown files", async () => {
+      const repo = join(tmp, "svc");
+      mkdirSync(repo);
+      mkdirSync(join(repo, "src"));
+      writeFileSync(join(repo, "src", "login.ts"), `export function login() {}\n`);
+      writeFileSync(join(repo, "data.json"), `{"k":1}\n`);
+      writeFileSync(join(repo, "README.md"), `# Service\n## Setup\n`);
+
+      const result = await collectRepos({
+        repos: [{ name: "svc", path: repo, docsGlob: "**/*", urls: [], type: "code" }],
+        output: {},
+        staleness: { thresholdDays: 540 },
+        failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const docs = result.value[0]?.docs;
+      expect(new Set(docs?.keys())).toEqual(new Set(["src/login.ts", "data.json", "README.md"]));
+    });
+
+    it("does not parse frontmatter, headings, or links in a code repo", async () => {
+      const repo = join(tmp, "svc");
+      mkdirSync(repo);
+      // A markdown file that WOULD yield headings/links if parsed as a doc.
+      writeFileSync(join(repo, "README.md"), `---\ntitle: X\n---\n# Heading\nsee [a](a.md)\n`);
+
+      const result = await collectRepos({
+        repos: [{ name: "svc", path: repo, docsGlob: "**/*", urls: [], type: "code" }],
+        output: {},
+        staleness: { thresholdDays: 540 },
+        failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const stub = result.value[0]?.docs.get("README.md");
+      expect(stub?.headings).toEqual(new Set());
+      expect(stub?.links).toEqual([]);
+    });
+  });
 });

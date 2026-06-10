@@ -25,10 +25,13 @@ Usage:
   daftari audit --help
 
 Flags:
-  --repo <path>          Add a repo to the audit. May be repeated. Anonymous
-                         CLI repos get no URL patterns — URL-based cross-repo
-                         references to them will not be detected. Use --config
-                         to declare urls explicitly.
+  --repo <path>          Add a docs repo to the audit. May be repeated.
+                         Anonymous CLI repos get no URL patterns — URL-based
+                         cross-repo references to them will not be detected.
+                         Use --config to declare urls explicitly.
+  --code-repo <path>     Add a code repo: a raw reference target indexed by
+                         path only (no frontmatter parsing). May be repeated.
+                         Doc-to-code \`describes\` bindings resolve against it.
   --config <path>        Load an audit.yaml. CLI flags override its values for
                          output paths (a warning is printed to stderr).
   --output <md>          Markdown report destination (default: stdout).

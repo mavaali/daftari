@@ -104,7 +104,46 @@ async function loadDoc(
   };
 }
 
+// Code-repo stubs carry no real mtime: a `code` repo never participates in
+// staleness (it has no managed-document lifecycle), so its files' modification
+// times are never read. This sentinel makes that explicit and avoids a
+// per-file statSync — important because a code repo may be a large monorepo
+// (thousands of files) and synchronous stat-in-a-loop would block the event
+// loop. checkStaleness skips code repos outright; the sentinel never surfaces.
+const STUB_MTIME = new Date(0).toISOString();
+
+// A `code` repo is a raw reference target: every file is indexed by path as a
+// stub (no content read, no frontmatter / heading / link extraction, no IO at
+// all beyond the glob). Only the path is needed — `describes` bindings resolve
+// against it and the broken-ref check verifies existence.
+//
+// Caveat: the glob is matched verbatim. A code repo configured with the default
+// "**/*" over a tree containing node_modules / build output will index those
+// too; narrow it with `docs_glob` in config for large repos.
+async function collectCodeRepo(config: RepoConfig): Promise<RepoSnapshot> {
+  const files = await glob(config.docsGlob, {
+    cwd: config.path,
+    nodir: true,
+    posix: true,
+    dot: false,
+  });
+  const docs = new Map<string, DocSnapshot>();
+  for (const rel of files) {
+    const posixRel = rel.split(/[\\/]/).join("/");
+    docs.set(posixRel, {
+      relPath: posixRel,
+      absPath: nodeResolve(config.path, posixRel),
+      mtime: STUB_MTIME,
+      mtimeSource: "fs",
+      headings: new Set(),
+      links: [],
+    });
+  }
+  return { config, docs };
+}
+
 async function collectOne(config: RepoConfig): Promise<RepoSnapshot> {
+  if (config.type === "code") return collectCodeRepo(config);
   const files = await glob(config.docsGlob, {
     cwd: config.path,
     nodir: true,

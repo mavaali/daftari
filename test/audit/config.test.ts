@@ -185,4 +185,86 @@ output:
     expect(result.error.kind).toBe("config");
     expect(result.error.message).toContain("expected a YAML map");
   });
+
+  describe("repo type (#118)", () => {
+    it("defaults a YAML repo's type to 'docs' when omitted", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig(
+        [`--config`, "ignored"],
+        () => `repos:\n  - name: alpha\n    path: ${a}\n`,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.repos[0]?.type).toBe("docs");
+    });
+
+    it("parses an explicit type: code repo", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig(
+        [`--config`, "ignored"],
+        () => `repos:\n  - name: svc\n    path: ${a}\n    type: code\n`,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.repos[0]?.type).toBe("code");
+    });
+
+    it("defaults a code repo's glob to **/* so non-markdown files are indexed", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig(
+        [`--config`, "ignored"],
+        () => `repos:\n  - name: svc\n    path: ${a}\n    type: code\n`,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.repos[0]?.docsGlob).toBe("**/*");
+    });
+
+    it("honours an explicit docs_glob on a code repo", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig(
+        [`--config`, "ignored"],
+        () =>
+          `repos:\n  - name: svc\n    path: ${a}\n    type: code\n    docs_glob: "src/**/*.ts"\n`,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.repos[0]?.docsGlob).toBe("src/**/*.ts");
+    });
+
+    it("returns a config error on an unknown type value", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig(
+        [`--config`, "ignored"],
+        () => `repos:\n  - name: svc\n    path: ${a}\n    type: binary\n`,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.kind).toBe("config");
+      expect(result.error.message).toContain("type");
+    });
+
+    it("defaults a CLI --repo to type 'docs'", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig([`--repo`, a]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.repos[0]?.type).toBe("docs");
+    });
+
+    it("registers a CLI --code-repo as type 'code'", () => {
+      const a = join(tmp, "a");
+      mkdirSync(a);
+      const result = parseAuditConfig([`--code-repo`, a]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.repos[0]?.type).toBe("code");
+    });
+  });
 });
