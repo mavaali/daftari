@@ -117,7 +117,6 @@ export async function generatePlan(
       relPath,
       body: parsed.value.content,
       raw: parsed.value.raw,
-      coerced: parsed.value.frontmatter,
       git,
       mtimeDate: await mtimeDate(resolved.value),
       identityMap: opts.identityMap,

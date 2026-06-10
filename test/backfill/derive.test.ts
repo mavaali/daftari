@@ -8,7 +8,6 @@ import {
   slugify,
   titleFromFilename,
 } from "../../src/backfill/derive.js";
-import type { Frontmatter } from "../../src/frontmatter/types.js";
 
 describe("slugify", () => {
   it("kebab-cases names", () => {
@@ -100,14 +99,11 @@ describe("classifyDoc", () => {
 });
 
 describe("deriveProposed", () => {
-  const emptyCoerced = {} as Frontmatter;
-
   it("derives a full frontmatter from git + body + path defaults", () => {
     const { proposed, derivation } = deriveProposed({
       relPath: "specs/data-movement/foo.md",
       body: "# Foo Title\n\n## Questions Answered\n- Q1?\n",
       raw: {},
-      coerced: emptyCoerced,
       git: { created: "2025-04-12", updated: "2025-05-01", author: "Mihir Wagle" },
       mtimeDate: "2026-06-07",
       identityMap: { "Mihir Wagle": "human:mihir" },
@@ -141,7 +137,6 @@ describe("deriveProposed", () => {
       relPath: "specs/data-movement/bar.md",
       body: "no heading here",
       raw: {},
-      coerced: emptyCoerced,
       git: { created: "2025-03-02", updated: "2025-03-02", author: "Priya Patel" },
       mtimeDate: "2026-06-07",
       identityMap: {},
@@ -157,7 +152,6 @@ describe("deriveProposed", () => {
       relPath: "notes/x.md",
       body: "# X",
       raw: {},
-      coerced: emptyCoerced,
       git: { created: null, updated: null, author: null },
       mtimeDate: "2026-06-07",
       identityMap: {},
@@ -172,12 +166,10 @@ describe("deriveProposed", () => {
 
   it("preserves present fields and fills only the missing ones", () => {
     const raw = { title: "Existing Baz Title", created: "2024-12-01" };
-    const coerced = { title: "Existing Baz Title", created: "2024-12-01" } as Frontmatter;
     const { proposed, derivation } = deriveProposed({
       relPath: "specs/pricing/baz.md",
       body: "# Baz body heading\n\nbody",
       raw,
-      coerced,
       git: { created: "2025-02-10", updated: "2025-02-10", author: "Mihir Wagle" },
       mtimeDate: "2026-06-07",
       identityMap: { "Mihir Wagle": "human:mihir" },
@@ -195,5 +187,50 @@ describe("deriveProposed", () => {
     expect(proposed.collection).toBe("specs");
     expect(proposed.status).toBe("canonical");
     expect(derivation.updated).toBe("git-last-commit");
+  });
+
+  it("preserves an out-of-enum built-in value as raw and labels it a collision", () => {
+    const raw = { status: "ACTIVE", confidence: "EXPLICIT", domain: "Architecture" };
+    const { proposed, derivation } = deriveProposed({
+      relPath: "decisions/dec-004.md",
+      body: "# DEC-004",
+      raw,
+      git: { created: "2026-04-11", updated: "2026-04-11", author: "Mihir Wagle" },
+      mtimeDate: "2026-06-09",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.status).toBe("ACTIVE");
+    expect(proposed.confidence).toBe("EXPLICIT");
+    expect(proposed.domain).toBe("Architecture");
+    expect(derivation.status).toBe("collision");
+    expect(derivation.confidence).toBe("collision");
+    expect(derivation.domain).toBe("collision");
+  });
+
+  it("normalizes a present YAML Date to a YYYY-MM-DD string", () => {
+    const { proposed } = deriveProposed({
+      relPath: "specs/x.md",
+      body: "# X",
+      raw: { created: new Date("2024-12-01T00:00:00Z") },
+      git: { created: null, updated: null, author: null },
+      mtimeDate: "2026-06-09",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.created).toBe("2024-12-01");
+  });
+
+  it("preserves a present malformed non-enum built-in as raw, not a coerced default (§4.4)", () => {
+    const { proposed } = deriveProposed({
+      relPath: "specs/x.md",
+      body: "# X",
+      raw: { tags: "foo" },
+      git: { created: null, updated: null, author: null },
+      mtimeDate: "2026-06-09",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.tags).toBe("foo" as unknown as string[]);
   });
 });
