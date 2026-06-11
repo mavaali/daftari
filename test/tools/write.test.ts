@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
@@ -12,7 +12,18 @@ import { isGitRepo, log } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
-const TODAY = new Date().toISOString().slice(0, 10);
+
+// The write path stamps `new Date()` at write time (correct). Compare against a
+// date computed at ASSERTION time — never frozen at module load — and tolerate
+// the one-day window between the write and the read-back, so a run that crosses
+// a UTC-midnight boundary mid-test does not flake. A date outside [today,
+// yesterday] is still a genuine failure.
+function isoDaysAgo(n: number): string {
+  return new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+}
+function expectStampedToday(received: unknown): void {
+  expect([isoDaysAgo(0), isoDaysAgo(1)]).toContain(received);
+}
 
 // A complete, valid frontmatter block for a brand-new document.
 function newFrontmatter(overrides: Record<string, unknown> = {}) {
@@ -63,7 +74,7 @@ describe("write tools", () => {
       expect(read.ok).toBe(true);
       if (!read.ok) return;
       expect(read.value.content).toContain("Fresh content.");
-      expect(read.value.frontmatter.updated).toBe(TODAY);
+      expectStampedToday(read.value.frontmatter.updated);
       expect(read.value.frontmatter.updated_by).toBe(AGENT);
 
       // The auto-commit names the tool and the agent.
@@ -161,7 +172,7 @@ describe("write tools", () => {
       const read = await vaultRead(vault, "pricing/no-stamps.md");
       expect(read.ok).toBe(true);
       if (!read.ok) return;
-      expect(read.value.frontmatter.updated).toBe(TODAY);
+      expectStampedToday(read.value.frontmatter.updated);
       expect(read.value.frontmatter.updated_by).toBe(AGENT);
     }, 60_000);
   });
@@ -182,7 +193,7 @@ describe("write tools", () => {
       if (!read.ok) return;
       expect(read.value.content).toContain("Appended body.");
       expect(read.value.content).toContain("Speculative sketch");
-      expect(read.value.frontmatter.updated).toBe(TODAY);
+      expectStampedToday(read.value.frontmatter.updated);
       expect(read.value.frontmatter.updated_by).toBe(AGENT);
 
       const history = await log(vault, {
@@ -1189,5 +1200,38 @@ describe("write tools", () => {
       if (result.ok) return;
       expect(result.error.message).toContain("auto_commit");
     });
+  });
+});
+
+describe("expectStampedToday — UTC-midnight boundary tolerance", () => {
+  // Regression guard for the flake where a write stamped just before UTC
+  // midnight was compared against a date captured after midnight. The write
+  // path stamps `new Date()` at write time (correct); the assertion must
+  // tolerate the one-day window between the write and the read-back.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("accepts a date stamped just before a midnight the assertion crosses", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T23:59:59.000Z"));
+    const stampedByWrite = new Date().toISOString().slice(0, 10); // "2026-06-10"
+    // The read-back assertion runs a moment later, after midnight UTC.
+    vi.setSystemTime(new Date("2026-06-11T00:00:01.000Z"));
+    expect(() => expectStampedToday(stampedByWrite)).not.toThrow();
+  });
+
+  it("accepts a same-instant stamp (no boundary crossed)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T12:00:00.000Z"));
+    expect(() => expectStampedToday(new Date().toISOString().slice(0, 10))).not.toThrow();
+  });
+
+  it("rejects a genuinely wrong (stale or hardcoded) date", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-11T00:00:01.000Z"));
+    expect(() => expectStampedToday("2020-01-01")).toThrow();
+    // Two days back is outside the tolerated window → still a real failure.
+    expect(() => expectStampedToday("2026-06-09")).toThrow();
   });
 });
