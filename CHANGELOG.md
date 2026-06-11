@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-06-10
+
+### Added
+
+- **Code coherence: doc-to-code bindings across the audit and eval** ([#117],
+  [#118], [#119], [#120], [#121]). Vault docs can now declare which code they
+  document, and the audit can verify those bindings still hold.
+  - **`describes` frontmatter field** ([#117]) — a built-in optional string
+    array of doc-to-code bindings, each `repo:path` or `repo:path::symbol` (a
+    bare `path` resolves against the doc's own repo; the `::symbol` suffix is
+    retained but resolved at file level in v1). A first-class relationship like
+    `sources` / `superseded_by`; defaults to `[]`.
+  - **`type: docs | code` repo discriminant for the audit** ([#118]) — code
+    repos join the coherence audit as reference targets, indexed by path only
+    (no frontmatter parsing, no content read) and excluded from staleness.
+    Adds the `--code-repo` flag; a code repo's glob defaults to `**/*`.
+  - **Doc-to-code reference integrity** ([#119]) — the audit classifies
+    `describes` entries as cross-repo edges and flags any whose target file is
+    missing, in a new report section with a `brokenDescribes` total and a
+    `fail_on.broken_describes` threshold (default 1).
+  - **`--semantic` drift check** ([#120]) — opt-in LLM pass that reads each
+    resolvable binding's doc and code and judges whether the doc still
+    accurately describes the code (`coherent` / `drifted` / `contradicted` /
+    `skipped`). `--auto-tension` logs drift as a tension in the docs vault;
+    `--max-semantic` caps LLM calls. Every non-markdown read is guarded (size
+    cap, binary sniff, strict UTF-8). Advisory — does not gate the exit code,
+    and the default audit needs no API key and makes no network calls.
+  - **`describes` as a subgraph edge kind in eval** ([#121]) — the cortex
+    quality sampler records doc-to-code edges and loads vault-resident code as
+    separate, non-citable context nodes (the answerer is never asked to
+    retrieve code). External-repo code-content loading in eval is deferred.
+
+[#117]: https://github.com/mavaali/daftari/issues/117
+[#118]: https://github.com/mavaali/daftari/issues/118
+[#119]: https://github.com/mavaali/daftari/issues/119
+[#120]: https://github.com/mavaali/daftari/issues/120
+[#121]: https://github.com/mavaali/daftari/issues/121
+
 ## [1.18.0] - 2026-06-09
 
 ### Added
