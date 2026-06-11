@@ -130,6 +130,7 @@ export function serializeDocument(
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
     tags: fm.tags,
+    describes: fm.describes,
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
   };

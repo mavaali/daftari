@@ -200,6 +200,8 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     superseded_by: resolve("superseded_by", null, "null"),
     ttl_days: resolve("ttl_days", null, "null"),
     tags: resolve("tags", [], "empty"),
+    // No signal to derive doc-to-code bindings from raw content; default empty.
+    describes: resolve("describes", [], "empty"),
     questions_answered: resolve(
       "questions_answered",
       qAnswered,

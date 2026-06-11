@@ -13,6 +13,7 @@ const fakeSubgraph: Subgraph = {
     { from: "a.md", to: "b.md", kind: "link" },
     { from: "b.md", to: "a.md", kind: "sources" },
   ],
+  code_nodes: [],
 };
 
 function mockClient(canned: unknown): LlmClient {
@@ -217,5 +218,41 @@ describe("generateQuestions", () => {
       expect(r.value.tier_counts_produced.contradiction).toBe(0);
     }
     expect(calls()).toBe(2); // capped: NOT 3
+  });
+
+  it("never lets a code node leak into expected_sources (#121 generator guard)", async () => {
+    // A subgraph that reached a code file via a describes edge. Code nodes are
+    // grader context only — they must never be citable as an expected source.
+    const sg: Subgraph = {
+      seed_doc: "a.md",
+      nodes: [{ path: "a.md", body: "documents login", frontmatter: {} }],
+      edges: [{ from: "a.md", to: "src/login.ts", kind: "describes" }],
+      code_nodes: [{ path: "src/login.ts", body: "export function login() {}", frontmatter: {} }],
+    };
+    // The model (wrongly) tries to cite the code path; one valid question cites a.md.
+    const canned = {
+      questions: [
+        {
+          tier: "retrieval",
+          question: "what does login take?",
+          expected_answer: "a token",
+          expected_sources: ["src/login.ts"],
+        },
+        {
+          tier: "retrieval",
+          question: "what does the guide document?",
+          expected_answer: "the login flow",
+          expected_sources: ["a.md"],
+        },
+      ],
+    };
+    const r = await generateQuestions(sg, mockClient(canned), { n: 3, model: "m" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // The code-citing question is dropped; no surviving question cites the code path.
+    for (const q of r.value.questions) {
+      expect(q.expected_sources).not.toContain("src/login.ts");
+    }
+    expect(r.value.questions.some((q) => q.expected_sources.includes("a.md"))).toBe(true);
   });
 });

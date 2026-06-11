@@ -19,7 +19,14 @@ function doc(relPath: string, ageDays: number): DocSnapshot {
 
 function repo(name: string, docs: DocSnapshot[]): RepoSnapshot {
   return {
-    config: { name, path: `/${name}`, docsGlob: "**/*.md", urls: [] },
+    config: { name, path: `/${name}`, docsGlob: "**/*.md", urls: [], type: "docs" },
+    docs: new Map(docs.map((d) => [d.relPath, d])),
+  };
+}
+
+function codeRepo(name: string, docs: DocSnapshot[]): RepoSnapshot {
+  return {
+    config: { name, path: `/${name}`, docsGlob: "**/*", urls: [], type: "code" },
     docs: new Map(docs.map((d) => [d.relPath, d])),
   };
 }
@@ -94,5 +101,13 @@ describe("checkStaleness", () => {
     expect(paths).toEqual(uniquePaths); // no duplicates
     // And c.md is transitively stale; a.md and b.md too; stale.md is direct.
     expect(findings.map((f) => f.path).sort()).toEqual(["a.md", "b.md", "c.md", "stale.md"].sort());
+  });
+
+  it("never flags a code repo's files as stale (#118)", () => {
+    // A code repo file with an ancient mtime must not appear as directly stale —
+    // code repos are reference targets, not managed documents.
+    const snaps = [codeRepo("svc", [doc("src/login.ts", 5000)])];
+    const findings = checkStaleness(snaps, [], 540, NOW);
+    expect(findings).toEqual([]);
   });
 });

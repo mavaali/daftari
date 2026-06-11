@@ -7,7 +7,14 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { type AuditConfig, type AuditError, configError, type RepoConfig } from "./types.js";
+import {
+  type AuditConfig,
+  type AuditError,
+  configError,
+  REPO_TYPES,
+  type RepoConfig,
+  type RepoType,
+} from "./types.js";
 
 // Inner helpers throw tagged AuditError objects (not class instances). The
 // top-level parseAuditConfig wraps in try/catch and converts to Result.
@@ -21,8 +28,9 @@ function isAuditError(e: unknown): e is AuditError {
 
 const DEFAULTS = {
   docsGlob: "**/*.md",
+  codeGlob: "**/*",
   thresholdDays: 540,
-  failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+  failOn: { brokenRefs: 1, transitiveStaleness: 100, brokenDescribes: 1 },
 };
 
 type RawRepoYaml = {
@@ -30,13 +38,18 @@ type RawRepoYaml = {
   path?: unknown;
   docs_glob?: unknown;
   urls?: unknown;
+  type?: unknown;
 };
 
 type RawYaml = {
   repos?: unknown;
   output?: { markdown?: unknown; json?: unknown };
   staleness?: { threshold_days?: unknown };
-  fail_on?: { broken_refs?: unknown; transitive_staleness?: unknown };
+  fail_on?: {
+    broken_refs?: unknown;
+    transitive_staleness?: unknown;
+    broken_describes?: unknown;
+  };
 };
 
 function readArg(argv: string[], flag: string): string | undefined {
@@ -82,11 +95,23 @@ function parseYamlRepos(raw: RawRepoYaml[] | undefined): RepoConfig[] {
       throw configError(`repos[${i}] (${r.name}): missing path`);
     }
     const path = validateRepoPath(resolve(r.path), `repos[${i}] (${r.name})`);
-    const docsGlob = typeof r.docs_glob === "string" ? r.docs_glob : DEFAULTS.docsGlob;
+    let type: RepoType = "docs";
+    if (r.type !== undefined) {
+      if (typeof r.type !== "string" || !(REPO_TYPES as readonly string[]).includes(r.type)) {
+        throw configError(
+          `repos[${i}] (${r.name}): type must be one of [${REPO_TYPES.join(", ")}], got ${JSON.stringify(r.type)}`,
+        );
+      }
+      type = r.type as RepoType;
+    }
+    // A code repo indexes all files by path; its glob defaults to "**/*" (not
+    // the markdown-only docs default) so source files are actually indexed.
+    const defaultGlob = type === "code" ? DEFAULTS.codeGlob : DEFAULTS.docsGlob;
+    const docsGlob = typeof r.docs_glob === "string" ? r.docs_glob : defaultGlob;
     const urls = Array.isArray(r.urls)
       ? r.urls.filter((u): u is string => typeof u === "string")
       : [];
-    return { name: r.name, path, docsGlob, urls };
+    return { name: r.name, path, docsGlob, urls, type };
   });
 }
 
@@ -153,10 +178,24 @@ export function parseAuditConfig(
         path,
         docsGlob: DEFAULTS.docsGlob,
         urls: [],
+        type: "docs" as RepoType,
       };
     });
 
-    const repos = [...yamlRepos, ...cliRepos];
+    // Anonymous code repos: raw reference targets indexed by path only.
+    const cliCodeRepoPaths = readMulti(argv, "--code-repo");
+    const cliCodeRepos: RepoConfig[] = cliCodeRepoPaths.map((rawPath, i) => {
+      const path = validateRepoPath(resolve(rawPath), `--code-repo ${rawPath}`);
+      return {
+        name: `code-${i}`,
+        path,
+        docsGlob: DEFAULTS.codeGlob,
+        urls: [],
+        type: "code" as RepoType,
+      };
+    });
+
+    const repos = [...yamlRepos, ...cliRepos, ...cliCodeRepos];
     if (repos.length === 0) {
       throw configError("no repos configured: pass --repo or --config");
     }
@@ -193,6 +232,10 @@ export function parseAuditConfig(
         typeof yamlRaw.fail_on?.transitive_staleness === "number"
           ? yamlRaw.fail_on.transitive_staleness
           : DEFAULTS.failOn.transitiveStaleness,
+      brokenDescribes:
+        typeof yamlRaw.fail_on?.broken_describes === "number"
+          ? yamlRaw.fail_on.broken_describes
+          : DEFAULTS.failOn.brokenDescribes,
     };
 
     return ok({ repos, output, staleness: { thresholdDays }, failOn });

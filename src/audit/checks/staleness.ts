@@ -25,6 +25,9 @@ export function checkStaleness(
   type NodeInfo = { repo: string; path: string; mtime: string };
   const nodes = new Map<NodeKey, NodeInfo>();
   for (const snap of snapshots) {
+    // Code repos are reference targets, not managed documents — they carry no
+    // lifecycle and a stub mtime, so they never participate in staleness.
+    if (snap.config.type === "code") continue;
     for (const d of snap.docs.values()) {
       nodes.set(key(snap.config.name, d.relPath), {
         repo: snap.config.name,

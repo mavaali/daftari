@@ -6,10 +6,10 @@ import type { AuditReport } from "../../src/audit/types.js";
 const REPORT: AuditReport = {
   generatedAt: "2026-05-30T12:00:00.000Z",
   config: {
-    repos: [{ name: "a", path: "/r/a", docsGlob: "**/*.md", urls: [] }],
+    repos: [{ name: "a", path: "/r/a", docsGlob: "**/*.md", urls: [], type: "docs" }],
     output: {},
     staleness: { thresholdDays: 540 },
-    failOn: { brokenRefs: 1, transitiveStaleness: 100 },
+    failOn: { brokenRefs: 1, transitiveStaleness: 100, brokenDescribes: 1 },
   },
   totals: {
     reposScanned: 1,
@@ -17,6 +17,8 @@ const REPORT: AuditReport = {
     brokenRefs: 1,
     directlyStale: 1,
     transitivelyStale: 1,
+    brokenDescribes: 1,
+    semanticDrifted: 0,
   },
   brokenRefs: [
     {
@@ -39,6 +41,14 @@ const REPORT: AuditReport = {
       ],
     },
   ],
+  describesRefs: [
+    {
+      source: { repo: "a", path: "auth.md" },
+      target: { repo: "svc", path: "src/gone.ts", symbol: "validateCredentials" },
+      raw: "svc:src/gone.ts::validateCredentials",
+    },
+  ],
+  semantic: [],
 };
 
 describe("renderMarkdown", () => {
@@ -50,14 +60,24 @@ describe("renderMarkdown", () => {
     expect(md).toContain("a/x.md");
     expect(md).toContain("a/y.md");
     expect(md).toContain("a/z.md → a/old.md");
+    // doc-to-code binding section + row
+    expect(md).toContain("broken doc-to-code bindings: **1**");
+    expect(md).toContain("svc/src/gone.ts::validateCredentials");
   });
 
   it("shows the empty-state message when nothing to report", () => {
     const md = renderMarkdown({
       ...REPORT,
-      totals: { ...REPORT.totals, brokenRefs: 0, directlyStale: 0, transitivelyStale: 0 },
+      totals: {
+        ...REPORT.totals,
+        brokenRefs: 0,
+        directlyStale: 0,
+        transitivelyStale: 0,
+        brokenDescribes: 0,
+      },
       brokenRefs: [],
       staleness: [],
+      describesRefs: [],
     });
     expect(md).toContain("no findings");
   });
