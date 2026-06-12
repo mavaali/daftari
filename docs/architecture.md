@@ -443,6 +443,26 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
   housekeeping sweep on each run — the queue can grow stale, but it never grows
   unbounded.
+- **derives_from edges.** The earned re-derivation graph (§11.3) — the trust
+  substrate the future consolidation loop's strength model reads. An edge
+  `from → to` asserts that `from`'s content derives from `to`, and it is never
+  declared into trust: the first observation seeds a zero-strength `candidate`,
+  and only *blind* re-derivations that vary a recorded axis
+  (prompt | input-neighborhood | model) count as independent votes
+  (`k_survived`, capped). Strength is recomputed from the trail on every read,
+  never kept as a counter, and it *ages* — halving per 90 days since the last
+  qualifying re-test — so an un-retested edge drops out of `trigger-bearing`
+  on its own and entrenchment is structurally impossible. A replayed
+  attestation (same observer, same axis) counts again only after a minimum
+  gap, so one caller cannot pump strength in a sitting. `vault_edge_observe`
+  records sightings (the producer — normally the loop), `vault_edge_contest`
+  records a case-2 contradiction — the edge is revoked *and* a tension is
+  logged, never a silent decrement, and only fresh observations can re-earn
+  it — and `vault_edges` lists edges with live aged strength. Storage mirrors
+  staged actions: an append-only log at `.daftari/edges.jsonl` is the source
+  of truth, with a derived `derives_from_edges` table in the ephemeral index
+  (rebuilt on reindex, materialized at startup) for the loop's future
+  traversal engine.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
 process silently rewrites or deletes knowledge. Every change is a deliberate,
