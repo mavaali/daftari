@@ -38,9 +38,10 @@ import {
   upsertStagedAction,
 } from "../storage/index-db.js";
 
-// The action verbs the queue understands. `promote` and `deprecate` dispatch to
-// existing write tools on ratify; the rest are STAGED ONLY in v1 and dispatch
-// is deferred to §11.4 (vault_supersede / vault_merge / vault_set_confidence).
+// The action verbs the queue understands. Each dispatches to a write tool on
+// ratify (§11.4 completed the set): promote → vault_promote, deprecate →
+// vault_deprecate, supersede → vault_supersede, confidence-up →
+// vault_set_confidence, merge → vault_merge.
 export const STAGED_ACTION_TYPES = [
   "promote",
   "deprecate",
@@ -50,18 +51,12 @@ export const STAGED_ACTION_TYPES = [
 ] as const;
 export type StagedActionType = (typeof STAGED_ACTION_TYPES)[number];
 
-// Action types whose ratify dispatch is deferred to §11.4. Approving one of
-// these is recorded as `ratified-pending-tool` and applies nothing.
-export const DEFERRED_ACTION_TYPES: readonly StagedActionType[] = [
-  "supersede",
-  "merge",
-  "confidence-up",
-];
-
 export const DEFAULT_TTL_DAYS = 14;
 
 // The lifecycle states a staged action moves through. `ratified-pending-tool`
-// is the terminal state for an approved-but-deferred action (§11.4).
+// is a legacy terminal state from v1.17 (before §11.4 wired up the
+// supersede/merge/confidence-up write tools); it is no longer produced but is
+// kept here so a record written then still collapses to a known status.
 export const STAGED_ACTION_STATUSES = [
   "pending",
   "ratified",

@@ -156,7 +156,15 @@ export function serializeDocument(
 
 export interface WriteResult {
   path: string;
-  action: "create" | "update" | "append" | "promote" | "deprecate";
+  action:
+    | "create"
+    | "update"
+    | "append"
+    | "promote"
+    | "deprecate"
+    | "supersede"
+    | "merge"
+    | "confidence-set";
   // Short commit hash when the write was auto-committed; null when the vault
   // is configured with `auto_commit: false` and the caller owns git.
   commit: string | null;
@@ -783,6 +791,483 @@ export async function vaultDeprecate(
 }
 
 // ---------------------------------------------------------------------------
+// vault_set_confidence (§11.4)
+// ---------------------------------------------------------------------------
+
+// Changes only a document's `confidence`, leaving status and body untouched.
+// A narrow tool so a calibration nudge never rides a full-document overwrite.
+// A reason is mandatory — a confidence change is a claim about the document's
+// trustworthiness and earns an audit trail.
+export async function vaultSetConfidence(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const path = requireString(args, "path", "vault_set_confidence");
+  if (!path.ok) return path;
+  const agent = requireString(args, "agent", "vault_set_confidence");
+  if (!agent.ok) return agent;
+  const reason = requireString(args, "reason", "vault_set_confidence");
+  if (!reason.ok) return reason;
+  const confidence = requireString(args, "confidence", "vault_set_confidence");
+  if (!confidence.ok) return confidence;
+  if (!(CONFIDENCES as readonly string[]).includes(confidence.value)) {
+    return err(
+      new Error(`vault_set_confidence: 'confidence' must be one of: ${CONFIDENCES.join(", ")}`),
+    );
+  }
+  const baseVersion = readBaseVersion(args, "vault_set_confidence");
+  if (!baseVersion.ok) return baseVersion;
+
+  const resolved = resolveVaultPath(vaultRoot, path.value);
+  if (!resolved.ok) return resolved;
+
+  const existing = await readFile(resolved.value);
+  if (!existing.ok) {
+    return err(new Error(`vault_set_confidence: document not found: ${path.value}`));
+  }
+  const parsed = parseDocument(existing.value);
+  if (!parsed.ok) return parsed;
+
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
+  const oldFrontmatter = parsed.value.frontmatter;
+  if (access) {
+    const collection = collectionOf(path.value, oldFrontmatter);
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot write to ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
+
+  // No-op guard: a confidence already at the target would churn a commit for no
+  // change. Surface it as an error so a redundant staged confidence-up does not
+  // silently no-op (and a caller learns the value was already set). Compare
+  // against the *raw* on-disk value, not the validated frontmatter — the
+  // validator defaults a missing confidence to "low", so comparing the
+  // validated value would wrongly reject set_confidence(…, "low") on a doc that
+  // never declared one and never write the field (the trap vault_promote dodges
+  // the same way, via parsed.value.raw.confidence).
+  const rawConfidence = parsed.value.raw.confidence;
+  const currentConfidence =
+    typeof rawConfidence === "string" && (CONFIDENCES as readonly string[]).includes(rawConfidence)
+      ? rawConfidence
+      : undefined;
+  if (currentConfidence === confidence.value) {
+    return err(
+      new Error(`vault_set_confidence: ${path.value} confidence is already '${confidence.value}'`),
+    );
+  }
+
+  const newFrontmatter: Frontmatter = {
+    ...oldFrontmatter,
+    confidence: confidence.value as Frontmatter["confidence"],
+    updated: todayISO(),
+    updated_by: agent.value,
+  };
+
+  return performWrite({
+    vaultRoot,
+    relPath: path.value,
+    absPath: resolved.value,
+    agent: agent.value,
+    tool: "vault_set_confidence",
+    action: "confidence-set",
+    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
+    newFrontmatter,
+    oldFrontmatter,
+    validation: parsed.value.validation,
+    commitMessage:
+      `vault_set_confidence: ${path.value} ${oldFrontmatter.confidence}→${confidence.value} ` +
+      `by ${agent.value} — ${reason.value}`,
+    autoCommit: config.value.autoCommit,
+    baseVersion: baseVersion.value,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// vault_supersede (§11.4)
+// ---------------------------------------------------------------------------
+
+// Marks a document explicitly superseded by a named successor. Distinct from
+// vault_deprecate: deprecate sets status="deprecated" with an *optional*
+// successor; supersede sets status="superseded" and *requires* a successor that
+// must already exist. Permissive on source status in v1 (last-write-wins).
+export async function vaultSupersede(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const oldPath = requireString(args, "old_path", "vault_supersede");
+  if (!oldPath.ok) return oldPath;
+  const newPath = requireString(args, "new_path", "vault_supersede");
+  if (!newPath.ok) return newPath;
+  const agent = requireString(args, "agent", "vault_supersede");
+  if (!agent.ok) return agent;
+  const baseVersion = readBaseVersion(args, "vault_supersede");
+  if (!baseVersion.ok) return baseVersion;
+
+  let reason: string | undefined;
+  if (args.reason !== undefined && args.reason !== null) {
+    if (typeof args.reason !== "string") {
+      return err(new Error("vault_supersede: 'reason' must be a string"));
+    }
+    const trimmed = args.reason.trim();
+    if (trimmed.length > 0) reason = trimmed;
+  }
+
+  if (oldPath.value === newPath.value) {
+    return err(new Error("vault_supersede: a document cannot supersede itself"));
+  }
+
+  const resolvedOld = resolveVaultPath(vaultRoot, oldPath.value);
+  if (!resolvedOld.ok) return resolvedOld;
+  const resolvedNew = resolveVaultPath(vaultRoot, newPath.value);
+  if (!resolvedNew.ok) return resolvedNew;
+
+  const existing = await readFile(resolvedOld.value);
+  if (!existing.ok) {
+    return err(new Error(`vault_supersede: document not found: ${oldPath.value}`));
+  }
+  // The successor must be a real document — superseded_by must never dangle.
+  const successor = await readFile(resolvedNew.value);
+  if (!successor.ok) {
+    return err(new Error(`vault_supersede: successor not found: ${newPath.value}`));
+  }
+  const parsed = parseDocument(existing.value);
+  if (!parsed.ok) return parsed;
+
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
+  const oldFrontmatter = parsed.value.frontmatter;
+  if (access) {
+    const collection = collectionOf(oldPath.value, oldFrontmatter);
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot write to ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
+
+  const newFrontmatter: Frontmatter = {
+    ...oldFrontmatter,
+    status: "superseded",
+    superseded_by: newPath.value,
+    updated: todayISO(),
+    updated_by: agent.value,
+  };
+
+  return performWrite({
+    vaultRoot,
+    relPath: oldPath.value,
+    absPath: resolvedOld.value,
+    agent: agent.value,
+    tool: "vault_supersede",
+    action: "supersede",
+    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
+    newFrontmatter,
+    oldFrontmatter,
+    validation: parsed.value.validation,
+    commitMessage:
+      `vault_supersede: ${oldPath.value} superseded by ${newPath.value} ` +
+      `by ${agent.value}${reason ? ` — ${reason}` : ""}`,
+    autoCommit: config.value.autoCommit,
+    baseVersion: baseVersion.value,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// vault_merge (§11.4)
+// ---------------------------------------------------------------------------
+
+// One source doc being written or mutated as part of a merge, prepared before
+// any file I/O so all three writes can land under a single commit.
+interface MergeWrite {
+  relPath: string;
+  absPath: string;
+  fileText: string;
+  newFrontmatter: Frontmatter;
+  oldFrontmatter: Frontmatter | null;
+  action: WriteResult["action"];
+}
+
+// Combines two source documents into a target and supersedes both sources to
+// point at it. Mechanical, not generative: the merged body is supplied by the
+// caller (a human at ratification, or the loop) — vault_merge never synthesizes
+// prose (that would be an LLM call; the write layer is LLM-free).
+//
+// Unlike the single-file write tools this touches up to three files, so it does
+// not use performWrite. It mirrors the backfill apply pattern: write each file,
+// index each, then one git commit for the whole set (src/backfill/apply.ts). A
+// source that *is* the target is written once (with the merged body), not also
+// superseded. base_version optimistic concurrency is not offered for merge.
+export async function vaultMerge(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const pathA = requireString(args, "path_a", "vault_merge");
+  if (!pathA.ok) return pathA;
+  const pathB = requireString(args, "path_b", "vault_merge");
+  if (!pathB.ok) return pathB;
+  const targetPath = requireString(args, "target_path", "vault_merge");
+  if (!targetPath.ok) return targetPath;
+  const agent = requireString(args, "agent", "vault_merge");
+  if (!agent.ok) return agent;
+  const body = args.body;
+  if (typeof body !== "string" || body.trim().length === 0) {
+    return err(new Error("vault_merge requires a non-empty string 'body' argument"));
+  }
+  if (args.frontmatter !== undefined && args.frontmatter !== null) {
+    if (typeof args.frontmatter !== "object") {
+      return err(new Error("vault_merge: 'frontmatter' must be an object"));
+    }
+  }
+  const frontmatterOverrides =
+    args.frontmatter && typeof args.frontmatter === "object"
+      ? (args.frontmatter as Record<string, unknown>)
+      : {};
+
+  // Resolve all three paths up front and run every identity check against the
+  // resolved absolute paths, never the raw caller strings: `pricing/a.md` and
+  // `./pricing/a.md` name the same file but differ as strings, which would
+  // otherwise defeat the path_a≠path_b guard and the source-is-target skip
+  // below (writing one file twice in a single commit and superseding it against
+  // itself).
+  const resolvedA = resolveVaultPath(vaultRoot, pathA.value);
+  if (!resolvedA.ok) return resolvedA;
+  const resolvedB = resolveVaultPath(vaultRoot, pathB.value);
+  if (!resolvedB.ok) return resolvedB;
+  const resolvedTarget = resolveVaultPath(vaultRoot, targetPath.value);
+  if (!resolvedTarget.ok) return resolvedTarget;
+
+  if (resolvedA.value === resolvedB.value) {
+    return err(new Error("vault_merge: path_a and path_b must differ"));
+  }
+
+  const existingA = await readFile(resolvedA.value);
+  if (!existingA.ok) return err(new Error(`vault_merge: document not found: ${pathA.value}`));
+  const existingB = await readFile(resolvedB.value);
+  if (!existingB.ok) return err(new Error(`vault_merge: document not found: ${pathB.value}`));
+  const parsedA = parseDocument(existingA.value);
+  if (!parsedA.ok) return parsedA;
+  const parsedB = parseDocument(existingB.value);
+  if (!parsedB.ok) return parsedB;
+
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
+  // RBAC: a merge writes/mutates all three docs, so the caller needs write on
+  // each one's collection.
+  if (access) {
+    // The target's collection is the override, else path_a's *raw* collection
+    // (the value actually serialized into the target below — not the validated
+    // frontmatter, which may differ if path_a's raw collection is malformed),
+    // else the target path's top-level dir. Deriving it from the same source
+    // the write uses keeps the gate and the write in agreement.
+    const rawACollection = parsedA.value.raw.collection;
+    const collections = [
+      collectionOf(pathA.value, parsedA.value.frontmatter),
+      collectionOf(pathB.value, parsedB.value.frontmatter),
+      typeof frontmatterOverrides.collection === "string" && frontmatterOverrides.collection
+        ? frontmatterOverrides.collection
+        : typeof rawACollection === "string" && rawACollection
+          ? rawACollection
+          : (targetPath.value.split("/")[0] ?? ""),
+    ];
+    for (const collection of collections) {
+      if (!canWrite(access.role, collection)) {
+        return err(
+          new Error(
+            `access denied: role '${access.roleName}' cannot write to ` +
+              `collection '${collection}'`,
+          ),
+        );
+      }
+    }
+  }
+
+  // Target frontmatter: inherit path_a's raw frontmatter, apply caller
+  // overrides, stamp provenance/updated/updated_by. If the target file already
+  // exists, preserve its `created` (the vault_write update idiom); otherwise
+  // inherit path_a's. The supplied body replaces whatever was there.
+  const existingTarget = await readFile(resolvedTarget.value);
+  let targetOldFrontmatter: Frontmatter | null = null;
+  let targetCreated = parsedA.value.frontmatter.created;
+  if (existingTarget.ok) {
+    const parsedTarget = parseDocument(existingTarget.value);
+    if (parsedTarget.ok) {
+      targetOldFrontmatter = parsedTarget.value.frontmatter;
+      targetCreated = parsedTarget.value.frontmatter.created;
+    }
+  }
+  const targetRaw: Record<string, unknown> = {
+    ...parsedA.value.raw,
+    provenance: "synthesized",
+    ...frontmatterOverrides,
+    created: targetCreated,
+    updated: todayISO(),
+    updated_by: agent.value,
+  };
+  const { frontmatter: targetFm, report: targetReport } = validateFrontmatter(
+    targetRaw,
+    extensions,
+  );
+  if (!targetReport.valid) {
+    const summary = targetReport.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
+    return err(new Error(`vault_merge: target frontmatter is invalid: ${summary}`));
+  }
+  const stampedTarget: Frontmatter = {
+    ...targetFm,
+    created: targetCreated,
+    updated: todayISO(),
+    updated_by: agent.value,
+  };
+
+  // Build the write set. The target is always written. Each source that is NOT
+  // the target is superseded to point at the target.
+  const writes: MergeWrite[] = [];
+  writes.push({
+    relPath: targetPath.value,
+    absPath: resolvedTarget.value,
+    fileText: serializeDocument(
+      stampedTarget,
+      body,
+      extensions,
+      applyExtensionDefaults(targetRaw, extensions),
+    ),
+    newFrontmatter: stampedTarget,
+    oldFrontmatter: targetOldFrontmatter,
+    action: "merge",
+  });
+  for (const source of [
+    { path: pathA.value, abs: resolvedA.value, parsed: parsedA.value },
+    { path: pathB.value, abs: resolvedB.value, parsed: parsedB.value },
+  ]) {
+    // Compare resolved absolute paths, not raw strings: a source that aliases
+    // the target (e.g. target `./pricing/a.md`, source `pricing/a.md`) is the
+    // fold-into-A case — write it once with the merged body, never supersede it.
+    if (source.abs === resolvedTarget.value) continue;
+    const supersededFm: Frontmatter = {
+      ...source.parsed.frontmatter,
+      status: "superseded",
+      superseded_by: targetPath.value,
+      updated: todayISO(),
+      updated_by: agent.value,
+    };
+    writes.push({
+      relPath: source.path,
+      absPath: source.abs,
+      fileText: serializeDocument(
+        supersededFm,
+        source.parsed.content,
+        extensions,
+        source.parsed.raw,
+      ),
+      newFrontmatter: supersededFm,
+      oldFrontmatter: source.parsed.frontmatter,
+      action: "supersede",
+    });
+  }
+
+  // Acquire file locks on every distinct path, in a deterministic sorted order
+  // (defensive against self-deadlock if two merges ever overlapped — the
+  // one-process invariant makes that theoretical). Release all in finally.
+  const lockDbResult = openLockDb(vaultRoot);
+  if (!lockDbResult.ok) return lockDbResult;
+  const lockDb = lockDbResult.value;
+  const lockPaths = [...new Set(writes.map((w) => w.relPath))].sort();
+  const held: string[] = [];
+
+  try {
+    for (const relPath of lockPaths) {
+      const lock = acquireLock(lockDb, relPath, agent.value);
+      if (!lock.ok) return lock;
+      held.push(relPath);
+    }
+
+    // Write all files, then a single git commit. This is NOT crash-atomic on
+    // the disk-write phase: like the single-file write path (performWrite), a
+    // throw mid-loop — or a commit() failure after the files are on disk —
+    // leaves the working tree dirty and uncommitted. For merge the dirty state
+    // can be a *partial* merge (target written, a source not yet superseded),
+    // which a later reindex/watcher would pick up. The git commit itself is
+    // atomic, and the one-process invariant plus human-gated ratification keep
+    // this window small; a full pre-write snapshot/rollback is deferred.
+    for (const w of writes) {
+      await mkdir(dirname(w.absPath), { recursive: true });
+      await writeFile(w.absPath, w.fileText, "utf-8");
+    }
+
+    let commitHash: string | null = null;
+    if (config.value.autoCommit) {
+      const committed = await commit(
+        vaultRoot,
+        writes.map((w) => w.relPath),
+        `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}`,
+        agent.value,
+      );
+      if (!committed.ok) return committed;
+      commitHash = committed.value.hash;
+    }
+
+    // Index each written doc and log provenance per file. Both are best-effort
+    // (the index is a rebuildable cache; the log is advisory) so a failure here
+    // does not unwind the durable commit. noteSelfWrite runs here, after the
+    // index lands, so the fs.watch reactive indexer drops the redundant change
+    // event for our own write (mirrors performWrite's ordering).
+    let allIndexed = true;
+    for (const w of writes) {
+      const indexed = await indexDocument(vaultRoot, w.relPath);
+      if (!indexed.ok) allIndexed = false;
+      noteSelfWrite(w.absPath);
+      await recordProvenance(vaultRoot, {
+        tool: "vault_merge",
+        file: w.relPath,
+        agent: agent.value,
+        action: w.action,
+        frontmatter_diff: frontmatterDiff(w.oldFrontmatter, w.newFrontmatter),
+      });
+    }
+
+    return ok({
+      path: targetPath.value,
+      action: "merge",
+      commit: commitHash,
+      committed: config.value.autoCommit,
+      status: stampedTarget.status,
+      updated: stampedTarget.updated,
+      validation: targetReport,
+      indexUpdated: allIndexed,
+    });
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`vault_merge failed: ${reason}`));
+  } finally {
+    for (const relPath of held) releaseLock(lockDb, relPath, agent.value);
+    lockDb.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
@@ -996,5 +1481,112 @@ export const writeTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     handler: (vaultRoot, args, access) => vaultDeprecate(vaultRoot, args, access),
+  },
+  {
+    name: "vault_set_confidence",
+    title: "Set a document's confidence",
+    annotations: { destructiveHint: true },
+    description:
+      "Change only a document's confidence level (low | medium | high), leaving " +
+      "its status and body untouched. A reason is required and recorded. Rejects " +
+      "if the confidence is already at the target. Auto-commits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Vault-relative path of the document",
+        },
+        confidence: {
+          type: "string",
+          enum: [...CONFIDENCES],
+          description: "The new confidence level",
+        },
+        reason: {
+          type: "string",
+          description: "Why the confidence is changing (recorded in the commit and provenance)",
+        },
+        agent: agentProperty,
+        base_version: baseVersionProperty,
+      },
+      required: ["path", "confidence", "reason", "agent"],
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultSetConfidence(vaultRoot, args, access),
+  },
+  {
+    name: "vault_supersede",
+    title: "Supersede a document",
+    annotations: { destructiveHint: true },
+    description:
+      "Mark a document superseded by a named successor. Sets status=superseded " +
+      "and superseded_by; the successor must already exist. Distinct from " +
+      "vault_deprecate (which sets status=deprecated with an optional " +
+      "successor). Auto-commits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        old_path: {
+          type: "string",
+          description: "Vault-relative path of the document being superseded",
+        },
+        new_path: {
+          type: "string",
+          description: "Vault-relative path of the successor that replaces it (must exist)",
+        },
+        reason: {
+          type: "string",
+          description: "Optional reason recorded in the commit message",
+        },
+        agent: agentProperty,
+        base_version: baseVersionProperty,
+      },
+      required: ["old_path", "new_path", "agent"],
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultSupersede(vaultRoot, args, access),
+  },
+  {
+    name: "vault_merge",
+    title: "Merge two documents into one",
+    annotations: { destructiveHint: true },
+    description:
+      "Combine two source documents into a target and supersede both sources to " +
+      "point at it, all in one commit. The merged body is supplied by the caller " +
+      "— vault_merge does not synthesize prose. target_path may equal path_a (to " +
+      "fold B into A) or be a new path. The target's frontmatter inherits " +
+      "path_a's (provenance becomes 'synthesized') unless overridden. Auto-commits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path_a: {
+          type: "string",
+          description: "Vault-relative path of the first source document",
+        },
+        path_b: {
+          type: "string",
+          description: "Vault-relative path of the second source document",
+        },
+        target_path: {
+          type: "string",
+          description: "Vault-relative path of the merge target (may equal path_a, or be new)",
+        },
+        body: {
+          type: "string",
+          description: "The merged markdown body for the target (no frontmatter)",
+        },
+        frontmatter: {
+          type: "object",
+          description:
+            "Optional frontmatter overrides for the target. Defaults to path_a's " +
+            "frontmatter with provenance set to 'synthesized'.",
+          additionalProperties: true,
+        },
+        agent: agentProperty,
+      },
+      required: ["path_a", "path_b", "target_path", "body", "agent"],
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultMerge(vaultRoot, args, access),
   },
 ];
