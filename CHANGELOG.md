@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cortex §11.3: `derives_from` edge store with earned strength.** The
+  re-derivation graph the consolidation loop's strength model rests on — edges
+  are earned through independent re-derivations, never declared into trust.
+  - **Store** — append-only canonical log at `.daftari/edges.jsonl` (observe +
+    contest records) collapsed to current edge state; a derived
+    `derives_from_edges` table in the index (`from_path, to_path, strength,
+    k_survived, first_observed, last_rederived, last_age_decay, status`) is
+    rebuilt on reindex and materialized at startup for the future loop's
+    concurrent traversal reads.
+  - **Strength model** — the first observation seeds a zero-strength
+    `candidate` (birth is not a survival); only blind observations that vary a
+    recorded axis (prompt | input-neighborhood | model) count as independent
+    votes (`k_survived`, cap 5); a replayed (observer, axis) attestation counts
+    again only after a one-day gap, so a single caller cannot pump strength in
+    one sitting while the loop's later re-derivations still restore it;
+    strength ages by half-life (90 days) since the last qualifying
+    re-derivation, so an un-retested edge drops out of `trigger-bearing`
+    (floor 0.5) on its own — entrenchment is structurally impossible.
+    Constants are provisional pending calibration.
+  - **Tools** — `vault_edge_observe` (producer, exposed for the future loop
+    and testing), `vault_edge_contest` (case-2 contest-and-revoke; logs a
+    tension first so a contest can never be a silent decrement, reusing an
+    unresolved same-title tension so retries never stack duplicates; a revoked
+    edge is re-earned only through fresh observations), `vault_edges` (read,
+    live aged strength, endpoint/status filters). All caller paths are
+    canonicalized, so aliased inputs (`./a.md`, `b/../a.md`) cannot split an
+    edge's votes or slip a self-edge past the guard.
+  - `.daftari/edges.jsonl` and the previously-missed
+    `.daftari/staged-actions.jsonl` are now git-ignored (local curation state,
+    like the provenance log).
+
 - **Cortex §11.4: `vault_supersede`, `vault_merge`, `vault_set_confidence`
   write tools, wired into `vault_ratify`.** Completes the staged-action queue's
   apply path — every action type the queue accepts (`promote`, `deprecate`,

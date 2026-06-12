@@ -142,6 +142,20 @@ CREATE TABLE IF NOT EXISTS staged_actions (
 CREATE INDEX IF NOT EXISTS idx_staged_status ON staged_actions(status);
 CREATE INDEX IF NOT EXISTS idx_staged_target ON staged_actions(target_path);
 CREATE INDEX IF NOT EXISTS idx_staged_expires ON staged_actions(expires_at);
+CREATE TABLE IF NOT EXISTS derives_from_edges (
+  from_path      TEXT NOT NULL,
+  to_path        TEXT NOT NULL,
+  strength       REAL NOT NULL,
+  k_survived     INTEGER NOT NULL,
+  first_observed TEXT NOT NULL,
+  last_rederived TEXT NOT NULL,
+  last_age_decay TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  PRIMARY KEY (from_path, to_path)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_from ON derives_from_edges(from_path);
+CREATE INDEX IF NOT EXISTS idx_edges_to ON derives_from_edges(to_path);
+CREATE INDEX IF NOT EXISTS idx_edges_status ON derives_from_edges(status);
 `;
 
 // FTS5 virtual table over the `documents` body + title + tags. The
@@ -346,7 +360,10 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
       // additions (3 → 4 added embeddings.dim) and virtual-table creations
       // (4 → 5 added documents_fts + embeddings_vec) against existing rows;
       // the markdown files are the source of truth and the index is cheap to
-      // regenerate.
+      // regenerate. staged_actions and derives_from_edges are not in the drop
+      // list — they are jsonl-derived and clear-and-rebuilt by their own
+      // materialize paths — but a future bump that changes THEIR columns must
+      // add them here (CREATE IF NOT EXISTS will not alter an existing table).
       db.exec(
         "DROP TRIGGER IF EXISTS documents_ai;" +
           "DROP TRIGGER IF EXISTS documents_ad;" +
@@ -787,4 +804,64 @@ export function getStagedActionsByStatus(db: IndexDb, status: string): StagedAct
   return db
     .prepare("SELECT * FROM staged_actions WHERE status = ? ORDER BY expires_at")
     .all(status) as StagedActionRow[];
+}
+
+// --- derives_from edges ------------------------------------------------------
+//
+// The derives_from_edges table is a derived index of the append-only canonical
+// log .daftari/edges.jsonl (see src/curation/edges.ts). A reindex collapses
+// the jsonl and repopulates the table; `strength` and `status` are materialized
+// as of `last_age_decay` and age from there (the curation layer recomputes the
+// live value via agedStrength). The table exists for the future consolidation
+// loop's traversal engine, which wants concurrent SQL reads (spec §11.3); v1
+// read paths use the jsonl directly. Column set is exactly §11.3's schema.
+
+export interface DerivesFromEdgeRow {
+  from_path: string;
+  to_path: string;
+  strength: number;
+  k_survived: number;
+  first_observed: string;
+  last_rederived: string;
+  last_age_decay: string;
+  status: string; // candidate | trigger-bearing | revoked
+}
+
+// Inserts or replaces an edge row by (from_path, to_path). Used by the
+// jsonl→sqlite rebuild.
+export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): void {
+  db.prepare(
+    `INSERT INTO derives_from_edges
+       (from_path, to_path, strength, k_survived, first_observed, last_rederived,
+        last_age_decay, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(from_path, to_path) DO UPDATE SET
+       strength       = excluded.strength,
+       k_survived     = excluded.k_survived,
+       first_observed = excluded.first_observed,
+       last_rederived = excluded.last_rederived,
+       last_age_decay = excluded.last_age_decay,
+       status         = excluded.status`,
+  ).run(
+    row.from_path,
+    row.to_path,
+    row.strength,
+    row.k_survived,
+    row.first_observed,
+    row.last_rederived,
+    row.last_age_decay,
+    row.status,
+  );
+}
+
+// Drops every edge row. Called at the start of a rebuild so a reindex never
+// leaves rows for edges the jsonl no longer reflects.
+export function clearDerivesFromEdges(db: IndexDb): void {
+  db.exec("DELETE FROM derives_from_edges;");
+}
+
+export function getAllDerivesFromEdges(db: IndexDb): DerivesFromEdgeRow[] {
+  return db
+    .prepare("SELECT * FROM derives_from_edges ORDER BY from_path, to_path")
+    .all() as DerivesFromEdgeRow[];
 }

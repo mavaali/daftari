@@ -14,6 +14,8 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/locks.db-wal
 **/.daftari/locks.db-shm
 **/.daftari/curation-log.jsonl
+**/.daftari/staged-actions.jsonl
+**/.daftari/edges.jsonl
 **/.daftari/tensions.md
 **/.daftari/process.lock
 # Ephemeral eval artifacts (regeneratable from .md sources + LLM calls).

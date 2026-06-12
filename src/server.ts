@@ -10,6 +10,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { curationTools } from "./tools/curation.js";
+import { edgeTools } from "./tools/edges.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { searchTools } from "./tools/search.js";
 import { stagedActionTools } from "./tools/staged-actions.js";
@@ -42,6 +43,7 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
     ...writeTools,
     ...curationTools,
     ...stagedActionTools,
+    ...edgeTools,
   ];
   const byName = new Map(tools.map((t) => [t.name, t]));
 

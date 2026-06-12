@@ -18,6 +18,7 @@
 // lexical-only.
 
 import { stat } from "node:fs/promises";
+import { rebuildEdgesIndex } from "../curation/edges.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -353,6 +354,10 @@ export async function reindexVault(
     // keeps it in sync after a cold start or a manual index wipe. Best-effort:
     // the staging queue lives in the jsonl, so a rebuild miss never loses data.
     rebuildStagedActionsIndex(db, vaultRoot);
+
+    // Same posture for the derives_from edge store: the jsonl is canonical;
+    // this table is the loop's concurrent-read surface (spec §11.3).
+    rebuildEdgesIndex(db, vaultRoot);
 
     // Rebuild the sqlite-vec mirror from the durable `embeddings` cache.
     // The cache is per-(model, content_hash) and is the source of truth;

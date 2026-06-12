@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
+import { materializeEdges } from "./curation/edges.js";
 import { materializeStagedActions } from "./curation/staged-actions.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import {
@@ -167,6 +168,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!materialized.ok) {
       process.stderr.write(
         `daftari: warning: could not rebuild staged-actions index: ${materialized.error.message}\n`,
+      );
+    }
+    // Same for the derives_from edge store (spec §11.3): edges may have been
+    // observed since the last reindex without any file changing.
+    const edgesMaterialized = materializeEdges(vaultRoot);
+    if (!edgesMaterialized.ok) {
+      process.stderr.write(
+        `daftari: warning: could not rebuild derives_from index: ${edgesMaterialized.error.message}\n`,
       );
     }
     // Fresh index means a fully-cached state: no embedding work was done, so
