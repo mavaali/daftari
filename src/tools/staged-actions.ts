@@ -127,6 +127,9 @@ export interface RatifyResult {
   decision: "approve" | "reject";
   applied: boolean;
   commit?: string;
+  // True when the vault runs shadow_mode (§11.5): the dispatch was computed
+  // and shadow-logged but nothing was written, so the action stays pending.
+  shadow?: boolean;
 }
 
 export async function vaultRatify(
@@ -294,6 +297,14 @@ export async function vaultRatify(
 
   if (!dispatched.ok) return dispatched;
 
+  // Shadow mode (§11.5): the dispatch computed and shadow-logged the write but
+  // applied nothing. Recording a `ratified` decision over a write that never
+  // landed would be false history — leave the action pending so a live-mode
+  // ratification can really apply it later.
+  if (dispatched.value.shadow) {
+    return ok({ action_id: id.value, decision, applied: false, shadow: true });
+  }
+
   const recorded = await recordDecision(vaultRoot, id.value, {
     status: "ratified",
     ratifiedAt: decidedAt,
@@ -376,7 +387,10 @@ export const stagedActionTools: ToolDefinition[] = [
       "vault_set_confidence, merge → vault_merge) and auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
       "action pending. Errors if the id is unknown or the action is not pending " +
-      "(already decided or expired).",
+      "(already decided or expired). If the vault runs shadow_mode, an approved " +
+      "dispatch is computed and shadow-logged but NOT applied — the result " +
+      "carries shadow: true and the action stays pending for a live " +
+      "ratification later.",
     inputSchema: {
       type: "object",
       properties: {

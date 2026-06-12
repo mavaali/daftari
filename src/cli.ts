@@ -60,6 +60,9 @@ const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files — ne
 # runs with auto_commit: false inside a larger repo: keeps the host repo's
 # git status clean of Daftari's per-write log churn.
 .daftari/curation-log.jsonl
+.daftari/staged-actions.jsonl
+.daftari/edges.jsonl
+.daftari/shadow-actions.jsonl
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl

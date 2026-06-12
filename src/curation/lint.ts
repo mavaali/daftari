@@ -7,6 +7,7 @@
 
 import { ok, type Result } from "../frontmatter/types.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
+import { type ShadowLintSummary, shadowLintSummary } from "./shadow.js";
 import { listPendingForLint, type StagedActionLintItem } from "./staged-actions.js";
 
 export type { StagedActionLintItem } from "./staged-actions.js";
@@ -116,6 +117,11 @@ export interface LintReport {
   // the rest of vault_lint. The actual expiry sweep is a side effect of the
   // vault_lint tool, not of runLint (which stays read-only).
   stagedActions: StagedActionLintItem[];
+  // Shadow-mode summary (spec §11.5): how many writes were shadow-logged and
+  // which would have been gated by the trust budget — the "Would-have-gated
+  // actions" surface Decision 3's calibration reads. Zeroes when the vault has
+  // never run shadow mode.
+  shadowActions: ShadowLintSummary;
 }
 
 export interface LintOptions {
@@ -269,12 +275,16 @@ export async function runLint(
   const stagedActions = await listPendingForLint(vaultRoot, now);
   if (!stagedActions.ok) return stagedActions;
 
+  const shadowActions = await shadowLintSummary(vaultRoot);
+  if (!shadowActions.ok) return shadowActions;
+
   return ok({
     generatedAt: now.toISOString(),
     checks,
     totalFindings,
     tensionHealth: tensionHealth.value,
     stagedActions: stagedActions.value,
+    shadowActions: shadowActions.value,
   });
 }
 

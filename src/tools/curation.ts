@@ -19,6 +19,7 @@ import {
   type TensionHealth,
 } from "../curation/lint.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+import type { ShadowLintSummary } from "../curation/shadow.js";
 import { sweepExpiredActions } from "../curation/staged-actions.js";
 import {
   addTension,
@@ -244,6 +245,7 @@ export interface VaultLintResult {
   totalFindings: number;
   tensionHealth: TensionHealth;
   stagedActions: StagedActionLintItem[];
+  shadowActions: ShadowLintSummary;
 }
 
 export async function vaultLint(
@@ -288,6 +290,7 @@ export async function vaultLint(
       totalFindings: findings.length,
       tensionHealth: report.value.tensionHealth,
       stagedActions: report.value.stagedActions,
+      shadowActions: report.value.shadowActions,
     });
   }
 
@@ -298,6 +301,7 @@ export async function vaultLint(
     totalFindings: report.value.totalFindings,
     tensionHealth: report.value.tensionHealth,
     stagedActions: report.value.stagedActions,
+    shadowActions: report.value.shadowActions,
   });
 }
 
@@ -504,7 +508,9 @@ export const curationTools: ToolDefinition[] = [
       "ones, and questions raised but unanswered anywhere in the vault. " +
       "Also reports tension health (counts by kind and resolution kind, " +
       "stable acknowledged persistent disagreements, and legacy unspecified " +
-      "entries) and lists pending staged actions awaiting ratification. " +
+      "entries), lists pending staged actions awaiting ratification, and — " +
+      "when the vault has run shadow_mode — summarizes shadow-logged writes " +
+      "with the ones the trust budget would have gated. " +
       "Never auto-fixes vault content; it does, as housekeeping, expire " +
       "staged actions past their TTL. Optionally filter to a single check.",
     inputSchema: {
