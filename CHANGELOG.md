@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-06-11
+
 ### Added
 
 - **Cortex §11.3: `derives_from` edge store with earned strength.** The
