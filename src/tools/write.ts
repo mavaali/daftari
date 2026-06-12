@@ -14,6 +14,7 @@ import matter from "gray-matter";
 import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite } from "../access/rbac.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
+import { recordShadowAction } from "../curation/shadow.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
@@ -173,6 +174,10 @@ export interface WriteResult {
   updated: string;
   validation: ValidationReport;
   indexUpdated: boolean;
+  // True when the vault runs shadow_mode (spec §11.5): the write was computed
+  // and logged to .daftari/shadow-actions.jsonl but NOTHING was written —
+  // no file, no commit, no index update, no provenance entry.
+  shadow?: boolean;
 }
 
 // First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
@@ -213,7 +218,37 @@ async function performWrite(params: {
   commitMessage: string;
   autoCommit: boolean;
   baseVersion?: string;
+  shadowMode?: boolean;
 }): Promise<Result<WriteResult, Error>> {
+  // Shadow mode (spec §11.5): everything up to here ran exactly as live —
+  // validation, RBAC, frontmatter assembly, diff — so the logged do() is one
+  // that WOULD have executed. Log it with its impact/budget verdict and stop:
+  // no lock, no file, no commit, no index, no provenance. base_version is
+  // intentionally not checked — stale-write rejection guards a mutation, and
+  // there is none.
+  if (params.shadowMode) {
+    const recorded = await recordShadowAction(params.vaultRoot, {
+      tool: params.tool,
+      action: params.action,
+      targetPath: params.relPath,
+      agent: params.agent,
+      frontmatterDiff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
+      commitMessage: params.commitMessage,
+    });
+    if (!recorded.ok) return recorded;
+    return ok({
+      path: params.relPath,
+      action: params.action,
+      commit: null,
+      committed: false,
+      status: params.newFrontmatter.status,
+      updated: params.newFrontmatter.updated,
+      validation: params.validation,
+      indexUpdated: false,
+      shadow: true,
+    });
+  }
+
   const lockDbResult = openLockDb(params.vaultRoot);
   if (!lockDbResult.ok) return lockDbResult;
   const lockDb = lockDbResult.value;
@@ -511,6 +546,7 @@ export async function vaultWrite(
       `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
   });
 }
 
@@ -615,6 +651,7 @@ export async function vaultAppend(
     commitMessage: `vault_append: ${path.value} by ${agent.value}`,
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
   });
 }
 
@@ -703,6 +740,7 @@ export async function vaultPromote(
     commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
   });
 }
 
@@ -787,6 +825,7 @@ export async function vaultDeprecate(
       (supersededBy ? ` (superseded by ${supersededBy})` : ""),
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
   });
 }
 
@@ -890,6 +929,7 @@ export async function vaultSetConfidence(
       `by ${agent.value} — ${reason.value}`,
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
   });
 }
 
@@ -988,6 +1028,7 @@ export async function vaultSupersede(
       `by ${agent.value}${reason ? ` — ${reason}` : ""}`,
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
   });
 }
 
@@ -1188,6 +1229,33 @@ export async function vaultMerge(
     });
   }
 
+  // Shadow mode (spec §11.5): the full write set is assembled and validated —
+  // the do() that WOULD have executed. Log one merge record whose blast seeds
+  // every touched path, write nothing.
+  if (config.value.shadowMode) {
+    const recorded = await recordShadowAction(vaultRoot, {
+      tool: "vault_merge",
+      action: "merge",
+      targetPath: targetPath.value,
+      touchedPaths: [...new Set(writes.map((w) => w.relPath))],
+      agent: agent.value,
+      frontmatterDiff: frontmatterDiff(targetOldFrontmatter, stampedTarget),
+      commitMessage: `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}`,
+    });
+    if (!recorded.ok) return recorded;
+    return ok({
+      path: targetPath.value,
+      action: "merge",
+      commit: null,
+      committed: false,
+      status: stampedTarget.status,
+      updated: stampedTarget.updated,
+      validation: targetReport,
+      indexUpdated: false,
+      shadow: true,
+    });
+  }
+
   // Acquire file locks on every distinct path, in a deterministic sorted order
   // (defensive against self-deadlock if two merges ever overlapped — the
   // one-process invariant makes that theoretical). Release all in finally.
@@ -1277,6 +1345,13 @@ const agentProperty = {
     "Acting identity, e.g. 'agent:claude-code' or 'human:mihir'. Recorded " +
     "as updated_by, the git author, and in the provenance log.",
 };
+
+// Appended to every write-tool description: shadow_mode (§11.5) makes the
+// "auto-commits" claim conditionally false, and the description is the only
+// surface a caller reads before invoking.
+const shadowNote =
+  " If the vault runs shadow_mode, the write is computed and logged to the " +
+  "shadow store but NOT applied; the result carries shadow: true.";
 
 const baseVersionProperty = {
   type: "string",
@@ -1385,7 +1460,8 @@ export const writeTools: ToolDefinition[] = [
       "full frontmatter and markdown body; the server stamps 'updated' and " +
       "'updated_by' (omit them — anything supplied is overwritten), preserves " +
       "'created' on updates, refreshes the search index, and auto-commits the " +
-      "change to git.",
+      "change to git." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {
@@ -1409,7 +1485,8 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Append a markdown section to an existing vault document. Frontmatter " +
-      "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits.",
+      "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {
@@ -1436,7 +1513,8 @@ export const writeTools: ToolDefinition[] = [
     description:
       "Promote a draft document to canonical status. Refuses unless the " +
       "document is currently a draft, its frontmatter is complete, and a " +
-      "confidence level has been explicitly set. Auto-commits.",
+      "confidence level has been explicitly set. Auto-commits." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {
@@ -1458,7 +1536,8 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Mark a document deprecated. A reason is required; optionally record " +
-      "the document that supersedes it. Auto-commits.",
+      "the document that supersedes it. Auto-commits." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {
@@ -1489,7 +1568,8 @@ export const writeTools: ToolDefinition[] = [
     description:
       "Change only a document's confidence level (low | medium | high), leaving " +
       "its status and body untouched. A reason is required and recorded. Rejects " +
-      "if the confidence is already at the target. Auto-commits.",
+      "if the confidence is already at the target. Auto-commits." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {
@@ -1522,7 +1602,8 @@ export const writeTools: ToolDefinition[] = [
       "Mark a document superseded by a named successor. Sets status=superseded " +
       "and superseded_by; the successor must already exist. Distinct from " +
       "vault_deprecate (which sets status=deprecated with an optional " +
-      "successor). Auto-commits.",
+      "successor). Auto-commits." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {
@@ -1555,7 +1636,8 @@ export const writeTools: ToolDefinition[] = [
       "point at it, all in one commit. The merged body is supplied by the caller " +
       "— vault_merge does not synthesize prose. target_path may equal path_a (to " +
       "fold B into A) or be a new path. The target's frontmatter inherits " +
-      "path_a's (provenance becomes 'synthesized') unless overridden. Auto-commits.",
+      "path_a's (provenance becomes 'synthesized') unless overridden. Auto-commits." +
+      shadowNote,
     inputSchema: {
       type: "object",
       properties: {

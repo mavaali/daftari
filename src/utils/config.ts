@@ -89,6 +89,12 @@ export interface DaftariConfig {
   // back to a slugified `human:<author>` default. Empty when the optional
   // `backfill.identity_map` block is absent.
   backfillIdentityMap: Record<string, string>;
+  // Shadow-mode execution path (spec §11.5). When true, every doc-write tool
+  // computes the do(), its impact I, and the proposed diff, logs them to
+  // .daftari/shadow-actions.jsonl, and writes NOTHING — the calibration
+  // posture Decision 3 (§10.4) requires before the loop ever acts live.
+  // Defaults to false: a normal vault writes normally.
+  shadowMode: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -103,6 +109,7 @@ function emptyConfig(): DaftariConfig {
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
     backfillIdentityMap: {},
+    shadowMode: false,
   };
 }
 
@@ -463,6 +470,14 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     warmEmbeddings = root.warm_embeddings;
   }
 
+  let shadowMode = false;
+  if (root.shadow_mode !== undefined) {
+    if (typeof root.shadow_mode !== "boolean") {
+      return err(new Error("malformed config: 'shadow_mode' must be true or false"));
+    }
+    shadowMode = root.shadow_mode;
+  }
+
   // Embedding provider selection. Defaults to local-minilm. Unknown ids fail
   // loud — the trust model is "vault owner configures the server" so a typo
   // is a config error, not a fall-through to default. The OPENAI_API_KEY
@@ -511,5 +526,6 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     warmEmbeddings,
     embeddingProvider,
     backfillIdentityMap: backfillIdentityMap.value,
+    shadowMode,
   });
 }

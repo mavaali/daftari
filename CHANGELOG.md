@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cortex §11.5: shadow-mode execution path.** `shadow_mode: true` in
+  `.daftari/config.yaml` turns every doc-write tool into compute-but-don't-write:
+  validation, RBAC, and the proposed diff run exactly as live, then the would-be
+  `do()` is logged to an append-only `.daftari/shadow-actions.jsonl` (git-ignored)
+  with its impact and budget verdict — and nothing is written (no file, no commit,
+  no index update, no provenance entry). The calibration posture Decision 3
+  requires before the consolidation loop ever acts in production.
+  - **Impact** `I = min(i_base + 0.05·(blast−1)^1.5, 1)` — convex blast scaling
+    over the reverse-link/source reach of the touched paths; per-action `i_base`
+    starting table (create 0.1 … merge 0.6). All constants provisional and
+    exported — they are the thing being calibrated.
+  - **Budget** `B₀ = min(0.5 + 0.25·pendingStagedActions, max(1, ln(N)))` — a
+    vault-state function, proportional to ratification-queue depth with a log(N)
+    ceiling. A per-process session spend accumulates and `would_gate` marks every
+    action past the would-be checkpoint.
+  - **`vault_ratify`** detects a shadowed dispatch and leaves the action pending
+    (`applied: false, shadow: true`) instead of recording a false `ratified`.
+  - **`vault_lint`** gains a `shadowActions` section: totals plus the most recent
+    would-have-gated actions.
+
 ## [1.20.0] - 2026-06-11
 
 ### Added
