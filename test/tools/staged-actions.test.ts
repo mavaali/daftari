@@ -25,11 +25,15 @@ function draftFrontmatter(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function seedDraft(vault: string, path: string): Promise<void> {
+async function seedDraft(
+  vault: string,
+  path: string,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
   const written = await vaultWrite(vault, {
     path,
     body: "# Federation Spec\n\nBody.\n",
-    frontmatter: draftFrontmatter(),
+    frontmatter: draftFrontmatter(overrides),
     agent: "agent:seed",
   });
   if (!written.ok) throw written.error;
@@ -156,7 +160,9 @@ describe("vault_ratify", () => {
     expect(action.ok && action.value?.status).toBe("rejected");
   });
 
-  it("approving a supersede is a graceful punt deferred to §11.4", async () => {
+  it("approves a supersede: dispatches vault_supersede, marks ratified (§11.4)", async () => {
+    await seedDraft(vault, "pricing/old.md");
+    await seedDraft(vault, "pricing/new.md");
     const staged = await stageAction(vault, {
       actionType: "supersede",
       targetPath: "pricing/old.md",
@@ -173,12 +179,142 @@ describe("vault_ratify", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.applied).toBe(false);
-    expect(result.value.deferred_to).toBe("§11.4");
+    expect(result.value.applied).toBe(true);
+    expect(result.value.commit).toMatch(/^[0-9a-f]+$/);
+
+    const read = await vaultRead(vault, "pricing/old.md");
+    expect(read.ok && read.value.frontmatter.status).toBe("superseded");
+    expect(read.ok && read.value.frontmatter.superseded_by).toBe("pricing/new.md");
 
     const action = await getStagedActionById(vault, staged.value.id);
-    expect(action.ok && action.value?.status).toBe("ratified-pending-tool");
-  });
+    expect(action.ok && action.value?.status).toBe("ratified");
+  }, 60_000);
+
+  it("approves a confidence-up: dispatches vault_set_confidence (§11.4)", async () => {
+    await seedDraft(vault, "pricing/conf.md", { confidence: "low" });
+    const staged = await stageAction(vault, {
+      actionType: "confidence-up",
+      targetPath: "pricing/conf.md",
+      proposedBy: AGENT,
+      rationale: "Survived three independent re-derivations.",
+      proposedDiff: { confidence: "high" },
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/conf.md");
+    expect(read.ok && read.value.frontmatter.confidence).toBe("high");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("ratified");
+  }, 60_000);
+
+  it("approves a merge: dispatches vault_merge, supersedes both sources (§11.4)", async () => {
+    await seedDraft(vault, "pricing/a.md");
+    await seedDraft(vault, "pricing/b.md");
+    const staged = await stageAction(vault, {
+      actionType: "merge",
+      targetPath: "pricing/merged.md",
+      proposedBy: AGENT,
+      rationale: "Two overlapping specs converged.",
+      proposedDiff: {
+        merge_from: ["pricing/a.md", "pricing/b.md"],
+        body: "# Merged\n\nCombined.\n",
+      },
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.applied).toBe(true);
+
+    const target = await vaultRead(vault, "pricing/merged.md");
+    expect(target.ok && target.value.content).toContain("Combined.");
+    const a = await vaultRead(vault, "pricing/a.md");
+    expect(a.ok && a.value.frontmatter.status).toBe("superseded");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("ratified");
+  }, 60_000);
+
+  it("leaves a malformed supersede pending (no superseded_by in diff)", async () => {
+    await seedDraft(vault, "pricing/old.md");
+    const staged = await stageAction(vault, {
+      actionType: "supersede",
+      targetPath: "pricing/old.md",
+      proposedBy: AGENT,
+      rationale: "Missing successor.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("leaves a malformed merge pending (merge_from not two paths)", async () => {
+    await seedDraft(vault, "pricing/a.md");
+    const staged = await stageAction(vault, {
+      actionType: "merge",
+      targetPath: "pricing/merged.md",
+      proposedBy: AGENT,
+      rationale: "Bad merge diff.",
+      proposedDiff: { merge_from: ["pricing/a.md"], body: "x" },
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("leaves a malformed confidence-up pending (no confidence in diff)", async () => {
+    await seedDraft(vault, "pricing/conf.md", { confidence: "low" });
+    const staged = await stageAction(vault, {
+      actionType: "confidence-up",
+      targetPath: "pricing/conf.md",
+      proposedBy: AGENT,
+      rationale: "Missing confidence value.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
 
   it("errors when ratifying an unknown id", async () => {
     const result = await vaultRatify(vault, {

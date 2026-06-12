@@ -430,11 +430,13 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   future callers) records a proposed `promote` / `deprecate` / `supersede` /
   `merge` / `confidence-up` with a rationale, a proposed diff, and a TTL (default
   14 days). `vault_ratify` (the consumer) lets a human `approve` or `reject` one
-  pending action; on approve it dispatches to the existing write path —
-  `promote` → `vault_promote`, `deprecate` → `vault_deprecate`, both
-  auto-committing. `supersede` / `merge` / `confidence-up` are staged only for
-  now (their write tools are deferred); approving one returns `applied: false`
-  with a `ratified-pending-tool` status rather than failing. Storage mirrors the
+  pending action; on approve it dispatches to the matching write tool, which
+  auto-commits — `promote` → `vault_promote`, `deprecate` → `vault_deprecate`,
+  `supersede` → `vault_supersede`, `confidence-up` → `vault_set_confidence`,
+  `merge` → `vault_merge` (the §11.4 write tools). A dispatch failure (including
+  a malformed proposed diff) leaves the action pending so it can be retried.
+  (`ratified-pending-tool` is a legacy status from before §11.4 wired up the last
+  three tools; it is no longer produced.) Storage mirrors the
   rest of Daftari: an append-only canonical log at
   `.daftari/staged-actions.jsonl` is the source of truth, with a derived
   `staged_actions` table in the ephemeral index rebuilt from it. `vault_lint`

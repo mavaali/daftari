@@ -7,15 +7,14 @@
 // would not normally call it directly.
 //
 // vault_ratify is the human's approve/reject gate. On approve it dispatches to
-// the existing write tool for the action type. The dispatch table is
-// hand-written for v1: promote and deprecate dispatch to real tools; supersede,
-// merge, and confidence-up are STAGED ONLY (their write tools are deferred to
-// §11.4) and approving one records a `ratified-pending-tool` status that
-// applies nothing.
+// the matching write tool for the action type. Every action type now applies on
+// ratify: promote → vault_promote, deprecate → vault_deprecate, supersede →
+// vault_supersede, confidence-up → vault_set_confidence, merge → vault_merge
+// (the §11.4 write tools). A dispatch failure (including a malformed
+// proposed_diff) leaves the action pending so it can be retried.
 
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
 import {
-  DEFERRED_ACTION_TYPES,
   getStagedActionById,
   nowISO,
   recordDecision,
@@ -26,7 +25,14 @@ import {
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
-import { vaultDeprecate, vaultPromote, type WriteResult } from "./write.js";
+import {
+  vaultDeprecate,
+  vaultMerge,
+  vaultPromote,
+  vaultSetConfidence,
+  vaultSupersede,
+  type WriteResult,
+} from "./write.js";
 
 function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
   if (access && !hasAnyRead(access.role)) {
@@ -121,7 +127,6 @@ export interface RatifyResult {
   decision: "approve" | "reject";
   applied: boolean;
   commit?: string;
-  deferred_to?: string;
 }
 
 export async function vaultRatify(
@@ -180,47 +185,111 @@ export async function vaultRatify(
     return ok({ action_id: id.value, decision, applied: false });
   }
 
-  // --- approve: dispatch by action type ---
-  // Deferred types (§11.4) have no write tool yet: record the approval as
-  // ratified-pending-tool and apply nothing.
-  if (DEFERRED_ACTION_TYPES.includes(action.actionType as StagedActionType)) {
-    const recorded = await recordDecision(vaultRoot, id.value, {
-      status: "ratified-pending-tool",
-      ratifiedAt: decidedAt,
-      ratifiedBy: principal.value,
-      ...(reason ? { reason } : {}),
-    });
-    if (!recorded.ok) return recorded;
-    return ok({ action_id: id.value, decision, applied: false, deferred_to: "§11.4" });
-  }
+  // --- approve: dispatch by action type to the matching write tool ---
+  // A dispatch failure — including a malformed proposed_diff — leaves the action
+  // pending so it can be retried; no decision record is written until a write
+  // lands. The proposed_diff carries the per-action payload set at stage time.
+  const diff =
+    action.proposedDiff && typeof action.proposedDiff === "object"
+      ? (action.proposedDiff as Record<string, unknown>)
+      : {};
 
-  // promote / deprecate dispatch to real write tools. A dispatch failure leaves
-  // the action pending so it can be retried — no decision record is written.
   let dispatched: Result<WriteResult, Error>;
-  if (action.actionType === "promote") {
-    dispatched = await vaultPromote(
-      vaultRoot,
-      { path: action.targetPath, agent: principal.value },
-      access,
-    );
-  } else if (action.actionType === "deprecate") {
-    const deprecateArgs: Record<string, unknown> = {
-      path: action.targetPath,
-      agent: principal.value,
-      reason: action.rationale,
-    };
-    // Carry through a superseded_by hint from the proposed diff if present.
-    const diff = action.proposedDiff;
-    if (
-      diff &&
-      typeof diff === "object" &&
-      typeof (diff as Record<string, unknown>).superseded_by === "string"
-    ) {
-      deprecateArgs.superseded_by = (diff as Record<string, unknown>).superseded_by;
+  switch (action.actionType as StagedActionType) {
+    case "promote":
+      dispatched = await vaultPromote(
+        vaultRoot,
+        { path: action.targetPath, agent: principal.value },
+        access,
+      );
+      break;
+    case "deprecate": {
+      const deprecateArgs: Record<string, unknown> = {
+        path: action.targetPath,
+        agent: principal.value,
+        reason: action.rationale,
+      };
+      // Carry through a superseded_by hint from the proposed diff if present.
+      if (typeof diff.superseded_by === "string") {
+        deprecateArgs.superseded_by = diff.superseded_by;
+      }
+      dispatched = await vaultDeprecate(vaultRoot, deprecateArgs, access);
+      break;
     }
-    dispatched = await vaultDeprecate(vaultRoot, deprecateArgs, access);
-  } else {
-    return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
+    case "supersede": {
+      // proposed_diff = { superseded_by: "<new_path>" }
+      if (typeof diff.superseded_by !== "string" || diff.superseded_by.trim().length === 0) {
+        return err(
+          new Error(`vault_ratify: supersede action ${id.value} needs proposed_diff.superseded_by`),
+        );
+      }
+      dispatched = await vaultSupersede(
+        vaultRoot,
+        {
+          old_path: action.targetPath,
+          new_path: diff.superseded_by,
+          reason: action.rationale,
+          agent: principal.value,
+        },
+        access,
+      );
+      break;
+    }
+    case "confidence-up": {
+      // proposed_diff = { confidence: "<low|medium|high>" }. The enum name is
+      // confidence-up; the tool that applies it is vault_set_confidence.
+      if (typeof diff.confidence !== "string") {
+        return err(
+          new Error(
+            `vault_ratify: confidence-up action ${id.value} needs proposed_diff.confidence`,
+          ),
+        );
+      }
+      dispatched = await vaultSetConfidence(
+        vaultRoot,
+        {
+          path: action.targetPath,
+          confidence: diff.confidence,
+          reason: action.rationale,
+          agent: principal.value,
+        },
+        access,
+      );
+      break;
+    }
+    case "merge": {
+      // proposed_diff = { merge_from: [path_a, path_b], body, frontmatter? };
+      // the staged target_path is the merge target.
+      const mergeFrom = Array.isArray(diff.merge_from) ? diff.merge_from : null;
+      if (
+        !mergeFrom ||
+        mergeFrom.length !== 2 ||
+        typeof mergeFrom[0] !== "string" ||
+        typeof mergeFrom[1] !== "string" ||
+        typeof diff.body !== "string"
+      ) {
+        return err(
+          new Error(
+            `vault_ratify: merge action ${id.value} needs proposed_diff.merge_from ` +
+              "(two paths) and proposed_diff.body",
+          ),
+        );
+      }
+      const mergeArgs: Record<string, unknown> = {
+        path_a: mergeFrom[0],
+        path_b: mergeFrom[1],
+        target_path: action.targetPath,
+        body: diff.body,
+        agent: principal.value,
+      };
+      if (diff.frontmatter && typeof diff.frontmatter === "object") {
+        mergeArgs.frontmatter = diff.frontmatter;
+      }
+      dispatched = await vaultMerge(vaultRoot, mergeArgs, access);
+      break;
+    }
+    default:
+      return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
   }
 
   if (!dispatched.ok) return dispatched;
@@ -255,9 +324,10 @@ export const stagedActionTools: ToolDefinition[] = [
       "vault_ratify. The action waits in a pending queue and auto-expires after " +
       "ttl_days (default 14). This is the producer side of the staged-action " +
       "queue — normally called by the curation loop, not by a human directly. " +
-      "Action types: promote, deprecate, supersede, merge, confidence-up " +
-      "(supersede/merge/confidence-up are staged only in v1; their apply step " +
-      "is deferred to §11.4).",
+      "Action types: promote, deprecate, supersede, merge, confidence-up. " +
+      "proposed_diff carries the per-action payload replayed on ratification: " +
+      "supersede → {superseded_by}, confidence-up → {confidence}, " +
+      "merge → {merge_from: [path_a, path_b], body, frontmatter?}.",
     inputSchema: {
       type: "object",
       properties: {
@@ -302,10 +372,10 @@ export const stagedActionTools: ToolDefinition[] = [
     description:
       "Approve or reject a single pending staged action. On approve, dispatches " +
       "to the matching write tool (promote → vault_promote, deprecate → " +
-      "vault_deprecate) and auto-commits; supersede/merge/confidence-up are " +
-      "staged only in v1 and approving one returns applied=false with " +
-      "deferred_to='§11.4'. On reject, records the rejection and applies " +
-      "nothing. Errors if the id is unknown or the action is not pending " +
+      "vault_deprecate, supersede → vault_supersede, confidence-up → " +
+      "vault_set_confidence, merge → vault_merge) and auto-commits. On reject, " +
+      "records the rejection and applies nothing. A dispatch failure leaves the " +
+      "action pending. Errors if the id is unknown or the action is not pending " +
       "(already decided or expired).",
     inputSchema: {
       type: "object",

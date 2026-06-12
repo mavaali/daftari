@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cortex §11.4: `vault_supersede`, `vault_merge`, `vault_set_confidence`
+  write tools, wired into `vault_ratify`.** Completes the staged-action queue's
+  apply path — every action type the queue accepts (`promote`, `deprecate`,
+  `supersede`, `merge`, `confidence-up`) now applies on ratification instead of
+  punting to a `ratified-pending-tool` status.
+  - **`vault_set_confidence`** — change only a document's `confidence` (a
+    reason is required and recorded); rejects a no-op change already at the
+    target.
+  - **`vault_supersede`** — mark a document `superseded` by a named successor
+    that must already exist. Distinct from `vault_deprecate` (which sets
+    `deprecated` with an optional successor).
+  - **`vault_merge`** — combine two source docs into a target and supersede
+    both sources to point at it, all in one git commit (modeled on the backfill
+    multi-file commit, not single-file `performWrite`). The merged body is
+    supplied by the caller; the tool never synthesizes prose. `target_path` may
+    equal `path_a` (fold B into A) or be a new path; the target's frontmatter
+    inherits `path_a`'s with `provenance: synthesized` unless overridden.
+  - **`vault_ratify` dispatch** now covers all five action types; a malformed
+    `proposed_diff` leaves the action pending rather than recording a decision.
+
 ## [1.19.0] - 2026-06-10
 
 ### Added
