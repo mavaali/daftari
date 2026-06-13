@@ -13,7 +13,7 @@
 // (the §11.4 write tools). A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
 
-import { type AccessContext, hasAnyRead } from "../access/rbac.js";
+import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
 import {
   getStagedActionById,
   nowISO,
@@ -137,8 +137,12 @@ export async function vaultRatify(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<RatifyResult, Error>> {
-  const allowed = requireReadAccess("vault_ratify", access);
-  if (!allowed.ok) return allowed;
+  // Ratifying is the curation-verdict tier (§11.6): it needs the explicit
+  // `ratify` grant, not merely any read grant. The inner write tools still
+  // re-check their own canWrite/canPromote on dispatch.
+  if (access && !canRatify(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot ratify staged actions`));
+  }
 
   const id = requireString(args, "id", "vault_ratify");
   if (!id.ok) return id;
@@ -387,10 +391,10 @@ export const stagedActionTools: ToolDefinition[] = [
       "vault_set_confidence, merge → vault_merge) and auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
       "action pending. Errors if the id is unknown or the action is not pending " +
-      "(already decided or expired). If the vault runs shadow_mode, an approved " +
-      "dispatch is computed and shadow-logged but NOT applied — the result " +
-      "carries shadow: true and the action stays pending for a live " +
-      "ratification later.",
+      "(already decided or expired). Requires the role's 'ratify' grant. If " +
+      "the vault runs shadow_mode, an approved dispatch is computed and " +
+      "shadow-logged but NOT applied — the result carries shadow: true and " +
+      "the action stays pending for a live ratification later.",
     inputSchema: {
       type: "object",
       properties: {

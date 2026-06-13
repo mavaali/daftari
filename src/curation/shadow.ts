@@ -76,6 +76,9 @@ export interface ShadowActionRecord {
   target_path: string;
   touched_paths?: string[];
   agent: string;
+  // Authenticated identity the server runs as, when an AccessContext is
+  // present (§11.6) — ground truth beside the caller-claimed `agent`.
+  principal?: string;
   i_base: number;
   blast: number;
   impact: number;
@@ -155,6 +158,7 @@ export interface ShadowWriteInput {
   // All paths the write would touch (merge passes three); blast seeds.
   touchedPaths?: string[];
   agent: string;
+  principal?: string;
   frontmatterDiff?: FrontmatterDiff;
   commitMessage: string;
 }
@@ -194,6 +198,7 @@ export async function recordShadowAction(
       ? { touched_paths: input.touchedPaths }
       : {}),
     agent: input.agent,
+    ...(input.principal ? { principal: input.principal } : {}),
     i_base: SHADOW_I_BASE[input.action] ?? 0.2,
     blast: blastValue,
     impact,

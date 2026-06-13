@@ -57,6 +57,14 @@ export function canPromote(role: RoleConfig | null): boolean {
   return role?.promote ?? false;
 }
 
+// True if the role may issue curation verdicts (§11.6): approve/reject staged
+// actions and contest derives_from edges. A distinct grant from `promote` —
+// ratifying decides someone ELSE's proposed change; the agent principal
+// typically proposes (write) but does not ratify.
+export function canRatify(role: RoleConfig | null): boolean {
+  return role?.ratify ?? false;
+}
+
 // True if the role has read access to at least one collection. Curation tools
 // (lint, tension log, provenance) are open to anyone with any read grant.
 export function hasAnyRead(role: RoleConfig | null): boolean {

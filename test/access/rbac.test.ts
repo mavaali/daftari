@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canPromote,
+  canRatify,
   canRead,
   canWrite,
   filterByReadPermission,
@@ -100,6 +101,13 @@ describe("rbac", () => {
       expect(canRead(admin.role, "anything")).toBe(true);
       expect(canWrite(admin.role, "anything")).toBe(true);
       expect(canPromote(admin.role)).toBe(true);
+    });
+
+    it("grants ratify only where the config declares it (§11.6)", () => {
+      expect(canRatify(admin.role)).toBe(true);
+      expect(canRatify(analyst.role)).toBe(false);
+      expect(canRatify(researcher.role)).toBe(false);
+      expect(canRatify(null)).toBe(false);
     });
 
     it("resolves an unknown role to a deny-all guest", () => {

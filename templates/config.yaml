@@ -7,6 +7,8 @@
 #   read    — collections whose documents the role may read/search
 #   write   — collections the role may create/append/deprecate documents in
 #   promote — whether the role may promote a draft to canonical (default false)
+#   ratify  — whether the role may issue curation verdicts: approve/reject
+#             staged actions and contest derives_from edges (default false)
 #
 # "*" in a read or write list is a wildcard matching every collection. A role
 # that is not started with --role, or a name not listed here, falls back to an
@@ -29,3 +31,4 @@ roles:
     read: ["*"]
     write: ["*"]
     promote: true
+    ratify: true

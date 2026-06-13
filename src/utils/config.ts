@@ -20,10 +20,15 @@ import type { HookConfig, HookDeclaration } from "../hooks/types.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
+// `ratify` (§11.6) gates the curation-verdict tier: approving/rejecting staged
+// actions (vault_ratify) and contesting derives_from edges (vault_edge_contest).
+// An agent principal is just a role — e.g. a `curation-loop` role the server is
+// started as via --user agent:curation-loop --role curation-loop.
 export interface RoleConfig {
   read: string[];
   write: string[];
   promote: boolean;
+  ratify: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -149,7 +154,15 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     promote = obj.promote;
   }
 
-  return ok({ read: read.value, write: write.value, promote });
+  let ratify = false;
+  if (obj.ratify !== undefined) {
+    if (typeof obj.ratify !== "boolean") {
+      return err(new Error(`role '${name}' ratify must be true or false`));
+    }
+    ratify = obj.ratify;
+  }
+
+  return ok({ read: read.value, write: write.value, promote, ratify });
 }
 
 // Checks a declared `default` value against its extension type. A default

@@ -278,10 +278,20 @@ too.
 ### Layer 2 — ACL (multi-tenant access control)
 
 RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
-per-collection `read` / `write` / `promote` permissions. The server is started
+per-collection `read` / `write` permissions plus two verdict grants: `promote`
+(draft → canonical) and `ratify` (§11.6 — approve/reject staged actions and
+contest derives_from edges; the curation-verdict tier). The server is started
 with `--user` and `--role`; that role governs every tool call for the life of
 the process. There is no user-management system and no login — identity is an
 operational decision made at startup.
+
+An **agent principal** is just a role (§11.6): the future consolidation loop
+runs as, e.g., `--user agent:curation-loop --role curation-loop` against a role
+that can read and write but deliberately not ratify — the loop proposes, humans
+ratify. When the server runs with an access context, every write's provenance
+entry (and shadow record) carries `principal: <user>` — the *authenticated*
+identity — alongside the caller-supplied `agent` claim, so loop actions are
+attributable as ground truth, not assertion.
 
 A missing or unmatched role resolves to a deny-all **guest**. A malformed
 config makes the server refuse to start: a permission layer that silently loads

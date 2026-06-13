@@ -219,6 +219,10 @@ async function performWrite(params: {
   autoCommit: boolean;
   baseVersion?: string;
   shadowMode?: boolean;
+  // The authenticated identity the server runs as (access.user), when an
+  // AccessContext is present (§11.6). Recorded on provenance and shadow
+  // entries as ground truth alongside the caller-claimed `agent`.
+  principal?: string;
 }): Promise<Result<WriteResult, Error>> {
   // Shadow mode (spec §11.5): everything up to here ran exactly as live —
   // validation, RBAC, frontmatter assembly, diff — so the logged do() is one
@@ -232,6 +236,7 @@ async function performWrite(params: {
       action: params.action,
       targetPath: params.relPath,
       agent: params.agent,
+      ...(params.principal ? { principal: params.principal } : {}),
       frontmatterDiff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
       commitMessage: params.commitMessage,
     });
@@ -268,6 +273,7 @@ async function performWrite(params: {
             tool: params.tool,
             file: params.relPath,
             agent: params.agent,
+            ...(params.principal ? { principal: params.principal } : {}),
             action: "rejected_stale",
             reason:
               `stale: base_version ${shortHash(params.baseVersion)} != ` +
@@ -306,6 +312,7 @@ async function performWrite(params: {
         tool: params.tool,
         file: params.relPath,
         agent: params.agent,
+        ...(params.principal ? { principal: params.principal } : {}),
         action: params.action,
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
       });
@@ -547,6 +554,7 @@ export async function vaultWrite(
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
+    principal: access?.user,
   });
 }
 
@@ -652,6 +660,7 @@ export async function vaultAppend(
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
+    principal: access?.user,
   });
 }
 
@@ -741,6 +750,7 @@ export async function vaultPromote(
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
+    principal: access?.user,
   });
 }
 
@@ -826,6 +836,7 @@ export async function vaultDeprecate(
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
+    principal: access?.user,
   });
 }
 
@@ -930,6 +941,7 @@ export async function vaultSetConfidence(
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
+    principal: access?.user,
   });
 }
 
@@ -1029,6 +1041,7 @@ export async function vaultSupersede(
     autoCommit: config.value.autoCommit,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
+    principal: access?.user,
   });
 }
 
@@ -1239,6 +1252,7 @@ export async function vaultMerge(
       targetPath: targetPath.value,
       touchedPaths: [...new Set(writes.map((w) => w.relPath))],
       agent: agent.value,
+      ...(access?.user ? { principal: access.user } : {}),
       frontmatterDiff: frontmatterDiff(targetOldFrontmatter, stampedTarget),
       commitMessage: `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}`,
     });
@@ -1311,6 +1325,7 @@ export async function vaultMerge(
         tool: "vault_merge",
         file: w.relPath,
         agent: agent.value,
+        ...(access?.user ? { principal: access.user } : {}),
         action: w.action,
         frontmatter_diff: frontmatterDiff(w.oldFrontmatter, w.newFrontmatter),
       });
