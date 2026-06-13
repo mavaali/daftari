@@ -13,14 +13,13 @@
 // written first: a tension pointing at a still-live edge is harmless advisory
 // noise, but a silent revoke is the exact failure mode the design forbids.
 //
-// RBAC: all three tools gate on hasAnyRead, the curation-surface posture
-// (matching vault_tension_log / vault_stage_action). Note for §11.6: contest
-// is destructive to the future loop's trigger graph and has no second gate
-// the way ratify's inner write tools re-check canWrite — when the agent
-// principal lands, contest belongs on its grant list.
+// RBAC: observe and the read tool gate on hasAnyRead, the curation-surface
+// posture (matching vault_tension_log / vault_stage_action). Contest gates on
+// the `ratify` grant (§11.6) — it revokes trigger-bearing edges, the same
+// curation-verdict tier as vault_ratify.
 
 import { relative, resolve } from "node:path";
-import { type AccessContext, hasAnyRead } from "../access/rbac.js";
+import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
 import {
   contestEdge,
   type DerivesFromEdge,
@@ -168,8 +167,13 @@ export async function vaultEdgeContest(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<ContestResult, Error>> {
-  const allowed = requireReadAccess("vault_edge_contest", access);
-  if (!allowed.ok) return allowed;
+  // Contest is the curation-verdict tier (§11.6): it revokes a trigger-bearing
+  // edge — destructive to the future loop's trigger graph — so it needs the
+  // explicit `ratify` grant, the same tier as approving/rejecting staged
+  // actions (this closes the gap flagged in the §11.3 review).
+  if (access && !canRatify(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot contest edges`));
+  }
 
   const fromPath = requireString(args, "from_path", "vault_edge_contest");
   if (!fromPath.ok) return fromPath;
@@ -352,7 +356,8 @@ export const edgeTools: ToolDefinition[] = [
       "Record a case-2 contradiction: a re-derivation failed with no upstream " +
       "change. The edge is revoked (drops below trigger-bearing) and a tension " +
       "is logged — contests surface loudly, never as silent decrements. A " +
-      "revoked edge can only be re-earned through fresh observations.",
+      "revoked edge can only be re-earned through fresh observations. " +
+      "Requires the role's 'ratify' grant (the curation-verdict tier).",
     inputSchema: {
       type: "object",
       properties: {

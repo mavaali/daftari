@@ -22,6 +22,11 @@ export interface ProvenanceEntry {
   // "create" | "update" | "append" | "promote" | "deprecate" for a write that
   // landed; "rejected_stale" for a write refused by the base_version check.
   action: string;
+  // The AUTHENTICATED identity the server runs as (--user), recorded when an
+  // AccessContext is present (§11.6). Distinct from `agent`, which is the
+  // caller's free-text claim: `principal` is ground truth for attributing
+  // loop actions to the agent principal. Absent on servers run without --role.
+  principal?: string;
   frontmatter_diff?: FrontmatterDiff;
   // Free-text explanation, set on rejected writes (e.g. the stale-version
   // mismatch). Absent on writes that landed.
@@ -60,6 +65,7 @@ export async function recordProvenance(
     file: entry.file,
     agent: entry.agent,
     action: entry.action,
+    ...(entry.principal ? { principal: entry.principal } : {}),
     ...(entry.frontmatter_diff && Object.keys(entry.frontmatter_diff).length > 0
       ? { frontmatter_diff: entry.frontmatter_diff }
       : {}),

@@ -110,9 +110,12 @@ roles:
     read: ["*"]
     write: ["*"]
     promote: true
+    ratify: true   # may approve/reject staged actions and contest edges
 ```
 
-No `--role` or an unknown name falls back to deny-all.
+No `--role` or an unknown name falls back to deny-all. An agent identity is
+just a role too — e.g. a `curation-loop` role that reads and writes but leaves
+`ratify` off: the agent proposes, humans ratify.
 
 ## File format
 

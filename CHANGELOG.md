@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cortex §11.6: agent principal in RBAC.** The last substrate item before the
+  consolidation-loop spec. An agent principal is just a role — e.g. start the
+  server as `--user agent:curation-loop --role curation-loop` against a role
+  that writes but does not ratify.
+  - **`ratify` role grant** — gates the curation-verdict tier: `vault_ratify`
+    (approve/reject staged actions) and `vault_edge_contest` (revoke a
+    derives_from edge, closing the gap flagged in the §11.3 review). Declared
+    per role in `.daftari/config.yaml`, default false.
+  - **Authenticated principal attribution** — when the server runs with an
+    access context, every write's provenance entry and shadow record carries
+    `principal: <user>` (the identity the server was started as) alongside the
+    caller-supplied free-text `agent` claim.
+
 - **Cortex §11.5: shadow-mode execution path.** `shadow_mode: true` in
   `.daftari/config.yaml` turns every doc-write tool into compute-but-don't-write:
   validation, RBAC, and the proposed diff run exactly as live, then the would-be
@@ -28,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`applied: false, shadow: true`) instead of recording a false `ratified`.
   - **`vault_lint`** gains a `shadowActions` section: totals plus the most recent
     would-have-gated actions.
+
+### Changed
+
+- **`vault_ratify` and `vault_edge_contest` now require the `ratify` grant** on
+  vaults with RBAC roles configured (both previously allowed any role with a
+  read grant). Roles that issue curation verdicts must declare `ratify: true`.
+  Servers run without `--role` are unaffected.
 
 ## [1.20.0] - 2026-06-11
 
