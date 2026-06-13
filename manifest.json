@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "daftari",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "display_name": "Daftari",
   "description": "A persistent cortex Claude reads, writes, and curates over time.",
   "long_description": "An external cortex for AI agents: a persistent markdown vault that agents read, write, and curate over time. Plain text on disk, git-versioned, indexed for BM25 + vector search. Agents promote drafts to canonical knowledge, surface contradictions as tensions, and lint for staleness. Runs offline by default.",
