@@ -33,7 +33,7 @@ not new storage.
 | §11.5 shadow mode | `shadow_mode` config + `.daftari/shadow-actions.jsonl` | 1.21.0 | Calibration substrate (I, B₀) |
 | §11.6 agent principal | `ratify` grant + `principal` attribution | 1.21.0 | A's RBAC identity |
 | Component B | `daftari eval` | 1.16.0 | The exam — **monitor, never target** |
-| Trigger engine | `vault_tension_blast` / `_clusters` / `_resolve` | ≤1.16 | C's forward blast (no scheduler consumes it yet) |
+| Trigger engine | `vault_tension_blast` / `_clusters` / `_resolve` | ≤1.16 | tension blast-radius surface — **NOT** C's event clock (it walks sources/wikilinks, not `derives_from`; see §3.1 correction). C's event clock walks the edge graph from `vault_edges` directly. |
 
 **Verified shipped constants** (`src/curation/edges.ts`, `src/curation/shadow.ts`,
 2026-06-13) — all **provisional**, single-sourced, exported, and the calibration
@@ -121,7 +121,13 @@ write gate, but costs LLM calls). All three clocks are computed **at session sta
   **forward** from each changed doc, marking dependents due. Propagation
   **attenuates by ∏(path strength)** and **stops** where the compounded product
   drops below a per-class floor (C-Q2; the ATP path-irreversibility insight on the
-  trigger side). Implemented over `vault_tension_blast` + a path-strength stop.
+  trigger side). **Correction (Stage-1 grounding, 2026-06-13):** implemented over the
+  `derives_from` edge graph from `vault_edges`/`listEdges` directly, plus a new
+  `git diff --name-only` helper (`changedSince` in `src/utils/git.ts`). It is **NOT**
+  implemented over `vault_tension_blast` — that surface walks the frontmatter-`sources`
+  + wikilink graph (no `derives_from` edges, no strength, no attenuation; verified in
+  `src/curation/tension-blast.ts`). The forward strength-attenuated walk is net-new in
+  `src/consolidate/clocks.ts`.
 - **Decay clock.** Each edge's aged strength (`vault_edges` returns it live) shrinks
   per the 90-day half-life; the review interval `f(aged strength)` shortens
   accordingly, surfacing edges as due. TTL on docs (`ttl_days` frontmatter) feeds

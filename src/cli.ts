@@ -33,6 +33,7 @@ Usage:
   daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
+  daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
@@ -63,6 +64,7 @@ const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files — ne
 .daftari/staged-actions.jsonl
 .daftari/edges.jsonl
 .daftari/shadow-actions.jsonl
+.daftari/consolidate-state.json
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl
@@ -259,6 +261,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "backfill") {
     const { runBackfill } = await import("./backfill/index.js");
     process.exitCode = await runBackfill(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "consolidate") {
+    const { runConsolidate } = await import("./consolidate/index.js");
+    process.exitCode = await runConsolidate(argv.slice(1));
     return;
   }
 
