@@ -195,3 +195,24 @@ export async function log(
   }
   return ok(commits);
 }
+
+// Vault-relative .md paths changed between `sinceCommit` and HEAD. Used by the
+// consolidate event clock (spec §3.1). A bad/unknown commit is an error, not [] —
+// the caller treats that as the nil baseline path (skip the event clock), so the
+// distinction must not be swallowed.
+export async function changedSince(
+  vaultRoot: string,
+  sinceCommit: string,
+): Promise<Result<string[], Error>> {
+  if (!(await isGitRepo(vaultRoot))) return err(new Error("not a git repository"));
+  if (typeof sinceCommit !== "string" || sinceCommit.trim().length === 0) {
+    return err(new Error("changedSince requires a non-empty commit ref"));
+  }
+  const result = await git(vaultRoot, ["diff", "--name-only", `${sinceCommit}..HEAD`]);
+  if (!result.ok) return result;
+  const paths = result.value
+    .split("\n")
+    .map((p) => p.trim())
+    .filter((p) => p.endsWith(".md"));
+  return ok(paths);
+}

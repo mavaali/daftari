@@ -27,3 +27,18 @@ test/fixtures/sample-vault/.daftari/index.db
 # tracked. Database files, the process lock, and the curation log stay ignored.
 !templates/reviewer-vault/.daftari/config.yaml
 !templates/reviewer-vault/.daftari/tensions.md
+
+# Exp1 secrets + ephemeral run artifacts
+experiments/exp1-info-vs-priors/.env
+experiments/exp1-info-vs-priors/raw/
+experiments/exp1-info-vs-priors/.venv/
+__pycache__/
+
+# Cortex consolidate loop ephemeral state (rebuildable from edges + git).
+**/.daftari/consolidate-state.json
+
+# Exp1 intermediate drafts containing DROPPED private content (inverse-problem research + career) — never commit to the public repo.
+experiments/exp1-info-vs-priors/claimset_dropped_private.json
+experiments/exp1-info-vs-priors/draft_novel.json
+experiments/exp1-info-vs-priors/draft_novel_pd_expansion.json
+experiments/exp1-info-vs-priors/claimset.bak.json
