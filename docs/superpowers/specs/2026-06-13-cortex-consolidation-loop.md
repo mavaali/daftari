@@ -272,6 +272,17 @@ votes** on it within the session:
 Two non-substitutable gates (design §5.2). An action auto-writes **iff both pass**;
 otherwise it stages and surfaces.
 
+**Gate locus.** The envelope's two gates are **write-side**: they govern whether an
+action lands, not who may read what. But they are *fed* by **read-side
+measurement** — the §5.1 invariants check provenance, decay/validation, and tension
+state at read time; §5.2's trust budget reads pending-staged-actions and
+impact-blast. **Read-side measurement flows into write-side governance**, the
+inverse of read-permission-as-write-license. This is the structural difference
+from ranked-retrieval systems that govern access but not authorship: there, the
+read surface enforces ACLs and the write surface inherits whatever the agent
+chose; here, the read surface *measures*, and the write surface *gates on that
+measurement*.
+
 ### 5.1 Invariants (the "small opinionated set")
 
 - **Never-delete.** Deprecate/supersede/annotate only.
@@ -463,11 +474,13 @@ One spec, staged build (design §0 permits internal staging). Each stage is ship
 and shadow-safe.
 
 1. **Stage 1 — C scheduler skeleton + `daftari consolidate`.** Session-start clock
-   computation over the shipped `vault_edges` + `vault_tension_blast`; the four-slice
-   priority (backstop : main : periphery : birth); drain-under-ceiling;
-   `consolidate-state.json` (last-commit + birth-processed-docs). No A yet — emits both
-   queues (edge due-queue + unprocessed-doc birth queue) to stdout/lint. Verifiable:
-   the queues match hand-computed due/unprocessed sets on a fixture vault.
+   computation over the shipped `vault_edges` / `listEdges` + a new `changedSince` git
+   helper (event clock walks `derives_from` forward; **NOT** `vault_tension_blast` —
+   see §3.1 correction); the four-slice priority (backstop : main : periphery : birth);
+   drain-under-ceiling; `consolidate-state.json` (last-commit + birth-processed-docs).
+   No A yet — emits both queues (edge due-queue + unprocessed-doc birth queue) to
+   stdout/lint. Verifiable: the queues match hand-computed due/unprocessed sets on a
+   fixture vault. **Shipped** (PR #135).
 2. **Stage 2 — A's two modes, shadow-only.** Birth mode (§4.0: `vault_search_related`
    neighbors → re-derive direction → seed `k=0` candidates) AND the panel-per-session
    revision pass emitting `edge_observe`/`edge_contest`/`stage_action`, all under
