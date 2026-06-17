@@ -30,3 +30,38 @@ export const CONSOLIDATE_SLICE_FRACTIONS = {
 // Stage 1 has no LLM calls, so "budget" = max queue items emitted per session.
 // With Component A (Stage 2) this becomes the re-derivation-call cap.
 export const CONSOLIDATE_DEFAULT_BUDGET = 50;
+
+// --- Stage 2 (Component A) ----------------------------------------------------
+
+// Panel size M: votes cast per due edge per session (spec §4.1, brief item 2).
+// Starting M=2 — provisional, TBD — calibrate from shadow data.
+export const CONSOLIDATE_PANEL_SIZE = 2;
+
+// Birth-mode neighbor retrieval: top-K embedding neighbors per unprocessed doc
+// (spec §4.0). 20 = the K in the §10.2 recall@20 kill condition.
+export const CONSOLIDATE_BIRTH_TOP_K = 20;
+
+// Default LLM model for re-derivation. Haiku 4.5 — cheapest tier where the
+// task is "detect derivation," not "subtle reasoning." Override via the
+// DAFTARI_CONSOLIDATE_MODEL env var when calibrating against bigger models.
+export const CONSOLIDATE_DEFAULT_MODEL = "claude-haiku-4-5-20251001";
+
+// The agent principal Stage 2 attributes its writes to (spec §8). The server
+// is started as `--user agent:curation-loop --role curation-loop`; this string
+// is the free-text `agent` claim on edge_observe/contest (the authenticated
+// principal is recorded separately by the shadow path).
+export const CONSOLIDATE_AGENT = "agent:curation-loop";
+
+// Prompt-framing axis (v1 = the only varied axis, see brief item 3). Three
+// deterministic templates that re-derive the same edge claim from different
+// directions. Each template is independent of the others by *framing*, not
+// by model or input — whether that is enough to decorrelate votes is the
+// load-bearing question the decorrelation report (brief item 8) decides.
+export const CONSOLIDATE_PROMPT_TEMPLATES = ["forward", "reverse", "contrast"] as const;
+export type ConsolidatePromptTemplate = (typeof CONSOLIDATE_PROMPT_TEMPLATES)[number];
+
+// Decorrelation kill condition (brief item 8 / spec §10.2). If on the fixture
+// `majority_accuracy − max(single_vote_accuracy) < this`, the prompt-framing
+// axes are decorative (the panel doesn't beat its best single axis) and
+// multi-model becomes a Stage 2 add-on, NOT a Stage 5 prereq.
+export const CONSOLIDATE_DECORRELATION_MIN_LIFT = 0.05;
