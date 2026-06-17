@@ -1,0 +1,134 @@
+[
+  {
+    "edge_id": "pub-pf-001",
+    "to_premise_weak_quant": "Steel changes in length as its temperature rises.",
+    "to_premise_weak_hedge": "Temperature is among the factors that can influence the dimensions of steel rails over time.",
+    "notes": "W1 drops the direction 'expands' and the positive-coefficient quantifier, leaving an unspecified length change; X (gaps to prevent buckling) no longer follows but isn't contradicted. W2 hedges to 'among the factors that can influence'. Neither asserts contraction, so neither is a flip."
+  },
+  {
+    "edge_id": "pub-pf-002",
+    "to_premise_weak_quant": "A floating object interacts with the fluid it displaces, and a hull's shape affects how it sits in the water.",
+    "to_premise_weak_hedge": "The amount of water a hull displaces is among the considerations relevant to how a steel ship behaves in water.",
+    "notes": "W1 removes Archimedes' quantitative law (buoyant force equals weight of displaced fluid) and the displace-more-than-ship-weight condition, leaving only a vague interaction; X (steel ships float) no longer clearly follows. W2 hedges. Neither reverses the force direction, so neither is a flip."
+  },
+  {
+    "edge_id": "pub-pf-003",
+    "to_premise_weak_quant": "Plants carry out internal processes related to light and to producing the energy they need.",
+    "to_premise_weak_hedge": "Light is among the factors that can play a role in how plants obtain energy.",
+    "notes": "W1 removes the load-bearing mechanism that energy production REQUIRES light (photosynthesis converting CO2+water with light); leaves a vague light-relatedness so darkness need not be fatal. W2 hedges to 'among the factors'. Neither claims plants make energy without light, so neither contradicts Y or X."
+  },
+  {
+    "edge_id": "pub-pf-004",
+    "to_premise_weak_quant": "An orbiting spacecraft and its occupants are in a particular state of motion relative to Earth while in orbit.",
+    "to_premise_weak_hedge": "The motion of an orbiting spacecraft is among the things relevant to what its occupants experience inside.",
+    "notes": "W1 removes the free-fall + sideways-velocity mechanism and the 'no support force' consequence, leaving an unspecified motion state; weightlessness no longer follows. W2 hedges. Crucially neither asserts 'no gravity in space' (that would be the flip), so neither is a contradiction."
+  },
+  {
+    "edge_id": "pub-pf-005",
+    "to_premise_weak_quant": "A liquid boils when its vapor pressure equals the surrounding air pressure, and air pressure varies with altitude.",
+    "to_premise_weak_hedge": "Altitude is among the factors that can be relevant to the air pressure around a boiling liquid.",
+    "notes": "W1 keeps the boiling-condition rule but replaces 'decreases with altitude' with neutral 'varies', so the DIRECTION (lower boiling point at altitude) no longer follows. W2 hedges. Neither says pressure increases with altitude (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-006",
+    "to_premise_weak_quant": "The common cold has a particular cause, and antibiotics act selectively depending on what is causing an illness.",
+    "to_premise_weak_hedge": "What causes the common cold is among the considerations relevant to whether antibiotics would help.",
+    "notes": "W1 removes both load-bearing facts (cold is viral; antibiotics act only on bacteria), leaving vague 'particular cause' + 'act selectively'; ineffectiveness no longer follows. W2 hedges. Neither states the cold is bacterial or that antibiotics work on it (the flip), so neither is a contradiction."
+  },
+  {
+    "edge_id": "pub-pf-007",
+    "to_premise_weak_quant": "The Moon's rotation about its own axis and its orbital period around Earth are related to each other.",
+    "to_premise_weak_hedge": "The Moon's rotation is among the factors that can be relevant to which of its faces is visible from Earth.",
+    "notes": "W1 removes the specific equality (rotation period = orbital period = tidal locking) and replaces with vague 'related', so the same-face result no longer follows. W2 hedges. Neither asserts the Moon does not rotate (the flip), so neither contradicts Y."
+  },
+  {
+    "edge_id": "pub-pf-008",
+    "to_premise_weak_quant": "Underwater pressure affects how nitrogen behaves in a diver's blood and tissues, and that behavior changes as the diver ascends.",
+    "to_premise_weak_hedge": "Nitrogen in the body is among the factors that can be relevant to the risks a diver faces on ascent.",
+    "notes": "W1 removes the specific mechanism (extra nitrogen DISSOLVES under pressure and comes OUT OF SOLUTION as bubbles on rapid ascent), leaving vague 'affects behavior'; the bends no longer follows. W2 hedges. Neither reverses the solubility direction (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-009",
+    "to_premise_weak_quant": "When water freezes, its molecules arrange into a crystal lattice, and the resulting solid has a particular density relative to the liquid.",
+    "to_premise_weak_hedge": "How water's molecules arrange on freezing is among the factors relevant to how ice behaves in liquid water.",
+    "notes": "W1 removes the load-bearing 'occupies more volume / less dense than liquid' and replaces with neutral 'a particular density', so floating no longer follows. W2 hedges. Neither says ice is denser than water (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-010",
+    "to_premise_weak_quant": "Light and sound travel through air at different speeds, so light and sound from a distant event reach an observer at different times.",
+    "to_premise_weak_hedge": "The differing speeds of light and sound are among the factors relevant to the order in which a distant event is seen and heard.",
+    "notes": "W1 keeps that the speeds differ and arrivals differ but drops WHICH is faster ('light far faster than sound'), so seeing-before-hearing no longer follows. W2 hedges. Neither claims sound is faster (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-011",
+    "to_premise_weak_quant": "The Dead Sea's dissolved salt content affects its water density, which in turn relates to the buoyant force on a submerged body.",
+    "to_premise_weak_hedge": "The Dead Sea's salt content is among the factors that can be relevant to how easily a swimmer floats in it.",
+    "notes": "W1 removes the quantifiers 'extremely high salinity / much denser / increases buoyancy' and leaves neutral 'affects density... relates to buoyancy', so easier floating no longer follows. W2 hedges. Neither says salinity is low / density lower (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-012",
+    "to_premise_weak_quant": "A vaccine exposes the immune system to something related to a pathogen, which influences how the body later responds to that pathogen.",
+    "to_premise_weak_hedge": "Vaccination is among the factors that can play a role in how a person's immune system later responds to a pathogen.",
+    "notes": "W1 removes the load-bearing mechanism (harmless form/fragment prompts memory cells that recognize the real pathogen WITHOUT infection); leaves vague 'influences how the body responds', so protection-without-prior-disease no longer clearly follows. W2 hedges. Neither says protection requires getting the disease (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-013",
+    "to_premise_weak_quant": "Earth has a magnetic field, and a freely pivoting magnetized needle responds to magnetic fields around it.",
+    "to_premise_weak_hedge": "Earth's magnetic field is among the factors that can be relevant to the direction a compass needle settles in.",
+    "notes": "W1 keeps that Earth has a field and a needle responds, but removes the placement of poles near the geographic poles AND that the needle ALIGNS with the field; pointing roughly north no longer follows. W2 hedges. Neither says Earth has no field (the flip), so neither contradicts Y. (Mild risk noted below.)"
+  },
+  {
+    "edge_id": "pub-pf-014",
+    "to_premise_weak_quant": "Cut apple flesh undergoes changes when its cells are exposed to air.",
+    "to_premise_weak_hedge": "Exposure to air is among the factors that can be relevant to how cut apple flesh changes over time.",
+    "notes": "W1 removes the specific enzyme-plus-oxygen reaction producing brown pigments, leaving unspecified 'changes', so browning no longer specifically follows. W2 hedges. Neither says enzymes are destroyed / no reaction occurs (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-015",
+    "to_premise_weak_quant": "Earth's rotation axis has some orientation relative to its orbit, which relates to how sunlight reaches the two hemispheres.",
+    "to_premise_weak_hedge": "The orientation of Earth's axis is among the factors relevant to how the seasons differ between the hemispheres.",
+    "notes": "W1 removes the load-bearing 'tilted' plus the consequence that one hemisphere is angled toward the Sun while the other is away; leaves neutral 'some orientation... relates to sunlight', so opposite seasons no longer follow. W2 hedges. Neither says the axis is perpendicular / hemispheres identical (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-016",
+    "to_premise_weak_quant": "Heating the air inside a balloon changes its density relative to the surrounding cooler air, affecting the net force on the balloon.",
+    "to_premise_weak_hedge": "Heating the air inside a balloon is among the factors that can be relevant to whether the balloon rises.",
+    "notes": "W1 removes the direction (heated air EXPANDS / becomes LESS dense / net UPWARD force) and leaves neutral 'changes density... affects net force', so rising no longer follows. W2 hedges. Neither says heated air contracts / becomes denser / net downward (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-017",
+    "to_premise_weak_quant": "Air pressure changes with altitude, so the number of oxygen molecules in each breath at Everest's summit differs from that at sea level.",
+    "to_premise_weak_hedge": "Altitude is among the factors that can be relevant to how much oxygen is available in each breath on Everest.",
+    "notes": "W1 removes the direction+magnitude ('falls sharply', 'roughly a third'), leaving neutral 'changes / differs', so the can't-breathe-unaided conclusion no longer follows. W2 hedges. Neither says pressure rises with altitude / more oxygen up high (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-018",
+    "to_premise_weak_quant": "Dissolving salt in water changes its freezing point, so a salt-water mixture's freezing behavior differs from that of pure water.",
+    "to_premise_weak_hedge": "Salt is among the factors that can be relevant to how ice on a road behaves in winter.",
+    "notes": "W1 removes the direction (salt LOWERS the freezing point so the mixture stays liquid below 0C) and leaves neutral 'changes... differs', so melting-the-ice no longer follows. W2 hedges. Neither says salt raises the freezing point / promotes freezing (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-019",
+    "to_premise_weak_quant": "Identical twins arise through a developmental process early in pregnancy that relates to how their genetic material is established.",
+    "to_premise_weak_hedge": "How identical twins originate is among the factors relevant to how similar their DNA is.",
+    "notes": "W1 removes the load-bearing fact (single fertilized egg SPLITS into two, both from the SAME genetic material); leaves vague 'a process... relates to genetic material', so same-DNA no longer follows. W2 hedges. Neither describes two separate eggs / distinct genomes (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-020",
+    "to_premise_weak_quant": "A solar eclipse happens when the Moon, Sun, and Earth come into a particular alignment, and the Moon's position in its phase cycle is related to that alignment.",
+    "to_premise_weak_hedge": "The Moon's phase is among the factors that can be relevant to when a solar eclipse can occur.",
+    "notes": "W1 removes the specific geometry (Moon directly between Sun and Earth) and the pin to the new-moon phase, leaving vague 'particular alignment... related to phase', so new-moon-only no longer follows. W2 hedges. Neither swaps in the full-moon / lunar-eclipse geometry (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-021",
+    "to_premise_weak_quant": "White light interacts with a glass prism, and the light emerging from the prism is affected by passing through it.",
+    "to_premise_weak_hedge": "The properties of white light are among the factors relevant to what is seen when it passes through a prism.",
+    "notes": "W1 removes the load-bearing facts (white light is a MIXTURE of many wavelengths; the prism bends EACH wavelength by a DIFFERENT angle, spreading them); leaves vague 'interacts... is affected', so splitting-into-colors no longer follows. W2 hedges. Neither claims white light is a single wavelength (the flip), so neither contradicts X."
+  },
+  {
+    "edge_id": "pub-pf-022",
+    "to_premise_weak_quant": "The amount of carbon-14 in living organisms changes after death in a way that is related to how much time has passed.",
+    "to_premise_weak_hedge": "The carbon-14 content of organic remains is among the factors that can be relevant to estimating their age.",
+    "notes": "W1 removes the load-bearing mechanism (C-14 stops being replenished at death and DECAYS at a KNOWN, CONSTANT half-life); leaves vague 'changes... related to time passed', so reliable age-estimation no longer follows. W2 hedges. Neither says C-14 accumulates unpredictably / does not decay (the flip), so neither contradicts X."
+  }
+]

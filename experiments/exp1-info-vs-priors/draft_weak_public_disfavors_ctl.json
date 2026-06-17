@@ -1,0 +1,194 @@
+[
+  {
+    "edge_id": "ctl-pos-001",
+    "to_premise_weak_quant": "Socrates is a human being.",
+    "to_premise_weak_hedge": "Socrates has various attributes typical of people.",
+    "notes": "Removed the major premise (all humans are mortal); mortality no longer entailed, but nothing asserts Socrates is immortal, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-002",
+    "to_premise_weak_quant": "The number 14 results from doubling 7, and questions of parity concern divisibility by 2.",
+    "to_premise_weak_hedge": "The number 14 has properties that are relevant to whether a number counts as even.",
+    "notes": "Removed the explicit rule that divisible-by-2 means even plus the no-remainder check; evenness no longer follows. Does not claim 14 is odd, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-003",
+    "to_premise_weak_quant": "Rex is a dog.",
+    "to_premise_weak_hedge": "Rex is a dog, and dogs have anatomical features typical of their kind.",
+    "notes": "Removed the major premise (every dog has four legs); the leg count no longer follows. Does not deny four legs, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-004",
+    "to_premise_weak_quant": "Right now the sky is producing falling water droplets outdoors.",
+    "to_premise_weak_hedge": "There are signs outdoors that can be associated with wet weather right now.",
+    "notes": "Removed the definitional rule linking falling droplets to 'raining'; without the rule the conclusion is not entailed (could be sprinklers/spray). Does not assert it is dry, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-005",
+    "to_premise_weak_quant": "Maria is a 25-year-old citizen.",
+    "to_premise_weak_hedge": "Maria is a citizen whose age and status are among the things that bear on voting eligibility.",
+    "notes": "Removed the eligibility rule (citizen aged 18+ may vote); legal voting no longer follows. Does not say she is ineligible, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-006",
+    "to_premise_weak_quant": "The box and the book each have a weight.",
+    "to_premise_weak_hedge": "The box and the book differ in size and heft in ways one might notice.",
+    "notes": "Removed the specific masses (10 kg vs 1 kg); the comparison no longer follows. Does not assert the book is heavier, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-007",
+    "to_premise_weak_quant": "It is now 8 p.m., and the store keeps regular daytime business hours.",
+    "to_premise_weak_hedge": "It is evening, and the store's hours are a factor in whether it is open right now.",
+    "notes": "Removed the exact 9-to-5 window so 8 p.m. no longer entails closed (vague 'daytime' could extend later). Does not assert the store is open, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-008",
+    "to_premise_weak_quant": "The liquid in the beaker has a measured pH of 3.",
+    "to_premise_weak_hedge": "The liquid's pH reading is among the properties relevant to classifying it chemically.",
+    "notes": "Removed the rule (pH below 7 = acid); without it the bare pH=3 does not formally entail 'acid'. Does not call it a base, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-009",
+    "to_premise_weak_quant": "Anil, Brit, and Chen differ in age from one another.",
+    "to_premise_weak_hedge": "There are age differences among Anil, Brit, and Chen worth comparing.",
+    "notes": "Removed the two ordered relations (Anil>Brit>Chen) that chain to the conclusion; the Anil>Chen ordering no longer follows. Does not assert Chen is older, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-010",
+    "to_premise_weak_quant": "The shape is a triangle.",
+    "to_premise_weak_hedge": "The shape is a triangle, with the geometric properties such figures generally have.",
+    "notes": "Removed the defining rule (every triangle has exactly three sides); the side count no longer formally follows. Does not deny three sides, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-011",
+    "to_premise_weak_quant": "The team scored 3 goals to their opponent's 1.",
+    "to_premise_weak_hedge": "The team's and opponent's goal tallies are among the things that bear on the result.",
+    "notes": "Removed the rule that more goals wins; the bare scoreline no longer formally entails a win. Does not assert they lost, so not a contradiction."
+  },
+  {
+    "edge_id": "ctl-pos-012",
+    "to_premise_weak_quant": "The metal sphere is denser than water.",
+    "to_premise_weak_hedge": "The metal sphere's density relative to water is a factor in how it behaves when placed in water.",
+    "notes": "Removed the rule (denser-than-water objects sink); sinking no longer follows from density alone. Does not say it floats, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-001",
+    "to_premise_weak_quant": "Folding a sheet of paper repeatedly adds to its overall thickness with each successive fold.",
+    "to_premise_weak_hedge": "Repeatedly folding a sheet of paper can have a striking cumulative effect on how thick the stack becomes.",
+    "notes": "Removed the doubling (2^42) mechanism and the arithmetic showing ~4.4e8 m; growth sounds plausibly linear/small, so reaching the Moon no longer follows. Does not deny large growth, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-002",
+    "to_premise_weak_quant": "With 23 people, the chance that all birthdays are distinct is found by multiplying a sequence of shrinking fractions, leaving the rest as the chance of a shared birthday.",
+    "to_premise_weak_hedge": "Even fairly small groups of people can have a surprisingly high chance of a shared birthday.",
+    "notes": "Removed the numeric result (~0.493 / ~0.507 crossing one half); without the number it is unclear the probability exceeds 50%. Does not claim it is below half, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-003",
+    "to_premise_weak_quant": "The number of orderings of a 52-card deck is 52!, an enormous figure, and Earth is made of a vast number of atoms.",
+    "to_premise_weak_hedge": "The count of ways to order a deck of cards is famously huge, on a scale that invites comparison to astronomical quantities.",
+    "notes": "Removed the specific magnitudes (~8e67 vs ~1e50) needed to rank one above the other; with both merely 'huge/vast' the ordering vs atom count no longer follows. Does not assert atoms exceed orderings, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-004",
+    "to_premise_weak_quant": "Braess's paradox concerns how adding a road to a network interacts with the routing choices that self-interested drivers make.",
+    "to_premise_weak_hedge": "Adding a road can be among the factors that influence overall travel times in a congested network in non-obvious ways.",
+    "notes": "Removed the equilibrium mechanism (selfish routing shifting the Nash equilibrium to over-use the shortcut and raise total time); a worse outcome no longer follows. Does not claim the road always helps, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-005",
+    "to_premise_weak_quant": "Simpson's paradox concerns how subgroup comparisons relate to the comparison drawn after pooling all patients together.",
+    "to_premise_weak_hedge": "How data are grouped can be relevant to the apparent direction of a treatment comparison.",
+    "notes": "Removed the mechanism (unequal subgroup sizes + confounder correlated with both, causing the pooled rates to reverse); a full reversal no longer follows. Does not deny reversals occur, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-006",
+    "to_premise_weak_quant": "In the Monty Hall game your first pick may be right or wrong, and after the host reveals a goat you choose whether to switch.",
+    "to_premise_weak_hedge": "In the Monty Hall game, whether you switch can be relevant to your chance of winning the car.",
+    "notes": "Removed the probability accounting (1/3 vs 2/3, host forced to reveal the only other goat) that yields the 2/3-vs-1/3 result; the specific doubling no longer follows. Does not claim staying is better or equal, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-007",
+    "to_premise_weak_quant": "Benford's law describes a tendency for smaller leading digits to appear more often than larger ones in certain real-world datasets.",
+    "to_premise_weak_hedge": "In some datasets the distribution of leading digits is uneven, with smaller digits playing a notably larger role.",
+    "notes": "Removed the formula log10(1+1/d) and the specific ~30.1% (d=1) vs ~4.6% (d=9) figures; the precise '1 about 30%, far more than 9' no longer follows. Does not deny the skew, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-008",
+    "to_premise_weak_quant": "The coastline paradox concerns how the length you measure for a coastline depends on the size of the measuring stick you use.",
+    "to_premise_weak_hedge": "The choice of measuring scale can be among the factors affecting the length one records for a coastline.",
+    "notes": "Removed the fractal mechanism (self-similar, dimension >1, perimeter grows without bound as ruler shrinks); 'larger and larger with no single true length' no longer follows. Does not assert a fixed convergent length, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-009",
+    "to_premise_weak_quant": "The Great Pyramid, Cleopatra, and the first Pizza Hut each belong to widely separated points in history.",
+    "to_premise_weak_hedge": "The relative timing of Cleopatra, the Great Pyramid, and the first Pizza Hut is the sort of thing that can produce surprising comparisons.",
+    "notes": "Removed the dates (2560 BCE, 30 BCE, 1958 CE) and the gap arithmetic (2530 vs 1988 years); which gap is smaller no longer follows. Does not assert the opposite ordering, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-010",
+    "to_premise_weak_quant": "Oxford as a place of teaching and the Aztec state each have their own founding history.",
+    "to_premise_weak_hedge": "The respective origins of Oxford and the Aztec Empire are the kind of thing that invites historical comparison.",
+    "notes": "Removed the dating (Oxford by 1096/late 12th c. vs Tenochtitlan 1325 / empire 1428); which is older no longer follows. Does not claim the Aztec Empire is older, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-011",
+    "to_premise_weak_quant": "DNA stores information chemically, and a gram of it contains a great many nucleotides; total global hard-drive capacity is also large.",
+    "to_premise_weak_hedge": "DNA's information-carrying capacity is the sort of thing that can be relevant when comparing it to conventional digital storage.",
+    "notes": "Removed the quantification (2 bits/nucleotide, ~1e21 nucleotides, ~2e20 bytes vs global capacity); the 'more than all hard drives combined' ranking no longer follows. Does not assert DNA stores less, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-013",
+    "to_premise_weak_quant": "The mantis shrimp's club strike creates collapsing cavitation bubbles that briefly release energy as light and heat in a tiny region.",
+    "to_premise_weak_hedge": "The mantis shrimp's strike produces dramatic physical effects in the surrounding water that can include intense local conditions.",
+    "notes": "Removed the temperature figure (thousands of K, compared to the sun's ~5800 K); the 'roughly the sun's surface temperature' claim no longer follows. Does not deny heating occurs, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-014",
+    "to_premise_weak_quant": "The Hafele-Keating experiment flew atomic clocks around the world and compared them with a ground clock to test relativity's predictions about moving clocks at altitude.",
+    "to_premise_weak_hedge": "Flying an atomic clock can be relevant to how it reads relative to a clock left on the ground, according to relativity.",
+    "notes": "Removed the confirmed-disagreement result (velocity and gravitational effects netting tens-to-hundreds of ns matching theory); a measurable disagreement no longer follows from a mere 'test'. Does not assert clocks agree, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-015",
+    "to_premise_weak_quant": "Bananas are rich in potassium, and potassium is an element with more than one naturally occurring isotope.",
+    "to_premise_weak_hedge": "Bananas' potassium content is among the things that can be relevant to discussions of natural radioactivity.",
+    "notes": "Removed the specific fact that ~0.012% of natural potassium is radioactive K-40 (the source of the emission); radioactivity no longer follows from 'has potassium with isotopes'. Does not say bananas are non-radioactive, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-016",
+    "to_premise_weak_quant": "Antarctica's interior is a cold desert and receives little precipitation, while parts of the Sahara also receive limited rain.",
+    "to_premise_weak_hedge": "Both Antarctica and the Sahara include very dry regions, which makes their relative dryness an interesting comparison.",
+    "notes": "Removed the extreme-case detail (Dry Valleys with essentially no precipitation for long periods being drier than wetter Sahara parts); the cross-over comparison no longer follows. Does not assert the Sahara is always drier, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-017",
+    "to_premise_weak_quant": "Honey has a high sugar concentration and acidic character, and jars of it have been recovered from ancient Egyptian tombs.",
+    "to_premise_weak_hedge": "Honey's chemical makeup is among the factors relevant to how well it keeps over time.",
+    "notes": "Removed the preservation mechanism (low water activity + high sugar + ~3.9 pH + hydrogen-peroxide enzyme jointly preventing microbial growth); 'still edible after millennia' no longer follows. Does not claim the honey spoiled, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-019",
+    "to_premise_weak_quant": "The Banach-Tarski theorem concerns partitioning a solid ball into pieces and moving them with rigid motions.",
+    "to_premise_weak_hedge": "The Banach-Tarski theorem is among the results showing that infinite-set geometry can behave very counterintuitively.",
+    "notes": "Removed the load-bearing details (axiom of choice, finitely many non-measurable pieces, rotations/translations reassembling into two identical copies); doubling the ball no longer follows. Does not deny the result, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-020",
+    "to_premise_weak_quant": "Zipf's law describes a regular relationship between a word's frequency and its frequency rank in natural language.",
+    "to_premise_weak_hedge": "Word frequencies in natural language follow patterns that can persist in various ways across the vocabulary.",
+    "notes": "Removed the inverse-rank quantification (freq proportional to 1/rank, giving rank-1 ~2x rank-2, ~3x rank-3, and scale-free persistence after stopword removal); the specific 2x/3x ratios after filtering no longer follow. Does not deny the pattern, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-021",
+    "to_premise_weak_quant": "There are 23 people on the field, the two eleven-player teams plus the referee.",
+    "to_premise_weak_hedge": "The number of people on a soccer field, two teams and a referee, is the kind of group size that makes shared-birthday questions interesting.",
+    "notes": "Removed the probability result (~0.493 all-distinct, ~0.507 crossing one half) for 23; that a match is more likely than not no longer follows. Does not assert it is unlikely, so not a contradiction."
+  },
+  {
+    "edge_id": "pub-pd-022",
+    "to_premise_weak_quant": "The Sun is very far from Earth and its light travels to us at the finite speed of light, so it takes some time to arrive.",
+    "to_premise_weak_hedge": "The Sun's distance and the finite speed of light are factors in how long sunlight takes to reach us.",
+    "notes": "Removed the figures (~1.496e11 m, ~3e8 m/s, ~499 s) that pin the delay to 'over eight minutes'; the specific >8-minute duration no longer follows. Does not assert instantaneous or shorter travel, so not a contradiction."
+  }
+]

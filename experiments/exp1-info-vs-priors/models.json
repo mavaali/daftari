@@ -1,0 +1,8 @@
+{
+  "families": [
+    {"key": "claude", "vendor": "Anthropic", "lineage": "US", "id": "anthropic/claude-opus-4.8"},
+    {"key": "gpt",    "vendor": "OpenAI",    "lineage": "US", "id": "openai/gpt-5"},
+    {"key": "qwen",   "vendor": "Alibaba",   "lineage": "CN", "id": "qwen/qwen3-235b-a22b-2507"}
+  ],
+  "note": "Three distinct families = the decorrelation axis (protocol §5). Monoculture caveat (§11): all are web-corpus transformers; true independence may be overstated even on a PASS. Reported in results."
+}
