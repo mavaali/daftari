@@ -65,3 +65,22 @@ export type ConsolidatePromptTemplate = (typeof CONSOLIDATE_PROMPT_TEMPLATES)[nu
 // axes are decorative (the panel doesn't beat its best single axis) and
 // multi-model becomes a Stage 2 add-on, NOT a Stage 5 prereq.
 export const CONSOLIDATE_DECORRELATION_MIN_LIFT = 0.05;
+
+// LLM pricing — USD per million tokens, current as of 2026-06-16 for
+// claude-haiku-4-5-20251001. VERIFY against current pricing before reading the
+// cost-USD figure as gospel; this table is a recoverable mistake (the raw
+// token counts ARE logged into the shadow journal, so historical sessions can
+// be re-costed when prices move). Override per-model via the table; unknown
+// models fall back to Haiku pricing with a flag in the report.
+export const CONSOLIDATE_PRICING_PER_MTOKEN: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5-20251001": { input: 1.0, output: 5.0 },
+  "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
+  "claude-opus-4-8": { input: 15.0, output: 75.0 },
+};
+
+export function estimateCostUSD(model: string, inputTokens: number, outputTokens: number): number {
+  const p =
+    CONSOLIDATE_PRICING_PER_MTOKEN[model] ??
+    CONSOLIDATE_PRICING_PER_MTOKEN["claude-haiku-4-5-20251001"];
+  return (inputTokens * p.input + outputTokens * p.output) / 1_000_000;
+}
