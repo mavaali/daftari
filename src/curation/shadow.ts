@@ -43,6 +43,14 @@ import { loadDocuments } from "./vault-docs.js";
 
 // Intrinsic impact per write action. A starting table to calibrate against,
 // not a claim: shadow mode exists to find out where these are wrong.
+//
+// The two `edge-*` entries are for the cortex consolidation loop (Stage 2,
+// brief item 5 — shadow-mode integration for edge writes). They sit BELOW
+// the lowest doc-write tier (`create` at 0.1) because edge_observe is a
+// record-keeping op on .daftari/edges.jsonl — no doc-content mutation, no
+// git-tracked side effect. edge-contest is slightly higher because it
+// revokes a trigger-bearing strength + logs a tension (a surface-side
+// event). Both are calibration placeholders, same as the doc-write entries.
 export const SHADOW_I_BASE: Record<string, number> = {
   create: 0.1,
   append: 0.15,
@@ -52,6 +60,8 @@ export const SHADOW_I_BASE: Record<string, number> = {
   deprecate: 0.4,
   supersede: 0.4,
   merge: 0.6,
+  "edge-observe": 0.05,
+  "edge-contest": 0.1,
 };
 
 // Convex blast scaling: I grows with (blast − 1)^1.5.
