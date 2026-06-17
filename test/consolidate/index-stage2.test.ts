@@ -164,6 +164,120 @@ describe("Stage 2 dispatch — --max-births cap", () => {
   });
 });
 
+describe("--report=decorrelation", () => {
+  it("missing --fixture → exit 2 with clear error", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const code = await runConsolidate(["--report", "decorrelation"]);
+    expect(code).toBe(2);
+  });
+
+  it("missing ANTHROPIC_API_KEY → exit 2", async () => {
+    const code = await runConsolidate([
+      "--report",
+      "decorrelation",
+      "--fixture",
+      join(dir, "no-fixture.json"),
+    ]);
+    expect(code).toBe(2);
+  });
+
+  it("unknown --report value → exit 2", async () => {
+    const code = await runConsolidate(["--report", "lol"]);
+    expect(code).toBe(2);
+  });
+
+  it("happy path: panel beats each single axis → PASS, exit 0", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const edges = Array.from({ length: 6 }, (_, i) => ({
+      id: `e${i + 1}`,
+      fromPath: `from-${i + 1}.md`,
+      toPath: `to-${i + 1}.md`,
+      fromContent: `from-content-e${i + 1}`,
+      toContent: `to-content`,
+      truth: "derives",
+    }));
+    const fixturePath = join(dir, "fixture.json");
+    writeFileSync(fixturePath, JSON.stringify({ version: 1, edges }));
+
+    const llmMod = await import("../../src/eval/llm.js");
+    vi.mocked(llmMod.createAnthropicClient).mockImplementation(() => ({
+      complete: vi.fn(),
+      completeJson: vi.fn(async (opts: { user: string }) => {
+        const idM = opts.user.match(/from-content-(e\d+)/);
+        const axisM = opts.user.match(/\[template:(\w+)\]/);
+        if (!idM || !axisM) throw new Error("couldn't parse");
+        // Each axis is wrong on 2 of 6 edges, different ones — majority is
+        // always right (lift = 1/3, well above the 0.05 threshold).
+        const wrong: Record<string, string[]> = {
+          forward: ["e1", "e2"],
+          reverse: ["e3", "e4"],
+          contrast: ["e5", "e6"],
+        };
+        const verdict = wrong[axisM[1]]?.includes(idM[1]) ? "neither" : "derives";
+        const parsed = { verdict, reason: `${axisM[1]}/${idM[1]}` };
+        return ok({
+          text: JSON.stringify(parsed),
+          parsed,
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+        });
+      }),
+      completeWithTools: vi.fn(),
+    }));
+
+    const { out } = captureStdout();
+    const code = await runConsolidate(["--report", "decorrelation", "--fixture", fixturePath]);
+    expect(out.join("")).toContain("PASS");
+    expect(code).toBe(0);
+  });
+
+  it("kill condition: all axes always wrong the same way → FAIL, exit 6", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const edges = [
+      {
+        id: "e1",
+        fromPath: "a.md",
+        toPath: "b.md",
+        fromContent: "x",
+        toContent: "y",
+        truth: "derives",
+      },
+      {
+        id: "e2",
+        fromPath: "c.md",
+        toPath: "d.md",
+        fromContent: "x",
+        toContent: "y",
+        truth: "derives",
+      },
+    ];
+    const fixturePath = join(dir, "fixture.json");
+    writeFileSync(fixturePath, JSON.stringify({ version: 1, edges }));
+
+    const llmMod = await import("../../src/eval/llm.js");
+    vi.mocked(llmMod.createAnthropicClient).mockImplementation(() => ({
+      complete: vi.fn(),
+      completeJson: vi.fn(async () => {
+        const parsed = { verdict: "neither", reason: "always wrong, always together" };
+        return ok({
+          text: JSON.stringify(parsed),
+          parsed,
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+        });
+      }),
+      completeWithTools: vi.fn(),
+    }));
+
+    const { out } = captureStdout();
+    const code = await runConsolidate(["--report", "decorrelation", "--fixture", fixturePath]);
+    expect(out.join("")).toContain("FAIL");
+    expect(code).toBe(6);
+  });
+});
+
 describe("Stage 2 — trace failure → exit 5", () => {
   it("if the trace cannot be written (read-only .daftari), exit code is 5", async () => {
     process.env.ANTHROPIC_API_KEY = "test-key";

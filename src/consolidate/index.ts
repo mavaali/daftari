@@ -38,6 +38,7 @@ import {
   CONSOLIDATE_PANEL_SIZE,
   estimateCostUSD,
 } from "./constants.js";
+import { formatDecorrelationReport, loadFixture, runDecorrelation } from "./decorrelation.js";
 import { makeContest, makeObserve } from "./edge-write.js";
 import { prioritize } from "./priority.js";
 import {
@@ -54,6 +55,7 @@ const HELP = `daftari consolidate — cortex loop scheduler + Component A (shado
 Usage:
   daftari consolidate [--vault <path>] [--budget <n>] [--mode <m>]
                       [--max-panels <n>] [--max-births <n>] [--model <id>]
+  daftari consolidate --report decorrelation --fixture <path> [--model <id>]
 
 Modes (--mode, default 'scan'):
   scan      Stage 1: emit the edge due-queue + birth queue. No LLM, no writes.
@@ -77,12 +79,23 @@ What it does:
   items. The trace files (.daftari/{birth,revision}-trace.jsonl) are the
   decorrelation report's input (brief item 8).
 
+Reports:
+  --report decorrelation --fixture <path>
+    Run all v1 prompt-framing axes against a ground-truth-labeled fixture
+    (brief item 8). Reports per-axis accuracy, majority accuracy, lift,
+    inter-axis agreement, error correlation. Exits 6 if the kill condition
+    fires (majority - max(single) below CONSOLIDATE_DECORRELATION_MIN_LIFT).
+    Requires ANTHROPIC_API_KEY. The real ~50-edge fixture lives at
+    tests/fixtures/decorrelation-fixture.json (built in a separate
+    session).
+
 Exit codes:
   0 — ran cleanly
   2 — config error (no vault, bad flags, missing ANTHROPIC_API_KEY in LLM mode)
   3 — runtime error (edge store / vault I/O)
   4 — ran, but backstop-overdue work was left unserved (cron-alertable)
   5 — ran, but one or more trace writes failed (recall-evaluation data lost)
+  6 — decorrelation report ran, kill condition fired (multi-model required)
 `;
 
 const MS_PER_DAY = 86_400_000;
@@ -108,6 +121,20 @@ export async function runConsolidate(argv: string[]): Promise<number> {
     process.stdout.write(HELP);
     return 0;
   }
+
+  // --report=decorrelation is an alternate entry point: no vault scan, no
+  // queue, no Component A — just runs the v1 axes against the fixture and
+  // emits the analysis. Branches early so the main consolidate flow stays
+  // unchanged.
+  const reportName = flag(argv, "report");
+  if (reportName === "decorrelation") {
+    return runDecorrelationReportCli(argv);
+  }
+  if (reportName !== undefined) {
+    process.stderr.write(`consolidate: --report must be 'decorrelation', got ${reportName}\n`);
+    return 2;
+  }
+
   try {
     const vaultRoot = resolve(flag(argv, "vault") ?? process.cwd());
     if (!existsSync(vaultRoot)) {
@@ -469,4 +496,52 @@ function accumulateRevision(stage2: Stage2Result, out: RevisionOutcome): void {
   stage2.inputTokens += out.inputTokens;
   stage2.outputTokens += out.outputTokens;
   if (!out.traceWritten) stage2.traceWriteFailures++;
+}
+
+// --- --report=decorrelation ---------------------------------------------------
+
+async function runDecorrelationReportCli(argv: string[]): Promise<number> {
+  const fixturePath = flag(argv, "fixture");
+  if (!fixturePath) {
+    process.stderr.write("consolidate --report decorrelation: --fixture <path> is required\n");
+    return 2;
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    process.stderr.write(
+      "consolidate --report decorrelation: ANTHROPIC_API_KEY env var is required\n",
+    );
+    return 2;
+  }
+
+  const fixtureRes = loadFixture(fixturePath);
+  if (!fixtureRes.ok) {
+    process.stderr.write(`consolidate: ${fixtureRes.error.message}\n`);
+    return 2;
+  }
+  if (fixtureRes.value.edges.length === 0) {
+    process.stderr.write("consolidate: fixture is empty\n");
+    return 2;
+  }
+
+  let llm: LlmClient;
+  try {
+    llm = createAnthropicClient();
+  } catch (e) {
+    process.stderr.write(`consolidate: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 2;
+  }
+
+  const model = flag(argv, "model") ?? CONSOLIDATE_DEFAULT_MODEL;
+  const reportRes = await runDecorrelation(
+    fixtureRes.value,
+    { llm },
+    { model, fixtureSource: fixturePath },
+  );
+  if (!reportRes.ok) {
+    process.stderr.write(`consolidate: ${reportRes.error.message}\n`);
+    return 3;
+  }
+  process.stdout.write(formatDecorrelationReport(reportRes.value));
+  // Kill condition fires → exit 6 so CI / a calibration wrapper can branch.
+  return reportRes.value.passes ? 0 : 6;
 }
