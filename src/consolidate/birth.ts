@@ -121,34 +121,6 @@ function canon(p: string): string {
   return posix.normalize(p).replace(/^\.\//, "");
 }
 
-// --- legacy parser (retained for decorrelation until Task 7) -----------------
-
-// DEPRECATED: the derives/depends/neither token is replaced by the foundational
-// ordering {related, premise} verdict (see derivation-prompt.ts). This parser
-// is retained ONLY because src/consolidate/decorrelation.ts still imports it;
-// Task 7 swaps decorrelation to the shared prompt and removes this.
-const VALID_VERDICTS: ReadonlySet<string> = new Set(["derives", "depends", "neither"]);
-
-export function parseBirthVerdict(
-  raw: unknown,
-): Result<{ verdict: "derives" | "depends" | "neither"; reason: string }, Error> {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return err(new Error("verdict: expected object"));
-  }
-  const obj = raw as Record<string, unknown>;
-  const v = obj.verdict;
-  const r = obj.reason;
-  if (typeof v !== "string" || !VALID_VERDICTS.has(v)) {
-    return err(
-      new Error(`verdict: expected one of derives|depends|neither, got ${JSON.stringify(v)}`),
-    );
-  }
-  if (typeof r !== "string" || r.trim().length === 0) {
-    return err(new Error("verdict: 'reason' is required (and non-empty)"));
-  }
-  return ok({ verdict: v as "derives" | "depends" | "neither", reason: r });
-}
-
 // --- direction reconciliation (option c) -------------------------------------
 
 export type ReconcileOutcome =

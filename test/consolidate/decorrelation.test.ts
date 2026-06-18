@@ -41,30 +41,43 @@ function toyFixture(): DecorrelationFixture {
   };
 }
 
-// LLM that returns a fixed verdict per (axis, edgeId).
+type FT = "derives" | "depends" | "neither";
+// A foundational {related, premise} verdict that maps to the given fixture truth
+// (derives ⇒ premise B; depends ⇒ premise A; neither ⇒ related:false).
+function truthVerdict(truth: FT): { related: boolean; premise: string | null; reason: string } {
+  if (truth === "neither") return { related: false, premise: null, reason: "neither" };
+  return { related: true, premise: truth === "derives" ? "B" : "A", reason: truth };
+}
+
+// LLM that returns a verdict per (edgeId, axisIndex). The foundational prompt
+// has no [template:] marker now (axes send identical prompts), so we recover the
+// edgeId from "from-${id}" and the axis position from a per-edge call counter
+// (axes run in CONSOLIDATE_PROMPT_TEMPLATES order: 0=forward, 1=reverse, 2=contrast).
 function scriptedLlm(
-  script: Record<string, Record<string, "derives" | "depends" | "neither" | "ERROR">>,
+  fn: (
+    edgeId: string,
+    axisIndex: number,
+  ) => { related: boolean; premise: string | null; reason: string } | "ERROR",
 ): LlmClient {
+  const counter = new Map<string, number>();
   return {
     complete: vi.fn(),
     completeJson: vi.fn(async (opts: { user: string }) => {
-      // Recover the edgeId from "from-${id}" in the user body; recover the
-      // axis from the [template:...] marker in userBody().
       const idM = opts.user.match(/from-(e\d+)/);
-      const axisM = opts.user.match(/\[template:(\w+)\]/);
-      if (!idM || !axisM) throw new Error(`scripted LLM: could not parse id+axis from prompt`);
-      const verdict = script[idM[1]]?.[axisM[1]];
-      if (!verdict) throw new Error(`scripted LLM: no script for (${idM[1]}, ${axisM[1]})`);
-      if (verdict === "ERROR") {
+      if (!idM) throw new Error("scripted LLM: could not parse id from prompt");
+      const id = idM[1];
+      const idx = counter.get(id) ?? 0;
+      counter.set(id, idx + 1);
+      const spec = fn(id, idx);
+      if (spec === "ERROR") {
         return {
           ok: false,
           error: { kind: "llm" as const, message: "scripted error", retryable: false },
         };
       }
-      const parsed = { verdict, reason: `${idM[1]}/${axisM[1]} → ${verdict}` };
       return ok({
-        text: JSON.stringify(parsed),
-        parsed,
+        text: JSON.stringify(spec),
+        parsed: spec,
         input_tokens: 10,
         output_tokens: 5,
         stop_reason: "end_turn",
@@ -239,47 +252,50 @@ describe("computeMetrics", () => {
   });
 });
 
-describe("runDecorrelation — toy fixture, scripted LLM", () => {
-  it("happy path: 3 axes × 5 edges = 15 calls, returns a full report", async () => {
-    // Always-correct script.
+describe("runDecorrelation — toy fixture, scripted LLM (foundational prompt)", () => {
+  it("happy path: maps {related, premise} → fixture truth, majority correct", async () => {
     const fixture = toyFixture();
-    const script: Record<string, Record<string, "derives" | "depends" | "neither">> = {};
-    for (const e of fixture.edges) {
-      script[e.id] = { forward: e.truth, reverse: e.truth, contrast: e.truth };
-    }
-    const llm = scriptedLlm(script);
+    const truthById = new Map(fixture.edges.map((e) => [e.id, e.truth]));
+    const llm = scriptedLlm((id) => truthVerdict(truthById.get(id) as FT));
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     expect(r.ok).toBe(true);
     if (!r.ok) throw r.error;
     expect(r.value.fixtureSize).toBe(5);
     expect(r.value.metrics.majorityAccuracy).toBe(1);
-    expect(r.value.passes).toBe(false); // lift=0, doesn't beat best-single by the threshold
+    expect(r.value.passes).toBe(true); // gate is accuracy now (1.0 >= 0.85)
     expect(r.value.perEdge.every((p) => p.majorityCorrect)).toBe(true);
   });
 
-  it("kill condition fires: prompt axes always give the SAME wrong verdict → fail", async () => {
+  it("a fabricated 'symmetric' answer never matches a directional truth (scored wrong)", async () => {
     const fixture = toyFixture();
-    // Every axis returns the wrong answer the same way: always `neither`.
-    const script: Record<string, Record<string, "derives" | "depends" | "neither">> = {};
-    for (const e of fixture.edges) {
-      script[e.id] = { forward: "neither", reverse: "neither", contrast: "neither" };
-    }
-    const llm = scriptedLlm(script);
+    // Always answer symmetric → maps to the "symmetric" vote, which equals no
+    // 3-class truth → every directional edge is wrong.
+    const llm = scriptedLlm(() => ({ related: true, premise: "symmetric", reason: "mutual" }));
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     if (!r.ok) throw r.error;
-    expect(r.value.metrics.errorCorrelation).toBeGreaterThan(0); // they share the failure mode
-    // The lift is non-positive (majority can't beat the best single because they're all equal).
+    // e1,e2,e4 are directional truths → wrong; e3,e5 are neither → also wrong.
+    expect(r.value.metrics.majorityAccuracy).toBe(0);
+    expect(r.value.perEdge.every((p) => p.majorityVerdict === "symmetric")).toBe(true);
+  });
+
+  it("kill condition fires: the prompt always gives the SAME wrong verdict → fail", async () => {
+    const fixture = toyFixture();
+    // Always related:false → "neither". Correct for e3/e5, wrong-same for the rest.
+    const llm = scriptedLlm(() => ({ related: false, premise: null, reason: "x" }));
+    const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
+    if (!r.ok) throw r.error;
+    expect(r.value.metrics.errorCorrelation).toBeGreaterThan(0);
     expect(r.value.metrics.liftOverBestSingle).toBeLessThanOrEqual(0);
     expect(r.value.passes).toBe(false);
   });
 
   it("LLM errors are recorded as 'error' votes, not propagated as failure", async () => {
     const fixture = toyFixture();
-    const script: Record<string, Record<string, "derives" | "depends" | "neither" | "ERROR">> = {};
-    for (const e of fixture.edges) {
-      script[e.id] = { forward: "ERROR", reverse: e.truth, contrast: e.truth };
-    }
-    const llm = scriptedLlm(script);
+    const truthById = new Map(fixture.edges.map((e) => [e.id, e.truth]));
+    // axisIndex 0 = forward → error; the other two axes vote truth.
+    const llm = scriptedLlm((id, idx) =>
+      idx === 0 ? "ERROR" : truthVerdict(truthById.get(id) as FT),
+    );
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     if (!r.ok) throw r.error;
     expect(r.value.axisCounts.forward.errored).toBe(5);
@@ -290,11 +306,8 @@ describe("runDecorrelation — toy fixture, scripted LLM", () => {
 describe("formatDecorrelationReport", () => {
   it("renders accuracy + lift + verdict", async () => {
     const fixture = toyFixture();
-    const script: Record<string, Record<string, "derives" | "depends" | "neither">> = {};
-    for (const e of fixture.edges) {
-      script[e.id] = { forward: e.truth, reverse: e.truth, contrast: e.truth };
-    }
-    const llm = scriptedLlm(script);
+    const truthById = new Map(fixture.edges.map((e) => [e.id, e.truth]));
+    const llm = scriptedLlm((id) => truthVerdict(truthById.get(id) as FT));
     const r = await runDecorrelation(
       fixture,
       { llm },
