@@ -42,6 +42,32 @@ describe("LlmClient interface", () => {
   });
 });
 
+describe("temperature passthrough", () => {
+  // Injects a fake Anthropic SDK client so the create call is observable.
+  function makeClientWith(create: ReturnType<typeof vi.fn>) {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    // biome-ignore lint/suspicious/noExplicitAny: minimal SDK stand-in
+    const client = createAnthropicClient({ messages: { create } } as any);
+    if (prev) process.env.ANTHROPIC_API_KEY = prev;
+    else delete process.env.ANTHROPIC_API_KEY;
+    return client;
+  }
+
+  it("forwards temperature when set, omits when unset", async () => {
+    const create = vi.fn(async () => ({
+      content: [{ type: "text", text: "ok", citations: null }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+      stop_reason: "end_turn",
+    }));
+    const client = makeClientWith(create);
+    await client.complete({ model: "m", system: "s", user: "u", temperature: 0 });
+    expect(create.mock.calls[0][0]).toMatchObject({ temperature: 0 });
+    await client.complete({ model: "m", system: "s", user: "u" });
+    expect(create.mock.calls[1][0].temperature).toBeUndefined();
+  });
+});
+
 describe("stripCodeFence", () => {
   it("strips a ```json fenced block", () => {
     expect(stripCodeFence('```json\n{"a":1}\n```')).toBe('{"a":1}');

@@ -430,3 +430,160 @@ describe("derives_from edge store", () => {
     expect(second.value.contestReason).toBe("failed again");
   });
 });
+
+describe("derives_from direction verdict", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("defaults to 'directed' for legacy edges with no premise vote", async () => {
+    const r = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      at: T0,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.directionVerdict).toBe("directed");
+  });
+
+  it("collapses agreeing premise votes to directed", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "to",
+      at: T0,
+    });
+    const r = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "model",
+      premiseVote: "to",
+      at: T1,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.directionVerdict).toBe("directed");
+  });
+
+  it("collapses split premise votes (from vs to) to symmetric", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "to",
+      at: T0,
+    });
+    const r = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "model",
+      premiseVote: "from",
+      at: T1,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.directionVerdict).toBe("symmetric");
+  });
+
+  it("an explicit symmetric vote makes the edge symmetric", async () => {
+    const r = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "symmetric",
+      at: T0,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.directionVerdict).toBe("symmetric");
+  });
+
+  it("a single directed vote is directed", async () => {
+    const r = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "to",
+      at: T0,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.directionVerdict).toBe("directed");
+  });
+
+  it("a re-birth that FLIPS the orientation collapses to one symmetric edge, not two directed twins", async () => {
+    // pass 1: a.md depends on b.md (b is premise) → observe(from=a, to=b, premise=to)
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "to",
+      at: T0,
+    });
+    // pass 2 (post-edit re-birth): direction flipped — b.md depends on a.md (a is
+    // premise) → observe(from=b, to=a, premise=to). Orientation flipped vs pass 1.
+    await observeEdge(vault, {
+      fromPath: "b.md",
+      toPath: "a.md",
+      observedBy: BY,
+      blind: true,
+      axis: "model",
+      premiseVote: "to",
+      at: T1,
+    });
+    // Exactly ONE edge for the {a,b} pair, and it must be symmetric (conflicting
+    // orientations are a split, not two trusted directed twins).
+    const all = await listEdges(vault, {}, new Date(T1));
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value).toHaveLength(1);
+    expect(all.value[0]?.directionVerdict).toBe("symmetric");
+    const fwd = await getEdge(vault, "a.md", "b.md", new Date(T1));
+    const rev = await getEdge(vault, "b.md", "a.md", new Date(T1));
+    expect(fwd.ok && fwd.value?.directionVerdict).toBe("symmetric");
+    expect(rev.ok && rev.value?.directionVerdict).toBe("symmetric");
+  });
+
+  it("materializes direction_verdict into the sqlite row after rebuild", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "symmetric",
+      at: T0,
+    });
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      const rebuilt = rebuildEdgesIndex(db, vault, new Date(T1));
+      expect(rebuilt.ok).toBe(true);
+      const row = getAllDerivesFromEdges(db).find((r) => r.to_path === "b.md");
+      expect(row?.direction_verdict).toBe("symmetric");
+    } finally {
+      db.close();
+    }
+  });
+});

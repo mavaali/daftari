@@ -1,0 +1,18 @@
+{
+  "model": "anthropic/claude-haiku-4.5",
+  "method": "foundational",
+  "note": "Per-pair, both orders. flag: OK=both orders recovered premise; ~~=order-inconsistent (position-influenced); XX=both orders wrong.",
+  "summary": { "fully_correct": 18, "order_inconsistent": 8, "fully_wrong": 2, "n": 28 },
+  "rows": [
+    {"id":"nv-pf-001","flag":"OK"},{"id":"nv-pf-002","flag":"OK"},{"id":"nv-pf-003","flag":"~~"},
+    {"id":"nv-pf-004","flag":"OK"},{"id":"nv-pf-005","flag":"OK"},{"id":"nv-pf-006","flag":"OK"},
+    {"id":"nv-pf-007","flag":"OK"},{"id":"nv-pf-008","flag":"~~"},{"id":"nv-pf-009","flag":"OK"},
+    {"id":"nv-pf-010","flag":"OK"},{"id":"nv-pf-011","flag":"~~"},{"id":"nv-pf-012","flag":"~~"},
+    {"id":"nv-pf-013","flag":"OK"},{"id":"nv-pf-014","flag":"OK"},{"id":"nv-pf-015","flag":"XX"},
+    {"id":"nv-pf-016","flag":"OK"},{"id":"nv-pd-001","flag":"OK"},{"id":"nv-pd-002","flag":"~~"},
+    {"id":"nv-pd-003","flag":"XX"},{"id":"nv-pd-004","flag":"OK"},{"id":"nv-pd-005","flag":"OK"},
+    {"id":"nv-pd-006","flag":"OK"},{"id":"nv-pd-007","flag":"~~"},{"id":"nv-pd-008","flag":"OK"},
+    {"id":"nv-pd-009","flag":"OK"},{"id":"nv-pd-010","flag":"~~"},{"id":"nv-pd-011","flag":"OK"},
+    {"id":"nv-pd-012","flag":"~~"}
+  ]
+}

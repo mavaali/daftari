@@ -90,7 +90,14 @@ describe("runConsolidate", () => {
       return true;
     });
     const code = await runConsolidate(["--vault", dir]);
-    expect(code).toBe(0); // skips the event clock, still reports
+    // Degrades (not crash) but signals: the event clock was skipped and the
+    // baseline re-based to HEAD, so the gap is not event-examined → exit 7
+    // (cron-alertable) rather than a silent exit 0.
+    expect(code).toBe(7);
     expect(out.join("")).toContain("consolidate @");
+    // And it must re-baseline so it doesn't loop on the same dead commit.
+    expect(readConsolidateState(dir).lastConsolidationCommit).not.toBe(
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    );
   });
 });

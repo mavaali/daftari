@@ -12,6 +12,10 @@ export interface CompleteOpts {
   system: string;
   user: string;
   maxTokens?: number; // default 4096
+  // Optional sampling temperature. Omitted ⇒ the SDK sends no temperature and
+  // the provider default (1.0) applies. Pinned to 0 for the direction
+  // elicitation (foundational-ordering must be deterministic, not creative).
+  temperature?: number;
 }
 
 export interface CompleteJsonOpts extends CompleteOpts {
@@ -55,10 +59,12 @@ export interface LlmClient {
   ): Promise<Result<CompleteWithToolsResult, CortexEvalError>>;
 }
 
-export function createAnthropicClient(): LlmClient {
+// `injected` lets tests substitute a stand-in SDK client so the create call is
+// observable; production passes nothing and a real Anthropic instance is built.
+export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): LlmClient {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var is required for daftari eval");
-  const client = new Anthropic({ apiKey });
+  const client = injected ?? new Anthropic({ apiKey });
 
   const complete = async (opts: CompleteOpts): Promise<Result<CompleteResult, CortexEvalError>> => {
     return retry(async () => {
@@ -67,6 +73,7 @@ export function createAnthropicClient(): LlmClient {
         max_tokens: opts.maxTokens ?? 4096,
         system: opts.system,
         messages: [{ role: "user", content: opts.user }],
+        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       });
       const text = res.content
         .filter((b): b is { type: "text"; text: string; citations: null } => b.type === "text")
@@ -129,6 +136,7 @@ export function createAnthropicClient(): LlmClient {
             tools: opts.tools as any,
             // biome-ignore lint/suspicious/noExplicitAny: SDK types
             messages: messages as any,
+            ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
           }),
         ),
       );

@@ -175,7 +175,7 @@ describe("index-db", () => {
 
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("5");
+    expect(getMeta(db, "schema_version")).toBe("6");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -198,8 +198,8 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("5");
-    // All five expected tables now exist on a fresh v5 index: three
+    expect(getMeta(db, "schema_version")).toBe("6");
+    // All five expected tables now exist on a fresh index: three
     // regular tables (documents, chunks, embeddings, meta) plus two
     // virtual tables (documents_fts, embeddings_vec).
     const tables = db
