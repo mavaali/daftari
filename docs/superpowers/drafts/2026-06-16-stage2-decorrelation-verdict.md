@@ -486,3 +486,21 @@ decision (not unilaterally changed):**
   track the **false-symmetric / stuck-pending rate** explicitly, and a margin signal (route to pending
   only when both orders are low-confidence, not on a clean cross-order flip) may be needed before
   non-shadow graduation.
+
+**UPDATE (2026-06-17) — two of the three surfaced findings are now FIXED:**
+- **Flipped directed twin → FIXED (`b42f6bb`).** The durable collapse key is now **canonical** (sorted),
+  so both orientations of a pair merge into one edge; a post-edit flip is a genuine premise split ⇒
+  `directionVerdict:"symmetric"`, and `deriveEdge` re-derives the output orientation. The design's
+  "flip → symmetric" intent now actually holds. New test: a flipped re-birth collapses to one symmetric
+  edge, not two twins.
+- **Single-order report → FIXED (both-orders).** `runDecorrelation` now imports birth's
+  `reconcileDirection` and runs BOTH presentation orders per edge, so the report measures birth's
+  *trusted-directed* rate by construction (closes F3). **Re-run on v2: 97.4% (38/39), PASS** — equal to
+  the single-order 94.9% within run noise. On this clean directional fixture both-orders does **not**
+  degrade accuracy: order-consistency is high on clear pairs, so birth ships directed edges for them
+  rather than abstaining. Report: `scripts/pools/decorrelation-report-bothorders.json`.
+- **Option-c over-production / stuck-symmetric → STILL TRACKED** (shadow-graduation item). The 97.4% is
+  on curated *clear-direction* pairs; the over-production concern is specific to the uncurated ambiguous
+  tail (~71–75% order-consistency) this fixture excludes, where abstention is the intended behavior. The
+  "Ongoing (shadow)" item must track the stuck-pending rate before non-shadow graduation; a margin signal
+  remains the candidate mitigation.

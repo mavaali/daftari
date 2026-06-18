@@ -209,10 +209,11 @@ describe("--report=decorrelation", () => {
     vi.mocked(llmMod.createAnthropicClient).mockImplementation(() => ({
       complete: vi.fn(),
       completeJson: vi.fn(async (opts: { user: string }) => {
-        // truth=derives ⇒ premise is DOC B ⇒ {related:true, premise:"B"}.
-        const idM = opts.user.match(/from-content-(e\d+)/);
-        if (!idM) throw new Error("couldn't parse");
-        const parsed = { related: true, premise: "B", reason: `${idM[1]}` };
+        // The report runs BOTH orders; answer consistently — always name the `to`
+        // doc as premise (truth=derives ⇒ to is premise). DOC A is the `to` doc in
+        // one order and the `from` doc in the other.
+        const docAisTo = /DOC A \(path: to-\d+\.md\)/.test(opts.user);
+        const parsed = { related: true, premise: docAisTo ? "A" : "B", reason: "derives" };
         return ok({
           text: JSON.stringify(parsed),
           parsed,

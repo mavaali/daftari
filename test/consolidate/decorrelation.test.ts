@@ -42,39 +42,39 @@ function toyFixture(): DecorrelationFixture {
 }
 
 type FT = "derives" | "depends" | "neither";
-// A foundational {related, premise} verdict that maps to the given fixture truth
-// (derives ⇒ premise B; depends ⇒ premise A; neither ⇒ related:false).
-function truthVerdict(truth: FT): { related: boolean; premise: string | null; reason: string } {
-  if (truth === "neither") return { related: false, premise: null, reason: "neither" };
-  return { related: true, premise: truth === "derives" ? "B" : "A", reason: truth };
+// Which doc is the load-bearing premise for each edge's truth: derives ⇒ the
+// `to` doc; depends ⇒ the `from` doc; neither ⇒ none. "symmetric"/"ERROR" force
+// those reconcile outcomes.
+type Target = "from" | "to" | "none" | "symmetric" | "ERROR";
+function targetOf(truth: FT): Target {
+  if (truth === "neither") return "none";
+  return truth === "derives" ? "to" : "from";
 }
 
-// LLM that returns a verdict per (edgeId, axisIndex). The foundational prompt
-// has no [template:] marker now (axes send identical prompts), so we recover the
-// edgeId from "from-${id}" and the axis position from a per-edge call counter
-// (axes run in CONSOLIDATE_PROMPT_TEMPLATES order: 0=forward, 1=reverse, 2=contrast).
-function scriptedLlm(
-  fn: (
-    edgeId: string,
-    axisIndex: number,
-  ) => { related: boolean; premise: string | null; reason: string } | "ERROR",
-): LlmClient {
-  const counter = new Map<string, number>();
+// LLM that answers BOTH presentation orders consistently. The report now runs
+// order1 (DOC A=from) and order2 (DOC A=to) per edge and reconciles; the scripted
+// model detects which side is DOC A from the prompt and names the intended
+// premise doc as "A" or "B" accordingly, so a correct model is order-consistent.
+function scriptedLlm(targetFor: (edgeId: string) => Target): LlmClient {
   return {
     complete: vi.fn(),
     completeJson: vi.fn(async (opts: { user: string }) => {
-      const idM = opts.user.match(/from-(e\d+)/);
-      if (!idM) throw new Error("scripted LLM: could not parse id from prompt");
-      const id = idM[1];
-      const idx = counter.get(id) ?? 0;
-      counter.set(id, idx + 1);
-      const spec = fn(id, idx);
-      if (spec === "ERROR") {
+      const m = opts.user.match(/DOC A \(path: (e\d+)-(from|to)\.md\)/);
+      if (!m) throw new Error("scripted LLM: could not parse DOC A from prompt");
+      const id = m[1];
+      const aSide = m[2]; // "from" | "to"
+      const target = targetFor(id);
+      if (target === "ERROR") {
         return {
           ok: false,
           error: { kind: "llm" as const, message: "scripted error", retryable: false },
         };
       }
+      let spec: { related: boolean; premise: string | null; reason: string };
+      if (target === "none") spec = { related: false, premise: null, reason: "none" };
+      else if (target === "symmetric")
+        spec = { related: true, premise: "symmetric", reason: "mutual" };
+      else spec = { related: true, premise: aSide === target ? "A" : "B", reason: target };
       return ok({
         text: JSON.stringify(spec),
         parsed: spec,
@@ -252,11 +252,11 @@ describe("computeMetrics", () => {
   });
 });
 
-describe("runDecorrelation — toy fixture, scripted LLM (foundational prompt)", () => {
-  it("happy path: maps {related, premise} → fixture truth, majority correct", async () => {
+describe("runDecorrelation — toy fixture, scripted LLM (both-orders foundational)", () => {
+  it("happy path: order-consistent verdicts reconcile to the fixture truth, majority correct", async () => {
     const fixture = toyFixture();
     const truthById = new Map(fixture.edges.map((e) => [e.id, e.truth]));
-    const llm = scriptedLlm((id) => truthVerdict(truthById.get(id) as FT));
+    const llm = scriptedLlm((id) => targetOf(truthById.get(id) as FT));
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     expect(r.ok).toBe(true);
     if (!r.ok) throw r.error;
@@ -266,40 +266,60 @@ describe("runDecorrelation — toy fixture, scripted LLM (foundational prompt)",
     expect(r.value.perEdge.every((p) => p.majorityCorrect)).toBe(true);
   });
 
-  it("a fabricated 'symmetric' answer never matches a directional truth (scored wrong)", async () => {
+  it("a 'symmetric' reconcile never matches a directional truth (scored wrong)", async () => {
     const fixture = toyFixture();
-    // Always answer symmetric → maps to the "symmetric" vote, which equals no
-    // 3-class truth → every directional edge is wrong.
-    const llm = scriptedLlm(() => ({ related: true, premise: "symmetric", reason: "mutual" }));
+    // Both orders return premise 'symmetric' → reconcile symmetric → "symmetric"
+    // vote, which equals no 3-class truth → every edge wrong.
+    const llm = scriptedLlm(() => "symmetric");
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     if (!r.ok) throw r.error;
-    // e1,e2,e4 are directional truths → wrong; e3,e5 are neither → also wrong.
     expect(r.value.metrics.majorityAccuracy).toBe(0);
     expect(r.value.perEdge.every((p) => p.majorityVerdict === "symmetric")).toBe(true);
   });
 
-  it("kill condition fires: the prompt always gives the SAME wrong verdict → fail", async () => {
+  it("order-DISAGREEMENT reconciles to symmetric (what birth would abstain on)", async () => {
+    // The model names the SAME doc as premise in BOTH orders (DOC A always),
+    // so the two orders disagree on the real-world premise → reconcile symmetric.
     const fixture = toyFixture();
-    // Always related:false → "neither". Correct for e3/e5, wrong-same for the rest.
-    const llm = scriptedLlm(() => ({ related: false, premise: null, reason: "x" }));
+    const llm: LlmClient = {
+      complete: vi.fn(),
+      completeJson: vi.fn(async () =>
+        ok({
+          text: "{}",
+          parsed: { related: true, premise: "A", reason: "always A" },
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+        }),
+      ),
+      completeWithTools: vi.fn(),
+    };
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     if (!r.ok) throw r.error;
-    expect(r.value.metrics.errorCorrelation).toBeGreaterThan(0);
-    expect(r.value.metrics.liftOverBestSingle).toBeLessThanOrEqual(0);
+    expect(r.value.perEdge.every((p) => p.majorityVerdict === "symmetric")).toBe(true);
+  });
+
+  it("kill condition: the prompt always says unrelated → fail the accuracy gate", async () => {
+    const fixture = toyFixture();
+    // Always related:false → reconcile unrelated → "neither". Correct for e3/e5,
+    // wrong for the directional edges → accuracy 2/5 < 0.85.
+    const llm = scriptedLlm(() => "none");
+    const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
+    if (!r.ok) throw r.error;
+    expect(r.value.metrics.majorityAccuracy).toBeCloseTo(2 / 5);
     expect(r.value.passes).toBe(false);
   });
 
-  it("LLM errors are recorded as 'error' votes, not propagated as failure", async () => {
+  it("an LLM error on an edge is recorded as 'error' (not propagated as failure)", async () => {
     const fixture = toyFixture();
     const truthById = new Map(fixture.edges.map((e) => [e.id, e.truth]));
-    // axisIndex 0 = forward → error; the other two axes vote truth.
-    const llm = scriptedLlm((id, idx) =>
-      idx === 0 ? "ERROR" : truthVerdict(truthById.get(id) as FT),
-    );
+    // e1 errors (both orders share the same target fn → order1 errors → edge error);
+    // the rest reconcile to truth.
+    const llm = scriptedLlm((id) => (id === "e1" ? "ERROR" : targetOf(truthById.get(id) as FT)));
     const r = await runDecorrelation(fixture, { llm }, { model: "test", fixtureSource: "toy" });
     if (!r.ok) throw r.error;
-    expect(r.value.axisCounts.forward.errored).toBe(5);
-    expect(r.value.axisCounts.reverse.errored).toBe(0);
+    expect(r.value.axisCounts.forward.errored).toBe(1); // only e1
+    expect(r.value.metrics.majorityAccuracy).toBeCloseTo(4 / 5); // the rest correct
   });
 });
 
@@ -307,7 +327,7 @@ describe("formatDecorrelationReport", () => {
   it("renders accuracy + lift + verdict", async () => {
     const fixture = toyFixture();
     const truthById = new Map(fixture.edges.map((e) => [e.id, e.truth]));
-    const llm = scriptedLlm((id) => truthVerdict(truthById.get(id) as FT));
+    const llm = scriptedLlm((id) => targetOf(truthById.get(id) as FT));
     const r = await runDecorrelation(
       fixture,
       { llm },

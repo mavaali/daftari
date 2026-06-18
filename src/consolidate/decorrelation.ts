@@ -25,8 +25,11 @@
 // to keep the report/CLI surface stable.
 
 import { readFileSync } from "node:fs";
-import type { LlmClient } from "../eval/llm.js";
+import type { CompleteJsonResult, LlmClient } from "../eval/llm.js";
+import type { CortexEvalError } from "../eval/types.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+// Import birth's reconciliation so the report measures EXACTLY what birth ships.
+import { reconcileDirection } from "./birth.js";
 import {
   CONSOLIDATE_DECORRELATION_MIN_LIFT,
   CONSOLIDATE_DIRECTION_MIN_ACCURACY,
@@ -210,6 +213,43 @@ export function mapDerivationToFixture(v: DerivationVerdict): VoteVerdict {
   return v.premise === "B" ? "derives" : "depends";
 }
 
+type Elicit = (
+  aPath: string,
+  aContent: string,
+  bPath: string,
+  bContent: string,
+) => Promise<Result<CompleteJsonResult, CortexEvalError>>;
+
+// Run BOTH presentation orders and reconcile via birth's reconcileDirection
+// (doc=from, neighbor=to), then map to the 3-class fixture truth:
+//   directed, premise=neighbor(to) → A derives from B            → "derives"
+//   directed, premise=doc(from)    → B derives from A            → "depends"
+//   symmetric / order-contested    → "symmetric" (no directional truth matches)
+//   unrelated                      → "neither"
+// Any LLM/parse failure in either order yields "error".
+async function reconcileEdgeToFixture(
+  edge: DecorrelationFixtureEdge,
+  elicit: Elicit,
+): Promise<{ verdict: VoteVerdict | "error"; reason?: string }> {
+  // Order 1: DOC A = from, DOC B = to.
+  const r1 = await elicit(edge.fromPath, edge.fromContent, edge.toPath, edge.toContent);
+  if (!r1.ok) return { verdict: "error", reason: r1.error.message };
+  const p1 = parseDerivationVerdict(r1.value.parsed);
+  if (!p1.ok) return { verdict: "error", reason: p1.error.message };
+  // Order 2: DOC A = to, DOC B = from.
+  const r2 = await elicit(edge.toPath, edge.toContent, edge.fromPath, edge.fromContent);
+  if (!r2.ok) return { verdict: "error", reason: r2.error.message };
+  const p2 = parseDerivationVerdict(r2.value.parsed);
+  if (!p2.ok) return { verdict: "error", reason: p2.error.message };
+
+  const outcome = reconcileDirection(p1.value, p2.value);
+  const reason = p1.value.reason;
+  if (outcome.kind === "unrelated") return { verdict: "neither", reason };
+  if (outcome.kind === "symmetric") return { verdict: "symmetric", reason };
+  // directed: premise "neighbor" (=to) ⇒ derives; "doc" (=from) ⇒ depends.
+  return { verdict: outcome.premise === "neighbor" ? "derives" : "depends", reason };
+}
+
 // --- runner ------------------------------------------------------------------
 
 export interface DecorrelationRunDeps {
@@ -235,37 +275,32 @@ export async function runDecorrelation(
   const axisCounts: Record<string, { correct: number; wrong: number; errored: number }> = {};
   for (const a of axes) axisCounts[a] = { correct: 0, wrong: 0, errored: 0 };
 
+  // One foundational elicitation per (edge, order) at temp 0. Birth runs BOTH
+  // orders and reconciles (option c), abstaining → symmetric on order-disagreement;
+  // the report mirrors that EXACTLY via birth's reconcileDirection so its accuracy
+  // is birth's trusted-directed rate, not a single-order upper bound (closes F3).
+  const elicit = (aPath: string, aContent: string, bPath: string, bContent: string) =>
+    deps.llm.completeJson({
+      model: opts.model,
+      system: DERIVATION_SYSTEM,
+      user: derivationUserBody(aPath, truncate(aContent), bPath, truncate(bContent)),
+      schema: DERIVATION_VERDICT_SCHEMA,
+      temperature: 0,
+    });
+
   for (const edge of fixture.edges) {
-    const votes: DecorrelationVote[] = [];
+    // Reconcile ONCE per edge (the prompt-framing axes are identical under the
+    // deterministic prompt), then emit the same vote for every axis so the
+    // per-axis/majority/lift machinery is preserved.
+    const verdict = await reconcileEdgeToFixture(edge, elicit);
+    const votes: DecorrelationVote[] = axes.map((axis) => ({
+      axis,
+      verdict: verdict.verdict,
+      ...(verdict.reason ? { reason: verdict.reason } : {}),
+    }));
     for (const axis of axes) {
-      const r = await deps.llm.completeJson({
-        model: opts.model,
-        system: DERIVATION_SYSTEM,
-        // The foundational prompt is order-agnostic; the axis no longer varies
-        // it (see the module note). Pinned temp 0 to measure what birth runs.
-        user: derivationUserBody(
-          edge.fromPath,
-          truncate(edge.fromContent),
-          edge.toPath,
-          truncate(edge.toContent),
-        ),
-        schema: DERIVATION_VERDICT_SCHEMA,
-        temperature: 0,
-      });
-      if (!r.ok) {
-        votes.push({ axis, verdict: "error", reason: r.error.message });
-        axisCounts[axis].errored++;
-        continue;
-      }
-      const parsed = parseDerivationVerdict(r.value.parsed);
-      if (!parsed.ok) {
-        votes.push({ axis, verdict: "error", reason: parsed.error.message });
-        axisCounts[axis].errored++;
-        continue;
-      }
-      const verdict = mapDerivationToFixture(parsed.value);
-      votes.push({ axis, verdict, reason: parsed.value.reason });
-      if (verdict === edge.truth) axisCounts[axis].correct++;
+      if (verdict.verdict === "error") axisCounts[axis].errored++;
+      else if (verdict.verdict === edge.truth) axisCounts[axis].correct++;
       else axisCounts[axis].wrong++;
     }
 
