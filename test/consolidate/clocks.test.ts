@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { birthQueue, decayBackstopDue, eventDue } from "../../src/consolidate/clocks.js";
 import { docContentHash } from "../../src/consolidate/state.js";
-import type { DerivesFromEdge } from "../../src/curation/edges.js";
+import type { DerivesFromEdge, DirectionVerdict } from "../../src/curation/edges.js";
 
 const NOW = new Date("2026-06-13T00:00:00Z");
-function edge(from: string, to: string, strength: number, lastRederived: string): DerivesFromEdge {
+function edge(
+  from: string,
+  to: string,
+  strength: number,
+  lastRederived: string,
+  directionVerdict: DirectionVerdict = "directed",
+): DerivesFromEdge {
   return {
     fromPath: from,
     toPath: to,
@@ -13,6 +19,7 @@ function edge(from: string, to: string, strength: number, lastRederived: string)
     firstObserved: lastRederived,
     lastRederived,
     status: "trigger-bearing",
+    directionVerdict,
     observations: 1,
     contestedAt: null,
     contestReason: null,
@@ -34,6 +41,10 @@ describe("decayBackstopDue", () => {
     const ok = edge("a.md", "b.md", 5, "2026-06-12T00:00:00Z");
     expect(decayBackstopDue([ok], NOW)).toEqual([]);
   });
+  it("never flags a direction-symmetric edge, even when otherwise backstop-overdue", () => {
+    const sym = edge("a.md", "b.md", 5, "2026-01-01T00:00:00Z", "symmetric");
+    expect(decayBackstopDue([sym], NOW)).toEqual([]);
+  });
 });
 
 describe("eventDue", () => {
@@ -45,6 +56,13 @@ describe("eventDue", () => {
     ];
     const due = eventDue(["a.md"], edges);
     expect(due.map((d) => d.fromPath).sort()).toEqual(["b.md", "c.md"]);
+  });
+  it("symmetric edges do not propagate event triggers", () => {
+    // b derives_from a, but direction is unconfirmed (symmetric): a changing
+    // must NOT make b due.
+    const due = eventDue(["a.md"], [edge("b.md", "a.md", 5, "2026-06-12T00:00:00Z", "symmetric")]);
+    expect(due.map((d) => d.fromPath)).not.toContain("b.md");
+    expect(due).toEqual([]);
   });
   it("stops propagation where the strength product drops below the floor", () => {
     const edges = [edge("b.md", "a.md", 0.05, "2026-06-12T00:00:00Z")];
