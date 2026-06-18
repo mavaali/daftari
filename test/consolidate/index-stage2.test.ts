@@ -23,9 +23,15 @@ vi.mock("../../src/eval/llm.js", async () => {
         // We can distinguish by looking at the user body for the template
         // marker (revision uses [template:...]).
         const isRevision = /\[template:/.test(opts.user);
+        // Birth now uses the foundational-ordering {related, premise} verdict
+        // and asks in both orders. The neighbor is always b.md (search mock), so
+        // always name the DOC (the non-b.md side) as premise: order 1 has the
+        // doc as A → "A"; order 2 has the doc as B → "B". Both orders agree on
+        // the same real-world premise → a deterministic directed edge.
+        const docIsB = /DOC A \(path: b\.md\)/.test(opts.user);
         const verdict = isRevision
           ? { verdict: "survives", reason: "mock revision survives" }
-          : { verdict: "derives", reason: "mock birth derives" };
+          : { related: true, premise: docIsB ? "B" : "A", reason: "mock birth premise" };
         return ok({
           text: JSON.stringify(verdict),
           parsed: verdict,
