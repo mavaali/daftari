@@ -13,6 +13,7 @@ import {
   CONSOLIDATE_SLICE_FRACTIONS,
   reviewIntervalDays,
 } from "../../src/consolidate/constants.js";
+import { EDGE_AXES } from "../../src/curation/edges.js";
 
 describe("consolidate constants", () => {
   it("slice fractions sum to 1", () => {
@@ -66,6 +67,14 @@ describe("consolidate constants", () => {
   it("prompt templates are the three v1 framings, distinct, non-empty", () => {
     expect(CONSOLIDATE_PROMPT_TEMPLATES).toEqual(["forward", "reverse", "contrast"]);
     expect(new Set(CONSOLIDATE_PROMPT_TEMPLATES).size).toBe(CONSOLIDATE_PROMPT_TEMPLATES.length);
+  });
+
+  it("there are at least as many store axes as panel votes (distinct-axes precondition)", () => {
+    // The revision panel maps each surviving vote to a DISTINCT store axis via
+    // EDGE_AXES[i % EDGE_AXES.length]; if the prompt templates ever outgrow the
+    // store axes, that modulo would silently reuse an axis and collapse the
+    // §11.3 replay guard. Fail here at test time, not at runtime.
+    expect(CONSOLIDATE_PROMPT_TEMPLATES.length).toBeLessThanOrEqual(EDGE_AXES.length);
   });
 
   it("decorrelation min lift is in (0, 1) — small positive lift the panel must beat", () => {

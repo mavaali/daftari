@@ -87,8 +87,8 @@ describe("parseRevisionVerdict", () => {
   });
 });
 
-describe("revisionPanel — happy path", () => {
-  it("M=2 votes, both survive → 2 edge_observe records, 0 contests", async () => {
+describe("revisionPanel — majority decides, once", () => {
+  it("M=2 both survive → 2 observes with DISTINCT store axes, 0 contests (k accrues)", async () => {
     const root = tmpVault();
     try {
       const observed: Array<{ axis?: string }> = [];
@@ -111,17 +111,19 @@ describe("revisionPanel — happy path", () => {
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
-      expect(r.value.votes.length).toBe(2);
+      expect(r.value.decision).toBe("survives");
       expect(observed.length).toBe(2);
+      // R1-F1: the store axes must be DISTINCT or the replay guard collapses the
+      // panel to k+1 regardless of M (the whole panel mechanic).
+      expect(new Set(observed.map((o) => o.axis)).size).toBe(2);
       expect(contests.length).toBe(0);
       expect(r.value.observedCount).toBe(2);
-      expect(r.value.contestedCount).toBe(0);
     } finally {
       cleanup(root);
     }
   });
 
-  it("mixed survives + fails → 1 observe + 1 contest", async () => {
+  it("M=2 split (1 survive, 1 fail) is a TIE → no write, no revoke/reseed churn", async () => {
     const root = tmpVault();
     try {
       const observed: unknown[] = [];
@@ -144,8 +146,74 @@ describe("revisionPanel — happy path", () => {
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
-      expect(observed.length).toBe(1);
-      expect(contests.length).toBe(1);
+      expect(r.value.decision).toBe("tie");
+      expect(observed.length).toBe(0);
+      expect(contests.length).toBe(0);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("majority fails (2 of 3) → ONE contest, no observe (lone dissent can't revoke)", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const contests: unknown[] = [];
+      const deps: RevisionDeps = {
+        llm: mockLlm([
+          { verdict: "fails", reason: "no link" },
+          { verdict: "survives", reason: "still" },
+          { verdict: "fails", reason: "premise gone" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async () => {
+          observed.push(1);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => {
+          contests.push(1);
+          return ok({ ...dueEdge });
+        },
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 3 });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("fails");
+      expect(contests.length).toBe(1); // exactly one, never per-vote
+      expect(observed.length).toBe(0);
+      expect(r.value.contestedCount).toBe(1);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("majority survives (2 of 3) → 2 observes, no contest from the lone fail", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const contests: unknown[] = [];
+      const deps: RevisionDeps = {
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "fails", reason: "noise" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async () => {
+          observed.push(1);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => {
+          contests.push(1);
+          return ok({ ...dueEdge });
+        },
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 3 });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("survives");
+      expect(observed.length).toBe(2);
+      expect(contests.length).toBe(0);
     } finally {
       cleanup(root);
     }

@@ -17,7 +17,12 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, posix } from "node:path";
-import type { ContestEdgeInput, DerivesFromEdge, ObserveEdgeInput } from "../curation/edges.js";
+import {
+  type ContestEdgeInput,
+  type DerivesFromEdge,
+  EDGE_AXES,
+  type ObserveEdgeInput,
+} from "../curation/edges.js";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { CONSOLIDATE_PROMPT_TEMPLATES, type ConsolidatePromptTemplate } from "./constants.js";
@@ -53,6 +58,10 @@ export interface RevisionVoteError {
   error: string;
 }
 
+// The panel's aggregated decision (majority-decides). "tie" and "no-vote" apply
+// no write — they surface for human attention instead of churning edge state.
+export type RevisionDecision = "survives" | "fails" | "tie" | "no-vote";
+
 export interface RevisionTraceRow {
   at: string;
   fromPath: string;
@@ -62,12 +71,18 @@ export interface RevisionTraceRow {
   lastRederivedAtStart: string;
   model: string;
   votes: Array<RevisionVote | RevisionVoteError>;
+  // The aggregated decision + how many writes it produced — so the recall@K
+  // evaluator reads what the store actually honored, not raw vote counts.
+  decision: RevisionDecision;
+  observedCount: number;
+  contestedCount: number;
 }
 
 export interface RevisionOutcome {
   fromPath: string;
   toPath: string;
   votes: Array<RevisionVote | RevisionVoteError>;
+  decision: RevisionDecision;
   observedCount: number;
   contestedCount: number;
   // Vote landed but the downstream write (observe / contest) failed. The vote
@@ -193,15 +208,18 @@ export async function revisionPanel(
   const axes = axesForPanel(opts.panelSize);
   const votes: Array<RevisionVote | RevisionVoteError> = [];
   const writeErrors: Array<{ axis: ConsolidatePromptTemplate; error: string }> = [];
-  let observedCount = 0;
-  let contestedCount = 0;
   let llmCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
 
+  // --- Phase 1: ELICIT all M votes (no writes). Aggregation must see the whole
+  // panel before deciding — applying writes per-vote let a single dissent revoke
+  // a healthy edge and a later survive re-seed it (order-dependent churn). ---
+  const surviving: Array<{ axis: ConsolidatePromptTemplate; reason: string }> = [];
+  let failsCount = 0;
+  let firstFailReason = "re-derivation failed";
   for (const axis of axes) {
     if (llmCalls >= opts.budgetRemaining) break;
-
     const r = await deps.llm.completeJson({
       model: opts.model,
       system: SYSTEM_BASE,
@@ -215,35 +233,65 @@ export async function revisionPanel(
     }
     inputTokens += r.value.input_tokens;
     outputTokens += r.value.output_tokens;
-
     const parsed = parseRevisionVerdict(r.value.parsed);
     if (!parsed.ok) {
       votes.push({ axis, error: parsed.error.message });
       continue;
     }
     votes.push({ axis, verdict: parsed.value.verdict, reason: parsed.value.reason });
-
     if (parsed.value.verdict === "survives") {
+      surviving.push({ axis, reason: parsed.value.reason });
+    } else {
+      if (failsCount === 0) firstFailReason = parsed.value.reason;
+      failsCount++;
+    }
+  }
+
+  // --- Phase 2: AGGREGATE, then apply ONE decision (majority-decides). ---
+  const survivesCount = surviving.length;
+  let decision: RevisionDecision;
+  let observedCount = 0;
+  let contestedCount = 0;
+
+  if (survivesCount === 0 && failsCount === 0) {
+    decision = "no-vote"; // all errored / budget-starved — surface, write nothing
+  } else if (failsCount > survivesCount) {
+    // Majority fails ⇒ ONE contest (revoke + tension). Satisfies the spec's
+    // multi-pass-agreement-for-contests: a lone dissent can no longer revoke.
+    decision = "fails";
+    const con = await deps.contest({
+      fromPath,
+      toPath,
+      contestedBy: opts.agent,
+      reason: `revision panel (${failsCount}/${survivesCount + failsCount} fail): ${firstFailReason}`,
+    });
+    if (con.ok) contestedCount = 1;
+    else writeErrors.push({ axis: axes[0], error: `contest failed: ${con.error.message}` });
+  } else if (survivesCount > failsCount) {
+    // Majority survives ⇒ accrue strength: each surviving vote observes with a
+    // DISTINCT store axis (EDGE_AXES), so the §11.3 replay guard counts them as
+    // independent in one sitting (panelSize ≤ EDGE_AXES.length ⇒ no collision).
+    decision = "survives";
+    for (let i = 0; i < surviving.length; i++) {
+      const storeAxis = EDGE_AXES[i % EDGE_AXES.length];
       const obs = await deps.observe({
         fromPath,
         toPath,
         observedBy: opts.agent,
         blind: true,
-        axis: "prompt",
-        note: `revision/${axis}: ${parsed.value.reason}`,
+        axis: storeAxis,
+        note: `revision/${surviving[i].axis}: ${surviving[i].reason}`,
       });
       if (obs.ok) observedCount++;
-      else writeErrors.push({ axis, error: `observe failed: ${obs.error.message}` });
-    } else {
-      const con = await deps.contest({
-        fromPath,
-        toPath,
-        contestedBy: opts.agent,
-        reason: `revision/${axis}: ${parsed.value.reason}`,
-      });
-      if (con.ok) contestedCount++;
-      else writeErrors.push({ axis, error: `contest failed: ${con.error.message}` });
+      else
+        writeErrors.push({
+          axis: surviving[i].axis,
+          error: `observe failed: ${obs.error.message}`,
+        });
     }
+  } else {
+    // Tie (survives === fails, both > 0): no majority ⇒ surface, write nothing.
+    decision = "tie";
   }
 
   const traceRes = await deps.recordRevisionTrace({
@@ -255,12 +303,16 @@ export async function revisionPanel(
     lastRederivedAtStart: edge.lastRederived,
     model: opts.model,
     votes,
+    decision,
+    observedCount,
+    contestedCount,
   });
 
   return ok({
     fromPath,
     toPath,
     votes,
+    decision,
     observedCount,
     contestedCount,
     writeErrors,

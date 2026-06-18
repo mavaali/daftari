@@ -38,6 +38,7 @@ import {
   CONSOLIDATE_DEFAULT_MODEL,
   CONSOLIDATE_PANEL_SIZE,
   estimateCostUSD,
+  isModelPriced,
 } from "./constants.js";
 import { formatDecorrelationReport, loadFixture, runDecorrelation } from "./decorrelation.js";
 import { makeContest, makeObserve } from "./edge-write.js";
@@ -98,6 +99,7 @@ Exit codes:
   4 — ran, but backstop-overdue work was left unserved (cron-alertable)
   5 — ran, but one or more trace writes failed (recall-evaluation data lost)
   6 — decorrelation report ran, accuracy below the gate (fix elicitation/fixture)
+  7 — ran, but the event-clock baseline was unreachable (gap skipped, re-baselined to HEAD)
 `;
 
 const MS_PER_DAY = 86_400_000;
@@ -199,13 +201,22 @@ export async function runConsolidate(argv: string[]): Promise<number> {
     const inRepo = await isGitRepo(vaultRoot);
 
     let eventEdges: DueEdge[] = [];
+    let staleBaseline = false;
     if (state.lastConsolidationCommit && inRepo) {
       const changed = await changedSince(vaultRoot, state.lastConsolidationCommit);
       if (changed.ok) eventEdges = eventDue(changed.value.map(canon), edges);
-      else
+      else {
+        // The stored baseline commit is unreachable (rebase / force-push / GC /
+        // re-clone). The event clock can't run for the gap — it re-baselines to
+        // HEAD below (the decay+backstop clock will still re-derive those edges
+        // within the cap), but the gap is NOT event-examined, so we surface a
+        // non-zero exit (7) rather than silently exit 0 as if all was covered.
+        staleBaseline = true;
         process.stderr.write(
-          `consolidate: stale baseline ${state.lastConsolidationCommit} — skipping event clock\n`,
+          `consolidate: stale baseline ${state.lastConsolidationCommit} — event clock skipped, ` +
+            `re-baselining to HEAD (gap relies on the backstop clock; exit 7)\n`,
         );
+      }
     }
     const decayEdges = decayBackstopDue(edges, now);
     const birth = birthQueue(docs, birthProcessed);
@@ -316,7 +327,9 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       report += `    panels_cast: ${stage2.panelsCast} | votes_cast: ${stage2.votesCast}\n`;
       report += `    observed: ${stage2.observedTotal} | contested: ${stage2.contestedTotal}\n`;
       report += `    llm_calls: ${stage2.llmCalls} | tokens: ${stage2.inputTokens}/${stage2.outputTokens} in/out\n`;
-      report += `    est_cost_usd: ${estimateCostUSD(model, stage2.inputTokens, stage2.outputTokens).toFixed(4)} (${model})\n`;
+      report += `    est_cost_usd: ${estimateCostUSD(model, stage2.inputTokens, stage2.outputTokens).toFixed(4)} (${model})${
+        isModelPriced(model) ? "" : " [pricing_fallback: haiku — model unpriced]"
+      }\n`;
       if (stage2.traceWriteFailures > 0) {
         report += `    trace_write_failures: ${stage2.traceWriteFailures} — recall@K evaluator input lost (exit 5)\n`;
       }
@@ -346,11 +359,13 @@ export async function runConsolidate(argv: string[]): Promise<number> {
     if (!wrote.ok) process.stderr.write(`consolidate: ${wrote.error.message}\n`);
 
     // --- exit code hierarchy --------------------------------------------------
-    // 5 (trace lost) > 4 (backstop unserved) > 0. Trace loss is the more
-    // serious signal because it silently corrupts the calibration data flow;
-    // backstop-overdue is a warning the next session can resolve.
+    // 5 (trace lost) > 4 (backstop unserved) > 7 (event-clock baseline lost) > 0.
+    // Trace loss silently corrupts the calibration data flow (most serious);
+    // backstop-overdue and a lost baseline are cron-alertable warnings the next
+    // session / a human can resolve.
     if (stage2.traceWriteFailures > 0) return 5;
-    return backstopOverdueRemaining > 0 ? 4 : 0;
+    if (backstopOverdueRemaining > 0) return 4;
+    return staleBaseline ? 7 : 0;
   } catch (e) {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
     return 2;

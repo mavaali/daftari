@@ -55,6 +55,12 @@ export function prioritize(input: PrioritizeInput): PrioritizeOutput {
   // slot whenever the budget is positive — otherwise the periphery fairness floor
   // silently rounds to zero below budget 7 (floor(6·0.15)=0), breaking the §3.3
   // guarantee that the periphery gets nonzero compute every session.
+  // NOTE: at budget 1–2 the four caps (each ≥1) sum to >budget, so a single
+  // backstop-overdue edge can still consume the whole budget and starve the
+  // reserved slices that session. That is acceptable — backstop IS the guarantee,
+  // and a per-session budget below the number of reserved slices is degenerate
+  // (real budgets are CONSOLIDATE_DEFAULT_BUDGET-scale). The fairness floor holds
+  // for any budget ≥ the reserved-slice count.
   const slot = (f: number) => (budget * f > 0 ? Math.max(1, Math.floor(budget * f)) : 0);
   const cap = {
     backstop: slot(CONSOLIDATE_SLICE_FRACTIONS.backstop),

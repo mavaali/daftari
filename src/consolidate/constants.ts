@@ -84,9 +84,17 @@ export const CONSOLIDATE_PRICING_PER_MTOKEN: Record<string, { input: number; out
   "claude-opus-4-8": { input: 15.0, output: 75.0 },
 };
 
+// True when the model has its own pricing row (vs falling back to Haiku rates).
+export function isModelPriced(model: string): boolean {
+  return Object.hasOwn(CONSOLIDATE_PRICING_PER_MTOKEN, model);
+}
+
 export function estimateCostUSD(model: string, inputTokens: number, outputTokens: number): number {
   const p =
     CONSOLIDATE_PRICING_PER_MTOKEN[model] ??
     CONSOLIDATE_PRICING_PER_MTOKEN["claude-haiku-4-5-20251001"];
-  return (inputTokens * p.input + outputTokens * p.output) / 1_000_000;
+  // Clamp negatives: a bad token count must not produce a negative "cost".
+  const inTok = Math.max(0, inputTokens);
+  const outTok = Math.max(0, outputTokens);
+  return (inTok * p.input + outTok * p.output) / 1_000_000;
 }
