@@ -527,6 +527,41 @@ describe("derives_from direction verdict", () => {
     if (r.ok) expect(r.value.directionVerdict).toBe("directed");
   });
 
+  it("a re-birth that FLIPS the orientation collapses to one symmetric edge, not two directed twins", async () => {
+    // pass 1: a.md depends on b.md (b is premise) → observe(from=a, to=b, premise=to)
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "to",
+      at: T0,
+    });
+    // pass 2 (post-edit re-birth): direction flipped — b.md depends on a.md (a is
+    // premise) → observe(from=b, to=a, premise=to). Orientation flipped vs pass 1.
+    await observeEdge(vault, {
+      fromPath: "b.md",
+      toPath: "a.md",
+      observedBy: BY,
+      blind: true,
+      axis: "model",
+      premiseVote: "to",
+      at: T1,
+    });
+    // Exactly ONE edge for the {a,b} pair, and it must be symmetric (conflicting
+    // orientations are a split, not two trusted directed twins).
+    const all = await listEdges(vault, {}, new Date(T1));
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value).toHaveLength(1);
+    expect(all.value[0]?.directionVerdict).toBe("symmetric");
+    const fwd = await getEdge(vault, "a.md", "b.md", new Date(T1));
+    const rev = await getEdge(vault, "b.md", "a.md", new Date(T1));
+    expect(fwd.ok && fwd.value?.directionVerdict).toBe("symmetric");
+    expect(rev.ok && rev.value?.directionVerdict).toBe("symmetric");
+  });
+
   it("materializes direction_verdict into the sqlite row after rebuild", async () => {
     await observeEdge(vault, {
       fromPath: "a.md",

@@ -226,11 +226,27 @@ function edgeKey(from: string, to: string): string {
   return `${from}\n${to}`;
 }
 
+// The DURABLE key is canonical (sorted), so the two orientations of a pair —
+// `(x,y)` and `(y,x)` — collapse to ONE edge. Direction is then a derived
+// property of the premise votes, not of key order: this is what makes a
+// post-edit orientation flip a from/to *split* (⇒ symmetric) instead of a
+// second contradictory directed twin. Output orientation is re-derived in
+// deriveEdge.
+function canonPair(from: string, to: string): [string, string] {
+  return from <= to ? [from, to] : [to, from];
+}
+
 // Mutable per-edge state the collapse accumulates, before strength/status are
 // derived at the end.
 interface EdgeState {
+  // Canonical (sorted) endpoints — the durable identity of the pair.
   fromPath: string;
   toPath: string;
+  // The seed observe's ORIGINAL orientation (from=dependent, to=premise by the
+  // store convention). Used to preserve direction for legacy edges that carry no
+  // premise vote; directed-with-votes re-derives orientation from the votes.
+  seedFrom: string;
+  seedTo: string;
   kSurvived: number;
   firstObserved: string;
   lastRederived: string;
@@ -286,8 +302,22 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
     const from = rec.from as string;
     const to = rec.to as string;
     const at = rec.at as string;
-    const key = edgeKey(from, to);
+    const [cFrom, cTo] = canonPair(from, to);
+    const key = edgeKey(cFrom, cTo);
     const existing = byKey.get(key);
+
+    // Resolve this record's premise vote (relative to the record's own from/to)
+    // to a CANONICAL endpoint vote: "from" = canonical-first is the premise,
+    // "to" = canonical-second is the premise. Opposite orientations of the same
+    // pair therefore vote on the same canonical axis and a flip becomes a split.
+    const rawVote = validPremiseVote(rec.premiseVote);
+    let canonVote: PremiseVote | null = null;
+    if (rawVote === "symmetric") {
+      canonVote = "symmetric";
+    } else if (rawVote === "from" || rawVote === "to") {
+      const premisePath = rawVote === "to" ? to : from;
+      canonVote = premisePath === cFrom ? "from" : "to";
+    }
 
     if (rec.kind === "contest") {
       // A contest of an edge that was never observed cannot stand alone.
@@ -314,10 +344,11 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         rec.by.length > 0
           ? [`${rec.by}\n${rec.axis}`]
           : [];
-      const seedVote = validPremiseVote(rec.premiseVote);
       byKey.set(key, {
-        fromPath: from,
-        toPath: to,
+        fromPath: cFrom,
+        toPath: cTo,
+        seedFrom: from,
+        seedTo: to,
         kSurvived: 0,
         firstObserved: at,
         lastRederived: at,
@@ -326,14 +357,13 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         contestedAt: null,
         contestReason: null,
         votedPairs: new Set(seedPair),
-        premiseVotes: new Set(seedVote ? [seedVote] : []),
+        premiseVotes: new Set(canonVote ? [canonVote] : []),
       });
       continue;
     }
 
     existing.observations += 1;
-    const obsVote = validPremiseVote(rec.premiseVote);
-    if (obsVote) existing.premiseVotes.add(obsVote);
+    if (canonVote) existing.premiseVotes.add(canonVote);
     const qualifying =
       rec.blind === true &&
       typeof rec.axis === "string" &&
@@ -365,15 +395,35 @@ function deriveEdge(state: EdgeState, now: Date): DerivesFromEdge {
     : strength >= EDGE_TRIGGER_STRENGTH
       ? "trigger-bearing"
       : "candidate";
+
+  // Re-derive the OUTPUT orientation (from=dependent, to=premise). The state's
+  // fromPath/toPath are canonical; direction lives in the votes:
+  //   - symmetric ⇒ keep canonical order (direction unconfirmed, won't propagate)
+  //   - directed with votes ⇒ premise = the voted canonical endpoint
+  //   - directed without votes (legacy) ⇒ preserve the seed's original orientation
+  const verdict = directionVerdictOf(state.premiseVotes);
+  let fromPath = state.fromPath;
+  let toPath = state.toPath;
+  if (verdict === "directed") {
+    if (state.premiseVotes.size === 0) {
+      fromPath = state.seedFrom;
+      toPath = state.seedTo;
+    } else {
+      const premiseIsFrom = state.premiseVotes.has("from"); // unanimous when directed
+      fromPath = premiseIsFrom ? state.toPath : state.fromPath; // dependent
+      toPath = premiseIsFrom ? state.fromPath : state.toPath; // premise
+    }
+  }
+
   return {
-    fromPath: state.fromPath,
-    toPath: state.toPath,
+    fromPath,
+    toPath,
     strength,
     kSurvived: state.kSurvived,
     firstObserved: state.firstObserved,
     lastRederived: state.lastRederived,
     status,
-    directionVerdict: directionVerdictOf(state.premiseVotes),
+    directionVerdict: verdict,
     observations: state.observations,
     contestedAt: state.contestedAt,
     contestReason: state.contestReason,
@@ -433,7 +483,9 @@ export async function observeEdge(
     return err(new Error(`cannot record edge observation: ${reason}`));
   }
 
-  const after = collapse(readRawRecords(vaultRoot)).get(edgeKey(record.from, record.to));
+  const after = collapse(readRawRecords(vaultRoot)).get(
+    edgeKey(...canonPair(record.from, record.to)),
+  );
   if (!after) return err(new Error("edge not found after write"));
   return ok(deriveEdge(after, new Date()));
 }
@@ -458,7 +510,7 @@ export async function contestEdge(
 
   const from = input.fromPath.trim();
   const to = input.toPath.trim();
-  const current = collapse(readRawRecords(vaultRoot)).get(edgeKey(from, to));
+  const current = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(from, to)));
   if (!current) {
     return err(new Error(`contestEdge: no such edge: ${from} derives_from ${to}`));
   }
@@ -483,7 +535,7 @@ export async function contestEdge(
     return err(new Error(`cannot record edge contest: ${reason}`));
   }
 
-  const after = collapse(readRawRecords(vaultRoot)).get(edgeKey(from, to));
+  const after = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(from, to)));
   if (!after) return err(new Error("edge not found after write"));
   return ok(deriveEdge(after, new Date()));
 }
@@ -526,7 +578,7 @@ export async function getEdge(
   now: Date = new Date(),
 ): Promise<Result<DerivesFromEdge | null, Error>> {
   try {
-    const state = collapse(readRawRecords(vaultRoot)).get(edgeKey(fromPath, toPath));
+    const state = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(fromPath, toPath)));
     return ok(state ? deriveEdge(state, now) : null);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
