@@ -1,0 +1,206 @@
+{
+  "directional": [
+    {
+      "id": "nv-pf-001",
+      "premise": "In imaging and inverse-problem theory (Iagaru 2026), hallucinated reconstructions arise precisely when the forward operator has a non-trivial null space, so components of the solution unconstrained by the data are filled in arbitrarily.",
+      "conclusion": "LLM hallucination can be framed as an ill-posed inverse problem: the model inverts a forward operator with a non-trivial null space, and the unconstrained null-space components surface as fabrications."
+    },
+    {
+      "id": "nv-pf-002",
+      "premise": "Regularization of an ill-posed inverse problem works by adding external constraints (a prior) that restrict the solution to a lower-dimensional subspace, damping components the data alone cannot determine.",
+      "conclusion": "Retrieval-augmented generation acts as a regularizer on the retrieval inverse problem, injecting a low-rank prior that suppresses the unconstrained (hallucinated) components."
+    },
+    {
+      "id": "nv-pf-003",
+      "premise": "Git is the version-control layer for the vault; every write operation auto-commits, making git the reversibility substrate.",
+      "conclusion": "Daftari needs no separate versioning subsystem: every write auto-commits, so history and rollback are already provided."
+    },
+    {
+      "id": "nv-pf-004",
+      "premise": "All files are markdown with YAML frontmatter, and frontmatter is the single metadata layer for the system.",
+      "conclusion": "Daftari does not need a separate metadata database table for document attributes; the attributes live with the document."
+    },
+    {
+      "id": "nv-pf-005",
+      "premise": "Write locks are file-level and SQLite-backed with a 60-second TTL; an expired lock is released automatically.",
+      "conclusion": "A daftari write lock left behind by a crashed agent will not block the vault indefinitely."
+    },
+    {
+      "id": "nv-pf-006",
+      "premise": "Only one daftari process may hold a vault at a time; on startup the server SIGTERMs any live holder and waits up to 3 seconds before taking over the per-vault process lock.",
+      "conclusion": "Two daftari servers cannot end up corrupting the same vault by writing concurrently."
+    },
+    {
+      "id": "nv-pf-007",
+      "premise": "RBAC is config-driven: users and roles are declared in .daftari/config.yaml, not managed at runtime.",
+      "conclusion": "Daftari ships no user-management UI or user CRUD subsystem."
+    },
+    {
+      "id": "nv-pf-008",
+      "premise": "Edge strength decays on a 90-day half-life from the time of last re-derivation, and the review interval is a function of the aged strength, so a long-unreviewed edge's interval elapses.",
+      "conclusion": "In Daftari's cortex, a derivation edge that has not been re-examined for a long time should be resurfaced for review."
+    },
+    {
+      "id": "nv-pf-009",
+      "premise": "The monitor validates on a held-out question set, never the set a pass could see, because a pass that could read the exam would optimize to it (the testing-effect Goodhart guard).",
+      "conclusion": "Daftari's quality monitor evaluates the cortex on questions the curation pass could not have seen."
+    },
+    {
+      "id": "nv-pf-010",
+      "premise": "The envelope lets the human set policy once; the agent auto-acts only inside that policy and surfaces anything outside it for human ratification.",
+      "conclusion": "Under Daftari's envelope, a high-impact curation action the agent is unsure about is escalated to a human rather than executed."
+    },
+    {
+      "id": "nv-pf-011",
+      "premise": "Krakovna et al. (2018) introduce a path-integrated reachability penalty that charges an agent for cumulative irreversible effects, which the literature map names as the closest prior art to the trust budget.",
+      "conclusion": "The ATP trust budget has a direct antecedent in the side-effect-penalty literature on agent safety."
+    },
+    {
+      "id": "nv-pf-012",
+      "premise": "The strength gate catches premise-wrong-as-fact while the accumulation budget catches harm from cumulative iteration; the two failures are disjoint, so each gate is blind to the other's failure mode.",
+      "conclusion": "Daftari needs two separate gates on auto-actions because one gate alone leaves a failure mode open."
+    },
+    {
+      "id": "nv-pf-013",
+      "premise": "Edges are born inside the consolidation loop's birth mode: embedding-neighbor inference merely proposes candidate edges, and the same loop re-validates them by re-derivation, so proposal and validation share one pass.",
+      "conclusion": "Daftari does not need a separate matcher pipeline to create derivation edges."
+    },
+    {
+      "id": "nv-pf-014",
+      "premise": "The SQLite index is ephemeral and can be rebuilt from the markdown files at any time; the markdown files are the source of truth.",
+      "conclusion": "Deleting Daftari's .daftari/index.db does not lose any vault data."
+    },
+    {
+      "id": "nv-pf-015",
+      "premise": "ROME's edit formula uses C^-1 as a Mahalanobis preconditioner, treating the input covariance C as the geometry in which factual associations are stored and edited.",
+      "conclusion": "The thesis analyzes the FFN input covariance C (rather than the raw weight matrices) as the substrate where overshadowing lives."
+    },
+    {
+      "id": "nv-pf-016",
+      "premise": "The default embedding provider runs all-MiniLM-L6-v2 in-process, so embeddings are produced fully locally without any embedding-API call.",
+      "conclusion": "Daftari can index and search a vault with no external API calls."
+    },
+    {
+      "id": "nv-pd-001",
+      "premise": "Ramani (2026) finds the scaling exponent alpha varies by up to 2.6x with optimizer choice, so alpha encodes the optimization procedure in addition to architecture and data.",
+      "conclusion": "A model's empirical spectral scaling exponent should be treated as encoding the training procedure, not as an architecture-and-data-determined constant."
+    },
+    {
+      "id": "nv-pd-002",
+      "premise": "Daftari's curation engine is advisory and contradiction-preserving: vault_tension_log records a tension and surfaces it; it deliberately does not resolve, blacklist, or canonicalize-by-majority-vote, because suppressing a live disagreement destroys the signal a human needs.",
+      "conclusion": "When two curated documents contradict each other, the right action is to keep both live and log the tension rather than pick a winner."
+    },
+    {
+      "id": "nv-pd-003",
+      "premise": "Trust strength moves only on independent re-derivation; usage and popularity are deliberately excluded because reinforcing by successful-use ratio is exactly the Goodhart failure the design forbids.",
+      "conclusion": "How often a stored claim is used should have no effect on how trustworthy the system considers it."
+    },
+    {
+      "id": "nv-pd-004",
+      "premise": "A literature review found the path-irreversibility theorem already held by Arthur (1989) and Krakovna (2018), so the contribution that survives is the framing and operationalization; claiming a novel theorem would be refuted on the lit map.",
+      "conclusion": "Recasting the paper as conceptual synthesis rather than a novel theorem strengthens, not weakens, its contribution."
+    },
+    {
+      "id": "nv-pd-005",
+      "premise": "Auto-fixing would violate the never-delete and human-ratify invariants of the trust model: the engine is advisory by design so that a human, not the agent, owns every irreversible change to curated knowledge.",
+      "conclusion": "Daftari's curation engine should report problems but never automatically fix them."
+    },
+    {
+      "id": "nv-pd-006",
+      "premise": "The vault's invariant is never-delete: wrong or obsolete documents are deprecated or superseded and kept, because git plus provenance make non-destructive revision the reversibility substrate and deletion would erase the audit trail.",
+      "conclusion": "Daftari never deletes a document, even one judged wrong or obsolete."
+    },
+    {
+      "id": "nv-pd-007",
+      "premise": "Re-reading the prior answer is cramming: it produces a correlated re-derivation that cannot count as independent evidence, so the pass works from premises and the prior tension trail (the generation effect), not the document body verbatim.",
+      "conclusion": "When re-validating an edge, the pass should re-derive the claim from scratch rather than re-read the document it is checking."
+    },
+    {
+      "id": "nv-pd-008",
+      "premise": "Detecting cumulative overload requires knowing how many write actions have already been taken this session, which is information outside any single forward pass's input; it is an input-availability gap, not a capability gap, so scaling capability does not close it.",
+      "conclusion": "A more capable model will not, on its own, detect cumulative-action overload within a session."
+    },
+    {
+      "id": "nv-pd-009",
+      "premise": "Under feature superposition, singular vectors of a weight matrix are arbitrary mixtures of features, so singular-value rank does not correspond to feature-popularity rank.",
+      "conclusion": "Ranking a weight matrix's singular vectors does not give a ranking of knowledge by popularity."
+    },
+    {
+      "id": "nv-pd-010",
+      "premise": "Because git plus never-delete make every action mechanically reversible at near-zero cost, the budget cannot be justified by irreversibility; what it actually rations is the comprehension and coherence load a batch of changes imposes on the human reviewer.",
+      "conclusion": "Daftari's trust budget exists to bound how much change a human must comprehend, not to bound irreversible damage."
+    },
+    {
+      "id": "nv-pd-011",
+      "premise": "The research aligns specifically with that employer's core agenda (hallucination reduction), so it is a differentiator in that context; broadcasting unfinished, unpublished work universally would weaken rather than strengthen the general application.",
+      "conclusion": "It is sound to surface one's unpublished research as a credential for one specific employer while omitting it from the resume sent everywhere else."
+    },
+    {
+      "id": "nv-pd-012",
+      "premise": "Immediate re-derivation fights the anti-cramming rule: the inter-session gap is what certifies the next re-derivation independent, so the loop batches at session start rather than reacting live to each write.",
+      "conclusion": "Daftari deliberately does not fire re-derivation immediately when a document changes."
+    }
+  ],
+  "symmetric": [
+    {
+      "id": "sym-supply-demand",
+      "mutual": true,
+      "a": "The market-clearing price is set at the level where the quantity buyers wish to purchase exactly matches the quantity sellers wish to sell.",
+      "b": "The market-clearing quantity is the volume that changes hands at the single price where the supply and demand schedules intersect."
+    },
+    {
+      "id": "sym-predator-prey",
+      "mutual": true,
+      "a": "The predator population's growth rate rises as prey become more abundant, since more prey means more successful hunts and more offspring.",
+      "b": "The prey population's decline rate rises as predators become more abundant, since more predators means more of the prey are caught."
+    },
+    {
+      "id": "sym-nash-bestresponse",
+      "mutual": true,
+      "a": "Player 1's chosen strategy is a best response given that Player 2 plays the strategy Player 2 has chosen.",
+      "b": "Player 2's chosen strategy is a best response given that Player 1 plays the strategy Player 1 has chosen."
+    },
+    {
+      "id": "sym-time-dilation",
+      "mutual": true,
+      "a": "In special relativity, observer A measures observer B's moving clock to be running slow relative to A's own clock.",
+      "b": "In special relativity, observer B measures observer A's moving clock to be running slow relative to B's own clock."
+    },
+    {
+      "id": "sym-pollinator-coevolution",
+      "mutual": true,
+      "a": "The flower's nectar reward and corolla shape evolved to fit the morphology and behavior of its specific pollinator.",
+      "b": "The pollinator's tongue length and foraging behavior evolved to fit the nectar placement and shape of its specific flower."
+    },
+    {
+      "id": "sym-exchange-reciprocal",
+      "mutual": true,
+      "a": "The price of one dollar measured in euros equals the reciprocal of the price of one euro measured in dollars.",
+      "b": "The price of one euro measured in dollars equals the reciprocal of the price of one dollar measured in euros."
+    },
+    {
+      "id": "sym-two-body-orbit",
+      "mutual": true,
+      "a": "Body A orbits the system's barycenter because of the gravitational attraction exerted on it by body B.",
+      "b": "Body B orbits the same barycenter because of the gravitational attraction exerted on it by body A."
+    },
+    {
+      "id": "sym-arms-race",
+      "mutual": true,
+      "a": "Nation A expands its arsenal each year in direct response to the size of Nation B's arsenal.",
+      "b": "Nation B expands its arsenal each year in direct response to the size of Nation A's arsenal."
+    },
+    {
+      "id": "sym-hardware-software-codesign",
+      "mutual": true,
+      "a": "The processor's instruction set was shaped to expose exactly the operations the compiler needed to target.",
+      "b": "The compiler's code generator was shaped to emit exactly the operation mix the processor's instruction set executes fastest."
+    },
+    {
+      "id": "sym-definitional-equivalence",
+      "mutual": true,
+      "a": "In this glossary, the term 'velocity' is defined as an object's rate of change of position with respect to time.",
+      "b": "In this glossary, the phrase 'rate of change of position with respect to time' is precisely what the term 'velocity' labels."
+    }
+  ]
+}
