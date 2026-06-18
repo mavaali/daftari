@@ -47,7 +47,7 @@ export type IndexDb = Database.Database;
 // Bumped 4 → 5 to add FTS5 (`documents_fts`) and sqlite-vec (`embeddings_vec`)
 // virtual tables for SQL-native search. The index is a derived cache so the
 // bump triggers a clean rebuild (see openIndexDb); no in-place migration.
-const SCHEMA_VERSION = "5";
+const SCHEMA_VERSION = "6";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS derives_from_edges (
   last_rederived TEXT NOT NULL,
   last_age_decay TEXT NOT NULL,
   status         TEXT NOT NULL,
+  direction_verdict TEXT NOT NULL DEFAULT 'directed',
   PRIMARY KEY (from_path, to_path)
 );
 CREATE INDEX IF NOT EXISTS idx_edges_from ON derives_from_edges(from_path);
@@ -360,10 +361,12 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
       // additions (3 → 4 added embeddings.dim) and virtual-table creations
       // (4 → 5 added documents_fts + embeddings_vec) against existing rows;
       // the markdown files are the source of truth and the index is cheap to
-      // regenerate. staged_actions and derives_from_edges are not in the drop
-      // list — they are jsonl-derived and clear-and-rebuilt by their own
-      // materialize paths — but a future bump that changes THEIR columns must
-      // add them here (CREATE IF NOT EXISTS will not alter an existing table).
+      // regenerate. staged_actions is jsonl-derived and clear-and-rebuilt by
+      // its own materialize path, so it stays out of the drop list. A bump that
+      // changes a jsonl-derived table's COLUMNS must drop it here, because
+      // CREATE IF NOT EXISTS will not alter an existing table — the 5 → 6 bump
+      // adds derives_from_edges.direction_verdict, so that table is dropped and
+      // re-materialized from edges.jsonl on the next reindex.
       db.exec(
         "DROP TRIGGER IF EXISTS documents_ai;" +
           "DROP TRIGGER IF EXISTS documents_ad;" +
@@ -372,7 +375,8 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
           "DROP TABLE IF EXISTS embeddings_vec;" +
           "DROP TABLE IF EXISTS documents;" +
           "DROP TABLE IF EXISTS chunks;" +
-          "DROP TABLE IF EXISTS embeddings;",
+          "DROP TABLE IF EXISTS embeddings;" +
+          "DROP TABLE IF EXISTS derives_from_edges;",
       );
       db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
       db.prepare("DELETE FROM meta WHERE key = ?").run(VEC_DIM_META_KEY);
@@ -825,6 +829,7 @@ export interface DerivesFromEdgeRow {
   last_rederived: string;
   last_age_decay: string;
   status: string; // candidate | trigger-bearing | revoked
+  direction_verdict: string; // directed | symmetric
 }
 
 // Inserts or replaces an edge row by (from_path, to_path). Used by the
@@ -833,15 +838,16 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
   db.prepare(
     `INSERT INTO derives_from_edges
        (from_path, to_path, strength, k_survived, first_observed, last_rederived,
-        last_age_decay, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        last_age_decay, status, direction_verdict)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(from_path, to_path) DO UPDATE SET
        strength       = excluded.strength,
        k_survived     = excluded.k_survived,
        first_observed = excluded.first_observed,
        last_rederived = excluded.last_rederived,
        last_age_decay = excluded.last_age_decay,
-       status         = excluded.status`,
+       status         = excluded.status,
+       direction_verdict = excluded.direction_verdict`,
   ).run(
     row.from_path,
     row.to_path,
@@ -851,6 +857,7 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
     row.last_rederived,
     row.last_age_decay,
     row.status,
+    row.direction_verdict,
   );
 }
 

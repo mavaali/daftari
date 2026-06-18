@@ -46,6 +46,7 @@ function stubEdge(
     firstObserved: at,
     lastRederived: at,
     status,
+    directionVerdict: "directed",
     observations: 0,
     contestedAt: status === "revoked" ? at : null,
     contestReason,
