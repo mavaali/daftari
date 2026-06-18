@@ -449,7 +449,11 @@ async function runBirthLoop(
       continue;
     }
     accumulateBirth(stage2, out.value);
-    birthProcessed[docPath] = out.value.contentHash;
+    // Only mark the doc processed if its trace landed. A failed trace write
+    // (exit 5) must NOT be permanent: birthProcessed is keyed on content-hash, so
+    // marking it here would stop the doc ever re-birthing and the recall@K trace
+    // row — the whole reason birth mode exists — would be lost unrecoverably.
+    if (out.value.traceWritten) birthProcessed[docPath] = out.value.contentHash;
   }
 }
 
