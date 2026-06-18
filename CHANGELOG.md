@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-06-17
+
+### Added
+
+- **Cortex consolidation loop — Stage 2 (Component A).** The loop's read-side
+  curation engine, running `shadow_mode` + `ratify:false` by default (it proposes;
+  humans ratify), driven by `daftari consolidate --mode scan|birth|revision|both`.
+  - **Birth mode** — for an unprocessed doc, retrieve its top-K embedding
+    neighbors, judge whether a load-bearing derivation exists and in which
+    direction, and seed `k=0` candidate `derives_from` edges. The full top-K and
+    per-neighbor verdicts are logged to `.daftari/birth-trace.jsonl` for recall@K
+    evaluation.
+  - **Revision mode** — cast a panel of M independent votes on a due edge and
+    decide once by **majority**: majority-survives accrues strength (each
+    surviving vote observes on a distinct axis); majority-fails contests once
+    (revoke + tension); a tie surfaces without churning edge state.
+  - **Shadow mode** — edge writes route through `.daftari/shadow-actions.jsonl`
+    (calibration) with the durable `edges.jsonl` untouched; impact/blast/budget
+    are recorded per the §11.5 model.
+  - **Axis-decorrelation report** — `--report decorrelation --fixture <path>`
+    measures the elicitation prompt's direction-recovery accuracy on a
+    ground-truth fixture (PASS gate ≥ 85%).
+
+- **Reliable `derives_from` edge direction (foundational-ordering).** Replaces the
+  brittle derives/depends token with a temperature-0 foundational-ordering
+  judgment (`{related, premise}`): which document is the load-bearing premise that
+  must be established first. Birth loads the neighbor's content and elicits the
+  direction in **both presentation orders**, committing a directed edge only when
+  the orders agree; genuinely-mutual or order-contested pairs become
+  direction-unconfirmed **pending edges** that stay visible as undirected
+  relationships but do not propagate triggers, plus an interpretive
+  direction-pending tension for human adjudication. Edge keys are canonical, so a
+  post-edit direction flip collapses to one symmetric edge rather than forking a
+  contradictory twin. Validated at 96–100% on curated clear-direction real-prose
+  pairs and 97.4% on the contamination-free decorrelation fixture.
+
+### Changed
+
+- **SQLite index schema bumped to v6** — adds `direction_verdict` to
+  `derives_from_edges`. The `.daftari/index.db` is ephemeral and rebuilds from the
+  markdown/JSONL on first open; no data migration.
+- `daftari consolidate` gains exit code **7** (event-clock baseline unreachable —
+  the gap is re-baselined to HEAD and left to the backstop clock, surfaced as a
+  cron-alertable signal rather than a silent success).
+
 ## [1.21.0] - 2026-06-12
 
 ### Added
