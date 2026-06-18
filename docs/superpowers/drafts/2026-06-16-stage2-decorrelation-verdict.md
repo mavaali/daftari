@@ -31,6 +31,11 @@ raw number overstates it, and the indicated fix is NOT primarily multi-model.**
   the canonical CLI's behavior**, including its noise. Mihir accepted this transport as
   equivalent to the canonical `daftari consolidate` path (2026-06-17), so no separate
   Anthropic-key confirmatory run is required.
+  > NOTE (2026-06-17): this temperature=1.0 describes the ORIGINAL derives/depends-**token**
+  > runs only. The later foundational-prompt re-run (see "Formal decorrelation re-run on v2"
+  > below) pins **temperature 0** — the shim was updated to forward `opts.temperature`, and
+  > `runDecorrelation` now passes `temperature: 0`, so that run is temp-0 faithful to what
+  > birth ships. The two runs use different temperatures by design; this line is not in conflict.
 
 ## The four numbers
 
@@ -437,3 +442,47 @@ validates the capability but does **not** retire option (c): a **margin/agreemen
 (e.g. run both orders, route disagreement to the pending path) is the robustness mechanism for
 ambiguous production pairs and should be considered as a design addition before/with the loop seeding
 real edges. Not a blocker for clear edges; a known gap on ambiguous ones.
+
+### Formal decorrelation re-run on v2 + adversarial review (2026-06-17)
+
+**Decorrelation re-run — PASS.** Ran the real `runDecorrelation` (foundational prompt, temp 0,
+both-doc content) over `tests/fixtures/decorrelation-fixture-v2.json` (39 contamination-free,
+cross-family-validated edges: 18 derives / 21 neither) via the OpenRouter→Haiku shim:
+
+| | per-axis acc | majority acc | lift | agreement | verdict |
+|---|---|---|---|---|---|
+| v2 / foundational | 94.9% (37/39, all 3 axes identical) | **94.9%** | 0.0 pp (informational) | 100% | **PASS (≥85%)** |
+
+A decisive jump from the old derives/depends-token runs (lift −15.69pp v1 / −23pp v2). Direction is
+recovered with the foundational prompt + content loading. Result + per-edge detail in
+`scripts/pools/decorrelation-report.json`, log in `scripts/pools/v2/decorr-v2-foundational.log`.
+
+**Caveat (single-order — surfaced by the review).** This 94.9% is the prompt's *single-order*
+direction accuracy. Birth ships **both orders + reconcile**, abstaining (→symmetric/pending) on
+order-inconsistent edges — so 94.9% is the raw-capability ceiling, and birth's *trusted-directed*
+rate is the order-consistent subset of it. A both-orders report would measure exactly what birth
+ships; recorded as a follow-up below.
+
+**Adversarial review (3 general-purpose reviewers, distinct lenses).** Clear bugs **fixed**
+(`f82805b`): tension-flood dedup (HIGH), revision symmetric guard (LOW), shadow premiseVote (LOW),
+stale `--help`/exit-6 gloss after the accuracy-gate change (MED). **Design findings surfaced for
+decision (not unilaterally changed):**
+- **Single-order report vs both-orders birth.** The report measures a more optimistic path than birth
+  ships. Fix = run both orders + `reconcileDirection` in the report so its number is birth's
+  trusted-directed rate, not the raw single-order ceiling.
+- **Flipped directed twin on re-birth (HIGH-bounded).** Directed edges are keyed by orientation, so a
+  post-edit direction flip lands on the flipped key `(to,from)` → a *second* directed edge, not the
+  symmetric/pending collapse the design intends (that only triggers when both votes share a key).
+  Fails toward over-triggering, not false-trust; bounded by shadow + `ratify:false`. Proper fix =
+  canonical-key directed edges (direction in `premiseVote`, clocks read it) OR the deferred
+  epoch-vote-expiry (plan Task 3 note). The design doc's "flip → symmetric → tension" claim is
+  inaccurate for directed edges and should be corrected.
+- **Option-c over-production + stuck-symmetric (HIGH design concern).** With ~71–75% order-consistency
+  on *uncurated* real prose (vs 100% on the curated gate set), the hard "any order-disagreement ⇒
+  pending" rule routes ~25–30% of genuinely-directional production edges to symmetric — and the
+  collapse is a one-way door (no automated re-convergence; only human contest, which symmetric edges
+  are excluded from). Compounds into a growing pool of trigger-invisible pending edges on an
+  editing-heavy vault. Defensible in shadow (conservative), but the "Ongoing (shadow)" item must
+  track the **false-symmetric / stuck-pending rate** explicitly, and a margin signal (route to pending
+  only when both orders are low-confidence, not on a clean cross-order flip) may be needed before
+  non-shadow graduation.
