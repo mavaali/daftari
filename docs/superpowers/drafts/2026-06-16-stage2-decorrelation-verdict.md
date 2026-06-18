@@ -384,6 +384,30 @@ My read: cause 1 (order-inconsistency on genuinely-ambiguous pairs) is the real 
 is the honest path — re-curate to confirm the capability on truly clear pairs, and if even those don't
 clear ~95% order-consistency, adopt the margin→pending fallback the symmetric path already validates.
 
+### Implementation complete (2026-06-17, branch `feat/derives-from-direction`)
+
+After the re-gate PASS and the option-(c) decision, the full plan
+(`docs/superpowers/plans/2026-06-17-derives-from-direction.md`) was implemented TDD, task by task:
+
+- **T1** `CompleteOpts.temperature` passthrough · **T2** shared `derivation-prompt.ts` (foundational
+  `{related, premise}` verdict + parser) · **T3+T4** `premiseVote` observe field → derived
+  `directionVerdict` collapse + SQLite `direction_verdict` column + schema v6 · **T5** clocks skip
+  symmetric edges · **T6** birth loads neighbor content + **both-orders** elicitation + reconcile
+  (directed / symmetric-pending + interpretive tension) — **option (c)** · **T7** decorrelation reuses
+  the shared prompt (F3 closed), `parseBirthVerdict` removed; PASS gate re-based on **accuracy** (≥85%)
+  since the deterministic prompt makes lift ~0 · **T8** cost = no-op (token-based, already reflects the
+  larger inputs) · **T9** symmetric-consumer audit **clean** (`vault_edges` lists; clocks/revision gated).
+- **Suite: 1120 pass / 3 skip, tsc + biome clean.**
+
+**Still owed (carried, not blockers for this branch):**
+- The **formal decorrelation re-run on the real ~50-pair v2 fixture** is blocked on that fixture, which
+  does not exist yet (the chunk-6 handoff, a separate session). The equivalent evidence that direction
+  is now recovered with the foundational prompt + content loading is the **re-gate v2 PASS above**
+  (96–100% accuracy, 100% order-consistency); the report harness is wired and will run once the fixture lands.
+- The **margin→pending fallback's** live behaviour on ambiguous *production* pairs (vs the clear-direction
+  gate) is exercised by the both-orders reconciliation but not yet measured on real vault edges — that is
+  the shadow-mode observation the design's §4 "Ongoing (shadow)" item names.
+
 ### Re-curation re-gate (option b chosen — 2026-06-17)
 
 Built a **curated clear-direction set** (`direction-realprose-pairs-v2.json`, results in
