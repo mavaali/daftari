@@ -383,3 +383,33 @@ setting), each pair shown in both orders.
 My read: cause 1 (order-inconsistency on genuinely-ambiguous pairs) is the real signal; (b) then (c)
 is the honest path — re-curate to confirm the capability on truly clear pairs, and if even those don't
 clear ~95% order-consistency, adopt the margin→pending fallback the symmetric path already validates.
+
+### Re-curation re-gate (option b chosen — 2026-06-17)
+
+Built a **curated clear-direction set** (`direction-realprose-pairs-v2.json`, results in
+`direction-realprose-v2.results.json`): 28 directional pairs each passing the counterfactual test
+(general law/definition/design-decision as premise; specific consequence that collapses without it
+as conclusion), 5 grounded in Daftari's own `CLAUDE.md` key decisions, the rest textbook derivations
+phrased as natural prose. Authored by an independent clarity criterion — **not** by selecting pairs
+the model previously got right. Symmetric pairs reused unchanged.
+
+| model | directional acc | order-consistency | DOC1-bias | symmetric emission |
+|---|---|---|---|---|
+| claude-haiku-4.5 | **100%** | 100% | 50% | 9/10 (90%) |
+| gpt-4o | **100%** | 100% | 50% | 8/10 (80%) |
+| gemini-2.5-flash | **96%** | 100% | 50% | 10/10 (100%) |
+
+**GATE PASSES** on both kill conditions, all three models. This confirms the v1 failure was **cause 2**
+(the `draft_novel` pairs were not all clear-direction), not a capability ceiling: on unambiguous
+prose the foundational-ordering prompt recovers direction at 96–100% with perfect order-consistency
+and zero position bias, matching the synthetic-pool result. Implementation (Tasks 1–9) is unblocked.
+
+**Residual caveat carried forward (still real, now scoped).** The v1 result remains a true finding
+about *production* prose: real vault docs will contain genuinely-related-but-ambiguous pairs, and on
+those the model gives a confident-looking direction that **flips with presentation order** rather than
+emitting `symmetric` (~71% consistency in v1). The §3.3 pending path only triggers on an explicit
+`symmetric` verdict — it does **not** catch order-dependent ambiguity. So the clear-direction gate
+validates the capability but does **not** retire option (c): a **margin/agreement→pending fallback**
+(e.g. run both orders, route disagreement to the pending path) is the robustness mechanism for
+ambiguous production pairs and should be considered as a design addition before/with the loop seeding
+real edges. Not a blocker for clear edges; a known gap on ambiguous ones.

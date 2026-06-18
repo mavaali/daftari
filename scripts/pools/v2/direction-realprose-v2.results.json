@@ -1,0 +1,54 @@
+{
+  "pairsFile": "scripts/pools/v2/direction-realprose-pairs-v2.json",
+  "directionalPairs": 28,
+  "symmetricPairs": 10,
+  "dirRows": [
+    {
+      "model": "claude-haiku-4.5",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 56,
+      "errs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 56,
+      "errs": 0
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "acc": 0.9642857142857143,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 56,
+      "errs": 0
+    }
+  ],
+  "symRows": [
+    {
+      "model": "claude-haiku-4.5",
+      "symCaught": 9,
+      "symTrials": 10,
+      "symRate": 0.9,
+      "symErrs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "symCaught": 8,
+      "symTrials": 10,
+      "symRate": 0.8,
+      "symErrs": 0
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "symCaught": 10,
+      "symTrials": 10,
+      "symRate": 1,
+      "symErrs": 0
+    }
+  ]
+}

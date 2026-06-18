@@ -20,9 +20,12 @@ if (!API_KEY || !API_KEY.startsWith("sk-or-")) {
   process.exit(1);
 }
 
-const PAIRS = JSON.parse(readFileSync("scripts/pools/v2/direction-realprose-pairs.json", "utf-8"));
+const PAIRS_FILE = process.argv[2] || "scripts/pools/v2/direction-realprose-pairs.json";
+const RESULTS_FILE = process.argv[3] || "scripts/pools/v2/direction-realprose.results.json";
+const PAIRS = JSON.parse(readFileSync(PAIRS_FILE, "utf-8"));
 const directional = PAIRS.directional;
 const symmetric = PAIRS.symmetric;
+console.log(`pairs: ${PAIRS_FILE}  (${directional.length} directional, ${symmetric.length} symmetric)`);
 
 // The production prompt is the foundational-ordering one (spec §3.1 / Task 2).
 const MODELS = ["anthropic/claude-haiku-4.5", "openai/gpt-4o", "google/gemini-2.5-flash"];
@@ -115,7 +118,7 @@ for (const model of MODELS) {
 }
 
 writeFileSync(
-  "scripts/pools/v2/direction-realprose.results.json",
-  JSON.stringify({ directionalPairs: directional.length, symmetricPairs: symmetric.length, dirRows, symRows }, null, 2),
+  RESULTS_FILE,
+  JSON.stringify({ pairsFile: PAIRS_FILE, directionalPairs: directional.length, symmetricPairs: symmetric.length, dirRows, symRows }, null, 2),
 );
 console.log(`\nGate: directional acc>=85% & DOC1-bias in [40,60]; symmetric-emission majority of mutual pairs.`);
