@@ -70,7 +70,10 @@ export function makeObserve(
       touchedPaths: [input.fromPath, input.toPath],
       agent: input.observedBy,
       ...(config.principal ? { principal: config.principal } : {}),
-      commitMessage: `[shadow] edge_observe ${input.fromPath} ← ${input.toPath}${input.note ? ` (${input.note})` : ""}`,
+      // Carry premiseVote in the message so the calibration journal can
+      // reconstruct direction (directed-to vs symmetric/pending) — shadow mode
+      // is where this feature is calibrated, so the signal must not be erased.
+      commitMessage: `[shadow] edge_observe ${input.fromPath} ← ${input.toPath} [premise:${input.premiseVote ?? "n/a"}]${input.note ? ` (${input.note})` : ""}`,
     });
     if (!shadowRes.ok) return shadowRes;
     return ok(stubEdge(input.fromPath, input.toPath, shadowRes.value.at, "candidate", null));

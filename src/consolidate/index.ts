@@ -17,7 +17,7 @@
 import { existsSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import { type DerivesFromEdge, listEdges } from "../curation/edges.js";
-import { addTension } from "../curation/tension.js";
+import { addTension, listTensions } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
 import { err, ok } from "../frontmatter/types.js";
@@ -82,13 +82,14 @@ What it does:
 
 Reports:
   --report decorrelation --fixture <path>
-    Run all v1 prompt-framing axes against a ground-truth-labeled fixture
-    (brief item 8). Reports per-axis accuracy, majority accuracy, lift,
-    inter-axis agreement, error correlation. Exits 6 if the kill condition
-    fires (majority - max(single) below CONSOLIDATE_DECORRELATION_MIN_LIFT).
-    Requires ANTHROPIC_API_KEY. The real ~50-edge fixture lives at
-    tests/fixtures/decorrelation-fixture.json (built in a separate
-    session).
+    Run the shared foundational-ordering prompt against a ground-truth-labeled
+    fixture (brief item 8). Reports per-axis + majority accuracy, lift
+    (informational — the axes are identical under the deterministic prompt),
+    inter-axis agreement, error correlation. PASS/FAIL gates on ACCURACY: exits
+    6 if majority accuracy < CONSOLIDATE_DIRECTION_MIN_ACCURACY (the foundational
+    prompt did not recover direction well enough — fix the elicitation/fixture).
+    Requires ANTHROPIC_API_KEY. A real fixture lives at
+    tests/fixtures/decorrelation-fixture-v2.json.
 
 Exit codes:
   0 — ran cleanly
@@ -96,7 +97,7 @@ Exit codes:
   3 — runtime error (edge store / vault I/O)
   4 — ran, but backstop-overdue work was left unserved (cron-alertable)
   5 — ran, but one or more trace writes failed (recall-evaluation data lost)
-  6 — decorrelation report ran, kill condition fired (multi-model required)
+  6 — decorrelation report ran, accuracy below the gate (fix elicitation/fixture)
 `;
 
 const MS_PER_DAY = 86_400_000;
@@ -414,8 +415,17 @@ async function runBirthLoop(
     const d = docByPath.get(canon(path));
     return d ? ok(d.content) : err(new Error(`neighbor not in docs map: ${path}`));
   };
-  // Direction-pending tensions are authored under the loop principal.
-  const recordTension: BirthDeps["recordTension"] = (input) => addTension(vaultRoot, input);
+  // Direction-pending tensions are authored under the loop principal. Dedup on
+  // the canonical title (mirrors vaultEdgeContest): a doc re-births on every
+  // edit, so without this an unresolved direction-pending pair would re-append
+  // an identical tension on each re-birth and flood the advisory log.
+  const recordTension: BirthDeps["recordTension"] = async (input) => {
+    const existing = await listTensions(vaultRoot);
+    if (existing.ok && existing.value.some((t) => t.title === input.title && !t.resolved)) {
+      return ok(undefined); // already open for this pair — don't stack a duplicate
+    }
+    return addTension(vaultRoot, input);
+  };
   const recordBirthTrace: BirthDeps["recordBirthTrace"] = (row) => appendBirthTrace(vaultRoot, row);
 
   const opts: BirthOpts = {
@@ -484,6 +494,12 @@ async function runRevisionLoop(
     const key = `${canon(item.fromPath)}\n${canon(item.toPath)}`;
     const edge = edgeByKey.get(key);
     if (!edge) continue;
+    // Defensive: the clocks already exclude direction-symmetric edges from the
+    // due-list, but the revision panel votes on a FIXED from→to direction and
+    // has no symmetric guard of its own. Keep the invariant next to the consumer
+    // so a future due-path (e.g. the deferred TTL clock) can't feed a pending
+    // edge into a directional verdict.
+    if (edge.directionVerdict === "symmetric") continue;
     const out = await revisionPanel(
       edge,
       { llm, loadDoc, observe, contest, recordRevisionTrace },
