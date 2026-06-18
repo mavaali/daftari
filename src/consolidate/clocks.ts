@@ -34,6 +34,9 @@ export function decayBackstopDue(edges: DerivesFromEdge[], now: Date): DueEdge[]
   const out: DueEdge[] = [];
   for (const e of edges) {
     if (e.status === "revoked") continue;
+    // Direction-unconfirmed edges are not trusted to bear triggers (spec §3.4);
+    // they stay visible as undirected relationships but never become due.
+    if (e.directionVerdict === "symmetric") continue;
     // Clamp at 0: a future-dated lastRederived (clock skew) yields a negative age;
     // either way such an edge is fresh, not due (consistent with priority.ts ageOf).
     const age = Math.max(0, daysBetween(e.lastRederived, now));
@@ -74,6 +77,10 @@ export function eventDue(changedPaths: string[], edges: DerivesFromEdge[]): DueE
   const byPremise = new Map<string, DerivesFromEdge[]>();
   for (const e of edges) {
     if (e.status === "revoked") continue;
+    // Direction-unconfirmed edges don't propagate change signals (spec §3.4):
+    // we can't trust which endpoint is the premise, so a change on either side
+    // must not fabricate a due dependent.
+    if (e.directionVerdict === "symmetric") continue;
     const list = byPremise.get(e.toPath) ?? [];
     list.push(e);
     byPremise.set(e.toPath, list);

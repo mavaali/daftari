@@ -17,9 +17,10 @@
 import { existsSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import { type DerivesFromEdge, listEdges } from "../curation/edges.js";
+import { addTension } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
-import { ok } from "../frontmatter/types.js";
+import { err, ok } from "../frontmatter/types.js";
 import { vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
 import { changedSince, log as gitLog, isGitRepo } from "../utils/git.js";
@@ -408,6 +409,13 @@ async function runBirthLoop(
     if (!r.ok) return r;
     return ok(r.value.hits.map((h) => h.path));
   };
+  // Neighbor content is already in process (the docs map) — no disk read.
+  const loadNeighborContent: BirthDeps["loadNeighborContent"] = async (path) => {
+    const d = docByPath.get(canon(path));
+    return d ? ok(d.content) : err(new Error(`neighbor not in docs map: ${path}`));
+  };
+  // Direction-pending tensions are authored under the loop principal.
+  const recordTension: BirthDeps["recordTension"] = (input) => addTension(vaultRoot, input);
   const recordBirthTrace: BirthDeps["recordBirthTrace"] = (row) => appendBirthTrace(vaultRoot, row);
 
   const opts: BirthOpts = {
@@ -421,7 +429,11 @@ async function runBirthLoop(
     const docPath = canon(item.path);
     const doc = docByPath.get(docPath);
     if (!doc) continue; // queue → docs is reconstructible; a missing doc is non-fatal
-    const out = await birthOne(doc, { llm, searchNeighbors, observe, recordBirthTrace }, opts);
+    const out = await birthOne(
+      doc,
+      { llm, searchNeighbors, loadNeighborContent, observe, recordTension, recordBirthTrace },
+      opts,
+    );
     if (!out.ok) {
       process.stderr.write(`consolidate: birth failed for ${docPath}: ${out.error.message}\n`);
       continue;

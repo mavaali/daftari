@@ -86,6 +86,18 @@ export type EdgeAxis = (typeof EDGE_AXES)[number];
 export const EDGE_STATUSES = ["candidate", "trigger-bearing", "revoked"] as const;
 export type EdgeStatus = (typeof EDGE_STATUSES)[number];
 
+// Which endpoint an observation judged the load-bearing premise. "to" is the
+// normal directed case (birth orients premise on `to`); a "from"/"to" split or
+// an explicit "symmetric" collapses the edge's direction to unconfirmed.
+export const PREMISE_VOTES = ["from", "to", "symmetric"] as const;
+export type PremiseVote = (typeof PREMISE_VOTES)[number];
+
+// Derived per-edge direction (like `status`): "directed" when premise votes are
+// unanimous (or absent — legacy edges); "symmetric" on any disagreement or an
+// explicit symmetric vote. Symmetric edges stay visible as an undirected
+// relationship but do not propagate triggers (clocks.ts).
+export type DirectionVerdict = "directed" | "symmetric";
+
 // --- public shapes -----------------------------------------------------------
 
 // One collapsed edge with its strength computed as of `asOf` (the timestamp
@@ -99,6 +111,9 @@ export interface DerivesFromEdge {
   firstObserved: string;
   lastRederived: string;
   status: EdgeStatus;
+  // Derived direction (collapse of the cycle's premise votes). Defaults to
+  // "directed" when no observation carried a vote (legacy edges).
+  directionVerdict: DirectionVerdict;
   // Trail extras, useful to callers and tests; not part of the sqlite row.
   observations: number;
   contestedAt: string | null;
@@ -112,6 +127,9 @@ export interface ObserveEdgeInput {
   blind: boolean;
   axis?: EdgeAxis;
   note?: string;
+  // Which endpoint this observation judged the premise (foundational ordering).
+  // Optional: legacy/unscored observes omit it and don't affect directionVerdict.
+  premiseVote?: PremiseVote;
   // Test-only timestamp override for deterministic aging math.
   at?: string;
 }
@@ -166,6 +184,7 @@ interface RawEdgeRecord {
   axis?: string | null;
   note?: string;
   reason?: string;
+  premiseVote?: string;
 }
 
 function readRawRecords(vaultRoot: string): RawEdgeRecord[] {
@@ -222,6 +241,25 @@ interface EdgeState {
   // (observer, axis) pairs already counted as votes this cycle — the dedup
   // set behind the replay guard below. Reset on re-seed.
   votedPairs: Set<string>;
+  // Distinct premise votes seen this cycle (reset on re-seed). The direction
+  // verdict is derived from this set: unanimous (or empty) ⇒ directed; any
+  // split, or an explicit symmetric ⇒ symmetric.
+  premiseVotes: Set<PremiseVote>;
+}
+
+// Collapse the cycle's premise votes into a direction verdict (review C1):
+// empty (legacy) or unanimous from/to ⇒ directed; a from/to split or any
+// explicit symmetric vote ⇒ symmetric.
+function directionVerdictOf(votes: Set<PremiseVote>): DirectionVerdict {
+  if (votes.has("symmetric")) return "symmetric";
+  if (votes.has("from") && votes.has("to")) return "symmetric";
+  return "directed";
+}
+
+function validPremiseVote(v: unknown): PremiseVote | null {
+  return typeof v === "string" && (PREMISE_VOTES as readonly string[]).includes(v)
+    ? (v as PremiseVote)
+    : null;
 }
 
 // Collapses the append-only log to one current state per (from, to), applying
@@ -276,6 +314,7 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         rec.by.length > 0
           ? [`${rec.by}\n${rec.axis}`]
           : [];
+      const seedVote = validPremiseVote(rec.premiseVote);
       byKey.set(key, {
         fromPath: from,
         toPath: to,
@@ -287,11 +326,14 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         contestedAt: null,
         contestReason: null,
         votedPairs: new Set(seedPair),
+        premiseVotes: new Set(seedVote ? [seedVote] : []),
       });
       continue;
     }
 
     existing.observations += 1;
+    const obsVote = validPremiseVote(rec.premiseVote);
+    if (obsVote) existing.premiseVotes.add(obsVote);
     const qualifying =
       rec.blind === true &&
       typeof rec.axis === "string" &&
@@ -331,6 +373,7 @@ function deriveEdge(state: EdgeState, now: Date): DerivesFromEdge {
     firstObserved: state.firstObserved,
     lastRederived: state.lastRederived,
     status,
+    directionVerdict: directionVerdictOf(state.premiseVotes),
     observations: state.observations,
     contestedAt: state.contestedAt,
     contestReason: state.contestReason,
@@ -363,6 +406,12 @@ export async function observeEdge(
   if (input.at !== undefined && !Number.isFinite(Date.parse(input.at))) {
     return err(new Error("observeEdge 'at' must be a parseable timestamp"));
   }
+  if (
+    input.premiseVote !== undefined &&
+    !(PREMISE_VOTES as readonly string[]).includes(input.premiseVote)
+  ) {
+    return err(new Error(`observeEdge 'premiseVote' must be one of: ${PREMISE_VOTES.join(", ")}`));
+  }
 
   const record = {
     kind: "observe",
@@ -373,6 +422,7 @@ export async function observeEdge(
     blind: input.blind,
     axis: input.axis ?? null,
     ...(input.note ? { note: input.note } : {}),
+    ...(input.premiseVote ? { premiseVote: input.premiseVote } : {}),
   };
 
   try {
@@ -508,6 +558,7 @@ export function rebuildEdgesIndex(
       last_rederived: e.lastRederived,
       last_age_decay: at,
       status: e.status,
+      direction_verdict: e.directionVerdict,
     }));
     const write = db.transaction(() => {
       clearDerivesFromEdges(db);

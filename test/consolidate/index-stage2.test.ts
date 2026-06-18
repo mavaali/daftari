@@ -23,9 +23,15 @@ vi.mock("../../src/eval/llm.js", async () => {
         // We can distinguish by looking at the user body for the template
         // marker (revision uses [template:...]).
         const isRevision = /\[template:/.test(opts.user);
+        // Birth now uses the foundational-ordering {related, premise} verdict
+        // and asks in both orders. The neighbor is always b.md (search mock), so
+        // always name the DOC (the non-b.md side) as premise: order 1 has the
+        // doc as A → "A"; order 2 has the doc as B → "B". Both orders agree on
+        // the same real-world premise → a deterministic directed edge.
+        const docIsB = /DOC A \(path: b\.md\)/.test(opts.user);
         const verdict = isRevision
           ? { verdict: "survives", reason: "mock revision survives" }
-          : { verdict: "derives", reason: "mock birth derives" };
+          : { related: true, premise: docIsB ? "B" : "A", reason: "mock birth premise" };
         return ok({
           text: JSON.stringify(verdict),
           parsed: verdict,
@@ -186,7 +192,7 @@ describe("--report=decorrelation", () => {
     expect(code).toBe(2);
   });
 
-  it("happy path: panel beats each single axis → PASS, exit 0", async () => {
+  it("happy path: foundational prompt recovers direction → PASS (accuracy gate), exit 0", async () => {
     process.env.ANTHROPIC_API_KEY = "test-key";
     const edges = Array.from({ length: 6 }, (_, i) => ({
       id: `e${i + 1}`,
@@ -203,18 +209,10 @@ describe("--report=decorrelation", () => {
     vi.mocked(llmMod.createAnthropicClient).mockImplementation(() => ({
       complete: vi.fn(),
       completeJson: vi.fn(async (opts: { user: string }) => {
+        // truth=derives ⇒ premise is DOC B ⇒ {related:true, premise:"B"}.
         const idM = opts.user.match(/from-content-(e\d+)/);
-        const axisM = opts.user.match(/\[template:(\w+)\]/);
-        if (!idM || !axisM) throw new Error("couldn't parse");
-        // Each axis is wrong on 2 of 6 edges, different ones — majority is
-        // always right (lift = 1/3, well above the 0.05 threshold).
-        const wrong: Record<string, string[]> = {
-          forward: ["e1", "e2"],
-          reverse: ["e3", "e4"],
-          contrast: ["e5", "e6"],
-        };
-        const verdict = wrong[axisM[1]]?.includes(idM[1]) ? "neither" : "derives";
-        const parsed = { verdict, reason: `${axisM[1]}/${idM[1]}` };
+        if (!idM) throw new Error("couldn't parse");
+        const parsed = { related: true, premise: "B", reason: `${idM[1]}` };
         return ok({
           text: JSON.stringify(parsed),
           parsed,
@@ -259,7 +257,8 @@ describe("--report=decorrelation", () => {
     vi.mocked(llmMod.createAnthropicClient).mockImplementation(() => ({
       complete: vi.fn(),
       completeJson: vi.fn(async () => {
-        const parsed = { verdict: "neither", reason: "always wrong, always together" };
+        // Always related:false → "neither" on derives-truth edges → accuracy 0.
+        const parsed = { related: false, premise: null, reason: "always wrong" };
         return ok({
           text: JSON.stringify(parsed),
           parsed,

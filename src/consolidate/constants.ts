@@ -60,11 +60,17 @@ export const CONSOLIDATE_AGENT = "agent:curation-loop";
 export const CONSOLIDATE_PROMPT_TEMPLATES = ["forward", "reverse", "contrast"] as const;
 export type ConsolidatePromptTemplate = (typeof CONSOLIDATE_PROMPT_TEMPLATES)[number];
 
-// Decorrelation kill condition (brief item 8 / spec §10.2). If on the fixture
-// `majority_accuracy − max(single_vote_accuracy) < this`, the prompt-framing
-// axes are decorative (the panel doesn't beat its best single axis) and
-// multi-model becomes a Stage 2 add-on, NOT a Stage 5 prereq.
+// Decorrelation lift (brief item 8 / spec §10.2). `majority_accuracy −
+// max(single_vote_accuracy)`. Retained as an informational metric: under the
+// foundational-ordering prompt (which replaced the prompt-framing axes) the
+// axes send an identical deterministic prompt, so lift is ~0 by construction —
+// confirming the axes no longer decorrelate, the verdict doc's conclusion.
 export const CONSOLIDATE_DECORRELATION_MIN_LIFT = 0.05;
+
+// The report's PASS gate is now ACCURACY, not lift (spec §5 — it measures the
+// foundational prompt's direction-recovery accuracy on the fixture). Matches the
+// real-prose gate's 85% directional kill condition.
+export const CONSOLIDATE_DIRECTION_MIN_ACCURACY = 0.85;
 
 // LLM pricing — USD per million tokens, current as of 2026-06-16 for
 // claude-haiku-4-5-20251001. VERIFY against current pricing before reading the

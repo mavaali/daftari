@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { observeEdge } from "../../src/curation/edges.js";
 import { listTensions } from "../../src/curation/tension.js";
 import { vaultEdgeContest, vaultEdgeObserve, vaultEdges } from "../../src/tools/edges.js";
 import { vaultWrite } from "../../src/tools/write.js";
@@ -305,4 +306,31 @@ describe("vault_edges", () => {
     const result = await vaultEdges(vault, {}, GUEST);
     expect(result.ok).toBe(false);
   });
+
+  // Symmetric-edge consumer audit (Task 9): a direction-unconfirmed edge must
+  // stay VISIBLE as an undirected relationship in the listing — vault_edges does
+  // not walk edges directionally, so it lists it and exposes directionVerdict,
+  // never silently dropping it or treating from→to as a trusted premise link.
+  it("lists a direction-symmetric edge and exposes its directionVerdict", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    const sym = await observeEdge(vault, {
+      fromPath: "pricing/a.md",
+      toPath: "pricing/b.md",
+      observedBy: AGENT,
+      blind: true,
+      axis: "prompt",
+      premiseVote: "symmetric",
+    });
+    expect(sym.ok).toBe(true);
+
+    const all = await vaultEdges(vault, {});
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value.total).toBe(1);
+    const edge = all.value.edges[0];
+    expect(edge?.fromPath).toBe("pricing/a.md");
+    expect(edge?.toPath).toBe("pricing/b.md");
+    expect(edge?.directionVerdict).toBe("symmetric");
+  }, 60_000);
 });

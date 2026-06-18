@@ -1,9 +1,18 @@
 // Birth mode (spec §4.0, brief item 1). For an unprocessed doc, retrieve its
-// top-K embedding neighbors and ask the LLM which (if any) it derives from /
-// depends on; emit edge_observe for survivors, log the full top-K + outcomes
-// to the birth trace for post-hoc recall@K evaluation, and return the content
-// hash so the caller can advance `consolidate-state.json`'s birth-processed
-// map.
+// top-K embedding neighbors and ask the LLM — with a foundational-ordering
+// prompt, both docs' content loaded — whether it has a load-bearing derivation
+// with each neighbor and which is the premise; emit edge_observe for survivors,
+// log the full top-K + outcomes to the birth trace for post-hoc recall@K
+// evaluation, and return the content hash so the caller can advance
+// `consolidate-state.json`'s birth-processed map.
+//
+// Direction is elicited in BOTH orders per neighbor (option c, design §3.1
+// amendment): agreement ⇒ a trusted directed edge; an explicit `symmetric` or
+// an order-disagreement ⇒ a canonical-sorted *pending* edge (premiseVote
+// "symmetric", direction-unconfirmed) plus an interpretive tension for human
+// adjudication. The gate showed ambiguous real-prose pairs return a confident
+// but order-dependent direction rather than `symmetric`, so both orders are
+// required to catch that.
 //
 // One pass per neighbor — NOT a panel (the panel is revision-mode, §4.1).
 // Birth seeds k=0 candidates; subsequent revision passes earn strength.
@@ -12,9 +21,17 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, posix } from "node:path";
 import type { DerivesFromEdge, ObserveEdgeInput } from "../curation/edges.js";
+import type { TensionInput } from "../curation/tension.js";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { CONSOLIDATE_AGENT, type ConsolidatePromptTemplate } from "./constants.js";
+import {
+  DERIVATION_SYSTEM,
+  DERIVATION_VERDICT_SCHEMA,
+  type DerivationVerdict,
+  derivationUserBody,
+  parseDerivationVerdict,
+} from "./derivation-prompt.js";
 
 // --- public surface ----------------------------------------------------------
 
@@ -23,10 +40,17 @@ export interface BirthDeps {
   // Returns vault-relative paths for the doc's top-K embedding neighbors.
   // The CLI wires this to `vaultSearchRelated`; tests stub it.
   searchNeighbors: (docPath: string, k: number) => Promise<Result<string[], Error>>;
+  // Load a neighbor's content (vault-relative path) for the DOC B side of the
+  // foundational-ordering prompt. Live wiring reads the in-process docs map (no
+  // disk read); tests stub it. An error skips the neighbor (recorded in trace).
+  loadNeighborContent: (path: string) => Promise<Result<string, Error>>;
   // Observe an edge. Live wiring calls `observeEdge(vaultRoot, input)`; the
   // shadow-mode wrapper (chunk 4) intercepts and writes to shadow-actions.jsonl
   // instead. Injecting this means birth.ts knows nothing about shadow.
   observe: (input: ObserveEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
+  // Record a direction-pending tension (mutual or order-contested). Live wiring
+  // calls `addTension(vaultRoot, ...)`; tests collect in memory.
+  recordTension: (input: TensionInput) => Promise<Result<unknown, Error>>;
   // Append one trace row per birth-processed doc (top-K + verdicts). The CLI
   // wires this to `.daftari/birth-trace.jsonl`; tests collect rows in memory.
   recordBirthTrace: (row: BirthTraceRow) => Promise<Result<void, Error>>;
@@ -37,14 +61,19 @@ export interface BirthOpts {
   agent: string;
   axis: ConsolidatePromptTemplate;
   // Max LLM calls this birth pass may make. Decremented by the caller across
-  // docs; birth.ts itself just caps THIS doc's neighbor count by it.
+  // docs; birth.ts itself just caps THIS doc's neighbor count by it. Each
+  // neighbor now costs 2 calls (both orders, option c).
   budgetRemaining: number;
   model: string;
 }
 
 export interface BirthVerdict {
   neighbor: string;
-  verdict: "derives" | "depends" | "neither";
+  related: boolean;
+  // Reconciled direction outcome for this neighbor.
+  direction: "directed" | "symmetric" | "none";
+  // Which doc is the load-bearing premise, when directed. null otherwise.
+  premise: "doc" | "neighbor" | null;
   reason: string;
 }
 
@@ -92,68 +121,48 @@ function canon(p: string): string {
   return posix.normalize(p).replace(/^\.\//, "");
 }
 
-// --- verdict parsing ---------------------------------------------------------
+// --- direction reconciliation (option c) -------------------------------------
 
-// The LLM is asked to return {verdict, reason}; this guards against silently
-// accepting unknown verdicts that would poison the edge_observe call.
-const VALID_VERDICTS: ReadonlySet<string> = new Set(["derives", "depends", "neither"]);
+export type ReconcileOutcome =
+  | { kind: "unrelated" }
+  | { kind: "directed"; premise: "doc" | "neighbor" }
+  | { kind: "symmetric"; contested: boolean };
 
-export function parseBirthVerdict(
-  raw: unknown,
-): Result<{ verdict: "derives" | "depends" | "neither"; reason: string }, Error> {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return err(new Error("verdict: expected object"));
-  }
-  const obj = raw as Record<string, unknown>;
-  const v = obj.verdict;
-  const r = obj.reason;
-  if (typeof v !== "string" || !VALID_VERDICTS.has(v)) {
-    return err(
-      new Error(`verdict: expected one of derives|depends|neither, got ${JSON.stringify(v)}`),
-    );
-  }
-  if (typeof r !== "string" || r.trim().length === 0) {
-    return err(new Error("verdict: 'reason' is required (and non-empty)"));
-  }
-  return ok({ verdict: v as "derives" | "depends" | "neither", reason: r });
+// Map an order-1 verdict (A=doc, B=neighbor) to a real-world premise.
+function realWorldPremise1(v: DerivationVerdict): "doc" | "neighbor" | "symmetric" | "unrelated" {
+  if (!v.related) return "unrelated";
+  if (v.premise === "symmetric") return "symmetric";
+  if (v.premise === "A") return "doc";
+  if (v.premise === "B") return "neighbor";
+  return "unrelated";
 }
 
-// --- prompt construction -----------------------------------------------------
-
-const VERDICT_SCHEMA = {
-  type: "object",
-  required: ["verdict", "reason"],
-  properties: {
-    verdict: { enum: ["derives", "depends", "neither"] },
-    reason: { type: "string", minLength: 1 },
-  },
-} as const;
-
-const SYSTEM_BASE =
-  "You evaluate whether one document's central claim derives from another's. " +
-  "A 'derivation' means the first claim depends on the second as a load-bearing premise — " +
-  "not a passing reference, not a citation, not a co-occurrence. " +
-  "Be conservative: when the dependence is shallow or ambiguous, return 'neither'.";
-
-function userBody(
-  axis: ConsolidatePromptTemplate,
-  docA: string,
-  docAPath: string,
-  docB: string,
-  docBPath: string,
-): string {
-  const a = `DOC A (path: ${docAPath}):\n${truncate(docA)}`;
-  const b = `DOC B (path: ${docBPath}):\n${truncate(docB)}`;
-  switch (axis) {
-    case "forward":
-      return `${a}\n\n${b}\n\nDoes the central claim of DOC A derive from / depend on the central claim of DOC B? Return JSON.`;
-    case "reverse":
-      // Same question, asked from the other side: does B underlie A?
-      return `${b}\n\n${a}\n\nDoes the central claim of DOC A depend on the central claim of DOC B as a load-bearing premise? Return JSON.`;
-    case "contrast":
-      return `${a}\n\n${b}\n\nWhat is the relationship between the central claims of DOC A and DOC B? If A derives from B, answer 'derives'. If B derives from A, answer 'depends'. Otherwise 'neither'. Return JSON.`;
-  }
+// Map an order-2 verdict (A=neighbor, B=doc) to a real-world premise.
+function realWorldPremise2(v: DerivationVerdict): "doc" | "neighbor" | "symmetric" | "unrelated" {
+  if (!v.related) return "unrelated";
+  if (v.premise === "symmetric") return "symmetric";
+  if (v.premise === "A") return "neighbor";
+  if (v.premise === "B") return "doc";
+  return "unrelated";
 }
+
+// Reconcile both orders into a single edge decision. Conservative on existence
+// (either order saying "unrelated" ⇒ no edge); any explicit symmetric ⇒ pending;
+// agreement on the premise ⇒ directed; disagreement (one says doc, the other
+// neighbor) ⇒ pending-contested.
+export function reconcileDirection(
+  order1: DerivationVerdict,
+  order2: DerivationVerdict,
+): ReconcileOutcome {
+  const r1 = realWorldPremise1(order1);
+  const r2 = realWorldPremise2(order2);
+  if (r1 === "unrelated" || r2 === "unrelated") return { kind: "unrelated" };
+  if (r1 === "symmetric" || r2 === "symmetric") return { kind: "symmetric", contested: false };
+  if (r1 === r2) return { kind: "directed", premise: r1 };
+  return { kind: "symmetric", contested: true };
+}
+
+// --- prompt input bounding ---------------------------------------------------
 
 // Truncate doc content for the prompt. Birth doesn't need the whole doc —
 // the central claim is usually in the first ~1500 chars; a longer corpus
@@ -161,6 +170,14 @@ function userBody(
 const MAX_DOC_CHARS = 1500;
 function truncate(s: string): string {
   return s.length <= MAX_DOC_CHARS ? s : `${s.slice(0, MAX_DOC_CHARS)}\n…[truncated]`;
+}
+
+// A non-empty one-line claim snippet for the tension record (addTension rejects
+// empty claims). Falls back to the path when the content is blank.
+function claimSnippet(content: string, fallback: string): string {
+  const line = content.split("\n").find((l) => l.trim().length > 0);
+  const snip = (line ?? "").trim().slice(0, 200);
+  return snip.length > 0 ? snip : `(no readable content: ${fallback})`;
 }
 
 // --- birth pass --------------------------------------------------------------
@@ -172,6 +189,7 @@ export async function birthOne(
 ): Promise<Result<BirthOutcome, Error>> {
   const docPath = canon(doc.relPath);
   const contentHash = createHash("sha256").update(doc.content).digest("hex").slice(0, 16);
+  const docContent = truncate(doc.content);
 
   const neighborsRes = await deps.searchNeighbors(docPath, 20);
   if (!neighborsRes.ok) return neighborsRes;
@@ -184,54 +202,125 @@ export async function birthOne(
   let outputTokens = 0;
 
   for (const neighbor of neighbors) {
-    if (llmCalls >= opts.budgetRemaining) break;
+    // Each neighbor needs both orders; stop if we can't afford the pair.
+    if (llmCalls + 2 > opts.budgetRemaining) break;
 
-    // We don't have the neighbor's content here — the caller has docs map, but
-    // birth passes through one doc at a time. For v1 we pass the neighbor path
-    // only; the LLM evaluates structural plausibility from titles + the path's
-    // own semantic signal. Loading neighbor contents inflates cost ~20× per
-    // doc (one re-read per neighbor) and is the obvious calibration knob.
-    // Tracked: load on demand when shadow data shows path-only verdicts
-    // disagree with content-loaded verdicts on the decorrelation fixture.
-    const r = await deps.llm.completeJson({
+    const nc = await deps.loadNeighborContent(neighbor);
+    if (!nc.ok) {
+      verdicts.push({ neighbor, error: `load failed: ${nc.error.message}` });
+      continue;
+    }
+    const neighborContent = truncate(nc.value);
+
+    // Order 1: DOC A = this doc, DOC B = neighbor.
+    const r1 = await deps.llm.completeJson({
       model: opts.model,
-      system: SYSTEM_BASE,
-      user: userBody(opts.axis, doc.content, docPath, "", neighbor),
-      schema: VERDICT_SCHEMA,
+      system: DERIVATION_SYSTEM,
+      user: derivationUserBody(docPath, docContent, neighbor, neighborContent),
+      schema: DERIVATION_VERDICT_SCHEMA,
+      temperature: 0,
     });
     llmCalls++;
-    if (!r.ok) {
-      verdicts.push({ neighbor, error: r.error.message });
+    if (!r1.ok) {
+      verdicts.push({ neighbor, error: r1.error.message });
       continue;
     }
-    inputTokens += r.value.input_tokens;
-    outputTokens += r.value.output_tokens;
-
-    const parsed = parseBirthVerdict(r.value.parsed);
-    if (!parsed.ok) {
-      verdicts.push({ neighbor, error: parsed.error.message });
+    inputTokens += r1.value.input_tokens;
+    outputTokens += r1.value.output_tokens;
+    const p1 = parseDerivationVerdict(r1.value.parsed);
+    if (!p1.ok) {
+      verdicts.push({ neighbor, error: p1.error.message });
       continue;
     }
-    verdicts.push({ neighbor, verdict: parsed.value.verdict, reason: parsed.value.reason });
 
-    if (parsed.value.verdict === "neither") continue;
+    // Order 2: DOC A = neighbor, DOC B = this doc.
+    const r2 = await deps.llm.completeJson({
+      model: opts.model,
+      system: DERIVATION_SYSTEM,
+      user: derivationUserBody(neighbor, neighborContent, docPath, docContent),
+      schema: DERIVATION_VERDICT_SCHEMA,
+      temperature: 0,
+    });
+    llmCalls++;
+    if (!r2.ok) {
+      verdicts.push({ neighbor, error: r2.error.message });
+      continue;
+    }
+    inputTokens += r2.value.input_tokens;
+    outputTokens += r2.value.output_tokens;
+    const p2 = parseDerivationVerdict(r2.value.parsed);
+    if (!p2.ok) {
+      verdicts.push({ neighbor, error: p2.error.message });
+      continue;
+    }
 
-    const [from, to] =
-      parsed.value.verdict === "derives" ? [docPath, neighbor] : [neighbor, docPath];
+    const outcome = reconcileDirection(p1.value, p2.value);
+    const reason = p1.value.reason;
+
+    if (outcome.kind === "unrelated") {
+      verdicts.push({ neighbor, related: false, direction: "none", premise: null, reason });
+      continue;
+    }
+
+    if (outcome.kind === "directed") {
+      // Premise is materialized on `to` (clocks: from depends on to). doc-premise
+      // ⇒ to=doc, from=neighbor; neighbor-premise ⇒ to=neighbor, from=doc.
+      const [from, to] = outcome.premise === "doc" ? [neighbor, docPath] : [docPath, neighbor];
+      verdicts.push({
+        neighbor,
+        related: true,
+        direction: "directed",
+        premise: outcome.premise,
+        reason,
+      });
+      const obs = await deps.observe({
+        fromPath: from,
+        toPath: to,
+        observedBy: opts.agent,
+        blind: true,
+        axis: "prompt",
+        premiseVote: "to",
+        note: `birth: ${reason}`,
+      });
+      if (!obs.ok) {
+        verdicts.push({ neighbor, error: `observe failed: ${obs.error.message}` });
+        continue;
+      }
+      observations.push({ from, to });
+      continue;
+    }
+
+    // symmetric — a canonical-sorted pending edge (direction unconfirmed) so
+    // re-observation lands on the same key, plus an interpretive tension.
+    const [from, to] = [docPath, neighbor].sort();
+    const which = outcome.contested ? "contested" : "mutual";
+    verdicts.push({ neighbor, related: true, direction: "symmetric", premise: null, reason });
     const obs = await deps.observe({
       fromPath: from,
       toPath: to,
       observedBy: opts.agent,
       blind: true,
       axis: "prompt",
-      note: `birth/${opts.axis}: ${parsed.value.reason}`,
+      premiseVote: "symmetric",
+      note: `birth/symmetric(${which}): ${reason}`,
     });
     if (!obs.ok) {
-      // Don't fail the pass — surface in the trace, move on.
       verdicts.push({ neighbor, error: `observe failed: ${obs.error.message}` });
       continue;
     }
     observations.push({ from, to });
+    const tension = await deps.recordTension({
+      title: `direction-pending (${which}): ${from} ↔ ${to}`,
+      kind: "interpretive",
+      sourceA: docPath,
+      claimA: claimSnippet(doc.content, docPath),
+      sourceB: neighbor,
+      claimB: claimSnippet(nc.value, neighbor),
+      loggedBy: opts.agent,
+    });
+    if (!tension.ok) {
+      verdicts.push({ neighbor, error: `tension failed: ${tension.error.message}` });
+    }
   }
 
   const traceRes = await deps.recordBirthTrace({

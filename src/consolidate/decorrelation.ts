@@ -9,19 +9,37 @@
 // session (see the chunk-6 handoff). Until it exists, the gate cannot fire
 // meaningfully and the report is exercise-only.
 //
-// Verdict space: birth-mode {derives, depends, neither}. We deliberately use
-// the birth surface (not revision's {survives, fails}) because the fixture's
-// ground truth IS a directional derivation claim — the natural match.
+// Verdict space: the fixture ground truth is the 3-class {derives, depends,
+// neither} directional claim. The report now elicits with the SHARED
+// foundational-ordering prompt birth runs (derivation-prompt.ts, closing F3) and
+// maps its {related, premise} verdict onto that 3-class truth (+ a 4th
+// "symmetric" vote that never matches a directional truth, so a fabricated
+// mutual answer is correctly scored wrong).
+//
+// NOTE (axes are now redundant): the foundational prompt is order-agnostic and
+// temperature-0 deterministic, so the three prompt-framing axes send an
+// identical prompt and agree by construction — the report measures the
+// foundational prompt's per-edge ACCURACY (spec §5), not prompt-framing
+// decorrelation (which the verdict doc already found decorative). Collapsing the
+// axes loop to a single judgment is a follow-up; the structure is retained here
+// to keep the report/CLI surface stable.
 
 import { readFileSync } from "node:fs";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { parseBirthVerdict } from "./birth.js";
 import {
   CONSOLIDATE_DECORRELATION_MIN_LIFT,
+  CONSOLIDATE_DIRECTION_MIN_ACCURACY,
   CONSOLIDATE_PROMPT_TEMPLATES,
   type ConsolidatePromptTemplate,
 } from "./constants.js";
+import {
+  DERIVATION_SYSTEM,
+  DERIVATION_VERDICT_SCHEMA,
+  type DerivationVerdict,
+  derivationUserBody,
+  parseDerivationVerdict,
+} from "./derivation-prompt.js";
 
 // --- fixture shape -----------------------------------------------------------
 
@@ -50,9 +68,13 @@ export interface DecorrelationFixture {
 
 // --- vote + result shapes ----------------------------------------------------
 
+// A vote can be one of the 3 directional classes, "symmetric" (the model said
+// neither doc is THE premise — never matches a directional truth), or "error".
+export type VoteVerdict = FixtureTruth | "symmetric";
+
 export interface DecorrelationVote {
   axis: ConsolidatePromptTemplate;
-  verdict: FixtureTruth | "error";
+  verdict: VoteVerdict | "error";
   reason?: string;
 }
 
@@ -60,7 +82,7 @@ export interface DecorrelationPerEdge {
   id: string;
   truth: FixtureTruth;
   votes: DecorrelationVote[];
-  majorityVerdict: FixtureTruth | "tie" | "all-error";
+  majorityVerdict: VoteVerdict | "tie" | "all-error";
   majorityCorrect: boolean;
 }
 
@@ -88,10 +110,11 @@ export interface DecorrelationReport {
   axes: readonly ConsolidatePromptTemplate[];
   model: string;
   metrics: DecorrelationMetrics;
-  // Kill condition: liftOverBestSingle >= CONSOLIDATE_DECORRELATION_MIN_LIFT.
-  // `passes=true` means the prompt-framing axis is doing real work and
-  // multi-model can stay deferred. `false` means multi-model must land
-  // INSIDE Stage 2 before any auto-write graduation.
+  // PASS gate (spec §5): majorityAccuracy >= CONSOLIDATE_DIRECTION_MIN_ACCURACY.
+  // `passes=true` means the foundational prompt recovers direction accurately
+  // enough on the fixture; `false` means direction recovery is below the bar and
+  // the elicitation/fixture needs work before any auto-write graduation. (Lift is
+  // still reported but no longer gates — the axes are identical now.)
   passes: boolean;
   perEdge: DecorrelationPerEdge[];
   // Per-axis verdict counts (incl. errors) — for the report's narrative.
@@ -168,46 +191,23 @@ export function loadFixture(path: string): Result<DecorrelationFixture, Error> {
   return parseFixture(parsed);
 }
 
-// --- prompts (shared with birth — the verdict space matches) ----------------
-
-const VERDICT_SCHEMA = {
-  type: "object",
-  required: ["verdict", "reason"],
-  properties: {
-    verdict: { enum: ["derives", "depends", "neither"] },
-    reason: { type: "string", minLength: 1 },
-  },
-} as const;
-
-const SYSTEM_BASE =
-  "You evaluate whether one document's central claim derives from another's. " +
-  "A 'derivation' means the first claim depends on the second as a load-bearing premise — " +
-  "not a passing reference, not a citation, not a co-occurrence. " +
-  "Be conservative: when the dependence is shallow or ambiguous, return 'neither'.";
+// --- prompt + verdict mapping (shared foundational prompt, closing F3) --------
 
 const MAX_DOC_CHARS = 1500;
 function truncate(s: string): string {
   return s.length <= MAX_DOC_CHARS ? s : `${s.slice(0, MAX_DOC_CHARS)}\n…[truncated]`;
 }
 
-function userBody(
-  axis: ConsolidatePromptTemplate,
-  fromPath: string,
-  fromContent: string,
-  toPath: string,
-  toContent: string,
-): string {
-  const tag = `[template:${axis}]`;
-  const a = `${tag}\nDOC A (path: ${fromPath}):\n${truncate(fromContent)}`;
-  const b = `DOC B (path: ${toPath}):\n${truncate(toContent)}`;
-  switch (axis) {
-    case "forward":
-      return `${a}\n\n${b}\n\nDoes the central claim of DOC A derive from / depend on the central claim of DOC B? Return JSON.`;
-    case "reverse":
-      return `${tag}\n${b}\n\n${a}\n\nDoes the central claim of DOC A depend on the central claim of DOC B as a load-bearing premise? Return JSON.`;
-    case "contrast":
-      return `${a}\n\n${b}\n\nWhat is the relationship between the central claims of DOC A and DOC B? If A derives from B, answer 'derives'. If B derives from A, answer 'depends'. Otherwise 'neither'. Return JSON.`;
-  }
+// Map the foundational {related, premise} verdict onto the fixture's 3-class
+// directional truth (DOC A = fromPath/fromContent, DOC B = toPath/toContent):
+//   related:false        → neither
+//   premise === "B"      → A derives from B            → "derives"
+//   premise === "A"      → B derives from A            → "depends"
+//   premise === "symmetric" → "symmetric" (never matches a directional truth)
+export function mapDerivationToFixture(v: DerivationVerdict): VoteVerdict {
+  if (!v.related) return "neither";
+  if (v.premise === "symmetric") return "symmetric";
+  return v.premise === "B" ? "derives" : "depends";
 }
 
 // --- runner ------------------------------------------------------------------
@@ -240,23 +240,32 @@ export async function runDecorrelation(
     for (const axis of axes) {
       const r = await deps.llm.completeJson({
         model: opts.model,
-        system: SYSTEM_BASE,
-        user: userBody(axis, edge.fromPath, edge.fromContent, edge.toPath, edge.toContent),
-        schema: VERDICT_SCHEMA,
+        system: DERIVATION_SYSTEM,
+        // The foundational prompt is order-agnostic; the axis no longer varies
+        // it (see the module note). Pinned temp 0 to measure what birth runs.
+        user: derivationUserBody(
+          edge.fromPath,
+          truncate(edge.fromContent),
+          edge.toPath,
+          truncate(edge.toContent),
+        ),
+        schema: DERIVATION_VERDICT_SCHEMA,
+        temperature: 0,
       });
       if (!r.ok) {
         votes.push({ axis, verdict: "error", reason: r.error.message });
         axisCounts[axis].errored++;
         continue;
       }
-      const parsed = parseBirthVerdict(r.value.parsed);
+      const parsed = parseDerivationVerdict(r.value.parsed);
       if (!parsed.ok) {
         votes.push({ axis, verdict: "error", reason: parsed.error.message });
         axisCounts[axis].errored++;
         continue;
       }
-      votes.push({ axis, verdict: parsed.value.verdict, reason: parsed.value.reason });
-      if (parsed.value.verdict === edge.truth) axisCounts[axis].correct++;
+      const verdict = mapDerivationToFixture(parsed.value);
+      votes.push({ axis, verdict, reason: parsed.value.reason });
+      if (verdict === edge.truth) axisCounts[axis].correct++;
       else axisCounts[axis].wrong++;
     }
 
@@ -277,7 +286,7 @@ export async function runDecorrelation(
     axes,
     model: opts.model,
     metrics,
-    passes: metrics.liftOverBestSingle >= CONSOLIDATE_DECORRELATION_MIN_LIFT,
+    passes: metrics.majorityAccuracy >= CONSOLIDATE_DIRECTION_MIN_ACCURACY,
     perEdge,
     axisCounts: axisCounts as Record<
       ConsolidatePromptTemplate,
@@ -290,8 +299,8 @@ export async function runDecorrelation(
 
 // Most common non-error verdict. Returns "tie" when the top two are tied (the
 // panel can't decide), or "all-error" when every vote errored.
-export function majorityVerdict(votes: DecorrelationVote[]): FixtureTruth | "tie" | "all-error" {
-  const counts = new Map<FixtureTruth, number>();
+export function majorityVerdict(votes: DecorrelationVote[]): VoteVerdict | "tie" | "all-error" {
+  const counts = new Map<VoteVerdict, number>();
   let nonErrors = 0;
   for (const v of votes) {
     if (v.verdict === "error") continue;
@@ -380,12 +389,12 @@ export function formatDecorrelationReport(report: DecorrelationReport): string {
   }
   lines.push(`  majority accuracy:  ${(report.metrics.majorityAccuracy * 100).toFixed(1)}%`);
   lines.push(
-    `  lift over best single:  ${(report.metrics.liftOverBestSingle * 100).toFixed(2)} pp  (kill condition: >= ${(CONSOLIDATE_DECORRELATION_MIN_LIFT * 100).toFixed(1)} pp)`,
+    `  lift over best single:  ${(report.metrics.liftOverBestSingle * 100).toFixed(2)} pp  (informational; min-lift ${(CONSOLIDATE_DECORRELATION_MIN_LIFT * 100).toFixed(1)} pp — axes identical under the foundational prompt)`,
   );
   lines.push(`  axis agreement rate: ${(report.metrics.axisAgreementRate * 100).toFixed(1)}%`);
   lines.push(`  error correlation:   ${(report.metrics.errorCorrelation * 100).toFixed(1)}%`);
   lines.push(
-    `  VERDICT: ${report.passes ? "PASS — prompt-framing axes are doing real work" : "FAIL — multi-model must land inside Stage 2"}`,
+    `  VERDICT: ${report.passes ? "PASS — foundational prompt recovers direction" : "FAIL — direction recovery below the accuracy bar"}  (accuracy gate: >= ${(CONSOLIDATE_DIRECTION_MIN_ACCURACY * 100).toFixed(0)}%)`,
   );
   return `${lines.join("\n")}\n`;
 }

@@ -1,0 +1,53 @@
+{
+  "directionalPairs": 28,
+  "symmetricPairs": 10,
+  "dirRows": [
+    {
+      "model": "claude-haiku-4.5",
+      "acc": 0.7857142857142857,
+      "bias": 0.42857142857142855,
+      "cons": 0.7142857142857143,
+      "trials": 56,
+      "errs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "acc": 0.6964285714285714,
+      "bias": 0.5178571428571429,
+      "cons": 0.75,
+      "trials": 56,
+      "errs": 0
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "acc": 0.6964285714285714,
+      "bias": 0.39285714285714285,
+      "cons": 0.7037037037037037,
+      "trials": 56,
+      "errs": 0
+    }
+  ],
+  "symRows": [
+    {
+      "model": "claude-haiku-4.5",
+      "symCaught": 9,
+      "symTrials": 10,
+      "symRate": 0.9,
+      "symErrs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "symCaught": 9,
+      "symTrials": 10,
+      "symRate": 0.9,
+      "symErrs": 0
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "symCaught": 10,
+      "symTrials": 10,
+      "symRate": 1,
+      "symErrs": 0
+    }
+  ]
+}
