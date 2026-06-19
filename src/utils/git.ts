@@ -7,6 +7,8 @@
 // tree; `git -C <vaultRoot>` scopes every command to it.
 
 import { execFile } from "node:child_process";
+import { mkdir, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
@@ -58,10 +60,32 @@ export async function isGitRepo(vaultRoot: string): Promise<boolean> {
   return result.ok && result.value.trim() === "true";
 }
 
-// Initializes a git repo at the vault root if one does not already exist.
-// Idempotent — safe to call on every write.
-export async function ensureGitRepo(vaultRoot: string): Promise<Result<void, Error>> {
+// Initializes a git repo for the vault if one does not already exist. When
+// `gitDir` is given, the repo data lives there (git init --separate-git-dir),
+// leaving only a static `.git` FILE in the vault — so a cloud-synced vault never
+// holds churning git internals. Idempotent.
+export async function ensureGitRepo(
+  vaultRoot: string,
+  gitDir?: string,
+): Promise<Result<void, Error>> {
   if (await isGitRepo(vaultRoot)) return ok(undefined);
+
+  if (gitDir) {
+    // A leftover `.git` FILE (e.g. synced from another device, pointing at a
+    // path that doesn't exist here) makes `git init` refuse. isGitRepo already
+    // returned false, so it isn't a live repo — drop the stale pointer first.
+    try {
+      const s = await stat(join(vaultRoot, ".git"));
+      if (s.isFile()) await rm(join(vaultRoot, ".git"));
+    } catch {
+      // no .git present — fine
+    }
+    await mkdir(dirname(gitDir), { recursive: true });
+    const init = await git(vaultRoot, ["init", "--quiet", `--separate-git-dir=${gitDir}`]);
+    if (!init.ok) return init;
+    return ok(undefined);
+  }
+
   const init = await git(vaultRoot, ["init", "--quiet"]);
   if (!init.ok) return init;
   return ok(undefined);
@@ -76,8 +100,9 @@ export async function commit(
   paths: string[],
   message: string,
   identity: string,
+  opts: { gitDir?: string } = {},
 ): Promise<Result<{ hash: string }, Error>> {
-  const ready = await ensureGitRepo(vaultRoot);
+  const ready = await ensureGitRepo(vaultRoot, opts.gitDir);
   if (!ready.ok) return ready;
 
   if (paths.length === 0) {
