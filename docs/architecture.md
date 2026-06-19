@@ -473,6 +473,19 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   of truth, with a derived `derives_from_edges` table in the ephemeral index
   (rebuilt on reindex, materialized at startup) for the loop's future
   traversal engine.
+- **Two-gate envelope (consolidation loop, Stage 3).** `daftari consolidate`
+  (Component A — the birth/revision curation loop) consults a two-gate
+  envelope before every edge `do()`: an **invariants** gate (e.g. it refuses
+  to act on an edge whose endpoint carries an unresolved tension) and a
+  **trust-budget** gate. The envelope is wired **live but shadowed** — its
+  verdict is computed and recorded, never enacted. Each decision is journaled
+  to the shared `.daftari/shadow-actions.jsonl` as `decision: "admitted"` or
+  `decision: "gated"` (with the gate and reason), and `vault_lint` surfaces a
+  distinct envelope-gated view alongside the existing would-gate calibration
+  section. The §8 closures: a loop decision records `decided_by_principal`
+  (the authenticated identity) on the staged-action / contest-tension it
+  produces, and `vault_tension_resolve` is gated on `canRatify` for
+  loop-authored tensions, so the loop cannot close its own tensions.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
 process silently rewrites or deletes knowledge. Every change is a deliberate,
