@@ -57,6 +57,14 @@ const baseOpts: RevisionOpts = {
   model: "claude-haiku-test",
 };
 
+// Default: the envelope always admits. Refusing tests pass their own `admit`.
+const ADMIT_OK: RevisionDeps["admit"] = async () => ({
+  admit: true,
+  gate: null,
+  reason: "ok",
+  impact: 0,
+});
+
 const dueEdge = {
   fromPath: "a.md",
   toPath: "b.md",
@@ -94,6 +102,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: Array<{ axis?: string }> = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "ok" },
           { verdict: "survives", reason: "still" },
@@ -129,6 +138,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "still ok" },
           { verdict: "fails", reason: "premise reformulated" },
@@ -160,6 +170,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "fails", reason: "no link" },
           { verdict: "survives", reason: "still" },
@@ -193,6 +204,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "ok" },
           { verdict: "fails", reason: "noise" },
@@ -214,6 +226,144 @@ describe("revisionPanel — majority decides, once", () => {
       expect(r.value.decision).toBe("survives");
       expect(observed.length).toBe(2);
       expect(contests.length).toBe(0);
+    } finally {
+      cleanup(root);
+    }
+  });
+});
+
+describe("revisionPanel — envelope admit (gate consulted once per panel decision)", () => {
+  it("majority survives but admit refuses → decision 'gated', 0 observes", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const contests: unknown[] = [];
+      const deps: RevisionDeps = {
+        admit: async () => ({
+          admit: false,
+          gate: "budget" as const,
+          reason: "trust-budget exhausted",
+          impact: 0.05,
+        }),
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async () => {
+          observed.push(1);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => {
+          contests.push(1);
+          return ok({ ...dueEdge });
+        },
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("gated");
+      expect(r.value.observedCount).toBe(0);
+      expect(observed.length).toBe(0);
+      expect(contests.length).toBe(0);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("majority fails but admit refuses → decision 'gated', 0 contests", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const contests: unknown[] = [];
+      const deps: RevisionDeps = {
+        admit: async () => ({
+          admit: false,
+          gate: "invariants" as const,
+          reason: "provenance-required",
+          impact: 0,
+        }),
+        llm: mockLlm([
+          { verdict: "fails", reason: "no link" },
+          { verdict: "survives", reason: "still" },
+          { verdict: "fails", reason: "premise gone" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async () => {
+          observed.push(1);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => {
+          contests.push(1);
+          return ok({ ...dueEdge });
+        },
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 3 });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("gated");
+      expect(r.value.contestedCount).toBe(0);
+      expect(contests.length).toBe(0);
+      expect(observed.length).toBe(0);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("a throwing admit does NOT crash the panel: treated as a refusal → gated, no write", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const deps: RevisionDeps = {
+        admit: async () => {
+          throw new Error("makeAdmit fs error");
+        },
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async () => {
+          observed.push(1);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("gated");
+      expect(r.value.gate).toBe("invariants");
+      expect(observed.length).toBe(0);
+      // The panel completed; the trace landed.
+      expect(r.value.traceWritten).toBe(true);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("tie does NOT consult admit (nothing to write)", async () => {
+    const root = tmpVault();
+    try {
+      let admitCalls = 0;
+      const deps: RevisionDeps = {
+        admit: async () => {
+          admitCalls++;
+          return ADMIT_OK({ action: "edge-observe", fromPath: "", toPath: "" });
+        },
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "fails", reason: "no" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async () => ok({ ...dueEdge }),
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("tie");
+      expect(admitCalls).toBe(0);
     } finally {
       cleanup(root);
     }
@@ -247,6 +397,7 @@ describe("revisionPanel — independence by axis (§11.3 replay-gap)", () => {
         completeWithTools: vi.fn(),
       };
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm,
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
         observe: async () => ok({ ...dueEdge }),
@@ -268,6 +419,7 @@ describe("revisionPanel — budget + stop", () => {
     const root = tmpVault();
     try {
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "1" },
           { verdict: "survives", reason: "2" },
@@ -295,6 +447,7 @@ describe("revisionPanel — budget + stop", () => {
     const root = tmpVault();
     try {
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "1" },
           { verdict: "survives", reason: "2" },
@@ -325,6 +478,7 @@ describe("revisionPanel — trace", () => {
     try {
       const rows: unknown[] = [];
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "1" },
           { verdict: "fails", reason: "2" },
@@ -358,6 +512,7 @@ describe("revisionPanel — trace", () => {
     try {
       const observed: unknown[] = [];
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([{ verdict: "survives", reason: "x" }]),
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
         observe: async () => {
@@ -390,6 +545,7 @@ describe("revisionPanel — path canonicalization", () => {
         toPath: "research/./b.md",
       };
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([{ verdict: "survives", reason: "x" }]),
         loadDoc: async (p) => {
           loaded.push(p);
@@ -416,6 +572,7 @@ describe("revisionPanel — write failure post-vote (observe/contest disk error)
     const root = tmpVault();
     try {
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm: mockLlm([{ verdict: "survives", reason: "ok" }]),
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
         observe: async () => ({ ok: false, error: new Error("edges.jsonl disk full") }),
@@ -463,6 +620,7 @@ describe("revisionPanel — LLM failures", () => {
         completeWithTools: vi.fn(),
       };
       const deps: RevisionDeps = {
+        admit: ADMIT_OK,
         llm,
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
         observe: async () => {

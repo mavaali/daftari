@@ -42,6 +42,7 @@ import {
 } from "./constants.js";
 import { formatDecorrelationReport, loadFixture, runDecorrelation } from "./decorrelation.js";
 import { makeContest, makeObserve } from "./edge-write.js";
+import type { Admit } from "./envelope.js";
 import { prioritize } from "./priority.js";
 import {
   appendRevisionTrace,
@@ -279,12 +280,19 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       const observe = makeObserve({
         vaultRoot,
         shadowMode: cfg.value.shadowMode,
-        principal: CONSOLIDATE_AGENT,
       });
       const contest = makeContest({
         vaultRoot,
         shadowMode: cfg.value.shadowMode,
-        principal: CONSOLIDATE_AGENT,
+      });
+      // TODO(Stage 3 Task 7): replace with real makeAdmit (envelope + budget +
+      // journal). This temporary stub always admits so birth/revision behave as
+      // before until the envelope-owned admit lands.
+      const admit: Admit = async () => ({
+        admit: true,
+        gate: null,
+        reason: "stage7-pending",
+        impact: 0,
       });
 
       if (mode === "birth" || mode === "both") {
@@ -295,6 +303,7 @@ export async function runConsolidate(argv: string[]): Promise<number> {
         await runBirthLoop(
           birthOnly,
           docByPath,
+          admit,
           observe,
           llm,
           vaultRoot,
@@ -313,6 +322,7 @@ export async function runConsolidate(argv: string[]): Promise<number> {
           edgeOnly,
           edgeByKey,
           docByPath,
+          admit,
           observe,
           contest,
           llm,
@@ -413,6 +423,7 @@ function emptyStage2(): Stage2Result {
 async function runBirthLoop(
   birthItems: Array<{ kind: "birth"; path: string }>,
   docByPath: Map<string, { relPath: string; content: string }>,
+  admit: BirthDeps["admit"],
   observe: BirthDeps["observe"],
   llm: LlmClient,
   vaultRoot: string,
@@ -456,7 +467,15 @@ async function runBirthLoop(
     if (!doc) continue; // queue → docs is reconstructible; a missing doc is non-fatal
     const out = await birthOne(
       doc,
-      { llm, searchNeighbors, loadNeighborContent, observe, recordTension, recordBirthTrace },
+      {
+        llm,
+        searchNeighbors,
+        loadNeighborContent,
+        admit,
+        observe,
+        recordTension,
+        recordBirthTrace,
+      },
       opts,
     );
     if (!out.ok) {
@@ -485,6 +504,7 @@ async function runRevisionLoop(
   edgeItems: Array<{ kind: "edge"; fromPath: string; toPath: string }>,
   edgeByKey: Map<string, DerivesFromEdge>,
   docByPath: Map<string, { relPath: string; content: string }>,
+  admit: RevisionDeps["admit"],
   observe: RevisionDeps["observe"],
   contest: RevisionDeps["contest"],
   llm: LlmClient,
@@ -521,7 +541,7 @@ async function runRevisionLoop(
     if (edge.directionVerdict === "symmetric") continue;
     const out = await revisionPanel(
       edge,
-      { llm, loadDoc, observe, contest, recordRevisionTrace },
+      { llm, loadDoc, admit, observe, contest, recordRevisionTrace },
       opts,
     );
     if (!out.ok) {

@@ -1,13 +1,18 @@
 // Shadow-aware wrappers around observeEdge / contestEdge for the consolidation
 // loop (spec §5.3, brief item 5). When the vault runs `shadow_mode: true`,
-// these factories route edge writes through `recordShadowAction` so the
-// calibration log gains records but `.daftari/edges.jsonl` is untouched.
-// When shadow is off, they fall through to the live store.
+// these factories return a synthetic stub edge and touch NOTHING — no edge
+// store, no journal. When shadow is off, they fall through to the live store.
 //
-// The CLI (chunk 5) is the ONLY caller — birth.ts and revision.ts receive
-// `observe` / `contest` via dependency injection and don't know which path
-// they're on. That keeps the unit tests for those modules hermetic (no fs,
-// no shadow config), and concentrates the live-vs-shadow branch here.
+// Journaling used to live here (recordShadowAction). It moved out (Stage 3,
+// decision D6): the calibration journal is now written by the CLI's admit
+// wrapper, which owns the envelope's budget accounting. The loop must NOT
+// advance the shared spentByVault, so edge-write must not record an action
+// the way the live MCP tools do.
+//
+// The CLI is the ONLY caller — birth.ts and revision.ts receive `observe` /
+// `contest` via dependency injection and don't know which path they're on.
+// That keeps the unit tests for those modules hermetic (no fs, no shadow
+// config), and concentrates the live-vs-shadow branch here.
 
 import {
   type ContestEdgeInput,
@@ -16,16 +21,11 @@ import {
   type ObserveEdgeInput,
   observeEdge,
 } from "../curation/edges.js";
-import { recordShadowAction } from "../curation/shadow.js";
 import { ok, type Result } from "../frontmatter/types.js";
 
 export interface EdgeWriteConfig {
   vaultRoot: string;
   shadowMode: boolean;
-  // The authenticated server identity (spec §11.6). Optional because tests
-  // and a non-RBAC vault may not set it; the live observe/contest tools don't
-  // need it (provenance there comes from the caller-claimed `agent`).
-  principal?: string;
 }
 
 // In shadow mode we return a synthetic DerivesFromEdge so the caller's
@@ -53,6 +53,12 @@ function stubEdge(
   };
 }
 
+// Shadow-mode timestamp for the synthetic stub. Matches the edge store's
+// second-resolution ISO format so the stub is shape-compatible.
+function nowIso(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 export function makeObserve(
   config: EdgeWriteConfig,
 ): (input: ObserveEdgeInput) => Promise<Result<DerivesFromEdge, Error>> {
@@ -60,23 +66,9 @@ export function makeObserve(
     if (!config.shadowMode) {
       return observeEdge(config.vaultRoot, input);
     }
-    const shadowRes = await recordShadowAction(config.vaultRoot, {
-      tool: "vault_edge_observe",
-      action: "edge-observe",
-      // targetPath drives the blast computation (downstream reach via reverse
-      // link/source maps). The FROM doc is the right seed: strengthening
-      // from→to could re-trigger anything downstream of `from`.
-      targetPath: input.fromPath,
-      touchedPaths: [input.fromPath, input.toPath],
-      agent: input.observedBy,
-      ...(config.principal ? { principal: config.principal } : {}),
-      // Carry premiseVote in the message so the calibration journal can
-      // reconstruct direction (directed-to vs symmetric/pending) — shadow mode
-      // is where this feature is calibrated, so the signal must not be erased.
-      commitMessage: `[shadow] edge_observe ${input.fromPath} ← ${input.toPath} [premise:${input.premiseVote ?? "n/a"}]${input.note ? ` (${input.note})` : ""}`,
-    });
-    if (!shadowRes.ok) return shadowRes;
-    return ok(stubEdge(input.fromPath, input.toPath, shadowRes.value.at, "candidate", null));
+    // Shadow mode: advance nothing. Return the stub so the caller's success
+    // branch (which keys on `ok` + counts, not the row contents) is satisfied.
+    return ok(stubEdge(input.fromPath, input.toPath, nowIso(), "candidate", null));
   };
 }
 
@@ -87,16 +79,6 @@ export function makeContest(
     if (!config.shadowMode) {
       return contestEdge(config.vaultRoot, input);
     }
-    const shadowRes = await recordShadowAction(config.vaultRoot, {
-      tool: "vault_edge_contest",
-      action: "edge-contest",
-      targetPath: input.fromPath,
-      touchedPaths: [input.fromPath, input.toPath],
-      agent: input.contestedBy,
-      ...(config.principal ? { principal: config.principal } : {}),
-      commitMessage: `[shadow] edge_contest ${input.fromPath} ← ${input.toPath}: ${input.reason}`,
-    });
-    if (!shadowRes.ok) return shadowRes;
-    return ok(stubEdge(input.fromPath, input.toPath, shadowRes.value.at, "revoked", input.reason));
+    return ok(stubEdge(input.fromPath, input.toPath, nowIso(), "revoked", input.reason));
   };
 }

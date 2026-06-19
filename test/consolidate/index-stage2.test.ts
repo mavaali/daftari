@@ -146,8 +146,10 @@ describe("Stage 2 dispatch — birth", () => {
     expect(Object.keys(state.birthProcessed).length).toBeGreaterThan(0);
     // Shadow mode: no real edges in .daftari/edges.jsonl.
     expect(existsSync(join(dir, ".daftari", "edges.jsonl"))).toBe(false);
-    // But shadow-actions.jsonl WAS appended (the calibration data flow).
-    expect(existsSync(join(dir, ".daftari", "shadow-actions.jsonl"))).toBe(true);
+    // Journaling moved out of edge-write (Stage 3, D6): shadow-actions.jsonl is
+    // now written by the CLI's admit wrapper (Stage 3 Task 7). With the
+    // temporary always-admit stub in place, nothing journals yet.
+    expect(existsSync(join(dir, ".daftari", "shadow-actions.jsonl"))).toBe(false);
   });
 });
 

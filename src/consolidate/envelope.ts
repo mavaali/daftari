@@ -37,6 +37,18 @@ export interface EnvelopeVerdict {
   impact: number; // echoed so the caller deducts the right amount on admit
 }
 
+// The injected gate Component A consults once per edge-action (birth: per
+// neighbor; revision: per panel decision). The CLI's makeAdmit (a later task)
+// assembles the EnvelopeCtx, calls evaluateEnvelope, deducts on admit, and
+// journals — birth.ts / revision.ts only see this narrow surface so their unit
+// tests stay hermetic (no fs, no shadow config, no budget state).
+export interface EnvelopeAction {
+  action: EnvelopeActionType;
+  fromPath: string;
+  toPath: string;
+}
+export type Admit = (a: EnvelopeAction) => Promise<EnvelopeVerdict>;
+
 export function evaluateEnvelope(ctx: EnvelopeCtx, spent: number): EnvelopeVerdict {
   // --- Invariants gate (first; §5.1) ---
   //
