@@ -5,13 +5,35 @@
 // backfill plan/apply flow with Obsidian-aware derivation enabled. The command
 // mirrors backfill's two-step UX exactly (spec: 2026-06-19-obsidian-adoption).
 
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { dump, load } from "js-yaml";
 import { runBackfill } from "../backfill/index.js";
 import { directoryExists } from "../storage/local.js";
 import { isGitRepo } from "../utils/git.js";
 import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 
 const SUPPORTED = ["obsidian"] as const;
+
+// Writes git_dir (+ auto_commit:true) into the vault's config.yaml, merging into
+// any existing config. Idempotent: returns "present" with no rewrite when already
+// at the target. Comments in an existing config are not preserved (js-yaml dump).
+function writeGitDirConfig(vaultRoot: string, gitDirValue: string): "written" | "present" {
+  const cfgPath = join(vaultRoot, ".daftari", "config.yaml");
+  let cfg: Record<string, unknown> = {};
+  if (existsSync(cfgPath)) {
+    const parsed = load(readFileSync(cfgPath, "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      cfg = parsed as Record<string, unknown>;
+    }
+  }
+  if (cfg.git_dir === gitDirValue && cfg.auto_commit === true) return "present";
+  cfg.git_dir = gitDirValue;
+  cfg.auto_commit = true;
+  mkdirSync(dirname(cfgPath), { recursive: true });
+  writeFileSync(cfgPath, dump(cfg), "utf-8");
+  return "written";
+}
 
 const HELP = `daftari import — adopt an existing vault into Daftari, in place.
 
@@ -56,10 +78,19 @@ export async function runImport(argv: string[]): Promise<number> {
   let vault = ".";
   const passthrough: string[] = [];
   let tookVault = false;
+  let externalGitDir: string | undefined;
   for (const a of rest) {
     if (!tookVault && !a.startsWith("-")) {
       vault = a;
       tookVault = true;
+      continue;
+    }
+    if (a === "--external-git-dir") {
+      externalGitDir = "external";
+      continue;
+    }
+    if (a.startsWith("--external-git-dir=")) {
+      externalGitDir = a.slice("--external-git-dir=".length) || "external";
       continue;
     }
     passthrough.push(a);
@@ -80,7 +111,9 @@ export async function runImport(argv: string[]): Promise<number> {
   const isGit = await isGitRepo(resolvedVault);
   if (!isGit) {
     process.stderr.write(
-      `daftari import: '${vault}' is not a git repository — Daftari versions changes with git and will initialize one here.\n`,
+      externalGitDir !== undefined
+        ? `daftari import: '${vault}' is not a git repository — Daftari will initialize git data at an external location (config git_dir), keeping .git out of the vault.\n`
+        : `daftari import: '${vault}' is not a git repository — Daftari versions changes with git and will initialize one here.\n`,
     );
   }
 
@@ -94,6 +127,21 @@ export async function runImport(argv: string[]): Promise<number> {
     if (result !== "present") {
       process.stderr.write(
         `daftari import: wrote .daftari ignore rules to ${resolvedVault}/.gitignore\n`,
+      );
+    }
+  }
+
+  if (externalGitDir !== undefined) {
+    if (isApply) {
+      const res = writeGitDirConfig(resolvedVault, externalGitDir);
+      if (res === "written") {
+        process.stderr.write(
+          `daftari import: configured external git-dir (git_dir: ${externalGitDir}, auto_commit: true) in ${resolvedVault}/.daftari/config.yaml\n`,
+        );
+      }
+    } else {
+      process.stderr.write(
+        "daftari import: --external-git-dir will be written to config on --apply (dry-run writes nothing)\n",
       );
     }
   }

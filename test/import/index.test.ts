@@ -1,6 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { load } from "js-yaml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock runBackfill to capture delegation without touching the filesystem.
@@ -95,5 +96,51 @@ describe("runImport", () => {
       expect.arrayContaining(["--vault", tmpDir, "--apply", "--scope", "x"]),
       { obsidian: true },
     );
+  });
+
+  it("--external-git-dir writes git_dir: external + auto_commit: true on apply", async () => {
+    const v = makeNonGitVault();
+    await runImport(["obsidian", v, "--apply", "--scope", "x", "--external-git-dir"]);
+    const cfg = load(readFileSync(join(v, ".daftari", "config.yaml"), "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    expect(cfg.git_dir).toBe("external");
+    expect(cfg.auto_commit).toBe(true);
+    const lastCall = (runBackfill as any).mock.calls.at(-1);
+    expect(lastCall[0]).not.toContain("--external-git-dir"); // stripped before delegation
+  });
+
+  it("--external-git-dir=/p writes the explicit path", async () => {
+    const v = makeNonGitVault();
+    await runImport(["obsidian", v, "--apply", "--scope", "x", "--external-git-dir=/tmp/ext-git"]);
+    const cfg = load(readFileSync(join(v, ".daftari", "config.yaml"), "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    expect(cfg.git_dir).toBe("/tmp/ext-git");
+  });
+
+  it("merges into an existing config without dropping other keys", async () => {
+    const v = makeNonGitVault();
+    mkdirSync(join(v, ".daftari"), { recursive: true });
+    writeFileSync(
+      join(v, ".daftari", "config.yaml"),
+      "auto_commit: false\nwarm_embeddings: false\n",
+    );
+    await runImport(["obsidian", v, "--apply", "--scope", "x", "--external-git-dir"]);
+    const cfg = load(readFileSync(join(v, ".daftari", "config.yaml"), "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    expect(cfg.git_dir).toBe("external");
+    expect(cfg.auto_commit).toBe(true); // overridden
+    expect(cfg.warm_embeddings).toBe(false); // preserved
+  });
+
+  it("does NOT write config on --plan (dry-run)", async () => {
+    const v = makeNonGitVault();
+    await runImport(["obsidian", v, "--plan", "--external-git-dir"]);
+    expect(existsSync(join(v, ".daftari", "config.yaml"))).toBe(false);
   });
 });
