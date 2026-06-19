@@ -134,11 +134,16 @@ distribution in Stage 5; a scalar would hide which tail is moving.)
 - **Snapshot of counts.** Cross-session drift is recoverable offline from the journal
   timestamps; no history file needed in v1.
 
-### 5.4 Direction-resolution coverage (stuck-pending)
+### 5.4 Direction-resolution coverage (the symmetric/unresolved tail)
 
-- **Source:** `listEdges` — `DerivesFromEdge.directionVerdict` /  `status`.
-- **Report:** counts of `symmetric` and pending vs `directed`, plus the
-  stuck-pending fraction over non-revoked edges.
+- **Source:** `listEdges` — `DerivesFromEdge.directionVerdict`.
+- **Model note:** there is NO "pending" state. `directionVerdict` is exactly
+  `"directed" | "symmetric"` (verified `src/curation/edges.ts:99`); `symmetric` =
+  direction unconfirmed (the edge can't bear triggers and never becomes due —
+  `clocks.ts` skips it). `symmetric` IS the "stuck/unresolved" set the handoff's
+  "stuck-pending" referred to.
+- **Report:** counts of `directed` vs `symmetric`, plus the **unresolved fraction**
+  (`symmetric / non-revoked`).
 - The named shadow-OFF graduation gate (the ~71–75% ambiguous-tail observation from
   the Stage-2 decorrelation verdict), now a standing metric rather than a draft note.
 
@@ -167,8 +172,8 @@ interface CoverageEquitySummary {
     total: number;
   };
   directionResolution: {
-    directed: number; symmetric: number; pending: number;
-    stuckPendingFraction: number;     // (symmetric + pending) / non-revoked
+    directed: number; symmetric: number;
+    unresolvedFraction: number;       // symmetric / non-revoked
   };
 }
 ```
@@ -184,7 +189,7 @@ All zeros on an empty / never-run vault (no findings is the empty state, not an 
 2. **Revoked exclusion** — a revoked (strength-0) edge does not enter the strength
    distribution.
 3. **Empty vault** — every counter zero, no error.
-4. **All-symmetric vault** — `stuckPendingFraction == 1`, backstop-overdue == 0
+4. **All-symmetric vault** — `unresolvedFraction == 1`, backstop-overdue == 0
    (symmetric edges never become due).
 5. **Backstop boundary** — an edge at exactly 90 days is overdue; at 89 is not
    (matches `decayBackstopDue` `>=` semantics).
