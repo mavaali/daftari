@@ -42,7 +42,7 @@ One new **pure** module: `src/curation/coverage.ts`, exporting
 coverageEquitySummary(
   docs: LoadedDoc[],
   edges: DerivesFromEdge[],
-  shadowActions: ShadowActionRecord[],
+  shadowRecords: ShadowActionRecord[],   // raw journal rows (listShadowActions)
   stagedActions: <staged-action records>,
   now: Date,
 ): Result<CoverageEquitySummary, Error>
@@ -57,7 +57,10 @@ coverageEquitySummary(
   load `edges` (`listEdges`), the shadow journal (`listShadowActions`), the staged-
   action log, then `coverageEquity = coverageEquitySummary(...)`. Added as
   `coverageEquity: CoverageEquitySummary` on `LintReport` (interface at lint.ts:124,
-  beside `shadowActions`).
+  beside `shadowActions`). NOTE the function's raw-records parameter is named
+  `shadowRecords` (not `shadowActions`) to avoid shadowing the existing
+  `LintReport.shadowActions: ShadowLintSummary` field — they are different objects
+  (raw journal rows vs. the aggregated summary).
 - **Tool output:** surfaced in the `vault_lint` MCP tool (`src/tools/curation.ts`),
   mirroring the existing `shadowActions` rendering.
 - **No writes, no new `.daftari` file.** Snapshot-first.
@@ -119,8 +122,15 @@ distribution in Stage 5; a scalar would hide which tail is moving.)
   = promote/deprecate/supersede/merge/confidence-up, in
   `src/curation/staged-actions.ts`).
 - **Report:** counts per action type + the **cheap-link fraction**
-  (`edge-observe / total recorded actions`) — the "creeping toward cheap link over
-  deprecate/merge" ratchet (§6.2).
+  (`edge-observe / total`) — the "creeping toward cheap link over deprecate/merge"
+  ratchet (§6.2).
+- **Denominator (pinned):** `total` = envelope/edge-op rows (`recordEnvelopeDecision`:
+  `edge-observe`/`edge-contest`) **plus** staged-action rows (`STAGED_ACTION_TYPES`).
+  It **excludes** the shadow journal's doc-write calibration rows
+  (`recordShadowAction`, which carry an `action` that is not an edge op and no
+  `decision`). The metric is about the curation `do()` mix, not doc writes — those
+  rows would dilute the ratchet. The filter: a record counts iff its `action` ∈
+  {edge-observe, edge-contest} or it is a staged-action record.
 - **Snapshot of counts.** Cross-session drift is recoverable offline from the journal
   timestamps; no history file needed in v1.
 
@@ -179,7 +189,8 @@ All zeros on an empty / never-run vault (no findings is the empty state, not an 
 5. **Backstop boundary** — an edge at exactly 90 days is overdue; at 89 is not
    (matches `decayBackstopDue` `>=` semantics).
 6. **Action-mix** — empty journals → zeros; mixed journal → correct cheap-link
-   fraction.
+   fraction; **a doc-write calibration row (`recordShadowAction`) mixed into the
+   journal must NOT count toward the denominator** (locks the §5.3 pinned filter).
 7. **Path-alias canonicalization** — feed an edge with an aliased path
    (`x/../x/a.md`); assert blast seeds canonicalize so the edge isn't double-counted
    or mis-bucketed (carries the `feedback_canonicalize_path_keys` lesson into the
