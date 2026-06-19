@@ -137,6 +137,24 @@ describe("generatePlan", () => {
     const second = readFileSync(planPath(vault), "utf-8");
     expect(second).toBe(first);
   });
+
+  it("harvests inline tags into the plan when obsidian mode is on", async () => {
+    // Write a doc with an inline #tag and no frontmatter. listFiles uses glob
+    // (not git), so the file is picked up immediately without a git commit.
+    const clipPath = join(vault, "notes/clip.md");
+    mkdirSync(dirname(clipPath), { recursive: true });
+    writeFileSync(clipPath, "# Clip\n\nbody #harvested\n");
+
+    const result = await generatePlan(vault, {
+      identityMap: {},
+      invoker: "human:tester",
+      obsidian: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const entry = result.value.entries.find((e) => e.path === "notes/clip.md");
+    expect(entry?.proposed.tags).toContain("harvested");
+  });
 });
 
 describe("generatePlan on a fully conformant vault", () => {

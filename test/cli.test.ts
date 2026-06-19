@@ -127,6 +127,29 @@ describe("daftari audit subcommand", () => {
   });
 });
 
+describe("daftari import subcommand", () => {
+  it("prints import help on `daftari import --help`", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    await run(["import", "--help"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining("daftari import"));
+    out.mockRestore();
+  });
+
+  it("exits 1 on unsupported import type", async () => {
+    const { vi } = await import("vitest");
+    const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    process.exitCode = undefined;
+    await run(["import", "notion", "./x"]);
+    expect(process.exitCode).toBe(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("unsupported type 'notion'"));
+    errSpy.mockRestore();
+    process.exitCode = undefined;
+  });
+});
+
 describe("daftari invoked through a symlink (npm/npx bin shim)", () => {
   // npm/npx bin shims and `npm i -g` invoke the CLI through a symlinked
   // launcher, so process.argv[1] is the symlink path, not cli.ts's real path.

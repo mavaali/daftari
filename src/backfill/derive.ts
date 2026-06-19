@@ -13,6 +13,7 @@ import { validateFrontmatter } from "../frontmatter/schema.js";
 import type { Frontmatter } from "../frontmatter/types.js";
 import type { FileGitMeta } from "../utils/git.js";
 import { detectCollisions } from "./collisions.js";
+import { harvestInlineTags, webClipperSources } from "./obsidian.js";
 import type { DerivationMap, DocClassification } from "./types.js";
 
 // kebab-case a free-form string: lowercase, non-alphanumerics → single hyphen,
@@ -108,6 +109,10 @@ export interface DeriveInputs {
   // The CLI invoker identity — last-resort fallback for updated_by when a doc
   // has neither an existing value nor any git author.
   invoker: string;
+  // When true, apply Obsidian-aware enrichment: harvest inline #tags into
+  // `tags` and map a Web Clipper `source` into `sources`. Default/false leaves
+  // derivation byte-identical to the general backfill path.
+  obsidian?: boolean;
 }
 
 export interface DerivedFrontmatter {
@@ -186,6 +191,32 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
   const qAnswered = parseQuestionSection(body, "Questions Answered");
   const qRaised = parseQuestionSection(body, "Questions Raised");
 
+  // Obsidian-aware tags: take resolve()'s value (present value preserved
+  // verbatim — possibly a non-array — else []), then append harvested inline
+  // tags ONLY when in obsidian mode and the base is an array. Never coerce or
+  // rebuild: a non-array preserved value passes through untouched, so the
+  // non-obsidian path and the malformed-tags test stay byte-identical.
+  let tagsValue = resolve("tags", [], "empty"); // also sets derivation.tags
+  const inlineTags = input.obsidian ? harvestInlineTags(body) : [];
+  if (input.obsidian && Array.isArray(tagsValue) && inlineTags.length > 0) {
+    const merged = [...tagsValue];
+    for (const t of inlineTags) if (!merged.includes(t)) merged.push(t);
+    tagsValue = merged;
+    // If the base had no present tags, these came from the body. Otherwise
+    // resolve() already labeled it "preserved" — leave that.
+    if (!isPresent(raw, "tags")) derivation.tags = "inline-tags";
+  }
+
+  // Obsidian-aware sources: substitute a Web Clipper `source` only when no
+  // sources are present. resolve() handles the present/empty paths and label;
+  // we override to "web-clipper-source" only in the substitution case.
+  let sourcesValue = resolve("sources", [], "empty"); // also sets derivation.sources
+  const clipSources = input.obsidian ? webClipperSources(raw) : undefined;
+  if (input.obsidian && !isPresent(raw, "sources") && clipSources) {
+    sourcesValue = clipSources;
+    derivation.sources = "web-clipper-source";
+  }
+
   const proposed: Frontmatter = {
     title,
     domain: resolve("domain", "accumulation", "default"),
@@ -196,10 +227,10 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     updated,
     updated_by: updatedBy,
     provenance: resolve("provenance", "direct", "default"),
-    sources: resolve("sources", [], "empty"),
+    sources: sourcesValue,
     superseded_by: resolve("superseded_by", null, "null"),
     ttl_days: resolve("ttl_days", null, "null"),
-    tags: resolve("tags", [], "empty"),
+    tags: tagsValue,
     // No signal to derive doc-to-code bindings from raw content; default empty.
     describes: resolve("describes", [], "empty"),
     questions_answered: resolve(
