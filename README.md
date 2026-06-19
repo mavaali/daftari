@@ -150,6 +150,56 @@ later agents can take as settled, `questions_raised` is where to build next.
 
 Full field reference in <docs/file-format.md>.
 
+## Adopting an existing vault
+
+Already have a wiki or an Obsidian vault? Daftari adopts it **in place** — it
+indexes and curates the same markdown files you already edit, not a separate copy.
+
+```bash
+# Dry run — see what would change, write nothing
+daftari import obsidian ~/my-vault --plan
+
+# Adopt one folder at a time (per-folder ratification; --yes to skip the prompt)
+daftari import obsidian ~/my-vault --apply --scope notes
+```
+
+The import is non-destructive to your content. It fills only the *missing*
+Daftari frontmatter — collection from the folder, dates from git history (or file
+mtime), sensible defaults for the rest — and preserves everything you already
+had, including custom frontmatter fields. Obsidian specifics: inline `#tags` are
+merged into `tags`, a Web Clipper `source` is mapped into `sources`, and
+`[[wikilinks]]` are left untouched (Daftari resolves them as written). Filling
+frontmatter is deliberate, not automatic — re-run the import to pick up newly
+added notes.
+
+### Cloud-synced vaults (iCloud, Dropbox, …)
+
+Daftari versions every change with git, and a `.git/` directory churning inside a
+cloud-synced folder can corrupt. For a synced vault, keep git's data outside it:
+
+```bash
+daftari import obsidian "~/Library/Mobile Documents/.../my-vault" \
+  --apply --scope notes --external-git-dir
+```
+
+This writes `git_dir: external` to `.daftari/config.yaml`, so Daftari uses
+`git init --separate-git-dir`: only a tiny static `.git` *file* stays in the vault
+(syncs harmlessly) while the repo data lives under `~/.local/share/daftari/git/`.
+Pass `--external-git-dir=/path` for an explicit location, or set `git_dir`
+directly in config to apply the same to any vault. History is per-device; your
+notes still sync everywhere.
+
+### Lower-level: `backfill`
+
+`daftari import obsidian` is a thin, Obsidian-aware wrapper over `daftari
+backfill` — the git-driven frontmatter migration that works on any markdown wiki.
+Use it directly for non-Obsidian trees:
+
+```bash
+daftari backfill --plan
+daftari backfill --apply --scope specs
+```
+
 ## How it compares
 
 |                    |AGENTS.md        |RAG                          |Daftari                              |

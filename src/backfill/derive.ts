@@ -13,7 +13,7 @@ import { validateFrontmatter } from "../frontmatter/schema.js";
 import type { Frontmatter } from "../frontmatter/types.js";
 import type { FileGitMeta } from "../utils/git.js";
 import { detectCollisions } from "./collisions.js";
-import { harvestInlineTags, webClipperSources } from "./obsidian.js";
+import { coerceDatePrefix, harvestInlineTags, webClipperSources } from "./obsidian.js";
 import type { DerivationMap, DocClassification } from "./types.js";
 
 // kebab-case a free-form string: lowercase, non-alphanumerics → single hyphen,
@@ -180,6 +180,11 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     git.updated ? "git-last-commit" : "file-mtime",
   );
 
+  // Obsidian-aware: Obsidian/plugins write datetime created/updated; coerce to
+  // the date-only form the schema requires. Off-path is untouched (verbatim).
+  const createdValue = input.obsidian ? (coerceDatePrefix(created) as typeof created) : created;
+  const updatedValue = input.obsidian ? (coerceDatePrefix(updated) as typeof updated) : updated;
+
   // updated_by ← git author mapped through identity config, else invoker.
   const updatedBy = resolve(
     "updated_by",
@@ -223,8 +228,8 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     collection,
     status: resolve("status", "canonical", "default"),
     confidence: resolve("confidence", "medium", "default"),
-    created,
-    updated,
+    created: createdValue,
+    updated: updatedValue,
     updated_by: updatedBy,
     provenance: resolve("provenance", "direct", "default"),
     sources: sourcesValue,

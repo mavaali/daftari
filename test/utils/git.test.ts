@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,6 +72,61 @@ describe("git", () => {
   it("fails a commit with no paths", async () => {
     const result = await commit(vault, [], "empty", "agent:tester");
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("git external git-dir", () => {
+  let vault: string;
+  let vault2: string;
+  let vault3: string;
+  let ext: string;
+  let ext3: string;
+  const dirs: string[] = [];
+
+  function freshDir(): string {
+    const d = mkdtempSync(join(tmpdir(), "git-"));
+    dirs.push(d);
+    return d;
+  }
+
+  beforeEach(() => {
+    vault = freshDir();
+    vault2 = freshDir();
+    vault3 = freshDir();
+    ext = join(freshDir(), "repo.git");
+    ext3 = join(freshDir(), "repo.git");
+  });
+
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("ensureGitRepo with gitDir creates an external repo + a .git FILE (no .git/ dir)", async () => {
+    const r = await ensureGitRepo(vault, ext);
+    expect(r.ok).toBe(true);
+    expect(statSync(join(vault, ".git")).isFile()).toBe(true);
+    expect(existsSync(join(ext, "HEAD"))).toBe(true);
+  });
+
+  it("commit with gitDir lands in the external repo and is readable via log", async () => {
+    writeFileSync(join(vault, "note.md"), "# note\n");
+    const c = await commit(vault, ["note.md"], "msg", "human:tester", { gitDir: ext });
+    expect(c.ok).toBe(true);
+    const l = await log(vault, { limit: 1 });
+    expect(l.ok && l.value[0]?.subject).toBe("msg");
+  });
+
+  it("ensureGitRepo without gitDir creates an in-vault .git/ dir (unchanged)", async () => {
+    const r = await ensureGitRepo(vault2);
+    expect(r.ok).toBe(true);
+    expect(statSync(join(vault2, ".git")).isDirectory()).toBe(true);
+  });
+
+  it("re-inits when a dangling .git file points nowhere (second-device case)", async () => {
+    writeFileSync(join(vault3, ".git"), "gitdir: /no/such/place\n");
+    const r = await ensureGitRepo(vault3, ext3);
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(ext3, "HEAD"))).toBe(true);
   });
 });
 

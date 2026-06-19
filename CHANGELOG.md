@@ -11,8 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `daftari import obsidian <vault>` — adopt an Obsidian vault in place. An
   Obsidian-aware wrapper over `backfill`: harvests inline `#tags`, maps Web
-  Clipper `source` → `sources[]`, preserves all existing/custom frontmatter,
-  and leaves wikilinks untouched (Daftari already resolves them).
+  Clipper `source` → `sources[]`, normalizes ISO-datetime `created`/`updated`
+  (as Obsidian/plugins write them) to the schema's `YYYY-MM-DD`, preserves all
+  other existing/custom frontmatter, and leaves wikilinks untouched (Daftari
+  already resolves them). On a non-git vault it announces it will initialize
+  git, and scaffolds the `.daftari/*` gitignore rules on apply.
+- `git_dir` config key (and `daftari import … --external-git-dir[=path]`) — keep a
+  vault's git data outside the vault via `git init --separate-git-dir`, so a
+  cloud-synced (iCloud/Dropbox/…) vault gets version history without a churning
+  `.git/` inside the sync folder. `external` derives a per-vault path under the
+  data home; an explicit path is also accepted. History is per-device.
 
 ## [1.23.0] - 2026-06-19
 

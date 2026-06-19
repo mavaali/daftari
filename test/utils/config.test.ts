@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configPath, loadConfig } from "../../src/utils/config.js";
 
@@ -157,6 +157,39 @@ describe("loadConfig — schema extensions", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error.message).toContain("warm_embeddings");
+    });
+  });
+
+  describe("git_dir (external-git-dir feature)", () => {
+    it("leaves gitDir undefined when git_dir is absent", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const cfg = loadConfig(dir);
+      expect(cfg.ok && cfg.value.gitDir).toBeUndefined();
+    });
+
+    it("resolves the 'external' sentinel to a path under the data home, outside the vault", () => {
+      writeConfig("git_dir: external\n");
+      const cfg = loadConfig(dir);
+      expect(cfg.ok).toBe(true);
+      if (!cfg.ok) return;
+      expect(cfg.value.gitDir).toMatch(/daftari\/git\//);
+      expect(cfg.value.gitDir!.startsWith(resolve(dir) + "/")).toBe(false);
+    });
+
+    it("expands ~ and resolves an explicit git_dir path", () => {
+      writeConfig("git_dir: ~/somewhere/daftari-git\n");
+      const cfg = loadConfig(dir);
+      expect(cfg.ok && cfg.value.gitDir).toBe(join(homedir(), "somewhere/daftari-git"));
+    });
+
+    it("rejects a git_dir resolving inside the vault (loud error)", () => {
+      writeConfig("git_dir: ./inside\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+
+    it("rejects a non-string git_dir", () => {
+      writeConfig("git_dir: [1, 2]\n");
+      expect(loadConfig(dir).ok).toBe(false);
     });
   });
 
