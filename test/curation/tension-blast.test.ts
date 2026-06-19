@@ -60,7 +60,12 @@ function syntheticDoc(opts: { path: string; content?: string; sources?: string[]
     questions_answered: [],
     questions_raised: [],
   };
-  return { path: opts.path, frontmatter: fm, content: opts.content ?? "" };
+  return {
+    path: opts.path,
+    frontmatter: fm,
+    content: opts.content ?? "",
+    validation: { valid: true, issues: [] },
+  };
 }
 
 interface DocSpec {

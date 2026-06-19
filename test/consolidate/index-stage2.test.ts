@@ -59,14 +59,19 @@ vi.mock("../../src/tools/search.js", async () => {
 });
 
 const { runConsolidate } = await import("../../src/consolidate/index.js");
+const { addTension } = await import("../../src/curation/tension.js");
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "daftari-stage2-"));
   mkdirSync(join(dir, ".daftari"), { recursive: true });
   // Two trivial docs so loadDocuments has something to return.
+  // Schema-valid frontmatter (updated + updated_by required) so makeAdmit reads
+  // these as provenance-known. status:canonical + recent updated so computeDecay
+  // stays silent (a draft older than 30d would read as stale/warn → invariants
+  // gate, which is not what these dispatch/journal tests are exercising).
   const fm = (title: string) =>
-    `---\ntitle: ${title}\ndomain: accumulation\ncollection: c\nstatus: draft\nconfidence: medium\ncreated: 2026-05-01\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# ${title}\n`;
+    `---\ntitle: ${title}\ndomain: accumulation\ncollection: c\nstatus: canonical\nconfidence: high\ncreated: 2026-06-17\nupdated: 2026-06-17\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# ${title}\n`;
   writeFileSync(join(dir, "a.md"), fm("A"));
   writeFileSync(join(dir, "b.md"), fm("B"));
 });
@@ -146,10 +151,68 @@ describe("Stage 2 dispatch — birth", () => {
     expect(Object.keys(state.birthProcessed).length).toBeGreaterThan(0);
     // Shadow mode: no real edges in .daftari/edges.jsonl.
     expect(existsSync(join(dir, ".daftari", "edges.jsonl"))).toBe(false);
-    // Journaling moved out of edge-write (Stage 3, D6): shadow-actions.jsonl is
-    // now written by the CLI's admit wrapper (Stage 3 Task 7). With the
-    // temporary always-admit stub in place, nothing journals yet.
-    expect(existsSync(join(dir, ".daftari", "shadow-actions.jsonl"))).toBe(false);
+    // Stage 3 Task 7: the CLI's makeAdmit journals every envelope decision to
+    // shadow-actions.jsonl (regardless of shadow mode). The two clean docs admit
+    // a directed edge, so at least one admitted row lands.
+    expect(existsSync(join(dir, ".daftari", "shadow-actions.jsonl"))).toBe(true);
+    const journal = readFileSync(join(dir, ".daftari", "shadow-actions.jsonl"), "utf-8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as { decision?: string });
+    expect(journal.some((r) => r.decision === "admitted")).toBe(true);
+  });
+});
+
+describe("Stage 3 — envelope gating end-to-end (birth)", () => {
+  it("an unresolved tension on an endpoint → reports gated >=1, no edge observed, a gated row journaled", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
+    // The birth edge for a.md's neighbor is the directed pair a.md ← b.md (the
+    // search mock returns b.md). Seed an unresolved tension on b.md so the
+    // envelope refuses on invariants (tension-respect).
+    const t = await addTension(dir, {
+      title: "b is contested",
+      kind: "factual",
+      sourceA: "b.md",
+      claimA: "x",
+      sourceB: "a.md",
+      claimB: "y",
+      loggedBy: "human:test",
+    });
+    expect(t.ok).toBe(true);
+
+    const { out } = captureStdout();
+    const code = await runConsolidate(["--vault", dir, "--mode", "birth"]);
+    expect([0, 4]).toContain(code);
+    const text = out.join("");
+    expect(text).toMatch(/gated: [1-9]/);
+
+    const journal = readFileSync(join(dir, ".daftari", "shadow-actions.jsonl"), "utf-8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as { decision?: string; gate?: string });
+    // At least one gated decision was journaled; none admitted (the only edge
+    // candidate touches the contested endpoint).
+    expect(journal.some((r) => r.decision === "gated" && r.gate === "invariants")).toBe(true);
+    expect(journal.some((r) => r.decision === "admitted")).toBe(false);
+    // No real edge store write under shadow mode either.
+    expect(existsSync(join(dir, ".daftari", "edges.jsonl"))).toBe(false);
+  });
+
+  it("a clean edge yields an admitted decision row", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
+
+    const { restore } = captureStdout();
+    const code = await runConsolidate(["--vault", dir, "--mode", "birth"]);
+    restore();
+    expect([0, 4]).toContain(code);
+
+    const journal = readFileSync(join(dir, ".daftari", "shadow-actions.jsonl"), "utf-8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as { decision?: string });
+    expect(journal.some((r) => r.decision === "admitted")).toBe(true);
   });
 });
 
@@ -159,7 +222,7 @@ describe("Stage 2 dispatch — --max-births cap", () => {
     writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
     // Add more docs so the cap matters.
     for (let i = 0; i < 5; i++) {
-      const fm = `---\ntitle: D${i}\ndomain: accumulation\ncollection: c\nstatus: draft\nconfidence: medium\ncreated: 2026-05-01\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# D${i}\n`;
+      const fm = `---\ntitle: D${i}\ndomain: accumulation\ncollection: c\nstatus: draft\nconfidence: medium\ncreated: 2026-05-01\nupdated: 2026-06-17\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# D${i}\n`;
       writeFileSync(join(dir, `d${i}.md`), fm);
     }
 
