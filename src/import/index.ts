@@ -8,6 +8,8 @@
 import { resolve } from "node:path";
 import { runBackfill } from "../backfill/index.js";
 import { directoryExists } from "../storage/local.js";
+import { isGitRepo } from "../utils/git.js";
+import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 
 const SUPPORTED = ["obsidian"] as const;
 
@@ -65,9 +67,35 @@ export async function runImport(argv: string[]): Promise<number> {
 
   // Adoption front door: a typo'd vault should fail loudly, not silently no-op
   // the way backfill does on a missing path.
-  if (!(await directoryExists(resolve(vault)))) {
+  const resolvedVault = resolve(vault);
+  if (!(await directoryExists(resolvedVault))) {
     process.stderr.write(`daftari import: vault directory not found: ${vault}\n`);
     return 1;
+  }
+
+  // Foreign-vault footguns: most Obsidian vaults aren't git repos, and an apply
+  // commit will silently `git init` one (via commit → ensureGitRepo). Announce
+  // that, and scaffold the .daftari ignore rules so the ephemeral index/lock/log
+  // files never leak into the user's repo on a later `git add`.
+  const isGit = await isGitRepo(resolvedVault);
+  if (!isGit) {
+    process.stderr.write(
+      `daftari import: '${vault}' is not a git repository — Daftari versions changes with git and will initialize one here.\n`,
+    );
+  }
+
+  // Only --apply mutates the vault; a --plan dry-run must not write the
+  // .gitignore. ensureVaultGitignore runs before runBackfill so the ignore file
+  // exists before any commit. It's left untracked (git honors that) — backfill's
+  // apply commits only doc paths.
+  const isApply = passthrough.includes("--apply");
+  if (isApply) {
+    const result = await ensureVaultGitignore(resolvedVault);
+    if (result !== "present") {
+      process.stderr.write(
+        `daftari import: wrote .daftari ignore rules to ${resolvedVault}/.gitignore\n`,
+      );
+    }
   }
 
   return runBackfill(["--vault", vault, ...passthrough], { obsidian: true });

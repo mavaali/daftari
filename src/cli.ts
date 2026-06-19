@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { main, parseFlag } from "./index.js";
 import { reindexVault } from "./search/reindex.js";
 import { commit } from "./utils/git.js";
+import { VAULT_GITIGNORE } from "./utils/vault-gitignore.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -48,28 +49,6 @@ Examples:
 `;
 
 const COLLECTIONS = ["competitive-intel", "pricing", "moonshot", "_drafts"];
-
-const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files — never commit them.
-.daftari/index.db
-.daftari/index.db-journal
-.daftari/index.db-wal
-.daftari/index.db-shm
-.daftari/locks.db
-.daftari/locks.db-journal
-.daftari/locks.db-wal
-.daftari/locks.db-shm
-# Local audit state — advisory, not vault content. Matters most when a vault
-# runs with auto_commit: false inside a larger repo: keeps the host repo's
-# git status clean of Daftari's per-write log churn.
-.daftari/curation-log.jsonl
-.daftari/staged-actions.jsonl
-.daftari/edges.jsonl
-.daftari/shadow-actions.jsonl
-.daftari/consolidate-state.json
-# Transient backfill staging surface (daftari backfill --plan). The apply
-# commit is the durable audit trail — the plan itself is never committed.
-.daftari/backfill-plan.jsonl
-`;
 
 // Example documents written by --init. Content is fictional: "Aurora" and
 // "Helios" are made-up products, not real companies.
