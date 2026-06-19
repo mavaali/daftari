@@ -7,7 +7,8 @@
 // empty role set, so every --role resolves to the deny-all guest.
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { load as parseYaml } from "js-yaml";
 import {
   BUILTIN_FRONTMATTER_FIELDS,
@@ -17,6 +18,7 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
+import { sha256Hex } from "./hash.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -100,6 +102,11 @@ export interface DaftariConfig {
   // posture Decision 3 (§10.4) requires before the loop ever acts live.
   // Defaults to false: a normal vault writes normally.
   shadowMode: boolean;
+  // Absolute path to an external git directory (git's --separate-git-dir), or
+  // undefined for a normal in-vault .git. Lets a cloud-synced vault hold only a
+  // static `.git` file while git's churn lives off-cloud. Always resolved
+  // outside the vault.
+  gitDir?: string;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -115,6 +122,7 @@ function emptyConfig(): DaftariConfig {
     embeddingProvider: "local-minilm",
     backfillIdentityMap: {},
     shadowMode: false,
+    gitDir: undefined,
   };
 }
 
@@ -403,6 +411,41 @@ function validateBackfillIdentityMap(raw: unknown): Result<Record<string, string
   return ok(out);
 }
 
+function dataHome(): string {
+  const xdg = process.env.XDG_DATA_HOME;
+  return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
+}
+
+function expandTilde(p: string): string {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
+
+// Resolves the optional `git_dir` value to an absolute path OUTSIDE the vault,
+// or undefined when absent. `external` derives a stable per-vault path under the
+// data home; anything else is a filesystem path (~ expanded, relative paths
+// resolved against the vault root). A value inside the vault, or a non-string,
+// is a loud config error.
+function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefined, Error> {
+  if (raw === undefined || raw === null) return ok(undefined);
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return err(new Error("malformed config: 'git_dir' must be a non-empty string"));
+  }
+  const vaultAbs = resolve(vaultRoot);
+  const gitDirAbs =
+    raw === "external"
+      ? join(dataHome(), "daftari", "git", sha256Hex(vaultAbs).slice(0, 16))
+      : resolve(vaultAbs, expandTilde(raw));
+  const rel = relative(vaultAbs, gitDirAbs);
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+    return err(
+      new Error(`malformed config: 'git_dir' must resolve outside the vault (got ${gitDirAbs})`),
+    );
+  }
+  return ok(gitDirAbs);
+}
+
 // Loads and validates the vault's RBAC config. A missing file is not an error
 // — it produces an empty role set. A file that parses but violates the schema,
 // or fails to parse at all, returns Result.err so the server can refuse to
@@ -466,6 +509,9 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     }
     autoCommit = root.auto_commit;
   }
+
+  const gitDir = resolveGitDir(root.git_dir, vaultRoot);
+  if (!gitDir.ok) return gitDir;
 
   let watch = true;
   if (root.watch !== undefined) {
@@ -540,5 +586,6 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     embeddingProvider,
     backfillIdentityMap: backfillIdentityMap.value,
     shadowMode,
+    gitDir: gitDir.value,
   });
 }
