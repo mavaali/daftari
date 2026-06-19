@@ -6,6 +6,7 @@ import {
   getStagedActionById,
   listStagedActions,
   materializeStagedActions,
+  nowISO,
   rebuildStagedActionsIndex,
   recordDecision,
   type StageActionInput,
@@ -173,5 +174,38 @@ describe("staged-actions", () => {
     } finally {
       opened.value.close();
     }
+  });
+
+  it("records decided_by_principal on a reject decision and round-trips it", async () => {
+    const staged = await stageAction(vault, sampleInput);
+    if (!staged.ok) return;
+    const decided = await recordDecision(vault, staged.value.id, {
+      status: "rejected",
+      ratifiedAt: nowISO(),
+      ratifiedBy: "agent:curation-loop",
+      decidedByPrincipal: "agent:curation-loop",
+    });
+    expect(decided.ok).toBe(true);
+
+    const fetched = await getStagedActionById(vault, staged.value.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok || !fetched.value) return;
+    expect(fetched.value.decidedByPrincipal).toBe("agent:curation-loop");
+  });
+
+  it("omits decided_by_principal when not supplied", async () => {
+    const staged = await stageAction(vault, sampleInput);
+    if (!staged.ok) return;
+    const decided = await recordDecision(vault, staged.value.id, {
+      status: "rejected",
+      ratifiedAt: nowISO(),
+      ratifiedBy: "agent:curation-loop",
+    });
+    expect(decided.ok).toBe(true);
+
+    const fetched = await getStagedActionById(vault, staged.value.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok || !fetched.value) return;
+    expect(fetched.value.decidedByPrincipal).toBeNull();
   });
 });

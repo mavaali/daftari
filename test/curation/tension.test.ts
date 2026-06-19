@@ -361,6 +361,57 @@ describe("agingTier (Phase 4)", () => {
   });
 });
 
+// --- decided_by_principal (Stage 3, §8) -----------------------------------
+
+describe("decided_by_principal", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-tension-dbp-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("renders and parses decided_by_principal round-trip", async () => {
+    const added = await addTension(vault, {
+      title: "Test contested edge",
+      kind: "factual",
+      sourceA: "docs/a.md",
+      claimA: "derives from docs/b.md",
+      sourceB: "docs/b.md",
+      claimB: "re-derivation failed",
+      loggedBy: "agent:curation-loop",
+      decidedByPrincipal: "agent:curation-loop",
+    });
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    expect(added.value.decidedByPrincipal).toBe("agent:curation-loop");
+
+    const list = await listTensions(vault);
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    expect(list.value).toHaveLength(1);
+    expect(list.value[0]?.decidedByPrincipal).toBe("agent:curation-loop");
+  });
+
+  it("omits the line when decidedByPrincipal is absent", async () => {
+    const added = await addTension(vault, {
+      title: "No principal tension",
+      kind: "factual",
+      sourceA: "docs/a.md",
+      claimA: "derives from docs/b.md",
+      sourceB: "docs/b.md",
+      claimB: "re-derivation failed",
+      loggedBy: "agent:curation-loop",
+    });
+    expect(added.ok).toBe(true);
+    const raw = readFileSync(tensionsPath(vault), "utf-8");
+    expect(raw).not.toMatch(/Decided by principal/);
+  });
+});
+
 describe("STALE_TIER_LINT_COPY", () => {
   it("exposes the three loggable kinds and omits unspecified", () => {
     expect(Object.keys(STALE_TIER_LINT_COPY).sort()).toEqual([

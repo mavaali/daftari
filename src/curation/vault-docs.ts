@@ -8,13 +8,20 @@
 
 import { posix } from "node:path";
 import { parseDocument } from "../frontmatter/parser.js";
-import { type Frontmatter, ok, type Result } from "../frontmatter/types.js";
+import { type Frontmatter, ok, type Result, type ValidationReport } from "../frontmatter/types.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 
 export interface LoadedDoc {
   path: string;
   frontmatter: Frontmatter;
   content: string;
+  // The schema-validation report from the SAME parse pass that produced
+  // `frontmatter`. Carried so downstream consumers (e.g. the consolidate
+  // envelope's provenance check) can tell schema-valid from schema-invalid
+  // frontmatter without re-reading or re-parsing the file. `content` is the
+  // body only (frontmatter stripped), so validation cannot be recovered from
+  // it alone — that is why we surface it here.
+  validation: ValidationReport;
 }
 
 // Loads every markdown file under the vault root, returning frontmatter +
@@ -36,6 +43,7 @@ export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc
       path: relPath,
       frontmatter: parsed.value.frontmatter,
       content: parsed.value.content,
+      validation: parsed.value.validation,
     });
   }
   return ok(docs);

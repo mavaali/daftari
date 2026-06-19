@@ -104,16 +104,32 @@ interface Harness {
   observed: Array<{ from: string; to: string; premiseVote?: string }>;
   tensions: Array<{ title: string; kind: string; loggedBy: string }>;
   traceRows: unknown[];
+  admitCalls: Array<{ action: string; fromPath: string; toPath: string }>;
 }
+
+// Default: the envelope always admits. Refusing tests override `admit`.
+const ADMIT_OK: BirthDeps["admit"] = async () => ({
+  admit: true,
+  gate: null,
+  reason: "ok",
+  impact: 0,
+});
 
 function makeDeps(overrides: Partial<BirthDeps>): Harness {
   const observed: Harness["observed"] = [];
   const tensions: Harness["tensions"] = [];
   const traceRows: unknown[] = [];
+  const admitCalls: Harness["admitCalls"] = [];
   const deps: BirthDeps = {
     llm: overrides.llm as LlmClient,
     searchNeighbors: overrides.searchNeighbors ?? (async () => ok(["b.md"])),
     loadNeighborContent: overrides.loadNeighborContent ?? (async () => ok("neighbor content body")),
+    admit:
+      overrides.admit ??
+      (async (a) => {
+        admitCalls.push({ action: a.action, fromPath: a.fromPath, toPath: a.toPath });
+        return ADMIT_OK(a);
+      }),
     observe:
       overrides.observe ??
       (async (input) => {
@@ -134,7 +150,7 @@ function makeDeps(overrides: Partial<BirthDeps>): Harness {
         return ok(undefined);
       }),
   };
-  return { deps, observed, tensions, traceRows };
+  return { deps, observed, tensions, traceRows, admitCalls };
 }
 
 const baseOpts: BirthOpts = {
@@ -255,6 +271,110 @@ describe("birthOne — symmetric / contested → pending edge + tension", () => 
       expect(r.ok).toBe(true);
       expect(observed).toEqual([{ from: "a.md", to: "z.md", premiseVote: "symmetric" }]);
       expect(tensions[0]?.title).toContain("contested");
+    } finally {
+      cleanup(root);
+    }
+  });
+});
+
+describe("birthOne — envelope admit (gate consulted once per neighbor)", () => {
+  it("refused admit on a symmetric outcome → no observe, no tension, gated verdict + gatedCount", async () => {
+    const root = tmpVault();
+    try {
+      const { deps, observed, tensions } = makeDeps({
+        llm: mockLlm(V.symmetric()),
+        searchNeighbors: async () => ok(["z.md"]),
+        admit: async () => ({
+          admit: false,
+          gate: "budget" as const,
+          reason: "trust-budget exhausted",
+          impact: 0.05,
+        }),
+      });
+      const r = await birthOne({ relPath: "a.md", content: "x" }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw r.error;
+      // Refused: zero observations, NO tension, and the outcome is counted gated.
+      expect(observed).toEqual([]);
+      expect(tensions).toEqual([]);
+      expect(r.value.observations).toEqual([]);
+      expect(r.value.gatedCount).toBeGreaterThan(0);
+      const gated = r.value.verdicts.filter(
+        (v): v is Extract<typeof v, { gated?: boolean }> => "gated" in v && v.gated === true,
+      );
+      expect(gated.length).toBe(1);
+      expect(gated[0].gate).toBe("budget");
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("refused admit on a directed outcome → no observe, gated verdict", async () => {
+    const root = tmpVault();
+    try {
+      const { deps, observed } = makeDeps({
+        llm: mockLlm(V.docPremise()),
+        admit: async () => ({
+          admit: false,
+          gate: "invariants" as const,
+          reason: "provenance-required",
+          impact: 0,
+        }),
+      });
+      const r = await birthOne({ relPath: "a.md", content: "x" }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw r.error;
+      expect(observed).toEqual([]);
+      expect(r.value.gatedCount).toBe(1);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("a throwing admit does NOT crash the pass: treated as a refusal, gated, no observe", async () => {
+    const root = tmpVault();
+    try {
+      const { deps, observed } = makeDeps({
+        llm: mockLlm(V.docPremise()),
+        admit: async () => {
+          throw new Error("makeAdmit network error");
+        },
+      });
+      const r = await birthOne({ relPath: "a.md", content: "x" }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw r.error;
+      expect(observed).toEqual([]);
+      expect(r.value.gatedCount).toBe(1);
+      // Fail-closed: a throw is a refusal on the invariants gate.
+      const gated = r.value.verdicts.filter(
+        (v): v is Extract<typeof v, { gated?: boolean }> => "gated" in v && v.gated === true,
+      );
+      expect(gated[0].gate).toBe("invariants");
+      // The trace still landed (the pass completed).
+      expect(r.value.traceWritten).toBe(true);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("admit is consulted once per neighbor edge-action (before observe)", async () => {
+    const root = tmpVault();
+    try {
+      const { deps, admitCalls } = makeDeps({ llm: mockLlm(V.docPremise()) });
+      await birthOne({ relPath: "a.md", content: "x" }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(admitCalls).toEqual([{ action: "edge-observe", fromPath: "b.md", toPath: "a.md" }]);
     } finally {
       cleanup(root);
     }

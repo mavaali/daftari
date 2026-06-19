@@ -26,6 +26,7 @@ import {
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { CONSOLIDATE_PROMPT_TEMPLATES, type ConsolidatePromptTemplate } from "./constants.js";
+import type { Admit, EnvelopeVerdict } from "./envelope.js";
 
 // --- public surface ----------------------------------------------------------
 
@@ -34,6 +35,10 @@ export interface RevisionDeps {
   // Load a doc's content for a re-derivation prompt. CLI wires `loadDocuments`;
   // tests stub it (avoids fs + frontmatter parsing in the unit).
   loadDoc: (path: string) => Promise<Result<{ path: string; content: string }, Error>>;
+  // Consult the two-gate envelope ONCE per panel decision (per the aggregated
+  // contest or observe-loop), BEFORE any write. On refuse the decision becomes
+  // "gated" and nothing is written. Live wiring is the CLI's makeAdmit.
+  admit: Admit;
   observe: (input: ObserveEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   contest: (input: ContestEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   recordRevisionTrace: (row: RevisionTraceRow) => Promise<Result<void, Error>>;
@@ -60,7 +65,9 @@ export interface RevisionVoteError {
 
 // The panel's aggregated decision (majority-decides). "tie" and "no-vote" apply
 // no write — they surface for human attention instead of churning edge state.
-export type RevisionDecision = "survives" | "fails" | "tie" | "no-vote";
+// "gated" means a majority WAS reached (survives/fails) but the envelope refused
+// the write — the vote stands in the trace, but nothing was applied.
+export type RevisionDecision = "survives" | "fails" | "tie" | "no-vote" | "gated";
 
 export interface RevisionTraceRow {
   at: string;
@@ -76,6 +83,10 @@ export interface RevisionTraceRow {
   decision: RevisionDecision;
   observedCount: number;
   contestedCount: number;
+  // When decision === "gated": which gate refused + its reason (mirrors
+  // EnvelopeVerdict). Absent otherwise.
+  gate?: "invariants" | "budget" | null;
+  gateReason?: string;
 }
 
 export interface RevisionOutcome {
@@ -85,6 +96,9 @@ export interface RevisionOutcome {
   decision: RevisionDecision;
   observedCount: number;
   contestedCount: number;
+  // Populated when decision === "gated": the envelope refused the write.
+  gate?: "invariants" | "budget" | null;
+  gateReason?: string;
   // Vote landed but the downstream write (observe / contest) failed. The vote
   // itself is valid (the LLM said what it said); the durable record didn't
   // land. Separated from `votes` so the trace doesn't carry a phantom vote
@@ -101,6 +115,25 @@ export interface RevisionOutcome {
 
 function canon(p: string): string {
   return posix.normalize(p).replace(/^\.\//, "");
+}
+
+// Defensive wrapper around the injected admit (same rationale as birth.ts): the
+// live makeAdmit does I/O and can throw; a thrown admit must NOT crash the panel
+// (losing the votes + trace). Fail closed — a throw is a refusal on invariants.
+async function safeAdmit(
+  admit: Admit,
+  action: { action: "edge-observe" | "edge-contest"; fromPath: string; toPath: string },
+): Promise<EnvelopeVerdict> {
+  try {
+    return await admit(action);
+  } catch (e) {
+    return {
+      admit: false,
+      gate: "invariants",
+      reason: `admit threw: ${e instanceof Error ? e.message : String(e)}`,
+      impact: 0,
+    };
+  }
 }
 
 // --- verdict parsing ---------------------------------------------------------
@@ -252,42 +285,64 @@ export async function revisionPanel(
   let decision: RevisionDecision;
   let observedCount = 0;
   let contestedCount = 0;
+  let gate: "invariants" | "budget" | null | undefined;
+  let gateReason: string | undefined;
 
   if (survivesCount === 0 && failsCount === 0) {
     decision = "no-vote"; // all errored / budget-starved — surface, write nothing
   } else if (failsCount > survivesCount) {
     // Majority fails ⇒ ONE contest (revoke + tension). Satisfies the spec's
     // multi-pass-agreement-for-contests: a lone dissent can no longer revoke.
-    decision = "fails";
-    const con = await deps.contest({
-      fromPath,
-      toPath,
-      contestedBy: opts.agent,
-      reason: `revision panel (${failsCount}/${survivesCount + failsCount} fail): ${firstFailReason}`,
-    });
-    if (con.ok) contestedCount = 1;
-    else writeErrors.push({ axis: axes[0], error: `contest failed: ${con.error.message}` });
+    // Consult the envelope ONCE for this panel decision (not per vote) before
+    // writing; on refuse the decision is gated and nothing is contested.
+    const verdict = await safeAdmit(deps.admit, { action: "edge-contest", fromPath, toPath });
+    if (!verdict.admit) {
+      decision = "gated";
+      gate = verdict.gate;
+      gateReason = verdict.reason;
+    } else {
+      decision = "fails";
+      const con = await deps.contest({
+        fromPath,
+        toPath,
+        contestedBy: opts.agent,
+        reason: `revision panel (${failsCount}/${survivesCount + failsCount} fail): ${firstFailReason}`,
+      });
+      if (con.ok) contestedCount = 1;
+      else writeErrors.push({ axis: axes[0], error: `contest failed: ${con.error.message}` });
+    }
   } else if (survivesCount > failsCount) {
     // Majority survives ⇒ accrue strength: each surviving vote observes with a
     // DISTINCT store axis (EDGE_AXES), so the §11.3 replay guard counts them as
     // independent in one sitting (panelSize ≤ EDGE_AXES.length ⇒ no collision).
-    decision = "survives";
-    for (let i = 0; i < surviving.length; i++) {
-      const storeAxis = EDGE_AXES[i % EDGE_AXES.length];
-      const obs = await deps.observe({
-        fromPath,
-        toPath,
-        observedBy: opts.agent,
-        blind: true,
-        axis: storeAxis,
-        note: `revision/${surviving[i].axis}: ${surviving[i].reason}`,
-      });
-      if (obs.ok) observedCount++;
-      else
-        writeErrors.push({
-          axis: surviving[i].axis,
-          error: `observe failed: ${obs.error.message}`,
+    // Consult the envelope ONCE for this panel decision (the per-vote observe
+    // loop is the mechanical accrual of the ONE admitted action); on refuse the
+    // decision is gated and NO observes are applied.
+    const verdict = await safeAdmit(deps.admit, { action: "edge-observe", fromPath, toPath });
+    if (!verdict.admit) {
+      decision = "gated";
+      gate = verdict.gate;
+      gateReason = verdict.reason;
+      surviving.length = 0; // ensure the loop below applies nothing
+    } else {
+      decision = "survives";
+      for (let i = 0; i < surviving.length; i++) {
+        const storeAxis = EDGE_AXES[i % EDGE_AXES.length];
+        const obs = await deps.observe({
+          fromPath,
+          toPath,
+          observedBy: opts.agent,
+          blind: true,
+          axis: storeAxis,
+          note: `revision/${surviving[i].axis}: ${surviving[i].reason}`,
         });
+        if (obs.ok) observedCount++;
+        else
+          writeErrors.push({
+            axis: surviving[i].axis,
+            error: `observe failed: ${obs.error.message}`,
+          });
+      }
     }
   } else {
     // Tie (survives === fails, both > 0): no majority ⇒ surface, write nothing.
@@ -306,6 +361,7 @@ export async function revisionPanel(
     decision,
     observedCount,
     contestedCount,
+    ...(decision === "gated" ? { gate, gateReason } : {}),
   });
 
   return ok({
@@ -315,6 +371,7 @@ export async function revisionPanel(
     decision,
     observedCount,
     contestedCount,
+    ...(decision === "gated" ? { gate, gateReason } : {}),
     writeErrors,
     llmCalls,
     inputTokens,

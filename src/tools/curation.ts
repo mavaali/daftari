@@ -9,7 +9,8 @@
 // Result, never throws) plus an MCP ToolDefinition, mirroring the read- and
 // write-path tools.
 
-import { type AccessContext, hasAnyRead } from "../access/rbac.js";
+import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
+import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import {
   LINT_CHECKS,
   type LintCheckName,
@@ -24,6 +25,7 @@ import { sweepExpiredActions } from "../curation/staged-actions.js";
 import {
   addTension,
   LOGGABLE_TENSION_KINDS,
+  listTensions,
   RESOLUTION_KINDS,
   type ResolutionKind,
   resolveTension,
@@ -158,6 +160,21 @@ export async function vaultTensionResolve(
       refs.push(r.trim());
     }
     if (refs.length > 0) references = refs;
+  }
+
+  // Gate: loop-authored tensions require the ratify permission to resolve.
+  // Human-authored tensions remain resolvable by any-read role.
+  // No-access calls (access === undefined) bypass, matching the existing
+  // pattern in vault_edge_contest / vault_ratify.
+  // Reads tensions.md once here to check authorship; resolveTension reads it again below.
+  // The double-read is acceptable at the expected tensions.md scale (advisory log, not a hot path).
+  const all = await listTensions(vaultRoot);
+  if (!all.ok) return all;
+  const target = all.value.find((t) => t.id === id.trim());
+  if (target && target.loggedBy === CONSOLIDATE_AGENT && access && !canRatify(access.role)) {
+    return err(
+      new Error(`access denied: role '${access.roleName}' cannot resolve a loop-authored tension`),
+    );
   }
 
   // [DATA] resolved_by is taken from the server's access identity (set via

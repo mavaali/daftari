@@ -1,6 +1,8 @@
 // Shadow-aware edge_observe / edge_contest factories (brief item 5).
-// Live mode → writes to .daftari/edges.jsonl. Shadow mode → writes ONLY to
-// .daftari/shadow-actions.jsonl; the edge store is untouched.
+// Live mode → writes to .daftari/edges.jsonl. Shadow mode → returns a stub and
+// writes NOTHING (no edge store, no shadow journal). Journaling moved to the
+// CLI's admit wrapper (Stage 3, decision D6): the loop must not advance the
+// shared spentByVault, so edge-write no longer touches shadow-actions.jsonl.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,13 +64,12 @@ describe("makeObserve — live mode", () => {
 });
 
 describe("makeObserve — shadow mode", () => {
-  it("does NOT write to edges.jsonl; writes ONE record to shadow-actions.jsonl", async () => {
+  it("does NOT write to edges.jsonl AND does NOT journal (journaling moved to admit)", async () => {
     const root = tmpVault();
     try {
       const observe = makeObserve({
         vaultRoot: root,
         shadowMode: true,
-        principal: "agent:curation-loop",
       });
       const r = await observe({
         fromPath: "a.md",
@@ -79,22 +80,14 @@ describe("makeObserve — shadow mode", () => {
         note: "birth/forward: A derives from B",
       });
       expect(r.ok).toBe(true);
-      // The edge store is untouched — the calibration data lands in the
-      // shadow log alone.
+      // The edge store is untouched.
       expect(existsSync(edgesPath(root))).toBe(false);
+      // And the shadow journal is untouched too: edge-write no longer records
+      // (decision D6 — the loop must not advance the shared spentByVault).
       const shadow = await listShadowActions(root);
       expect(shadow.ok).toBe(true);
       if (!shadow.ok) throw shadow.error;
-      expect(shadow.value.length).toBe(1);
-      const rec = shadow.value[0];
-      expect(rec.tool).toBe("vault_edge_observe");
-      expect(rec.action).toBe("edge-observe");
-      expect(rec.target_path).toBe("a.md");
-      expect(rec.touched_paths).toEqual(["a.md", "b.md"]);
-      expect(rec.agent).toBe("agent:curation-loop");
-      expect(rec.principal).toBe("agent:curation-loop");
-      // i_base for edge-observe is the lowest tier in SHADOW_I_BASE — sanity.
-      expect(rec.i_base).toBe(0.05);
+      expect(shadow.value.length).toBe(0);
     } finally {
       cleanup(root);
     }
@@ -159,13 +152,12 @@ describe("makeContest — live mode", () => {
 });
 
 describe("makeContest — shadow mode", () => {
-  it("does NOT mutate the edge store; writes ONE edge-contest record", async () => {
+  it("does NOT mutate the edge store AND does NOT journal", async () => {
     const root = tmpVault();
     try {
       const contest = makeContest({
         vaultRoot: root,
         shadowMode: true,
-        principal: "agent:curation-loop",
       });
       const r = await contest({
         fromPath: "a.md",
@@ -176,12 +168,10 @@ describe("makeContest — shadow mode", () => {
       expect(r.ok).toBe(true);
       // No live edge writes happened, so listEdges sees zero (empty store).
       expect(existsSync(edgesPath(root))).toBe(false);
+      // And no journal record — edge-write no longer records (decision D6).
       const shadow = await listShadowActions(root);
       if (!shadow.ok) throw shadow.error;
-      expect(shadow.value.length).toBe(1);
-      expect(shadow.value[0].action).toBe("edge-contest");
-      expect(shadow.value[0].i_base).toBe(0.1);
-      expect(shadow.value[0].commit_message).toContain("no longer derivable");
+      expect(shadow.value.length).toBe(0);
     } finally {
       cleanup(root);
     }

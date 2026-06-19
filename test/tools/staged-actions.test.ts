@@ -316,6 +316,68 @@ describe("vault_ratify", () => {
     expect(action.ok && action.value?.status).toBe("pending");
   }, 60_000);
 
+  it("vault_ratify approve stamps decidedByPrincipal on the ratified record", async () => {
+    await seedDraft(vault, "pricing/stamp-approve.md");
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/stamp-approve.md",
+      proposedBy: AGENT,
+      rationale: "Matured — approve stamp test.",
+      proposedDiff: { status: { from: "draft", to: "canonical" } },
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const access = {
+      user: "agent:curation-loop",
+      roleName: "curator",
+      role: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    };
+
+    const ratified = await vaultRatify(
+      vault,
+      { id: staged.value.id, decision: "approve", principal: HUMAN, reason: "verified" },
+      access,
+    );
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok).toBe(true);
+    if (!action.ok) throw action.error;
+    expect(action.value?.decidedByPrincipal).toBe("agent:curation-loop");
+  }, 60_000);
+
+  it("vault_ratify reject stamps the authenticated principal", async () => {
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/federation.md",
+      proposedBy: AGENT,
+      rationale: "Matured.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) return;
+
+    const access = {
+      user: "agent:curation-loop",
+      roleName: "curator",
+      role: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    };
+
+    const result = await vaultRatify(
+      vault,
+      { id: staged.value.id, decision: "reject", principal: "human:mihir" },
+      access,
+    );
+    expect(result.ok).toBe(true);
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok).toBe(true);
+    if (!action.ok || !action.value) return;
+    expect(action.value.decidedByPrincipal).toBe("agent:curation-loop");
+  });
+
   it("errors when ratifying an unknown id", async () => {
     const result = await vaultRatify(vault, {
       id: "stage-999",

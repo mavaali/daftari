@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cortex consolidation loop — Stage 3 (two-gate envelope).** `daftari
+  consolidate` now consults a two-gate envelope — an **invariants** gate (it
+  refuses to act on an edge whose endpoint carries an unresolved tension) and a
+  **trust-budget** gate — before each edge `do()`. The envelope is enforced
+  **live but shadowed**: every decision is computed and journaled to
+  `.daftari/shadow-actions.jsonl` as `decision: "admitted"` or
+  `decision: "gated"` (with gate + reason), but never enacted. `vault_lint`
+  surfaces the gated/surfaced envelope decisions as a view distinct from the
+  existing would-gate calibration section.
+- **§8 closures.** A loop decision records `decided_by_principal` (the
+  authenticated identity) on the staged action and contest tension it produces;
+  `vault_tension_resolve` is gated on `canRatify` for loop-authored tensions, so
+  the loop cannot close its own tensions.
+
 ## [1.22.0] - 2026-06-17
 
 ### Added

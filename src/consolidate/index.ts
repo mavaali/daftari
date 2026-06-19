@@ -24,6 +24,7 @@ import { err, ok } from "../frontmatter/types.js";
 import { vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
 import { changedSince, log as gitLog, isGitRepo } from "../utils/git.js";
+import { makeAdmit } from "./admit.js";
 import {
   appendBirthTrace,
   type BirthDeps,
@@ -279,13 +280,35 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       const observe = makeObserve({
         vaultRoot,
         shadowMode: cfg.value.shadowMode,
-        principal: CONSOLIDATE_AGENT,
       });
       const contest = makeContest({
         vaultRoot,
         shadowMode: cfg.value.shadowMode,
-        principal: CONSOLIDATE_AGENT,
       });
+      // The real envelope-owned admit (Stage 3 Task 7): assembles the
+      // EnvelopeCtx from in-process data, owns the §3.7 per-session spend
+      // scalar (deduct-on-admit), and journals every decision. Construction
+      // does I/O (loadDocuments / staged actions / tensions) and can fail.
+      //
+      // FAIL CLOSED: if construction fails the envelope cannot evaluate the
+      // gate, so Component A MUST NOT run — letting birth/revision write
+      // ungated would be exactly the auto-write-on-incomplete-info the envelope
+      // exists to prevent. We surface the error and abort with a runtime exit.
+      // Reuse the docs index.ts already loaded above (docsRes.value) — makeAdmit
+      // derives its reverse maps / per-endpoint metadata / docCount from this
+      // same LoadedDoc[], so no second vault walk happens.
+      const admitRes = await makeAdmit({
+        vaultRoot,
+        principal: CONSOLIDATE_AGENT,
+        docs: docsRes.value,
+      });
+      if (!admitRes.ok) {
+        process.stderr.write(
+          `consolidate: envelope init failed: ${admitRes.error.message} — Component A skipped (fail-closed)\n`,
+        );
+        return 3;
+      }
+      const admit = admitRes.value.admit;
 
       if (mode === "birth" || mode === "both") {
         const cap = maxBirths.value ?? Number.POSITIVE_INFINITY;
@@ -295,6 +318,7 @@ export async function runConsolidate(argv: string[]): Promise<number> {
         await runBirthLoop(
           birthOnly,
           docByPath,
+          admit,
           observe,
           llm,
           vaultRoot,
@@ -313,6 +337,7 @@ export async function runConsolidate(argv: string[]): Promise<number> {
           edgeOnly,
           edgeByKey,
           docByPath,
+          admit,
           observe,
           contest,
           llm,
@@ -322,10 +347,15 @@ export async function runConsolidate(argv: string[]): Promise<number> {
         );
       }
 
+      // Surface journal-write failures the admit closure counted across the loops.
+      // A failed journal write loses a calibration row but does not change any gate
+      // verdict (mirrors traceWriteFailures — counted, not thrown).
+      stage2.journalWriteFailures = admitRes.value.journalFailures();
+
       report += `  Component A (${mode}):\n`;
       report += `    births_processed: ${stage2.birthsProcessed}\n`;
       report += `    panels_cast: ${stage2.panelsCast} | votes_cast: ${stage2.votesCast}\n`;
-      report += `    observed: ${stage2.observedTotal} | contested: ${stage2.contestedTotal}\n`;
+      report += `    observed: ${stage2.observedTotal} | contested: ${stage2.contestedTotal} | gated: ${stage2.gated}\n`;
       report += `    llm_calls: ${stage2.llmCalls} | tokens: ${stage2.inputTokens}/${stage2.outputTokens} in/out\n`;
       report += `    est_cost_usd: ${estimateCostUSD(model, stage2.inputTokens, stage2.outputTokens).toFixed(4)} (${model})${
         isModelPriced(model) ? "" : " [pricing_fallback: haiku — model unpriced]"
@@ -333,8 +363,17 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       if (stage2.traceWriteFailures > 0) {
         report += `    trace_write_failures: ${stage2.traceWriteFailures} — recall@K evaluator input lost (exit 5)\n`;
       }
+      if (stage2.journalWriteFailures > 0) {
+        report += `    journal_write_failures: ${stage2.journalWriteFailures} — calibration rows lost\n`;
+      }
+      // The envelope journals every decision (admit/gate) to shadow-actions.jsonl
+      // regardless of shadow mode (makeAdmit owns this). In shadow mode the edge
+      // STORE write is additionally suppressed (makeObserve); off-shadow, admitted
+      // edges also land in edges.jsonl.
       if (stage2.shadowMode) {
-        report += `    shadow_mode: true — edge writes journaled to shadow-actions.jsonl, store untouched\n`;
+        report += `    shadow_mode: true — envelope decisions journaled to shadow-actions.jsonl, edge store untouched\n`;
+      } else {
+        report += `    shadow_mode: false — envelope decisions journaled to shadow-actions.jsonl; admitted edges also written to the store\n`;
       }
     }
 
@@ -363,6 +402,12 @@ export async function runConsolidate(argv: string[]): Promise<number> {
     // Trace loss silently corrupts the calibration data flow (most serious);
     // backstop-overdue and a lost baseline are cron-alertable warnings the next
     // session / a human can resolve.
+    //
+    // journalWriteFailures is deliberately NOT in this hierarchy: a lost
+    // calibration (shadow-actions) row never changes a gate verdict and is
+    // already surfaced in the report above. It is reported-only by design, not
+    // forgotten — the exit code is reserved for the data flows a human/cron must
+    // act on.
     if (stage2.traceWriteFailures > 0) return 5;
     if (backstopOverdueRemaining > 0) return 4;
     return staleBaseline ? 7 : 0;
@@ -389,10 +434,16 @@ interface Stage2Result {
   votesCast: number;
   observedTotal: number;
   contestedTotal: number;
+  // Edge-actions the envelope refused (birth gated neighbors + revision panels
+  // whose majority decision was gated). Task 6 M1 reporting surface.
+  gated: number;
   llmCalls: number;
   inputTokens: number;
   outputTokens: number;
   traceWriteFailures: number;
+  // Calibration rows the envelope journal failed to persist (recordEnvelopeDecision
+  // returned err). Counted, not thrown — surfaced in the report, never gates.
+  journalWriteFailures: number;
   shadowMode: boolean;
 }
 function emptyStage2(): Stage2Result {
@@ -402,10 +453,12 @@ function emptyStage2(): Stage2Result {
     votesCast: 0,
     observedTotal: 0,
     contestedTotal: 0,
+    gated: 0,
     llmCalls: 0,
     inputTokens: 0,
     outputTokens: 0,
     traceWriteFailures: 0,
+    journalWriteFailures: 0,
     shadowMode: false,
   };
 }
@@ -413,6 +466,7 @@ function emptyStage2(): Stage2Result {
 async function runBirthLoop(
   birthItems: Array<{ kind: "birth"; path: string }>,
   docByPath: Map<string, { relPath: string; content: string }>,
+  admit: BirthDeps["admit"],
   observe: BirthDeps["observe"],
   llm: LlmClient,
   vaultRoot: string,
@@ -456,7 +510,15 @@ async function runBirthLoop(
     if (!doc) continue; // queue → docs is reconstructible; a missing doc is non-fatal
     const out = await birthOne(
       doc,
-      { llm, searchNeighbors, loadNeighborContent, observe, recordTension, recordBirthTrace },
+      {
+        llm,
+        searchNeighbors,
+        loadNeighborContent,
+        admit,
+        observe,
+        recordTension,
+        recordBirthTrace,
+      },
       opts,
     );
     if (!out.ok) {
@@ -475,6 +537,7 @@ async function runBirthLoop(
 function accumulateBirth(stage2: Stage2Result, out: BirthOutcome): void {
   stage2.birthsProcessed++;
   stage2.observedTotal += out.observations.length;
+  stage2.gated += out.gatedCount;
   stage2.llmCalls += out.llmCalls;
   stage2.inputTokens += out.inputTokens;
   stage2.outputTokens += out.outputTokens;
@@ -485,6 +548,7 @@ async function runRevisionLoop(
   edgeItems: Array<{ kind: "edge"; fromPath: string; toPath: string }>,
   edgeByKey: Map<string, DerivesFromEdge>,
   docByPath: Map<string, { relPath: string; content: string }>,
+  admit: RevisionDeps["admit"],
   observe: RevisionDeps["observe"],
   contest: RevisionDeps["contest"],
   llm: LlmClient,
@@ -521,7 +585,7 @@ async function runRevisionLoop(
     if (edge.directionVerdict === "symmetric") continue;
     const out = await revisionPanel(
       edge,
-      { llm, loadDoc, observe, contest, recordRevisionTrace },
+      { llm, loadDoc, admit, observe, contest, recordRevisionTrace },
       opts,
     );
     if (!out.ok) {
@@ -539,6 +603,7 @@ function accumulateRevision(stage2: Stage2Result, out: RevisionOutcome): void {
   stage2.votesCast += out.votes.length;
   stage2.observedTotal += out.observedCount;
   stage2.contestedTotal += out.contestedCount;
+  if (out.decision === "gated") stage2.gated++;
   stage2.llmCalls += out.llmCalls;
   stage2.inputTokens += out.inputTokens;
   stage2.outputTokens += out.outputTokens;

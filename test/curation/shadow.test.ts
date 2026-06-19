@@ -3,13 +3,17 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import {
+  computeShadowMetrics,
   listShadowActions,
+  recordEnvelopeDecision,
+  recordShadowAction,
   resetShadowSession,
   SHADOW_B0_BASE,
   SHADOW_I_BASE,
   shadowBudget,
   shadowImpact,
   shadowLintSummary,
+  shadowSpent,
 } from "../../src/curation/shadow.js";
 import { stageAction } from "../../src/curation/staged-actions.js";
 import { loadDocuments } from "../../src/curation/vault-docs.js";
@@ -306,5 +310,185 @@ describe("shadow-mode write path", () => {
     if (!result.ok) return;
     expect(result.value.shadow).toBeUndefined();
     expect(existsSync(join(vault, "pricing", "live.md"))).toBe(true);
+  }, 60_000);
+});
+
+describe("recordEnvelopeDecision", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+    resetShadowSession(vault);
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("journals an admitted loop decision (no gate fields, would_gate false)", async () => {
+    const rec = await recordEnvelopeDecision(vault, {
+      tool: "vault_edge_observe",
+      action: "edge-observe",
+      targetPath: "pricing/a.md",
+      touchedPaths: ["pricing/a.md", "pricing/b.md"],
+      agent: AGENT,
+      decision: "admitted",
+      impact: 0.05,
+      budget: 0.5,
+      blast: 1,
+      spentBefore: 0.1,
+      commitMessage: "edge: a -> b",
+    });
+    expect(rec.ok).toBe(true);
+    if (!rec.ok) return;
+    expect(rec.value.decision).toBe("admitted");
+    expect(rec.value.would_gate).toBe(false);
+    expect(rec.value.gate).toBeUndefined();
+    expect(rec.value.gate_reason).toBeUndefined();
+    expect(rec.value.i_base).toBe(SHADOW_I_BASE["edge-observe"]);
+    expect(rec.value.spent_before).toBe(0.1);
+    expect(rec.value.touched_paths).toEqual(["pricing/a.md", "pricing/b.md"]);
+
+    const log = await listShadowActions(vault);
+    expect(log.ok && log.value).toHaveLength(1);
+    if (log.ok) expect(log.value[0]?.decision).toBe("admitted");
+  }, 60_000);
+
+  it("journals a gated loop decision with gate + reason, and NEVER advances spentByVault", async () => {
+    resetShadowSession(vault);
+    expect(shadowSpent(vault)).toBe(0);
+
+    const rec = await recordEnvelopeDecision(vault, {
+      tool: "vault_edge_contest",
+      action: "edge-contest",
+      targetPath: "pricing/a.md",
+      touchedPaths: ["pricing/a.md", "pricing/b.md"],
+      agent: AGENT,
+      decision: "gated",
+      gate: "budget",
+      gateReason: "trust-budget exhausted: spent 0.500 + I 0.100 > B0 0.500",
+      impact: 0.1,
+      budget: 0.5,
+      blast: 1,
+      spentBefore: 0.5,
+      commitMessage: "edge-contest: a vs b",
+    });
+    expect(rec.ok).toBe(true);
+    if (!rec.ok) return;
+    expect(rec.value.decision).toBe("gated");
+    expect(rec.value.gate).toBe("budget");
+    expect(rec.value.gate_reason).toContain("trust-budget");
+    expect(rec.value.would_gate).toBe(true);
+
+    // The envelope owns its own spend; the module global must stay untouched.
+    expect(shadowSpent(vault)).toBe(0);
+  }, 60_000);
+});
+
+describe("computeShadowMetrics", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+    resetShadowSession(vault);
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("matches the impact/budget recordShadowAction records for the same fixture", async () => {
+    await seedLive(vault, "pricing/a.md", { status: "canonical" });
+    await seedLive(vault, "pricing/b.md", { status: "canonical", sources: ["pricing/a.md"] });
+
+    // Record one shadow action directly (refactor must keep it unchanged).
+    resetShadowSession(vault);
+    const rec = await recordShadowAction(vault, {
+      tool: "vault_write",
+      action: "update",
+      targetPath: "pricing/a.md",
+      agent: AGENT,
+      commitMessage: "update a",
+    });
+    expect(rec.ok).toBe(true);
+    if (!rec.ok) return;
+
+    const metrics = await computeShadowMetrics(vault, "update", ["pricing/a.md"]);
+    expect(metrics.ok).toBe(true);
+    if (!metrics.ok) return;
+    expect(metrics.value.impact).toBeCloseTo(rec.value.impact, 10);
+    expect(metrics.value.budget).toBeCloseTo(rec.value.budget, 10);
+    expect(metrics.value.blast).toBe(rec.value.blast);
+  }, 60_000);
+});
+
+describe("shadowLintSummary gated view", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+    resetShadowSession(vault);
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("surfaces envelope-gated rows in gatedSurfaced/gatedCount, leaving would_gate-based gated intact", async () => {
+    enableShadowMode(vault);
+    // 6 doc writes → 1 would_gate row (the would_gate-based calibration view).
+    for (let i = 1; i <= 6; i++) {
+      await vaultWrite(vault, {
+        path: `pricing/shadow-${i}.md`,
+        body: "# S\n\nBody.\n",
+        frontmatter: frontmatter({ title: `S${i}` }),
+        agent: AGENT,
+      });
+    }
+    // One ADMITTED envelope loop decision: decision === "admitted" so it does
+    // NOT appear in the decision-based gated view, and its would_gate is false
+    // so it does NOT appear in the would_gate-based view either. This isolates
+    // the two surfaces cleanly.
+    const admitted = await recordEnvelopeDecision(vault, {
+      tool: "vault_edge_observe",
+      action: "edge-observe",
+      targetPath: "pricing/shadow-2.md",
+      touchedPaths: ["pricing/shadow-2.md"],
+      agent: AGENT,
+      decision: "admitted",
+      impact: 0.05,
+      budget: 0.5,
+      blast: 1,
+      spentBefore: 0,
+      commitMessage: "edge-observe admitted",
+    });
+    expect(admitted.ok).toBe(true);
+
+    // One GATED envelope loop decision (decision === "gated").
+    const envRec = await recordEnvelopeDecision(vault, {
+      tool: "vault_edge_contest",
+      action: "edge-contest",
+      targetPath: "pricing/shadow-1.md",
+      touchedPaths: ["pricing/shadow-1.md"],
+      agent: AGENT,
+      decision: "gated",
+      gate: "invariants",
+      gateReason: "tension-respect: pricing/shadow-1.md has an unresolved tension",
+      impact: 0.1,
+      budget: 0.5,
+      blast: 1,
+      spentBefore: 0,
+      commitMessage: "edge-contest gated",
+    });
+    expect(envRec.ok).toBe(true);
+
+    const summary = await shadowLintSummary(vault);
+    expect(summary.ok).toBe(true);
+    if (!summary.ok) return;
+    // would_gate-based view: the 6th doc write (would_gate true) PLUS the gated
+    // envelope row (would_gate mirrors decision === "gated"). The admitted
+    // envelope row is excluded. The two views are computed from DIFFERENT
+    // fields and are NOT merged: this view still keys off would_gate.
+    expect(summary.value.gated).toBe(2);
+    expect(summary.value.recentGated[0]?.targetPath).toBe("pricing/shadow-1.md");
+    // decision-based view: ONLY the gated envelope row (the admitted envelope
+    // row and all six doc writes — which set no `decision` — are excluded).
+    expect(summary.value.gatedCount).toBe(1);
+    expect(summary.value.gatedSurfaced).toHaveLength(1);
+    expect(summary.value.gatedSurfaced[0]?.targetPath).toBe("pricing/shadow-1.md");
   }, 60_000);
 });

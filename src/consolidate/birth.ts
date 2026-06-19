@@ -32,6 +32,7 @@ import {
   derivationUserBody,
   parseDerivationVerdict,
 } from "./derivation-prompt.js";
+import type { Admit, EnvelopeVerdict } from "./envelope.js";
 
 // --- public surface ----------------------------------------------------------
 
@@ -44,9 +45,14 @@ export interface BirthDeps {
   // foundational-ordering prompt. Live wiring reads the in-process docs map (no
   // disk read); tests stub it. An error skips the neighbor (recorded in trace).
   loadNeighborContent: (path: string) => Promise<Result<string, Error>>;
+  // Consult the two-gate envelope once per neighbor edge-action, BEFORE the
+  // observe. On refuse the write is skipped and the outcome counted gated.
+  // Live wiring is the CLI's makeAdmit (envelope + budget + journal); tests
+  // stub it. birth.ts itself owns no budget state — it just asks.
+  admit: Admit;
   // Observe an edge. Live wiring calls `observeEdge(vaultRoot, input)`; the
-  // shadow-mode wrapper (chunk 4) intercepts and writes to shadow-actions.jsonl
-  // instead. Injecting this means birth.ts knows nothing about shadow.
+  // shadow-mode wrapper intercepts and returns a stub (no write). Injecting
+  // this means birth.ts knows nothing about shadow.
   observe: (input: ObserveEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   // Record a direction-pending tension (mutual or order-contested). Live wiring
   // calls `addTension(vaultRoot, ...)`; tests collect in memory.
@@ -75,6 +81,10 @@ export interface BirthVerdict {
   // Which doc is the load-bearing premise, when directed. null otherwise.
   premise: "doc" | "neighbor" | null;
   reason: string;
+  // The envelope refused this neighbor's edge-action: no observe, no tension.
+  // `gate` carries which gate refused (mirrors EnvelopeVerdict.gate).
+  gated?: boolean;
+  gate?: "invariants" | "budget" | null;
 }
 
 export interface BirthVerdictError {
@@ -101,6 +111,10 @@ export interface BirthOutcome {
   neighbors: string[]; // the full top-K, canonicalized
   verdicts: Array<BirthVerdict | BirthVerdictError>;
   observations: Array<{ from: string; to: string }>;
+  // Neighbor edge-actions the envelope refused (gated, not observed). Distinct
+  // from `verdicts` length: an unrelated/errored neighbor is neither observed
+  // nor gated.
+  gatedCount: number;
   llmCalls: number;
   inputTokens: number;
   outputTokens: number;
@@ -172,6 +186,28 @@ function truncate(s: string): string {
   return s.length <= MAX_DOC_CHARS ? s : `${s.slice(0, MAX_DOC_CHARS)}\n…[truncated]`;
 }
 
+// Defensive wrapper around the injected admit. The live makeAdmit (Task 7) does
+// I/O — reads provenance / decay / tension state — so it can throw (network,
+// config, fs). The house style is no-throw from this loop: a thrown admit must
+// NOT crash the whole birth pass (losing every neighbor's verdict + the trace).
+// Treat a throw as a refusal on the invariants gate (fail-closed: never write
+// when the gate couldn't be evaluated), recorded like any other gated outcome.
+async function safeAdmit(
+  admit: Admit,
+  action: { action: "edge-observe" | "edge-contest"; fromPath: string; toPath: string },
+): Promise<EnvelopeVerdict> {
+  try {
+    return await admit(action);
+  } catch (e) {
+    return {
+      admit: false,
+      gate: "invariants",
+      reason: `admit threw: ${e instanceof Error ? e.message : String(e)}`,
+      impact: 0,
+    };
+  }
+}
+
 // A non-empty one-line claim snippet for the tension record (addTension rejects
 // empty claims). Falls back to the path when the content is blank.
 function claimSnippet(content: string, fallback: string): string {
@@ -197,6 +233,7 @@ export async function birthOne(
 
   const verdicts: Array<BirthVerdict | BirthVerdictError> = [];
   const observations: Array<{ from: string; to: string }> = [];
+  let gatedCount = 0;
   let llmCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
@@ -266,6 +303,26 @@ export async function birthOne(
       // Premise is materialized on `to` (clocks: from depends on to). doc-premise
       // ⇒ to=doc, from=neighbor; neighbor-premise ⇒ to=neighbor, from=doc.
       const [from, to] = outcome.premise === "doc" ? [neighbor, docPath] : [docPath, neighbor];
+      // Consult the envelope ONCE for this neighbor's edge-action. On refuse:
+      // record a gated verdict, count it, and skip the write entirely.
+      const verdict = await safeAdmit(deps.admit, {
+        action: "edge-observe",
+        fromPath: from,
+        toPath: to,
+      });
+      if (!verdict.admit) {
+        verdicts.push({
+          neighbor,
+          related: true,
+          direction: "directed",
+          premise: outcome.premise,
+          reason,
+          gated: true,
+          gate: verdict.gate,
+        });
+        gatedCount++;
+        continue;
+      }
       verdicts.push({
         neighbor,
         related: true,
@@ -294,6 +351,27 @@ export async function birthOne(
     // re-observation lands on the same key, plus an interpretive tension.
     const [from, to] = [docPath, neighbor].sort();
     const which = outcome.contested ? "contested" : "mutual";
+    // Consult the envelope ONCE for this neighbor's edge-action. On refuse:
+    // record a gated verdict, count it, and skip BOTH the observe AND the
+    // direction-pending tension (no write of any kind).
+    const symVerdict = await safeAdmit(deps.admit, {
+      action: "edge-observe",
+      fromPath: from,
+      toPath: to,
+    });
+    if (!symVerdict.admit) {
+      verdicts.push({
+        neighbor,
+        related: true,
+        direction: "symmetric",
+        premise: null,
+        reason,
+        gated: true,
+        gate: symVerdict.gate,
+      });
+      gatedCount++;
+      continue;
+    }
     verdicts.push({ neighbor, related: true, direction: "symmetric", premise: null, reason });
     const obs = await deps.observe({
       fromPath: from,
@@ -339,6 +417,7 @@ export async function birthOne(
     neighbors,
     verdicts,
     observations,
+    gatedCount,
     llmCalls,
     inputTokens,
     outputTokens,
