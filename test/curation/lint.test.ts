@@ -86,6 +86,16 @@ describe("lint", () => {
       if (!report.ok) return;
       expect(report.value.checks.unansweredQuestions).toEqual([]);
     });
+
+    it("carries the shadow gated-decision view (gatedSurfaced/gatedCount)", async () => {
+      const report = await runLint(LINT_VAULT);
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      // Smoke: the nested fields exist and are zero/empty for a vault that has
+      // never journaled an envelope decision.
+      expect(report.value.shadowActions.gatedCount).toBe(0);
+      expect(report.value.shadowActions.gatedSurfaced).toEqual([]);
+    });
   });
 
   describe("unansweredQuestions check", () => {

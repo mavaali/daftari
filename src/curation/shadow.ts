@@ -97,6 +97,14 @@ export interface ShadowActionRecord {
   would_gate: boolean;
   frontmatter_diff?: FrontmatterDiff;
   commit_message: string;
+  // Cortex-loop envelope fields (Stage 3, §5/D3). Set ONLY on rows journaled by
+  // recordEnvelopeDecision — the doc-write calibration path leaves them unset.
+  // `decision` is the envelope verdict (admitted/gated); `gate`/`gate_reason`
+  // are populated only when gated. These are distinct from `would_gate` (the
+  // would_gate-based calibration view derives from that boolean instead).
+  decision?: "admitted" | "gated";
+  gate?: "invariants" | "budget";
+  gate_reason?: string;
 }
 
 // --- impact / budget math ------------------------------------------------------
@@ -136,6 +144,47 @@ function shadowBlastFromDocs(
     reverseLink: buildReverseLinkMap(docs),
   });
   return 1 + blast.downstream.length;
+}
+
+// --- shared metrics (DRY: recordShadowAction + the cortex-loop envelope) -------
+//
+// The blast/impact/budget derivation a would-be write needs. Extracted so the
+// doc-write path (recordShadowAction) and the cortex loop's envelope share one
+// source of truth for the numbers.
+
+export interface ShadowMetrics {
+  blast: number;
+  impact: number;
+  budget: number;
+  livePending: number;
+  docCount: number;
+}
+
+// One full-vault doc load per call — shadow/loop is a calibration posture, not
+// a hot path. Queue depth counts only LIVE pending actions: the expiry sweep
+// runs inside vault_lint, so between lints the raw pending list can carry
+// TTL-dead entries that would inflate B₀.
+export async function computeShadowMetrics(
+  vaultRoot: string,
+  action: string,
+  seeds: string[],
+): Promise<Result<ShadowMetrics, Error>> {
+  const docs = await loadDocuments(vaultRoot);
+  if (!docs.ok) return docs;
+  const blast = shadowBlastFromDocs(vaultRoot, seeds, docs.value);
+
+  const pending = await listStagedActions(vaultRoot, "pending");
+  if (!pending.ok) return pending;
+  const nowMs = Date.now();
+  const livePending = pending.value.filter((a) => Date.parse(a.expiresAt) > nowMs).length;
+
+  return ok({
+    blast,
+    impact: shadowImpact(action, blast),
+    budget: shadowBudget(livePending, docs.value.length),
+    livePending,
+    docCount: docs.value.length,
+  });
 }
 
 // --- per-process session spend (§3.7, shadow-only) ---------------------------
@@ -183,20 +232,9 @@ export async function recordShadowAction(
   const seeds =
     input.touchedPaths && input.touchedPaths.length > 0 ? input.touchedPaths : [input.targetPath];
 
-  const docs = await loadDocuments(vaultRoot);
-  if (!docs.ok) return docs;
-  const blastValue = shadowBlastFromDocs(vaultRoot, seeds, docs.value);
-
-  // Queue depth counts only LIVE pending actions: the expiry sweep runs inside
-  // vault_lint, so between lints the raw pending list can carry TTL-dead
-  // entries that would inflate B₀.
-  const pending = await listStagedActions(vaultRoot, "pending");
-  if (!pending.ok) return pending;
-  const nowMs = Date.now();
-  const livePending = pending.value.filter((a) => Date.parse(a.expiresAt) > nowMs).length;
-
-  const impact = shadowImpact(input.action, blastValue);
-  const budget = shadowBudget(livePending, docs.value.length);
+  const metrics = await computeShadowMetrics(vaultRoot, input.action, seeds);
+  if (!metrics.ok) return metrics;
+  const { blast: blastValue, impact, budget } = metrics.value;
   const spentBefore = shadowSpent(vaultRoot);
 
   const record: ShadowActionRecord = {
@@ -230,6 +268,69 @@ export async function recordShadowAction(
   }
 
   spentByVault.set(vaultRoot, spentBefore + impact);
+  return ok(record);
+}
+
+// --- cortex-loop envelope journaling (Stage 3, §5/D3) ------------------------
+//
+// Journals ONE loop decision (admitted or gated) to the SAME shadow-actions
+// log, reusing the record shape. Decision D6: the cortex loop owns its OWN
+// session-spend scalar (the caller passes `spentBefore` and the precomputed
+// metrics). This function is a thin journaler — it NEVER touches the module
+// global `spentByVault` (that scalar stays exclusively for the doc-write
+// calibration path), and it does NOT recompute metrics (the caller already has
+// them; recomputing would mean a second loadDocuments).
+
+export interface EnvelopeJournalInput {
+  tool: "vault_edge_observe" | "vault_edge_contest";
+  action: "edge-observe" | "edge-contest";
+  targetPath: string;
+  touchedPaths: string[];
+  agent: string;
+  principal?: string;
+  decision: "admitted" | "gated";
+  gate?: "invariants" | "budget";
+  gateReason?: string;
+  impact: number;
+  budget: number;
+  blast: number;
+  spentBefore: number;
+  commitMessage: string;
+}
+
+export async function recordEnvelopeDecision(
+  vaultRoot: string,
+  input: EnvelopeJournalInput,
+): Promise<Result<ShadowActionRecord, Error>> {
+  const record: ShadowActionRecord = {
+    at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    tool: input.tool,
+    action: input.action,
+    target_path: input.targetPath,
+    ...(input.touchedPaths.length > 0 ? { touched_paths: input.touchedPaths } : {}),
+    agent: input.agent,
+    ...(input.principal ? { principal: input.principal } : {}),
+    i_base: SHADOW_I_BASE[input.action] ?? 0.2,
+    blast: input.blast,
+    impact: input.impact,
+    budget: input.budget,
+    spent_before: input.spentBefore,
+    would_gate: input.decision === "gated",
+    commit_message: input.commitMessage,
+    decision: input.decision,
+    ...(input.decision === "gated" && input.gate ? { gate: input.gate } : {}),
+    ...(input.decision === "gated" && input.gateReason ? { gate_reason: input.gateReason } : {}),
+  };
+
+  try {
+    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    appendFileSync(shadowActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot record envelope decision: ${reason}`));
+  }
+
+  // NEVER advance spentByVault — the envelope owns its session spend (D6).
   return ok(record);
 }
 
@@ -273,33 +374,48 @@ export interface ShadowLintItem {
 
 export interface ShadowLintSummary {
   total: number;
+  // would_gate-based view (doc-write calibration): how many rows the trust
+  // budget would have gated, and the most recent of them.
   gated: number;
   // Most recent first; gated actions only — the section the operator reads.
   recentGated: ShadowLintItem[];
+  // decision-based view (cortex-loop envelope, Stage 3 §5/D3): rows the
+  // envelope itself gated (`decision === "gated"`). KEPT DISTINCT from
+  // `gated`/`recentGated` above — different field, different surface; the two
+  // are not merged. Envelope-gated rows also satisfy `would_gate`, so they
+  // intentionally appear in both this view and `gated`/`recentGated`.
+  gatedSurfaced: ShadowLintItem[];
+  gatedCount: number;
 }
 
 export const SHADOW_LINT_RECENT_LIMIT = 20;
+
+function toLintItem(r: ShadowActionRecord): ShadowLintItem {
+  return {
+    at: r.at,
+    tool: r.tool,
+    action: r.action,
+    targetPath: r.target_path,
+    agent: r.agent,
+    impact: r.impact,
+    budget: r.budget,
+  };
+}
 
 export async function shadowLintSummary(
   vaultRoot: string,
 ): Promise<Result<ShadowLintSummary, Error>> {
   const all = await listShadowActions(vaultRoot);
   if (!all.ok) return all;
+  // would_gate-based view (doc-write calibration).
   const gated = all.value.filter((r) => r.would_gate);
+  // decision-based view (envelope) — distinct from would_gate.
+  const decisionGated = all.value.filter((r) => r.decision === "gated");
   return ok({
     total: all.value.length,
     gated: gated.length,
-    recentGated: gated
-      .slice(-SHADOW_LINT_RECENT_LIMIT)
-      .reverse()
-      .map((r) => ({
-        at: r.at,
-        tool: r.tool,
-        action: r.action,
-        targetPath: r.target_path,
-        agent: r.agent,
-        impact: r.impact,
-        budget: r.budget,
-      })),
+    recentGated: gated.slice(-SHADOW_LINT_RECENT_LIMIT).reverse().map(toLintItem),
+    gatedCount: decisionGated.length,
+    gatedSurfaced: decisionGated.slice(-SHADOW_LINT_RECENT_LIMIT).reverse().map(toLintItem),
   });
 }
