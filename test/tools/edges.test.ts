@@ -250,6 +250,43 @@ describe("vault_edge_contest", () => {
     );
     expect(result.ok).toBe(false);
   });
+
+  it("records decided_by_principal from access.user on the contest tension", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: true,
+      varied_axis: "model",
+    });
+
+    const ratifyAccess: AccessContext = {
+      user: "agent:curation-loop",
+      roleName: "curator",
+      role: { read: ["*"], write: ["*"], promote: false, ratify: true },
+    };
+
+    const result = await vaultEdgeContest(
+      vault,
+      {
+        from_path: "pricing/a.md",
+        to_path: "pricing/b.md",
+        contested_by: AGENT,
+        reason: "re-derivation produced a contradicting claim",
+      },
+      ratifyAccess,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    const entry = tensions.value.find((t) => t.id === result.value.tension_id);
+    expect(entry?.decidedByPrincipal).toBe("agent:curation-loop");
+  }, 60_000);
 });
 
 describe("vault_edges", () => {

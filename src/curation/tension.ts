@@ -56,6 +56,7 @@ export interface TensionEntry {
   claimB: string;
   status: string;
   loggedBy: string;
+  decidedByPrincipal?: string;
   resolved: boolean;
   resolution?: TensionResolution;
 }
@@ -100,6 +101,8 @@ function renderEntry(entry: TensionEntry): string {
   lines.push(`- **Source B:** ${entry.sourceB} says ${entry.claimB}`);
   lines.push(`- **Status:** ${entry.status}`);
   lines.push(`- **Logged by:** ${entry.loggedBy}`);
+  if (entry.decidedByPrincipal)
+    lines.push(`- **Decided by principal:** ${entry.decidedByPrincipal}`);
   if (entry.resolution !== undefined) {
     lines.push(renderResolution(entry.resolution));
   }
@@ -157,6 +160,9 @@ export async function addTension(
     claimB: input.claimB.trim(),
     status: input.status ?? DEFAULT_TENSION_STATUS,
     loggedBy: input.loggedBy.trim(),
+    ...(input.decidedByPrincipal != null && input.decidedByPrincipal.trim().length > 0
+      ? { decidedByPrincipal: input.decidedByPrincipal.trim() }
+      : {}),
     resolved: false,
   };
 
@@ -240,6 +246,8 @@ function parseBlock(block: string): TensionEntry | null {
       entry.status = value.trim();
     } else if (label === "logged by") {
       entry.loggedBy = value.trim();
+    } else if (label === "decided by principal") {
+      entry.decidedByPrincipal = value.trim();
     } else if (label === "resolved at") {
       resolvedAt = value.trim();
     } else if (label === "resolved by") {

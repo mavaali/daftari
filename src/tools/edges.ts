@@ -233,6 +233,7 @@ export async function vaultEdgeContest(
       sourceB: canonTo.value,
       claimB: `re-derivation failed with no upstream change — ${reason.value}`,
       loggedBy: contestedBy.value,
+      decidedByPrincipal: access?.user,
     });
     if (!tension.ok) return tension;
     tensionId = tension.value.id;
