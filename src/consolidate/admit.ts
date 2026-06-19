@@ -228,6 +228,9 @@ export async function makeAdmit(
 
     // Deduct on admit (D1): only an admitted action spends. A gated action
     // leaves the budget untouched so a following clean action can still admit.
+    // By design: deduction happens here (on the decision), before the caller's
+    // observe/contest write — a post-admit storage failure (off-shadow only;
+    // the shadow stub never fails) consumes budget even if no edge lands.
     if (verdict.admit) spent += verdict.impact;
 
     return verdict;

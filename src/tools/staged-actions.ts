@@ -315,7 +315,7 @@ export async function vaultRatify(
     ratifiedAt: decidedAt,
     ratifiedBy: principal.value,
     ...(reason ? { reason } : {}),
-    ...(access?.user ? { decidedByPrincipal: access.user } : {}),
+    ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
   });
   if (!recorded.ok) return recorded;
 
