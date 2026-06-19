@@ -34,6 +34,7 @@ Usage:
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
+  daftari import obsidian <v>        Adopt an Obsidian vault in place (see: daftari import --help)
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
@@ -267,6 +268,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "consolidate") {
     const { runConsolidate } = await import("./consolidate/index.js");
     process.exitCode = await runConsolidate(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "import") {
+    const { runImport } = await import("./import/index.js");
+    process.exitCode = await runImport(argv.slice(1));
     return;
   }
 
