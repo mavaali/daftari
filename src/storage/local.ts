@@ -51,7 +51,12 @@ export async function listFiles(
       cwd: resolve(vaultRoot),
       nodir: true,
       posix: true,
-      ignore: ["**/.daftari/**", "**/node_modules/**"],
+      // glob's default `dot: false` already skips dotfiles, but the Obsidian
+      // adoption path (`daftari import obsidian`) depends on `.obsidian/` and
+      // `.trash/` never entering a backfill plan, so the exclusion is made
+      // explicit here rather than riding an implicit default across glob
+      // versions. .daftari (control dir) and node_modules are excluded too.
+      ignore: ["**/.daftari/**", "**/node_modules/**", "**/.obsidian/**", "**/.trash/**"],
     });
     return ok([...matches].sort());
   } catch (e) {
