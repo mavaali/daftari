@@ -248,3 +248,52 @@ describe("deriveProposed", () => {
     expect(proposed.tags).toBe("foo" as unknown as string[]);
   });
 });
+
+describe("deriveProposed — obsidian mode", () => {
+  const base = {
+    relPath: "notes/x.md",
+    git: { created: null, updated: null, author: null },
+    mtimeDate: "2026-06-19",
+    identityMap: {},
+    invoker: "human:tester",
+  };
+
+  it("unions inline #tags with frontmatter tags", () => {
+    const { proposed, derivation } = deriveProposed({
+      ...base,
+      body: "body with #frombody and #shared",
+      raw: { tags: ["fromfm", "shared"] },
+      obsidian: true,
+    });
+    expect(proposed.tags).toEqual(["fromfm", "shared", "frombody"]);
+    expect(derivation.tags).toBe("preserved");
+  });
+
+  it("harvests inline tags when frontmatter has none", () => {
+    const { proposed, derivation } = deriveProposed({
+      ...base,
+      body: "see #alpha and #beta",
+      raw: {},
+      obsidian: true,
+    });
+    expect(proposed.tags).toEqual(["alpha", "beta"]);
+    expect(derivation.tags).toBe("inline-tags");
+  });
+
+  it("maps Web Clipper source into sources[]", () => {
+    const { proposed, derivation } = deriveProposed({
+      ...base,
+      body: "clip body",
+      raw: { source: "https://example.com/post" },
+      obsidian: true,
+    });
+    expect(proposed.sources).toEqual(["https://example.com/post"]);
+    expect(derivation.sources).toBe("web-clipper-source");
+  });
+
+  it("is identical to default mode when obsidian is unset (no inline scan)", () => {
+    const off = deriveProposed({ ...base, body: "#alpha", raw: {} });
+    expect(off.proposed.tags).toEqual([]);
+    expect(off.derivation.tags).toBe("empty");
+  });
+});
