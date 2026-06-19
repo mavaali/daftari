@@ -50,6 +50,9 @@ export interface GeneratePlanOptions {
   // this to a throttled stderr heartbeat. Kept out of generatePlan so the
   // function stays pure and testable.
   onProgress?: (done: number, total: number) => void;
+  // Enable Obsidian-aware derivation (inline #tags, Web Clipper source). Used by
+  // `daftari import obsidian`; backfill leaves it unset.
+  obsidian?: boolean;
 }
 
 export interface GeneratePlanResult {
@@ -125,6 +128,7 @@ export async function generatePlan(
       mtimeDate: await mtimeDate(resolved.value),
       identityMap: opts.identityMap,
       invoker: opts.invoker,
+      obsidian: opts.obsidian,
     });
 
     entries.push({
