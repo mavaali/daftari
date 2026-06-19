@@ -96,7 +96,10 @@ independently for the monitor only.
   carry a real aged strength and are part of the distribution.
 - **Per group report:** `count, mean, median, p10, p90, variance` of aged strength.
 - **Headline drift signal:** `core median − periphery median` (the gap that widens as
-  the core entrenches while the periphery flatlines).
+  the core entrenches while the periphery flatlines). **Null when either group is
+  empty** — the gap is undefined without both sides, and a sentinel `0` would falsely
+  read as "no drift" in exactly the lopsided/early-vault regime the monitor watches.
+  Consumers compare the per-group counts.
 - **Secondary flatline signal:** count of edges whose aged strength has decayed below
   `EDGE_TRIGGER_STRENGTH` (0.5) — the inert tail that can no longer bear triggers.
 
@@ -125,12 +128,17 @@ distribution in Stage 5; a scalar would hide which tail is moving.)
   (`edge-observe / total`) — the "creeping toward cheap link over deprecate/merge"
   ratchet (§6.2).
 - **Denominator (pinned):** `total` = envelope/edge-op rows (`recordEnvelopeDecision`:
-  `edge-observe`/`edge-contest`) **plus** staged-action rows (`STAGED_ACTION_TYPES`).
-  It **excludes** the shadow journal's doc-write calibration rows
-  (`recordShadowAction`, which carry an `action` that is not an edge op and no
-  `decision`). The metric is about the curation `do()` mix, not doc writes — those
-  rows would dilute the ratchet. The filter: a record counts iff its `action` ∈
-  {edge-observe, edge-contest} or it is a staged-action record.
+  `edge-observe`/`edge-contest`) **plus** staged-action rows (`STAGED_ACTION_TYPES`)
+  whose `status` is `pending` or `ratified`. It **excludes** (a) the shadow journal's
+  doc-write calibration rows (`recordShadowAction`, which carry an `action` that is not
+  an edge op and no `decision`), and (b) staged actions with status `expired` or
+  `rejected` (they died without effect; counting them inflates the heavyweight side and
+  *deflates* `cheapLinkFraction`, i.e. **under-reports the very cheap-link-creep ratchet
+  this metric exists to detect** — a monitor must not under-report its own ratchet). The
+  metric is the curation `do()` mix the loop actually enacted or is still proposing —
+  not doc writes, not dead proposals. The filter: a record counts iff its `action` ∈
+  {edge-observe, edge-contest}, or it is a staged-action record with status ∈
+  {pending, ratified}.
 - **Snapshot of counts.** Cross-session drift is recoverable offline from the journal
   timestamps; no history file needed in v1.
 
@@ -159,7 +167,7 @@ interface CoverageEquitySummary {
   strengthDrift: {
     core: StrengthGroupStats;
     periphery: StrengthGroupStats;
-    coreMinusPeripheryMedian: number;
+    coreMinusPeripheryMedian: number | null;  // null when either group empty
     belowTriggerCount: number;        // aged strength < EDGE_TRIGGER_STRENGTH
   };
   backstopOverdue: {

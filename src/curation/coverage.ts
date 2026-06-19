@@ -35,7 +35,10 @@ export interface CoverageEquitySummary {
   strengthDrift: {
     core: StrengthGroupStats; // blast > 0
     periphery: StrengthGroupStats; // blast == 0
-    coreMinusPeripheryMedian: number;
+    // The drift signal — null when either group is empty (the gap is undefined
+    // without both sides; a sentinel 0 would read as "no drift" in exactly the
+    // lopsided/early-vault regime this monitor watches). Compare group counts.
+    coreMinusPeripheryMedian: number | null;
     belowTriggerCount: number; // aged strength < EDGE_TRIGGER_STRENGTH (0.5)
   };
   backstopOverdue: {
@@ -118,10 +121,13 @@ export function coverageEquitySummary(input: CoverageInput): Result<CoverageEqui
   }
   const core = stats(coreStrengths);
   const periphery = stats(periStrengths);
+  // Null unless BOTH groups have edges — the median gap is undefined otherwise,
+  // and a sentinel 0 would falsely read as "no drift" on a one-sided vault.
+  const medianGap = core.count > 0 && periphery.count > 0 ? core.median - periphery.median : null;
   const strengthDrift = {
     core,
     periphery,
-    coreMinusPeripheryMedian: core.median - periphery.median,
+    coreMinusPeripheryMedian: medianGap,
     belowTriggerCount,
   };
 
@@ -163,7 +169,13 @@ export function coverageEquitySummary(input: CoverageInput): Result<CoverageEqui
     if (!EDGE_OP_ACTIONS.has(rec.action)) continue; // exclude doc-write calibration rows
     counts[rec.action] = (counts[rec.action] ?? 0) + 1;
   }
+  // Count only staged actions the loop actually enacted ("ratified") or is still
+  // actively proposing ("pending"). "expired"/"rejected" died without effect —
+  // counting them inflates the heavyweight side and DEFLATES cheapLinkFraction,
+  // i.e. under-reports the cheap-link-creep ratchet this metric exists to detect.
+  const LIVE_STAGED_STATUSES = new Set(["pending", "ratified"]);
   for (const sa of input.stagedActions) {
+    if (!LIVE_STAGED_STATUSES.has(sa.status)) continue;
     counts[sa.actionType] = (counts[sa.actionType] ?? 0) + 1;
   }
   const total = Object.values(counts).reduce((s, n) => s + n, 0);

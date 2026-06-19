@@ -63,7 +63,7 @@ function shadowRow(action: string, decision?: "admitted" | "gated"): ShadowActio
     ...(decision ? { decision } : {}),
   } as ShadowActionRecord;
 }
-function staged(actionType: string): StagedAction {
+function staged(actionType: string, status = "pending"): StagedAction {
   return {
     id: "1",
     actionType,
@@ -71,7 +71,7 @@ function staged(actionType: string): StagedAction {
     proposedBy: "a",
     proposedAt: "",
     expiresAt: "",
-    status: "pending",
+    status,
     rationale: "",
     proposedDiff: null,
     ratifiedAt: null,
@@ -95,7 +95,8 @@ describe("coverageEquitySummary", () => {
     const s = r.value;
     expect(s.strengthDrift.core.count).toBe(0);
     expect(s.strengthDrift.periphery.count).toBe(0);
-    expect(s.strengthDrift.coreMinusPeripheryMedian).toBe(0);
+    // gap is null (undefined) when either group is empty — here both are
+    expect(s.strengthDrift.coreMinusPeripheryMedian).toBeNull();
     expect(s.strengthDrift.belowTriggerCount).toBe(0);
     expect(s.backstopOverdue.count).toBe(0);
     expect(s.actionMix.total).toBe(0);
@@ -129,6 +130,22 @@ describe("strength-distribution drift", () => {
     expect(r.ok && r.value.strengthDrift.core.count + r.value.strengthDrift.periphery.count).toBe(
       2,
     );
+  });
+
+  it("reports a null median gap when one group is empty (no false 'no drift')", () => {
+    const docs = blastDocs();
+    // only a periphery edge (no core) → gap undefined, must be null not 0
+    const edges = [edge({ fromPath: "lonely.md", toPath: "orphan.md", strength: 0.3 })];
+    const r = coverageEquitySummary({
+      docs,
+      edges,
+      shadowRecords: [],
+      stagedActions: [],
+      now: NOW,
+    });
+    expect(r.ok && r.value.strengthDrift.core.count).toBe(0);
+    expect(r.ok && r.value.strengthDrift.periphery.count).toBe(1);
+    expect(r.ok && r.value.strengthDrift.coreMinusPeripheryMedian).toBeNull();
   });
 
   it("excludes revoked edges from the distribution", () => {
@@ -221,6 +238,29 @@ describe("action-mix drift", () => {
     expect(r.ok && r.value.actionMix.total).toBe(1); // only the edge-observe
     expect(r.ok && r.value.actionMix.cheapLinkFraction).toBe(1);
     expect(r.ok && r.value.actionMix.counts["write"]).toBeUndefined();
+  });
+
+  it("excludes expired/rejected staged actions (counts only pending+ratified)", () => {
+    const shadowRecords = [shadowRow("edge-observe", "admitted")];
+    const stagedActions = [
+      staged("merge", "ratified"), // enacted → counts
+      staged("deprecate", "pending"), // live proposal → counts
+      staged("merge", "expired"), // died → excluded
+      staged("supersede", "rejected"), // died → excluded
+    ];
+    const r = coverageEquitySummary({
+      docs: [],
+      edges: [],
+      shadowRecords,
+      stagedActions,
+      now: NOW,
+    });
+    // denominator = 1 edge-observe + 2 live staged (merge ratified, deprecate pending)
+    expect(r.ok && r.value.actionMix.total).toBe(3);
+    expect(r.ok && r.value.actionMix.counts["merge"]).toBe(1); // expired merge not counted
+    expect(r.ok && r.value.actionMix.counts["deprecate"]).toBe(1);
+    expect(r.ok && r.value.actionMix.counts["supersede"]).toBeUndefined();
+    expect(r.ok && r.value.actionMix.cheapLinkFraction).toBeCloseTo(1 / 3, 5);
   });
 });
 
