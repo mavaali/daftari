@@ -150,7 +150,15 @@ export function serializeDocument(
   for (const [key, value] of Object.entries(raw)) {
     if (handled.has(key)) continue;
     if (value === undefined || value === null) continue;
-    ordered[key] = value;
+    // A js-yaml-parsed unquoted date arrives as a Date; serialize it date-only
+    // (Daftari's YYYY-MM-DD convention) rather than letting js-yaml emit a full
+    // ISO datetime — otherwise a custom field like `published: 2026-06-15` is
+    // silently rewritten to `2026-06-15T00:00:00.000Z`. Mirrors extensionValue's
+    // Date handling for declared fields.
+    ordered[key] =
+      value instanceof Date && !Number.isNaN(value.getTime())
+        ? value.toISOString().slice(0, 10)
+        : value;
   }
   return matter.stringify(body.startsWith("\n") ? body : `\n${body}`, ordered);
 }

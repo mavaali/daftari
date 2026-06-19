@@ -3,10 +3,17 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import type { Frontmatter } from "../../src/frontmatter/types.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultRead } from "../../src/tools/read.js";
-import { vaultAppend, vaultDeprecate, vaultPromote, vaultWrite } from "../../src/tools/write.js";
+import {
+  serializeDocument,
+  vaultAppend,
+  vaultDeprecate,
+  vaultPromote,
+  vaultWrite,
+} from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
 import { isGitRepo, log } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -1200,6 +1207,21 @@ describe("write tools", () => {
       if (result.ok) return;
       expect(result.error.message).toContain("auto_commit");
     });
+  });
+});
+
+describe("serializeDocument — custom Date frontmatter fields", () => {
+  it("serializes a custom Date frontmatter field as YYYY-MM-DD, not a datetime", () => {
+    const fm = newFrontmatter({
+      describes: [],
+      questions_answered: [],
+      questions_raised: [],
+    }) as unknown as Frontmatter;
+    const out = serializeDocument(fm, "body\n", [], {
+      published: new Date("2026-06-15T00:00:00.000Z"),
+    });
+    expect(out).toContain("published: '2026-06-15'");
+    expect(out).not.toContain("2026-06-15T00:00:00");
   });
 });
 
