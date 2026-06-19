@@ -4,6 +4,10 @@
 import { posix } from "node:path";
 import { decayBackstopDue } from "../consolidate/clocks.js";
 import { CONSOLIDATE_MAX_INTERVAL_DAYS } from "../consolidate/constants.js";
+// Type-only (erased at runtime — no runtime coupling): pins the edge-op action
+// names below to the envelope's source-of-truth type, so a rename there breaks
+// THIS build instead of silently drifting the monitor.
+import type { EnvelopeActionType } from "../consolidate/envelope.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { type DerivesFromEdge, EDGE_TRIGGER_STRENGTH } from "./edges.js";
 import type { ShadowActionRecord } from "./shadow.js";
@@ -126,7 +130,10 @@ export function coverageEquitySummary(input: CoverageInput): Result<CoverageEqui
   const daysSince = (iso: string) =>
     Math.max(0, (now.getTime() - new Date(iso).getTime()) / 86_400_000);
   // daysOverdue = days past the max interval. We need lastRederived per overdue
-  // edge; look it up from the source edges by (from,to).
+  // edge; look it up from the source edges by (from,to). Keyed identically to
+  // decayBackstopDue's own (from,to) dedup (clocks.ts), so each overdue edge has
+  // exactly one source row; the data model has no parallel (from,to) edges. If
+  // that ever changes, the last writer wins here — acceptable for a monitor.
   const lastByKey = new Map(
     input.edges.map((e) => [`${e.fromPath}\n${e.toPath}`, e.lastRederived]),
   );
@@ -146,7 +153,11 @@ export function coverageEquitySummary(input: CoverageInput): Result<CoverageEqui
   };
 
   // --- action-mix drift -----------------------------------------------------
-  const EDGE_OP_ACTIONS = new Set(["edge-observe", "edge-contest"]);
+  // Pinned to EnvelopeActionType: if the envelope renames an action, this array
+  // literal fails to compile rather than the monitor silently miscounting.
+  const EDGE_OP_ACTION_NAMES: readonly EnvelopeActionType[] = ["edge-observe", "edge-contest"];
+  const CHEAP_LINK_ACTION: EnvelopeActionType = "edge-observe";
+  const EDGE_OP_ACTIONS = new Set<string>(EDGE_OP_ACTION_NAMES);
   const counts: Record<string, number> = {};
   for (const rec of input.shadowRecords) {
     if (!EDGE_OP_ACTIONS.has(rec.action)) continue; // exclude doc-write calibration rows
@@ -156,7 +167,7 @@ export function coverageEquitySummary(input: CoverageInput): Result<CoverageEqui
     counts[sa.actionType] = (counts[sa.actionType] ?? 0) + 1;
   }
   const total = Object.values(counts).reduce((s, n) => s + n, 0);
-  const cheapLink = counts["edge-observe"] ?? 0;
+  const cheapLink = counts[CHEAP_LINK_ACTION] ?? 0;
   const actionMix = {
     counts,
     total,
