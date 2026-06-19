@@ -86,6 +86,10 @@ export interface StagedAction {
   ratifiedAt: string | null;
   ratifiedBy: string | null;
   ratificationReason: string | null;
+  // The authenticated identity (access.user / §11.6 principal) that issued the
+  // decision. Recorded in the JSONL decision record and carried on the in-memory
+  // row. NOT stored in the sqlite staged_actions table (no schema bump needed).
+  decidedByPrincipal: string | null;
 }
 
 export interface StageActionInput {
@@ -105,6 +109,9 @@ export interface DecisionInput {
   ratifiedAt: string;
   ratifiedBy: string;
   reason?: string;
+  // The authenticated identity that issued the decision (access.user, §11.6).
+  // Optional — omitted when no AccessContext is present.
+  decidedByPrincipal?: string;
 }
 
 export function stagedActionsPath(vaultRoot: string): string {
@@ -159,6 +166,7 @@ interface RawRecord {
   ratified_at?: string | null;
   ratified_by?: string | null;
   ratification_reason?: string | null;
+  decided_by_principal?: string | null;
 }
 
 function readRawRecords(vaultRoot: string): RawRecord[] {
@@ -205,6 +213,7 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
         ratified_at: null,
         ratified_by: null,
         ratification_reason: null,
+        decided_by_principal: null,
       });
     } else {
       // Decision record — only meaningful if the proposal was already seen.
@@ -214,6 +223,7 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
       existing.ratified_at = rec.ratified_at ?? null;
       existing.ratified_by = rec.ratified_by ?? null;
       existing.ratification_reason = rec.ratification_reason ?? null;
+      existing.decided_by_principal = rec.decided_by_principal ?? null;
     }
   }
   return byId;
@@ -239,6 +249,9 @@ function rowToStagedAction(row: StagedActionRow): StagedAction {
     ratifiedAt: row.ratified_at,
     ratifiedBy: row.ratified_by,
     ratificationReason: row.ratification_reason,
+    // NOTE: decided_by_principal is JSONL-only — no DDL column in staged_actions;
+    // SQLite-backed reads (rebuildStagedActionsIndex) always yield null here.
+    decidedByPrincipal: row.decided_by_principal ?? null,
   };
 }
 
@@ -341,6 +354,9 @@ export async function recordDecision(
       ratified_at: decision.ratifiedAt,
       ratified_by: decision.ratifiedBy,
       ...(decision.reason ? { ratification_reason: decision.reason } : {}),
+      ...(decision.decidedByPrincipal != null
+        ? { decided_by_principal: decision.decidedByPrincipal }
+        : {}),
     };
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
