@@ -6,9 +6,15 @@
 // check, for a human (or an agent acting on a human's behalf) to triage.
 
 import { ok, type Result } from "../frontmatter/types.js";
+import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
-import { type ShadowLintSummary, shadowLintSummary } from "./shadow.js";
-import { listPendingForLint, type StagedActionLintItem } from "./staged-actions.js";
+import { listEdges } from "./edges.js";
+import { listShadowActions, type ShadowLintSummary, shadowLintSummary } from "./shadow.js";
+import {
+  listPendingForLint,
+  listStagedActions,
+  type StagedActionLintItem,
+} from "./staged-actions.js";
 
 export type { StagedActionLintItem } from "./staged-actions.js";
 
@@ -122,6 +128,9 @@ export interface LintReport {
   // actions" surface Decision 3's calibration reads. Zeroes when the vault has
   // never run shadow mode.
   shadowActions: ShadowLintSummary;
+  // Coverage/equity summary (Stage 4 — spec §6.2): four budget-drift ratchets
+  // over the cortex loop. Read-only monitor; never a target.
+  coverageEquity: CoverageEquitySummary;
 }
 
 export interface LintOptions {
@@ -278,6 +287,21 @@ export async function runLint(
   const shadowActions = await shadowLintSummary(vaultRoot);
   if (!shadowActions.ok) return shadowActions;
 
+  const edgesRes = await listEdges(vaultRoot, {}, now);
+  if (!edgesRes.ok) return edgesRes;
+  const shadowRecordsRes = await listShadowActions(vaultRoot);
+  if (!shadowRecordsRes.ok) return shadowRecordsRes;
+  const stagedRes = await listStagedActions(vaultRoot);
+  if (!stagedRes.ok) return stagedRes;
+  const coverageEquityRes = coverageEquitySummary({
+    docs,
+    edges: edgesRes.value,
+    shadowRecords: shadowRecordsRes.value,
+    stagedActions: stagedRes.value,
+    now,
+  });
+  if (!coverageEquityRes.ok) return coverageEquityRes;
+
   return ok({
     generatedAt: now.toISOString(),
     checks,
@@ -285,6 +309,7 @@ export async function runLint(
     tensionHealth: tensionHealth.value,
     stagedActions: stagedActions.value,
     shadowActions: shadowActions.value,
+    coverageEquity: coverageEquityRes.value,
   });
 }
 
