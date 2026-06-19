@@ -159,6 +159,65 @@ Reuses backfill's apply path verbatim:
 into the live Obsidian files and renders as Obsidian **Properties**. A sidecar is
 not an option (CLAUDE.md). This is the deal of in-place adoption.
 
+## Validating the value (post-import)
+
+> Reconstructed from the brainstorming side-chat (the exact transcript markdown
+> was not available to this session) and then corrected against the actual
+> `daftari eval` tooling — the side-chat version may carry the same inaccuracy
+> noted below, so reconcile before trusting either. Kill condition for this whole
+> section: if `daftari eval` cannot produce a stable day-one number on a freshly
+> imported, un-curated vault, the protocol below needs rework.
+
+Adoption produces two distinct kinds of value on two different clocks. Conflating
+them makes the feature look either over- or under-delivering, so the adopter
+should measure them separately — and `daftari eval`'s **by-tier** output is
+exactly the separation.
+
+**1. Retrieval value — available day one, frontmatter-independent.** The moment a
+vault is indexed, an LLM pointed at Daftari retrieves over the *content*, whether
+or not Daftari frontmatter has been filled (indexing only needs YAML to parse, not
+to validate — `src/search/reindex.ts:186`). This is the bulk of the "answers get
+better" promise and does **not** wait on the deliberate frontmatter pass. It maps
+to `daftari eval`'s **`retrieval` tier**.
+
+**2. Curation value — accrues as frontmatter (and edges) fill.** Confidence
+weighting, staleness/TTL, lint, tension surfacing, and consolidation key off
+structure the adopter hasn't created yet. It maps to eval's **`cross_reference`**
+and **`contradiction`** tiers, which lean on cross-document structure that grows
+as the cleanup loop runs (deliberately, never auto). Track it as a trend, not a
+day-one number.
+
+**How `daftari eval` actually works (so the protocol is honest).** `eval` is not
+a retrieval-on/off switch. It samples a question set *from the vault*
+(`sampleSubgraph`), runs an answerer LLM (k samples) over Daftari's tool surface,
+and an LLM grader scores answers against vault-derived expected answers — emitting
+an overall score plus the three tier means (pipeline at `src/eval/index.ts:285`
+`runTopLevel`; tiers surfaced at `:260`; grading in `src/eval/score.ts`). There is
+no "Daftari off" arm.
+
+**Protocol for the adopter:**
+
+1. **Day-one baseline.** Run `daftari eval` immediately after import (frontmatter
+   mostly unfilled). Expect the `retrieval` tier to already be strong — that is
+   the retrieval value, landed on day one. Note the default `--n 15` splits ~5
+   questions per tier, so a single-run tier mean is noisy; raise `--n` for a
+   stabler day-one number.
+2. **Trend.** Re-run after each cleanup pass as coverage rises (track coverage via
+   the `daftari backfill --plan` summary or `vault_lint`). Watch the
+   `cross_reference` / `contradiction` tiers climb — that is the curation value
+   maturing.
+
+Keeping the tiers separate is the point: a flat `cross_reference` curve is not a
+failed import if the `retrieval` tier is already high — they are different
+mechanisms on different timelines.
+
+**Caveat (do not oversell the A/B).** `eval` generates its question set from the
+vault and stamps a `vault_hash`, so the question set *evolves* as the vault is
+curated. Cross-run tier comparisons are therefore **directional, not a controlled
+A/B on a frozen set**. A rigorous before/after on identical questions would need a
+pinned question set across runs — out of scope here; treat the trend as a signal,
+not a measurement.
+
 ## Testing
 
 Mirror the backfill test structure. New cases:
