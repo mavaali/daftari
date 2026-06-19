@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { CONSOLIDATE_AGENT } from "../../src/consolidate/constants.js";
 import { addTension, listTensions } from "../../src/curation/tension.js";
 import { vaultTensionResolve } from "../../src/tools/curation.js";
 
@@ -12,7 +13,23 @@ function curatorAccess(user = "mihir"): AccessContext {
   return {
     user,
     roleName: "curator",
-    role: { read: ["*"], write: ["*"], promote: true },
+    role: { read: ["*"], write: ["*"], promote: true, ratify: false },
+  };
+}
+
+function ratifyAccess(user = "senior"): AccessContext {
+  return {
+    user,
+    roleName: "senior-curator",
+    role: { read: ["*"], write: ["*"], promote: true, ratify: true },
+  };
+}
+
+function readerAccess(user = "reader"): AccessContext {
+  return {
+    user,
+    roleName: "reader",
+    role: { read: ["*"], write: [], promote: false, ratify: false },
   };
 }
 
@@ -177,5 +194,72 @@ describe("vault_tension_resolve", () => {
     expect(first?.resolution?.kind).toBe("corrected");
     expect(first?.resolution?.resolved_by).toBe("mihir.wagle");
     expect(first?.resolution?.references).toEqual(["pricing/canonical.md"]);
+  });
+
+  describe("loop-authored tension guard (Stage 3 §5.4)", () => {
+    async function seedLoopTension(vaultRoot: string) {
+      const seeded = await addTension(vaultRoot, {
+        title: "Loop-authored tension",
+        sourceA: "a.md",
+        claimA: "claim A",
+        sourceB: "b.md",
+        claimB: "claim B",
+        loggedBy: CONSOLIDATE_AGENT,
+        kind: "interpretive",
+      });
+      if (!seeded.ok) throw seeded.error;
+      return seeded.value;
+    }
+
+    it("denies a non-ratify role from resolving a loop-authored tension", async () => {
+      const entry = await seedLoopTension(vault);
+      const res = await vaultTensionResolve(
+        vault,
+        { id: entry.id, kind: "superseded", rationale: "Overriding loop" },
+        readerAccess(),
+      );
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error.message).toMatch(/cannot resolve/i);
+    });
+
+    it("allows a ratify role to resolve a loop-authored tension", async () => {
+      const entry = await seedLoopTension(vault);
+      const res = await vaultTensionResolve(
+        vault,
+        { id: entry.id, kind: "superseded", rationale: "Senior curator sign-off" },
+        ratifyAccess(),
+      );
+      expect(res.ok).toBe(true);
+    });
+
+    it("allows any-read role to resolve a human-authored tension", async () => {
+      // Human-logged tensions stay resolvable by anyone with read access.
+      const seeded = await addTension(vault, {
+        title: "Human tension",
+        sourceA: "c.md",
+        claimA: "human claim A",
+        sourceB: "d.md",
+        claimB: "human claim B",
+        loggedBy: "human:mihir",
+        kind: "factual",
+      });
+      if (!seeded.ok) throw seeded.error;
+      const entry = seeded.value;
+
+      const res = await vaultTensionResolve(
+        vault,
+        { id: entry.id, kind: "accepted", rationale: "Both stand" },
+        readerAccess(),
+      );
+      expect(res.ok).toBe(true);
+    });
+
+    it("bypasses the gate when no access context is supplied (loop-authored tension)", async () => {
+      // Direct/in-process calls with no access context must not be blocked.
+      const entry = await seedLoopTension(vault);
+      const res = await vaultTensionResolve(vault, { id: entry.id, kind: "invalid" }, undefined);
+      expect(res.ok).toBe(true);
+    });
   });
 });
