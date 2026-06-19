@@ -186,7 +186,10 @@ export function renderApplyResult(r: ApplyResult): string {
   return `${out.join("\n")}\n`;
 }
 
-export async function runBackfill(argv: string[]): Promise<number> {
+export async function runBackfill(
+  argv: string[],
+  opts: { obsidian?: boolean } = {},
+): Promise<number> {
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP);
     return argv.length === 0 ? 1 : 0;
@@ -226,6 +229,7 @@ export async function runBackfill(argv: string[]): Promise<number> {
       identityMap,
       invoker: agent,
       onProgress: planProgress(),
+      obsidian: opts.obsidian,
     });
     if (!result.ok) {
       process.stderr.write(`daftari backfill: ${result.error.message}\n`);
