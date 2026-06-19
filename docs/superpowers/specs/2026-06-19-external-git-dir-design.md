@@ -68,10 +68,12 @@ and the running server find the same repo.
   through the `.git` file automatically.
 
 ### Threading
-Auto-commit callers load config already and pass `config.gitDir`:
-- `performWrite` (`src/tools/write.ts`)
-- `vaultMerge` (`src/tools/write.ts`)
-- `applyPlan` (`src/backfill/apply.ts`)
+Auto-commit callers load config already and pass `config.gitDir`. There are
+exactly four `commit()` call sites:
+- `performWrite` (`src/tools/write.ts`) — add `gitDir` to its `params` object.
+- `vaultMerge` (`src/tools/write.ts`) — has `config` in scope; pass `config.value.gitDir`.
+- `applyPlan` (`src/backfill/apply.ts`) — **loads config internally, so the change
+  is local to its `commit()` call; no new parameter needed.**
 - `initVault` (`src/cli.ts`) — passes `undefined` (a freshly-scaffolded vault is
   not cloud-adopted); behavior unchanged.
 
@@ -93,7 +95,13 @@ wrongly `git init` an in-vault `.git/`. Threading prevents that.
   comments may not survive a rewrite — documented; acceptable for a config file.)
   If the two keys are already at the target values, no rewrite (idempotent).
 - Order: the config is written *before* `runBackfill` delegates, so the apply's
-  commit picks up the external git-dir.
+  commit picks up the external git-dir (because `applyPlan` re-reads config from
+  disk).
+- **Update the existing `runImport` stderr notices** for the external case: the
+  current "is not a git repository — Daftari … will initialize one here"
+  (`src/import/index.ts:81`) is misleading when `git_dir` is set, since the repo
+  is initialized *off* the vault. When `--external-git-dir` is in effect, the
+  notice should say the repo will be created at the external path instead.
 
 ## Behavior notes / limitations (documented)
 
@@ -139,6 +147,6 @@ wrongly `git init` an in-vault `.git/`. Threading prevents that.
   dangling `.git` file (the machine-2 case): expect it to recreate the external
   dir and rewrite the file. Kill condition: it errors instead — then
   `ensureGitRepo` must `rm` the dangling `.git` file first.
-- Confirm js-yaml is already a direct/transitive dependency usable for the config
-  merge (gray-matter bundles it); if not, add the dependency or do a targeted
-  text edit.
+- ~~Confirm js-yaml availability~~ — RESOLVED: `src/utils/config.ts:11` already
+  imports `js-yaml` directly (`load`); use it for the config merge (parse +
+  `dump`).
