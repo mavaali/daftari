@@ -36,6 +36,18 @@ export function harvestInlineTags(body: string): string[] {
   return found;
 }
 
+// Obsidian and its plugins (Templater, Linter, Web Clipper) write `created` /
+// `updated` as full ISO datetimes ("2026-03-05T04:13:05+00:00"), but Daftari's
+// schema requires a date-only YYYY-MM-DD. Coerce a datetime-shaped string to its
+// leading date; leave a bare date, a non-date string, or non-string input
+// untouched (so anything not datetime-shaped still flows to the apply guard
+// unchanged). Used only on the obsidian derivation path for created/updated.
+export function coerceDatePrefix(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const m = /^(\d{4}-\d{2}-\d{2})[T ]/.exec(value);
+  return m ? m[1] : value;
+}
+
 // Obsidian Web Clipper writes the captured page URL into a singular `source`
 // frontmatter field. Daftari's equivalent is the plural `sources` array. Map it
 // when `sources` is absent/empty; the original `source` key is left untouched

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { harvestInlineTags, webClipperSources } from "../../src/backfill/obsidian.js";
+import {
+  coerceDatePrefix,
+  harvestInlineTags,
+  webClipperSources,
+} from "../../src/backfill/obsidian.js";
 
 describe("harvestInlineTags", () => {
   it("finds simple and nested tags, order-preserved and deduped", () => {
@@ -25,6 +29,25 @@ describe("harvestInlineTags", () => {
   });
   it("returns [] for a body with no tags", () => {
     expect(harvestInlineTags("plain text, no tags")).toEqual([]);
+  });
+});
+
+describe("coerceDatePrefix", () => {
+  it("coerces an ISO datetime with timezone to the date prefix", () => {
+    expect(coerceDatePrefix("2026-03-05T04:13:05+00:00")).toBe("2026-03-05");
+  });
+  it("coerces a space-separated datetime to the date prefix", () => {
+    expect(coerceDatePrefix("2026-03-05 04:13:05")).toBe("2026-03-05");
+  });
+  it("leaves a bare YYYY-MM-DD date unchanged", () => {
+    expect(coerceDatePrefix("2026-03-05")).toBe("2026-03-05");
+  });
+  it("leaves a non-date string unchanged", () => {
+    expect(coerceDatePrefix("sometime last year")).toBe("sometime last year");
+  });
+  it("returns non-string input unchanged", () => {
+    expect(coerceDatePrefix(42)).toBe(42);
+    expect(coerceDatePrefix(null)).toBe(null);
   });
 });
 

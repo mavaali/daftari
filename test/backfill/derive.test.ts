@@ -296,4 +296,24 @@ describe("deriveProposed — obsidian mode", () => {
     expect(off.proposed.tags).toEqual([]);
     expect(off.derivation.tags).toBe("empty");
   });
+
+  it("coerces an ISO-datetime created/updated to YYYY-MM-DD in obsidian mode", () => {
+    const { proposed } = deriveProposed({
+      ...base,
+      body: "clip",
+      raw: { created: "2026-03-05T04:13:05+00:00", updated: "2026-03-05T04:13:05+00:00" },
+      obsidian: true,
+    });
+    expect(proposed.created).toBe("2026-03-05");
+    expect(proposed.updated).toBe("2026-03-05");
+  });
+
+  it("does NOT coerce datetime created when obsidian is off (preserved verbatim)", () => {
+    const { proposed } = deriveProposed({
+      ...base,
+      body: "clip",
+      raw: { created: "2026-03-05T04:13:05+00:00" },
+    });
+    expect(proposed.created).toBe("2026-03-05T04:13:05+00:00");
+  });
 });
