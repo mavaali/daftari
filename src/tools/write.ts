@@ -225,6 +225,7 @@ async function performWrite(params: {
   validation: ValidationReport;
   commitMessage: string;
   autoCommit: boolean;
+  gitDir?: string;
   baseVersion?: string;
   shadowMode?: boolean;
   // The authenticated identity the server runs as (access.user), when an
@@ -311,6 +312,7 @@ async function performWrite(params: {
           [params.relPath],
           params.commitMessage,
           params.agent,
+          { gitDir: params.gitDir },
         );
         if (!committed.ok) return committed;
         commitHash = committed.value.hash;
@@ -560,6 +562,7 @@ export async function vaultWrite(
     commitMessage:
       `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
     autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
@@ -666,6 +669,7 @@ export async function vaultAppend(
     validation: parsed.value.validation,
     commitMessage: `vault_append: ${path.value} by ${agent.value}`,
     autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
@@ -756,6 +760,7 @@ export async function vaultPromote(
     validation: parsed.value.validation,
     commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
     autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
@@ -842,6 +847,7 @@ export async function vaultDeprecate(
       `vault_deprecate: ${path.value} by ${agent.value} — ${reason.value}` +
       (supersededBy ? ` (superseded by ${supersededBy})` : ""),
     autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
@@ -947,6 +953,7 @@ export async function vaultSetConfidence(
       `vault_set_confidence: ${path.value} ${oldFrontmatter.confidence}→${confidence.value} ` +
       `by ${agent.value} — ${reason.value}`,
     autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
@@ -1047,6 +1054,7 @@ export async function vaultSupersede(
       `vault_supersede: ${oldPath.value} superseded by ${newPath.value} ` +
       `by ${agent.value}${reason ? ` — ${reason}` : ""}`,
     autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
@@ -1314,6 +1322,7 @@ export async function vaultMerge(
         writes.map((w) => w.relPath),
         `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}`,
         agent.value,
+        { gitDir: config.value.gitDir },
       );
       if (!committed.ok) return committed;
       commitHash = committed.value.hash;

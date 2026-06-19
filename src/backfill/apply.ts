@@ -154,7 +154,9 @@ export async function applyPlan(
     const message =
       `vault_backfill: ${scope} — ${applied.length} ` +
       `${applied.length === 1 ? "doc" : "docs"} frontmatter backfilled by ${agent}`;
-    const committed = await commit(vaultRoot, applied, message, agent);
+    const committed = await commit(vaultRoot, applied, message, agent, {
+      gitDir: config.value.gitDir,
+    });
     if (!committed.ok) return committed;
     commitHash = committed.value.hash;
   }
