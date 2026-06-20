@@ -9,7 +9,7 @@
 // Result, never throws) plus an MCP ToolDefinition, mirroring the read- and
 // write-path tools.
 
-import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
+import { type AccessContext, canRatify, canRead, hasAnyRead } from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import type { CoverageEquitySummary } from "../curation/coverage.js";
 import {
@@ -35,7 +35,9 @@ import {
 } from "../curation/tension.js";
 import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
+import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
@@ -352,6 +354,33 @@ export async function vaultProvenance(
       ok: false,
       error: new Error("vault_provenance requires a non-empty 'filePath' argument"),
     };
+  }
+
+  // RBAC (W): provenance entries carry a frontmatter_diff for every write to
+  // the file, so returning them on `hasAnyRead` alone leaks the metadata of
+  // documents in collections the caller cannot read. Gate on canRead for the
+  // file's collection. The document may no longer exist (deprecated/deleted
+  // history), so derive the collection from its current frontmatter when
+  // readable, else fall back to the path's leading segment.
+  if (access) {
+    let collection = filePath.split("/")[0] ?? "";
+    const resolved = resolveVaultPath(vaultRoot, filePath);
+    if (resolved.ok) {
+      const content = await readFile(resolved.value);
+      if (content.ok) {
+        const parsed = parseDocument(content.value);
+        if (parsed.ok && parsed.value.frontmatter.collection) {
+          collection = parsed.value.frontmatter.collection;
+        }
+      }
+    }
+    if (!canRead(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot read provenance for '${filePath}'`,
+        ),
+      );
+    }
   }
 
   const log = await readProvenanceLog(vaultRoot);
