@@ -1,6 +1,6 @@
 {
   "name": "daftari",
-  "version": "1.24.0",
+  "version": "1.25.0",
   "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
   "license": "MIT",
   "author": "Mihir Wagle / mavaali",
