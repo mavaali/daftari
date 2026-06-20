@@ -13,7 +13,7 @@
 // (the §11.4 write tools). A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
 
-import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
+import { type AccessContext, canRatify, canWrite } from "../access/rbac.js";
 import {
   getStagedActionById,
   nowISO,
@@ -22,6 +22,7 @@ import {
   type StagedActionType,
   stageAction,
 } from "../curation/staged-actions.js";
+import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
@@ -33,13 +34,6 @@ import {
   vaultSupersede,
   type WriteResult,
 } from "./write.js";
-
-function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
-  if (access && !hasAnyRead(access.role)) {
-    return err(new Error(`access denied: role '${access.roleName}' cannot use ${tool}`));
-  }
-  return ok(undefined);
-}
 
 function requireString(
   args: Record<string, unknown>,
@@ -67,9 +61,6 @@ export async function vaultStageAction(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<StageActionResult, Error>> {
-  const allowed = requireReadAccess("vault_stage_action", access);
-  if (!allowed.ok) return allowed;
-
   const actionType = requireString(args, "action_type", "vault_stage_action");
   if (!actionType.ok) return actionType;
   if (!(STAGED_ACTION_TYPES as readonly string[]).includes(actionType.value)) {
@@ -90,12 +81,38 @@ export async function vaultStageAction(
     return err(new Error("vault_stage_action requires a 'proposed_diff' object argument"));
   }
 
-  // Fail fast: an action that targets a non-existent document can never be
-  // ratified (the write-tool dispatch would reject "document not found"). Catch
-  // it at stage time so a bad target never sits in the queue for 14 days.
   const resolved = resolveVaultPath(vaultRoot, targetPath.value);
   if (!resolved.ok) return resolved;
   const exists = await readFile(resolved.value);
+
+  // RBAC (S2): staging proposes a mutation to the target document, so it
+  // requires WRITE access to that document's collection — not merely any read
+  // grant. vault_ratify re-checks the `ratify` grant and the inner write tools
+  // re-check canWrite/canPromote on dispatch, but the producer must be gated
+  // too: a read-only role must not be able to append durable mutation proposals
+  // to the queue. The gate runs BEFORE the not-found branch so a role lacking
+  // write cannot probe document existence (not-found vs access-denied). The
+  // collection is authoritative from the document's own frontmatter when it is
+  // readable; for a not-yet-existing target it falls back to the path's leading
+  // segment (the same convention the write tools use).
+  if (access) {
+    const parsed = exists.ok ? parseDocument(exists.value) : null;
+    const collection =
+      (parsed?.ok ? parsed.value.frontmatter.collection : "") ||
+      (targetPath.value.split("/")[0] ?? "");
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot stage actions for collection '${collection}'`,
+        ),
+      );
+    }
+  }
+
+  // Fail fast: an action that targets a non-existent document can never be
+  // ratified (the write-tool dispatch would reject "document not found"). Catch
+  // it at stage time so a bad target never sits in the queue for 14 days. This
+  // is reached only by callers that already hold write access (checked above).
   if (!exists.ok) {
     return err(new Error(`vault_stage_action: target document not found: ${targetPath.value}`));
   }
