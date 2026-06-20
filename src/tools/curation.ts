@@ -11,6 +11,7 @@
 
 import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
+import type { CoverageEquitySummary } from "../curation/coverage.js";
 import {
   LINT_CHECKS,
   type LintCheckName,
@@ -263,6 +264,7 @@ export interface VaultLintResult {
   tensionHealth: TensionHealth;
   stagedActions: StagedActionLintItem[];
   shadowActions: ShadowLintSummary;
+  coverageEquity: CoverageEquitySummary;
 }
 
 export async function vaultLint(
@@ -308,6 +310,7 @@ export async function vaultLint(
       tensionHealth: report.value.tensionHealth,
       stagedActions: report.value.stagedActions,
       shadowActions: report.value.shadowActions,
+      coverageEquity: report.value.coverageEquity,
     });
   }
 
@@ -319,6 +322,7 @@ export async function vaultLint(
     tensionHealth: report.value.tensionHealth,
     stagedActions: report.value.stagedActions,
     shadowActions: report.value.shadowActions,
+    coverageEquity: report.value.coverageEquity,
   });
 }
 

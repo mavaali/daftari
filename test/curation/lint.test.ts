@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { observeEdge } from "../../src/curation/edges.js";
 import { runLint } from "../../src/curation/lint.js";
 import {
   listStagedActions,
@@ -11,6 +12,7 @@ import {
 import { addTension, resolveTension, tensionsPath } from "../../src/curation/tension.js";
 import { extractLinks } from "../../src/curation/vault-docs.js";
 import { vaultLint } from "../../src/tools/curation.js";
+import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
 
@@ -880,6 +882,44 @@ Body.
 
       const expired = await listStagedActions(dir, "expired");
       expect(expired.ok && expired.value.map((a) => a.id)).toEqual(["stage-001"]);
+    });
+  });
+
+  // ----- Task 7: coverageEquity in runLint -----------------------------------
+
+  describe("coverageEquity summary", () => {
+    const BY = "agent:curation-loop";
+    let vault: string;
+    beforeEach(() => {
+      vault = makeTempVault();
+    });
+    afterEach(() => {
+      cleanupVault(vault);
+    });
+
+    it("runLint includes a coverageEquity summary with the expected shape", async () => {
+      // Seed one directed edge (mirrors the seedAndVote pattern in edges.test.ts).
+      const seeded = await observeEdge(vault, {
+        fromPath: "a.md",
+        toPath: "b.md",
+        observedBy: BY,
+        blind: false,
+        at: "2026-01-01T00:00:00Z",
+      });
+      if (!seeded.ok) throw seeded.error;
+
+      const r = await runLint(vault);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const eq = r.value.coverageEquity;
+      expect(eq).toBeDefined();
+      // All four sub-metrics must be present.
+      expect(eq.strengthDrift).toBeDefined();
+      expect(eq.backstopOverdue).toBeDefined();
+      expect(eq.actionMix).toBeDefined();
+      expect(eq.directionResolution).toBeDefined();
+      // The seeded edge is non-revoked and directed.
+      expect(eq.directionResolution.directed).toBeGreaterThanOrEqual(1);
     });
   });
 });

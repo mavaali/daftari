@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Cortex loop **Stage 4 — coverage/equity instrumentation** (spec §6.2). `vault_lint`
+  now reports a `coverageEquity` summary surfacing the budget-drift ratchets before
+  any auto-write graduates: **strength-distribution drift** (edges split into core
+  vs periphery by blast==0, with per-group strength quantiles/variance and the
+  core−periphery median gap, plus a below-trigger-strength count), **standing
+  backstop-overdue** count (edges past the 90-day max interval, computed without a
+  consolidate run), **action-mix drift** (the cheap-link fraction over edge-op +
+  staged actions, excluding doc-write calibration rows), and **direction-resolution**
+  (directed vs symmetric, with the unresolved fraction). Read-only — a monitor, never
+  a target: a guard test forbids any `src/consolidate/` module from importing it.
+
 ## [1.24.0] - 2026-06-19
 
 ### Added

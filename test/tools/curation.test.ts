@@ -49,6 +49,22 @@ describe("curation tools", () => {
       const result = await vaultLint(LINT_VAULT, { filter: "nonsense" });
       expect(result.ok).toBe(false);
     });
+
+    it("tool result carries coverageEquity (unfiltered)", async () => {
+      const result = await vaultLint(LINT_VAULT, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.coverageEquity).toBeDefined();
+      expect(result.value.coverageEquity.directionResolution).toBeDefined();
+    });
+
+    it("tool result carries coverageEquity (filtered)", async () => {
+      const result = await vaultLint(LINT_VAULT, { filter: "orphanFiles" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.coverageEquity).toBeDefined();
+      expect(result.value.coverageEquity.actionMix).toBeDefined();
+    });
   });
 
   describe("vault_tension_log", () => {
