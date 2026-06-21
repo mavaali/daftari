@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-06-21
+
+### Security
+
+- **Symlink confinement, staged-action write-gate, and provenance RBAC (N/O/W)**
+  ([#142]). Vault path resolution now confines symlinks within the vault root
+  (prevents a symlinked file from escaping to read/write outside the vault);
+  staged actions are gated behind the write permission before they can be
+  ratified; and `vault_provenance` is RBAC-checked so provenance reads cannot
+  leak content from collections the role cannot read.
+
+### Changed
+
+- **`reindex` now reports schema-invalid frontmatter instead of silently coercing
+  it** ([#143]). `ReindexResult` gains `invalidFrontmatter: FlaggedDocument[]`
+  (documents indexed but whose frontmatter violated the schema and was coerced to
+  defaults), and `skipped` is now `FlaggedDocument[]` (`{ path, reason }`) rather
+  than `string[]`, covering files that could not be indexed at all. The markdown
+  file remains the source of truth; `vault_lint` is the repair path. Coercion is
+  no longer silent.
+
+### Internal
+
+- Added `integrations/recall-bench/` — a `MemorySystemAdapter` for the external
+  Recall Bench memory benchmark (SP1: adapter + baseline arm) ([#144]). Benchmark
+  tooling only; not part of the published package (`private`, excluded from `files`).
+
 ## [1.25.0] - 2026-06-19
 
 ### Added
