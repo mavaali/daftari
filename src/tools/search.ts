@@ -8,6 +8,7 @@
 
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { resolveCurrentSource } from "../search/current-source.js";
 import {
   DEFAULT_WEIGHTS,
   type HybridSearchResult,
@@ -131,9 +132,25 @@ export async function vaultSearch(
       weights: parseWeights(args.weights),
       limit: parseLimit(args.limit),
     });
-    if (!result.ok || !access) return result;
-    // RBAC: drop hits in collections the role cannot read.
-    const hits = result.value.hits.filter((h) => canRead(access.role, h.collection));
+    if (!result.ok) return result;
+
+    // RBAC: drop hits in collections the role cannot read (only when an access
+    // context is present). Enrichment then runs on the surviving hits.
+    const hits = access
+      ? result.value.hits.filter((h) => canRead(access.role, h.collection))
+      : result.value.hits;
+
+    // Foreground the current source for any hit that points at a successor.
+    // Additive and lossless — the stale hit keeps its place; we only attach a
+    // pointer. Do NOT gate this on `hit.status === "superseded"`: a
+    // `deprecated` doc can also carry a `superseded_by` successor (set by
+    // vault_deprecate), so we key on the pointer (inside resolveCurrentSource),
+    // not the status string. The resolver no-ops for hits with no successor.
+    for (const hit of hits) {
+      const cs = resolveCurrentSource(db, hit.path, access);
+      if (cs) hit.currentSource = cs;
+    }
+
     return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();

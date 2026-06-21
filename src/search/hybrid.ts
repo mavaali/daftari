@@ -26,6 +26,7 @@ import {
   type IndexDb,
 } from "../storage/index-db.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
+import type { CurrentSource } from "./current-source.js";
 import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
 
 export interface HybridWeights {
@@ -45,6 +46,7 @@ export interface HybridHit {
   vectorScore: number;
   snippet: string;
   decay: DecayState | null;
+  currentSource?: CurrentSource; // populated by the tool handler, not the ranker
 }
 
 export interface HybridSearchResult {

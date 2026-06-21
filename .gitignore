@@ -42,3 +42,10 @@ experiments/exp1-info-vs-priors/claimset_dropped_private.json
 experiments/exp1-info-vs-priors/draft_novel.json
 experiments/exp1-info-vs-priors/draft_novel_pd_expansion.json
 experiments/exp1-info-vs-priors/claimset.bak.json
+
+# Recall Bench SP1 run secrets (never commit)
+integrations/recall-bench/.env
+integrations/recall-bench/.env.local
+
+# Recall Bench run artifacts (large; reproducible)
+integrations/recall-bench/results/

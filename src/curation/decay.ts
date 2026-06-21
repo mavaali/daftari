@@ -37,18 +37,18 @@ export function computeDecay(input: DecayInput, now: Date = new Date()): DecaySt
   const reasons: string[] = [];
   let level: DecayLevel | null = null;
 
+  // Superseded — replaced by a specific successor. Retired severity. The
+  // successor's identity is surfaced structurally by resolveCurrentSource, NOT
+  // in this banner, so no document-authored string reaches the prompt here.
+  if (input.status === "superseded") {
+    level = "deprecated";
+    reasons.push("status is superseded — a newer version of this document exists");
+  }
+
   // Deprecated — formally retired knowledge. Highest precedence.
   if (input.status === "deprecated") {
     level = "deprecated";
     reasons.push("status is deprecated — this document has been retired");
-    if (input.superseded_by) {
-      // `superseded_by` is the only document-authored string that reaches the
-      // banner. Collapse all whitespace before interpolating it: a newline would
-      // otherwise forge an extra banner line — a prompt-injection vector against
-      // the consuming agent.
-      const ref = input.superseded_by.replace(/\s+/g, " ").trim();
-      reasons.push(`superseded by: ${ref}`);
-    }
   }
 
   // Past TTL.
@@ -89,18 +89,28 @@ export function computeDecay(input: DecayInput, now: Date = new Date()): DecaySt
 
   if (level === null) return null; // healthy — silent baseline
 
-  return { level, reasons, banner: renderBanner(level, reasons) };
+  return { level, reasons, banner: renderBanner(level, reasons, input.status) };
 }
 
 // The banner is null for `aging` (scarcity rule). For warn/deprecated it is a
-// Daftari-authored, action-stating warning. The reason lines may include a
-// `superseded_by` path; that is the only document-supplied text, and it rides
-// as a quoted list item, never interpolated into the directive sentence.
-function renderBanner(level: DecayLevel, reasons: string[]): string | null {
+// Daftari-authored, action-stating warning. Every line is Daftari-authored: no
+// document-supplied string is interpolated here, so the banner is not a
+// prompt-injection surface. The triggering `status` selects a superseded-specific
+// head where applicable.
+function renderBanner(level: DecayLevel, reasons: string[], status: string): string | null {
   if (level === "aging") return null;
-  const head =
-    level === "deprecated"
-      ? "⚠ DEPRECATED — this document has been retired. Do not rely on it; find the current source."
-      : "⚠ STALE — this document may no longer be accurate. Verify against a current source before relying on it.";
+  let head: string;
+  // `status` is checked before `level` because it is the more specific signal:
+  // a superseded doc has level "deprecated" but must show the SUPERSEDED head.
+  if (status === "superseded") {
+    head =
+      "⚠ SUPERSEDED — a newer version of this document exists. See the current source rather than relying on this one.";
+  } else if (level === "deprecated") {
+    head =
+      "⚠ DEPRECATED — this document has been retired. Do not rely on it; find the current source.";
+  } else {
+    head =
+      "⚠ STALE — this document may no longer be accurate. Verify against a current source before relying on it.";
+  }
   return `${head}\n${reasons.map((r) => `  - ${r}`).join("\n")}`;
 }
