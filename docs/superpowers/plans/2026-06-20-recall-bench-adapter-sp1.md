@@ -108,7 +108,9 @@ Maps `(day, content, DayMetadata)` to a daftari daily. Uses **real** builtin fro
 
 - [ ] **Step 1: Write the failing test**
 
-Parse with **daftari's own parser** (`dist/frontmatter/parser.js`), not gray-matter — same parser daftari indexes with, no dependency ambiguity. Confirm `parseDocument`'s exact return field names first (`frontmatter`/`body` vs `data`/`content`) and adjust the asserts.
+Parse with **daftari's own parser** (`dist/frontmatter/parser.js`), not gray-matter — same parser daftari indexes with, no dependency ambiguity. Confirm `parseDocument`'s exact return shape first (Result-wrapped? field names `frontmatter`/`body`/`validation` vs `data`/`content`) and adjust the asserts.
+
+**Why this is a correctness GATE, not a nicety (spec spike-finding 3):** the adapter writes dailies and calls `reindexVault`, which on bad frontmatter **silently coerces** invalid enums to fallbacks and indexes the coerced value while discarding validation (`reindex.ts:185-225`, `parser.ts:30-38`) — `vault_write`'s reject gate is NOT on this path. So if `corpus-map` emits anything outside the builtin sets, the run won't error; it'll corrupt the baseline invisibly. The test must therefore assert **zero validation/coercion issues** on the emitted doc.
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -118,15 +120,18 @@ import { mapDay } from "./corpus-map.js";
 const meta = { dayNumber: 53, date: "2026-03-21", personaId: "executive-assistant", activeArcs: ["condor", "hiring"] };
 
 describe("mapDay", () => {
-  it("writes a daily under the persona dir with real builtin frontmatter", () => {
+  it("writes a daily with real builtin frontmatter and ZERO coercions", () => {
     const { relPath, markdown } = mapDay(53, "Condor deal sized at $4M.", meta);
     expect(relPath).toBe("executive-assistant/day-0053.md");
-    const parsed = parseDocument(markdown); // confirm shape: { frontmatter, body } (or .data/.content)
-    const fm = (parsed as any).frontmatter ?? (parsed as any).data;
+    const parsed = parseDocument(markdown); // confirm shape: Result<{ frontmatter, body, validation }>
+    const p = (parsed as any).ok ? (parsed as any).value : parsed;
+    const fm = p.frontmatter ?? p.data;
     expect(fm.collection).toBe("executive-assistant");
     expect(fm.tags).toEqual(["condor", "hiring"]);
     expect(fm.created).toBe("2026-03-21");
     expect(fm.dayNumber).toBe(53);
+    // CORRECTNESS GATE: corpus-map must emit nothing that reindex would silently coerce.
+    expect(p.validation ?? []).toHaveLength(0);
   });
 
   it("zero-pads day to 4 digits", () => {
@@ -262,6 +267,8 @@ git commit -m "feat(recall-bench): config parsing with defaults"
 Reuses `buildToolSurface(vaultRoot)` (defs + handler; handler already returns `{tool_error}` envelopes, never throws) and `completeWithTools`. Returns `{ answer, retrieval, toolCalls }`. **Retrieval extraction:** union all `vault_search` hits across `tool_calls` (skip `{tool_error}` outputs), dedup by path keeping max score. **toolCalls:** map each `tool_calls` entry to `{ tool, args, resultPreview }` (≤200 chars). Injects the `LlmClient` for testability (default = `createAnthropicClient()`).
 
 > **Test classification (corrected):** the LLM is stubbed, but this test calls real `reindexVault`, which loads the MiniLM embedding model. It is therefore an **integration test requiring the model cached** — NOT hermetic. Gate it (e.g. `describe.skipIf(!process.env.RB_INTEGRATION)`), warm the model once before running, and on a red result re-check against the known MiniLM CI-load flake (`reference_ci_embedding_model_flake`) before treating it as a regression. Only `corpus-map.test.ts` and `config.test.ts` are truly hermetic.
+>
+> **No-flatten constraint (spec spike-finding 2):** the answerer must pass `buildToolSurface`'s structured tool output through **unmodified** — do NOT post-process hits or inline structured fields (`decay`, `superseded_by`) into the prose `snippet`/prompt. The spike's `⚠ STALE`-in-prompt hallucination was caused by the *adapter* flattening a structured field; `extractRetrieval` only *reads* `{path,score,snippet}` and never rewrites what the LLM sees, so keep it that way.
 
 - [ ] **Step 1: Write the failing test (stub LLM, real tool surface — integration)**
 
@@ -590,7 +597,7 @@ git commit -m "feat(recall-bench): EA daftari profile + smoke config"
 
 - [ ] **Step 1: Switch the profile to the full run** — `ranges: { start: 6, end: 180, step: 6 }`, `sample: 50`, appellate on. Run with `--json-out bench-results/drafts/daftari-ea-180d/result.json` and `--resume` on its `progress.jsonl` if interrupted (~1–3 hrs).
 
-- [ ] **Step 2: Write the results note** — daftari baseline composite + per-checkpoint degradation curve + `contradiction-resolution` failure analysis (does daftari return stale revisions? quote `failures.jsonl` retrieval entries). **State the cross-system comparability caveat** (Claude+MiniLM vs published gpt-5.4+OpenAI-emb): clean claims are the within-daftari picture + failure modes; cross-system numbers are directional only.
+- [ ] **Step 2: Write the results note** — daftari baseline composite + per-checkpoint degradation curve + `contradiction-resolution` failure analysis (does daftari return stale revisions? quote `failures.jsonl` retrieval entries). **State the cross-system comparability caveat** (Claude+MiniLM vs published gpt-5.4+OpenAI-emb): clean claims are the within-daftari picture + failure modes; cross-system numbers are directional only. **Also state explicitly (spec spike-finding 1): this is daftari's FIRST retrieval-only evaluation — `daftari eval` is the cortex answer-quality metric (LLM-judged over a generated subgraph), with no recall@k/nDCG over a labeled query→doc set; do not let a reader assume the eval already existed.**
 
 - [ ] **Step 3: Commit**
 

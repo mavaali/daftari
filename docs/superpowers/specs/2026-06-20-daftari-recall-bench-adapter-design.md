@@ -259,6 +259,59 @@ cached** (gate them; re-check reds against the known MiniLM CI-load flake).
   client** for the answerer (deterministic, offline) but a **real in-process
   `hybridSearch`** over the fixture so retrieval is genuinely exercised.
 
+## Validation findings from the 2026-06-20 spike (cross-ref: critique doc)
+
+A separate Recall Bench adapter spike (EA-180d, stopped at 154/312 Qs) produced a
+falsifiable critique ("What daftari is truly missing"). Its tests were re-run
+against the repo at commit `30e0bfe`. Three findings are load-bearing for this
+programme and are recorded here so SP1/SP2 absorb them rather than rediscover them.
+
+1. **SP1 *is* daftari's first retrieval-only eval — state it, don't assume `daftari
+   eval` covers it.** `[DATA]` `daftari eval` (`src/eval/types.ts`) is the *cortex
+   quality* metric: LLM-judged `expected_answer` over a generated subgraph QA set,
+   with a `grader`/`answerer_model`. It has no `recall@k`/nDCG/MRR over a labeled
+   (query → relevant-doc) set, and it confounds retrieval with synthesis. SP1's
+   per-category recall numbers are the *first* retrieval-grounding measurement in
+   the box. The SP1 results note should say this explicitly so no reader thinks the
+   eval already existed.
+
+2. **The retrieval-grounding contract is the durable artifact — SP2's output shape,
+   not just SP2's ranking.** `[DATA]` Today a hit is
+   `HybridHit = { path, score, bm25Score, vectorScore, snippet, decay }`
+   (`src/search/hybrid.ts:39-47`). The spike's hallucinations (`final_hold.md`,
+   "day-0085") happened *over correct retrieval* because the caller had only prose
+   `snippet` + document `path` to synthesize from. The missing fields a safe
+   synthesizer needs are: **(a) char/line spans** into the source (today `snippet`
+   is a ±140-char excerpt, no offsets); **(b) a stable chunk/source id** to cite
+   (today `path` only, document-level — though the index already chunk-hashes
+   content, so the id exists internally); **(c) an answerability/sufficiency
+   signal**. SP1's `RetrievalEntry` extraction (`query()` row above) makes the
+   absence concrete: it can only emit `{path, score, snippet}`. **Recommendation:**
+   when SP2 touches `hybrid.ts` for supersession-aware ranking, extend `HybridHit`
+   to carry chunk-id + spans + a sufficiency flag in the same pass — the
+   retrieval-grounding contract and the ranking change are the same edit to the same
+   struct, and the contract is the part that outlives the benchmark. Keep decay/
+   supersession as **structured sibling fields** (they already are — do not inline
+   them into `snippet`; the spike's `⚠ STALE`-in-prompt leak was the *adapter*
+   flattening a structured field, and SP1's adapter must not repeat it).
+
+3. **corpus-map fidelity is load-bearing because reindex coerces silently — no error
+   on bad frontmatter.** `[DATA]` `vault_write` rejects schema-invalid frontmatter
+   (`write.ts:534`), but the adapter does **not** use `vault_write` — it writes
+   dailies to disk and calls `reindexVault`. On that path, `parseDocument` →
+   `validateFrontmatter` **coerces** invalid enums to fallbacks (`domain: tooling →
+   accumulation`, `confidence: EXPLICIT → low`) and `stageOne` indexes the coerced
+   value while **discarding `parsed.value.validation`** (`reindex.ts:185-225`,
+   `parser.ts:30-38`). Consequence for SP1: if `corpus-map.ts` ever emits an enum
+   outside the builtin sets, **the run will not error — it will silently index a
+   different value than intended**, corrupting the baseline invisibly. This is the
+   real reason `corpus-map.test.ts` must assert against the exact builtin field
+   names and the validator-filled defaults (already required at lines above); the
+   added rationale is *why* the assertion is a correctness gate, not a nicety. (This
+   coerce-and-discard behavior is also a standalone daftari bug — validate-on-reindex
+   should skip/quarantine, not coerce-and-forget — but fixing it is out of SP1 scope;
+   noted for the backlog.)
+
 ## Open questions / risks
 
 - **Answerer-model confound** (accepted) — documented above; revisit only if
