@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-06-21
+
+### Added
+
+- **`vault_search` foregrounds the current source of a superseded document
+  (SP-A)** ([#146]). When a hit is superseded — or deprecated — and points at a
+  successor, the result gains a structured `currentSource` field that resolves the
+  `superseded_by` chain to its terminal-current document, one of `resolved` /
+  `restricted` / `dangling` / `cycle`. Enrichment is additive and never re-ranks,
+  and it respects RBAC strictly: any unreadable hop in the chain degrades to
+  `restricted`, leaking no path or title. daftari authors the *relation*, never the
+  *value* — the successor snippet is read verbatim from its indexed content, never
+  synthesized.
+
+### Changed
+
+- **A `superseded`-status document now surfaces a decay banner** (it was previously
+  silent). The document-supplied `superseded_by` path no longer appears in any decay
+  banner text — redirection moves entirely to the structured `currentSource` field —
+  which also closes a prompt-injection surface in the banner.
+
 ## [1.26.0] - 2026-06-21
 
 ### Security
