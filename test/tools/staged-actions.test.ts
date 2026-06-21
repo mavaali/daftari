@@ -63,6 +63,98 @@ describe("vault_stage_action", () => {
     expect(result.value.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("denies a role that lacks write access to the target collection", async () => {
+    await seedDraft(vault, "pricing/foo.md");
+    const readOnly = {
+      user: "agent:reader",
+      roleName: "reader",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "promote",
+        target_path: "pricing/foo.md",
+        proposed_by: AGENT,
+        rationale: "read-only role should not be able to stage this",
+        proposed_diff: { status: { from: "draft", to: "canonical" } },
+      },
+      readOnly,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+  });
+
+  it("allows a role with write access to the target collection", async () => {
+    await seedDraft(vault, "pricing/foo.md");
+    const writer = {
+      user: "agent:writer",
+      roleName: "writer",
+      role: { read: ["pricing"], write: ["pricing"], promote: false, ratify: false },
+    };
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "promote",
+        target_path: "pricing/foo.md",
+        proposed_by: AGENT,
+        rationale: "writer may stage",
+        proposed_diff: { status: { from: "draft", to: "canonical" } },
+      },
+      writer,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("denies a write-less role for an absent target without leaking existence", async () => {
+    // The target does not exist. A role lacking write must get 'access denied'
+    // (derived from the path-segment collection) — NOT 'not found' — so the
+    // not-found signal can't be used to probe document existence.
+    const readOnly = {
+      user: "agent:reader",
+      roleName: "reader",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "promote",
+        target_path: "pricing/ghost.md",
+        proposed_by: AGENT,
+        rationale: "absent target, no write grant",
+        proposed_diff: {},
+      },
+      readOnly,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+    expect(result.error.message).not.toContain("not found");
+  });
+
+  it("returns not-found to an authorized writer for an absent target", async () => {
+    const writer = {
+      user: "agent:writer",
+      roleName: "writer",
+      role: { read: ["pricing"], write: ["pricing"], promote: false, ratify: false },
+    };
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "promote",
+        target_path: "pricing/ghost.md",
+        proposed_by: AGENT,
+        rationale: "absent target, has write grant",
+        proposed_diff: {},
+      },
+      writer,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("not found");
+  });
+
   it("rejects an action whose target document does not exist", async () => {
     const result = await vaultStageAction(vault, {
       action_type: "promote",

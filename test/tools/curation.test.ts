@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -237,6 +237,80 @@ describe("curation tools", () => {
     it("rejects a missing filePath", async () => {
       const result = await vaultProvenance(vault, {});
       expect(result.ok).toBe(false);
+    });
+
+    it("denies history for a file in a collection the role cannot read", async () => {
+      await recordProvenance(vault, {
+        timestamp: "2026-05-01T00:00:00.000Z",
+        tool: "vault_write",
+        file: "pricing/a.md",
+        agent: "agent:claude-code",
+        action: "create",
+        frontmatter_diff: { confidence: { from: "low", to: "high" } },
+      });
+      const otherCollection = {
+        user: "agent:reader",
+        roleName: "reader",
+        role: { read: ["competitive-intel"], write: [], promote: false, ratify: false },
+      };
+      const result = await vaultProvenance(vault, { filePath: "pricing/a.md" }, otherCollection);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("access denied");
+    });
+
+    it("derives the gated collection from frontmatter, not the path segment", async () => {
+      // Doc lives under pricing/ but declares collection: competitive-intel.
+      // The frontmatter collection is authoritative for the RBAC gate.
+      mkdirSync(join(vault, "pricing"), { recursive: true });
+      writeFileSync(
+        join(vault, "pricing", "cross.md"),
+        "---\ntitle: Cross\ncollection: competitive-intel\nstatus: draft\n---\n# Cross\n",
+      );
+      await recordProvenance(vault, {
+        timestamp: "2026-05-01T00:00:00.000Z",
+        tool: "vault_write",
+        file: "pricing/cross.md",
+        agent: "agent:claude-code",
+        action: "create",
+      });
+
+      // A reader of the path-segment collection (pricing) is denied...
+      const pricingReader = {
+        user: "agent:reader",
+        roleName: "reader",
+        role: { read: ["pricing"], write: [], promote: false, ratify: false },
+      };
+      const denied = await vaultProvenance(vault, { filePath: "pricing/cross.md" }, pricingReader);
+      expect(denied.ok).toBe(false);
+
+      // ...while a reader of the real (frontmatter) collection is allowed.
+      const ciReader = {
+        user: "agent:reader",
+        roleName: "reader",
+        role: { read: ["competitive-intel"], write: [], promote: false, ratify: false },
+      };
+      const allowed = await vaultProvenance(vault, { filePath: "pricing/cross.md" }, ciReader);
+      expect(allowed.ok).toBe(true);
+    });
+
+    it("returns history for a file in a collection the role can read", async () => {
+      await recordProvenance(vault, {
+        timestamp: "2026-05-01T00:00:00.000Z",
+        tool: "vault_write",
+        file: "pricing/a.md",
+        agent: "agent:claude-code",
+        action: "create",
+      });
+      const pricingReader = {
+        user: "agent:reader",
+        roleName: "reader",
+        role: { read: ["pricing"], write: [], promote: false, ratify: false },
+      };
+      const result = await vaultProvenance(vault, { filePath: "pricing/a.md" }, pricingReader);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.count).toBe(1);
     });
   });
 });

@@ -133,6 +133,19 @@ async function defaultStatFn(absPath: string): Promise<{ exists: boolean }> {
   }
 }
 
+// Extracts an `invalidFrontmatter` reason string from an indexer result, if
+// present. The injected `indexFn` is typed against `unknown`, so we narrow
+// defensively: a test fake returning `ok(undefined)` yields null (no warning),
+// while the real indexDocument returns an IndexDocumentResult carrying the
+// reason an out-of-band write was coerced.
+function indexedInvalidReason(value: unknown): string | null {
+  if (value && typeof value === "object" && "invalidFrontmatter" in value) {
+    const reason = (value as { invalidFrontmatter: unknown }).invalidFrontmatter;
+    return typeof reason === "string" ? reason : null;
+  }
+  return null;
+}
+
 // Maps a chokidar-emitted absolute path back to the vault-relative POSIX
 // path indexDocument / deleteDocument expect. Returns null when the path is
 // outside the vault, which can happen with symlinks chokidar followed.
@@ -287,6 +300,13 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
               resolved.log(
                 `daftari: watcher: index update failed for ${relPath}: ${r.error.message}\n`,
               );
+            } else {
+              const reason = indexedInvalidReason(r.value);
+              if (reason)
+                resolved.log(
+                  `daftari: watcher: warning: ${relPath} indexed with ${reason} ` +
+                    `(file is the source of truth — run vault_lint to repair)\n`,
+                );
             }
             return;
           }
@@ -302,6 +322,13 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
       const r = await resolved.indexFn(root, relPath);
       if (!r.ok) {
         resolved.log(`daftari: watcher: index update failed for ${relPath}: ${r.error.message}\n`);
+      } else {
+        const reason = indexedInvalidReason(r.value);
+        if (reason)
+          resolved.log(
+            `daftari: watcher: warning: ${relPath} indexed with ${reason} ` +
+              `(file is the source of truth — run vault_lint to repair)\n`,
+          );
       }
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);

@@ -20,7 +20,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, parseFlag } from "./index.js";
-import { reindexVault } from "./search/reindex.js";
+import { reindexVault, reindexWarnings } from "./search/reindex.js";
 import { commit } from "./utils/git.js";
 import { VAULT_GITIGNORE } from "./utils/vault-gitignore.js";
 
@@ -208,6 +208,8 @@ export async function initVault(targetPath: string): Promise<number> {
       `daftari: indexed ${indexed.value.documentCount} docs ` +
         `(vectors ${indexed.value.vectorEnabled ? "on" : "off"})\n`,
     );
+    for (const line of reindexWarnings(indexed.value))
+      process.stderr.write(`daftari: warning: ${line}\n`);
   } else {
     process.stderr.write(
       `daftari: warning: initial index build failed: ${indexed.error.message}\n`,

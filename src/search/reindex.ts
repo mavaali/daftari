@@ -152,11 +152,28 @@ export async function isIndexFresh(vaultRoot: string): Promise<boolean> {
   }
 }
 
+// A vault file flagged during a reindex, with a human-readable reason. Used
+// for two distinct buckets in ReindexResult — `skipped` (could not be indexed
+// at all) and `invalidFrontmatter` (indexed, but its frontmatter failed schema
+// validation) — so the server/CLI can surface *why* instead of staying silent.
+export interface FlaggedDocument {
+  path: string;
+  reason: string;
+}
+
 export interface ReindexResult {
   documentCount: number;
   chunkCount: number;
   vectorEnabled: boolean;
-  skipped: string[];
+  // Files that could not be indexed at all: unreadable, or malformed YAML
+  // frontmatter. Not present in the index.
+  skipped: FlaggedDocument[];
+  // Files that WERE indexed but whose frontmatter violates the schema (e.g. an
+  // out-of-enum value). validateFrontmatter coerces the offending fields to
+  // their defaults for the index row, so the index value can differ from what
+  // the file declares. Reported here so that coercion is never silent — the
+  // markdown file remains the source of truth; `vault_lint` is the repair path.
+  invalidFrontmatter: FlaggedDocument[];
   indexedAt: string;
   // Cache stats: how many chunks needed a fresh embedding vs hit the cache,
   // and how many orphaned embedding rows the gc pass reaped. Useful for
@@ -175,22 +192,70 @@ export interface ReindexOptions {
   onProgress?: (done: number, total: number) => void;
 }
 
+// Human-readable warning lines for a reindex result's `skipped` and
+// `invalidFrontmatter` buckets, or [] when both are empty. Callers write these
+// to stderr so documents missing from the index — or indexed with coerced
+// frontmatter — are surfaced at reindex time rather than only by a later
+// vault_lint pass. Pure: no I/O, so it is unit-testable without a model.
+export function reindexWarnings(result: ReindexResult): string[] {
+  const lines: string[] = [];
+  if (result.skipped.length > 0) {
+    lines.push(`${result.skipped.length} document(s) not indexed:`);
+    for (const s of result.skipped) lines.push(`  ${s.path}: ${s.reason}`);
+  }
+  if (result.invalidFrontmatter.length > 0) {
+    lines.push(
+      `${result.invalidFrontmatter.length} document(s) indexed with invalid frontmatter ` +
+        `(values coerced; the markdown file is the source of truth — run vault_lint to repair):`,
+    );
+    for (const s of result.invalidFrontmatter) lines.push(`  ${s.path}: ${s.reason}`);
+  }
+  return lines;
+}
+
 interface StagedDocument {
   doc: IndexedDocument;
   chunks: string[];
   hashes: string[];
 }
 
+// The result of staging one file: either a document ready to index (carrying
+// an `invalidReason` when its frontmatter failed schema validation but was
+// coerced for the index), or a reason it could not be indexed at all. Skipping
+// (rather than aborting) keeps one bad file from sinking the whole rebuild;
+// carrying reasons keeps both buckets visible to the caller.
+type StageOutcome =
+  | { kind: "staged"; staged: StagedDocument; invalidReason: string | null }
+  | { kind: "skipped"; reason: string };
+
 // Reads and parses a single markdown file into the shape the index needs.
-// Returns null when the file should be skipped (unreadable, or malformed YAML
-// frontmatter) so a reindex never aborts on one bad file.
-async function stageOne(vaultRoot: string, relPath: string): Promise<StagedDocument | null> {
+// A file that cannot be read or whose YAML is malformed is "skipped" (not
+// indexed). A file that parses but has schema-invalid frontmatter is still
+// staged for indexing — validation is advisory (a read of such a file
+// succeeds; the source of truth is the markdown) — but its `invalidReason` is
+// returned so the coercion the index applies is reported rather than silent.
+async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcome> {
   const resolved = resolveVaultPath(vaultRoot, relPath);
-  if (!resolved.ok) return null;
+  if (!resolved.ok)
+    return { kind: "skipped", reason: `path could not be resolved: ${resolved.error.message}` };
   const file = await readFile(resolved.value);
-  if (!file.ok) return null;
+  if (!file.ok) return { kind: "skipped", reason: `file could not be read: ${file.error.message}` };
   const parsed = parseDocument(file.value);
-  if (!parsed.ok) return null;
+  if (!parsed.ok) return { kind: "skipped", reason: parsed.error.message };
+
+  // Frontmatter that parses (valid YAML) but violates the schema — e.g. an
+  // unknown enum value. validateFrontmatter *coerces* such fields to their
+  // fallbacks, so the index row can differ from what the file declares. We
+  // still index it (advisory, never hide content — same posture as vault_read),
+  // but surface the issues so the divergence isn't silent. vault_lint is the
+  // repair path; vault_write rejects the same frontmatter at the write boundary.
+  let invalidReason: string | null = null;
+  if (!parsed.value.validation.valid) {
+    const summary = parsed.value.validation.issues
+      .map((issue) => `${issue.field} (${issue.message})`)
+      .join("; ");
+    invalidReason = `invalid frontmatter: ${summary}`;
+  }
 
   const fm = parsed.value.frontmatter;
   const body = parsed.value.content;
@@ -202,45 +267,61 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StagedDocum
   const hashes = chunks.map((t) => sha256Hex(t));
 
   return {
-    doc: {
-      path: relPath,
-      title: fm.title,
-      collection: fm.collection || (relPath.split("/")[0] ?? ""),
-      domain: fm.domain,
-      status: fm.status,
-      confidence: fm.confidence,
-      updated: fm.updated,
-      tags: fm.tags,
-      content: body,
-      tokens,
-      ttlDays: fm.ttl_days,
-      created: fm.created,
-      supersededBy: fm.superseded_by,
+    kind: "staged",
+    invalidReason,
+    staged: {
+      doc: {
+        path: relPath,
+        title: fm.title,
+        collection: fm.collection || (relPath.split("/")[0] ?? ""),
+        domain: fm.domain,
+        status: fm.status,
+        confidence: fm.confidence,
+        updated: fm.updated,
+        tags: fm.tags,
+        content: body,
+        tokens,
+        ttlDays: fm.ttl_days,
+        created: fm.created,
+        supersededBy: fm.superseded_by,
+      },
+      chunks,
+      hashes,
     },
-    chunks,
-    hashes,
   };
 }
 
 // Reads and parses every markdown file into the shape the index needs. A file
 // that stageOne rejects is skipped (recorded in `skipped`) rather than
 // aborting the whole rebuild.
-async function stageDocuments(
-  vaultRoot: string,
-): Promise<Result<{ staged: StagedDocument[]; skipped: string[] }, Error>> {
+async function stageDocuments(vaultRoot: string): Promise<
+  Result<
+    {
+      staged: StagedDocument[];
+      skipped: FlaggedDocument[];
+      invalidFrontmatter: FlaggedDocument[];
+    },
+    Error
+  >
+> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return list;
 
   const staged: StagedDocument[] = [];
-  const skipped: string[] = [];
+  const skipped: FlaggedDocument[] = [];
+  const invalidFrontmatter: FlaggedDocument[] = [];
 
   for (const relPath of list.value) {
     const one = await stageOne(vaultRoot, relPath);
-    if (one) staged.push(one);
-    else skipped.push(relPath);
+    if (one.kind === "skipped") {
+      skipped.push({ path: relPath, reason: one.reason });
+      continue;
+    }
+    staged.push(one.staged);
+    if (one.invalidReason) invalidFrontmatter.push({ path: relPath, reason: one.invalidReason });
   }
 
-  return ok({ staged, skipped });
+  return ok({ staged, skipped, invalidFrontmatter });
 }
 
 // Inserts the chunk rows in a single transaction. Embeddings are persisted by
@@ -274,7 +355,7 @@ export async function reindexVault(
 ): Promise<Result<ReindexResult, Error>> {
   const staging = await stageDocuments(vaultRoot);
   if (!staging.ok) return staging;
-  const { staged, skipped } = staging.value;
+  const { staged, skipped, invalidFrontmatter } = staging.value;
 
   // Open the index first so we can ask the embeddings cache which (hash,
   // model) pairs already exist before deciding what to embed. Pass the
@@ -380,6 +461,7 @@ export async function reindexVault(
       chunkCount,
       vectorEnabled,
       skipped,
+      invalidFrontmatter,
       indexedAt,
       embeddedCount: missHashes.length,
       cacheHits,
@@ -396,6 +478,11 @@ export async function reindexVault(
 export interface IndexDocumentResult {
   chunkCount: number;
   vectorEnabled: boolean;
+  // Non-null when the indexed document's frontmatter failed schema validation
+  // (values were coerced for the index). The reactive watcher logs this so an
+  // out-of-band write of an invalid file is surfaced, not silently coerced —
+  // the same guarantee the full-reindex `invalidFrontmatter` bucket gives.
+  invalidFrontmatter: string | null;
 }
 
 // Incrementally updates the index for a single document after a write.
@@ -420,14 +507,16 @@ export async function indexDocument(
     return ok({
       chunkCount: full.value.chunkCount,
       vectorEnabled: full.value.vectorEnabled,
+      invalidFrontmatter:
+        full.value.invalidFrontmatter.find((f) => f.path === relPath)?.reason ?? null,
     });
   }
 
-  const staged = await stageOne(vaultRoot, relPath);
-  if (!staged) {
-    return err(new Error(`cannot index document: ${relPath}`));
+  const outcome = await stageOne(vaultRoot, relPath);
+  if (outcome.kind !== "staged") {
+    return err(new Error(`cannot index document: ${relPath} (${outcome.reason})`));
   }
-  const { doc, chunks, hashes } = staged;
+  const { doc, chunks, hashes } = outcome.staged;
 
   const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
@@ -506,7 +595,11 @@ export async function indexDocument(
         }
       }
     }
-    return ok({ chunkCount: chunks.length, vectorEnabled });
+    return ok({
+      chunkCount: chunks.length,
+      vectorEnabled,
+      invalidFrontmatter: outcome.invalidReason,
+    });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`index update failed: ${reason}`));
