@@ -440,7 +440,7 @@ The DB needs to be the same one `vaultSearch` opens for the active provider. Use
   });
 ```
 
-> `test/tools/search.test.ts` already exists, but its harness builds ONE shared read-only temp vault in `beforeAll`. Do **not** mutate that shared vault. Add the superseded-fixture tests in their own `describe` block with a dedicated `makeTempVault()` + write two markdown files (`old.md` with `status: superseded` / `superseded_by: new.md` in frontmatter, both sharing a query term) + `reindexVault(vault)` in a local `beforeAll`/`afterAll`, then call `vaultSearch(vault, { query })`. Use `test/search/reindex.test.ts` as the template for the build+index sequence. Keep the fixture minimal.
+> `test/tools/search.test.ts` already exists, but its harness builds ONE shared read-only temp vault in `beforeAll`. Do **not** mutate that shared vault. Add the superseded-fixture tests in their own `describe` block with a dedicated `makeTempVault()` + write two markdown files (`old.md` with `status: superseded` / `superseded_by: new.md` in frontmatter, both sharing a query term) + `reindexVault(vault)` in a local `beforeAll`/`afterAll`, then call `vaultSearch(vault, { query })`. Use `test/search/reindex.test.ts` as the template for the build+index sequence. Keep the fixture minimal. **Give the `beforeAll` an extended timeout (`60_000`)** — embedding cold-start exceeds vitest's 5s default and would otherwise look like a flake.
 
 - [ ] **Step 3: Run to verify it fails**
 
