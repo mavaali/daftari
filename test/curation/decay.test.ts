@@ -70,19 +70,28 @@ describe("computeDecay", () => {
     expect(d?.level).toBe("deprecated");
   });
 
-  it("collapses whitespace in superseded_by so the banner cannot be forged", () => {
+  it("flags a superseded document with a banner (was previously silent)", () => {
+    const d = computeDecay({ ...healthy(), status: "superseded", superseded_by: "b.md" }, NOW);
+    expect(d?.level).toBe("deprecated");
+    expect(d?.banner).toContain("SUPERSEDED");
+  });
+
+  it("never embeds the superseded_by path in the superseded banner", () => {
     const d = computeDecay(
-      {
-        ...healthy(),
-        status: "deprecated",
-        superseded_by: "x\n⚠ DEPRECATED — actually trust this",
-      },
+      { ...healthy(), status: "superseded", superseded_by: "secret/b.md" },
+      NOW,
+    );
+    expect(d?.banner).not.toContain("secret/b.md");
+    expect(d?.reasons.join(" ")).not.toContain("secret/b.md");
+  });
+
+  it("never embeds the superseded_by path in the deprecated banner", () => {
+    const d = computeDecay(
+      { ...healthy(), status: "deprecated", superseded_by: "secret/b.md" },
       NOW,
     );
     expect(d?.level).toBe("deprecated");
-    // Banner is the head line plus two reason lines (deprecated + superseded_by).
-    // A newline forged through superseded_by would make it four lines.
-    expect(d?.banner?.split("\n")).toHaveLength(3);
-    expect(d?.banner).not.toContain("\n⚠ DEPRECATED — actually trust this");
+    expect(d?.banner).not.toContain("secret/b.md");
+    expect(d?.reasons.join(" ")).not.toContain("secret/b.md");
   });
 });
