@@ -247,7 +247,9 @@ git commit -m "test(search): lock cycle + dangling resolver behavior"
 import type { AccessContext } from "../../src/access/rbac.js";
 
 function accessReading(...collections: string[]): AccessContext {
-  return { user: "u", roleName: "r", role: { read: collections, write: [] } };
+  // RoleConfig requires all four fields (read/write/promote/ratify) — promote
+  // and ratify are non-optional; omitting them fails the TS build.
+  return { user: "u", roleName: "r", role: { read: collections, write: [], promote: false, ratify: false } };
 }
 
   it("degrades to restricted when the terminal head is unreadable", () => {
@@ -323,7 +325,7 @@ git commit -m "test(search): lock strict RBAC degrade in resolver"
   });
 ```
 
-Also: **find and update the existing deprecated test** (decay.test.ts around line 39-52) if it asserts the banner/reasons contain `superseded by:` — that assertion is now intentionally removed.
+Also: **delete the existing injection-forge test at `test/curation/decay.test.ts:73-87`** (`"collapses whitespace in superseded_by so the banner cannot be forged"`). It asserts the deprecated banner is exactly 3 lines (`d?.banner?.split("\n")).toHaveLength(3)`) — head + 2 reason lines, the second being the `superseded by:` line. SP-A removes that reason line entirely, so the banner is now 2 lines and the assertion hard-fails. The injection vector it guards no longer exists (no document-supplied path reaches the banner), and the new "never embeds the superseded_by path" tests above supersede it. Delete the whole `it(...)` block, don't try to adjust the line count.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -438,7 +440,7 @@ The DB needs to be the same one `vaultSearch` opens for the active provider. Use
   });
 ```
 
-> If `test/tools/search.test.ts` does not exist, create it using the indexing harness from `test/search/hybrid.test.ts` or `test/search/reindex.test.ts` as the template (they already build + index a temp vault). Keep the fixture minimal.
+> `test/tools/search.test.ts` already exists, but its harness builds ONE shared read-only temp vault in `beforeAll`. Do **not** mutate that shared vault. Add the superseded-fixture tests in their own `describe` block with a dedicated `makeTempVault()` + write two markdown files (`old.md` with `status: superseded` / `superseded_by: new.md` in frontmatter, both sharing a query term) + `reindexVault(vault)` in a local `beforeAll`/`afterAll`, then call `vaultSearch(vault, { query })`. Use `test/search/reindex.test.ts` as the template for the build+index sequence. Keep the fixture minimal.
 
 - [ ] **Step 3: Run to verify it fails**
 
