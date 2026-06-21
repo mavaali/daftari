@@ -196,4 +196,15 @@ The zylophone widget used to cost 500 credits per cycle.
       expect(h.currentSource).toMatchObject({ kind: "resolved" });
     }
   });
+
+  it("preserves rank order: hits stay sorted by descending score after enrichment", async () => {
+    const res = await vaultSearch(vault, { query: "zylophone widget credits" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const paths = res.value.hits.map((h) => h.path);
+    const sortedByScore = [...res.value.hits].sort((a, b) => b.score - a.score).map((h) => h.path);
+    expect(paths).toEqual(sortedByScore);
+    // and at least one hit WAS enriched in this query, so the assertion is non-vacuous
+    expect(res.value.hits.some((h) => h.currentSource !== undefined)).toBe(true);
+  });
 });
