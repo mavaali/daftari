@@ -148,10 +148,37 @@ tags: [spa, widget]
 The zylophone widget used to cost 500 credits per cycle.
 `;
 
+  // A *deprecated* doc that also carries a successor (vault_deprecate sets
+  // status "deprecated" with an optional superseded_by). Enrichment must key on
+  // the pointer, not status, so this resolves too — guards against a future
+  // status-gated optimization silently dropping deprecated-with-successor hits.
+  const DEPRECATED_DOC = `---
+title: "SP-A Deprecated Widget Pricing"
+domain: accumulation
+collection: pricing
+status: deprecated
+confidence: high
+created: 2026-01-20
+updated: 2026-05-10
+updated_by: human:test
+provenance: direct
+sources:
+  - sp-a-test-source
+superseded_by: pricing/sp-a-new.md
+ttl_days: 45
+tags: [spa, widget]
+---
+
+# SP-A Deprecated Widget Pricing
+
+The zylophone widget pricing here is retired.
+`;
+
   beforeAll(async () => {
     vault = makeTempVault();
     writeFileSync(join(vault, "pricing", "sp-a-new.md"), NEW_DOC);
     writeFileSync(join(vault, "pricing", "sp-a-old.md"), OLD_DOC);
+    writeFileSync(join(vault, "pricing", "sp-a-deprecated.md"), DEPRECATED_DOC);
     const r = await vaultReindex(vault);
     if (!r.ok) throw r.error;
   }, 60_000);
@@ -175,12 +202,22 @@ The zylophone widget used to cost 500 credits per cycle.
     expect(fresh?.currentSource).toBeUndefined();
   });
 
-  it("does not re-order results and only enriches genuinely-superseded hits", async () => {
+  it("enriches a deprecated-with-successor hit (keys on the pointer, not status)", async () => {
+    const res = await vaultSearch(vault, { query: "zylophone widget retired" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const dep = res.value.hits.find((h) => h.path === "pricing/sp-a-deprecated.md");
+    expect(dep).toBeDefined();
+    expect(dep?.status).toBe("deprecated");
+    expect(dep?.currentSource).toMatchObject({ kind: "resolved", path: "pricing/sp-a-new.md" });
+  });
+
+  it("does not re-order results and only enriches retired docs that carry a successor", async () => {
     // The Helios query's top hit is the canonical Helios doc; ranking is
     // unchanged by enrichment. Any currentSource that does appear must belong to
-    // a genuinely-superseded doc — the fixture ships one real supersession
-    // (pricing/cirrus-capacity-tiers.md -> .../cirrus-capacity-tiers-2026.md),
-    // so we assert enrichment is exactly that and never lands on a healthy doc.
+    // a retired doc that points at a successor — never a healthy one. The vault
+    // holds two such docs the Helios query retrieves: the fixture's superseded
+    // cirrus doc and this block's deprecated-with-successor sp-a doc.
     const res = await vaultSearch(vault, { query: "Helios compute credit consumption pricing" });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -189,10 +226,11 @@ The zylophone widget used to cost 500 credits per cycle.
     expect(res.value.hits[0]?.path).toBe("pricing/helios-consumption-pricing.md");
     expect(res.value.hits[0]?.currentSource).toBeUndefined();
 
-    // Enrichment lands only on superseded docs, never on canonical ones.
+    // Enrichment lands only on retired (superseded|deprecated) docs that carry a
+    // successor, never on canonical/draft ones — keyed on the pointer, not status.
     const enriched = res.value.hits.filter((h) => h.currentSource !== undefined);
     for (const h of enriched) {
-      expect(h.status).toBe("superseded");
+      expect(["superseded", "deprecated"]).toContain(h.status);
       expect(h.currentSource).toMatchObject({ kind: "resolved" });
     }
   });

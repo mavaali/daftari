@@ -140,8 +140,12 @@ export async function vaultSearch(
       ? result.value.hits.filter((h) => canRead(access.role, h.collection))
       : result.value.hits;
 
-    // Foreground the current source for any superseded hit. Additive and
-    // lossless — the stale hit keeps its place; we only attach a pointer.
+    // Foreground the current source for any hit that points at a successor.
+    // Additive and lossless — the stale hit keeps its place; we only attach a
+    // pointer. Do NOT gate this on `hit.status === "superseded"`: a
+    // `deprecated` doc can also carry a `superseded_by` successor (set by
+    // vault_deprecate), so we key on the pointer (inside resolveCurrentSource),
+    // not the status string. The resolver no-ops for hits with no successor.
     for (const hit of hits) {
       const cs = resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
