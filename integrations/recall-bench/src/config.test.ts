@@ -36,4 +36,13 @@ describe("parseConfig", () => {
     expect(parseConfig({ answererModel: "   " }).ok).toBe(false);
     expect(parseConfig({ answererModel: 42 }).ok).toBe(false);
   });
+
+  it("rejects non-positive-integer numeric overrides", () => {
+    const model = "claude-opus-4-8";
+    expect(parseConfig({ answererModel: model, maxSearchResults: 0 }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, maxSearchResults: -1 }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, maxSearchResults: 1.5 }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, maxSearchResults: "15" }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, agentMaxIterations: 0 }).ok).toBe(false);
+  });
 });

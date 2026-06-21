@@ -16,6 +16,7 @@ import type { DayMetadata } from "./types.js";
 
 export interface DaftariDaily {
   relPath: string;
+  // The complete file body to write to disk: YAML frontmatter + content.
   markdown: string;
 }
 
