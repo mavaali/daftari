@@ -74,7 +74,9 @@ Split: banner = "should I trust this?" (daftari prose only); `currentSource` = "
 
 ### D. Tool-handler wiring (`vaultSearch`, `src/tools/search.ts`)
 
-After ranking, enrich each superseded hit — for **both** the `access`-present and `access`-absent paths (restructure the `!access` early return at line 134 so enrichment runs regardless; RBAC degrade no-ops when `access` is undefined). RBAC *filtering* of hits stays first (line 136); enrichment runs on survivors, calling `resolveCurrentSource(db, hit.path, access)` with the already-open `db`. Cost is bounded: fires only for the rare superseded hit, one `getDocument` per chain hop.
+After ranking, enrich each superseded hit — for **both** the `access`-present and `access`-absent paths (restructure the `!access` early return at line 134 so enrichment runs regardless; RBAC degrade no-ops when `access` is undefined). **This early-return restructure is the load-bearing edit** — enrichment must slot inside the existing `try` (db open at line 128, closed in the `finally` at 139), *before* the `finally`, on both branches. RBAC *filtering* of hits stays first (line 136); enrichment runs on survivors, calling `resolveCurrentSource(db, hit.path, access)` with the already-open `db`. Cost is bounded: fires only for the rare superseded hit, one `getDocument` per chain hop.
+
+**Note — deliberate non-reuse of the ranker's doc map.** `rankDocuments` already materializes a `byPath` map (`hybrid.ts:182-183`), but it lives inside `hybrid.ts` and is not exposed. The resolver issues its own `getDocument` calls per hop rather than reusing that map — a deliberate decoupling, since SP-A insists `hybrid.ts` stays untouched and the resolver lives downstream of it. For 1–2-hop chains on rare superseded hits this is negligible.
 
 **Knob (omitted in SP-A):** a `resolveCurrentSource: boolean` search arg (default true) is a trivial future addition if token cost ever bites. Not included now — enrichment is additive, lossless, and bounded.
 
@@ -92,6 +94,7 @@ After ranking, enrich each superseded hit — for **both** the `access`-present 
 - **No atomization** — intra-document supersession (both values in one doc) stays out of scope; that is **SP-C** and requires the atom layer.
 - **No new edge store** — `superseded_by` stays a frontmatter field; SP-A reads it, doesn't re-home it.
 - **No automatic edge acquisition** — SP-A operates on edges that already exist (explicit `vault_supersede`). Acquiring edges without a human (markers/recency/LLM) is **SP-B**, gated on a real use case explicit supersede doesn't cover.
+- **`vault_search` only** — `vault_search_related` (`src/tools/search.ts:147`) is a second search surface that also produces hits; enriching it is deliberately deferred. SP-A wires enrichment into `vaultSearch` alone. If related-search enrichment is wanted later, it reuses the same resolver (cheap), but it is not in this scope.
 
 ## Decisions log (from the brainstorm)
 
