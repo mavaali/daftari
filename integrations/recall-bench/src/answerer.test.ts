@@ -17,11 +17,95 @@ import type {
   LlmClient,
   CompleteWithToolsOpts,
 } from "../../../dist/eval/llm.js";
-import { makeAnswerer, extractRetrieval } from "./answerer.js";
+import { makeAnswerer, extractRetrieval, wrapHandlerWithLimit } from "./answerer.js";
 import { mapDay } from "./corpus-map.js";
 import type { AdapterConfig } from "./config.js";
 
 const RUN = !!process.env.RB_INTEGRATION;
+
+// HERMETIC: pure extraction invariants — no MiniLM, no network. These ran inside
+// the RB_INTEGRATION-gated block before, which meant they were silently SKIPPED
+// in the default suite. They are pure functions of hand-built tool-call records,
+// so they belong in the always-on hermetic suite.
+describe("extractRetrieval", () => {
+  it("dedups by path keeping max score across multiple search calls", () => {
+    const merged = extractRetrieval([
+      {
+        tool: "vault_search",
+        input: { query: "a" },
+        output: { hits: [{ path: "x.md", score: 0.2, snippet: "lo" }] },
+        latency_ms: 1,
+      },
+      {
+        tool: "vault_search",
+        input: { query: "b" },
+        output: { hits: [{ path: "x.md", score: 0.9, snippet: "hi" }] },
+        latency_ms: 1,
+      },
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual({ path: "x.md", score: 0.9, snippet: "hi" });
+  });
+
+  it("skips tool_error and non-search outputs during extraction", () => {
+    const merged = extractRetrieval([
+      { tool: "vault_search", input: {}, output: { tool_error: "boom" }, latency_ms: 1 },
+      { tool: "vault_read", input: {}, output: { hits: [{ path: "y.md", score: 1, snippet: "s" }] }, latency_ms: 1 },
+      { tool: "vault_search", input: {}, output: { hits: [{ path: "z.md", score: 0.5, snippet: "s" }] }, latency_ms: 1 },
+    ]);
+    expect(merged).toEqual([{ path: "z.md", score: 0.5, snippet: "s" }]);
+  });
+});
+
+// HERMETIC: the limit-capping wrapper around the tool handler. Uses a fake inner
+// handler that echoes its (name, input) so we can assert exactly what the wrapper
+// forwarded — no MiniLM, no search index.
+describe("wrapHandlerWithLimit", () => {
+  function makeSpy() {
+    const calls: Array<{ name: string; input: unknown }> = [];
+    const handler = async (name: string, input: unknown) => {
+      calls.push({ name, input });
+      return { echoed: true };
+    };
+    return { handler, calls };
+  }
+
+  it("injects limit when the model omits it on vault_search", async () => {
+    const { handler, calls } = makeSpy();
+    const wrapped = wrapHandlerWithLimit(handler, 15);
+    await wrapped("vault_search", { query: "q" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].input).toEqual({ query: "q", limit: 15 });
+  });
+
+  it("caps limit when the model exceeds maxSearchResults", async () => {
+    const { handler, calls } = makeSpy();
+    const wrapped = wrapHandlerWithLimit(handler, 15);
+    await wrapped("vault_search", { query: "q", limit: 99 });
+    expect(calls[0].input).toEqual({ query: "q", limit: 15 });
+  });
+
+  it("leaves a within-bounds limit untouched on vault_search", async () => {
+    const { handler, calls } = makeSpy();
+    const wrapped = wrapHandlerWithLimit(handler, 15);
+    await wrapped("vault_search", { query: "q", limit: 5 });
+    expect(calls[0].input).toEqual({ query: "q", limit: 5 });
+  });
+
+  it("passes non-search tools through unchanged", async () => {
+    const { handler, calls } = makeSpy();
+    const wrapped = wrapHandlerWithLimit(handler, 15);
+    await wrapped("vault_read", { path: "a.md", limit: 99 });
+    expect(calls[0]).toEqual({ name: "vault_read", input: { path: "a.md", limit: 99 } });
+  });
+
+  it("injects limit even when vault_search input is missing/not an object", async () => {
+    const { handler, calls } = makeSpy();
+    const wrapped = wrapHandlerWithLimit(handler, 15);
+    await wrapped("vault_search", undefined);
+    expect(calls[0].input).toEqual({ limit: 15 });
+  });
+});
 
 const CFG: AdapterConfig = {
   answererModel: "stub-model",
@@ -113,34 +197,4 @@ describe.skipIf(!RUN)("makeAnswerer (integration)", () => {
     expect(result.toolCalls[0].args).toEqual({ query: "What is the secret gemstone?" });
     expect(result.toolCalls[0].resultPreview.length).toBeLessThanOrEqual(200);
   }, 60_000);
-
-  it("dedups by path keeping max score across multiple search calls", () => {
-    // Pure unit check of the dedup invariant (no model load needed). The same
-    // path appearing twice collapses to one entry with the higher score.
-    const merged = extractRetrieval([
-      {
-        tool: "vault_search",
-        input: { query: "a" },
-        output: { hits: [{ path: "x.md", score: 0.2, snippet: "lo" }] },
-        latency_ms: 1,
-      },
-      {
-        tool: "vault_search",
-        input: { query: "b" },
-        output: { hits: [{ path: "x.md", score: 0.9, snippet: "hi" }] },
-        latency_ms: 1,
-      },
-    ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toEqual({ path: "x.md", score: 0.9, snippet: "hi" });
-  });
-
-  it("skips tool_error and non-search outputs during extraction", () => {
-    const merged = extractRetrieval([
-      { tool: "vault_search", input: {}, output: { tool_error: "boom" }, latency_ms: 1 },
-      { tool: "vault_read", input: {}, output: { hits: [{ path: "y.md", score: 1, snippet: "s" }] }, latency_ms: 1 },
-      { tool: "vault_search", input: {}, output: { hits: [{ path: "z.md", score: 0.5, snippet: "s" }] }, latency_ms: 1 },
-    ]);
-    expect(merged).toEqual([{ path: "z.md", score: 0.5, snippet: "s" }]);
-  });
 });

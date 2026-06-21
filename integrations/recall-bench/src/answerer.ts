@@ -12,7 +12,11 @@
 // retrieval metric — it does not mutate, reorder, or enrich the model's view.
 
 import { buildToolSurface } from "../../../dist/eval/tool-surface.js";
-import { createAnthropicClient, type LlmClient } from "../../../dist/eval/llm.js";
+import {
+  createAnthropicClient,
+  type LlmClient,
+  type CompleteWithToolsResult,
+} from "../../../dist/eval/llm.js";
 import { ANSWERER_SYSTEM_PROMPT } from "../../../dist/eval/prompts.js";
 import type { AdapterConfig } from "./config.js";
 
@@ -34,13 +38,9 @@ export interface AnswerResult {
   toolCalls: ToolCallRecord[];
 }
 
-// A single tool_call entry as recorded by LlmClient.completeWithTools.
-interface ToolCallEntry {
-  tool: string;
-  input: unknown;
-  output: unknown;
-  latency_ms: number;
-}
+// A single tool_call entry as recorded by LlmClient.completeWithTools. Sourced
+// from the SDK's result type rather than re-declared so it can't drift.
+type ToolCallEntry = CompleteWithToolsResult["tool_calls"][number];
 
 // Structural guard for a vault_search success output: a HybridSearchResult has
 // an array of hits. A {tool_error} envelope or any non-hits shape is skipped.
@@ -81,12 +81,42 @@ export function extractRetrieval(toolCalls: ToolCallEntry[]): RetrievalEntry[] {
   return [...byPath.values()];
 }
 
+// The tool-surface handler signature: (name, input) => Promise<output>.
+type ToolHandler = (name: string, input: unknown) => Promise<unknown>;
+
+// Wraps a tool handler so that vault_search calls have their `limit` arg bounded
+// to `maxSearchResults`: injected when the model omits it, capped when the model
+// asks for more. A search that returns an unbounded result set would confound
+// the benchmark's retrieval metric, so this is enforced at the boundary rather
+// than trusted to the model. All other tools pass through untouched.
+export function wrapHandlerWithLimit(
+  handler: ToolHandler,
+  maxSearchResults: number,
+): ToolHandler {
+  return (name: string, input: unknown): Promise<unknown> => {
+    if (name !== "vault_search") return handler(name, input);
+
+    const base =
+      typeof input === "object" && input !== null
+        ? (input as Record<string, unknown>)
+        : {};
+    const requested = base.limit;
+    const limit =
+      typeof requested === "number" && Number.isFinite(requested)
+        ? Math.min(requested, maxSearchResults)
+        : maxSearchResults;
+
+    return handler(name, { ...base, limit });
+  };
+}
+
 export function makeAnswerer(
   vaultRoot: string,
   cfg: AdapterConfig,
   llm: LlmClient = createAnthropicClient(),
 ): (question: string) => Promise<AnswerResult> {
   const surface = buildToolSurface(vaultRoot);
+  const handler = wrapHandlerWithLimit(surface.handler, cfg.maxSearchResults);
 
   return async (question: string): Promise<AnswerResult> => {
     const res = await llm.completeWithTools({
@@ -94,7 +124,7 @@ export function makeAnswerer(
       system: ANSWERER_SYSTEM_PROMPT,
       user: question,
       tools: surface.defs,
-      toolHandler: surface.handler,
+      toolHandler: handler,
       maxRounds: cfg.agentMaxIterations,
     });
     if (!res.ok) throw res.error;
@@ -106,7 +136,9 @@ export function makeAnswerer(
     const recordedCalls: ToolCallRecord[] = toolCalls.map((c) => ({
       tool: c.tool,
       args: (c.input ?? {}) as Record<string, unknown>,
-      resultPreview: JSON.stringify(c.output).slice(0, 200),
+      // JSON.stringify(undefined) returns undefined (not a string), which would
+      // make .slice throw; coerce to "" so a tool that returns nothing is safe.
+      resultPreview: (JSON.stringify(c.output) ?? "").slice(0, 200),
     }));
 
     return {
