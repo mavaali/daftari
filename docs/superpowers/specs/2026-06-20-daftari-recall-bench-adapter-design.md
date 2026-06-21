@@ -241,7 +241,12 @@ embedding cache keeps each rebuild cheap (only new days are embedded).
 - **`teardown`** removes the temp vault even when a prior step threw (try/finally).
 - **Answerer loop** capped at `agentMaxIterations` (→ `maxRounds`); respects `timeout`.
 
-## Testing (mirrors `src/`, hermetic — no network)
+## Testing (mirrors `src/`)
+
+`corpus-map.test.ts` and `config.test.ts` are **hermetic** (no model, no network).
+`answerer.test.ts` and `adapter.test.ts` stub the LLM but call real `reindexVault`,
+which loads the MiniLM model — they are **integration tests requiring the model
+cached** (gate them; re-check reds against the known MiniLM CI-load flake).
 
 - **`corpus-map.test.ts`** — day+content+metadata → expected frontmatter asserted
   against the **real** builtin field names (`collection`, `tags`, `title`,
