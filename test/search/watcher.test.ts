@@ -97,6 +97,53 @@ describe("startWatcher", () => {
     await w.close();
   });
 
+  it("warns when an out-of-band write is indexed with invalid frontmatter", async () => {
+    const fake = new FakeChokidar();
+    const logs: string[] = [];
+    const w = startWatcher(vault, {
+      watcherFactory: () => fake as never,
+      debounceMs: 20,
+      log: (msg) => logs.push(msg),
+      // An agent wrote a file straight to disk with an out-of-enum value; the
+      // indexer coerced it and reports the reason. The watcher must surface it
+      // rather than swallow it the way it swallows a clean index update.
+      indexFn: async () =>
+        ok({
+          chunkCount: 1,
+          vectorEnabled: true,
+          invalidFrontmatter: 'invalid frontmatter: domain (expected one of […], got "tooling")',
+        }),
+    });
+
+    fake.emit("add", osPath(abs(vault, "_drafts/agent-written.md")));
+    await sleep(60);
+
+    const warning = logs.find((l) => l.includes("indexed with invalid frontmatter"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("_drafts/agent-written.md");
+    expect(warning).toContain("vault_lint");
+
+    await w.close();
+  });
+
+  it("stays quiet when an out-of-band write indexes cleanly", async () => {
+    const fake = new FakeChokidar();
+    const logs: string[] = [];
+    const w = startWatcher(vault, {
+      watcherFactory: () => fake as never,
+      debounceMs: 20,
+      log: (msg) => logs.push(msg),
+      indexFn: async () => ok({ chunkCount: 1, vectorEnabled: true, invalidFrontmatter: null }),
+    });
+
+    fake.emit("add", osPath(abs(vault, "pricing/clean.md")));
+    await sleep(60);
+
+    expect(logs.some((l) => l.includes("invalid frontmatter"))).toBe(false);
+
+    await w.close();
+  });
+
   it("routes an external unlink to deleteFn when the file is really gone", async () => {
     const fake = new FakeChokidar();
     const deleted: string[] = [];

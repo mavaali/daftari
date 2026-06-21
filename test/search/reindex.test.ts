@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ok, type Result } from "../../src/frontmatter/types.js";
 import type { EmbeddingProvider } from "../../src/search/embedding-provider.js";
 import { LOCAL_MINILM_DIM, localMinilmProvider } from "../../src/search/providers/local-minilm.js";
-import { indexDocument, isIndexFresh, reindexVault } from "../../src/search/reindex.js";
+import {
+  indexDocument,
+  isIndexFresh,
+  type ReindexResult,
+  reindexVault,
+  reindexWarnings,
+} from "../../src/search/reindex.js";
 import {
   EMBEDDING_MODEL,
   resetProviderForTests,
@@ -53,6 +59,54 @@ describe("reindexVault", () => {
     } finally {
       db.close();
     }
+  }, 60_000);
+
+  it("reports a doc with invalid frontmatter instead of coercing it silently", async () => {
+    // An agent writer (e.g. session-distillery) writes a file DIRECTLY to disk,
+    // bypassing vault_write's validation gate. `domain: tooling` and
+    // `confidence: EXPLICIT` are not valid enum values — validateFrontmatter
+    // coerces them to `accumulation`/`low` for the index. Per daftari's
+    // advisory model the doc stays indexed and searchable (the markdown file
+    // is the source of truth), but the divergence must be SURFACED at reindex,
+    // not swallowed: that silent coercion was the bug.
+    const badPath = "competitive-intel/agent-written-bad.md";
+    await writeFile(
+      join(vault, badPath),
+      "---\ntitle: Agent Written\ndomain: tooling\nstatus: draft\n" +
+        "confidence: EXPLICIT\nupdated: 2026-05-20\ntags: []\n---\n\n" +
+        "Body with real content an agent distilled.\n",
+    );
+
+    const result = await reindexVault(vault);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Reported in invalidFrontmatter, with a reason naming the offending fields.
+    const entry = result.value.invalidFrontmatter.find((s) => s.path === badPath);
+    expect(entry).toBeDefined();
+    expect(entry?.reason).toMatch(/domain/);
+    expect(entry?.reason).toMatch(/confidence/);
+
+    // It is NOT treated as unindexable — `skipped` is for unreadable / malformed
+    // files, not advisory schema issues.
+    expect(result.value.skipped.map((s) => s.path)).not.toContain(badPath);
+
+    // Still indexed and searchable — advisory, not rejected (matches the
+    // _drafts/incomplete-note.md fixture's documented intent).
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      expect(getDocument(db, badPath)).not.toBeNull();
+    } finally {
+      db.close();
+    }
+
+    // The source-of-truth file on disk is untouched — the bad value is not
+    // silently rewritten.
+    const onDisk = await readFile(join(vault, badPath), "utf-8");
+    expect(onDisk).toMatch(/confidence: EXPLICIT/);
   }, 60_000);
 
   it("is idempotent: a second reindex yields the same counts", async () => {
@@ -329,6 +383,45 @@ describe("reindexVault", () => {
         db.close();
       }
     }, 120_000);
+  });
+
+  // Hermetic: reindexWarnings is a pure formatter over a ReindexResult, so it
+  // needs no vault and no model. It is the surface that makes skipped /
+  // invalid-frontmatter docs visible instead of silent.
+  describe("reindexWarnings", () => {
+    const base: ReindexResult = {
+      documentCount: 1,
+      chunkCount: 1,
+      vectorEnabled: true,
+      skipped: [],
+      invalidFrontmatter: [],
+      indexedAt: "2026-06-20T00:00:00.000Z",
+      embeddedCount: 0,
+      cacheHits: 1,
+      orphansRemoved: 0,
+    };
+
+    it("returns no lines when nothing was skipped or flagged", () => {
+      expect(reindexWarnings(base)).toEqual([]);
+    });
+
+    it("reports invalid-frontmatter docs with their reason and a repair hint", () => {
+      const lines = reindexWarnings({
+        ...base,
+        invalidFrontmatter: [{ path: "a/bad.md", reason: "invalid frontmatter: domain (…)" }],
+      });
+      expect(lines.some((l) => /invalid frontmatter/.test(l) && /vault_lint/.test(l))).toBe(true);
+      expect(lines).toContain("  a/bad.md: invalid frontmatter: domain (…)");
+    });
+
+    it("reports skipped (unindexable) docs separately from flagged ones", () => {
+      const lines = reindexWarnings({
+        ...base,
+        skipped: [{ path: "b/broken.md", reason: "malformed YAML frontmatter: bad indent" }],
+      });
+      expect(lines.some((l) => /not indexed/.test(l))).toBe(true);
+      expect(lines).toContain("  b/broken.md: malformed YAML frontmatter: bad indent");
+    });
   });
 
   // Provider switch: when the active provider's `id` changes between two
