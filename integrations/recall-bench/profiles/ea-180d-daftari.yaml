@@ -1,0 +1,49 @@
+# Daftari SP1 baseline — executive-assistant 180-day persona vs Recall Bench.
+#
+# Answerer: daftari in-process (vault_search/vault_read agent loop) + native Claude
+# + native MiniLM embeddings. Judges: gpt-5.4(-mini) routed through OpenRouter
+# (OpenAI-wire-compatible) so no Azure creds are needed — same judge MODELS as the
+# published runs, so judge parity holds; the answerer is the only cross-system
+# confound (Claude+MiniLM vs the published gpt-5.4+OpenAI-emb systems).
+#
+# Keys come from env.file (dotenv): ANTHROPIC_API_KEY (answerer) + OPENAI_API_KEY
+# (= the OpenRouter key; the `openai` provider reads OPENAI_API_KEY by name).
+#
+# This file is currently the SMOKE config (3 checkpoints, sample 10, no appellate).
+# Switch ranges/sample + add appellateJudge for the full EA-180d run.
+
+persona:
+  id: executive-assistant
+  dir: /tmp/recall-review/packages/recall-bench/personas/executive-assistant
+  arcs: arcs-180d.yaml
+
+env:
+  file: /Users/mihirwagle/projects/daftari/integrations/recall-bench/.env
+
+models:
+  # The harness routes `openai:<model>` through the OpenAI SDK, which reads
+  # OPENAI_BASE_URL from env (set to OpenRouter in .env). The `;endpoint` spec
+  # form is dropped by the OpenAI-shorthand parser, so we use the base-URL env
+  # instead. Model slug is the OpenRouter id.
+  judge: openai:openai/gpt-5.4-mini
+  appellateJudge: openai:openai/gpt-5.4
+
+harness:
+  adapter: /Users/mihirwagle/projects/daftari/integrations/recall-bench/dist/index.js
+  factory: createDaftariAdapter
+  config:
+    answererModel: claude-opus-4-8
+    maxSearchResults: 15
+    agentMaxIterations: 6
+
+run:
+  ranges:
+    start: 6
+    end: 180
+    step: 6           # FULL: 30 checkpoints, days 6..180
+  seed: 42
+  sample: 50
+  parallelism: 6      # concurrent answerer queries; adapter is read-only after indexing
+  timeout: 120000     # judge per-call timeout (ms); generous for the gpt-5.4 appellate
+  judgeMemoryWindow: 1
+  groupsEnabled: false
