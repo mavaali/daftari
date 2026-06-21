@@ -239,7 +239,7 @@ embedding cache keeps each rebuild cheap (only new days are embedded).
   `vectorEnabled:false`/`vectorUsed:false` and either abort or record it in run
   metadata. (See the known MiniLM CI-load flake — re-run before trusting a red result.)
 - **`teardown`** removes the temp vault even when a prior step threw (try/finally).
-- **Answerer loop** capped at `agentMaxIterations` (→ `maxRounds`); respects `timeout`.
+- **Answerer loop** bounded by `agentMaxIterations` (→ `maxRounds`). NOTE: the daftari LLM client (`completeWithTools`) exposes no `timeout` knob, so the per-call profile `timeout` is enforced by the Recall Bench harness *around* `query()`, not inside the adapter — `maxRounds` is the only in-adapter bound.
 
 ## Testing (mirrors `src/`)
 
