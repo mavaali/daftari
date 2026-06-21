@@ -27,7 +27,12 @@ import {
   markIndexReady,
   setIndexProgress,
 } from "./search/index-state.js";
-import { isIndexFresh, type ReindexOptions, reindexVault } from "./search/reindex.js";
+import {
+  isIndexFresh,
+  type ReindexOptions,
+  reindexVault,
+  reindexWarnings,
+} from "./search/reindex.js";
 import { setProvider, warmModel } from "./search/vector.js";
 import { startWatcher, type VaultWatcher } from "./search/watcher.js";
 import { createServer } from "./server.js";
@@ -135,6 +140,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
           `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
       );
+      for (const line of reindexWarnings(r)) process.stderr.write(`daftari: warning: ${line}\n`);
     } else {
       markIndexError(reindexed.error.message);
       process.stderr.write(`daftari: warning: index build failed: ${reindexed.error.message}\n`);
@@ -266,6 +272,7 @@ async function runBackgroundReindex(
         `daftari: indexed ${r.documentCount} docs, ${r.chunkCount} chunks ` +
           `(vectors ${r.vectorEnabled ? "on" : "off"})\n`,
       );
+      for (const line of reindexWarnings(r)) process.stderr.write(`daftari: warning: ${line}\n`);
       // If the reindex was fully cache-hit (no chunks needed embedding) the
       // model was never loaded — warm it now so the first user search isn't
       // a cold start. A reindex that did embed already loaded the model; no
