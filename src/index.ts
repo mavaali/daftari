@@ -41,7 +41,7 @@ import { loadConfig } from "./utils/config.js";
 
 // Kept in sync with package.json. Surfaced in the process lockfile for
 // operator diagnostics. Bump both together on a release.
-const DAFTARI_VERSION = "1.26.0";
+const DAFTARI_VERSION = "1.27.0";
 
 // Reads `--name value` or `--name=value` from argv; null if absent.
 export function parseFlag(argv: string[], name: string): string | null {
