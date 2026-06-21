@@ -100,6 +100,8 @@ export function computeDecay(input: DecayInput, now: Date = new Date()): DecaySt
 function renderBanner(level: DecayLevel, reasons: string[], status: string): string | null {
   if (level === "aging") return null;
   let head: string;
+  // `status` is checked before `level` because it is the more specific signal:
+  // a superseded doc has level "deprecated" but must show the SUPERSEDED head.
   if (status === "superseded") {
     head =
       "⚠ SUPERSEDED — a newer version of this document exists. See the current source rather than relying on this one.";
