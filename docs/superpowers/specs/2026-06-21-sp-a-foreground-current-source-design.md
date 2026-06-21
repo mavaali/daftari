@@ -58,7 +58,7 @@ export type CurrentSource =
 Pure function: `resolveCurrentSource(db, stalePath, access?) → CurrentSource`.
 
 - **Chain walk:** from `stalePath`, follow `supersededBy` via `getDocument` to the terminal head (first doc whose `supersededBy` is null). `hops` = edges traversed (≥1).
-- **Cycle guard:** visited-set of canonicalized paths; a repeat → `{ kind: "cycle" }`. Plus a defensive max-depth cap.
+- **Cycle guard:** visited-set of canonicalized paths; a repeat → `{ kind: "cycle" }`. The document set is finite, so any non-terminating chain must revisit a path — the visited-set alone bounds the walk; no separate max-depth cap is needed (it would be dead code).
 - **Dangling guard:** a hop's successor `getDocument` returns null → `{ kind: "dangling", brokenAt }` (the `brokenAt` path lies in the already-readable portion, safe to name). Reachable when a successor is later renamed/deleted.
 - **RBAC degrade (strict):** return `{ kind: "resolved" }` **only if every hop AND the terminal head are readable** (`canRead(access.role, doc.collection)`). If *any* link crosses an unreadable collection → `{ kind: "restricted" }` with no path, title, or hop count — the caller learns only "a current source exists, outside your access." When `access` is undefined (RBAC unconfigured), everything is readable → normal resolution. This is the strict reading of the W provenance-leak fix (PR #142).
 - **Snippet:** `title`/`snippet` for the terminal head come from its indexed content — the same snippet mechanism `hybrid.ts` uses — riding as structured JSON fields, never interpolated into directive text (same injection posture as every existing snippet).

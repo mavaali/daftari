@@ -96,6 +96,25 @@ describe("resolveCurrentSource", () => {
     expect(resolveCurrentSource(db, "a.md")).toEqual({ kind: "dangling", brokenAt: "b.md" });
   });
 
+  it("reports dangling (not restricted) when a readable mid-chain doc points at a missing successor", () => {
+    // The dangling check fires before the RBAC check, and `brokenAt` names the
+    // doc holding the broken pointer — which the caller already passed an RBAC
+    // gate for on the prior hop. Locks that this stays dangling (readable path),
+    // never restricted, regardless of future check reordering.
+    insertDocument(
+      db,
+      doc({ path: "a.md", collection: "pricing", status: "superseded", supersededBy: "b.md" }),
+    );
+    insertDocument(
+      db,
+      doc({ path: "b.md", collection: "pricing", status: "superseded", supersededBy: "gone.md" }),
+    );
+    expect(resolveCurrentSource(db, "a.md", accessReading("pricing"))).toEqual({
+      kind: "dangling",
+      brokenAt: "b.md",
+    });
+  });
+
   it("degrades to restricted when the terminal head is unreadable", () => {
     insertDocument(
       db,
