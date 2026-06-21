@@ -483,6 +483,17 @@ export function createDaftariAdapter(rawConfig: Record<string, unknown>, deps: {
     async finalizeIngestion() {
       const r = await reindexVault(vaultRoot);
       if (!r.ok) throw r.error;
+      // NEW ReindexResult (report-don't-coerce; merged from fix/reindex-validate-on-ingest):
+      // `invalidFrontmatter` and `skipped` are FlaggedDocument[] = {path, reason}.
+      // Either being non-empty means the baseline is silently wrong — fail loud.
+      if (r.value.invalidFrontmatter.length > 0) {
+        const d = r.value.invalidFrontmatter.map((f) => `${f.path}: ${f.reason}`).join("; ");
+        throw new Error(`recall-bench: ${r.value.invalidFrontmatter.length} daily(ies) indexed with COERCED frontmatter (corpus-map emitted an out-of-schema value) — baseline invalid: ${d}`);
+      }
+      if (r.value.skipped.length > 0) {
+        const d = r.value.skipped.map((f) => `${f.path}: ${f.reason}`).join("; ");
+        throw new Error(`recall-bench: ${r.value.skipped.length} daily(ies) NOT indexed (unreadable/malformed): ${d}`);
+      }
       lastVectorEnabled = r.value.vectorEnabled;
       if (!lastVectorEnabled) {
         throw new Error("recall-bench: MiniLM vectors disabled (vectorEnabled=false) — BM25-only would confound the baseline. Aborting; re-run.");

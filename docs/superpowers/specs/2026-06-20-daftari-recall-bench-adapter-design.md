@@ -179,7 +179,7 @@ daftari internals as a workspace package, built to `dist/index.js`, exporting
 |---|---|
 | `setup()` | `mkdtemp` temp vault; in-process — **no** server, **no** `process.lock` (`acquireProcessLock` is only called from server `main()`, `src/index.ts:72`). No config.yaml RBAC role needed (handlers run with `access: undefined`) |
 | `ingestDay(day, content, meta)` | `corpus-map` → write `<vault>/<persona>/day-XXXX.md`; batched (no index yet) |
-| `finalizeIngestion()` | call `reindexVault`. **It clears and rebuilds the index tables every call** (`reindex.ts:1-5, 249-269`) — there is no in-place incremental path. What is incremental is the **embedding** step: content-hash-keyed cache (`existingEmbeddingHashes`, `reindex.ts:304`) re-embeds only new/changed chunks. **Idempotency holds because the temp vault on disk is cumulative and is the source of truth** — each call re-stages all files-so-far and rebuilds, so repeated calls correctly cover all ingested days at low marginal embedding cost. **No consolidation** (baseline needs no edges) |
+| `finalizeIngestion()` | call `reindexVault`. **It clears and rebuilds the index tables every call** (`reindex.ts:1-5, 249-269`) — there is no in-place incremental path. What is incremental is the **embedding** step: content-hash-keyed cache (`existingEmbeddingHashes`, `reindex.ts:304`) re-embeds only new/changed chunks. **Idempotency holds because the temp vault on disk is cumulative and is the source of truth** — each call re-stages all files-so-far and rebuilds, so repeated calls correctly cover all ingested days at low marginal embedding cost. **No consolidation** (baseline needs no edges). **Runtime confound guards (new `ReindexResult`):** throw if `vectorEnabled===false`, if `invalidFrontmatter.length>0` (a daily was coerced), or if `skipped.length>0` (a daily wasn't indexed) — see finding 3 |
 | `query()` / `queryDetail()` | run the answerer agent-loop over the in-process tool surface; return prose answer + `retrieval[]` + `toolCalls[]`. **Extraction:** union all `vault_search` hits across the trace (filter `tool === "vault_search"`, skip `{tool_error}` envelopes, dedup by path keeping max score) → `RetrievalEntry{path,score,snippet}` (`HybridHit` has these; `snippet` is a ±140-char excerpt, not the full chunk). `toolCalls[]` maps `{tool, input→args, output→resultPreview(≤200 chars)}` per `ToolCallTraceEntry` |
 | `teardown()` | `rm -rf` the temp vault, **after asserting the path is under `os.tmpdir()`** (cheap guard, consistent with the symlink-confinement work merged on this branch). (No long-lived DB handles to close — search/reindex open and close the DB per call.) |
 
@@ -307,10 +307,18 @@ programme and are recorded here so SP1/SP2 absorb them rather than rediscover th
    different value than intended**, corrupting the baseline invisibly. This is the
    real reason `corpus-map.test.ts` must assert against the exact builtin field
    names and the validator-filled defaults (already required at lines above); the
-   added rationale is *why* the assertion is a correctness gate, not a nicety. (This
-   coerce-and-discard behavior is also a standalone daftari bug — validate-on-reindex
-   should skip/quarantine, not coerce-and-forget — but fixing it is out of SP1 scope;
-   noted for the backlog.)
+   added rationale is *why* the assertion is a correctness gate, not a nicety.
+
+   **UPDATE 2026-06-20 — the standalone fix landed and SP1 now uses it as a RUNTIME
+   guard.** `fix/reindex-validate-on-ingest` (merged into the SP1 branch) makes
+   `reindexVault` **report** coercion instead of swallowing it: `ReindexResult` now
+   carries `invalidFrontmatter: FlaggedDocument[]` (indexed but schema-violating →
+   coerced) and `skipped: FlaggedDocument[]` (unreadable/malformed YAML), where
+   `FlaggedDocument = {path, reason}`. So SP1 gets defense in depth: the static
+   `corpus-map` unit gate (catch at test time) PLUS `finalizeIngestion` asserting
+   `invalidFrontmatter.length === 0 && skipped.length === 0` at runtime (fail loud if
+   any daily was coerced or dropped — the baseline can no longer be silently
+   corrupted). Build SP1 against this new shape, not the old `skipped: string[]`.
 
 ## Open questions / risks
 
