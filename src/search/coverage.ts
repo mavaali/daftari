@@ -57,6 +57,15 @@ export interface DateWindow {
   end: string;
 }
 
+// True only for a real calendar date in strict ISO YYYY-MM-DD form. Guards the
+// window math against malformed `created` values that the indexer may store
+// (the frontmatter linter warns but still indexes them).
+function isValidIsoDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
 // Shifts an ISO YYYY-MM-DD date by `days` (may be negative). UTC-anchored so it
 // is timezone-stable.
 function shiftDays(iso: string, days: number): string {
@@ -77,7 +86,8 @@ export function computeWindow(
   const dates: string[] = [];
   for (const h of hits.slice(0, opts.seedK)) {
     const d = getDocument(db, h.path);
-    if (d && d.tags.includes(entity) && d.created) dates.push(d.created);
+    if (d && d.tags.includes(entity) && d.created && isValidIsoDate(d.created))
+      dates.push(d.created);
   }
   if (dates.length === 0) return null;
   dates.sort();
@@ -162,8 +172,8 @@ export function enforceTokenCap(hits: HybridHit[], opts: CoverageOptions): Hybri
   // order is newest→oldest; a stable sort by (fresh?0:1) puts stale last for the
   // "drop from the end" loop below.
   const ordered = [...coverage].sort((a, b) => {
-    const aStale = a.currentSource ? 1 : 0;
-    const bStale = b.currentSource ? 1 : 0;
+    const aStale = a.currentSource?.kind === "resolved" ? 1 : 0;
+    const bStale = b.currentSource?.kind === "resolved" ? 1 : 0;
     return aStale - bStale; // fresh first, stale last; stable keeps recency within group
   });
 

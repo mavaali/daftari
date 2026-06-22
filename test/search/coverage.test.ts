@@ -152,6 +152,23 @@ describe("computeWindow", () => {
     insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "" }));
     expect(computeWindow(db, [hit("a.md")], "e", DEFAULT_COVERAGE_OPTIONS)).toBeNull();
   });
+
+  it("ignores malformed seed created dates instead of throwing", () => {
+    insertDocument(db, doc({ path: "bad.md", tags: ["e"], created: "2026-3-1" }));
+    insertDocument(db, doc({ path: "good.md", tags: ["e"], created: "2026-06-08" }));
+    const call = () =>
+      computeWindow(db, [hit("bad.md"), hit("good.md")], "e", {
+        ...DEFAULT_COVERAGE_OPTIONS,
+        padDays: 0,
+      });
+    expect(call).not.toThrow();
+    expect(call()).toEqual({ start: "2026-06-08", end: "2026-06-08" });
+  });
+
+  it("returns null when all entity-bearing seeds have malformed dates", () => {
+    insertDocument(db, doc({ path: "bad.md", tags: ["e"], created: "March 2026" }));
+    expect(computeWindow(db, [hit("bad.md")], "e", DEFAULT_COVERAGE_OPTIONS)).toBeNull();
+  });
 });
 
 describe("applyCoveragePass", () => {
@@ -216,6 +233,15 @@ describe("applyCoveragePass", () => {
     const addedPaths = out.filter((h) => h.viaCoverage).map((h) => h.path);
     expect(addedPaths).toEqual(["extra-4.md", "extra-3.md"]); // two most recent (03-07, 03-06)
   });
+
+  it("does not throw when a same-tag in-window doc has a malformed created date", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-03-10" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["e"], created: "2026-03-12" }));
+    // A same-tag doc with a malformed created value the indexer may still store.
+    insertDocument(db, doc({ path: "poison.md", tags: ["e"], created: "2026-13-45" }));
+    const hits = [hit("a.md"), hit("b.md")];
+    expect(() => applyCoveragePass(db, hits, DEFAULT_COVERAGE_OPTIONS)).not.toThrow();
+  });
 });
 
 describe("enforceTokenCap", () => {
@@ -259,5 +285,20 @@ describe("enforceTokenCap", () => {
     const fresh = cov("fresh.md", "short");
     const list = [hit("a.md"), fresh];
     expect(enforceTokenCap(list, DEFAULT_COVERAGE_OPTIONS)).toEqual(list);
+  });
+
+  it("treats a non-resolved currentSource as fresh (only resolved counts as stale)", () => {
+    const dangling = {
+      ...cov("dangling.md", "y".repeat(50)),
+      currentSource: { kind: "dangling", brokenAt: "x.md" } as CurrentSource,
+    };
+    const resolvedStale = cov("stale.md", "z".repeat(50), true);
+    // budget fits only one coverage doc; resolved-stale should be evicted, the
+    // dangling one survives because dangling is not a genuine successor.
+    const out = enforceTokenCap([hit("a.md"), resolvedStale, dangling], {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      tokenCapChars: 60,
+    });
+    expect(out.map((h) => h.path)).toEqual(["a.md", "dangling.md"]);
   });
 });
