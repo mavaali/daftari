@@ -89,6 +89,8 @@ Same hit array. Added docs carry:
 
 `currentSource` annotations are already present from SP-A. Agents that ignore the new flags still receive a strictly better set — no contract break.
 
+**Interaction with the caller's `limit`.** `parseLimit` caps `limit` at 50 (`src/tools/search.ts:104`). Coverage adds are counted **on top of** the caller's `limit` (not squeezed inside it) but the combined return is still bounded by `min(limit + coverageMaxAdd, 50 + coverageMaxAdd)` and by `coverageTokenCap`. The relevance top-N the caller asked for is never displaced by coverage adds.
+
 ## RBAC
 
 The coverage pass must respect the same ACL filter the existing search applies (`canRead(access.role, hit.collection)` at `src/tools/search.ts:140,190`). Added docs are filtered identically; a coverage pull must never surface a doc the caller could not retrieve directly. SP-A's strict-RBAC-degrade behavior (established v1.27.0) applies to the `currentSource` resolution of added docs as well.
@@ -122,4 +124,5 @@ Each stage is independently shippable and testable, matching the SP-A/B/C rhythm
 - **Entity precision.** "Dominant shared tag" can over-pull on a coarse tag. Mitigated by ≥2-seed agreement + caps + SP-A demotion of stale members. Watch in native-sanity tests; refine the term-overlap backup if tags prove too coarse.
 - **Window anchor (`created` vs `updated`).** Journal day-docs make these equal; for revised native docs they diverge. Default `created`; config-overridable. Revisit if native vaults show drift.
 - **Latency at scale.** Bounded by reading the SQLite edge index (not the jsonl) + one capped lexical query. Negligible today; re-measure if a vault grows large or the edge graph densifies.
-- **Token cap eviction order.** "Lowest coverage-value + stale first" needs a concrete value function in Stage 1; start simple (rank position + `currentSource` staleness) and refine against the offline metric.
+- **Token cap eviction order.** v1 eviction is deterministic: **stale first (SP-A `currentSource`-demoted), then ascending relevance rank position.** The testing section asserts this exact order. Refine the value function against the offline metric later.
+- **Stage 2 net-new edge lookup.** There is no existing SQLite-backed single-hop edge query exported (`index-db.ts` has `rebuildEdgesIndex` / upsert / a full-table read, but no `from_path`/`to_path` indexed lookup). Stage 2 needs a small net-new helper that reads `derives_from_edges` via `idx_edges_from` / `idx_edges_to` — do not mistake it for already-existing.
