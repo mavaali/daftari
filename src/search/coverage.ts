@@ -4,7 +4,12 @@
 // text (avoids the query-conditioning fidelity trap). Returns the hits
 // unchanged when no signal fires.
 
-import { getDocument, type IndexDb } from "../storage/index-db.js";
+import {
+  getDocument,
+  getDocumentsInDateRange,
+  type IndexDb,
+  type IndexedDocument,
+} from "../storage/index-db.js";
 import type { HybridHit } from "./hybrid.js";
 
 export interface CoverageOptions {
@@ -81,4 +86,64 @@ export function computeWindow(
   const maxEnd = shiftDays(start, opts.maxSpanDays);
   if (end > maxEnd) end = maxEnd;
   return { start, end };
+}
+
+const COVERAGE_SNIPPET_MAX = 280; // mirrors current-source.ts previewSnippet
+
+function coverageSnippet(content: string): string {
+  const collapsed = content.replace(/\s+/g, " ").trim();
+  return collapsed.length > COVERAGE_SNIPPET_MAX
+    ? `${collapsed.slice(0, COVERAGE_SNIPPET_MAX)}…`
+    : collapsed;
+}
+
+// Same-entity docs in the window, excluding ones already present, recency-first
+// (current state matters), capped at maxAdd. The getDocumentsInDateRange call is
+// the net-new date-range query.
+function gatherCandidates(
+  db: IndexDb,
+  entity: string,
+  window: DateWindow,
+  excludePaths: Set<string>,
+  opts: CoverageOptions,
+): IndexedDocument[] {
+  return getDocumentsInDateRange(db, window.start, window.end)
+    .filter((d) => d.tags.includes(entity) && !excludePaths.has(d.path))
+    .slice(0, opts.maxAdd); // already created-DESC, path-ASC from the query
+}
+
+// Builds an appended coverage hit. score 0 keeps it below ranked hits; the
+// caller never re-sorts, so original relevance order is preserved.
+function coverageHit(d: IndexedDocument): HybridHit {
+  return {
+    path: d.path,
+    title: d.title,
+    collection: d.collection,
+    status: d.status,
+    score: 0,
+    bm25Score: 0,
+    vectorScore: 0,
+    snippet: coverageSnippet(d.content),
+    decay: null,
+    viaCoverage: true,
+    coverageReason: "entity-window",
+  };
+}
+
+// The Stage 1 coverage pass. Returns hits unchanged unless a shared entity (>=2
+// seeds) + a date window + at least one new in-window same-entity doc all hold.
+export function applyCoveragePass(
+  db: IndexDb,
+  hits: HybridHit[],
+  opts: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+): HybridHit[] {
+  if (!opts.enabled || hits.length < 2) return hits;
+  const entity = detectSharedEntity(db, hits, opts.seedK);
+  if (!entity) return hits;
+  const window = computeWindow(db, hits, entity, opts);
+  if (!window) return hits;
+  const exclude = new Set(hits.map((h) => h.path));
+  const added = gatherCandidates(db, entity, window, exclude, opts);
+  if (added.length === 0) return hits;
+  return [...hits, ...added.map(coverageHit)];
 }

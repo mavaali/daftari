@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyCoveragePass,
   computeWindow,
   DEFAULT_COVERAGE_OPTIONS,
   detectSharedEntity,
@@ -148,5 +149,69 @@ describe("computeWindow", () => {
   it("returns null when no entity-bearing seed has a date", () => {
     insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "" }));
     expect(computeWindow(db, [hit("a.md")], "e", DEFAULT_COVERAGE_OPTIONS)).toBeNull();
+  });
+});
+
+describe("applyCoveragePass", () => {
+  let vault: string;
+  let db: IndexDb;
+  beforeEach(() => {
+    vault = makeTempVault();
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!o.ok) throw o.error;
+    db = o.value;
+  });
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+  });
+
+  it("returns hits unchanged when no tag is shared by >=2 seeds (quiet)", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["x"], created: "2026-03-01" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["y"], created: "2026-03-02" }));
+    const hits = [hit("a.md"), hit("b.md")];
+    expect(applyCoveragePass(db, hits, DEFAULT_COVERAGE_OPTIONS)).toEqual(hits);
+  });
+
+  it("appends same-entity in-window docs not already present, flagged viaCoverage", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["spectral"], created: "2026-03-10" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["spectral"], created: "2026-03-12" }));
+    insertDocument(
+      db,
+      doc({
+        path: "c.md",
+        tags: ["spectral"],
+        created: "2026-03-11",
+        content: "missed cluster member",
+      }),
+    );
+    const hits = [hit("a.md"), hit("b.md")];
+    const out = applyCoveragePass(db, hits, DEFAULT_COVERAGE_OPTIONS);
+    expect(out.map((h) => h.path)).toEqual(["a.md", "b.md", "c.md"]);
+    const added = out[2];
+    expect(added.viaCoverage).toBe(true);
+    expect(added.coverageReason).toBe("entity-window");
+    expect(added.snippet).toContain("missed cluster member");
+  });
+
+  it("excludes docs already in the result set", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-03-10" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["e"], created: "2026-03-11" }));
+    const out = applyCoveragePass(db, [hit("a.md"), hit("b.md")], DEFAULT_COVERAGE_OPTIONS);
+    expect(out.map((h) => h.path)).toEqual(["a.md", "b.md"]); // nothing new to add → quiet
+  });
+
+  it("caps additions at maxAdd, recency-first", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-03-01" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["e"], created: "2026-03-02" }));
+    // extras sit inside the window (seed span 03-01..03-02 padded by 7 → 02-22..03-09)
+    for (let i = 0; i < 5; i++)
+      insertDocument(db, doc({ path: `extra-${i}.md`, tags: ["e"], created: `2026-03-0${i + 3}` }));
+    const out = applyCoveragePass(db, [hit("a.md"), hit("b.md")], {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      maxAdd: 2,
+    });
+    const addedPaths = out.filter((h) => h.viaCoverage).map((h) => h.path);
+    expect(addedPaths).toEqual(["extra-4.md", "extra-3.md"]); // two most recent (03-07, 03-06)
   });
 });
