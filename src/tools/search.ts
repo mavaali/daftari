@@ -8,6 +8,11 @@
 
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import {
+  applyCoveragePass,
+  DEFAULT_COVERAGE_OPTIONS,
+  enforceTokenCap,
+} from "../search/coverage.js";
 import { resolveCurrentSource } from "../search/current-source.js";
 import {
   DEFAULT_WEIGHTS,
@@ -136,22 +141,36 @@ export async function vaultSearch(
 
     // RBAC: drop hits in collections the role cannot read (only when an access
     // context is present). Enrichment then runs on the surviving hits.
-    const hits = access
+    const ranked = access
       ? result.value.hits.filter((h) => canRead(access.role, h.collection))
       : result.value.hits;
 
-    // Foreground the current source for any hit that points at a successor.
-    // Additive and lossless — the stale hit keeps its place; we only attach a
-    // pointer. Do NOT gate this on `hit.status === "superseded"`: a
-    // `deprecated` doc can also carry a `superseded_by` successor (set by
-    // vault_deprecate), so we key on the pointer (inside resolveCurrentSource),
-    // not the status string. The resolver no-ops for hits with no successor.
-    for (const hit of hits) {
+    // Coverage pass: conditionally widen the ranked set with same-entity docs in
+    // the seeds' date window. Quiet (returns `ranked` unchanged) when no signal
+    // fires. RBAC-filter the added docs identically — a coverage pull must never
+    // surface a doc the caller could not retrieve directly.
+    const widened = applyCoveragePass(db, ranked, DEFAULT_COVERAGE_OPTIONS);
+    const permitted = access
+      ? widened.filter((h) => (h.viaCoverage ? canRead(access.role, h.collection) : true))
+      : widened;
+
+    // Foreground the current source for any hit (ranked OR coverage-added) that
+    // points at a successor. Additive and lossless. Do NOT gate this on
+    // hit.status === "superseded": a deprecated doc can also carry a
+    // superseded_by successor (set by vault_deprecate), so we key on the pointer
+    // (inside resolveCurrentSource), not the status string. The resolver no-ops
+    // for hits with no successor. This is the suppression lever composing with
+    // the coverage recall lever.
+    for (const hit of permitted) {
       const cs = resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
     }
 
-    return ok({ ...result.value, count: hits.length, hits });
+    // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if
+    // their combined snippets exceed the budget. Never drops ranked hits.
+    const capped = enforceTokenCap(permitted, DEFAULT_COVERAGE_OPTIONS);
+
+    return ok({ ...result.value, count: capped.length, hits: capped });
   } finally {
     db.close();
   }

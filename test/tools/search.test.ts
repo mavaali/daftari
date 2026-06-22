@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
@@ -244,5 +245,96 @@ The zylophone widget pricing here is retired.
     expect(paths).toEqual(sortedByScore);
     // and at least one hit WAS enriched in this query, so the assertion is non-vacuous
     expect(res.value.hits.some((h) => h.currentSource !== undefined)).toBe(true);
+  });
+});
+
+// Builds a bare (non-sample) vault with only the given notes. reindex does not
+// require a git repo (makeTempVault strips .git for the same reason).
+function bareVault(
+  notes: { name: string; tags: string[]; created: string; body: string }[],
+): string {
+  const dir = mkdtempSync(join(tmpdir(), "daftari-cov-"));
+  mkdirSync(join(dir, "notes"), { recursive: true });
+  for (const n of notes) {
+    writeFileSync(
+      join(dir, "notes", n.name),
+      `---\ntitle: ${n.name}\ncollection: notes\ndomain: accumulation\nstatus: canonical\nconfidence: high\ncreated: ${n.created}\nupdated: ${n.created}\ntags: [${n.tags.join(", ")}]\n---\n\n${n.body}\n`,
+    );
+  }
+  return dir;
+}
+
+describe("vault_search coverage pass", () => {
+  let posVault: string; // muon-a/b match the query; muon-c shares the tag but not the terms
+  let quietVault: string; // three docs, all-distinct tags → no >=2-seed pair
+  beforeAll(async () => {
+    posVault = bareVault([
+      {
+        name: "muon-a.md",
+        tags: ["muon"],
+        created: "2026-03-10",
+        body: "muon spectral scaling laws result one",
+      },
+      {
+        name: "muon-b.md",
+        tags: ["muon"],
+        created: "2026-03-12",
+        body: "muon spectral scaling laws result two",
+      },
+      {
+        name: "muon-c.md",
+        tags: ["muon"],
+        created: "2026-03-11",
+        body: "gardening notes about tomatoes and soil",
+      },
+    ]);
+    quietVault = bareVault([
+      {
+        name: "x.md",
+        tags: ["alpha"],
+        created: "2026-03-10",
+        body: "research note about alpha topic",
+      },
+      {
+        name: "y.md",
+        tags: ["beta"],
+        created: "2026-03-11",
+        body: "research note about beta topic",
+      },
+      {
+        name: "z.md",
+        tags: ["gamma"],
+        created: "2026-03-12",
+        body: "research note about gamma topic",
+      },
+    ]);
+    const r1 = await vaultReindex(posVault);
+    if (!r1.ok) throw r1.error;
+    const r2 = await vaultReindex(quietVault);
+    if (!r2.ok) throw r2.error;
+  }, 60_000);
+  afterAll(() => {
+    cleanupVault(posVault);
+    cleanupVault(quietVault);
+  });
+
+  it("adds the same-tag in-window doc that ranking missed, flagged viaCoverage", async () => {
+    // limit:2 → ranked = [muon-a, muon-b]; muon-c (same tag, in window) is added by coverage.
+    // muon-c can't reach the top-2 on its own: its body is off-topic ("gardening...") so it
+    // shares zero query terms and is semantically distant — it can only enter via coverage.
+    const res = await vaultSearch(posVault, { query: "muon spectral scaling laws", limit: 2 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const added = res.value.hits.find((h) => h.path === "notes/muon-c.md");
+    expect(added).toBeDefined();
+    expect(added?.viaCoverage).toBe(true);
+    expect(added?.coverageReason).toBe("entity-window");
+  });
+
+  it("stays quiet when the top seeds share no tag (no >=2-seed pair)", async () => {
+    const res = await vaultSearch(quietVault, { query: "research note topic" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.some((h) => h.viaCoverage)).toBe(false);
   });
 });

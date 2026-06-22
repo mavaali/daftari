@@ -47,6 +47,8 @@ export interface HybridHit {
   snippet: string;
   decay: DecayState | null;
   currentSource?: CurrentSource; // populated by the tool handler, not the ranker
+  viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
+  coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }
 
 export interface HybridSearchResult {
