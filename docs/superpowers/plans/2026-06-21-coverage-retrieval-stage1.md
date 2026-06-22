@@ -35,19 +35,14 @@
 - Modify: `src/storage/index-db.ts` (add index to `SCHEMA` near line 105; add function near `getAllDocuments` at line 613)
 - Test: `test/storage/index-db.test.ts` (create if absent, else append)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Append the failing test to the existing file**
 
-In `test/storage/index-db.test.ts` (model the fixture/`doc()` helper on `test/search/current-source.test.ts:1-40`):
+`test/storage/index-db.test.ts` **already exists** with a `vitest` import block, an import block from `../../src/storage/index-db.js`, and a `sampleDoc` constant (no `doc()` helper). Do NOT paste a standalone file — you will get duplicate-import errors. Instead:
+
+1. Add `getDocumentsInDateRange` to the **existing** `import { … } from "../../src/storage/index-db.js"` block (keep it alphabetical near `getDocument`).
+2. Append the `describe` block below to the end of the file. It defines a local `doc()` factory — confirm no `doc` identifier already exists in the file before adding (there is `sampleDoc`, not `doc`, so this is safe). It reuses the already-imported `afterEach`/`beforeEach`/`describe`/`expect`/`it`, `LOCAL_MINILM_DIM`, `IndexDb`, `IndexedDocument`, `insertDocument`, `openIndexDb`, `makeTempVault`, `cleanupVault` — do not re-import any of these.
 
 ```ts
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
-import {
-  type IndexDb, type IndexedDocument,
-  getDocumentsInDateRange, insertDocument, openIndexDb,
-} from "../../src/storage/index-db.js";
-import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
-
 function doc(over: Partial<IndexedDocument> & { path: string }): IndexedDocument {
   return {
     path: over.path, title: over.title ?? over.path, collection: over.collection ?? "notes",
@@ -232,9 +227,10 @@ describe("detectSharedEntity", () => {
 
   it("only considers the top seedK hits", () => {
     insertDocument(db, doc({ path: "a.md", tags: ["shared"] }));
-    insertDocument(db, doc({ path: "b.md", tags: ["nope"] }));
-    insertDocument(db, doc({ path: "c.md", tags: ["nope"] }));
+    insertDocument(db, doc({ path: "b.md", tags: ["nope1"] })); // distinct tags so the
+    insertDocument(db, doc({ path: "c.md", tags: ["nope2"] })); // top-3 form NO pair
     insertDocument(db, doc({ path: "d.md", tags: ["shared"] })); // 4th — outside seedK=3
+    // Only `shared` could pair (a+d), but d is beyond seedK=3 → no >=2-seed tag → null.
     expect(detectSharedEntity(db, [hit("a.md"), hit("b.md"), hit("c.md"), hit("d.md")], 3)).toBeNull();
   });
 });
@@ -675,46 +671,69 @@ Ordering inside `vaultSearch`: rank → RBAC filter → **coverage pass** → **
 
 - [ ] **Step 1: Write the failing wiring test**
 
-Append a `describe` to `test/tools/search.test.ts`. This builds its own small temp vault with markdown files sharing a tag in a date window, so it does not depend on the shared `sample-vault` fixture. (Frontmatter `tags` + `created` are what the index reads.)
+Append a `describe` to `test/tools/search.test.ts`. **Do not use `makeTempVault`** here — it copies the 10-doc `sample-vault` fixture whose overlapping `pricing`/`helios` tags would make coverage fire on the quiet query and would pollute the ranked set. Build **isolated bare vaults** containing only the docs each test needs.
+
+Two determinism guards: (1) the positive test uses `limit: 2` so only the two strong content-matches (`muon-a`, `muon-b`) are in the ranked set — `muon-c` is genuinely *outside* it, so its presence proves the coverage pass added it (in a 3-doc vault with a large limit, everything is returned and coverage would have nothing to add); (2) `muon-c`'s body deliberately does **not** contain the query terms, so the ranker won't surface it on its own.
+
+Add these imports at the top of the file (merge with the existing `node:fs`/`node:path` imports if present):
 
 ```ts
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+```
+
+Then the describe block:
+
+```ts
+// Builds a bare (non-sample) vault with only the given notes. reindex does not
+// require a git repo (makeTempVault strips .git for the same reason).
+function bareVault(notes: { name: string; tags: string[]; created: string; body: string }[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "daftari-cov-"));
+  mkdirSync(join(dir, "notes"), { recursive: true });
+  for (const n of notes) {
+    writeFileSync(
+      join(dir, "notes", n.name),
+      `---\ntitle: ${n.name}\ncollection: notes\ndomain: accumulation\nstatus: canonical\nconfidence: high\ncreated: ${n.created}\nupdated: ${n.created}\ntags: [${n.tags.join(", ")}]\n---\n\n${n.body}\n`,
+    );
+  }
+  return dir;
+}
 
 describe("vault_search coverage pass", () => {
-  let covVault: string;
+  let posVault: string; // muon-a/b match the query; muon-c shares the tag but not the terms
+  let quietVault: string; // three docs, all-distinct tags → no >=2-seed pair
   beforeAll(async () => {
-    covVault = makeTempVault();
-    const dir = join(covVault, "notes");
-    mkdirSync(dir, { recursive: true });
-    const mk = (name: string, tags: string[], created: string, body: string) =>
-      writeFileSync(
-        join(dir, name),
-        `---\ntitle: ${name}\ncollection: notes\ndomain: accumulation\nstatus: canonical\nconfidence: high\ncreated: ${created}\nupdated: ${created}\ntags: [${tags.join(", ")}]\n---\n\n${body}\n`,
-      );
-    // Two strong matches share tag "muon"; a third same-tag doc is the missed member.
-    mk("muon-a.md", ["muon"], "2026-03-10", "muon spectral scaling laws result one");
-    mk("muon-b.md", ["muon"], "2026-03-12", "muon spectral scaling laws result two");
-    mk("muon-c.md", ["muon"], "2026-03-11", "muon coverage cluster member three");
-    mk("unrelated.md", ["pricing"], "2026-03-11", "helios consumption credits");
-    const r = await vaultReindex(covVault);
-    if (!r.ok) throw r.error;
+    posVault = bareVault([
+      { name: "muon-a.md", tags: ["muon"], created: "2026-03-10", body: "muon spectral scaling laws result one" },
+      { name: "muon-b.md", tags: ["muon"], created: "2026-03-12", body: "muon spectral scaling laws result two" },
+      { name: "muon-c.md", tags: ["muon"], created: "2026-03-11", body: "gardening notes about tomatoes and soil" },
+    ]);
+    quietVault = bareVault([
+      { name: "x.md", tags: ["alpha"], created: "2026-03-10", body: "research note about alpha topic" },
+      { name: "y.md", tags: ["beta"], created: "2026-03-11", body: "research note about beta topic" },
+      { name: "z.md", tags: ["gamma"], created: "2026-03-12", body: "research note about gamma topic" },
+    ]);
+    const r1 = await vaultReindex(posVault);
+    if (!r1.ok) throw r1.error;
+    const r2 = await vaultReindex(quietVault);
+    if (!r2.ok) throw r2.error;
   }, 60_000);
-  afterAll(() => cleanupVault(covVault));
+  afterAll(() => { cleanupVault(posVault); cleanupVault(quietVault); });
 
-  it("assembles the same-tag in-window cluster and flags added docs", async () => {
-    const res = await vaultSearch(covVault, { query: "muon spectral scaling laws" });
+  it("adds the same-tag in-window doc that ranking missed, flagged viaCoverage", async () => {
+    // limit:2 → ranked = [muon-a, muon-b]; muon-c (same tag, in window) is added by coverage.
+    const res = await vaultSearch(posVault, { query: "muon spectral scaling laws", limit: 2 });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    const paths = res.value.hits.map((h) => h.path);
-    expect(paths).toContain("notes/muon-c.md");
     const added = res.value.hits.find((h) => h.path === "notes/muon-c.md");
+    expect(added).toBeDefined();
     expect(added?.viaCoverage).toBe(true);
     expect(added?.coverageReason).toBe("entity-window");
   });
 
-  it("stays quiet on a single-fact query with no >=2-seed shared tag", async () => {
-    const res = await vaultSearch(covVault, { query: "helios consumption credits" });
+  it("stays quiet when the top seeds share no tag (no >=2-seed pair)", async () => {
+    const res = await vaultSearch(quietVault, { query: "research note topic" });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.hits.some((h) => h.viaCoverage)).toBe(false);
@@ -778,7 +797,7 @@ Expected: PASS (both cases).
 - [ ] **Step 5: Run the full search + tools suites**
 
 Run: `npx vitest run test/tools/search.test.ts test/search/coverage.test.ts`
-Expected: PASS. The pre-existing `vault_search` tests must remain green (coverage stays quiet on their single-topic queries).
+Expected: PASS. The pre-existing `vault_search` / SP-A tests must remain green. Note: coverage may now **append** `viaCoverage` hits on the sample-vault queries (its docs share tags like `pricing`) — that is fine and the existing assertions survive it by design: coverage hits carry `score: 0` so they sort last (the `paths === sortedByScore` stable-sort assertion still holds), the pass never reorders (`hits[0]` is unchanged), and canonical coverage adds are not enriched (so the `currentSource`→status-filter assertions are unaffected). The `limit: 1` test is also safe — `applyCoveragePass` returns early when fewer than 2 seeds. If any of these unexpectedly fail, do NOT loosen them; investigate whether the append/score-0/no-reorder invariants actually hold.
 
 - [ ] **Step 6: Commit**
 
