@@ -12,6 +12,7 @@ import {
   getAllDocuments,
   getChunksForPath,
   getDocument,
+  getDocumentsInDateRange,
   getMeta,
   type IndexDb,
   type IndexedDocument,
@@ -468,5 +469,53 @@ describe("index-db", () => {
       if (!reopened.ok) throw reopened.error;
       db = reopened.value;
     });
+  });
+});
+
+function doc(over: Partial<IndexedDocument> & { path: string }): IndexedDocument {
+  return {
+    path: over.path,
+    title: over.title ?? over.path,
+    collection: over.collection ?? "notes",
+    domain: "accumulation",
+    status: over.status ?? "canonical",
+    confidence: "high",
+    updated: over.updated ?? "2026-05-01",
+    tags: over.tags ?? [],
+    content: over.content ?? "body",
+    tokens: [],
+    ttlDays: null,
+    created: over.created ?? "2026-01-01",
+    supersededBy: over.supersededBy ?? null,
+  };
+}
+
+describe("getDocumentsInDateRange", () => {
+  let vault: string;
+  let db: IndexDb;
+  beforeEach(() => {
+    vault = makeTempVault();
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!o.ok) throw o.error;
+    db = o.value;
+  });
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+  });
+
+  it("returns docs whose created date is within [start,end] inclusive", () => {
+    insertDocument(db, doc({ path: "a.md", created: "2026-03-01" }));
+    insertDocument(db, doc({ path: "b.md", created: "2026-03-15" }));
+    insertDocument(db, doc({ path: "c.md", created: "2026-04-10" }));
+    const got = getDocumentsInDateRange(db, "2026-03-01", "2026-03-31")
+      .map((d) => d.path)
+      .sort();
+    expect(got).toEqual(["a.md", "b.md"]);
+  });
+
+  it("excludes docs with an empty created date", () => {
+    insertDocument(db, doc({ path: "a.md", created: "" }));
+    expect(getDocumentsInDateRange(db, "2025-01-01", "2027-01-01")).toEqual([]);
   });
 });

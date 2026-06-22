@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS documents (
   created       TEXT NOT NULL DEFAULT '',
   superseded_by TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created);
 CREATE TABLE IF NOT EXISTS chunks (
   path          TEXT NOT NULL,
   chunk_index   INTEGER NOT NULL,
@@ -612,6 +613,25 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
 
 export function getAllDocuments(db: IndexDb): IndexedDocument[] {
   const rows = db.prepare("SELECT * FROM documents ORDER BY path").all() as DocumentRow[];
+  return rows.map(rowToDocument);
+}
+
+// Documents whose `created` date falls within [start, end] inclusive, ordered
+// most-recent first (ties by path for determinism). Undateable docs (empty
+// `created`) are excluded. ISO dates sort lexically so string comparison is a
+// valid date range. Backs the coverage pass's date-window pull.
+export function getDocumentsInDateRange(
+  db: IndexDb,
+  start: string,
+  end: string,
+): IndexedDocument[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM documents
+        WHERE created != '' AND created >= ? AND created <= ?
+        ORDER BY created DESC, path ASC`,
+    )
+    .all(start, end) as DocumentRow[];
   return rows.map(rowToDocument);
 }
 
