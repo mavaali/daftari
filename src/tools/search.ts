@@ -150,7 +150,7 @@ export async function vaultSearch(
     // fires. RBAC-filter the added docs identically — a coverage pull must never
     // surface a doc the caller could not retrieve directly.
     const widened = applyCoveragePass(db, ranked, DEFAULT_COVERAGE_OPTIONS);
-    const hits = access
+    const permitted = access
       ? widened.filter((h) => (h.viaCoverage ? canRead(access.role, h.collection) : true))
       : widened;
 
@@ -161,14 +161,14 @@ export async function vaultSearch(
     // (inside resolveCurrentSource), not the status string. The resolver no-ops
     // for hits with no successor. This is the suppression lever composing with
     // the coverage recall lever.
-    for (const hit of hits) {
+    for (const hit of permitted) {
       const cs = resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
     }
 
     // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if
     // their combined snippets exceed the budget. Never drops ranked hits.
-    const capped = enforceTokenCap(hits, DEFAULT_COVERAGE_OPTIONS);
+    const capped = enforceTokenCap(permitted, DEFAULT_COVERAGE_OPTIONS);
 
     return ok({ ...result.value, count: capped.length, hits: capped });
   } finally {

@@ -320,6 +320,8 @@ describe("vault_search coverage pass", () => {
 
   it("adds the same-tag in-window doc that ranking missed, flagged viaCoverage", async () => {
     // limit:2 → ranked = [muon-a, muon-b]; muon-c (same tag, in window) is added by coverage.
+    // muon-c can't reach the top-2 on its own: its body is off-topic ("gardening...") so it
+    // shares zero query terms and is semantically distant — it can only enter via coverage.
     const res = await vaultSearch(posVault, { query: "muon spectral scaling laws", limit: 2 });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
