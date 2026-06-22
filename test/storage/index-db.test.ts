@@ -518,4 +518,12 @@ describe("getDocumentsInDateRange", () => {
     insertDocument(db, doc({ path: "a.md", created: "" }));
     expect(getDocumentsInDateRange(db, "2025-01-01", "2027-01-01")).toEqual([]);
   });
+
+  it("orders by created DESC then path ASC", () => {
+    insertDocument(db, doc({ path: "older.md", created: "2026-03-01" }));
+    insertDocument(db, doc({ path: "b-same.md", created: "2026-03-20" }));
+    insertDocument(db, doc({ path: "a-same.md", created: "2026-03-20" }));
+    const got = getDocumentsInDateRange(db, "2026-03-01", "2026-03-31").map((d) => d.path);
+    expect(got).toEqual(["a-same.md", "b-same.md", "older.md"]);
+  });
 });
