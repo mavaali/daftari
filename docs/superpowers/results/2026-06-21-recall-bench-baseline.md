@@ -1,5 +1,8 @@
 # Recall Bench — daftari SP1 baseline (EA-180d)
 
+> **⚠ CORRECTION (2026-06-21):** the "Honest assessment" claim below that daftari *"isn't losing on recall — it's losing on disambiguation"* is **wrong for the majority of failures.** A re-analysis of `questions.jsonl` by `relevantDays` coverage found **68% of hallucinations are recall/coverage misses** (the relevant days were never retrieved), only 32% disambiguation; multi-day questions hallucinate 18.2% vs single-day 9.4%. Many "supersession" failures here are recall failures in disguise (the revision day was never retrieved). The disambiguation story below holds for the *single-day* subset and the Condor spotlight, but not in aggregate. See `2026-06-21-recall-vs-disambiguation.md`.
+
+
 **Date:** 2026-06-21
 **Status:** Baseline complete enough to report. Run stopped at **27/30 checkpoints (days 6–162)** on cost grounds; the remaining 3 (days 168–180) are marginal. **1,489 questions** evaluated — ample.
 **Arm:** SP1 baseline only (daftari as-is — `hybrid.ts` untouched, no supersession edges). This is the number SP2/SP3 must beat.
