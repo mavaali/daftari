@@ -462,10 +462,12 @@ describe("applyCoveragePass", () => {
   it("caps additions at maxAdd, recency-first", () => {
     insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-03-01" }));
     insertDocument(db, doc({ path: "b.md", tags: ["e"], created: "2026-03-02" }));
-    for (let i = 0; i < 5; i++) insertDocument(db, doc({ path: `extra-${i}.md`, tags: ["e"], created: `2026-03-1${i}` }));
+    // Extras must fall INSIDE the window: seeds 03-01/03-02 + default padDays=7 →
+    // window [2026-02-22, 2026-03-09]. 03-03..03-07 are in-window; 03-1x would NOT be.
+    for (let i = 0; i < 5; i++) insertDocument(db, doc({ path: `extra-${i}.md`, tags: ["e"], created: `2026-03-0${i + 3}` }));
     const out = applyCoveragePass(db, [hit("a.md"), hit("b.md")], { ...DEFAULT_COVERAGE_OPTIONS, maxAdd: 2 });
     const addedPaths = out.filter((h) => h.viaCoverage).map((h) => h.path);
-    expect(addedPaths).toEqual(["extra-4.md", "extra-3.md"]); // two most recent
+    expect(addedPaths).toEqual(["extra-4.md", "extra-3.md"]); // two most recent (03-07, 03-06)
   });
 });
 ```
