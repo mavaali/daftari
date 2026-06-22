@@ -62,3 +62,27 @@ Single-shot, answerer `claude-haiku-4.5` held constant across arms, judge `gpt-5
 ## Decision
 
 Recall-recall improvement is **worth a feature.** Next: a retrieval-recall brainstorm (span/date-aware fetch, query expansion across the relevant window, recall@k). Optionally run the clean distractor placebo first to quantify how much of the residual is distractor-disambiguation (the SP-A/foregrounding lever) vs pure span recall.
+
+---
+
+## CLEAN DISTRACTOR PLACEBO (run 2026-06-21) — both levers are real
+
+Owed from the contaminated placebo above. Same answerer (`claude-haiku-4.5`) + grounded judge. **Arm B = relevant span only; Arm A′ = the stale distractor docs daftari co-ranked, prepended to the relevant span.** Distractors = top-scored retrieved days NOT in `relevantDays` (these include the stale-value docs).
+
+| subset | Arm B (relevant only) | Arm A′ (distractors + relevant) |
+|---|---|---|
+| disambiguation (covered, picked wrong) | **0%** (0/32) | **28.1%** (9/32) |
+| recall-miss (oracle-fixed) | **0%** (0/48) | **18.8%** (9/48) |
+
+**Distractors are causally potent.** Adding the co-ranked stale docs to an otherwise-correct context re-induces hallucination from ~0% to **19–28%**. So daftari's RB failure is **two levers, not one**:
+
+1. **Span recall** (get the relevant days into context) — the dominant *composition* of failures (68%); oracle fixed it 27.8%→1.3%.
+2. **Distractor suppression** (keep stale/competing docs from drowning the answer) — confirmed causal here: even with perfect recall, stale distractors break ~1 in 5.
+
+**This rehabilitates SP-A / foregrounding.** The earlier note said "many supersession failures are recall misses → SP-A can't help." True for the recall-miss slice. But this shows that *once the relevant doc is retrieved alongside distractors*, demoting/foregrounding the stale ones (precisely SP-A's `superseded_by` foregrounding) is the suppression lever — clean context → ~0%. SP-A's two preconditions on RB were the blockers: (a) the relevant doc must be retrieved (recall), (b) supersession edges must exist (raw RB has none). In a **native daftari vault** with `vault_supersede` edges + adequate recall, SP-A foregrounding directly attacks the 19–28% distractor effect.
+
+**Caveats:** Arm A′ prepends distractors (adversarial primacy ordering) — realistic for daftari's supersession-blind ranking that often surfaces stale docs high, but it likely *upper-bounds* the effect vs score-interleaved order; magnitude scales with distractor count (top-6 used here).
+
+## Unified decision
+
+The retrieval-recall feature should do **both**: (1) raise span recall so the relevant days reach the answerer, and (2) present them cleanly — suppress/foreground against stale distractors (the SP-A lever, now empirically motivated for native vaults). Brainstorm should treat recall and distractor-suppression as the two design axes, not one.
