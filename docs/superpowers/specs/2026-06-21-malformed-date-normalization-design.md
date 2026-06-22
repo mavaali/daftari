@@ -11,7 +11,7 @@
 1. **Poison path.** For a string that fails the `^\d{4}-\d{2}-\d{2}$` regex (e.g. non-padded `2026-3-1`, slash `2026/03/01`, textual `March 2026`), it pushes a lint issue **but returns the raw string `v`**. That raw value lands in the `documents.created` / `documents.updated` columns and in every consumer of `parseDocument`.
 2. **Out-of-range slips through unflagged.** The regex `^\d{4}-\d{2}-\d{2}$` matches `2026-13-45` (month 13, day 45) and returns it **as-is with no lint issue** — there is no real-calendar validation.
 
-Downstream, any code that does `new Date(\`${created}T00:00:00Z\`).toISOString()` throws `RangeError: Invalid time value` on these values. This already broke `vault_search` via the coverage pass (now guarded) and exposes `src/curation/decay.ts` and any future date-range logic.
+Downstream, any code that does `new Date(\`${created}T00:00:00Z\`).toISOString()` throws `RangeError: Invalid time value` on these values. This already broke `vault_search` via the coverage pass (now guarded). `src/curation/decay.ts` documents itself as NaN-safe/total so it likely already tolerates these values — but any future, less-defensive date consumer would be exposed. Fixing the boundary removes the hazard class rather than relying on every consumer to guard.
 
 The `requireDate` Date-object branch is already correct: it normalizes a valid js-yaml `Date` to `YYYY-MM-DD` and (via the `!Number.isNaN` guard) lets an Invalid Date fall through to the `""` return. **Only the string branch is broken.**
 
@@ -23,6 +23,7 @@ The `requireDate` Date-object branch is already correct: it normalizes a valid j
 - No change to reindex, decay, coverage, or vault_write — they consume `requireDate`'s output and are fixed transitively.
 - No removal of coverage's `isValidIsoDate` guard — it stays as independent defense-in-depth.
 - No aggressive coercion of ambiguous formats (slash, textual, US-vs-EU). A wrong-but-confident date is worse than none for staleness/windows. (Conservative-hybrid stance, chosen 2026-06-21.)
+- **Not in scope: the extension-field date validator** (`case "date"` at `schema.ts:59-65`) carries the same loose `^\d{4}-\d{2}-\d{2}$` regex. It validates config-declared schema-extension fields, which do not feed the `created`/`updated` → `new Date().toISOString()` hazard paths. Left untouched deliberately; a follow-up could share the helper if extension dates ever need normalizing.
 
 ## Design
 
@@ -46,12 +47,12 @@ Logic:
 ```
 if (typeof v === "string") {
   const norm = normalizeIsoDate(v);
-  if (norm === null) { issues.push({field, message: `expected YYYY-MM-DD date, got ${JSON.stringify(v)}`}); return ""; }
+  if (norm === null) { issues.push({field, message: `expected YYYY-MM-DD date, got "${v}"`}); return ""; }
   if (norm !== v)   { issues.push({field, message: `non-canonical date "${v}", normalized to ${norm}`}); }
   return norm;
 }
 ```
-The Date-object branch and the missing/wrong-type branch are unchanged.
+The reject message keeps the existing `got "${v}"` wording (the current code's format) to avoid churn. The Date-object branch and the missing/wrong-type branch are unchanged. Tests assert on the *presence* of an issue for the field (and a message substring), not an exact string, so message wording stays flexible.
 
 ### Why flag the recovered case
 A recovered date is still a frontmatter defect: `vault_write` rejects non-canonical dates at the write boundary, and reindex's posture is to *surface* divergence (stored value ≠ file literal), not hide it. So `2026-3-1` is normalized for the index **and** reported by `vault_lint`. Bucketing is unchanged — such a doc was already flagged invalid before (the old code pushed an issue too); we only change the stored value from raw to normalized.
