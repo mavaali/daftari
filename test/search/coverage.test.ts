@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_COVERAGE_OPTIONS, detectSharedEntity } from "../../src/search/coverage.js";
+import {
+  computeWindow,
+  DEFAULT_COVERAGE_OPTIONS,
+  detectSharedEntity,
+} from "../../src/search/coverage.js";
 import type { HybridHit } from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import {
@@ -92,5 +96,57 @@ describe("detectSharedEntity", () => {
     expect(
       detectSharedEntity(db, [hit("a.md"), hit("b.md"), hit("c.md"), hit("d.md")], 3),
     ).toBeNull();
+  });
+});
+
+describe("computeWindow", () => {
+  let vault: string;
+  let db: IndexDb;
+  beforeEach(() => {
+    vault = makeTempVault();
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!o.ok) throw o.error;
+    db = o.value;
+  });
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+  });
+
+  it("spans the entity-bearing seeds' created dates padded by padDays", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-03-10" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["e"], created: "2026-03-20" }));
+    const w = computeWindow(db, [hit("a.md"), hit("b.md")], "e", {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      padDays: 5,
+    });
+    expect(w).toEqual({ start: "2026-03-05", end: "2026-03-25" });
+  });
+
+  it("ignores seeds that lack the entity or a created date", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-03-10" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["other"], created: "2026-09-01" }));
+    const w = computeWindow(db, [hit("a.md"), hit("b.md")], "e", {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      padDays: 0,
+    });
+    expect(w).toEqual({ start: "2026-03-10", end: "2026-03-10" });
+  });
+
+  it("clamps the window end to maxSpanDays from the start", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "2026-01-01" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["e"], created: "2026-12-01" }));
+    const w = computeWindow(db, [hit("a.md"), hit("b.md")], "e", {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      padDays: 0,
+      maxSpanDays: 90,
+    });
+    expect(w?.start).toBe("2026-01-01");
+    expect(w?.end).toBe("2026-04-01"); // 2026-01-01 + 90 days
+  });
+
+  it("returns null when no entity-bearing seed has a date", () => {
+    insertDocument(db, doc({ path: "a.md", tags: ["e"], created: "" }));
+    expect(computeWindow(db, [hit("a.md")], "e", DEFAULT_COVERAGE_OPTIONS)).toBeNull();
   });
 });

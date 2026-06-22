@@ -46,3 +46,39 @@ export function detectSharedEntity(db: IndexDb, hits: HybridHit[], seedK: number
   }
   return best;
 }
+
+export interface DateWindow {
+  start: string;
+  end: string;
+}
+
+// Shifts an ISO YYYY-MM-DD date by `days` (may be negative). UTC-anchored so it
+// is timezone-stable.
+function shiftDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// The date window to gather over: the created-date span of the entity-bearing
+// seeds, padded by padDays, with the end clamped to maxSpanDays from the start.
+// Returns null when no entity-bearing seed carries a date.
+export function computeWindow(
+  db: IndexDb,
+  hits: HybridHit[],
+  entity: string,
+  opts: CoverageOptions,
+): DateWindow | null {
+  const dates: string[] = [];
+  for (const h of hits.slice(0, opts.seedK)) {
+    const d = getDocument(db, h.path);
+    if (d && d.tags.includes(entity) && d.created) dates.push(d.created);
+  }
+  if (dates.length === 0) return null;
+  dates.sort();
+  const start = shiftDays(dates[0], -opts.padDays);
+  let end = shiftDays(dates[dates.length - 1], opts.padDays);
+  const maxEnd = shiftDays(start, opts.maxSpanDays);
+  if (end > maxEnd) end = maxEnd;
+  return { start, end };
+}
