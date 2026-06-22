@@ -147,3 +147,33 @@ export function applyCoveragePass(
   if (added.length === 0) return hits;
   return [...hits, ...added.map(coverageHit)];
 }
+
+// Deterministic backstop on the combined snippet size of coverage-added docs.
+// Original ranked hits are never evicted (we never displace the caller's
+// top-N). Among coverage docs, evict stale first (those SP-A flagged with a
+// currentSource), then oldest, until the added snippet chars fit tokenCapChars.
+export function enforceTokenCap(hits: HybridHit[], opts: CoverageOptions): HybridHit[] {
+  const original = hits.filter((h) => !h.viaCoverage);
+  const coverage = hits.filter((h) => h.viaCoverage);
+  if (coverage.length === 0) return hits;
+
+  // Eviction priority: stale before fresh, then oldest first. The survivors are
+  // taken from the opposite end. Coverage docs arrive recency-first, so index
+  // order is newest→oldest; a stable sort by (fresh?0:1) puts stale last for the
+  // "drop from the end" loop below.
+  const ordered = [...coverage].sort((a, b) => {
+    const aStale = a.currentSource ? 1 : 0;
+    const bStale = b.currentSource ? 1 : 0;
+    return aStale - bStale; // fresh first, stale last; stable keeps recency within group
+  });
+
+  let used = ordered.reduce((n, h) => n + h.snippet.length, 0);
+  while (used > opts.tokenCapChars && ordered.length > 0) {
+    const dropped = ordered.pop(); // removes the last = stalest/oldest survivor
+    used -= dropped?.snippet.length ?? 0;
+  }
+
+  // Re-emit in the original arrival order, minus evicted coverage docs.
+  const keep = new Set(ordered.map((h) => h.path));
+  return [...original, ...coverage.filter((h) => keep.has(h.path))];
+}

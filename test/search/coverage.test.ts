@@ -4,7 +4,9 @@ import {
   computeWindow,
   DEFAULT_COVERAGE_OPTIONS,
   detectSharedEntity,
+  enforceTokenCap,
 } from "../../src/search/coverage.js";
+import type { CurrentSource } from "../../src/search/current-source.js";
 import type { HybridHit } from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import {
@@ -213,5 +215,49 @@ describe("applyCoveragePass", () => {
     });
     const addedPaths = out.filter((h) => h.viaCoverage).map((h) => h.path);
     expect(addedPaths).toEqual(["extra-4.md", "extra-3.md"]); // two most recent (03-07, 03-06)
+  });
+});
+
+describe("enforceTokenCap", () => {
+  const STALE: CurrentSource = { kind: "resolved", path: "x.md", title: "x", snippet: "", hops: 1 };
+
+  function cov(path: string, snippet: string, stale = false): HybridHit {
+    return {
+      path,
+      title: path,
+      collection: "notes",
+      status: "canonical",
+      score: 0,
+      bm25Score: 0,
+      vectorScore: 0,
+      snippet,
+      decay: null,
+      viaCoverage: true,
+      coverageReason: "entity-window",
+      ...(stale ? { currentSource: STALE } : {}),
+    };
+  }
+
+  it("never drops original (non-coverage) hits even over budget", () => {
+    const original = { ...hit("a.md"), snippet: "x".repeat(100) };
+    const out = enforceTokenCap([original], { ...DEFAULT_COVERAGE_OPTIONS, tokenCapChars: 0 });
+    expect(out).toEqual([original]);
+  });
+
+  it("evicts stale coverage docs before fresh ones when over budget", () => {
+    const fresh = cov("fresh.md", "y".repeat(50));
+    const stale = cov("stale.md", "z".repeat(50), true);
+    // budget fits only one coverage doc
+    const out = enforceTokenCap([hit("a.md"), stale, fresh], {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      tokenCapChars: 60,
+    });
+    expect(out.map((h) => h.path)).toEqual(["a.md", "fresh.md"]);
+  });
+
+  it("returns the list unchanged when under budget", () => {
+    const fresh = cov("fresh.md", "short");
+    const list = [hit("a.md"), fresh];
+    expect(enforceTokenCap(list, DEFAULT_COVERAGE_OPTIONS)).toEqual(list);
   });
 });
