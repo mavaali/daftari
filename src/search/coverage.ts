@@ -10,6 +10,7 @@ import {
   type IndexDb,
   type IndexedDocument,
 } from "../storage/index-db.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import type { HybridHit } from "./hybrid.js";
 
 export interface CoverageOptions {
@@ -57,13 +58,14 @@ export interface DateWindow {
   end: string;
 }
 
-// True only for a real calendar date in strict ISO YYYY-MM-DD form. Guards the
-// window math against malformed `created` values that the indexer may store
-// (the frontmatter linter warns but still indexes them).
+// True only for a value already in strict, canonical, real-calendar ISO
+// YYYY-MM-DD form. Defense-in-depth: insertDocument normalizes the index's date
+// columns, so in practice this only ever sees canonical dates or "" — but the
+// guard stays as an independent layer. Reuses the shared normalizer (a string is
+// canonical iff normalizing it is a no-op) to avoid a second date-validation
+// implementation that could drift.
 function isValidIsoDate(s: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  return normalizeIsoDate(s) === s;
 }
 
 // Shifts an ISO YYYY-MM-DD date by `days` (may be negative). UTC-anchored so it
