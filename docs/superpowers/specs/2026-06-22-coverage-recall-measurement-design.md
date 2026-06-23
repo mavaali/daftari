@@ -48,7 +48,7 @@ Map each returned `path` → day number. **Pin the embedding provider** and asse
 Per question: `recall = |returnedDays ∩ qa.relevantDays| / |qa.relevantDays|` at a **stated effective `k`** per series (so the three series compare at equal retrieval depth). Aggregate split by single-day vs multi-day, and — because the cap binds on the modal span — **also condition recall on `|relevantDays|` length** (report the length distribution; the length-7 cohort is cap-limited at `maxAdd=5`). Series:
 - coverage-ON @ `maxAdd=5` (as-shipped) and @ `maxAdd=14` (uncapped),
 - coverage-OFF (top-`limit`) — deployment-realistic "does the feature help at all",
-- matched-budget (top-`limit+maxAdd`) — the **real test**: does date-window *selection* beat asking for the same number of next-ranked docs.
+- matched-budget (top-`limit+maxAdd`), computed **at each `maxAdd`** (top-15 for the maxAdd=5 arm, top-24 for the maxAdd=14 arm) — the **real test**: does date-window *selection* beat asking for the same number of next-ranked docs at equal budget.
 
 **Also report, per coverage-ON arm, the relevant-vs-distractor split of the *added* docs** (how many additions were in `relevantDays` vs not). This is the key disambiguator for a later backfire: it separates "distractors swamped a real recall gain" from "the cap starved the recall gain so only distractors were added." Note the as-shipped `gatherCandidates` takes the **newest** in-window docs (`created DESC`, then `slice(maxAdd)`), so for a span like `[8..14]` the additions skew recent — a selection limitation of the shipped feature, to be reported, not silently absorbed.
 
@@ -59,7 +59,7 @@ Reuse the oracle harness machinery (`/tmp/oracle-recall.mjs`: answerer `anthropi
 
 ### 5. Success / kill criteria (adjustable)
 **Recall gate:**
-- *Proceed* → coverage-ON multi-day recall beats both baselines, ≥ ~5pp absolute over the matched-budget baseline.
+- *Proceed* → coverage-ON multi-day recall beats both baselines, ≥ ~5pp absolute over the matched-budget baseline *at the same `maxAdd`* (evaluated on the maxAdd=14 arm, which isn't cap-starved).
 - *Kill* → coverage-ON ≤ matched-budget baseline. Date-window adds nothing over rank-extension. Write the negative result; skip the LLM arm.
 
 **Hallucination (gated).** Anchors: multi-day baseline ~18.2% hallucinated; oracle ceiling ~1.3%.
@@ -72,7 +72,7 @@ Reuse the oracle harness machinery (`/tmp/oracle-recall.mjs`: answerer `anthropi
 
 ## Risks / open items
 - **Ephemeral inputs.** The RB corpus (`/tmp/recall-review/...memories-180d`) and oracle harness (`/tmp/oracle-recall.mjs`) are in `/tmp` and may be gone — re-clone `Stevenic/recall` (MIT) and re-create if missing. The prep script should fail loudly if the corpus is absent.
-- **Date derivation.** `day-N → base + (N−1)` assumes contiguous daily files from `2026-01-01`. Verify against a day-file's in-body date (day-0001 body says 2026-01-01) before trusting; the prep script asserts the mapping on a sample.
+- **Date derivation.** `day-N → base + (N−1)` assumes contiguous daily files from `2026-01-01`. Spot-check ONLY the base offset once (day-0001's body says 2026-01-01 → base = 2026-01-01); do NOT assert per-file in-body-date matches (the earliest body date is often topic prose, not the file's own day — see §1). The prep script's real assertion is the §1 monotonic/contiguous/180-day check, which is what the date-window depends on.
 - **`maxAdd`=5 binds on the MODAL case, not the tail.** RB multi-day `relevantDays` are contiguous weekly spans — ~71% are exactly length 7 (>5), ~75% are ≥6. So coverage-ON recall is mechanically capped below 1.0 for the majority of multi-day questions, and a weak/null result at the default cap would be an artifact, not a finding. Mitigation is built into the design (§2 dual-`maxAdd` run, §3 length-conditioned recall + added-doc relevant/distractor split, §5 backfire disambiguation), not deferred to a follow-up. The `gatherCandidates` recency-skew (newest-5) is a real selection limitation of the shipped feature — report it.
 - **Cost realism.** Even multi-day-only × 2 arms × 2 LLM calls has a real $ cost; the runner must print an up-front question count + rough estimate and support `--smoke` (a handful of questions) before the full arm.
 - **Confound — injected tokens in FTS.** The uniform `tags:[daily]` washes out (uniform IDF≈0), but an injected per-doc `title` would NOT — handled in §1 by using an inert constant title. Verify on a sample that the coverage-OFF ranking on the prepped vault matches a plain/untagged index for the same queries (tag + title parity).
