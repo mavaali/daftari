@@ -153,8 +153,12 @@ describe("computeWindow", () => {
     expect(computeWindow(db, [hit("a.md")], "e", DEFAULT_COVERAGE_OPTIONS)).toBeNull();
   });
 
-  it("ignores malformed seed created dates instead of throwing", () => {
-    insertDocument(db, doc({ path: "bad.md", tags: ["e"], created: "2026-3-1" }));
+  it("ignores an unparseable seed date instead of throwing", () => {
+    // insertDocument normalizes recoverable dates (2026-3-1 -> 2026-03-01) and
+    // stores "" for unparseable ones, so the index never hands computeWindow a
+    // poison string. A slash date lands as "" -> the seed is skipped; only
+    // good.md's date defines the window.
+    insertDocument(db, doc({ path: "bad.md", tags: ["e"], created: "2026/03/01" }));
     insertDocument(db, doc({ path: "good.md", tags: ["e"], created: "2026-06-08" }));
     const call = () =>
       computeWindow(db, [hit("bad.md"), hit("good.md")], "e", {

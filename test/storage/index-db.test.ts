@@ -527,3 +527,53 @@ describe("getDocumentsInDateRange", () => {
     expect(got).toEqual(["a-same.md", "b-same.md", "older.md"]);
   });
 });
+
+describe("insertDocument date normalization (index is cleaned; source is not)", () => {
+  let vault: string;
+  let db: IndexDb;
+  beforeEach(() => {
+    vault = makeTempVault();
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    db = opened.value;
+  });
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+  });
+
+  it("normalizes a recoverable created/updated date in the index", () => {
+    insertDocument(db, { ...sampleDoc, path: "a.md", created: "2026-3-1", updated: "2026-7-9" });
+    const d = getDocument(db, "a.md");
+    expect(d?.created).toBe("2026-03-01");
+    expect(d?.updated).toBe("2026-07-09");
+  });
+
+  it("stores empty string for an unrecoverable (slash) created date", () => {
+    insertDocument(db, { ...sampleDoc, path: "b.md", created: "2026/03/01" });
+    expect(getDocument(db, "b.md")?.created).toBe("");
+  });
+
+  it("stores empty string for an out-of-range created date", () => {
+    insertDocument(db, { ...sampleDoc, path: "c.md", created: "2026-13-45" });
+    expect(getDocument(db, "c.md")?.created).toBe("");
+  });
+
+  it("leaves a canonical date untouched", () => {
+    insertDocument(db, {
+      ...sampleDoc,
+      path: "d.md",
+      created: "2026-05-01",
+      updated: "2026-05-02",
+    });
+    const d = getDocument(db, "d.md");
+    expect(d?.created).toBe("2026-05-01");
+    expect(d?.updated).toBe("2026-05-02");
+  });
+
+  it("excludes an index-normalized-to-empty date from getDocumentsInDateRange", () => {
+    insertDocument(db, { ...sampleDoc, path: "e.md", created: "March 2026" });
+    const inRange = getDocumentsInDateRange(db, "2026-01-01", "2026-12-31").map((x) => x.path);
+    expect(inRange).not.toContain("e.md");
+  });
+});

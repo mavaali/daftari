@@ -7,6 +7,7 @@
 // tension, superseded_by consistency) — that is the curation engine's job.
 
 import type { SchemaExtension } from "../utils/config.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import {
   CONFIDENCES,
   type Confidence,
@@ -138,8 +139,16 @@ export function validateFrontmatter(
       return v.toISOString().slice(0, 10);
     }
     if (typeof v === "string") {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-      issues.push({ field, message: `expected YYYY-MM-DD date, got "${v}"` });
+      // Preserve the author's raw value verbatim (serializeDocument writes this
+      // back to the source file — a tool-mediated write must never rewrite or
+      // drop what the author put there, #113). Flag anything that isn't a
+      // canonical, real-calendar YYYY-MM-DD so vault_lint surfaces it; this also
+      // closes the gap where an out-of-range value like "2026-13-45" passed the
+      // bare regex unflagged. The index layer (insertDocument) does the
+      // normalize-or-empty so date-math consumers never see a poison string.
+      if (normalizeIsoDate(v) !== v) {
+        issues.push({ field, message: `expected YYYY-MM-DD date, got "${v}"` });
+      }
       return v;
     }
     if (v === undefined || v === null) {
