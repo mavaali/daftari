@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-06-22
+
+### Added
+
+- **`vault_search` assembles a coverage cluster (edge-aware coverage retrieval,
+  Stage 1)** ([#150]). After ranking, a conditional, bounded coverage pass appends
+  same-entity documents — those sharing a frontmatter tag with at least two of the
+  top result seeds — that fall within the seeds' `created`-date window, surfacing
+  cluster members that lexical/semantic ranking alone missed. Added documents carry
+  `viaCoverage: true` and `coverageReason: "entity-window"`; they are appended
+  *after* the ranked hits (the relevance top-N is never re-ordered), RBAC-filtered
+  identically, run through SP-A current-source foregrounding, and bounded by a
+  doc-count and token-budget cap. The pass stays silent when the top seeds share no
+  tag, so single-fact queries are unaffected. Signals derive from the result set and
+  frontmatter, never the query text. Note: existing `vault_search` callers may now
+  see additional `viaCoverage`-flagged hits appended to their results.
+
+### Fixed
+
+- **Malformed date frontmatter no longer poisons the search index** ([#151]).
+  `created` / `updated` values that are not a real `YYYY-MM-DD` — non-padded
+  `2026-3-1`, slash `2026/03/01`, textual, or out-of-range such as `2026-13-45` —
+  were stored raw in the index, where date arithmetic could throw. The index now
+  normalizes recoverable dates (`2026-3-1` → `2026-03-01`) and stores an empty
+  string for unrecoverable ones, while the source markdown is preserved verbatim:
+  `requireDate` only *flags* a malformed date, it never rewrites it, honoring the
+  non-destructive tool-write invariant. `vault_lint` now also flags out-of-range
+  dates that previously passed validation unnoticed.
+
+[#150]: https://github.com/mavaali/daftari/pull/150
+[#151]: https://github.com/mavaali/daftari/pull/151
+
 ## [1.27.0] - 2026-06-21
 
 ### Added
