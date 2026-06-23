@@ -273,6 +273,8 @@ git commit -m "feat(recall-bench): maxAdd-sweep recall curves, coverage vs rank-
 
 **Files:** Create `integrations/recall-bench/llm-arm.mjs` (adapts `/tmp/oracle-recall.mjs` — copy its `call`/`docsBlock`/`pool`/`parseScore`/`GROUNDED_JUDGE`/`ANSWERER_SYS` verbatim; they already do exactly the answerer+judge+concurrency work).
 
+**CRITICAL override — do NOT inherit `MAX_DOCS=8` from the oracle harness.** `docsBlock(days)` truncates to the first `MAX_DOCS` days. The coverage-ON context is `[...seedDays, ...added]`, so an 8-doc cap drops the **coverage-added days first — the exact thing being measured** — and would understate the coverage effect. Set `const MAX_DOCS = 40;` (comfortably exceeds the largest coverage-ON set: `LIMIT`=10 seed days + the full window) so **neither arm truncates**. Consequence: absolute hallucination rates won't equal the historical "~18.2%" anchor (which used 8 docs) — that's fine, the anchor is only a sanity reference; **the coverage-OFF vs coverage-ON delta from this same harness is the measurement**. Log `onDays.length`/`offDays.length` so any truncation is visible.
+
 - [ ] **Step 1: Write the LLM arm**
 
 It reuses the oracle machinery, but the two arms are **coverage-OFF days** (top-`LIMIT` seed days) vs **coverage-ON days** (seed days + `added.slice(0, m)`), for **multi-day questions only**. Read the day-sets from `recall-perq.json` so retrieval isn't recomputed.
@@ -296,7 +298,11 @@ const cases = (SMOKE ? perQ.slice(0, 4) : perQ).map((p) => {
   return { id: p.id, q: qa.question, ref: qa.referenceAnswer, rel: p.rel, offDays, onDays };
 });
 
+const maxOn = Math.max(...cases.map((c) => c.onDays.length), 0);
+const maxOff = Math.max(...cases.map((c) => c.offDays.length), 0);
 console.log(`llm-arm: multi-day=${perQ.length} testing=${cases.length} coveragePoint m=${M} smoke=${SMOKE}`);
+console.log(`context sizes: maxOff=${maxOff} maxOn=${maxOn} (MAX_DOCS=${MAX_DOCS}) — both must be <= MAX_DOCS or the measured days get truncated`);
+if (maxOn > MAX_DOCS) throw new Error(`onDays (${maxOn}) exceeds MAX_DOCS (${MAX_DOCS}) — raise MAX_DOCS, coverage days would be truncated`);
 console.log(`COST NOTE: ${cases.length} questions x 2 arms x 2 calls (answer+judge). Ctrl-C now to abort.`);
 
 async function runArm(q, ref, rel, days) {
@@ -349,7 +355,7 @@ Include, per the spec §6:
 - The recall-curve shape note (recency-skew visible?) and the added-doc relevant-vs-distractor split.
 - The **gate decision** (proceed / kill) with the numbers behind it.
 - If the LLM arm ran: coverage-OFF vs coverage-ON hallucination, and an explicit **verdict** — win / backfire / null — against the kill condition, with the backfire **disambiguation** (cap story vs suppression story) using the uncapped-end recall + added-doc split.
-- An "Honest Assessment" section: what this does and does NOT show (date-window half only; multi-day only; RB has no SP-A suppression), and the kill condition's status.
+- An "Honest Assessment" section: what this does and does NOT show (date-window half only; multi-day only; RB has no SP-A suppression; the LLM arm raised the doc cap to 40 so absolute rates aren't comparable to the historical 8-doc ~18.2% anchor — only the OFF-vs-ON delta is), and the kill condition's status.
 
 - [ ] **Step 2: Commit**
 
