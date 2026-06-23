@@ -41,6 +41,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 
 export type IndexDb = Database.Database;
 
@@ -441,6 +442,14 @@ export function blobToEmbedding(blob: Buffer): Float32Array {
 // --- writes ----------------------------------------------------------------
 
 export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
+  // Normalize the date columns to canonical YYYY-MM-DD, or "" when the value is
+  // not a real ISO date. The index is a derived cache, so cleaning here keeps a
+  // malformed `created`/`updated` (which the frontmatter layer preserves raw on
+  // disk, #113) from poisoning date-math consumers — getDocumentsInDateRange,
+  // the coverage window, decay — without ever rewriting the source file. "" is
+  // the established "undateable" sentinel the date readers already handle.
+  const created = normalizeIsoDate(doc.created) ?? "";
+  const updated = normalizeIsoDate(doc.updated) ?? "";
   // ON CONFLICT(path) DO UPDATE (rather than INSERT OR REPLACE) is required
   // so the AFTER UPDATE trigger on `documents` fires and keeps
   // `documents_fts` in sync. SQLite's OR REPLACE conflict resolution does
@@ -472,12 +481,12 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
     doc.domain,
     doc.status,
     doc.confidence,
-    doc.updated,
+    updated,
     JSON.stringify(doc.tags),
     doc.content,
     JSON.stringify(doc.tokens),
     doc.ttlDays,
-    doc.created,
+    created,
     doc.supersededBy,
   );
 }

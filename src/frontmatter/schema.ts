@@ -7,6 +7,7 @@
 // tension, superseded_by consistency) — that is the curation engine's job.
 
 import type { SchemaExtension } from "../utils/config.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import {
   CONFIDENCES,
   type Confidence,
@@ -94,21 +95,6 @@ function validateExtensionField(
   }
 }
 
-// Normalizes an ISO-shaped date string to canonical YYYY-MM-DD, or returns null
-// if it is not an unambiguous, real calendar date. Conservative by design: it
-// only recovers the missing-zero-pad case (e.g. "2026-3-1" -> "2026-03-01") and
-// rejects everything else (slash/textual formats, out-of-range like "2026-13-45",
-// rollover non-days like "2026-02-30"). The round-trip equality check catches
-// values that `new Date` would silently roll over rather than reject.
-function normalizeIsoDate(s: string): string | null {
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
-  if (!m) return null;
-  const candidate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-  const d = new Date(`${candidate}T00:00:00Z`);
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== candidate) return null;
-  return candidate;
-}
-
 // Validates frontmatter against the built-in schema and, when supplied, the
 // config-declared schema extensions. Extensions are checked alongside the
 // built-ins; their issues land in the same advisory report. With no
@@ -153,17 +139,17 @@ export function validateFrontmatter(
       return v.toISOString().slice(0, 10);
     }
     if (typeof v === "string") {
-      const norm = normalizeIsoDate(v);
-      if (norm === null) {
+      // Preserve the author's raw value verbatim (serializeDocument writes this
+      // back to the source file — a tool-mediated write must never rewrite or
+      // drop what the author put there, #113). Flag anything that isn't a
+      // canonical, real-calendar YYYY-MM-DD so vault_lint surfaces it; this also
+      // closes the gap where an out-of-range value like "2026-13-45" passed the
+      // bare regex unflagged. The index layer (insertDocument) does the
+      // normalize-or-empty so date-math consumers never see a poison string.
+      if (normalizeIsoDate(v) !== v) {
         issues.push({ field, message: `expected YYYY-MM-DD date, got "${v}"` });
-        return "";
       }
-      // Recoverable but non-canonical (e.g. missing zero-pad): store the
-      // normalized value but surface the divergence so the source gets fixed.
-      if (norm !== v) {
-        issues.push({ field, message: `non-canonical date "${v}", normalized to ${norm}` });
-      }
-      return norm;
+      return v;
     }
     if (v === undefined || v === null) {
       issues.push({ field, message: "missing required field" });

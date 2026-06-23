@@ -22,53 +22,49 @@ function issuesFor(field: string, over: Record<string, unknown>) {
   return validateFrontmatter(data(over)).report.issues.filter((i) => i.field === field);
 }
 
-describe("requireDate normalization", () => {
+// requireDate is non-destructive on the source value: it preserves the author's
+// raw string verbatim (serializeDocument writes it back to disk, #113) and only
+// FLAGS anything that isn't a canonical, real-calendar YYYY-MM-DD. The
+// normalize-or-empty for the index happens later, in insertDocument.
+describe("requireDate validation (preserves raw, flags malformed)", () => {
   it("passes a canonical YYYY-MM-DD through unchanged with no issue", () => {
     const r = validateFrontmatter(data({ created: "2026-03-01" }));
     expect(r.frontmatter.created).toBe("2026-03-01");
     expect(r.report.issues.filter((i) => i.field === "created")).toEqual([]);
   });
 
-  it("normalizes a non-padded date and flags it as non-canonical", () => {
+  it("preserves a non-padded date verbatim but flags it", () => {
     const r = validateFrontmatter(data({ created: "2026-3-1" }));
-    expect(r.frontmatter.created).toBe("2026-03-01");
-    const flagged = r.report.issues.filter((i) => i.field === "created");
-    expect(flagged).toHaveLength(1);
-    expect(flagged[0].message).toMatch(/non-canonical/);
+    expect(r.frontmatter.created).toBe("2026-3-1"); // raw, NOT rewritten
+    expect(issuesFor("created", { created: "2026-3-1" })).toHaveLength(1);
   });
 
-  it("stores empty string and flags a slash-separated date", () => {
+  it("preserves a slash-separated date verbatim but flags it", () => {
     const r = validateFrontmatter(data({ created: "2026/03/01" }));
-    expect(r.frontmatter.created).toBe("");
+    expect(r.frontmatter.created).toBe("2026/03/01");
     expect(issuesFor("created", { created: "2026/03/01" })).toHaveLength(1);
   });
 
-  it("stores empty string and flags a textual date", () => {
+  it("preserves a textual date verbatim but flags it", () => {
     const r = validateFrontmatter(data({ created: "March 2026" }));
-    expect(r.frontmatter.created).toBe("");
+    expect(r.frontmatter.created).toBe("March 2026");
     expect(issuesFor("created", { created: "March 2026" })).toHaveLength(1);
   });
 
-  it("stores empty string and flags an out-of-range date (regression: was unflagged)", () => {
+  it("flags an out-of-range date (regression: was unflagged before)", () => {
     const r = validateFrontmatter(data({ created: "2026-13-45" }));
-    expect(r.frontmatter.created).toBe("");
+    expect(r.frontmatter.created).toBe("2026-13-45"); // preserved raw
     expect(issuesFor("created", { created: "2026-13-45" })).toHaveLength(1);
   });
 
-  it("stores empty string for a rollover date (2026-02-30, not a real day)", () => {
-    const r = validateFrontmatter(data({ created: "2026-02-30" }));
-    expect(r.frontmatter.created).toBe("");
+  it("flags a rollover non-day (2026-02-30)", () => {
     expect(issuesFor("created", { created: "2026-02-30" })).toHaveLength(1);
   });
 
-  it("stores empty string for a non-leap-year Feb 29 (2026-02-29)", () => {
-    const r = validateFrontmatter(data({ created: "2026-02-29" }));
-    expect(r.frontmatter.created).toBe("");
-  });
-
-  it("keeps a valid leap-year date (2024-02-29)", () => {
-    const r = validateFrontmatter(data({ created: "2024-02-29" }));
-    expect(r.frontmatter.created).toBe("2024-02-29");
+  it("flags a non-leap-year Feb 29 (2026-02-29) but accepts a real leap day", () => {
+    expect(issuesFor("created", { created: "2026-02-29" })).toHaveLength(1);
+    const ok = validateFrontmatter(data({ created: "2024-02-29" }));
+    expect(ok.frontmatter.created).toBe("2024-02-29");
     expect(issuesFor("created", { created: "2024-02-29" })).toEqual([]);
   });
 
@@ -78,14 +74,14 @@ describe("requireDate normalization", () => {
     expect(issuesFor("created", { created: new Date("2026-03-01T00:00:00Z") })).toEqual([]);
   });
 
-  it("stores empty string for an Invalid Date object", () => {
+  it("falls back to empty string for an Invalid Date object", () => {
     const r = validateFrontmatter(data({ created: new Date("nonsense") }));
     expect(r.frontmatter.created).toBe("");
   });
 
-  it("applies the same normalization to the updated field", () => {
+  it("applies the same flagging to the updated field", () => {
     const r = validateFrontmatter(data({ updated: "2026-7-9" }));
-    expect(r.frontmatter.updated).toBe("2026-07-09");
+    expect(r.frontmatter.updated).toBe("2026-7-9");
     expect(issuesFor("updated", { updated: "2026-7-9" })).toHaveLength(1);
   });
 });
