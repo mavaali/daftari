@@ -293,8 +293,13 @@ export async function hybridSearch(
   const matchQuery = buildMatchQuery(query);
   const snippetTokens = tokenize(query);
 
-  const embedResult = await embedQuery(query);
-  const queryEmbedding = embedResult.ok ? embedResult.value : null;
+  // Skip embedding when vector weight is zero — avoids vectorUsed:true being
+  // reported for a pure-lexical call, which would misrepresent the ranking mode.
+  let queryEmbedding: Float32Array | null = null;
+  if (weights.vector > 0) {
+    const embedResult = await embedQuery(query);
+    queryEmbedding = embedResult.ok ? embedResult.value : null;
+  }
 
   const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, snippetTokens, {
     weights,
