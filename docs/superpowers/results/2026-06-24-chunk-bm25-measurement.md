@@ -1,6 +1,6 @@
 # Results — Chunk-BM25 recall measurement (Stage B)
 
-DRAFT — pending controller review of the verdict.
+Reviewed 2026-06-24.
 
 **Date:** 2026-06-24
 **Spec:** `docs/superpowers/specs/2026-06-24-chunk-level-bm25-design.md`
@@ -60,5 +60,5 @@ The hypothesis — that the Stage A gain was a BM25 granularity artifact recover
 ## What ships / what's next
 
 - Harness (`chunkbm25-runner.mjs`) and this results doc committed. The hybrid.ts fix (skip embedding when `weights.vector === 0` so `vectorUsed` accurately reflects scoring mode) is included in this commit.
-- **Implementation path confirmed**: wire chunk-level BM25 into `hybridSearch` as the default lexical path when `chunks_fts` is populated. The `lexicalGranularity: "chunk"` option (Tasks 1–2) is the mechanism; this measurement confirms it deserves to be the default.
+- **Mechanism validated on RB**: the `lexicalGranularity:"chunk"` ranker (Tasks 1–2) recovers the granularity gap losslessly on this corpus. Whether to promote it from opt-in to the default lexical path is a SEPARATE decision, explicitly out of scope here — it needs a non-RB corpus (the RB-only caveat above) and a snippet/answer-quality check before any default flip.
 - **K=10 partial recovery** is worth revisiting if a post-dedup or re-rank step can reduce same-day chunk clustering — but this is a secondary concern given K=20+ results.

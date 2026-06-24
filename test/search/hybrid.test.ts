@@ -102,6 +102,16 @@ describe("hybrid search", () => {
       // still a valid (if weak) search — the tool layer guards empty input.
       expect(result.ok).toBe(true);
     });
+
+    it("reports vectorUsed false for a pure-lexical (vector:0) query", async () => {
+      const res = await hybridSearch(db, "Helios compute credit consumption pricing", {
+        weights: { bm25: 1, vector: 0 },
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.vectorUsed).toBe(false);
+      expect(res.value.weights).toEqual({ bm25: 1, vector: 0 });
+    });
   });
 
   describe("relatedSearch", () => {
