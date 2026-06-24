@@ -39,6 +39,17 @@ describe("hybrid search", () => {
       expect(result.value.hits[0]?.path).toBe(CREDIT_DOC);
     });
 
+    it("defaults to document-granularity (unchanged ordering)", async () => {
+      const a = await hybridSearch(db, "Helios compute credit consumption pricing");
+      const b = await hybridSearch(db, "Helios compute credit consumption pricing", {
+        lexicalGranularity: "document",
+      });
+      expect(a.ok && b.ok).toBe(true);
+      if (!a.ok || !b.ok) return;
+      expect(a.value.hits.map((h) => h.path)).toEqual(b.value.hits.map((h) => h.path));
+      expect(a.value.hits[0]?.path).toBe(CREDIT_DOC);
+    });
+
     it("returns snippets and per-ranker scores", async () => {
       const result = await hybridSearch(db, "cirrus pooled capacity tier");
       expect(result.ok).toBe(true);
@@ -253,5 +264,120 @@ Reference material for general use across the vault.
       expect(Object.hasOwn(hit, "decay")).toBe(true);
       expect(hit.decay === null || typeof hit.decay === "object").toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chunk-granularity BM25 dilution test
+// ---------------------------------------------------------------------------
+// `multi.md` contains the rare term "zephyr" in only one chunk. The rest of
+// its body is filler so the whole-doc BM25 score is diluted. `decoy.md` shares
+// all the filler words but NOT "zephyr". Under document-granularity, the
+// filler flood dilutes `multi.md`'s score enough that the decoy can rank
+// above it. Under chunk-granularity, `multi.md`'s zephyr-chunk scores high
+// and wins.
+describe("hybrid search — chunk-level BM25 granularity", () => {
+  let chunkVault: string;
+  let chunkDb: IndexDb;
+
+  beforeAll(async () => {
+    chunkVault = mkdtempSync(join(tmpdir(), "daftari-chunk-bm25-"));
+
+    // multi.md: MANY filler paragraphs (making the document very long) plus ONE
+    // tiny paragraph containing only the word "zephyr". The chunker packs the
+    // filler paragraphs into long chunks and the single-word "zephyr" paragraph
+    // into its own tiny chunk (~6 chars). Under DOCUMENT-level BM25, the long
+    // body dilutes the score and decoy.md wins. Under CHUNK-level BM25, the
+    // 6-char zephyr-only chunk has maximal term frequency (1 mention / 1 token)
+    // and wins over decoy's 100-char chunk where "zephyr" is just one of many.
+    const filler =
+      "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ";
+    // Ten filler paragraphs × ~900 chars each → ~10 KB body; huge length penalty.
+    const fillerParas = Array.from({ length: 10 }, () => filler.repeat(8)).join("\n\n");
+    const zephyrPara = "zephyr"; // 6 chars; gets its own chunk after filler hard-splits
+
+    writeFileSync(
+      join(chunkVault, "multi.md"),
+      `---
+title: "Multi Chunk Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [test]
+---
+
+# Multi Chunk Document
+
+${fillerParas}
+
+${zephyrPara}
+`,
+    );
+
+    // decoy.md: a short document that mentions "zephyr" once in a sentence so it
+    // beats multi.md under WHOLE-DOC BM25 (short doc = low length penalty, high
+    // relative zephyr density). Under CHUNK-level BM25, its single chunk
+    // (~100 chars) loses to multi.md's 6-char zephyr-only chunk.
+    writeFileSync(
+      join(chunkVault, "decoy.md"),
+      `---
+title: "Decoy Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [test]
+---
+
+# Decoy Document
+
+The zephyr system was briefly mentioned in a prior report and has no further detail.
+`,
+    );
+
+    const reindexed = await reindexVault(chunkVault);
+    if (!reindexed.ok) throw reindexed.error;
+    const opened = openIndexDb(chunkVault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    chunkDb = opened.value;
+  }, 60_000);
+
+  afterAll(() => {
+    chunkDb.close();
+    rmSync(chunkVault, { recursive: true, force: true });
+  });
+
+  it("chunk granularity ranks a diluted single-chunk topic above a decoy", async () => {
+    const res = await hybridSearch(chunkDb, "zephyr", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits[0]?.path).toBe("multi.md");
+
+    // The "document" arm must NOT rank multi.md first — confirming the two
+    // rankers produce a meaningful difference on this fixture.
+    const docArm = await hybridSearch(chunkDb, "zephyr", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "document",
+    });
+    expect(docArm.ok).toBe(true);
+    if (docArm.ok) expect(docArm.value.hits[0]?.path).not.toBe("multi.md");
   });
 });

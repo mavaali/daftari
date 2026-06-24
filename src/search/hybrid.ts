@@ -164,10 +164,37 @@ function vecRanking(
   return result;
 }
 
+// Chunk-level lexical ranking. Runs an FTS5 MATCH over `chunks_fts` (one row
+// per chunk), reads the inverse bm25 (flip to larger=better), joins back to
+// `chunks` on rowid to map onto document paths, and collapses to each
+// document's BEST chunk score (max) — mirroring vecRanking's best-per-doc.
+// A relevant topic's own chunk scores high even when its whole document is
+// long and multi-topic. Null query (no usable tokens) returns an empty map.
+function chunkFtsRanking(db: IndexDb, query: string | null): Map<string, number> {
+  if (query === null) return new Map();
+  const rows = db
+    .prepare(
+      `SELECT c.path AS path, -bm25(chunks_fts) AS score
+         FROM chunks_fts
+         JOIN chunks AS c ON c.rowid = chunks_fts.rowid
+        WHERE chunks_fts MATCH ?
+        ORDER BY bm25(chunks_fts)`,
+    )
+    .all(query) as { path: string; score: number }[];
+  const result = new Map<string, number>();
+  for (const r of rows) {
+    if (r.score <= 0) continue;
+    const prev = result.get(r.path) ?? -Infinity;
+    if (r.score > prev) result.set(r.path, r.score);
+  }
+  return result;
+}
+
 interface RankOptions {
   weights: HybridWeights;
   limit: number;
   excludePath?: string;
+  lexicalGranularity: "document" | "chunk";
 }
 
 // Core ranker shared by query search and related-document search.
@@ -186,7 +213,10 @@ function rankDocuments(
   const documents = getAllDocuments(db);
   const byPath = new Map(documents.map((d) => [d.path, d]));
 
-  const bm25Raw = ftsRanking(db, matchQuery);
+  const bm25Raw =
+    opts.lexicalGranularity === "chunk"
+      ? chunkFtsRanking(db, matchQuery)
+      : ftsRanking(db, matchQuery);
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
@@ -240,6 +270,7 @@ function rankDocuments(
 export interface HybridSearchOptions {
   weights?: HybridWeights;
   limit?: number;
+  lexicalGranularity?: "document" | "chunk";
 }
 
 // Ranks vault documents against a free-text query.
@@ -250,6 +281,7 @@ export async function hybridSearch(
 ): Promise<Result<HybridSearchResult, Error>> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  const lexicalGranularity = options.lexicalGranularity ?? "document";
   const matchQuery = buildMatchQuery(query);
   const snippetTokens = tokenize(query);
 
@@ -260,6 +292,7 @@ export async function hybridSearch(
     weights,
     limit,
     excludePath: undefined,
+    lexicalGranularity,
   });
 
   return ok({
@@ -322,6 +355,7 @@ export function relatedSearch(
     weights,
     limit,
     excludePath: path,
+    lexicalGranularity: "document",
   });
 
   return ok({
