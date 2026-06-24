@@ -183,6 +183,14 @@ function chunkFtsRanking(db: IndexDb, query: string | null): Map<string, number>
     .all(query) as { path: string; score: number }[];
   const result = new Map<string, number>();
   for (const r of rows) {
+    // Some rows may produce a non-positive flipped score if FTS5 returned a
+    // positive bm25 (rare with prefix matches); drop them so the normalize
+    // step sees only positive values.
+    // Note: BM25 scores here are computed over the CHUNK corpus (avgdl =
+    // average chunk length), a different normalization base than ftsRanking's
+    // document corpus. The two rankers are never mixed in the same call —
+    // rankDocuments routes to exactly one based on lexicalGranularity — so
+    // their raw scores are never directly compared.
     if (r.score <= 0) continue;
     const prev = result.get(r.path) ?? -Infinity;
     if (r.score > prev) result.set(r.path, r.score);

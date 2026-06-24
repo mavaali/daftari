@@ -47,6 +47,7 @@ describe("hybrid search", () => {
       expect(a.ok && b.ok).toBe(true);
       if (!a.ok || !b.ok) return;
       expect(a.value.hits.map((h) => h.path)).toEqual(b.value.hits.map((h) => h.path));
+      expect(a.value.hits.map((h) => h.bm25Score)).toEqual(b.value.hits.map((h) => h.bm25Score));
       expect(a.value.hits[0]?.path).toBe(CREDIT_DOC);
     });
 
@@ -363,6 +364,13 @@ The zephyr system was briefly mentioned in a prior report and has no further det
   });
 
   it("chunk granularity ranks a diluted single-chunk topic above a decoy", async () => {
+    // Fixture assumption: under DOCUMENT-level BM25, FTS5 length normalization
+    // favors the SHORT decoy.md (which contains "zephyr" once in a short ~100-char
+    // body) over long multi.md where "zephyr" is diluted across ~10 KB of filler.
+    // Under CHUNK-level BM25, multi.md's tiny "zephyr"-only chunk has near-maximal
+    // term density (1 mention / ~6 chars) and beats decoy.md's longer chunk.
+    // This depends on CHUNK_MAX_CHARS (currently 800) and the filler repeat counts
+    // above — if chunk size changes, the filler sizing may need re-tuning.
     const res = await hybridSearch(chunkDb, "zephyr", {
       weights: { bm25: 1, vector: 0 },
       lexicalGranularity: "chunk",
@@ -370,6 +378,8 @@ The zephyr system was briefly mentioned in a prior report and has no further det
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.hits[0]?.path).toBe("multi.md");
+    // Confirm the chunk arm REORDERS (both docs matched) rather than omitting decoy.
+    expect(res.value.hits.some((h) => h.path === "decoy.md")).toBe(true);
 
     // The "document" arm must NOT rank multi.md first — confirming the two
     // rankers produce a meaningful difference on this fixture.
