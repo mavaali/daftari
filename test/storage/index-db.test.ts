@@ -1,8 +1,12 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
+import { reindexVault } from "../../src/search/reindex.js";
 import {
   blobToEmbedding,
   clearIndex,
+  deleteDocument,
   documentCount,
   embeddingCount,
   embeddingToBlob,
@@ -176,7 +180,7 @@ describe("index-db", () => {
 
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("6");
+    expect(getMeta(db, "schema_version")).toBe("7");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -199,7 +203,7 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("6");
+    expect(getMeta(db, "schema_version")).toBe("7");
     // All five expected tables now exist on a fresh index: three
     // regular tables (documents, chunks, embeddings, meta) plus two
     // virtual tables (documents_fts, embeddings_vec).
@@ -575,5 +579,167 @@ describe("insertDocument date normalization (index is cleaned; source is not)", 
     insertDocument(db, { ...sampleDoc, path: "e.md", created: "March 2026" });
     const inRange = getDocumentsInDateRange(db, "2026-01-01", "2026-12-31").map((x) => x.path);
     expect(inRange).not.toContain("e.md");
+  });
+});
+
+describe("chunks_fts", () => {
+  it("maintains chunks_fts in lockstep with chunks across a multi->single shrink", async () => {
+    const vault = makeTempVault();
+    try {
+      // Author a genuinely multi-chunk doc: two paragraphs each > 800 chars so
+      // chunkText() yields >= 2 chunks. "zephyrine" lives ONLY in the 2nd para.
+      const para1 = `alpha ${"filler ".repeat(160)}`; // > 800 chars
+      const para2 = `zephyrine ${"context ".repeat(160)}`; // > 800 chars, holds the unique term
+      writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\n${para1}\n\n${para2}\n`);
+      let r = await reindexVault(vault);
+      if (!r.ok) throw r.error;
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+
+      expect(
+        (
+          db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='chunks_fts'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(1);
+      // big.md must have produced >= 2 chunks, else the shrink proves nothing.
+      const bigChunks = (
+        db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE path='big.md'").get() as { n: number }
+      ).n;
+      expect(bigChunks).toBeGreaterThanOrEqual(2);
+      const parity = () => {
+        const c = (db.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+        const f = (db.prepare("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n;
+        return [c, f];
+      };
+      const [c1, f1] = parity();
+      expect(f1).toBe(c1);
+      // the unique term matches before the shrink
+      const matches = (term: string) =>
+        (
+          db.prepare("SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?").get(term) as {
+            n: number;
+          }
+        ).n;
+      expect(matches("zephyrine")).toBeGreaterThan(0);
+
+      // SHRINK: rewrite big.md to a single short line (one chunk), reindex.
+      writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\nalpha only.\n`);
+      r = await reindexVault(vault);
+      if (!r.ok) throw r.error;
+      const [c2, f2] = parity();
+      expect(f2).toBe(c2); // no orphan FTS rows after shrink
+      expect(matches("zephyrine")).toBe(0); // removed-text term no longer matches
+      db.close();
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+
+  it("incremental path: chunks_fts stays in sync after deleteDocument + insertChunkRow (partial delete)", () => {
+    // This test exercises the INCREMENTAL single-document update path that the
+    // file watcher triggers via indexDocument() in src/search/reindex.ts
+    // (lines 559-568: deleteDocument(db, doc.path) then insertChunkRow per chunk).
+    // Unlike the test above which uses reindexVault / clearIndex (a full wipe),
+    // this path deletes only ONE document's chunk rows while leaving other
+    // documents' rows intact — the partial-delete path where the historical
+    // documents FTS-drift bug surfaced.
+    //
+    // We call deleteDocument + insertChunkRow directly to mirror that code path
+    // without spinning up the embedding model or file system watcher.
+    const vault = makeTempVault();
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    const testDb = opened.value;
+
+    try {
+      // Build a multi-chunk big.md: two distinct chunks, "zephyrine" only in chunk 1.
+      const bigPath = "big.md";
+      const chunk0Text = `alpha ${"filler ".repeat(160)}`; // chunk 0: no zephyrine
+      const chunk1Text = `zephyrine ${"context ".repeat(160)}`; // chunk 1: unique term
+      const hash0 = sha256Hex(chunk0Text);
+      const hash1 = sha256Hex(chunk1Text);
+
+      // Insert an unrelated document so we can verify partial-delete doesn't
+      // wipe rows for OTHER documents — the core partial-delete invariant.
+      const otherPath = "other.md";
+      const otherChunkText = "unrelated content stays intact";
+      const otherHash = sha256Hex(otherChunkText);
+      insertDocument(testDb, { ...sampleDoc, path: otherPath, content: otherChunkText });
+      insertChunkRow(testDb, {
+        path: otherPath,
+        chunkIndex: 0,
+        text: otherChunkText,
+        contentHash: otherHash,
+      });
+
+      // Insert the big multi-chunk document.
+      insertDocument(testDb, {
+        ...sampleDoc,
+        path: bigPath,
+        content: chunk0Text + "\n" + chunk1Text,
+      });
+      insertChunkRow(testDb, {
+        path: bigPath,
+        chunkIndex: 0,
+        text: chunk0Text,
+        contentHash: hash0,
+      });
+      insertChunkRow(testDb, {
+        path: bigPath,
+        chunkIndex: 1,
+        text: chunk1Text,
+        contentHash: hash1,
+      });
+
+      const parity = () => {
+        const c = (testDb.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+        const f = (testDb.prepare("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n;
+        return [c, f];
+      };
+      const matches = (term: string) =>
+        (
+          testDb
+            .prepare("SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?")
+            .get(term) as { n: number }
+        ).n;
+
+      const [c1, f1] = parity();
+      expect(f1).toBe(c1); // 3 chunks (2 big + 1 other), all in FTS
+      expect(matches("zephyrine")).toBeGreaterThan(0); // unique term visible
+
+      // INCREMENTAL SHRINK: simulate indexDocument() replacing big.md with a
+      // single-chunk version — deleteDocument then insertChunkRow for new chunk.
+      // This is the PARTIAL-delete path: only big.md's rows are removed, not
+      // other.md's row. The chunks_ad trigger must fire for each deleted chunk row.
+      const newChunkText = "alpha only.";
+      const newHash = sha256Hex(newChunkText);
+      deleteDocument(testDb, bigPath); // fires chunks_ad for chunk0 and chunk1
+      insertDocument(testDb, { ...sampleDoc, path: bigPath, content: newChunkText });
+      insertChunkRow(testDb, {
+        path: bigPath,
+        chunkIndex: 0,
+        text: newChunkText,
+        contentHash: newHash,
+      });
+
+      const [c2, f2] = parity();
+      expect(f2).toBe(c2); // no orphan FTS rows: 2 total (1 big new + 1 other)
+      expect(matches("zephyrine")).toBe(0); // removed-text term is gone from FTS
+      // Verify the unrelated doc's chunk is still present (partial-delete, not full wipe).
+      const otherChunks = (
+        testDb.prepare("SELECT COUNT(*) AS n FROM chunks WHERE path = ?").get(otherPath) as {
+          n: number;
+        }
+      ).n;
+      expect(otherChunks).toBe(1);
+    } finally {
+      testDb.close();
+      cleanupVault(vault);
+    }
   });
 });

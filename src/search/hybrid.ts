@@ -164,10 +164,45 @@ function vecRanking(
   return result;
 }
 
+// Chunk-level lexical ranking. Runs an FTS5 MATCH over `chunks_fts` (one row
+// per chunk), reads the inverse bm25 (flip to larger=better), joins back to
+// `chunks` on rowid to map onto document paths, and collapses to each
+// document's BEST chunk score (max) — mirroring vecRanking's best-per-doc.
+// A relevant topic's own chunk scores high even when its whole document is
+// long and multi-topic. Null query (no usable tokens) returns an empty map.
+function chunkFtsRanking(db: IndexDb, query: string | null): Map<string, number> {
+  if (query === null) return new Map();
+  const rows = db
+    .prepare(
+      `SELECT c.path AS path, -bm25(chunks_fts) AS score
+         FROM chunks_fts
+         JOIN chunks AS c ON c.rowid = chunks_fts.rowid
+        WHERE chunks_fts MATCH ?
+        ORDER BY bm25(chunks_fts)`,
+    )
+    .all(query) as { path: string; score: number }[];
+  const result = new Map<string, number>();
+  for (const r of rows) {
+    // Some rows may produce a non-positive flipped score if FTS5 returned a
+    // positive bm25 (rare with prefix matches); drop them so the normalize
+    // step sees only positive values.
+    // Note: BM25 scores here are computed over the CHUNK corpus (avgdl =
+    // average chunk length), a different normalization base than ftsRanking's
+    // document corpus. The two rankers are never mixed in the same call —
+    // rankDocuments routes to exactly one based on lexicalGranularity — so
+    // their raw scores are never directly compared.
+    if (r.score <= 0) continue;
+    const prev = result.get(r.path) ?? -Infinity;
+    if (r.score > prev) result.set(r.path, r.score);
+  }
+  return result;
+}
+
 interface RankOptions {
   weights: HybridWeights;
   limit: number;
   excludePath?: string;
+  lexicalGranularity: "document" | "chunk";
 }
 
 // Core ranker shared by query search and related-document search.
@@ -186,7 +221,10 @@ function rankDocuments(
   const documents = getAllDocuments(db);
   const byPath = new Map(documents.map((d) => [d.path, d]));
 
-  const bm25Raw = ftsRanking(db, matchQuery);
+  const bm25Raw =
+    opts.lexicalGranularity === "chunk"
+      ? chunkFtsRanking(db, matchQuery)
+      : ftsRanking(db, matchQuery);
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
@@ -240,6 +278,7 @@ function rankDocuments(
 export interface HybridSearchOptions {
   weights?: HybridWeights;
   limit?: number;
+  lexicalGranularity?: "document" | "chunk";
 }
 
 // Ranks vault documents against a free-text query.
@@ -250,16 +289,23 @@ export async function hybridSearch(
 ): Promise<Result<HybridSearchResult, Error>> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  const lexicalGranularity = options.lexicalGranularity ?? "document";
   const matchQuery = buildMatchQuery(query);
   const snippetTokens = tokenize(query);
 
-  const embedResult = await embedQuery(query);
-  const queryEmbedding = embedResult.ok ? embedResult.value : null;
+  // Skip embedding when vector weight is zero — avoids vectorUsed:true being
+  // reported for a pure-lexical call, which would misrepresent the ranking mode.
+  let queryEmbedding: Float32Array | null = null;
+  if (weights.vector > 0) {
+    const embedResult = await embedQuery(query);
+    queryEmbedding = embedResult.ok ? embedResult.value : null;
+  }
 
   const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, snippetTokens, {
     weights,
     limit,
     excludePath: undefined,
+    lexicalGranularity,
   });
 
   return ok({
@@ -322,6 +368,7 @@ export function relatedSearch(
     weights,
     limit,
     excludePath: path,
+    lexicalGranularity: "document",
   });
 
   return ok({
