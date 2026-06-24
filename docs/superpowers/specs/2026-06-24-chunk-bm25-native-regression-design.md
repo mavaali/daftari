@@ -39,7 +39,7 @@ Builds a native-daftari-shape vault, deterministically (no LLM, no randomness th
   - 2–3 `tags`, one of which is a **unique tag-only token** (appears nowhere else),
   - a 1–3 sentence body restating the fact, containing a **unique body-only token**.
   - Total < 800 chars so `chunkText` yields exactly **one chunk** (assert this in the runner — the native single-chunk case is the premise).
-  - Required daftari frontmatter (whatever `validateFrontmatter`/`requireDate` demand — read a sample-vault doc and the frontmatter validator first so generated docs index cleanly; a generator whose docs get skipped silently is the failure mode to avoid).
+  - **Complete, valid daftari frontmatter.** Required fields (from `validateFrontmatter`; confirm against a `test/fixtures/sample-vault` doc): `title`, `domain` (enum), `collection`, `status` (enum), `confidence` (enum), `created` (date), `updated` (date), `updated_by`, `provenance` (enum), plus `tags`. **Important failure mode (corrected):** docs with *invalid* frontmatter are NOT silently skipped — `reindex` indexes them with **fallback defaults applied** (`status:draft`, `confidence:low`, etc.) and an **empty title** would silently pollute the title-arm BM25. So the generator must emit fully valid frontmatter, and the runner must assert it (see Component 2 guard).
 - Writes the vault to an ephemeral `/tmp` path (e.g. `/tmp/native-regression/vault`).
 - Emits a **labeled query JSONL** alongside: for each doc, three rows `{ id, type: "body"|"title"|"tag", query: <the unique token>, relevantPath: <doc path> }`. The unique-token construction guarantees exactly one correct doc per query (clean ground truth).
 
@@ -50,7 +50,10 @@ Mirrors the existing recall-bench runners (`chunkbm25-runner.mjs` as the templat
 - For each labeled query, run **two arms**, lexical-only (`weights:{bm25:1, vector:0}`):
   - document: `lexicalGranularity:"document"`
   - chunk: `lexicalGranularity:"chunk"`
-- **Guard:** assert `vectorUsed === false` on every call (lexical purity — same guard the chunk-BM25 runner uses); assert each doc produced exactly 1 chunk (premise check) — if any doc multi-chunks, the corpus generator is wrong, fail loudly.
+- **Guards (fail loudly — the experiment is invalid otherwise):**
+  - assert `vectorUsed === false` on every call (lexical purity — same guard the chunk-BM25 runner uses);
+  - assert each doc produced exactly 1 chunk (the native single-chunk premise) — if any doc multi-chunks, the generator is wrong;
+  - assert the reindex reported **zero `invalidFrontmatter` and zero `skipped`** docs (so no fallback defaults / empty titles silently distort the title-arm — see `ReindexResult`).
 - **Metrics** per arm, **grouped by query type** (body / title / tag) and overall:
   - **hit@1**: fraction where `hits[0].path === relevantPath`.
   - **recall@5**: fraction where `relevantPath ∈ hits[0..4]`.
@@ -58,7 +61,7 @@ Mirrors the existing recall-bench runners (`chunkbm25-runner.mjs` as the templat
 
 ### Reuse, not rebuild
 
-Do not modify `chunkbm25-runner.mjs` or `granularity-runner.mjs`. The new runner reuses the same import pattern (`dist/search/hybrid.js`, `dist/tools/search.js`) and is a sibling. The vault index must be built at the current `SCHEMA_VERSION` (so `chunks_fts` exists) — reindex the generated vault before running.
+Do not modify `chunkbm25-runner.mjs` or `granularity-runner.mjs`. Reuse from the sibling **only the import/open pattern** (`dist/search/hybrid.js`, `dist/tools/search.js`, `openIndexForActiveProvider`, the `vectorUsed` guard) — **do NOT** copy its `daysAtK`/`recall` helpers, which are RB date-window-specific. This runner's metrics are simple **path-equality** (`hits[0].path === relevantPath`, and `relevantPath ∈ hits[0..4]`). The vault index must be built at the current `SCHEMA_VERSION` (so `chunks_fts` exists) — reindex the generated vault before running.
 
 ## Predicted result (state up front, per Tenet 1)
 
