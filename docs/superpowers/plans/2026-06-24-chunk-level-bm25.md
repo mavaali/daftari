@@ -28,39 +28,50 @@
 
 - [ ] **Step 1: Write the failing test — `chunks_fts` exists and tracks a doc shrink**
 
-Add to `test/storage/index-db.test.ts`. Read the top of that file first to reuse its existing temp-vault/open helpers and imports; follow the pattern already there. The test:
-1. Builds a temp vault, reindexes, opens the db.
-2. Asserts a `chunks_fts` table exists in `sqlite_master`.
-3. Asserts `SELECT COUNT(*) FROM chunks_fts` equals `SELECT COUNT(*) FROM chunks` (FTS row per chunk).
-4. **Doc-shrinks case:** pick an indexed multi-chunk doc, overwrite its file with a single short line, reindex that doc through the real reindex path, and assert `chunks_fts` count again equals `chunks` count (no orphan FTS rows after shrink) and that a term only present in the removed text no longer MATCHes.
+Add to `test/storage/index-db.test.ts`. Read the top of that file first; it does NOT yet import `node:fs`/`node:path`/`reindexVault`/`openIndexDb`/`makeTempVault`/`LOCAL_MINILM_DIM` — **add the missing imports** (model them on `test/search/hybrid.test.ts` lines 1-8).
+
+**Critical:** the chunker (`src/search/vector.ts`, `CHUNK_MAX_CHARS = 800`) chunks the **body only** and the sample-vault docs are all < 800 chars → single-chunk. A shrink test on a sample doc would be 1==1 before and after and guard nothing. The spec wants the **N-chunks → fewer-chunks** transition (the exact scenario that caused the original `documents` FTS-drift bug). So the test must author its own **multi-chunk** doc (body > 800 chars) and shrink it to one chunk, asserting (a) FTS/chunks parity holds across the shrink and (b) a term that lived only in the removed text no longer MATCHes `chunks_fts`.
 
 ```ts
-it("maintains chunks_fts in lockstep with chunks, including doc shrink", async () => {
+it("maintains chunks_fts in lockstep with chunks across a multi->single shrink", async () => {
   const vault = makeTempVault();
   try {
+    // Author a genuinely multi-chunk doc: two paragraphs each > 800 chars so
+    // chunkText() yields >= 2 chunks. "zephyrine" lives ONLY in the 2nd para.
+    const para1 = `alpha ${"filler ".repeat(160)}`;            // > 800 chars
+    const para2 = `zephyrine ${"context ".repeat(160)}`;       // > 800 chars, holds the unique term
+    writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\n${para1}\n\n${para2}\n`);
     let r = await reindexVault(vault);
     if (!r.ok) throw r.error;
     const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
     if (!opened.ok) throw opened.error;
     const db = opened.value;
 
-    const tableExists = (
-      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='chunks_fts'").get() as { n: number }
-    ).n;
-    expect(tableExists).toBe(1);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='chunks_fts'").get() as { n: number }).n,
+    ).toBe(1);
+    // big.md must have produced >= 2 chunks, else the shrink proves nothing.
+    const bigChunks = (db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE path='big.md'").get() as { n: number }).n;
+    expect(bigChunks).toBeGreaterThanOrEqual(2);
+    const parity = () => {
+      const c = (db.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+      const f = (db.prepare("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n;
+      return [c, f];
+    };
+    let [c1, f1] = parity();
+    expect(f1).toBe(c1);
+    // the unique term matches before the shrink
+    const matches = (term: string) =>
+      (db.prepare("SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?").get(term) as { n: number }).n;
+    expect(matches("zephyrine")).toBeGreaterThan(0);
 
-    const chunkN = (db.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
-    const ftsN = (db.prepare("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n;
-    expect(ftsN).toBe(chunkN);
-
-    // doc-shrinks: rewrite a known multi-chunk doc to one short line, reindex, re-check parity.
-    const rel = "pricing/helios-consumption-pricing.md"; // a substantial sample-vault doc
-    writeFileSync(join(vault, rel), "---\ntitle: Helios\n---\n\nShort.\n");
+    // SHRINK: rewrite big.md to a single short line (one chunk), reindex.
+    writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\nalpha only.\n`);
     r = await reindexVault(vault);
     if (!r.ok) throw r.error;
-    const chunkN2 = (db.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
-    const ftsN2 = (db.prepare("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n;
-    expect(ftsN2).toBe(chunkN2);
+    const [c2, f2] = parity();
+    expect(f2).toBe(c2);                          // no orphan FTS rows after shrink
+    expect(matches("zephyrine")).toBe(0);          // removed-text term no longer matches
     db.close();
   } finally {
     cleanupVault(vault);
@@ -68,7 +79,7 @@ it("maintains chunks_fts in lockstep with chunks, including doc shrink", async (
 }, 60_000);
 ```
 
-(Confirm `writeFileSync`, `join`, `makeTempVault`, `cleanupVault`, `reindexVault`, `openIndexDb`, `LOCAL_MINILM_DIM` are imported at the top of the test file; add any missing import.)
+(`"filler ".repeat(160)` ≈ 1120 chars, comfortably over the 800-char threshold so each paragraph is its own chunk. If `chunkText` packing changes, bump the repeat counts until `bigChunks >= 2` holds.)
 
 - [ ] **Step 2: Run the test, verify it FAILS**
 
@@ -142,8 +153,8 @@ git commit -m "feat(index): chunks_fts FTS5 over chunk text, SCHEMA_VERSION 6->7
 - [ ] **Step 1: Write the failing test — chunk granularity surfaces a diluted topic**
 
 Add a new `describe` block to `test/search/hybrid.test.ts` that builds its own small temp vault inline (follow the existing decay-vault sub-block in this file as the template for `mkdtempSync` + `writeFileSync` + `reindexVault` + `openIndexDb`). Construct two documents:
-- `multi.md` — a long multi-topic doc where the target term (e.g. `zephyr`) appears once, in one short section, surrounded by lots of unrelated text (dilutes the whole-doc BM25 score).
-- `decoy.md` — a doc that does **not** contain `zephyr` but shares many of `multi.md`'s other words (so under whole-doc scoring it competes with `multi.md`).
+- `multi.md` — a **multi-chunk** doc (body MUST exceed `CHUNK_MAX_CHARS = 800` so `chunkText` splits it into ≥2 chunks — otherwise chunk-granularity ≡ document-granularity and the test proves nothing). The target term (e.g. `zephyr`) appears once, in ONE chunk, surrounded by lots of unrelated filler in the other chunk(s) so the whole-doc BM25 score is diluted. Build it like the Task 1 test: two `> 800`-char paragraphs, `zephyr` only in the second.
+- `decoy.md` — a doc that does **not** contain `zephyr` but shares many of `multi.md`'s filler words (so under whole-doc scoring it competes with / beats the diluted `multi.md`).
 
 Assert that with `lexicalGranularity: "chunk"` and lexical-only weights, `multi.md` ranks first for query `"zephyr"`:
 
