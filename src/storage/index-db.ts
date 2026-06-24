@@ -528,9 +528,18 @@ export interface ChunkRowInput {
   contentHash: string;
 }
 
+// Invariant: chunks for a path are always deleted before they are inserted.
+// Every real write path either calls clearIndex (DELETE FROM chunks wholesale)
+// or deleteDocument (DELETE FROM chunks WHERE path=?) before inserting new
+// rows for that path. A plain INSERT is therefore always correct — no
+// (path, chunk_index) conflict should ever occur. Using INSERT OR REPLACE
+// would silently drop the old row WITHOUT firing the chunks_ad trigger (because
+// recursive_triggers is OFF in this project), leaving a ghost FTS row in
+// chunks_fts. A plain INSERT causes an explicit UNIQUE constraint failure
+// instead, surfacing caller bugs loudly rather than drifting the FTS index.
 export function insertChunkRow(db: IndexDb, chunk: ChunkRowInput): void {
   db.prepare(
-    `INSERT OR REPLACE INTO chunks (path, chunk_index, text, content_hash)
+    `INSERT INTO chunks (path, chunk_index, text, content_hash)
      VALUES (?, ?, ?, ?)`,
   ).run(chunk.path, chunk.chunkIndex, chunk.text, chunk.contentHash);
 }
