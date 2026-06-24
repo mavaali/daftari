@@ -20,10 +20,17 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// The whole-clause value for a clause in a given doc: the text introduced by
-// "as follows:" (a restate/add in an amendment), or — when there is no such
-// phrase — the clause's own sentence (a master clause body).
+// The whole-clause value for a clause in a given doc. A defined-term clause is a
+// quoted term followed by "means": its value runs to the next quoted definition
+// or the end. Otherwise the value is the text introduced by "as follows:" (a
+// Section restate/add), or the clause's own sentence (a master clause body).
 export function extractValue(docText: string, clause: string): string {
+  const term = new RegExp(
+    `["“]\\s*${escapeRegex(clause)}\\s*["”]\\s+(?:means|shall mean)\\s+(.+?)\\s*(?=[.;]\\s+["“]|$)`,
+    "is",
+  ).exec(docText);
+  if (term) return term[1].trim().replace(/[.;]+$/, "");
+
   const at = new RegExp(`Section\\s+${escapeRegex(clause)}\\b`, "i").exec(docText);
   const tail = at ? docText.slice(at.index) : docText;
   const quoted = /as follows:\s*["“”]([^"“”]+)["“”]/.exec(tail);

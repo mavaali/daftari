@@ -55,6 +55,25 @@ function perturbCurrency(text: string, seed: number, mapping: Record<string, str
   });
 }
 
+const PERCENT = /\b(\d+(?:\.\d+)?)%/g;
+
+function perturbPercent(text: string, seed: number, mapping: Record<string, string>): string {
+  return text.replace(PERCENT, (m, num: string) => {
+    if (!mapping[m]) {
+      const decimals = num.includes(".") ? num.split(".")[1].length : 0;
+      const h = hashStr(`${m}:${seed}`);
+      let v = (h % 2000) / 100; // 0.00..19.99 — a plausible rate
+      let s = v.toFixed(decimals);
+      if (`${s}%` === m) {
+        v = v + 1 < 20 ? v + 1 : 0.5;
+        s = v.toFixed(decimals);
+      }
+      mapping[m] = `${s}%`;
+    }
+    return mapping[m];
+  });
+}
+
 export function perturbValues(
   text: string,
   seed: number,
@@ -63,5 +82,6 @@ export function perturbValues(
   const mapping: Record<string, string> = { ...existing };
   let out = perturbDurations(text, seed, mapping);
   out = perturbCurrency(out, seed, mapping);
+  out = perturbPercent(out, seed, mapping);
   return { text: out, mapping };
 }

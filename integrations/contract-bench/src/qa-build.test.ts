@@ -68,3 +68,31 @@ describe("buildQAs — integrity gates", () => {
     });
   });
 });
+
+describe("buildQAs — defined-term clauses", () => {
+  const docs = [
+    { id: "master", order: 0, text: '"Applicable Margin" means 2.00%. "Base Rate" means the prime rate.' },
+    {
+      id: "amendment-1",
+      order: 1,
+      text:
+        "The following terms are hereby amended and restated in their respective " +
+        'entireties to read in full as follows: "Applicable Margin" means 2.75% per annum.',
+    },
+    {
+      id: "amendment-2",
+      order: 2,
+      text:
+        "The following terms are hereby amended and restated in their respective " +
+        'entireties to read in full as follows: "Base Rate" means SOFR plus 1.00%.',
+    },
+  ];
+
+  test("a defined-term governed by an earlier amendment is scoped-current, answered with that definition", () => {
+    const am = buildQAs(docs, resolveChain(docs)).find((q) => q.clause === "Applicable Margin");
+    expect(am?.bucket).toBe("scoped-current");
+    expect(am?.governingDoc).toBe("amendment-1");
+    expect(am?.answer).toContain("2.75%");
+    expect(am?.answer).not.toContain("2.00%");
+  });
+});

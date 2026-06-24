@@ -19,7 +19,10 @@ export interface CorpusDoc {
 }
 
 function clausePath(clause: string, docId: string): string {
-  return `clause-${clause}/${docId}.md`;
+  // Sanitize term names ("Applicable Margin") into path-safe slugs; Section ids
+  // ("4.2") are unchanged since they carry no whitespace or illegal characters.
+  const slug = clause.trim().replace(/\s+/g, "-").replace(/[/\\:*?"<>|]/g, "");
+  return `clause-${slug}/${docId}.md`;
 }
 
 export function buildCorpus(docs: ChainDoc[], resolutions: ClauseResolution[]): CorpusDoc[] {

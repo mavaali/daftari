@@ -30,3 +30,22 @@ describe("buildCorpus — clause-version atomization with clause-scoped superses
     expect(v2?.body).toContain("Net 60 days.");
   });
 });
+
+describe("buildCorpus — defined-term clause paths", () => {
+  test("sanitizes whitespace in term names so vault paths are filesystem-safe", () => {
+    const docs = [
+      { id: "master", order: 0, text: '"Applicable Margin" means 2.00%.' },
+      {
+        id: "amendment-1",
+        order: 1,
+        text:
+          "The following terms are hereby amended and restated in their respective " +
+          'entireties to read in full as follows: "Applicable Margin" means 2.75%.',
+      },
+    ];
+    const paths = buildCorpus(docs, resolveChain(docs)).map((d) => d.path);
+    expect(paths).toContain("clause-Applicable-Margin/master.md");
+    expect(paths).toContain("clause-Applicable-Margin/amendment-1.md");
+    expect(paths.some((p) => /\s/.test(p))).toBe(false);
+  });
+});

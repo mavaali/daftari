@@ -78,3 +78,35 @@ describe("writeAssembly — on-disk artifacts", () => {
     expect(existsSync(join(dir, "perturbation.json"))).toBe(true);
   });
 });
+
+describe("assemble — defined-term chain (end-to-end)", () => {
+  const raw = [
+    { id: "master", order: 0, text: '"Applicable Margin" means 2.00%. "Commitment" means $5,000,000.' },
+    {
+      id: "amendment-1",
+      order: 1,
+      text:
+        "The following terms are hereby amended and restated in their respective " +
+        'entireties to read in full as follows: "Applicable Margin" means 2.75%.',
+    },
+    {
+      id: "amendment-2",
+      order: 2,
+      text:
+        "The following terms are hereby amended and restated in their respective " +
+        'entireties to read in full as follows: "Commitment" means $7,500,000.',
+    },
+  ];
+
+  test("scoped-current term answered from governing doc, slugged vault path, $ perturbed", () => {
+    const a = assemble(raw, { seed: 11 });
+    const am = a.groundTruth.find((q) => q.clause === "Applicable Margin");
+    expect(am?.bucket).toBe("scoped-current");
+    expect(am?.governingDoc).toBe("amendment-1");
+    const gov = a.vault.find((f) => f.path === "clause-Applicable-Margin/amendment-1.md");
+    expect(gov).toBeDefined();
+    expect(gov?.content).toContain(am!.answer);
+    const commit = a.groundTruth.find((q) => q.clause === "Commitment");
+    expect(commit?.answer).not.toContain("7,500,000");
+  });
+});

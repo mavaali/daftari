@@ -45,3 +45,14 @@ describe("perturbValues — seeded, type-preserving value substitution", () => {
     expect(amend.mapping["24 months"]).not.toEqual(master.mapping["12 months"]);
   });
 });
+
+describe("perturbValues — percentages (credit-agreement rates)", () => {
+  test("perturbs a percentage to a different value preserving the % and decimals", () => {
+    const r = perturbValues("Applicable Margin means 2.75% per annum.", 3);
+    expect(r.text).not.toContain("2.75%");
+    const fake = r.mapping["2.75%"];
+    expect(fake).toMatch(/^\d+\.\d{2}%$/);
+    expect(fake).not.toEqual("2.75%");
+    expect(r.text).toContain(fake);
+  });
+});
