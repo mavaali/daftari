@@ -116,7 +116,10 @@ END;
   set up, and added to the version-mismatch drop+recreate set (alongside `documents_fts`,
   `embeddings_vec`, `chunks`).
 
-**Migration:** bump `SCHEMA_VERSION` 5 → 6. The existing version-mismatch path drops the
+**Migration:** bump `SCHEMA_VERSION` 6 → 7 (it is currently `"6"`, set by the recent
+`direction_verdict` change — verify the live value before editing). The existing
+version-mismatch drop list at `index-db.ts:375-381` must also gain
+`DROP TRIGGER chunks_ai/ad/au` and `DROP TABLE chunks_fts`. The version-mismatch path drops the
 derived tables and forces a full reindex; `reindex` re-writes every chunk, and the new
 triggers repopulate `chunks_fts` in lockstep. The `.daftari/index.db` is ephemeral
 (rebuildable from the markdown source at any time), so there is **no data migration** — only
@@ -206,7 +209,7 @@ handlers.
   - Degrade-to-empty: a query with no chunk match yields an empty lexical map and the search
     falls back to vector/empty without error.
 - **`test/storage/index-db.test.ts`** (or sibling) — schema/sync:
-  - `chunks_fts` exists at SCHEMA_VERSION 6; reindex populates it.
+  - `chunks_fts` exists at the bumped SCHEMA_VERSION; reindex populates it.
   - Edit/replace a document's chunks → `chunks_fts` rows track via triggers (no drift, no
     orphans after a doc shrinks). **Explicitly exercise the doc-shrinks case** (N chunks →
     fewer chunks) through the real `deleteDocument` + `insertChunkRow` path — that is the exact
@@ -222,8 +225,8 @@ to callers that explicitly opt in (the harness, and any future prod switch).
 
 ## Files touched
 
-- `src/storage/index-db.ts` — `chunks_fts` table + triggers, SCHEMA_VERSION 5→6, add to
-  drop+recreate set.
+- `src/storage/index-db.ts` — `chunks_fts` table + triggers (in `FTS_SCHEMA`), SCHEMA_VERSION
+  6→7, add `chunks_fts`/its triggers to the version-mismatch drop list (index-db.ts:375-381).
 - `src/search/hybrid.ts` — `chunkFtsRanking`, `lexicalGranularity` option threaded through
   `rankDocuments` / `HybridSearchOptions` / `hybridSearch`.
 - `integrations/recall-bench/chunkbm25-runner.mjs` — **a new sibling runner** (not a retrofit
