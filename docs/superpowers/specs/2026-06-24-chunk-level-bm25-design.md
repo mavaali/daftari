@@ -92,10 +92,24 @@ END;
 - `content='chunks'` is the same contentless external-content link `documents_fts` uses — the
   FTS index stores tokens, not a second copy of the chunk text.
 - `content_rowid='rowid'` references the `chunks` table's implicit integer rowid (the table's
-  PK is the composite `(path, chunk_index)`, so the implicit rowid is the join key). The
-  write path uses `INSERT OR REPLACE` (fires DELETE then INSERT triggers on conflict) and
-  `DELETE ... WHERE path = ?`; the AI/AD/AU triggers cover all three, so the FTS index never
-  drifts. The `chunks_fts.rowid` ↔ `chunks.rowid` correspondence is what the ranker joins on.
+  PK is the composite `(path, chunk_index)`, a UNIQUE index, not a rowid replacement — so the
+  implicit rowid exists and is the join key). The `chunks_fts.rowid` ↔ `chunks.rowid`
+  correspondence is what the ranker joins on. This mirrors `documents_fts`, which already uses
+  `content_rowid='rowid'` over `documents` (non-integer PK `path`).
+- **Why the FTS stays in sync — and why NOT to rely on `INSERT OR REPLACE`.** This project
+  runs with `recursive_triggers` at SQLite's default (OFF; only `journal_mode=WAL` is set),
+  so `INSERT OR REPLACE`'s conflict-delete does **not** fire DELETE/UPDATE triggers — exactly
+  the gotcha documented at `index-db.ts:453-458`, which is why `documents` was migrated to
+  `ON CONFLICT(path) DO UPDATE`. `chunks_fts` nonetheless stays in sync because **every real
+  write path deletes the path's chunks first**, so `insertChunkRow`'s `INSERT OR REPLACE`
+  never actually hits a conflict — it's always a fresh INSERT firing `chunks_ai`, preceded by
+  a plain DELETE firing `chunks_ad`: full rebuild (`clearIndex` → `DELETE FROM chunks`, then
+  insert) and single-doc update (`deleteDocument` → `DELETE FROM chunks WHERE path=?`, then
+  insert). The `chunks_au` trigger is defensive only — no current write path UPDATEs a chunk
+  row in place. **Implementation note for the planner:** do not justify sync by "OR REPLACE
+  fires conflict triggers" — it doesn't here; the guarantee comes from delete-before-insert.
+  If a future refactor ever relied on in-place `OR REPLACE` to keep the FTS current, the index
+  would silently drift, the same bug that hit `documents`.
 - Same `porter unicode61` tokenizer as `documents_fts` so chunk and document BM25 scores are
   on a comparable scale.
 - **Where it's created:** `chunks_fts` must be created in the same place the schema/FTS is
@@ -149,7 +163,9 @@ sanity variant to confirm `max` is the right collapse; `sum` does not ship to pr
 
 ## Measurement (`integrations/recall-bench/`)
 
-Reuse the Stage A harness and verdict criterion. Add a **third arm over the day-vault**:
+Reuse the Stage A harness *logic* and verdict criterion in a **new sibling runner**
+(`chunkbm25-runner.mjs`) — leave the committed `granularity-runner.mjs` (char-budget metric)
+untouched so Stage A stays reproducible. Three arms over the vaults:
 
 - **Arm A (baseline):** day-vault, `lexicalGranularity:"document"`, `{bm25:1, vector:0}` —
   today's whole-doc BM25.
@@ -192,7 +208,10 @@ handlers.
 - **`test/storage/index-db.test.ts`** (or sibling) — schema/sync:
   - `chunks_fts` exists at SCHEMA_VERSION 6; reindex populates it.
   - Edit/replace a document's chunks → `chunks_fts` rows track via triggers (no drift, no
-    orphans after a doc shrinks).
+    orphans after a doc shrinks). **Explicitly exercise the doc-shrinks case** (N chunks →
+    fewer chunks) through the real `deleteDocument` + `insertChunkRow` path — that is the exact
+    scenario where the `documents` FTS-drift bug surfaced and where any accidental reliance on
+    conflict-trigger behavior would fail.
 
 ## Error handling / degradation
 
@@ -207,8 +226,9 @@ to callers that explicitly opt in (the harness, and any future prod switch).
   drop+recreate set.
 - `src/search/hybrid.ts` — `chunkFtsRanking`, `lexicalGranularity` option threaded through
   `rankDocuments` / `HybridSearchOptions` / `hybridSearch`.
-- `integrations/recall-bench/granularity-runner.mjs` (or a sibling `chunkbm25-runner.mjs`) —
-  third arm + top-K metric.
+- `integrations/recall-bench/chunkbm25-runner.mjs` — **a new sibling runner** (not a retrofit
+  of `granularity-runner.mjs`, which computes a different metric — char-budget via `fillDays` —
+  and whose committed Stage A results must stay reproducible). Three arms + recall@top-K.
 - `test/search/hybrid.test.ts`, `test/storage/index-db.test.ts` — new cases.
 
 ## Open questions resolved in brainstorm
