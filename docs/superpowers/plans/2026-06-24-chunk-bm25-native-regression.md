@@ -62,7 +62,7 @@ status: canonical
 confidence: high
 created: 2026-01-01
 updated: 2026-01-01
-updated_by: agent:native-regression-gen
+updated_by: "agent:native-regression-gen"
 provenance: direct
 sources: []
 superseded_by: null
