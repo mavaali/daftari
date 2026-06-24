@@ -1,5 +1,8 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
+import { reindexVault } from "../../src/search/reindex.js";
 import {
   blobToEmbedding,
   clearIndex,
@@ -176,7 +179,7 @@ describe("index-db", () => {
 
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("6");
+    expect(getMeta(db, "schema_version")).toBe("7");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -199,7 +202,7 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("6");
+    expect(getMeta(db, "schema_version")).toBe("7");
     // All five expected tables now exist on a fresh index: three
     // regular tables (documents, chunks, embeddings, meta) plus two
     // virtual tables (documents_fts, embeddings_vec).
@@ -576,4 +579,63 @@ describe("insertDocument date normalization (index is cleaned; source is not)", 
     const inRange = getDocumentsInDateRange(db, "2026-01-01", "2026-12-31").map((x) => x.path);
     expect(inRange).not.toContain("e.md");
   });
+});
+
+describe("chunks_fts", () => {
+  it("maintains chunks_fts in lockstep with chunks across a multi->single shrink", async () => {
+    const vault = makeTempVault();
+    try {
+      // Author a genuinely multi-chunk doc: two paragraphs each > 800 chars so
+      // chunkText() yields >= 2 chunks. "zephyrine" lives ONLY in the 2nd para.
+      const para1 = `alpha ${"filler ".repeat(160)}`; // > 800 chars
+      const para2 = `zephyrine ${"context ".repeat(160)}`; // > 800 chars, holds the unique term
+      writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\n${para1}\n\n${para2}\n`);
+      let r = await reindexVault(vault);
+      if (!r.ok) throw r.error;
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+
+      expect(
+        (
+          db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='chunks_fts'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(1);
+      // big.md must have produced >= 2 chunks, else the shrink proves nothing.
+      const bigChunks = (
+        db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE path='big.md'").get() as { n: number }
+      ).n;
+      expect(bigChunks).toBeGreaterThanOrEqual(2);
+      const parity = () => {
+        const c = (db.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+        const f = (db.prepare("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n;
+        return [c, f];
+      };
+      const [c1, f1] = parity();
+      expect(f1).toBe(c1);
+      // the unique term matches before the shrink
+      const matches = (term: string) =>
+        (
+          db.prepare("SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?").get(term) as {
+            n: number;
+          }
+        ).n;
+      expect(matches("zephyrine")).toBeGreaterThan(0);
+
+      // SHRINK: rewrite big.md to a single short line (one chunk), reindex.
+      writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\nalpha only.\n`);
+      r = await reindexVault(vault);
+      if (!r.ok) throw r.error;
+      const [c2, f2] = parity();
+      expect(f2).toBe(c2); // no orphan FTS rows after shrink
+      expect(matches("zephyrine")).toBe(0); // removed-text term no longer matches
+      db.close();
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
 });

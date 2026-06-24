@@ -48,7 +48,7 @@ export type IndexDb = Database.Database;
 // Bumped 4 → 5 to add FTS5 (`documents_fts`) and sqlite-vec (`embeddings_vec`)
 // virtual tables for SQL-native search. The index is a derived cache so the
 // bump triggers a clean rebuild (see openIndexDb); no in-place migration.
-const SCHEMA_VERSION = "6";
+const SCHEMA_VERSION = "7";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -169,6 +169,16 @@ CREATE INDEX IF NOT EXISTS idx_edges_status ON derives_from_edges(status);
 // never touches the virtual table directly. Porter + unicode61 is the
 // stock English stemming pipeline; it lowercases, strips diacritics, and
 // folds plurals / -ing forms.
+//
+// Also contains chunks_fts: an FTS5 external-content table over `chunks`
+// using the same pattern. FTS sync relies on delete-before-insert: every
+// write path deletes a path's chunk rows before inserting new ones, so
+// the triggers fire in the right order. chunks_au is defensive — no current
+// write path UPDATEs a chunk row in place — but is included for correctness.
+// Note: recursive_triggers is OFF in this project, so INSERT OR REPLACE
+// conflict triggers do NOT fire both DELETE+INSERT; that is why the
+// documents write path was migrated off INSERT OR REPLACE. chunks follows
+// the same pattern.
 const FTS_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
   title, tags, content_body,
@@ -189,6 +199,22 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
   VALUES('delete', old.rowid, old.title, old.tags, old.content);
   INSERT INTO documents_fts(rowid, title, tags, content_body)
   VALUES (new.rowid, new.title, new.tags, new.content);
+END;
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  text,
+  content='chunks',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+  INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
 `;
 
@@ -376,6 +402,10 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
           "DROP TABLE IF EXISTS documents_fts;" +
           "DROP TABLE IF EXISTS embeddings_vec;" +
           "DROP TABLE IF EXISTS documents;" +
+          "DROP TRIGGER IF EXISTS chunks_ai;" +
+          "DROP TRIGGER IF EXISTS chunks_ad;" +
+          "DROP TRIGGER IF EXISTS chunks_au;" +
+          "DROP TABLE IF EXISTS chunks_fts;" +
           "DROP TABLE IF EXISTS chunks;" +
           "DROP TABLE IF EXISTS embeddings;" +
           "DROP TABLE IF EXISTS derives_from_edges;",
