@@ -77,6 +77,37 @@ function resolveSubject(sentence: string): Subject | null {
   return null;
 }
 
+// Defined-term operations (credit-agreement style). Unlike Section ops, the
+// unit is a NAMED term and one operative phrase governs a LIST of terms in the
+// following "...as follows:" body — so extraction is forward (into the value
+// body) rather than backward to a Section subject.
+const TERM_OP_PATTERNS: { re: RegExp; op: AmendmentOp }[] = [
+  { re: /amended and restated in their respective entireties/gi, op: "restate" },
+  { re: /amended to add[^.:]*?following definitions/gi, op: "add" },
+];
+// A defined term: a (curly/straight) quoted name immediately followed by
+// "means" / "shall mean" — definitions, not mere references.
+const TERM_DEF = /[“"”]\s*([A-Z][^“”"]*?)\s*[”"“]\s+(?:means|shall mean)\b/g;
+
+function parseDefinedTermCitations(text: string): Citation[] {
+  const phrases: { start: number; end: number; op: AmendmentOp }[] = [];
+  for (const { re, op } of TERM_OP_PATTERNS) {
+    for (const m of text.matchAll(re)) {
+      const start = m.index ?? 0;
+      phrases.push({ start, end: start + m[0].length, op });
+    }
+  }
+  phrases.sort((a, b) => a.start - b.start);
+  const out: Citation[] = [];
+  phrases.forEach((ph, i) => {
+    const bodyEnd = i + 1 < phrases.length ? phrases[i + 1].start : text.length;
+    for (const tm of text.slice(ph.end, bodyEnd).matchAll(TERM_DEF)) {
+      out.push({ clause: tm[1].trim(), op: ph.op, recoverable: true });
+    }
+  });
+  return out;
+}
+
 export function parseCitations(text: string): Citation[] {
   // 1. Locate every operative phrase, in document order.
   const phrases: { start: number; end: number; op: AmendmentOp; recoverable: boolean }[] = [];
@@ -106,5 +137,6 @@ export function parseCitations(text: string): Citation[] {
     }
     regionStart = ph.end;
   }
+  out.push(...parseDefinedTermCitations(text));
   return out;
 }

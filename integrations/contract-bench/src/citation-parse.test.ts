@@ -89,6 +89,34 @@ describe("parseCitations — sub-part subjects ('in its entirety' is not suffici
   });
 });
 
+describe("parseCitations — defined-term units (credit-agreement amendments)", () => {
+  // Real NGS Second Amendment phrasing: a definition-list restatement, one
+  // operative phrase yielding one recoverable citation per defined term.
+  test("a defined-term list restatement emits one recoverable citation per term", () => {
+    const text =
+      "The definitions of the following terms contained in Section 1.1 of the Credit " +
+      "Agreement are hereby amended and restated in their respective entireties to read " +
+      "in full as follows: “ Applicable Margin ” means the applicable percentages per " +
+      "annum set forth below; “ Base Rate ” means the highest of three reference rates.";
+    expect(parseCitations(text)).toEqual([
+      { clause: "Applicable Margin", op: "restate", recoverable: true },
+      { clause: "Base Rate", op: "restate", recoverable: true },
+    ]);
+  });
+
+  test("a defined-term addition emits a recoverable add citation per new term", () => {
+    const text =
+      "Section 1.1 of the Credit Agreement is hereby amended to add in alphabetical " +
+      "order the following definitions which shall read in full as follows: " +
+      "“ Second Amendment ” means that certain Second Amendment dated January 18, 2023; " +
+      "“ Maturity Date ” means the fifth anniversary of the closing.";
+    expect(parseCitations(text)).toEqual([
+      { clause: "Second Amendment", op: "add", recoverable: true },
+      { clause: "Maturity Date", op: "add", recoverable: true },
+    ]);
+  });
+});
+
 describe("parseCitations — region-bleed resistance", () => {
   test("an op whose subject is a Schedule does not claim a Section embedded in the prior op's quoted value", () => {
     const text =
