@@ -31,12 +31,16 @@ On SQuAD reconstructed to article-level documents, measure whether **chunk-granu
 
 ## Design
 
+### Which tree we measure on
+
+This branch is cut from `main` — which has the **body-only** chunk-BM25 ranker (#155) but **not** the title/tag union (#157, still unmerged). That is the right tree for Q1: the question is whether the **core body-dilution win** generalizes, and the neutral-title reconstruction makes the #157 union **inert** anyway (neutral titles carry no query tokens), so the result is identical under either version. Build/run the harness against this branch's `dist/`; record the measured commit in the results note.
+
 ### Component 1 — Adapter `integrations/recall-bench/gen-squad-vault.mjs`
 
 Deterministic, `$0`. Produces a daftari vault + labeled queries from SQuAD.
 
 - **Input:** SQuAD v1.1 JSON (public; e.g. the train split `train-v1.1.json`). The adapter downloads it if absent to an ephemeral `/tmp` path (document the URL; fail loudly if the download fails rather than silently producing an empty vault).
-- **Document reconstruction:** group all paragraphs under each `title` into **one markdown document** (`squad-<NNN>.md`), body = the article's paragraphs concatenated (blank-line separated, so the chunker splits them), with **complete valid daftari frontmatter** (`title`, `domain`, `collection`, `status`, `confidence`, `created`, `updated`, `updated_by`, `provenance`, `tags` — confirm against `validateFrontmatter`; the runner asserts zero `invalidFrontmatter`). The article title goes in `title:`.
+- **Document reconstruction:** group all paragraphs under each `title` into **one markdown document** (`squad-<NNN>.md`), body = the article's paragraphs concatenated (blank-line separated, so the chunker splits them), with **complete valid daftari frontmatter**. Required fields incl. the **enums** `domain` ∈ {accumulation, generative} and `provenance` ∈ {direct, synthesized, inferred} and `status` ∈ {draft, canonical, …} and `confidence` ∈ {low, medium, high} — a missing/invalid enum is coerced to a default **and flagged**, which trips guard #2 (zero `invalidFrontmatter`) and aborts. Emit valid values (mirror an existing `test/fixtures/sample-vault` doc).
   - **Title-leak guard:** the SQuAD article title is highly discriminative and would let *document*-granularity match via the title column unfairly (and chunk mode now unions title/tags — #157). To keep the test about **body dilution**, either (a) use a neutral synthetic title (`squad-<NNN>`) and put the real article title only in the body, or (b) run lexical-only doc-granularity which still indexes title via `documents_fts`. **Decision:** use a neutral `title:` (`Article <NNN>`) and a neutral tag, so neither arm gets a title shortcut — the comparison is purely body-chunk vs body-whole-doc. (Document this; it's load-bearing for a fair test.)
 - **Query set:** for each sampled question, emit `{ id, query: <question text>, relevantPath: squad-<NNN>.md }`. Sample **~1–2k** questions across articles (deterministic sample — e.g. first K per article or a fixed stride; no `Math.random`). One relevant article per query (SQuAD answers are single-article).
 - **Output:** vault at `/tmp/squad/vault`, queries at `/tmp/squad/queries.jsonl`.
@@ -47,7 +51,7 @@ Mirrors `chunkbm25-runner.mjs`'s import/open pattern (NOT its day-coverage helpe
 - document: `lexicalGranularity:"document"`
 - chunk: `lexicalGranularity:"chunk"`
 
-**Metric:** recall@k for k=10/20/50 (here recall = is the single relevant article in top-k → equivalent to hit@k), plus **hit@1** and **MRR@10** (richer signal for a single-relevant-doc task). Aggregate mean across queries, per arm.
+**Metric:** since each query has exactly one relevant article, report **hit@k** (k=10/20/50 — is the relevant article in top-k), **hit@1**, and **MRR@10**. Label them hit@k/MRR (not "recall@k") to avoid implying graded relevance. Aggregate mean across queries, per arm.
 
 **Validity guards (fail loudly — the experiment is invalid otherwise):**
 1. `vectorUsed === false` on every call (lexical purity).
