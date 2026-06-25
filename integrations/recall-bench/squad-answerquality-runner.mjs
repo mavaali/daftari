@@ -79,26 +79,34 @@ console.log(`queries=${raw.length} withAnswer=${withAns.length} dropped=${raw.le
 const sample = shuffleSeeded(withAns, SEED).slice(0, N);
 console.log(`sample=${sample.length}`);
 
-// --- divergence pre-step ($0 lexical): chunk hit@1 - document hit@1 ---
-// K=1 is used here (not PRIMARY_K=5) because SQuAD divergence is largest at K=1 (+13.5pp)
-// and is robust at N=25 (smoke). K=5 saturates to 1.0 on easy smoke queries, yielding a
-// false zero. The pre-step only guards "arms diverge at all"; paid aggregation uses KS=[5,10].
-const DIV_K = 1;
+// --- divergence pre-step ($0 lexical) ---
+// Guard headroom at the SAME K the paid experiment runs (PRIMARY_K), so this
+// catches the RB failure mode (arms diverge at low K but are a null at the
+// experiment's K). Verified full-N divergence: hit@5 +0.055, hit@1 +0.128.
+// In SMOKE (N=25) the first-25 queries saturate hit@5 to ~1.0/1.0 → a false
+// zero; smoke is a plumbing test, so we report but DON'T abort there. A K=1
+// reference line is also printed for visibility.
+const DIV_K = PRIMARY_K;
 const maxK = Math.max(...KS);
-let divSum = 0, divN = 0;
+let divSum = 0, div1 = 0, divN = 0;
 for (const q of sample) {
   const dHits = await retrieve(q.query, "document", maxK);
   const cHits = await retrieve(q.query, "chunk", maxK);
   divSum += hitAtK(cHits, q.relevantPath, DIV_K) - hitAtK(dHits, q.relevantPath, DIV_K);
+  div1 += hitAtK(cHits, q.relevantPath, 1) - hitAtK(dHits, q.relevantPath, 1);
   divN += 1;
 }
 const divergence = divN ? divSum / divN : 0;
-console.log(`divergence (hit@${DIV_K}, chunk - document): ${divergence.toFixed(4)} over ${divN} q`);
+console.log(`divergence (hit@${DIV_K}, chunk - document): ${divergence.toFixed(4)} over ${divN} q (hit@1 ref: ${(div1 / divN).toFixed(4)})`);
 if (divergence <= 0.01) {
-  console.error("PRE-STEP GATE FAIL: arms do not diverge — answering would be a null experiment.");
-  process.exit(2);
+  if (!SMOKE) {
+    console.error(`PRE-STEP GATE FAIL: arms do not diverge at K=${DIV_K} — answering would be a null experiment.`);
+    process.exit(2);
+  }
+  console.warn(`(smoke) divergence ~0 at K=${DIV_K} — expected on N=25 (saturated); proceeding for plumbing only.`);
+} else {
+  console.log("pre-step gate PASS.");
 }
-console.log("pre-step gate PASS.");
 if (PRESTEP_ONLY) { console.log("--prestep: exiting before paid loop ($0)."); process.exit(0); }
 
 // --- paid phase: answer + judge ---
