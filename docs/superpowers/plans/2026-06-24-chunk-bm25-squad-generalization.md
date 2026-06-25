@@ -216,7 +216,7 @@ git commit -m "test(recall-bench): SQuAD two-arm doc-vs-chunk runner (hit@k/MRR,
 
 - [ ] **Step 1: Write the results doc**
 
-Use the actual numbers from Task 2. Mirror `docs/superpowers/results/2026-06-24-chunk-bm25-native-regression.md`'s structure. Include:
+Use the actual numbers from Task 2. Mirror the structure of an existing results doc on this branch — `docs/superpowers/results/2026-06-24-chunk-bm25-measurement.md` (the RB chunk-BM25 win) or `docs/superpowers/results/2026-06-23-atomization-granularity-measurement.md`. (Do NOT reference `2026-06-24-chunk-bm25-native-regression.md` — it lives on the unmerged #156 branch, not here.) Include:
 - Date, links to spec + the two scripts, and the **measured commit SHA** (`git rev-parse HEAD`).
 - A doc-vs-chunk table: rows = document / chunk; columns = hit@1, MRR@10, hit@10, hit@20, hit@50. Plus `meanChunksPerDoc` and the ceiling-check status.
 - **Verdict** against the spec's three outcomes: replicates (chunk > doc, by how much vs RB's gap-recovery framing) / null (no headroom) / negative (RB-specific). Use the actual numbers; do not overstate.
