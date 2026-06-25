@@ -401,3 +401,213 @@ The zephyr system was briefly mentioned in a prior report and has no further det
     if (docArm.ok) expect(docArm.value.hits[0]?.path).not.toBe("multi.md");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Title/tag-aware chunk-BM25 tests
+// ---------------------------------------------------------------------------
+// Verifies that chunk mode can match terms that live ONLY in a doc's title or
+// tags (not in body text). Each probe term (wintermute, tagunique, tiebreak)
+// appears in exactly the intended field of exactly one doc — no overlap.
+describe("hybrid search — title/tag-aware chunk BM25", () => {
+  let ttVault: string;
+  let ttDb: IndexDb;
+
+  beforeAll(async () => {
+    ttVault = mkdtempSync(join(tmpdir(), "daftari-tt-chunk-bm25-"));
+
+    // titledoc.md: "wintermute" ONLY in title. Body is generic.
+    writeFileSync(
+      join(ttVault, "titledoc.md"),
+      `---
+title: "Project wintermute roadmap"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [planning]
+---
+
+# Roadmap
+
+This document covers the general planning information for our roadmap.
+`,
+    );
+
+    // tagdoc.md: "tagunique" ONLY in tags. Body is generic.
+    writeFileSync(
+      join(ttVault, "tagdoc.md"),
+      `---
+title: "Tag Reference Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [tagunique, native]
+---
+
+# Tag Reference
+
+This document covers general reference material for tag classification purposes.
+`,
+    );
+
+    // bodywin.md: "tiebreak" ONLY in body text. Title/tags are generic.
+    writeFileSync(
+      join(ttVault, "bodywin.md"),
+      `---
+title: "Body Win Document"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [general]
+---
+
+# Body Win
+
+tiebreak
+`,
+    );
+
+    // titlecoincidence.md: "tiebreak" ONLY in title. Body is generic.
+    writeFileSync(
+      join(ttVault, "titlecoincidence.md"),
+      `---
+title: "tiebreak quarterly"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [general]
+---
+
+# Quarterly Review
+
+This document covers general quarterly review information.
+`,
+    );
+
+    // filler1.md: generic content, no probe terms.
+    writeFileSync(
+      join(ttVault, "filler1.md"),
+      `---
+title: "Filler Document One"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [filler]
+---
+
+# Filler One
+
+General filler content for padding the vault retrieval set.
+`,
+    );
+
+    // filler2.md: generic content, no probe terms.
+    writeFileSync(
+      join(ttVault, "filler2.md"),
+      `---
+title: "Filler Document Two"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [filler]
+---
+
+# Filler Two
+
+Additional filler content for padding the vault retrieval set.
+`,
+    );
+
+    const reindexed = await reindexVault(ttVault);
+    if (!reindexed.ok) throw reindexed.error;
+    const opened = openIndexDb(ttVault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    ttDb = opened.value;
+  }, 60_000);
+
+  afterAll(() => {
+    ttDb.close();
+    rmSync(ttVault, { recursive: true, force: true });
+  });
+
+  it("chunk mode matches a title-only term (was blind before the fix)", async () => {
+    const res = await hybridSearch(ttDb, "wintermute", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits[0]?.path).toBe("titledoc.md");
+  });
+
+  it("chunk mode matches a tag-only term", async () => {
+    const res = await hybridSearch(ttDb, "tagunique", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits[0]?.path).toBe("tagdoc.md");
+  });
+
+  // bodywin.md has "tiebreak" in its body → upper band (>0.5). titlecoincidence.md
+  // has it title-only → lower band (<=0.5). The tier boundary guarantees body wins;
+  // titlecoincidence is still retrieved, just ranked below.
+  it("body match wins a tie against a coincidental title-only match", async () => {
+    const res = await hybridSearch(ttDb, "tiebreak", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits[0]?.path).toBe("bodywin.md");
+    expect(res.value.hits.some((h) => h.path === "titlecoincidence.md")).toBe(true);
+  });
+});
