@@ -331,7 +331,12 @@ export async function hybridSearch(
 ): Promise<Result<HybridSearchResult, Error>> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
-  const lexicalGranularity = options.lexicalGranularity ?? "document";
+  // Default flipped to "chunk" in v1.29.0: chunk-level BM25 recovers the
+  // multi-topic-document dilution gap (RB recall + SQuAD retrieval) and produces
+  // better end-to-end answers where it out-retrieves document, with no regression
+  // where it doesn't (docs/superpowers/results/2026-06-24-chunk-bm25-answer-quality.md).
+  // Title/tag-safe via the tiered combine (#157). Callers opt back with "document".
+  const lexicalGranularity = options.lexicalGranularity ?? "chunk";
   const matchQuery = buildMatchQuery(query);
   const snippetTokens = tokenize(query);
 

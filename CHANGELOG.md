@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-06-25
+
+### Changed
+
+- **`vault_search` now defaults to chunk-level BM25 lexical ranking** ([#160]).
+  The lexical half of hybrid search previously scored whole documents, which
+  diluted a relevant topic across long multi-topic documents; it now scores
+  per-chunk and keeps each document's best chunk. This recovers most of the
+  multi-document retrieval-recall gap (Recall Bench multi-day; replicated on
+  SQuAD human queries, hit@1 0.693→0.828) and produces measurably better
+  end-to-end answers where it out-retrieves the old ranker, with no regression
+  where it doesn't (SQuAD answer-quality ablation: composite +0.53/+0.29/+0.26
+  at K=1/5/10, all 95% CIs above zero, no hallucination increase). Title- and
+  tag-only retrieval is preserved by a tiered combine (body matches always rank
+  above title/tag-only matches). **This changes result ordering for existing
+  vaults.** Callers that need the previous behavior can pass
+  `lexicalGranularity: "document"`. Related-document search (`vault_search_related`)
+  is unchanged (still document-granularity). Index format is unchanged — no
+  reindex required.
+
+[#160]: https://github.com/mavaali/daftari/pull/160
+
 ## [1.28.0] - 2026-06-22
 
 ### Added

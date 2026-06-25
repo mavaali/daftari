@@ -39,10 +39,10 @@ describe("hybrid search", () => {
       expect(result.value.hits[0]?.path).toBe(CREDIT_DOC);
     });
 
-    it("defaults to document-granularity (unchanged ordering)", async () => {
+    it("defaults to chunk-granularity (matches explicit chunk mode)", async () => {
       const a = await hybridSearch(db, "Helios compute credit consumption pricing");
       const b = await hybridSearch(db, "Helios compute credit consumption pricing", {
-        lexicalGranularity: "document",
+        lexicalGranularity: "chunk",
       });
       expect(a.ok && b.ok).toBe(true);
       if (!a.ok || !b.ok) return;
@@ -399,6 +399,16 @@ The zephyr system was briefly mentioned in a prior report and has no further det
     });
     expect(docArm.ok).toBe(true);
     if (docArm.ok) expect(docArm.value.hits[0]?.path).not.toBe("multi.md");
+  });
+
+  it("defaults to chunk-granularity (diluted topic wins with no explicit option)", async () => {
+    // Behavioral proof of the flipped default: calling WITHOUT lexicalGranularity
+    // must now reproduce the chunk arm — multi.md's diluted zephyr-chunk ranks #1.
+    // Under the old "document" default this query ranked multi.md below the decoy.
+    const res = await hybridSearch(chunkDb, "zephyr", { weights: { bm25: 1, vector: 0 } });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits[0]?.path).toBe("multi.md");
   });
 });
 
