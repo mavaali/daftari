@@ -16,7 +16,7 @@ Within a single held-constant answerer, measure the **answer-quality delta betwe
 ## Why this shape
 
 - **Within-daftari ablation, answerer held constant.** Same model, same prompt, same context cap — only the retrieval ranking varies. This cancels the model confound; the per-question delta isolates retrieval granularity. This is the cleanest *direct* isolation of "given this retrieval, how good is the answer."
-- **Both arms return documents.** Verified at `src/search/hybrid.ts:208` (`chunkFtsRanking`) — chunk mode collapses to each document's best chunk, so the output unit is a ranked **document** list, identical in kind to document mode. Only the *order* differs. The fed unit is therefore the same (full documents); the sole varying factor is **which documents land in the top-K window**.
+- **Both arms return documents.** Verified at `src/search/hybrid.ts:208` (`chunkFtsRanking`) — chunk mode collapses to each document's best chunk, so the output unit is a ranked **document** list, identical in kind to document mode. Only the *order* differs. Each top-K document is fed to the answerer as its **best-matching chunk/snippet** (not the full body — see "fed context" below); the fed unit is the same across arms; the sole varying factor is **which documents land in the top-K window**.
 - **Recall Bench corpus.** Reuses the existing labeled questions (`referenceAnswer`, `relevantDays`) and the `/tmp/cov-recall/vault` already built for the chunk-BM25 recall runs. RB is partially rehabilitated as a *recall* scoreboard (memory: [[project_recall_bench_experiment]]); this experiment is on the recall axis, so RB is a fair surface.
 
 ## Non-goals (YAGNI)
@@ -37,7 +37,7 @@ This branch (`exp/chunk-bm25-squad-generalization`, cut from `main`) has the mer
 ### Pipeline (per question, per arm)
 
 1. **Retrieve** top-K documents under arm ∈ {`document`, `chunk`} via `hybridSearch(db, q, { limit: K, weights:{bm25:1,vector:0}, lexicalGranularity: arm })`. Assert `vectorUsed === false` and that it never flips across calls (lexical purity, mirroring the other runners).
-2. **Assemble context** = the full markdown body of the top-K documents, in ranked order, each prefixed with its path. Log total context chars per (question, arm).
+2. **Assemble context** = the **best-matching chunk/snippet of each top-K document** (bounded, ~1–2k chars/doc), in ranked order, each prefixed with its path. **Not the full body** — RB day-docs are ~26k chars median (measured), so feeding K full docs is both ~10× the cost (~$80 vs ~$7 for the big run) and *less* faithful to what chunk-mode buys: chunk mode's value is that the relevant **chunk** surfaces from a diluted day, so feeding that chunk is the faithful representation. The fed unit is symmetric across arms (top-K docs, best chunk each). Source the chunk text from the `chunks` table (the chunk `chunkFtsRanking` scored highest for that doc) or fall back to the hit's centered `snippet` — pin the exact source in the plan. Log total context chars per (question, arm).
 3. **Answer** single-shot: feed (context + question) to the held-constant answerer, get a concise answer.
 4. **Judge** the answer **blind to arm** against `referenceAnswer` → composite score.
 
@@ -87,9 +87,10 @@ If K is large, both arms include the relevant document → zero delta → null e
 ## Cost controls (the $400 Opus lesson)
 
 - Single-shot only — **no cumulative transcript** (the $400 was Opus + agentic full-doc re-sends; Option A avoids both).
-- Cap fed context at top-K full documents; **log total chars + token usage** per call.
-- Cheap models: Haiku answerer + gpt-5.4-mini judge. Estimated ~1600 calls at K=5, ~3200 across K=5+K=10 (400 questions × 2 arms × 2 Ks × {answer, judge}) → likely **< $10**. Confirm with a token log.
-- **Smoke mode (N=25)** first — validate the full pipeline (retrieve → assemble → answer → judge → aggregate) end-to-end before the full run.
+- **Bounded fed context = best chunk per doc (~1–2k chars), NOT full bodies.** This is the dominant cost lever: RB day-docs are ~26k chars median, so full-body feeding would make the big run ~$80; best-chunk feeding keeps it ~$6–8. (Decided 2026-06-24.)
+- **Log total chars + token usage** per call; confirm exact OpenRouter rates at run time and record actual spend in the results note.
+- Cheap models: Haiku answerer + gpt-5.4-mini judge. ~3200 LLM calls across K=5+K=10 (400 questions × 2 arms × 2 Ks × {answer, judge}); with bounded context → **~$6–8 for the entire big run, smoke (N=25) < $1**. Pricing is a [TRAINING] estimate (Haiku ~$1/M in; gpt-5.4-mini judge cheaper) — verify and log.
+- **Smoke mode (N=25)** first — validate the full pipeline (retrieve → assemble → answer → judge → aggregate) end-to-end, and confirm the actual per-call token spend matches the estimate, before the full run.
 
 ## Validity threats & guards
 
@@ -98,7 +99,8 @@ If K is large, both arms include the relevant document → zero delta → null e
 | **No headroom** (K too large → no delta) | Data-driven K pre-step; tight K=5 primary; report K trend. |
 | **Answerer-strength confound** (Haiku ≠ Opus sensitivity) | Within-arm ablation is still valid (answerer constant); flag magnitude as directional in the writeup. |
 | **Judge bias** (self-grading) | Judge family ≠ answerer family; judge blind to arm. |
-| **Doc-length asymmetry** (arms feed different docs → different total text) | Not a confound — it's the production behavior; log per-arm context chars and report (chunk feeding less text but answering as well = efficiency win). |
+| **Doc-length asymmetry** (arms feed different docs → different total text) | Bounded by best-chunk feeding (~1–2k chars/doc regardless of doc size); log per-arm context chars and report (chunk feeding less text but answering as well = efficiency win). |
+| **Snippet insufficiency** (best chunk lacks enough to answer even when the right doc is in-window) | Symmetric across arms (same best-chunk rule both arms), so the non-regression *delta* stays valid; depresses absolute scores only. If absolute scores are implausibly low in smoke, widen the chunk window before the full run. |
 | **7-relevant-day synthesis questions** (neither arm hits full recall at tight K) | The *delta* stays valid; cap their share of the multi-day stratum; report multi-day split. |
 | **Lexical-purity drift** (vector half flips between calls) | Assert `vectorUsed === false` and invariant across all retrievals, mirroring the other runners. |
 
