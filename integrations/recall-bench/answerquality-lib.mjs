@@ -97,3 +97,63 @@ export function pairedBootstrapCI(deltas, { iters = 2000, seed = 1, alpha = 0.05
   const q = (p) => means[Math.min(iters - 1, Math.max(0, Math.floor(p * iters)))];
   return { mean, lo: q(alpha / 2), hi: q(1 - alpha / 2) };
 }
+
+export function assembleContext(rankedPaths, bestChunkByPath, docContentByPath, { fallbackChars }, opts = {}) {
+  const parts = [];
+  const sources = [];
+  for (const path of rankedPaths) {
+    let body = bestChunkByPath.get(path);
+    let source = "chunk";
+    if (body == null) {
+      body = (docContentByPath.get(path) ?? "").slice(0, fallbackChars);
+      source = "fallback";
+    }
+    parts.push(`[source: ${path}]\n${body}`);
+    sources.push({ path, source });
+  }
+  const text = parts.join("\n\n---\n\n");
+  if (opts.detailed) return { text, totalChars: text.length, sources };
+  return text;
+}
+
+export function answererPrompt(context, question) {
+  return [
+    "You are answering a question using ONLY the provided context excerpts.",
+    "Rules:",
+    "- Use only the context below. Do not use outside knowledge.",
+    "- If the context does not contain the answer, say exactly: \"The provided context does not contain the answer.\"",
+    "- Be concise. Cite the [source: …] path(s) you used.",
+    "",
+    "CONTEXT:",
+    context,
+    "",
+    `QUESTION: ${question}`,
+    "",
+    "ANSWER:",
+  ].join("\n");
+}
+
+export const JUDGE_SCHEMA = {
+  type: "object",
+  required: ["correctness", "completeness", "hallucination", "reasoning"],
+  properties: {
+    correctness: { type: "integer", minimum: 0, maximum: 3 },
+    completeness: { type: "integer", minimum: 0, maximum: 2 },
+    hallucination: { type: "integer", minimum: 0, maximum: 1 }, // 1 = no hallucination (clean)
+    reasoning: { type: "string" },
+  },
+};
+
+export function judgePrompt(question, referenceAnswer, candidateAnswer) {
+  return [
+    "You are grading a candidate answer against a reference answer. Grade blind and strictly.",
+    "Scoring axes (integers):",
+    "- correctness 0–3: does the candidate state the correct fact(s) from the reference? (3=fully correct, 0=wrong/absent)",
+    "- completeness 0–2: does it cover what the reference covers? (2=complete, 0=missing the point)",
+    "- hallucination 0–1: 1 if the candidate adds NO unsupported/contradictory claims; 0 if it fabricates.",
+    "",
+    `QUESTION: ${question}`,
+    `REFERENCE ANSWER: ${referenceAnswer}`,
+    `CANDIDATE ANSWER: ${candidateAnswer}`,
+  ].join("\n");
+}

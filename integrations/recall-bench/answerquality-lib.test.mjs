@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mulberry32, shuffleSeeded, stratifiedSample, pairedBootstrapCI, composite } from "./answerquality-lib.mjs";
+import { mulberry32, shuffleSeeded, stratifiedSample, pairedBootstrapCI, composite, assembleContext, answererPrompt, judgePrompt, JUDGE_SCHEMA } from "./answerquality-lib.mjs";
 
 describe("mulberry32", () => {
   it("is deterministic for a fixed seed", () => {
@@ -89,5 +89,43 @@ describe("pairedBootstrapCI", () => {
   it("all-zero deltas give a zero-width CI at zero", () => {
     const { mean, lo, hi } = pairedBootstrapCI([0, 0, 0], { iters: 100, seed: 2, alpha: 0.05 });
     expect(mean).toBe(0); expect(lo).toBe(0); expect(hi).toBe(0);
+  });
+});
+
+describe("assembleContext", () => {
+  const best = new Map([["a.md", "best chunk A"], ["b.md", "best chunk B"]]);
+  const full = new Map([["a.md", "FULL A ".repeat(500)], ["c.md", "FULL C body here"]]);
+
+  it("uses best chunk per path, in ranked order, each prefixed with its path", () => {
+    const ctx = assembleContext(["a.md", "b.md"], best, full, { fallbackChars: 1500 });
+    expect(ctx.indexOf("a.md")).toBeLessThan(ctx.indexOf("b.md")); // ranked order preserved
+    expect(ctx).toContain("best chunk A");
+    expect(ctx).toContain("best chunk B");
+  });
+
+  it("falls back to first fallbackChars of body when no chunk matched", () => {
+    const ctx = assembleContext(["c.md"], best, full, { fallbackChars: 8 });
+    expect(ctx).toContain("c.md");
+    expect(ctx).toContain("FULL C b"); // first 8 chars
+  });
+
+  it("reports total chars and per-doc source for cost/validity logging", () => {
+    const { text, totalChars, sources } = assembleContext(["a.md", "c.md"], best, full, { fallbackChars: 8 }, { detailed: true });
+    expect(typeof text).toBe("string");
+    expect(totalChars).toBe(text.length);
+    expect(sources).toEqual([{ path: "a.md", source: "chunk" }, { path: "c.md", source: "fallback" }]);
+  });
+});
+
+describe("prompts", () => {
+  it("answerer prompt embeds context + question and instructs context-only answering", () => {
+    const p = answererPrompt("CTX", "Q?");
+    expect(p).toContain("CTX"); expect(p).toContain("Q?");
+    expect(p.toLowerCase()).toContain("only the");
+  });
+  it("judge prompt embeds question, reference, candidate; schema has the three axes", () => {
+    const p = judgePrompt("Q?", "REF", "CAND");
+    expect(p).toContain("Q?"); expect(p).toContain("REF"); expect(p).toContain("CAND");
+    expect(JUDGE_SCHEMA.required).toEqual(expect.arrayContaining(["correctness", "completeness", "hallucination", "reasoning"]));
   });
 });
