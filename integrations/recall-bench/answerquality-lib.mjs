@@ -74,3 +74,26 @@ export function stratifiedSample(records, { nSingle, nMulti, multiBucketCap, see
     ...pickedMulti.map((r) => ({ ...r, stratum: "multi" })),
   ];
 }
+
+export function composite({ correctness, completeness, hallucination }) {
+  return correctness + completeness + hallucination;
+}
+
+// Percentile bootstrap over PAIRED per-question deltas (same question, both arms).
+// Resample WITH replacement n times, take the mean each iter, return the
+// alpha/2 and 1-alpha/2 percentiles. Seeded → reproducible.
+export function pairedBootstrapCI(deltas, { iters = 2000, seed = 1, alpha = 0.05 }) {
+  const n = deltas.length;
+  const mean = n ? deltas.reduce((a, b) => a + b, 0) / n : 0;
+  if (n === 0) return { mean: 0, lo: 0, hi: 0 };
+  const rnd = mulberry32(seed);
+  const means = new Array(iters);
+  for (let it = 0; it < iters; it++) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += deltas[Math.floor(rnd() * n)];
+    means[it] = s / n;
+  }
+  means.sort((a, b) => a - b);
+  const q = (p) => means[Math.min(iters - 1, Math.max(0, Math.floor(p * iters)))];
+  return { mean, lo: q(alpha / 2), hi: q(1 - alpha / 2) };
+}
