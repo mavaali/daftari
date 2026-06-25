@@ -23,3 +23,54 @@ export function shuffleSeeded(arr, seed) {
   }
   return out;
 }
+
+// Stratified deterministic sample.
+// - single stratum: relevantDays.length === 1
+// - multi stratum: grouped by relevantDays.length into buckets; round-robin
+//   across buckets, each bucket capped at `multiBucketCap`, until nMulti filled.
+// Returns records tagged with `stratum: "single" | "multi"`. Throws if the pool
+// can't satisfy the requested counts (fail loud, don't silently under-sample).
+export function stratifiedSample(records, { nSingle, nMulti, multiBucketCap, seed }) {
+  const single = records.filter((r) => (r.qa.relevantDays?.length ?? 0) === 1);
+  const multi = records.filter((r) => (r.qa.relevantDays?.length ?? 0) > 1);
+
+  const pickedSingle = shuffleSeeded(single, seed).slice(0, nSingle);
+  if (pickedSingle.length < nSingle)
+    throw new Error(`single pool too small: have ${single.length}, need ${nSingle}`);
+
+  const buckets = new Map();
+  for (const r of multi) {
+    const L = r.qa.relevantDays.length;
+    if (!buckets.has(L)) buckets.set(L, []);
+    buckets.get(L).push(r);
+  }
+  const lens = [...buckets.keys()].sort((a, b) => a - b);
+  const queues = new Map(lens.map((L) => [L, shuffleSeeded(buckets.get(L), seed + L)]));
+  const takenPerBucket = new Map(lens.map((L) => [L, 0]));
+
+  const pickedMulti = [];
+  let progressed = true;
+  while (pickedMulti.length < nMulti && progressed) {
+    progressed = false;
+    for (const L of lens) {
+      if (pickedMulti.length >= nMulti) break;
+      if (takenPerBucket.get(L) >= multiBucketCap) continue;
+      const q = queues.get(L);
+      const idx = takenPerBucket.get(L);
+      if (idx < q.length) {
+        pickedMulti.push(q[idx]);
+        takenPerBucket.set(L, idx + 1);
+        progressed = true;
+      }
+    }
+  }
+  if (pickedMulti.length < nMulti)
+    throw new Error(
+      `multi pool too small under cap=${multiBucketCap}: got ${pickedMulti.length}, need ${nMulti}`,
+    );
+
+  return [
+    ...pickedSingle.map((r) => ({ ...r, stratum: "single" })),
+    ...pickedMulti.map((r) => ({ ...r, stratum: "multi" })),
+  ];
+}
