@@ -107,6 +107,41 @@ function normalize(scores: Map<string, number>): Map<string, number> {
   return new Map([...scores].map(([k, v]) => [k, v / max]));
 }
 
+// Wraps a prefix-OR'd FTS match string in an FTS5 column filter (e.g. "{title tags}"). Null query → null.
+function columnRestrict(matchQuery: string | null, columns: string): string | null {
+  return matchQuery === null ? null : `${columns} : (${matchQuery})`;
+}
+
+// Band boundary for the chunk-mode tiered lexical combine. Documents with any
+// chunk-body match occupy the upper band (0.5, 1]; documents matched only via
+// title/tags occupy the lower band (0, 0.5]. A body match therefore always
+// outranks a title-only match by construction — no tunable weight. (Any split
+// in (0,1) gives the same strict ordering; 0.5 is the natural midpoint.)
+const TIER_SPLIT = 0.5;
+
+// Tiered combine of two normalized lexical signals. chunkNorm (body) is primary:
+// its docs land in the upper band, ordered by body score. titleTagNorm docs that
+// are NOT already body-matched land in the lower band, ordered by title/tag score
+// — a strict fallback that surfaces docs the body ranker missed (the native
+// title/tag case) without ever displacing a real body match (the RB case).
+// Both inputs are normalized to (0,1] (no zeros) by the callers, so upper band
+// is strictly >0.5 and lower band is <=0.5: strict, tie-free separation. The
+// `> 0` guards make that precondition self-enforcing rather than relying on the
+// upstream invariant — a non-positive score never creates a band entry (so it
+// can't floor a body match to exactly 0.5 and tie a title-only match).
+function tieredLexical(
+  chunkNorm: Map<string, number>,
+  titleTagNorm: Map<string, number>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const [p, c] of chunkNorm) if (c > 0) out.set(p, TIER_SPLIT + (1 - TIER_SPLIT) * c);
+  for (const [p, t] of titleTagNorm) {
+    if (out.has(p) || t <= 0) continue; // already body-matched, or no real title/tag signal
+    out.set(p, TIER_SPLIT * t);
+  }
+  return out;
+}
+
 // Runs an FTS5 MATCH against `documents_fts` and returns a path → score
 // map. The FTS5 `bm25()` function is INVERSE (smaller = better, can be
 // negative for strong hits), so we flip the sign to `larger = better` and
@@ -221,10 +256,19 @@ function rankDocuments(
   const documents = getAllDocuments(db);
   const byPath = new Map(documents.map((d) => [d.path, d]));
 
-  const bm25Raw =
-    opts.lexicalGranularity === "chunk"
-      ? chunkFtsRanking(db, matchQuery)
-      : ftsRanking(db, matchQuery);
+  let bm25Norm: Map<string, number>;
+  if (opts.lexicalGranularity === "chunk") {
+    // Body granularity (the dilution fix) TIERED with a clean title/tag signal
+    // (the native-shape fix). Each is normalized to its own max to reconcile the
+    // two FTS score scales; tieredLexical then ranks every body match above every
+    // title-only match. The title/tag signal reuses ftsRanking with a column-
+    // restricted query so it scores title+tags only (no body dilution).
+    const chunkNorm = normalize(chunkFtsRanking(db, matchQuery));
+    const titleTagNorm = normalize(ftsRanking(db, columnRestrict(matchQuery, "{title tags}")));
+    bm25Norm = tieredLexical(chunkNorm, titleTagNorm);
+  } else {
+    bm25Norm = normalize(ftsRanking(db, matchQuery));
+  }
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
@@ -233,8 +277,6 @@ function rankDocuments(
     vectorRaw = vecRanking(db, queryEmbedding, provider.id);
     if (vectorRaw.size > 0) vectorUsed = true;
   }
-
-  const bm25Norm = normalize(bm25Raw);
   const vectorNorm = normalize(vectorRaw);
 
   // With no usable vector signal, lexical ranking carries the full weight.
