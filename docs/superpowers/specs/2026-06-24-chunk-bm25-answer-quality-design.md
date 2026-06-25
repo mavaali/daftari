@@ -16,7 +16,7 @@ Within a single held-constant answerer, measure the **answer-quality delta betwe
 ## Why this shape
 
 - **Within-daftari ablation, answerer held constant.** Same model, same prompt, same context cap — only the retrieval ranking varies. This cancels the model confound; the per-question delta isolates retrieval granularity. This is the cleanest *direct* isolation of "given this retrieval, how good is the answer."
-- **Both arms return documents.** Verified at `src/search/hybrid.ts:204` — chunk mode (`chunkFtsRanking`) collapses to each document's best chunk, so the output unit is a ranked **document** list, identical in kind to document mode. Only the *order* differs. The fed unit is therefore the same (full documents); the sole varying factor is **which documents land in the top-K window**.
+- **Both arms return documents.** Verified at `src/search/hybrid.ts:208` (`chunkFtsRanking`) — chunk mode collapses to each document's best chunk, so the output unit is a ranked **document** list, identical in kind to document mode. Only the *order* differs. The fed unit is therefore the same (full documents); the sole varying factor is **which documents land in the top-K window**.
 - **Recall Bench corpus.** Reuses the existing labeled questions (`referenceAnswer`, `relevantDays`) and the `/tmp/cov-recall/vault` already built for the chunk-BM25 recall runs. RB is partially rehabilitated as a *recall* scoreboard (memory: [[project_recall_bench_experiment]]); this experiment is on the recall axis, so RB is a fair surface.
 
 ## Non-goals (YAGNI)
@@ -47,7 +47,7 @@ The only difference between arms is step 1's ranking → which documents are in 
 
 If K is large, both arms include the relevant document → zero delta → null experiment. K must be tight enough that ranking decides top-K membership.
 
-- **Pre-step (data-driven K):** before the answer runs, compute the **rank of each relevant document under each arm** across the sample (reuse the chunkbm25 retrieval path). Pick the K where the arms diverge most — i.e. where chunk frequently has the relevant doc in-window and document does not. Expected **K=5 primary** (the recall runs showed gapRecovered 0.527 @K=10; divergence is larger at smaller K), with **K=10 as a robustness check**.
+- **K is fixed: K=5 primary + K=10 robustness.** The pre-step is a **divergence sanity-check, not a K-selection step.** Before the answer runs, compute the **rank of each relevant document under each arm** across the sample (reuse the chunkbm25 retrieval path) to confirm the arms actually diverge at K=5 (chunk frequently has the relevant doc in-window where document does not). The recall runs showed gapRecovered 0.527 @K=10; divergence is larger at smaller K, so K=5 is expected to be the sharper probe. If the pre-step shows negligible divergence even at K=5, stop and rethink K before spending answerer/judge calls.
 - **Internal-validity prediction:** the answer delta should **shrink as K grows** (K=10 ≤ K=5), tracking the recall divergence. If the delta does *not* track K, that is itself a finding — it means the answerer is not sensitive to retrieval rank within the fed window, which weakens the case that the recall win matters at the answer layer. Record this either way.
 - Both K=5 and K=10 are run (decided — keep the robustness arm).
 
@@ -73,7 +73,7 @@ If K is large, both arms include the relevant document → zero delta → null e
 
 ### Component 5 — metrics & gate decision rule
 
-- Per stratum (single-day, multi-day) and per K: **mean composite per arm** and the **per-question paired delta** (chunk − document) with a **bootstrap CI**.
+- Per stratum (single-day, multi-day) and per K: **mean composite per arm** and the **per-question paired delta** (chunk − document) with a **paired bootstrap CI** — resample the question-level paired deltas (same question, both arms), not the two arms independently, since the design is within-question paired.
 - **Gate (non-regression):** PASS iff single-day delta ≥ 0 within CI (no regression on the parity surface) **and** multi-day delta ≥ 0 within CI (ideally strictly positive). A negative single-day delta outside noise = FAIL (the flip degrades the common case).
 - Secondary readouts: hallucination-rate per arm (does chunk reduce or inflate fabrication); total context chars per arm (if chunk wins while feeding *less* text, that's an efficiency finding, not a confound); the K=5→K=10 delta trend (internal-validity check above).
 
