@@ -13,7 +13,7 @@ const SQUAD = "/tmp/squad/train-v1.1.json";
 const OUT = "/tmp/squad";
 const SMOKE = process.argv.includes("--smoke");
 const PRESTEP_ONLY = process.argv.includes("--prestep");
-const KS = [5, 10];                 // K=5 primary, K=10 robustness
+const KS = [1, 5, 10];              // K=1 = powered translation arm (largest divergence); K=5 primary gate; K=10 robustness
 const LEX = { bm25: 1, vector: 0 };
 const FALLBACK_CHARS = 1500;
 const SEED = 20260624;
