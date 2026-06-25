@@ -1,7 +1,7 @@
 // answerquality-runner.mjs — chunk-BM25 answer-quality ablation (Option A).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
-  stratifiedSample, assembleContext, answererPrompt, judgePrompt, JUDGE_SCHEMA,
+  stratifiedSample, assembleContext, answererPrompt, judgePrompt,
   composite, pairedBootstrapCI,
 } from "./answerquality-lib.mjs";
 import { createOpenRouter } from "./openrouter.mjs";
