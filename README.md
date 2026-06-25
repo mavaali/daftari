@@ -10,29 +10,49 @@ Corrections were noted, not erased. The ledger got more valuable the longer it
 was kept, because the accumulated record revealed patterns no single entry
 could.
 
-Daftari is an MCP server that gives AI agents the same thing: a persistent,
-structured knowledge vault they can read, write, and curate over time. A
-cortex, not a clipboard.
+Daftari is the **long-term memory cortex for your LLM agents** — a persistent,
+structured vault they read, write, and curate over time, **portable across any
+model.** A cortex, not a clipboard.
 
-## The problem
+## Rent the brain, own the memory
 
-Every agent conversation starts from zero. RAG retrieves chunks and hopes the
-model stitches them together. AGENTS.md gives static context that nobody
-updates. The knowledge an agent builds during a session evaporates when the
-session ends.
+LLMs are stateless; they forget. So memory is being bolted on everywhere — but
+*inside the model*: ChatGPT memory, Claude projects, Copilot, Gemini. Memory is
+becoming a feature of the provider, and whoever holds your memory holds you.
 
-Daftari takes the other path: **compilation over retrieval.** The agent
-synthesizes an answer once, writes it back as a durable document, and every
-later read starts from that compiled result. The compiler is the agent;
-Daftari is the substrate that catches and persists what the agent
-consolidates. The vault gets better the more it is used.
+Daftari takes the other path. The model is the rented part — swappable, obsolete
+in six months. Your memory is the durable asset, so it should belong to you and
+travel with you: plain markdown on your disk, under git, readable in any editor,
+queryable by any agent. **Compilation over retrieval** — the agent compiles an
+answer once and writes it back, so every later read starts from the compiled
+result instead of re-stitching chunks from zero.
 
-A human cortex doesn’t re-derive everything from sensory input each time it
-thinks. It consolidates: experiences become memories, memories become
-structure, structure shapes future thought. Daftari gives agents the same
-loop. Drafts consolidate into canonical knowledge. Contradictions surface as
-tensions. Stale knowledge decays on a schedule. The vault is a living system,
-not a filing cabinet.
+## Not a second brain
+
+Second brains are memory for a *human* to think with — you catch the stale fact,
+you notice the contradiction. Daftari is memory for an *agent* to reason with:
+the persistence layer for a consumer that acts on what it is handed and cannot
+sanity-check it first. Same substrate (markdown, links); reversed purpose — and
+a higher bar, because the reliability has to live in the memory, not the reader.
+
+## It remembers — it doesn't resolve for you
+
+Because the agent can't infer them, the vault carries three things and collapses
+none:
+
+- **what's current** — supersession follows a real edge to the latest source
+- **what's grounded** — provenance on every entry; the vault never mints a value
+- **what's contested** — contradictions surface as *tensions*, held open, not
+  flattened into a false answer
+
+The daftar noted corrections rather than erasing them. Daftari keeps that as a
+law:
+
+> **A tension may never masquerade as a supersession.**
+
+It resolves only by discovery — a real edge — never by invention. The agent
+compiles; the vault preserves; *you* keep the judgment. See
+[the manifesto](docs/manifesto.md) for the full argument.
 
 ## What it is
 
