@@ -136,6 +136,7 @@ export function answererPrompt(context, question) {
 export const JUDGE_SCHEMA = {
   type: "object",
   required: ["correctness", "completeness", "hallucination", "reasoning"],
+  additionalProperties: false,
   properties: {
     correctness: { type: "integer", minimum: 0, maximum: 3 },
     completeness: { type: "integer", minimum: 0, maximum: 2 },
@@ -144,6 +145,10 @@ export const JUDGE_SCHEMA = {
   },
 };
 
+// NOTE: the prompt itself instructs JSON output. This is load-bearing: the
+// OpenRouter/OpenAI `response_format: {type:"json_object"}` mode the judge
+// client uses REQUIRES the literal word "json" somewhere in the prompt or the
+// API rejects the request — so do not remove the JSON instruction below.
 export function judgePrompt(question, referenceAnswer, candidateAnswer) {
   return [
     "You are grading a candidate answer against a reference answer. Grade blind and strictly.",
@@ -155,5 +160,7 @@ export function judgePrompt(question, referenceAnswer, candidateAnswer) {
     `QUESTION: ${question}`,
     `REFERENCE ANSWER: ${referenceAnswer}`,
     `CANDIDATE ANSWER: ${candidateAnswer}`,
+    "",
+    'Respond with ONLY a JSON object: {"correctness": int, "completeness": int, "hallucination": int, "reasoning": string}.',
   ].join("\n");
 }

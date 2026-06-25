@@ -64,6 +64,17 @@ describe("stratifiedSample", () => {
     const out = stratifiedSample(pool, { nSingle: 20, nMulti: 30, multiBucketCap: 6, seed: 3 });
     expect(new Set(out.map((r) => r.qa.id)).size).toBe(out.length);
   });
+
+  it("fails loud when the single pool can't satisfy nSingle", () => {
+    expect(() => stratifiedSample(pool, { nSingle: 999, nMulti: 0, multiBucketCap: 6, seed: 1 }))
+      .toThrow(/single pool too small/);
+  });
+
+  it("fails loud when the cap makes nMulti unreachable", () => {
+    // 6 buckets present, cap 2 each => at most 12 multi; asking for 30 must throw.
+    expect(() => stratifiedSample(pool, { nSingle: 0, nMulti: 30, multiBucketCap: 2, seed: 1 }))
+      .toThrow(/multi pool too small/);
+  });
 });
 
 describe("composite", () => {
@@ -123,9 +134,11 @@ describe("prompts", () => {
     expect(p).toContain("CTX"); expect(p).toContain("Q?");
     expect(p.toLowerCase()).toContain("only the");
   });
-  it("judge prompt embeds question, reference, candidate; schema has the three axes", () => {
+  it("judge prompt embeds question, reference, candidate; instructs JSON; schema has the three axes", () => {
     const p = judgePrompt("Q?", "REF", "CAND");
     expect(p).toContain("Q?"); expect(p).toContain("REF"); expect(p).toContain("CAND");
+    // json_object response_format requires the literal word "json" in the prompt.
+    expect(p.toLowerCase()).toContain("json");
     expect(JUDGE_SCHEMA.required).toEqual(expect.arrayContaining(["correctness", "completeness", "hallucination", "reasoning"]));
   });
 });
