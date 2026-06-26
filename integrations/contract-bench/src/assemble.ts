@@ -16,6 +16,9 @@ export interface Assembly {
   groundTruth: ContractQA[];
   pairDump: string;
   mapping: Record<string, string>;
+  // The perturbed chain docs — the Arm A (recency) foil must extract from the
+  // SAME perturbed text the ground truth was built from, so it is returned here.
+  perturbedDocs: ChainDoc[];
 }
 
 export interface AssembleOptions {
@@ -49,7 +52,7 @@ export function assemble(rawDocs: ChainDoc[], opts: AssembleOptions): Assembly {
   const resolutions = resolveChain(docs);
   const groundTruth = buildQAs(docs, resolutions, { noValueClauses: opts.noValueClauses });
   const vault = buildCorpus(docs, resolutions).map((d) => ({ path: d.path, content: renderDoc(d) }));
-  return { vault, groundTruth, pairDump: renderPairDump(groundTruth, resolutions), mapping };
+  return { vault, groundTruth, pairDump: renderPairDump(groundTruth, resolutions), mapping, perturbedDocs: docs };
 }
 
 // Write an assembly to <outDir>: the daftari-ingestable vault/ tree, plus the
