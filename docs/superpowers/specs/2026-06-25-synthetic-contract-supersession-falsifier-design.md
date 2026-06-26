@@ -64,16 +64,24 @@ scoped-current (headline — governing doc ≠ latest), latest-current (control 
 - **KILL (mechanism)** — C fails to beat A on STALE (resolution bug, or retrieval can't surface the governing clause-doc). Fix or abandon before any real-corpus spend.
 - **Expected on CLEAN** — A ≈ C (not a failure; the designed control showing daftari adds nothing over clean clause-keyed recency, which is the honest boundary).
 
-## Files (new; reuse recall-bench harness patterns)
+## Builds on the EXISTING CB1 pipeline (do not duplicate it)
+
+**CB1 is already built** on `feat/contract-bench` (rebased clean onto main as `feat/contract-bench-arms`): 7 modules in `integrations/contract-bench/src/`, 35 tests green, validated on real EDGAR amendments. The clause-version-as-document modeling, perturbation, clause-edge resolution, QA buckets, and the `assemble()` orchestrator **already exist** and are reused wholesale. In particular:
+- `assemble(rawDocs: ChainDoc[], {seed, noValueClauses}) → {vault, groundTruth: ContractQA[], mapping}` (`assemble.ts`) — the corpus builder. The synthetic generator only needs to produce `ChainDoc[]` (`{id, order, text}`) that the existing `parseCitations`/`resolveChain` handle.
+- `ContractQA {clause, question, answer, governingDoc, bucket}` with buckets `scoped-current | latest-current | no-value` (`qa-build.ts`); `extractValue` pulls the answer from the governing doc.
+- `resolveChain` moves the governing pointer only on **recoverable whole-clause ops** — so the STALE variant's recital *mentions* must be phrased so `parseCitations` does NOT classify them as ops (verify against `citation-parse.ts`), leaving ground truth intact while still fooling Arm A.
+
+## Files (NEW only — everything else reused)
 
 | File | Responsibility |
 |---|---|
-| `integrations/contract-bench/gen-synthetic-chains.mjs` | Deterministic generator → both variants: clause-version docs (+`superseded_by`), whole-contract docs, QA buckets, ground-truth map. Seeded; regenerable. |
-| `integrations/contract-bench/lib.mjs` | Pure helpers: chain/clause model, bucket assignment, recency-extract (Arm A), metric aggregation. Unit-tested. |
-| `integrations/contract-bench/falsifier-runner.mjs` | Build vault (`reindexVault`), run Arm A + Arm C over buckets × variants, emit per-QA + summary with the WIN/KILL verdict. |
+| `integrations/contract-bench/src/synth-gen.ts` | Deterministic two-variant generator → `ChainDoc[]` (master + amendments as parseable contract text). CLEAN: scoped amendments only. STALE: + recital mentions of other clauses at their OLD values, phrased as non-ops. Seeded, regenerable. Feeds the existing `assemble()`. |
+| `integrations/contract-bench/src/arm-recency.ts` | Arm A: for clause X, `extractValue` from the most-recent (by `order`) ChainDoc that **mentions** X. The strong recency foil. |
+| `integrations/contract-bench/src/metrics.ts` | Per-bucket accuracy per arm per variant + fabrication rate + WIN/KILL verdict. |
+| `integrations/contract-bench/falsifier-runner.mjs` | Orchestrator (mirrors recall-bench `.mjs` runners): synth-gen → `assemble` → write vault → `reindexVault` (main `dist/`) → per QA run Arm A (recency) + Arm C (`resolveCurrentSource` over the atomized vault) → `metrics` → per-QA + summary JSON with verdict. Imports contract-bench `dist/` + daftari main `dist/`. |
 | `docs/superpowers/results/2026-06-25-synthetic-contract-supersession.md` | Results + verdict, feeding the parent benchmark + [[project_daftari_paper]]. |
 
-No `src/` changes (Arm C uses shipped `resolveCurrentSource`). Tests mirror the recall-bench harness discipline: pure helpers unit-tested (generator consistency, bucket assignment, Arm-A faithful-foil assertion — on a STALE fixture Arm A returns the *wrong* value), runner integration-gated on `reindexVault`/MiniLM.
+No daftari `src/` changes (Arm C uses shipped `resolveCurrentSource`). New TS modules built via the package's `tsc` so the `.mjs` runner can import them. Tests mirror the existing CB1 discipline: pure modules unit-tested (generator consistency + STALE-recital-is-not-an-op assertion against `parseCitations`; Arm-A faithful-foil — returns the *wrong* value on a STALE scoped-current fixture, the *right* value on CLEAN); runner integration-gated on `reindexVault`/MiniLM.
 
 ## Testing (the must-haves)
 
