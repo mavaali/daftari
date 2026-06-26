@@ -123,13 +123,20 @@ export function generateChain(opts: SynthGenOptions): SynthChainResult {
       );
     }
 
-    // Stale recital: in the LATEST amendment, add a recital mentioning the
-    // scoped clause (clauseIdx=0) with its OLD value. The recital uses "reads
-    // as follows:" (not any operative phrase) so parseCitations emits NO op.
+    // Stale recital: in the LATEST amendment, recite EVERY scoped-current clause
+    // (one governed by a non-latest amendment) with its OLD value, so Arm A's
+    // most-recent mention is stale across the WHOLE scoped bucket — not just one
+    // clause. The recital uses "reads as follows:" (not any operative phrase) so
+    // parseCitations emits NO op (governing pointer is unaffected; ground truth
+    // intact). `scopedClause` (clauses[0]) is always among these.
     if (variant === "stale" && isLatest) {
-      parts.push(
-        `For reference, Section ${scopedClause} remains in full force and reads as follows: "${oldValues[scopedClause]}".`,
-      );
+      for (const cl of clauses) {
+        if (governingAmendment[cl] !== nAmendments) {
+          parts.push(
+            `For reference, Section ${cl} remains in full force and reads as follows: "${oldValues[cl]}".`,
+          );
+        }
+      }
     }
 
     docs.push({
