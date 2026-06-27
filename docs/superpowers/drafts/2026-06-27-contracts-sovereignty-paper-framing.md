@@ -57,10 +57,12 @@ The original premise: real contract chains contain *scoped-current-with-stale-me
 
 (A)'s sovereignty/provenance claim dies if a value-minting baseline, given the same chain, **both** (i) abstains as reliably as daftari on unrecoverable clauses **and** (ii) reproduces the per-clause governing source + supersession history. Arm B already shows (i) is partially true for careful LLMs; the provenance experiment tests (ii). If both hold, daftari has no contract niche even on sovereignty/provenance, and (A) collapses to the negative result alone.
 
-## Two minimal experiments to make (A) real (not "all done")
+## Two minimal experiments — DONE (2026-06-27, `docs/superpowers/results/2026-06-27-a-small-experiments.md`)
 
-1. **Provenance eval** (the gap above): per-clause governing-source + superseded-history accuracy, daftari vs an LLM-consolidation baseline. The natural extension of Arm B.
-2. **Forced-answer Arm B** (no abstain) + larger N + a blind cross-family judge — to sharpen Claim 2 from "guarantee" to "measured gap."
+1. **Provenance eval** — RUN. LLMs reproduce provenance for *clean* clauses (history 5–6/6, governing 4/4 clean) but fail governing on the *partial* clauses **0/2** (both default to last-touched amd-2/amd-3 where daftari says master — even with the rule stated). daftari 6/6 deterministic. → Claim 3 holds **specifically on the partial/tainted subset** (the keystone), not on clean provenance.
+2. **Forced-answer Arm B** — RUN (N=7 partials, cross-judge). Forced (no abstain) fabrication **4/7** both foils vs **1/7** abstain-offered; daftari **0/7**. → Claim 2 is now a measured gap: the realistic consolidation baseline fabricates ~57% on partials.
+
+**Unified result (the spine of A):** daftari's edge is concentrated entirely on the **unrecoverable/partial clauses** — minting fabricates there, naive provenance mis-attributes governance there — while clean clauses are recency-resolvable and LLM-provenance-recoverable (the negative result localizes the win). (A) tightens to one claim: *where the chain is clean a trivial baseline suffices; where an edit is partial/tainted, daftari refuses to fabricate and refuses to let the partial masquerade as a clean supersession — a minting/LLM baseline does both.* Claims 2 & 3 are now measured, not asserted.
 
 ---
 
