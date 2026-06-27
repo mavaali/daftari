@@ -52,3 +52,6 @@ integrations/recall-bench/results/
 
 # EDGAR download cache (reproducible from SEC; do not commit)
 .edgar-cache/
+
+# EDGAR chain-discovery run outputs (reproducible; do not commit pulled filings)
+.discover-out/
