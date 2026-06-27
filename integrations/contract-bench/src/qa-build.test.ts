@@ -1,6 +1,21 @@
 import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 import { resolveChain } from "./clause-edge.js";
-import { buildQAs } from "./qa-build.js";
+import { buildQAs, extractValue } from "./qa-build.js";
+import { htmlToText } from "./html-to-text.js";
+
+describe("extractValue — real EDGAR text shapes", () => {
+  test("defined term where 'means' is followed by a COMMA (real NGS amd-2; not synthetic 'means <value>')", () => {
+    // Real credit-agreement definitions read '"Commitment" means, as to each
+    // Lender, ...' — the comma after 'means' broke the synthetic-shaped regex,
+    // which fell through to a fallback that grabbed '"Second Amendment"' (the
+    // preamble). This is the extraction artifact caught in the E3 NGS arms run.
+    const amd2 = htmlToText(readFileSync(new URL("./__fixtures__/ngs/amd2.htm", import.meta.url), "utf8"));
+    const v = extractValue(amd2, "Commitment");
+    expect(v).toContain("as to each Lender"); // the real definition body
+    expect(v).not.toBe("Second Amendment"); // not the preamble-bleed fallback garbage
+  });
+});
 
 describe("buildQAs — current-value buckets", () => {
   const docs = [

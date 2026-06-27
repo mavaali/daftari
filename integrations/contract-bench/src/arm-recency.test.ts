@@ -63,6 +63,25 @@ describe("arm-recency — faithful-foil assertions", () => {
     expect(armAnswer).toBe(qa!.answer);
   });
 
+  test("a DEFINED-TERM clause is found by recency (not only numbered Sections)", () => {
+    // recencyAnswer must detect quoted defined terms, not just "Section X" —
+    // else every defined term returns NOT_PRESENT and Arm A is silently crippled
+    // on real credit-agreement chains (the artifact caught in the E3 NGS run).
+    const docs = [
+      { id: "m", order: 0, text: '"Commitment" means the original obligation.' },
+      {
+        id: "a1",
+        order: 1,
+        text:
+          "The following terms are hereby amended and restated to read as follows: " +
+          '"Commitment" means, the increased obligation amount.',
+      },
+    ];
+    const ans = recencyAnswer(docs, "Commitment");
+    expect(ans).not.toBe("NOT_PRESENT");
+    expect(ans).toContain("increased obligation"); // most-recent doc's value, real comma-after-means shape
+  });
+
   test("no-mention clause returns NOT_PRESENT", () => {
     const { docs, noValueClauses } = generateChain({ seed, variant: "clean" });
     for (const cl of noValueClauses) {

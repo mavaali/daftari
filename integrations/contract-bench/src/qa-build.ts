@@ -25,8 +25,12 @@ function escapeRegex(s: string): string {
 // or the end. Otherwise the value is the text introduced by "as follows:" (a
 // Section restate/add), or the clause's own sentence (a master clause body).
 export function extractValue(docText: string, clause: string): string {
+  // `(?:means|shall mean)[,\s]+`: real definitions read '"Commitment" means, as
+  // to each Lender, ...' — the comma after "means" must be allowed, else the
+  // match fails and the fallback below grabs the wrong quoted string (it returned
+  // the preamble '"Second Amendment"' on real NGS text — the E3 extraction bug).
   const term = new RegExp(
-    `["“]\\s*${escapeRegex(clause)}\\s*["”]\\s+(?:means|shall mean)\\s+(.+?)\\s*(?=[.;]\\s+["“]|$)`,
+    `["“]\\s*${escapeRegex(clause)}\\s*["”]\\s+(?:means|shall mean)[,\\s]+(.+?)\\s*(?=[.;]\\s+["“]|$)`,
     "is",
   ).exec(docText);
   if (term) return term[1].trim().replace(/[.;]+$/, "");
