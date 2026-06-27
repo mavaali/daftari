@@ -1,0 +1,210 @@
+<noinclude>{{pp-30-500|small=yes}}__NONEWSECTIONLINK__
+</noinclude><div style="background:var(--background-color-neutral); color: inherit; border: solid 2px beige; padding: 0;">
+<div style="padding: 0 2em 1em 2em;"> 
+{{v|Talk:Donald Trump/Current consensus|e|brackets=yes|style=float:right}}
+<includeonly>{{anchor|Current consensuses and RfCs}}{{anchor|Current consensuses}}</includeonly> <!-- protects existing links to old section headings --> 
+'''''NOTE:''' It is recommended to link to this list in your edit summary when reverting, as:''<br />{{code|[[Talk:Donald Trump#Cn|consensus n]]}}'', replacing both occurrences of n with the item number.<br />To ensure you are viewing the current list, you may wish to {{purge|purge this page}}.''
+<!-- Since items will not be inserted or removed, the use of # for automatic numbering is not needed. For clarity in the record, each number should refer to one and only one consensus, forever.
+When adding a new consensus item to this section please include the link to its relevant discussion(s) so other editors can independently verify that the given point is a consensus based item. -->
+
+'''{{0}}1.''' {{anchor|C1}} Use the official White House portrait as the infobox image. ([[Talk:Donald Trump/Archive 38#Trump Photo 2 Rfc|Dec 2016]], [[Talk:Donald Trump/Archive 45#Official portrait|Jan 2017]], [[Talk:Donald Trump/Archive 68#Image discussions rendered moot|Oct 2017]], [[Talk:Donald Trump/Archive 113#New image|March 2020]]) {{smaller|(temporarily suspended by #19 following copyright issues on the inauguration portrait, enforced when an official public-domain portrait was released on {{diff||808046006||31 October 2017}})}}
+
+'''{{0}}2.''' {{anchor|C2}} Show birthplace as "{{tq|[[Queens]], New York City, U.S.}}" in the infobox. ([[Talk:Donald Trump/Archive 36#New York City, New York, U.S.|Nov 2016]], [[Talk:Donald Trump/Archive 93#Infobox place of birth|Oct 2018]], [[Talk:Donald_Trump/Archive_134#Add_U.S._on_to_birthplace_in_infobox|Feb 2021]]) "New York City" de-linked. ([[Talk:Donald Trump/Archive 122#Proposal to change consensus of link to NYC|September 2020]])
+
+'''{{0}}3.''' {{anchor|C3}} Omit reference to county-level election statistics. ([[Talk:Donald Trump/Archive 40#Donald Trump Won 2,600 Counties Compared To Clinton’s 500|Dec 2016]])
+
+{{hide| {{0}}4. {{anchor|C4}} Superseded by [[#C15|#15]] |headerstyle=text-align:left; font-weight:normal; |content=
+Lead phrasing of Trump "{{tq|gaining a majority of the U.S. Electoral College}}" and "{{tq|receiving a smaller share of the popular vote nationwide}}", without quoting numbers. ([[Talk:Donald Trump/Archive 37#Hillary Clinton did not win the popular vote. She had more popular vote.|Nov 2016]], [[Talk:Donald Trump/Archive 37#Suggested Edit to opening paragraph regarding Trump's election|Dec 2016]]) (Superseded by [[#C15|#15]] since {{diff||764846021||11 February 2017}})
+}}
+
+'''{{0}}5.''' {{anchor|C5}} Use Trump's annual net worth evaluation and matching ranking, from the ''Forbes'' list of billionaires, not from monthly or "live" estimates. ([[Talk:Donald Trump/Archive 31#Moratorium on constantly updating Forbes' ranking|Oct 2016]]) <del>In the lead section, just write: {{tq| ''[[Forbes]]'' estimates his net worth to be [$x.x] billion.}} ([[Talk:Donald Trump/Archive 89#Mention of Forbes ranking in the lede|July 2018]], [[Talk:Donald Trump/Archive 90#Minor changes to consensus wording|July 2018]])</del> Removed from the lead per [[#C47|#47]]. 
+
+'''{{0}}6.''' {{anchor|C6}} Do not include allegations of sexual misconduct in the lead section. ([[Talk:Donald Trump/Archive 20#Rape lawsuit|June 2016]], [[Talk:Donald Trump/Archive 73#RfC: Sexual misconduct allegations in the lead|Feb 2018]])
+
+{{hide| {{0}}7. {{anchor|C7}} Superseded by [[#C35|#35]] |headerstyle=text-align:left; font-weight:normal; |content=
+Include "{{tq|Many of his public statements were controversial or false.}}" in the lead. ([[Talk:Donald Trump/Archive 26#RfC: Donald Trump's false campaign statements|Sep 2016]], [[Talk:Donald Trump/Archive 47#RfC on including "false" in the lede|February 2017]], wording shortened per [[Talk:Donald Trump/Archive 57#Survey about being controversial or false|April 2017]], upheld with [[Talk:Donald Trump/Archive 90#"many of his public statements were controversial or false"|July 2018]]) <!-- When making changes to this consensus point please remember not call Trump a "liar" in Wikipedia's voice (#22). --> (superseded by [[#C35|#35]] since {{diff||883885427||18 February 2019}})
+}}
+
+{{hide| {{0}}8. {{anchor|C8}} Superseded by unlisted consensus |headerstyle=text-align:left; font-weight:normal; |content=
+Mention that Trump is the first president elected "{{tq|without [[List of presidents of the United States by previous experience|prior military or government service]]}}". ([[Talk:Donald Trump/Archive 41#Prior government experience|Dec 2016]], superseded [[Talk:Donald Trump/Archive 177#Motion to repeal Current Consensus item 8|Nov 2024]])
+}}
+
+'''{{0}}9.''' {{anchor|C9}} <del>Include a link to Trump's Twitter account in the "External links" section. ([[Talk:Donald Trump/Archive 42#RfC: Should social network links be added to the External links section?|Jan 2017]])</del> Include a link to an archive of Trump's Twitter account in the "External links" section. ([[Talk:Donald_Trump/Archive_130#Twitter_account_RFC|Jan 2021]])
+
+{{hide| 10. {{anchor|C10}} Canceled |headerstyle=text-align:left; font-weight:normal; |content=
+Keep [[Barron Trump]]'s name in the list of children and wikilink it, which redirects to his section in [[Family of Donald Trump]] per AfD consensus. ([[Talk:Donald Trump/Archive 45#Children in Infobox|Jan 2017]], [[Wikipedia:Articles for deletion/Barron Trump (2nd nomination)|Nov 2016]]) Canceled: Barron's BLP has existed since June 2019. ([[Talk:Donald Trump#Amend current consensus item 10|June 2024]])
+}}
+
+{{hide| 11. {{anchor|C11}} Superseded by [[#C17|#17]] |headerstyle=text-align:left; font-weight:normal; |content=
+The lead sentence is "{{tq|'''Donald John Trump''' (born June 14, 1946) is an American businessman, television personality, politician, and the 45th President of the United States.}}" ([[Talk:Donald Trump/Archive 43#Lede/& Election section|Jan 2017]], [[Talk:Donald Trump/Archive 44#"Former" in lead sentence|Jan 2017]], [[Talk:Donald Trump/Archive 44#Full name in lead sentence|Jan 2017]], [[Talk:Donald Trump/Archive 45#Opening sentence|Jan 2017]], [[Talk:Donald Trump/Archive 45#First sentence|Jan 2017]], [[Talk:Donald Trump/Archive 48#Lead sentence - 45th and current|Feb 2017]]) (superseded by [[#C17|#17]] since {{diff||773493221|773484258|2 April 2017}})
+}}
+
+'''12.''' {{anchor|C12}} The article title is [[Donald Trump]], not [[Donald J. Trump]]. ([[Talk:Donald Trump/Archive 44#Requested move 20 January 2017|RM Jan 2017]], [[Talk:Donald Trump/Archive 98#Requested move 12 June 2019|RM June 2019]])
+
+'''13.''' {{anchor|C13}} Auto-archival is set for discussions with no comments for 7 days. Manual archival is allowed for (1) closed discussions, 24 hours after the closure, provided the closure has not been challenged, and (2) "answered" [[Wikipedia:Edit requests|edit requests]], 24 hours after the "answer"<del>, provided there has been no follow-on discussion after the "answer"</del>. ([[Talk:Donald Trump/Archive 44#Archive talk page please!|Jan 2017]]) (amended with respect to manual archiving, to better reflect common practice at this article) ([[Talk:Donald Trump/Archive 107#Amend consensus #13|Nov 2019]]) Strikethrough per [[#C74|#74]].
+
+'''14.''' {{anchor|C14}} Omit mention of Trump's alleged bathmophobia/fear of slopes. ([[Talk:Donald Trump/Archive 46#Alleged bathmophobia of Donald Trump|Feb 2017]])
+
+{{hide| 15. {{anchor|C15}} Superseded by lead rewrite |headerstyle=text-align:left; font-weight:normal; |content=
+Supersedes [[#C4|#4]]. There is no consensus to change the formulation of the paragraph which summarizes election results in the lead (starting with "{{tq|Trump won the general election on November 8, 2016, …}}"). Accordingly the pre-RfC text ([[Special:Permalink/759042712|Diff 8 Jan 2017]]) has been restored, with minor adjustments to past tense ([[Special:Diff/764846021|Diff 11 Feb 2018]]). No new changes should be applied without debate. ([[Talk:Donald Trump/Archive 49#RfC: Election summary in the lede|RfC Feb 2017]], [[Talk:Donald Trump/Archive 43#Rephrasing|Jan 2017]], [[Talk:Donald Trump/Archive 49#Third paragraph|Feb 2017]], [[Talk:Donald Trump/Archive 49#Back to process|Feb 2017]]) In particular, there is no consensus to include any wording akin to "losing the popular vote". ([[Talk:Donald Trump/Archive 55#RfC: How to describe the popular vote outcome|RfC March 2017]]) (Superseded by [[Talk:Donald Trump/Archive 60#Options about popular vote|local consensus]] on {{diff||782425456||26 May 2017}} and [[Talk:Donald Trump/Archive 62#Lede Section Rewrite|lead section rewrite]] on {{diff||786987868||23 June 2017}})
+}}
+
+{{hide| 16. {{anchor|C16}} Superseded by lead rewrite |headerstyle=text-align:left; font-weight:normal; |content=
+Do not mention Russian influence on the presidential election in the lead section. ([[Talk:Donald Trump/Archive 51#RFC on Russian influence in election paragraph in opening|RfC March 2017]]) (Superseded by [[Talk:Donald Trump/Archive 62#Lede Section Rewrite|lead section rewrite]] on {{diff||786987868||23 June 2017}})
+}}
+
+{{hide| 17. {{anchor|C17}} Superseded by [[#C50|#50]] |headerstyle=text-align:left; font-weight:normal; |content=
+Supersedes [[#C11|#11]]. The lead paragraph is "{{tq|'''Donald John Trump''' (born June 14, 1946) is the 45th and current [[president of the United States]]. Before entering politics, he [[Business career of Donald Trump|was a businessman]] and [[Media career of Donald Trump|television personality]].}}" The hatnote is simply {{t|Other uses}}. ([[Talk:Donald Trump/Archive 56#Why is "incumbent" necessary in the hatnote?|April 2017]], [[Talk:Donald Trump/Archive 56#Request for comments (RFC) about whether the lead paragraph should say he's the current president|RfC April 2017]], [[Talk:Donald Trump/Archive 56#Which one of the proposed lede sentences will best describe Trump's current status as president?|April 2017]], [[Talk:Donald Trump/Archive 58#Survey about "full time" in lead paragraph|April 2017]], [[Talk:Donald Trump/Archive 59#'Prior to' or 'before'|April 2017]], [[Talk:Donald Trump/Archive 64#EGG compliance in the first sentence|July 2017]], [[Talk:Donald Trump/Archive 94#When to capitalize "president"?|Dec 2018]]) Amended by [[Talk:Donald Trump/Archive 62#Lede Section Rewrite|lead section rewrite]] on {{diff||786973475||23 June 2017}} and [[Talk:Donald Trump/Archive 87#Lead sentence - "in office since January 20, 2017"|removal of inauguration date]] on {{diff||848763932||4 July 2018}}. Lower-case "p" in "president" per [[Talk:Donald Trump/Archive 94#When to capitalize "president"?|Dec 2018]] and [[Wikipedia talk:Manual of Style/Capital letters/Archive 25#RfC 2: Specific proposal to revise the third bullet of MOS:JOBTITLES|MOS:JOBTITLES RfC Oct 2017]]. Wikilinks modified per [[Special:PermanentLink/953636518#Can we find a way to link to Presidency of Donald Trump in the first paragraph?|April 2020]]. Wikilink modified again per [[Talk:Donald Trump/Archive 120#Moving the link for Trump's presidency|July 2020]]. "45th" de-linked. ([[Talk:Donald Trump/Archive 130#Survey: Linking of "45th" in lead|Jan 2021]])
+}}
+
+{{hide| 18. {{anchor|C18}} Superseded by [[#C63|#63]] |headerstyle=text-align:left; font-weight:normal; |content=
+The "Alma mater" infobox entry shows "{{tq|[[Wharton School of the University of Pennsylvania|Wharton School]] ([[Bachelor of Science|BS]]{{thinsp}}[[Economics|Econ.]])}}", does not mention [[Fordham University]]. ([[Talk:Donald Trump/Archive 56#Universities in infobox|April 2017]], [[Talk:Donald Trump/Archive 58#Reopening discussion about 'Universities in infobox'|April 2017]], [[Talk:Donald Trump/Archive 122#University name in the Infobox?|Aug 2020]], [[Talk:Donald Trump/Archive 129#Survey: University degree in infobox|Dec 2020]])
+}}
+
+{{hide| 19. {{anchor|C19}} Obsolete |headerstyle=text-align:left; font-weight:normal; |content=
+Following deletion of Trump's official White House portrait for copyright reasons on [[c:Commons:Deletion requests/Files in Category:Official portraits of Donald Trump|2 June 2017]], infobox image was replaced by [[:File:Donald Trump Pentagon 2017.jpg]]. ([[Talk:Donald Trump/Archive 61#Survey: Selection of stop-gap image|June 2017]] for replacement, [[Talk:Donald Trump/Archive 61#Infobox image (sorry, sorry, sorry)|June 2017]], declined [[WP:REFUND|REFUND]] on [[c:Commons:Undeletion requests/Archive/2017-06#Files in Category:Official portraits of Donald Trump|11 June 2017]]) (replaced by White House official public-domain portrait according to #1 since {{diff||808046006||31 Oct 2017}})
+}}
+
+{{hide| 20. {{anchor|C20}} Superseded by unlisted consensus |headerstyle=text-align:left; font-weight:normal; |content=
+Mention protests in the lead section with this exact wording: {{tq|His election and policies <del>have</del> sparked [[Protests against Donald Trump|numerous protests]].}} ([[Talk:Donald Trump/Archive 63#"Protests" sentence in the lede|June 2017]], [[Talk:Donald Trump/Archive 79#Propose a small rewording of mention of protests in lead|May 2018]], superseded [[Talk:Donald Trump/Archive 185#Reverting consensus 20|December 2024]]) (Note: In February 2021, when he was no longer president, the verb tense was changed from "have sparked" to "sparked", without objection.)
+}}
+
+{{hide| 21. {{anchor|C21}} Superseded by [[#C39|#39]] |headerstyle=text-align:left; font-weight:normal; |content=
+Omit any opinions about Trump's psychology held by mental health academics or professionals who have not examined him. ([[Talk:Donald Trump/Archive 65#Psychological make-up|July 2017]], [[Talk:Donald Trump/Archive 65#Commenting on Trump’s mental health is fine, psychiatry group says|Aug 2017]]) (superseded by [[#C36|#36]] on [[Special:Diff/902380124|18 June 2019]], then by [[#C39|#39]] since [[Special:Diff/911609584|20 Aug 2019]])
+}}
+
+'''22.''' {{anchor|C22}} Do not call Trump a "liar" in Wikipedia's voice. Falsehoods he uttered can be mentioned, while being mindful of calling them "lies", which implies malicious intent. ([[Talk:Donald Trump/Archive 65#RFC on use of Liar and Lie|RfC Aug 2017]], upheld by [[Talk:Donald Trump/Archive 172#RfC: Should consensus 22 (not calling Trump a "liar" in Wikipedia's voice) be cancelled?|RfC July 2024]])
+
+{{hide| 23. {{anchor|C23}} Superseded by [[#C52|#52]] |headerstyle=text-align:left; font-weight:normal; |content=
+The lead includes the following sentence: {{tq|Trump ordered [[Executive Order 13769|a travel ban]] on citizens from several Muslim-majority countries, citing security concerns; after [[Legal challenges to the Trump travel ban|legal challenges]], the Supreme Court upheld [[Presidential Proclamation 9645|the policy's third revision]].}} ([[Talk:Donald Trump/Archive 66#Muslim ban or travel ban?|Aug 2017]], [[Talk:Donald Trump/Archive 68#New phrasing for travel ban in lede section|Nov 2017]], [[Talk:Donald Trump/Archive 69#Amending consensus #23|Dec 2017]], [[Talk:Donald Trump/Archive 72#Consensus 23 discrepancy|Jan 2018]], [[Talk:Donald Trump/Archive 72#Consensus 23 copy edit|Jan 2018]]) Wording updated ([[Talk:Donald Trump/Archive 87#Travel ban|July 2018]]) and again ([[Talk:Donald Trump/Archive 92#Small change to "travel ban" consensus wording|Sep 2018]]).
+}}
+
+{{hide| 24. {{anchor|C24}} Superseded by [[#C30|#30]] |headerstyle=text-align:left; font-weight:normal; |content=
+Do not include allegations of racism in the lead. ([[Talk:Donald Trump/Archive 74#Adding criticized as racist to lead|Feb 2018]])
+}}
+
+'''25.''' {{anchor|C25}} In citations, do not code the archive-related parameters for sources that are not dead. ([[Talk:Donald Trump/Archive 69#Archiving of live links|Dec 2017]], [[Talk:Donald Trump/Archive 74#Archive links|March 2018]])
+
+'''26.''' {{anchor|C26}} Do not include opinions by [[Michael Hayden (general)|Michael Hayden]] and [[Michael Morell]] that Trump is a {{tq|"useful fool […] manipulated by Moscow"}} or an {{tq|"unwitting agent of the Russian Federation"}}. ([[Talk:Donald Trump/Archive 76#RfC: "useful fool"|RfC April 2018]])
+
+'''27.''' {{anchor|C27}} State that Trump {{tq|falsely claimed}} that Hillary Clinton started the Barack Obama {{tq|birther}} rumors. ([[Talk:Donald Trump/Archive 76#No, Hillary is not "original birther"|April 2018]], [[Talk:Donald Trump/Archive 84#Seeking to modify consensus item #27|June 2018]])
+
+'''28.''' {{anchor|C28}} Include, in the Wealth section, a sentence on Jonathan Greenberg's allegation that Trump deceived him in order to get on the Forbes 400 list. ([[Talk:Donald Trump/Archive 82#Should we mention the Forbes 400 tapes in the 'wealth' section of the article?|June 2018]], [[Talk:Donald Trump/Archive 87#Forbes 400 tapes, again.|June 2018]])
+
+'''29.''' {{anchor|C29}} Include material about the [[Trump administration family separation policy]] in the article. ([[Talk:Donald Trump/Archive 88#RfC: Should the immigration section include material about Trump's family separation policy?|June 2018]])
+
+'''30.''' {{anchor|C30}} Supersedes [[#C24|#24]]. The lead includes: "{{tq|Many of his comments and actions have been characterized as {{strikethrough|racially charged or}} racist.}}" ([[Talk:Donald Trump/Archive 91#RfC: Should the lead include a sentence about Trump's racial stance?|RfC Sep 2018]], [[Talk:Donald Trump/Archive 92#Wording for sentence in lead on racial stance|Oct 2018]], [[Talk:Donald Trump/Archive 97#RfC: "perceived" or "characterized" as racist|RfC May 2019]]). Consensus on "racially charged" descriptor later superseded ([[Talk:Donald_Trump/Archive 190#Supersede consensus item 30 and item 51?|February 2025]]).
+
+'''31.''' {{anchor|C31}} Do not mention Trump's office space donation to [[Jesse Jackson]]'s [[Rainbow/Push Coalition]] in 1999. ([[Talk:Donald Trump/Archive 93#Charitable work with The Rainbow/Push Coalition on Wall Street|Nov 2018]])
+
+'''32.''' {{anchor|C32}} Omit from the lead the fact that Trump is the first sitting U.S. president to meet with a North Korean supreme leader. See [[#C44|#44]]. ([[Talk:Donald Trump/Archive 90#RfC: Should the lead include that Trump was the first sitting US President to meet with a North Korean supreme leader?|RfC July 2018]], [[Talk:Donald Trump/Archive 93#Seeking consensus: North Korea and Trump|Nov 2018]])
+
+'''33.''' {{anchor|C33}} Do not mention [[Barack Obama citizenship conspiracy theories|"birtherism"]] in the lead section. ([[Talk:Donald Trump/Archive 93#RfC: Birtherism in the lede|RfC Nov 2018]])
+
+'''34.''' {{anchor|C34}} Refer to [[Ivana Zelníčková]] as a [[Czechs|Czech]] model, with a link to [[Czechs]] (people), not [[Czechoslovakia]] (country). ([[Talk:Donald Trump/Archive 94#Ivana Trump's nationality |Jan 2019]])
+
+{{hide|35. {{anchor|C35}} Superseded by [[#C49|#49]] |headerstyle=text-align:left; font-weight:normal; |content=
+Supersedes [[#C7|#7]]. Include in the lead: {{tq|Trump has made many false or misleading statements during his campaign and presidency. The statements have been documented by [[fact-checker]]s, and the media have widely described the phenomenon as unprecedented in American politics.}} ([[Talk:Donald Trump/Archive 95#RfC: Should the lead be updated to reflect that Trump has continued to make false or misleading statements throughout his campaign and presidency?|RfC Feb 2019]])
+}}
+
+{{hide| 36. {{anchor|C36}} Superseded by [[#C39|#39]] |headerstyle=text-align:left; font-weight:normal; |content=
+Include one paragraph merged from [[Health of Donald Trump]] describing views about Trump's psychology expressed by public figures, media sources, and mental health professionals who have not examined him. ([[Talk:Donald Trump/Archive 100#Health and lifestyle proposal|June 2019]]) (paragraph removed per [[Talk:Donald Trump/Archive 103#RfC: Should the section Donald Trump#Health and lifestyle include a paragraph about his mental health?|RfC Aug 2019]] yielding consensus #39)
+}}
+
+'''37.''' {{anchor|C37}} Resolved: Content related to Trump's presidency should be limited to summary-level about things that are likely to have a lasting impact on his life and/or long-term presidential legacy. ([[Talk:Donald Trump/Archive 99#Proposal for resolution|June 2019]])
+
+'''38.''' {{anchor|C38}} Do not state in the lead that Trump is the wealthiest U.S. president ever. ([[Talk:Donald Trump/Archive 100#RfC: oldest and wealthiest|RfC June 2019]])
+
+'''39.''' {{anchor|C39}} Supersedes [[#C21|#21]] and [[#C36|#36]]. Do not include any paragraph regarding Trump's mental health or mental fitness for office. '''Do not bring up for discussion again until an announced formal diagnosis or [[WP:MEDRS]]-level sources are provided.''' This does not preclude bringing up for discussion whether to include media coverage relating to Trump's mental health and fitness. This does not prevent inclusion of content about temperamental fitness for office. ([[Talk:Donald Trump/Archive 103#RfC: Should the section Donald Trump#Health and lifestyle include a paragraph about his mental health?|RfC Aug 2019]], [[Wikipedia:Biographies of living persons/Noticeboard/Archive329#Donald Trump's mental health|July 2021]])
+
+'''40.''' {{anchor|C40}} Include, when discussing Trump's exercise or the lack thereof: {{tq|He has called golfing his "primary form of exercise",<!--<ref>{{cite tweet |user=realDonaldTrump |author-link=Donald Trump |number=1018068353305411584 |title=I have arrived in Scotland and will be at Trump Turnberry for two days of meetings, calls and hopefully, some golf - my primary form of exercise! The weather is beautiful, and this place is incredible! Tomorrow I go to Helsinki for a Monday meeting with Vladimir Putin. |date=July 14, 2018 |access-date=July 4, 2019}}</ref>--> although he usually does not walk the course.<!--<ref>{{cite news |url=https://thegolfnewsnet.com/golfnewsnetteam/2018/07/14/donald-trump-exercise-golf-cart-turnberry-110166/ |title=Donald Trump says he gets most of his exercise from golf, then uses cart at Turnberry |work=Golf News Net |date=July 14, 2018 |access-date=July 4, 2019}}</ref><ref>{{cite news |url=https://www.reuters.com/article/us-usa-trump-fitness/exclusive-exercise-i-get-more-than-people-think-trump-says-idUSKBN1F633B |title=Exercise? I get more than people think, Trump says |publisher=[[Reuters]] |first1=Jeff |last1=Mason |first2=Steve |last2=Holland |date=January 18, 2018 |quote=He gets exercise by playing golf, he said, even though he typically rides around the course in a golf cart.}}</ref>--> He considers exercise a waste of energy, because he believes the body is "like a battery, with a finite amount of energy" which is depleted by exercise.<!--<ref>{{cite news |url=https://edition.cnn.com/2019/02/07/politics/trump-health/index.html |title=Ahead of annual physical, Trump has not followed doctor's orders |publisher=[[CNN]] |first1=Jeremy |last1=Diamond |first2=Kevin |last2=Liptak |date=February 7, 2019 |quote=Nearly a dozen White House officials and sources close to Trump said they don't believe he's set foot in the fitness room in the White House residence, maintaining his view that exercise would be a waste of the energy he has always touted as one of his best attributes.}}</ref><ref>{{cite news |url=https://www.washingtonpost.com/national/health-science/trump-thinks-that-exercising-too-much-uses-up-the-bodys-finite-energy/2017/05/12/bb0b9bda-365d-11e7-b4ee-434b6d506b37_story.html |title=Trump thinks that exercising too much uses up the body's finite energy |newspaper=[[The Washington Post]] |date=May 12, 2017 |quote=Trump mostly gave up athletics after college because he “believed the human body was like a battery, with a finite amount of energy, which exercise only depleted.”}}</ref>-->}} ([[Talk:Donald Trump/Archive 104#RfC: Exercise, take 2|RfC Aug 2019]])<!--References included here to be on the safe side, but commented out-->
+
+'''41.''' {{anchor|C41}} Omit book authorship (or lack thereof) from the lead section. ([[Talk:Donald Trump/Archive 107#RfC: books in lead|RfC Nov 2019]])
+
+'''42.''' {{anchor|C42}} House and Senate outcomes of the impeachment process are separated by a full stop. For example: {{tq|He was impeached by the House on December 18, 2019, for abuse of power and obstruction of Congress. He was acquitted of both charges by the Senate on February 5, 2020.}} ([[Talk:Donald Trump/Archive 112#In what way does "but" change the meaning of this sentence?|Feb 2020]])
+
+'''43.''' {{anchor|C43}} The rules for edits to the lead are no different from those for edits below the lead. ''For edits that do not conflict with existing consensus:'' Prior consensus is NOT required. [[WP:BOLD|BOLD]] edits are allowed, subject to normal [[WP:BRD|BRD]] process. The mere fact that an edit has not been discussed is not a valid reason to revert it. ([[Talk:Donald Trump/Archive 113#Consensus-first in the lead|March 2020]])
+
+{{hide| 44. {{anchor|C44}} Superseded by [[#C71|#71]] |headerstyle=text-align:left; font-weight:normal; |content=
+The lead section should mention North Korea, focusing on Trump's meetings with Kim and some degree of clarification that they haven't produced clear results. See [[#C32|#32]]. ([[Talk:Donald Trump/Archive 117#RfC: North Korea in the lead|RfC May 2020]])
+}}
+
+{{hide| 45. {{anchor|C45}} Superseded by [[#C48|#48]] |headerstyle=text-align:left; font-weight:normal; |content=
+There is no consensus to mention the [[COVID-19 pandemic]] in the lead section. ([[Talk:Donald Trump/Archive 117#RfC: Coronavirus in the lead|RfC May 2020]], [[Talk:Donald Trump/Archive 119#Mention of coronavirus in lead, Take 3? Take 4? Take 5?|July 2020]])
+}}
+
+'''46.''' {{anchor|C46}} Use the caption "Official portrait, 2017" for the infobox image. ([[Talk:Donald Trump/Archive 122#Infobox caption once and for all|Aug 2020]], [[Talk:Donald Trump/Archive 131#Caption|Jan 2021]]) The consensus carries forward to "Official portrait, 2025" in 2025. 
+
+'''47.''' {{anchor|C47}} Do not mention Trump's net worth or ''Forbes'' ranking (or equivalents from other publications) in the lead, nor in the infobox. ([[Talk:Donald Trump/Archive 124#What about net worth?|Sep 2020]])
+
+'''48.''' {{anchor|C48}} Supersedes [[#C45|#45]]. Trump's reaction to the COVID-19 pandemic should be mentioned in the lead section. There is no consensus on specific wording, but the status quo is {{tq|Trump reacted slowly to the [[COVID-19 pandemic]]; he minimized the threat, ignored or contradicted many recommendations from health officials, and promoted false information about unproven treatments and the availability of testing.}} ([[Talk:Donald Trump/Archive 123#COVID-19 in the lead? (take 69)|Oct 2020]], [[Talk:Donald Trump/Archive 121#RfC: A statement on Trump and Covid-19 in the lead|RfC Aug 2020]])
+
+'''49.''' {{anchor|C49}} Supersedes [[#C35|#35]]. Include in lead: {{tq|Trump has made many false and misleading statements during his campaigns and presidency, to a degree unprecedented in American politics.}} ([[Talk:Donald Trump/Archive 128#Proposed shortening of one sentence in the lead section|Dec 2020]])
+
+{{hide| 50. {{anchor|C50}} Superseded by [[#C70|#70]] |headerstyle=text-align:left; font-weight:normal; |content=
+Supersedes [[#C17|#17]]. The lead sentence is: {{tq|Donald John Trump (born June 14, 1946) is an American politician, media personality, and businessman who served as the 45th [[president of the United States]] from 2017 to 2021.}} ([[Talk:Donald Trump/Archive 134#Lead sentence proposal|March 2021]]), amended ([[Talk:Donald Trump/Archive 136#The lead|July 2021]]), inclusion of politician ([[Talk:Donald Trump/Archive 138#RfC about adding "politician" to lead of Donald Trump|RfC September 2021]])
+}}
+
+'''51.''' {{anchor|C51}} Include in the lead that many of Trump's comments and actions have been characterized as misogynistic. ([[Talk:Donald_Trump/Archive_136#"Many_of_his_comments_and_actions_have_been_characterized_as_racially_charged_or_racist."|Aug 2021]] and [[Talk:Donald_Trump/Archive_139#Phrasing_of_lead_-_sentences_on_racially_charged/racist_and_on_mysogynistic_comments_and_actions|Sep 2021]])
+
+'''52.''' {{anchor|C52}} Supersedes [[#C23|#23]]. The lead should contain a summary of Trump's actions on immigration, including the Muslim travel ban (cf. item 23), the wall, and the family separation policy. ([[Talk:Donald_Trump/Archive_139#Immigration_line_for_intro|September 2021]])
+
+'''53.''' {{anchor|C53}} The lead should mention that Trump promotes conspiracy theories. ([[Talk:Donald Trump/Archive_139#RfC: Should the lead section mention that the subject promotes conspiracy theories?|RfC October 2021]])
+
+'''54.''' {{anchor|C54}} Include in the lead that, quote, {{tq|Scholars and historians rank Trump as one of the worst presidents in U.S. history.}} ([[Talk:Donald Trump/Archive 140#RFC: Should we mention historical evaluations of Trump's presidency?|RfC October 2021]]) Amended after re-election: {{tq|After his first term, scholars and historians ranked Trump as one of the worst presidents in American history.}} ([[Talk:Donald Trump/Archive 176#Reconsidering the wording for consensus 54|November 2024]])
+
+'''55.''' {{anchor|C55}} Regarding {{tq|Trump's comments on the [[Unite the Right rally|2017 far-right rally in Charlottesville, Virginia]]}}, do not wiki-link "[[Unite the Right rally#President Trump's statements|Trump's comments]]" in this manner. ([[Talk:Donald Trump/Archive 142#RfC: should we add a wiki-link to article subsection President Trump's statements on the Unite the Right rally?|RfC December 2021]])
+
+'''56.''' {{anchor|C56}} Retain the content that Trump {{tq|never confronted Putin over its alleged bounties against American soldiers in Afghanistan}} but add context. Current wording can be altered or contextualized; no consensus was achieved on alternate wordings. ([[Talk:Donald Trump/Archive 141#RfC Russian Bounties claims|RfC November 2021]]) Trump's expressions of doubt regarding the Russian Bounties Program should be included in some capacity, though there there is no consensus on a ''specific'' way to characterize these expressed doubts. ([[Talk:Donald Trump/Archive 145#RfC on Russian bounties wording|RfC March 2022]])
+
+'''57.''' {{anchor|C57}} Do not mention in the lead Gallup polling that states Trump's the only president to never reach 50% approval rating. ([[Talk:Donald Trump/Archive_142#RfC:_Gallup_poll|RfC January 2022]])
+
+'''58.''' {{anchor|C58}} Use inline citations in the lead for the more contentious and controversial statements. Editors should further discuss which sentences would benefit from having inline citations. ([[Talk:Donald_Trump/Archive_145#RfC:_Should_the_lead_section_have_any_citations?|RfC May 2022]], [[Talk:Donald_Trump/Archive_145#Deciding_what_to_cite_in_the_lede|discussion on what to cite May 2022]])
+
+'''59.''' {{anchor|C59}} Do not label or categorize Trump as a far-right politician. ([[Talk:Donald Trump/Archive 148#RFC: Should 'far-right politician' be included?|RfC August 2022]])
+
+'''60.''' {{anchor|C60}} Insert the links described in the [[Talk:Donald Trump/Archive 152#RfC on links in the lead|RfC January 2023]].
+
+'''61.''' {{anchor|C61}} When a thread is started with a general assertion that the article is biased for or against Trump (i.e., without a ''specific, policy-based'' suggestion for a change to the article), it is to be handled as follows:
+#Reply briefly with a link to [[Talk:Donald Trump/Response to claims of bias]], optionally using its shortcut, [[WP:TRUMPRCB]].
+#Close the thread using {{tlx|archive top}} and {{tlx|archive bottom}}, referring to this consensus item. Suggested closure for copy-and-paste:<br><code><nowiki>{{atop|Please read [[WP:TRUMPRCB]]. Closing per [[Talk:Donald Trump#C61|consensus 61]]. Eligible for manual archival after this time tomorrow. ~~~~}}</nowiki></code><br>[existing thread]<br><code><nowiki>{{abot}}</nowiki></code>
+#Wait at least 24 hours per [[#C13|#13]].
+#[[User:Elli/OneClickArchiver|Manually archive]] the thread.
+
+This does not apply to posts that are clearly in bad faith, which are to be removed on sight. ([[Talk:Donald Trump/Archive 155#Handling bias complaints|May 2023]])
+
+'''62.''' {{anchor|C62}} The article's description of the five people who died during and subsequent to the January 6 Capitol attack should avoid a) mentioning the causes of death and b) an explicit mention of the Capitol Police Officer who died. ([[Talk:Donald Trump/Archive 159#RfC on Jan 6 deaths|RfC July 2023]])
+
+'''63.''' {{anchor|C63}} Supersedes [[#C18|#18]]. The alma mater field of the infobox reads: "University of Pennsylvania (BS)". ([[Talk:Donald Trump/Archive 161#Discussion to change consensus #18 (alma mater in infobox)|September 2023]]) 
+
+'''64.''' {{anchor|C64}} Omit the {{tlx|Very long}} tag. ([[Talk:Donald Trump/Archive 164#Article tag "very long"|January 2024]])
+
+'''65.''' {{anchor|C65}} Mention the [[Abraham Accords]] in the article; no consensus was achieved on specific wordings. ([[Talk:Donald Trump/Archive 166#RfC for inclusion of Abraham Accords in article|RfC February 2024]])
+
+'''66.''' {{anchor|C66}} Omit {{tlx|infobox criminal}}. ([[Talk:Donald Trump/Archive 171#RfC: Do we add infobox criminal after conviction?|RfC June 2024]])
+
+'''67.''' {{anchor|C67}} The "Health" section includes: "Trump says he has never drunk alcohol, smoked cigarettes, or used <del>drugs. He</del> <ins>drugs, and that he</ins> sleeps about four or five hours a night." ([[Talk:Donald Trump/Archive 133#Trump's health habits|February 2021]]) Amended ([[Talk:Donald Trump/Archive 204#Seeking to modify prior consensus on two sentences in Personal life|October 2025]])
+
+'''68.''' {{anchor|C68}} Do not expand the brief mention of Trumpism in the lead. ([[Talk:Donald Trump/Archive 187#RfC on describing Trumpism in lead|RfC January 2025]])
+
+'''69.''' {{anchor|C69}} Do not include the word "criminal" in the first sentence. ([[Talk:Donald Trump/Archive 187#Proposal to supersede consensus #50|January 2025]])
+
+'''70.''' {{anchor|C70}} Supersedes [[#C50|#50]]. First two sentences read:{{tq2|'''Donald John Trump''' (born June 14, 1946) is an American politician, media personality, and businessman who is the 47th [[president of the United States]]. A member of the [[Republican Party (United States)|Republican Party]], he served as the 45th president from 2017 to 2021.}}Linking exactly as shown. ([[Talk:Donald Trump/Archive 192#Superseding consensus #50, sentences 1 and 2|February 2025]])
+
+'''71.''' {{anchor|C71}} Supersedes [[#C44|#44]]. Omit from the lead a mention of the Trump–Kim meetings of 2018 and 2019. ([[Talk:Donald Trump/Archive 196#Meeting with Kim in the lead|April 2025]])
+
+'''72.''' {{anchor|C72}} Omit from the lead a mention of the January 6 pardons. ([[Talk:Donald Trump/Archive 200#RfC on Jan 6 pardons in lead|RfC July 2025]])
+
+'''73.''' {{anchor|C73}} Article body includes:{{tq2|Trump [[Relationship of Donald Trump and Jeffrey Epstein|had a 15-year friendship]] with [[Jeffrey Epstein]]; persons who knew them at the time said they frequently hit on and competed for women. Media attention and public pressure mounted in 2025, when his administration did not release [[Jeffrey Epstein client list|files relating to Epstein]], despite Trump's promise to do so during the 2024 campaign.}}([[Talk:Donald Trump/Archive 202#Trump–Epstein|August 2025]], [[Talk:Donald Trump/Archive 203#Follow-up to Trump-Epstein|September 2025]])
+
+'''74.''' {{anchor|C74}} This article adheres to [[WP:EDITREQ]]. If an edit request is potentially controversial, an editor responds in one of three ways:
+*<code><nowiki>:{{subst:EEp|c}} ~~~~</nowiki></code>, rendering as:<br>[[File:X mark.svg|20px|link=|alt=]] '''Not done for now:''' please establish a [[Wikipedia:Consensus|consensus]] for this alteration '''[[Wikipedia:Edit requests#Planning a request|before]]''' using the {{Tlx|Edit extended-protected}} template.<!-- Template:EEp --> ''[your signature]''
+*If the editor prefers a less formal, more personal touch, non-template language to the same effect as above.
+*Or some combination of the above two, with the template first.{{pb}}Unless someone feels the response was incorrect for the situation (the edit request was not potentially controversial), no comments are posted after the response. Unless there is a good faith challenge in the interim, the thread is manually archived after 24 hours after the response, per [[Talk:Donald Trump#C13|#13]]. ([[Talk:Donald Trump/Archive 204#Handling improper edit requests|October 2025]])
+
+'''75.''' {{anchor|C75}} Mention the [[Greenland crisis]] in the body. ([[Talk:Donald Trump/Archive 207#Greenland crisis|January 2026]])
+
+'''76.''' {{anchor|C76}} Do not use the word "persecution" when describing Trump's policies toward transgender people. See closure for more. ([[Talk:Donald Trump/Archive 212#RfC: Transgender persecution?|RfC May 2026]])
+<br>
+</div>
+</div>
