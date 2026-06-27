@@ -38,6 +38,40 @@ The recency-fails property is strongly *argued* but not yet *measured*: the enti
 - **Alignment labor:** scoring recency-failure needs mapping an archive comment → the consensus item it (stale-ly) invokes. That's *alignment*, not supersession-labeling (the box gives supersession) — lighter than full LLM labeling, but real, and the place an LLM aligner could re-introduce contamination. Use string/citation anchors (editors literally cite "consensus item N") to keep alignment deterministic where possible.
 - **Optics:** contentious political topics invite scrutiny in a paper; lean on the science/history/IR subset to diversify away from US politics.
 
+## Evaluated alternative — MultiWOZ (raised by Mihir)
+
+MultiWOZ (multi-domain task-oriented dialogue, 10k+ dialogues with turn-level human belief-state annotations) is a tempting candidate — trivially assemblable, a trusted benchmark. But it's **weaker than Wikipedia consensus for (B)'s regime**, on grounded facts:
+
+- **Wrong failure mode.** [DATA] DST's hard cases are *coreference / value carryover* (MultiWOZ 2.3 added co-reference annotations for exactly this) — "same area as the hotel," not "a later turn restates a *superseded* value as current." That's reference resolution, not the stale-restatement regime. DST is otherwise mostly recency-resolvable (latest slot mention wins), so the regime is both a minority and a *different* one.
+- **Noisy ground truth.** [DATA] 17.3% of utterances had state-annotation errors (fixed in 2.2); 2.1→2.2→2.3→2.4 all chase residual inconsistency. "Clean labels" is overstated.
+- **Severe, unfixable contamination.** [DATA/TRAINING] Static 2018-era memorized benchmark, no post-cutoff option (Wikipedia consensus has 2025–26 items).
+- **No tensions; wrong positioning.** Preference changes are clean supersession (same gap as contracts), and it pulls into the crowded DST literature and a *personal*-preference framing, away from the multi-stakeholder decision-substrate thesis.
+
+**Role:** a cheap *pilot/control* to stand up the daftari pipeline, or a source of an isolated coreference-supersession subset — not the primary accuracy corpus. Wikipedia consensus remains primary (real regime + tensions + contamination control + positioning).
+
+## The decisive filter: retention vs. stale-restatement (evaluating the wider benchmark landscape)
+
+A survey of state-tracking benchmarks (MultiWOZ, SGD, bAbI, TextWorld/Jericho, BABILong, FreshQA, Ubuntu/MPC) sharpened the corpus criterion. The contract probe's lesson generalizes into one filter:
+
+> daftari's regime is **stale restatement** — a later message asserts an *earlier, now-superseded* value as current, so most-recent-mention recency returns the **stale** answer. This is *opposite* to **retention** — remembering an *unchanged* value across noise, where the current value IS the most-recent overwrite.
+
+Almost the entire state-tracking literature tests **retention**, which is the **accumulation pole's strength** — the thing daftari is *not* differentiated on:
+
+| Benchmark | Tests | Has the regime? |
+|---|---|---|
+| MultiWOZ / SGD (DST) | retention + coreference; recency-per-slot mostly wins | No (minority coreference subset) |
+| bAbI Task 2/15 | retention + chaining ("where is the football" = latest move) | No — recency-resolvable |
+| TextWorld / Jericho | world-state, "maintained until overwritten" (monotonic) | No — recency-resolvable |
+| BABILong | bAbI-in-noise → long-context retrieval | No |
+| FreshQA / Temporal QA | **model** staleness (training prior lags), not **corpus** staleness | No (orthogonal — stale is in the model, not the text) |
+| Ubuntu Dialogue / MPC | multiparty humans **do** restate stale positions | **Yes — but no clean ground truth** (raw chat → LLM-labeling → contamination gate) |
+
+The two that genuinely exhibit stale-restatement (multiparty human chat) lack a maintained current-state artifact to score against. **Wikipedia consensus is the only candidate that pairs the messy restating stream (talk archives) with clean human-maintained ground truth (the consensus box)** — which is why it stands out. The wider landscape confirms the gap rather than filling it.
+
+## Structured vs. unstructured (the use case)
+
+The regime is **unstructured multi-stakeholder conversational/decision text** (the group-chat / WorkIQ pain), and that is *necessary*, not incidental: structured logs / DB transaction streams are recency-resolvable **by construction** (latest transaction per key = current state; an append-only log never falsely asserts an old value as current) — the same recency-works property as contracts. **Structured data has no daftari *accuracy* niche (only provenance/audit).** The accuracy regime exists only where humans communicate state imperfectly (no incorporation-by-reference; restating, misremembering, disagreeing). This sharpens the thesis: **daftari's accuracy value is specifically the unstructured human decision substrate.**
+
 ## Recommended next step (its own brainstorm, then build)
 
 (B) is GO. Before building, brainstorm the corpus design as a unit: the archive→consensus alignment method (deterministic edit-summary citations vs. an aligner), the post-cutoff/perturbation contamination plan, and the exact QA buckets (current-decision, superseded-restatement-trap, live-tension-not-supersession). Then build acquisition (the Wikipedia-API analog of E1) and run the recency-fails kill-condition probe (step 1) before anything else.
