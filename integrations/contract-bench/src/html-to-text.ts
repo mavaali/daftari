@@ -61,3 +61,12 @@ export function stripStructure(html: string): string {
   s = s.replace(/<[^>]+>/g, " ");
   return s;
 }
+
+export function htmlToText(html: string): string {
+  const stripped = stripStructure(html);
+  const decoded = decodeEntities(stripped);
+  // Collapse every run of whitespace (incl. decoded U+00A0) to one space. We
+  // never insert a period, so this cannot mint a sentence boundary; it only
+  // guarantees at least one space between former block elements.
+  return decoded.replace(/[\s ]+/g, " ").trim();
+}

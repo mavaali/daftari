@@ -33,3 +33,38 @@ describe("stripStructure", () => {
     expect(stripStructure("a<!--x-->b<script>z()</script>c<style>p{}</style>d")).toBe("abcd");
   });
 });
+
+import { readFileSync } from "node:fs";
+import { htmlToText } from "./html-to-text.js";
+import { parseCitations } from "./citation-parse.js";
+
+const amd1 = readFileSync(new URL("./__fixtures__/ngs/amd1.htm", import.meta.url), "utf8");
+
+describe("htmlToText", () => {
+  test("strips tags then decodes (literal < from &lt; is not re-stripped)", () => {
+    expect(htmlToText("<p>a &lt;b&gt; c</p>").trim()).toBe("a <b> c");
+  });
+  test("collapses all whitespace (incl. decoded nbsp) to single spaces", () => {
+    expect(htmlToText("x\n\n  y&#160;&#160;z")).toBe("x y z");
+  });
+  test("does NOT mint a spurious sentence boundary inside a dotted clause number", () => {
+    // "5.1" split by an inline tag must remain a non-boundary "5.1".
+    const out = htmlToText("Section 5.<b>1</b> of the Agreement is amended.");
+    expect(out).toContain("Section 5.1 of");
+  });
+
+  // --- ORACLE: real EDGAR HTML -> parseCitations recovers the verified term ---
+  // op:"restate" depends on the "...respective entireties" (restate) phrase
+  // being the nearest preceding TERM_OP_PATTERNS match before "Commitment"
+  // means — verified live in gate-zero (spec). If this ever resolves to
+  // op:"add" instead, the cause is phrase ORDERING in the real text, NOT
+  // htmlToText — check that before touching the converter.
+  test("oracle: amd-1 yields the Commitment defined-term restate as recoverable", () => {
+    const text = htmlToText(amd1);
+    expect(text).toContain("“Commitment” means"); // curly quotes decoded
+    const cites = parseCitations(text);
+    const commitment = cites.find((c) => c.clause === "Commitment");
+    expect(commitment).toBeDefined();
+    expect(commitment).toMatchObject({ op: "restate", recoverable: true });
+  });
+});
