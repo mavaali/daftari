@@ -60,19 +60,22 @@ seeds/ngs.json  ──►  buildChainDocs()  ──►  ChainDoc[]  (E3 consumes
 - **`pull-edgar.mjs`:** thin runner — reads a seed JSON path, calls `buildChainDocs`, writes the cache, prints a `ChainDoc[]` summary (id, order, char count). This is the manual acquisition entrypoint; not exercised in CI.
 
 ### Unit 3 — seed + chain assembly
-- **Seed format** (`seeds/ngs.json`), hand-authored:
+- **Seed format** (`seeds/ngs.json`), hand-authored. **Resolved live 2026-06-26 (gate-zero pre-confirmed — see below); all 6 filings fetched OK via curl+UA.** The benchmark chain is NGS's Texas Capital Bank **Amended & Restated Credit Agreement** (a defined-term *and* Section-numbered credit agreement) plus its sequential amendments:
   ```json
   {
-    "chainId": "ngs-credit-agreement",
-    "unitType": "defined-term",
+    "chainId": "ngs-tcb-ar-credit-agreement",
+    "unitType": "mixed",
     "docs": [
-      { "id": "ngs-base",  "order": 0, "role": "master",       "cik": "1084991", "accession": "...", "filename": "..." },
-      { "id": "ngs-amd-1", "order": 1, "role": "amendment-1",  "cik": "1084991", "accession": "...", "filename": "..." },
-      { "id": "ngs-amd-2", "order": 2, "role": "amendment-2",  "cik": "1084991", "accession": "...", "filename": "..." }
+      { "id": "ngs-ar-base", "order": 0, "role": "master-ar",   "cik": "1084991", "accession": "0001084991-23-000019", "filename": "exhibit101tcbamendedandres.htm" },
+      { "id": "ngs-amd-1",   "order": 1, "role": "amendment-1",  "cik": "1084991", "accession": "0001084991-23-000124", "filename": "exhibit101firstamendmentto.htm" },
+      { "id": "ngs-amd-2",   "order": 2, "role": "amendment-2",  "cik": "1084991", "accession": "0001084991-24-000066", "filename": "exhibit101_secondamendme.htm" },
+      { "id": "ngs-amd-3",   "order": 3, "role": "amendment-3",  "cik": "1084991", "accession": "0001084991-24-000080", "filename": "exhibit101thirdamendment.htm" },
+      { "id": "ngs-amd-4",   "order": 4, "role": "amendment-4",  "cik": "1084991", "accession": "0001084991-25-000044", "filename": "exhibit101_fourthxamendm.htm" }
     ]
   }
   ```
-  (Exact accession/filename values resolved during implementation by browsing the CIK 1084991 filing index; the seed records them so the pull is reproducible.)
+  - **`ngs-amd-5`** (`0001084991-26-000054` / `exhibit101fifthamendmentto.htm`, 2026-06-15) is itself a ~1.5MB **second A&R restatement** (258 defined terms) — a chain-boundary case. **Excluded from the E1 seed**; whether it terminates the chain or opens a new master is an **E2/E3** decision (don't guess). E1 proves the path on base + amd-1..4.
+  - For E1's pipeline-readiness proof, base + amd-1 + amd-2 are sufficient and richest (amd-2 carries 5 Section-restate + 1 term-restate ops; amd-1 carries the defined-term oracle).
 - **`buildChainDocs(seed): Promise<ChainDoc[]>`:** for each `docs[]` entry, `fetchFiling` → `htmlToText` → `{ id, order, text }`; sort by `order`. `ChainDoc` is the existing type from `clause-edge.ts` (`{ id, order, text }`) — E3's `assemble(rawDocs, opts)` consumes this array unchanged.
 
 ## Test strategy — **no network in CI**
@@ -82,7 +85,7 @@ seeds/ngs.json  ──►  buildChainDocs()  ──►  ChainDoc[]  (E3 consumes
   1. Entity decode — named + numeric (`&#8220;`→`“` etc.).
   2. Tag-split quoted-term unwrap (`<u>“X”</u>` and `“<b>X</b>”` → `“X”`).
   3. No spurious sentence boundary minted on a known multi-clause prose passage (assert a `parseCitations` subject resolves to the right clause across a paragraph break).
-  4. **Oracle assertion (user-approved coupling to E2's parser):** `parseCitations(htmlToText(ngsFirstAmendment))` surfaces the expected defined term(s) (e.g. `"Applicable Margin"`) as `recoverable` — the only way to assert "pipeline-ready" rather than "looks clean." This couples E1's test to `parseCitations` deliberately; it does **not** make E1 own selection/annotation (E2).
+  4. **Oracle assertion (user-approved coupling to E2's parser):** `parseCitations(htmlToText(ngsAmd1))` surfaces the **verified** defined term **`"Commitment"`** as a `recoverable` restate — confirmed live 2026-06-26: amd-1 restates `"Commitment"` "amended and restated in their respective entireties to read in full as follows: &#8220;Commitment&#8221; means …". This is the only way to assert "pipeline-ready" rather than "looks clean." It couples E1's test to `parseCitations` deliberately; it does **not** make E1 own selection/annotation (E2). (The handoff's `"Applicable Margin"` guess was superseded by the actually-present `"Commitment"`.)
      - **Fixture precondition (load-bearing):** `parseDefinedTermCitations` only emits a `Citation` for a term when a `TERM_OP_PATTERNS` operative phrase (e.g. `"amended and restated in their respective entireties"`, `"amended to add … following definitions"`) precedes the term list — a doc containing merely `"Applicable Margin" means …` yields **nothing**. The oracle fixture (First Amendment) MUST contain such a trigger, else the oracle returns empty for reasons unrelated to `htmlToText`. Verify the chosen fixture carries a `TERM_OP_PATTERNS` phrase as part of gate-zero below; if NGS's amendment phrases its restatements differently, either pick a fixture that triggers or assert via a Section-op oracle instead.
 - **`edgar-fetch.test.ts`:** `filingUrl` URL-construction unit tests (dashes stripped, path shape) — pure, no network. The actual `fetchFiling`/curl path is exercised by `pull-edgar.mjs` run manually (proven path), not asserted in CI.
 - **Conventions:** tests mirror `src/` structure (per CLAUDE.md); functions-and-types, no classes; `Result`-style returns at I/O boundaries where a failure is expected (a 403/404 from `fetchFiling` returns an error result, does not throw). Build `cd integrations/contract-bench && npx tsc`; test `npx vitest run --root integrations/contract-bench`.
@@ -97,7 +100,7 @@ seeds/ngs.json  ──►  buildChainDocs()  ──►  ChainDoc[]  (E3 consumes
 
 - **[HYPOTHESIS] `htmlToText` accuracy is the dominant correctness risk.** Mitigated by the oracle assertion + hermetic fixtures. Kill signal: oracle test cannot surface known NGS terms ⇒ converter is wrong, fix before E2.
 - **[HYPOTHESIS] Table flattening is low-noise.** Kill condition stated above.
-- **[ASSUMPTION] NGS is pullable and is a clean defined-term chain. — GATE-ZERO (hard checkpoint, before any test scaffolding).** The parent handoff names it as the known case, but the accession/filename values are unresolved placeholders by design (`"..."` in the seed). The **first implementation step** is to (a) browse the CIK 1084991 filing index, resolve the 3 accession/filename triples, confirm all 3 are fetchable via the proven curl+UA path, and (b) confirm the First-Amendment text actually carries a `TERM_OP_PATTERNS` operative phrase so the oracle target (`"Applicable Margin"` as `recoverable`) is reachable. Only after this gate passes do we scaffold tests around those fixtures. If NGS is not as clean/triggering as assumed, pick another defined-term chain (still E1-shaped) and update the oracle target accordingly.
+- **[RESOLVED 2026-06-26] GATE-ZERO PASSED — pre-confirmed during planning.** All five chain filings (base + amd-1..4) were fetched live via curl+UA (exit 0; base 1.72MB, amd-1 70KB, amd-2 37KB, amd-3 21KB, amd-4 37KB). Verified: (a) curly quotes encode as `&#8220;`/`&#8221;` numeric entities (17× each in amd-1) — confirming the numeric-decoder requirement on real data; (b) amd-1 carries `amended and restated in their respective entireties` + `amended to add … following definitions` (both `TERM_OP_PATTERNS` triggers); (c) the oracle term `"Commitment"` is present as a recoverable restate. The accession/filename triples are now recorded in the seed above, so implementation **starts from confirmed-fetchable filings** — the "first executable step" is cache-and-convert, not discovery. Residual risk is now purely `htmlToText` *correctness*, retired by the fixture + oracle tests.
 - **Contamination:** structural memorization of contract *form* is fine; we measure perturbed *values* (E3's `perturbValues`). Out of E1's scope but noted.
 
 ## What E1 explicitly does NOT decide
