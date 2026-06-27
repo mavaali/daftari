@@ -70,4 +70,15 @@ describe("htmlToText", () => {
     expect(commitment).toBeDefined();
     expect(commitment).toMatchObject({ op: "restate", recoverable: true });
   });
+
+  // Real-doc SECTION-op oracle (complements the defined-term "Commitment"
+  // oracle): proves htmlToText preserves SENTENCE_BOUNDARY segmentation on real
+  // EDGAR Section prose so parseCitations' backward resolveSubject path
+  // recovers a whole-Section restate. amd-2 carries Section-restate ops.
+  test("oracle: amd-2 yields a recoverable Section restate", () => {
+    const amd2 = readFileSync(new URL("./__fixtures__/ngs/amd2.htm", import.meta.url), "utf8");
+    const cites = parseCitations(htmlToText(amd2));
+    const sectionRestate = cites.find((c) => c.clause === "8.1");
+    expect(sectionRestate).toMatchObject({ op: "restate", recoverable: true });
+  });
 });
