@@ -5,7 +5,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface FilingRef {
@@ -53,13 +53,20 @@ function cacheKey(ref: FilingRef): string {
 export async function fetchFiling(ref: FilingRef, opts: FetchOpts): Promise<FetchResult> {
   const cachePath = join(opts.cacheDir, cacheKey(ref));
   if (existsSync(cachePath)) {
-    return { ok: true, html: await readFile(cachePath, "utf8"), fromCache: true };
+    try {
+      return { ok: true, html: await readFile(cachePath, "utf8"), fromCache: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   }
   const transport = opts.transport ?? curlTransport;
   try {
     const html = await transport(filingUrl(ref), opts.userAgent);
     await mkdir(opts.cacheDir, { recursive: true });
-    await writeFile(cachePath, html);
+    const tmp = `${cachePath}.tmp`;
+    await writeFile(tmp, html);
+    await rename(tmp, cachePath);
+    // Space out live SEC calls for fair-access; cache hits don't throttle.
     if (opts.throttleMs) await new Promise((res) => setTimeout(res, opts.throttleMs));
     return { ok: true, html, fromCache: false };
   } catch (e) {
