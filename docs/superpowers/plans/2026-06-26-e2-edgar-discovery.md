@@ -47,7 +47,7 @@ cd integrations/contract-bench
 mkdir -p src/__fixtures__/efts
 UA="Daftari Research (mihir.wagle@gmail.com)"
 curl -sS --fail --max-time 40 -A "$UA" \
-  'https://efts.sec.gov/LATEST/search-index?q=%22Amendment+to+Credit+Agreement%22&ciks=0001084991' \
+  'https://efts.sec.gov/LATEST/search-index?q=%22Amendment+to+Credit+Agreement%22&forms=8-K&ciks=0001084991' \
   -o /tmp/efts-raw.json
 ```
 
@@ -757,7 +757,7 @@ function renderDistribution(d, selectedCount) {
 cd integrations/contract-bench && npx tsc
 node discover-edgar.mjs "Amendment to Credit Agreement" 15 0.2
 ```
-Expected: tallies CIKs, then per-CIK reconstructs+scores chains, prints `scored N chains; selected M`, and writes `.discover-out/{manifest.json, distribution.md, seeds/, pairs/}`. This is network-heavy and throttled (~300ms/call) — it may take a few minutes. **Capture and report:** the number scored/selected, the distribution.md contents, and whether any NGS chain (CIK 1084991) surfaced as a candidate (the known-good anchor — it will only appear if NGS is in the top-`topCiks`; if not, separately run `node discover-edgar.mjs "Amendment to Credit Agreement" 15 0.2` is fine, NGS appearing is a bonus not a gate).
+Expected: tallies CIKs, then per-CIK reconstructs+scores chains, prints `scored N chains; selected M`, and writes `.discover-out/{manifest.json, distribution.md, seeds/, pairs/}`. This is network-heavy and throttled (~300ms/call) — it may take a few minutes. **Debugging hint:** the grouping key is `(agreementType-lowercased, baseDate)`. If a surprising number of chains come back `length<3`, suspect **agreementType fragmentation** (amendments of one agreement naming its title inconsistently across filings → split into separate groups) BEFORE concluding amenders are scarce — inspect a few `manifest.json` chainIds for near-duplicate `(cik, baseDate)` pairs differing only in the type slug. (Over-merge is the opposite, rarer-but-real risk — loan closings date many agreements the same day — which is exactly why `agreementType` stays in the key.) **Capture and report:** the number scored/selected, the distribution.md contents, and whether any NGS chain (CIK 1084991) surfaced as a candidate (the known-good anchor — it will only appear if NGS is in the top-`topCiks`; if not, separately run `node discover-edgar.mjs "Amendment to Credit Agreement" 15 0.2` is fine, NGS appearing is a bonus not a gate).
 
 - [ ] **Step 4: Confirm outputs are git-ignored**
 ```bash
