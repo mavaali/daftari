@@ -280,6 +280,11 @@ describe("htmlToText", () => {
   });
 
   // --- ORACLE: real EDGAR HTML -> parseCitations recovers the verified term ---
+  // op:"restate" depends on the "...respective entireties" (restate) phrase
+  // being the nearest preceding TERM_OP_PATTERNS match before "Commitment"
+  // means — verified live in gate-zero (spec). If this ever resolves to
+  // op:"add" instead, the cause is phrase ORDERING in the real text, NOT
+  // htmlToText — check that before touching the converter.
   test("oracle: amd-1 yields the Commitment defined-term restate as recoverable", () => {
     const text = htmlToText(amd1);
     expect(text).toContain("“Commitment” means"); // curly quotes decoded
