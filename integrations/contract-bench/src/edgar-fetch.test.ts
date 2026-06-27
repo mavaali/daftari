@@ -54,4 +54,20 @@ describe("fetchFiling", () => {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
+
+  test("does NOT cache an empty (throttle-blank) 200 body; a later real fetch still works", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "edgar-"));
+    try {
+      let body = "   "; // whitespace-only throttle blank
+      const transport = async () => body;
+      const r1 = await fetchFiling(REF, { cacheDir, userAgent: "ua", transport });
+      expect(r1.ok).toBe(false); // empty body -> error, not a silent empty doc
+      body = "<p>real content</p>"; // SEC recovers
+      const r2 = await fetchFiling(REF, { cacheDir, userAgent: "ua", transport });
+      expect(r2.ok).toBe(true); // not poisoned by the earlier empty 200
+      if (r2.ok) expect(r2.html).toContain("real content");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
 });

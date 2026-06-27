@@ -62,6 +62,9 @@ export async function fetchFiling(ref: FilingRef, opts: FetchOpts): Promise<Fetc
   const transport = opts.transport ?? curlTransport;
   try {
     const html = await transport(filingUrl(ref), opts.userAgent);
+    if (html.trim().length === 0) {
+      return { ok: false, error: "empty response body from EDGAR (likely a throttle blank); not cached" };
+    }
     await mkdir(opts.cacheDir, { recursive: true });
     const tmp = `${cachePath}.tmp`;
     await writeFile(tmp, html);
