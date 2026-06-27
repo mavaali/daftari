@@ -1,0 +1,11 @@
+{
+  "chainId": "ngs-tcb-ar-credit-agreement",
+  "unitType": "mixed",
+  "docs": [
+    { "id": "ngs-ar-base", "order": 0, "role": "master-ar",  "cik": "1084991", "accession": "0001084991-23-000019", "filename": "exhibit101tcbamendedandres.htm" },
+    { "id": "ngs-amd-1",   "order": 1, "role": "amendment-1", "cik": "1084991", "accession": "0001084991-23-000124", "filename": "exhibit101firstamendmentto.htm" },
+    { "id": "ngs-amd-2",   "order": 2, "role": "amendment-2", "cik": "1084991", "accession": "0001084991-24-000066", "filename": "exhibit101_secondamendme.htm" },
+    { "id": "ngs-amd-3",   "order": 3, "role": "amendment-3", "cik": "1084991", "accession": "0001084991-24-000080", "filename": "exhibit101thirdamendment.htm" },
+    { "id": "ngs-amd-4",   "order": 4, "role": "amendment-4", "cik": "1084991", "accession": "0001084991-25-000044", "filename": "exhibit101_fourthxamendm.htm" }
+  ]
+}

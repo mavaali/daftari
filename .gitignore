@@ -49,3 +49,6 @@ integrations/recall-bench/.env.local
 
 # Recall Bench run artifacts (large; reproducible)
 integrations/recall-bench/results/
+
+# EDGAR download cache (reproducible from SEC; do not commit)
+.edgar-cache/
