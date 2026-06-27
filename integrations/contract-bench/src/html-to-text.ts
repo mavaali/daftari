@@ -3,6 +3,10 @@
 // numeric entities like &#8220;), unwrap inline tags WITHOUT inserting
 // whitespace (so a tag-split quoted term stays one token), and collapse
 // structure to spaces WITHOUT minting spurious sentence boundaries.
+//
+// Assumes tag attribute values contain no unescaped ">" (EDGAR escapes it as
+// &gt;). A literal ">" inside an attribute would leak attribute text into the
+// output; re-verify on any new, hand-edited corpus before reuse.
 
 const NAMED: Record<string, string> = {
   amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",

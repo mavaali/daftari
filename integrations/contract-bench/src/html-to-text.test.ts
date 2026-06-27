@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { decodeEntities } from "./html-to-text.js";
+import { decodeEntities, htmlToText, stripStructure } from "./html-to-text.js";
+import { parseCitations } from "./citation-parse.js";
 
 describe("decodeEntities", () => {
   test("decodes named entities", () => {
@@ -19,8 +21,6 @@ describe("decodeEntities", () => {
   });
 });
 
-import { stripStructure } from "./html-to-text.js";
-
 describe("stripStructure", () => {
   test("removes inline tags with NO inserted whitespace (keeps a tag-split token whole)", () => {
     expect(stripStructure("&#8220;<b>Commit</b>ment&#8221;")).toBe("&#8220;Commitment&#8221;");
@@ -33,10 +33,6 @@ describe("stripStructure", () => {
     expect(stripStructure("a<!--x-->b<script>z()</script>c<style>p{}</style>d")).toBe("abcd");
   });
 });
-
-import { readFileSync } from "node:fs";
-import { htmlToText } from "./html-to-text.js";
-import { parseCitations } from "./citation-parse.js";
 
 const amd1 = readFileSync(new URL("./__fixtures__/ngs/amd1.htm", import.meta.url), "utf8");
 
@@ -51,6 +47,13 @@ describe("htmlToText", () => {
     // "5.1" split by an inline tag must remain a non-boundary "5.1".
     const out = htmlToText("Section 5.<b>1</b> of the Agreement is amended.");
     expect(out).toContain("Section 5.1 of");
+  });
+  test("documents the block-split limitation: a BLOCK tag inside a clause number splits it", () => {
+    // Inline split is preserved (tested above). A block tag inserts a space,
+    // so "5.<td>1</td>" degrades to "5. 1". EDGAR never splits a clause number
+    // across a block element, so this is an accepted, documented limitation —
+    // pinned here so it reads as understood, not overlooked.
+    expect(htmlToText("Section 5.<td>1</td>")).toBe("Section 5. 1");
   });
 
   // --- ORACLE: real EDGAR HTML -> parseCitations recovers the verified term ---
