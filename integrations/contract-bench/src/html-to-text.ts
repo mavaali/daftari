@@ -39,3 +39,25 @@ export function decodeEntities(s: string): string {
     return NAMED[body] ?? m; // unknown named entity left intact
   });
 }
+
+// Inline tags carry no structural meaning — remove them with no spacing so a
+// quoted term split across <b>/<u>/<font> stays a single token. Everything
+// else is treated as a block boundary (one space).
+const INLINE = new Set([
+  "b", "i", "u", "em", "strong", "font", "span", "a", "sup", "sub",
+  "small", "big", "tt", "strike", "s", "ins", "del", "mark", "abbr",
+]);
+
+export function stripStructure(html: string): string {
+  let s = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<head[\s\S]*?<\/head>/gi, "");
+  // Named element tags: inline -> "", block -> " ".
+  s = s.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g, (_m, name: string) =>
+    INLINE.has(name.toLowerCase()) ? "" : " ");
+  // Any residual stray tags (malformed) -> space, never silently merge tokens.
+  s = s.replace(/<[^>]+>/g, " ");
+  return s;
+}

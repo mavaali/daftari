@@ -18,3 +18,18 @@ describe("decodeEntities", () => {
     expect(decodeEntities("&bogus; &amp;")).toBe("&bogus; &");
   });
 });
+
+import { stripStructure } from "./html-to-text.js";
+
+describe("stripStructure", () => {
+  test("removes inline tags with NO inserted whitespace (keeps a tag-split token whole)", () => {
+    expect(stripStructure("&#8220;<b>Commit</b>ment&#8221;")).toBe("&#8220;Commitment&#8221;");
+    expect(stripStructure("5.<u>1</u>")).toBe("5.1");
+  });
+  test("turns block tags into a single space boundary", () => {
+    expect(stripStructure("<p>A.</p><p>B.</p>").trim()).toBe("A.  B.");
+  });
+  test("drops comments, script, and style content", () => {
+    expect(stripStructure("a<!--x-->b<script>z()</script>c<style>p{}</style>d")).toBe("abcd");
+  });
+});
