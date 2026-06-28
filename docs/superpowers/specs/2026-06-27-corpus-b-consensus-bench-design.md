@@ -175,18 +175,25 @@ edit summary; record it as an instance attribute, report both.
   or **bidirectional edit-warring with no consensus-citing stabilization**. Arm C
   must **refuse to present it as settled** (return contested / no single governing
   value); recency and Arm B are tempted to mint one. Honest caveat: small N; this
-  is daftari's distinctive guarantee, kept even at small N.
+  is daftari's distinctive guarantee, kept even at small N. The two sources differ
+  in labelability: the **active "no consensus" box item is the primary,
+  deterministic source** (citation-anchored); **edit-war detection is best-effort**
+  (no citation anchor) and reported separately.
 - **no-mint probe** (fabrication test) — ask current consensus on a topic that has
   **no consensus item** (absent) or a **dead-end chain** (`{4,15}`). Correct =
   "not present / cannot determine." Arm C refuses (`resolved:false`, already built
   + tested); Arm B may fabricate; Arm A returns the nearest stream value (record
-  as fabrication-of-sorts).
+  as fabrication-of-sorts). **This bucket is box-derived, NOT stream-derived:** its
+  instances come from absent topics / dead-end chains in the consensus box, *not*
+  from the consensus-citing-revert parser (a citing revert names a live governing
+  item, so it never yields a no-mint case). Do not wire CO1's revert parser to feed
+  this bucket.
 
 ## Arms
 
 | Arm | Mechanism | The failure it embodies |
 |---|---|---|
-| **A. Recency-extraction** | Deterministic, zero-LLM: for topic X, return the topic-X passage value as of the **most-recent (reverted) edit** in the stream. The strong recency baseline (most-recent *on-topic* assertion, not global latest). | "Deterministic stream reader returns the stale value" (stale-restatement-trap) |
+| **A. Recency-extraction** | Deterministic, zero-LLM: for topic X, return the topic-X passage value as of the **most-recent (reverted) edit** in the stream. The strong recency baseline (most-recent *on-topic* assertion, not global latest). **Passage-localization** (mapping a box topic #N to the article passage it governs, so the right reverted value is read) is the least-specified mechanism and is **the first question CO2's plan must resolve** — content snapshots at kept instances are pulled in CO1 to support it. | "Deterministic stream reader returns the stale value" (stale-restatement-trap) |
 | **B. LLM-synthesis** *(gated — see WIN/KILL)* | Feed retrieved archive text to an LLM; ask it to state the current consensus on topic X as a single answer, with an explicit "say cannot-determine if unclear" instruction (the charitable baseline). | "Synthesized value hallucinates" (no-mint probe; live-tension confabulation) |
 | **C. Daftari (oracle edges)** | `parseConsensus` → `groupTopics` → `resolveCurrent` over the box's `supersededBy` edges → the active governing terminal; refuses (`resolved:false`) on dead-ends and tensions. Never mints. | The thesis under test |
 
