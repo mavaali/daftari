@@ -1,0 +1,8 @@
+[
+  { "revid": 1001, "parentid": 1000, "timestamp": "2025-09-01T10:00:00Z", "user": "EditorA", "comment": "ce: tweak wording of lead" },
+  { "revid": 1002, "parentid": 1001, "timestamp": "2025-09-02T11:00:00Z", "user": "EditorB", "comment": "manual rv per consensus 70" },
+  { "revid": 1003, "parentid": 1002, "timestamp": "2025-09-03T12:00:00Z", "user": "EditorC", "comment": "partial rv per [[Talk:Donald Trump/Current consensus#C71|consensus 71]]" },
+  { "revid": 1004, "parentid": 1003, "timestamp": "2025-09-04T13:00:00Z", "user": "EditorD", "comment": "restored per the consensus we reached on talk" },
+  { "revid": 1005, "parentid": 1004, "timestamp": "2025-09-05T14:00:00Z", "user": "EditorE", "comment": "rv per consensus 30 and consensus 39" },
+  { "revid": 1006, "parentid": 1005, "timestamp": "2025-09-06T15:00:00Z", "user": "EditorF", "comment": "Undid revision 1005 — see consensus 999" }
+]
