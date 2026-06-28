@@ -45,9 +45,16 @@ deferred and gated on this pilot.
 
 ## Goal
 
-Determine, on the 14 post-cutoff stale-trap instances, whether **stream-recency
+Determine, on the post-cutoff stale-trap instances, whether **stream-recency
 (Arm A) fails where daftari (Arm C) foregrounds the governing source** — the cheap
 falsifier that green-lights or kills the full corpus-B run.
+
+**Stale-trap set predicate (definitive):** CO1 instances with **`governingNum ∈ [67,76]`**
+— keyed on the *governing terminal*, exactly as CO1's `consensus-qa.ts` keys the
+post-cutoff set, NOT on `citedNum`. The two coincide on this data (**N=14**), but a
+stale cited item resolving forward to a terminal outside #67–76 (or vice versa)
+would make them diverge; the plan uses `governingNum ∈ [67,76]` and reports the
+actual N if it differs from 14.
 
 ## Non-goals
 
@@ -79,7 +86,10 @@ falsifier that green-lights or kills the full corpus-B run.
 **no-mint instances** (box dead-ends / absent topics, from CO1's no-mint bucket):
 ask "current consensus on topic X?" with no governing item. Arm A returns the
 latest stream value (**mint**); Arm C `resolveCurrent`→unresolved → **abstain**
-("not present").
+("not present"). **These are box-derived and NOT post-cutoff-scoped** — CO1's
+no-mint bucket (CO1 reported **N=5** globally, e.g. `{4,15}`); the abstain /
+mint-rate metric runs over these 5 regardless of the #67–76 slice. The bucket is
+confirmed populated (5), so the abstain sub-claim has data.
 
 ## Honest precision (do not force the metric)
 
@@ -97,7 +107,8 @@ than the probe implied).
 Reuse CO1 modules. New modules, each one responsibility:
 - `consensus-content.ts` — fetch revision content + `compare` diffs behind an
   interface; fixture reader for tests. A one-shot script pulls the 14 instances'
-  real diffs/content → committed fixtures (mirrors CO1's pull script).
+  real diffs/content → committed fixture `__fixtures__/trump-instance-diffs.json`
+  (keyed by revert `revid`; mirrors CO1's pull script).
 - `consensus-passage.ts` — parse a revert diff (`compare["*"]` HTML:
   `diff-deletedline` / `diff-addedline` / context) → `{ P, staleText, governingText, scorable, reason }`.
 - `consensus-arm-a.ts` — `armA(instance, snapshot)` → answer (staleText at `T-1`,
