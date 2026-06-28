@@ -1,5 +1,20 @@
 # Handoff — Engram → market-question KILL → corpus (B) consensus-bench started
 
+---
+## UPDATE — 2026-06-27 (session 2): corpus (B) PAUSED, Track 1 is the active track
+
+Picked this up. Two decisions made (both Mihir's, in-session):
+- **THE ONE OPEN DECISION (arm set) → resolved to "pause corpus B."** Not recency-only, not recency+llm-consolidate. Corpus (B) is parked at a clean stopping point. Reason: it's a paper mechanism-proof, lower priority than Track 1; don't sink the archive-acquisition cost until demand says there's a there there.
+- **Track 1 (demand validation) → "it's on me now."** The plan (`docs/plans/2026-06-27-decision-substrate-demand-validation.md`) is strategy-complete and field-ready enough; Mihir declined further scaffolding (field guide / outreach templates / contact list). Ball is in his court to run ~8–10 conversations and write the GREEN/WEAK/KILL read. **That read — not corpus B — decides company-vs-feature.**
+
+Shipped before pausing (the cheap, decision-independent NEXT step 1 + bugs found en route; commits `0d1d00f`, `3d68992`; suite 15 green, tsc clean):
+- **Topic grouping** `src/consensus-topics.ts` — `groupTopics(items)→Topic[]{id,items,current,resolved}`, connected components (union-find over supersededBy+supersedes). Real fixture = **63 topics (9 multi-item supersession chains + 54 standalone active), exactly 1 unresolved** ({4,15}, honest dead-end, `current:[]`). 5 tests.
+- **Two parse bug fixes** `src/consensus-parse.ts` — (1) active items no longer leak their predecessor into `supersededBy` (was scraped from the statement-as-header; latent because resolveCurrent short-circuits on active); (2) `extractSupersedes` now captures EVERY predecessor when one item supersedes several (#39→{21,36}), bounded to the Supersedes sentence. 2 tests.
+
+**Resume corpus B only if Track 1 returns GREEN/WEAK-worth-pursuing.** If/when resumed, the next undecided thing is STILL the arm set (recency-only vs +llm-consolidate) and then Arm A archive acquisition (needs its own brainstorm). Everything below this line is the original session-1 handoff, unchanged.
+
+---
+
 **Date:** 2026-06-27
 **Branch:** `feat/contract-bench-arms` (NOT pushed)
 **Suite:** consensus-bench 8 tests green, tsc clean. New commits this session: `f579239`, `a4378be`(prev), `f6bd2bb`, `a074054`, `20ac256`, `f5cab2f`.
