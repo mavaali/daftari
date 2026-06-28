@@ -1,16 +1,21 @@
 # Architecture
 
 Daftari is a single MCP server process. It is started against one vault
-directory, runs as one access identity for its lifetime, and serves 19 tools
-over stdio. (A twentieth surface, `daftari backfill`, is CLI-only — see
-[Adoption](#adoption-daftari-backfill).) This document explains how a tool call
-travels through the system and why the design is shaped the way it is.
+directory, runs as one access identity for its lifetime, and serves 25 MCP
+tools over stdio. Five additional surfaces are CLI-only —
+`daftari backfill`, `daftari import obsidian`, `daftari audit`,
+`daftari eval`, and `daftari consolidate` — plus a one-shot
+`daftari --init` scaffolder; they are introduced in the relevant sections
+below (see [Adoption](#adoption), [The consolidation loop](#the-consolidation-loop),
+and [Doc-to-code coherence](#doc-to-code-coherence)). This document
+explains how a tool call travels through the system and why the design is
+shaped the way it is.
 
 ## The layered model
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 19 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 25 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -55,14 +60,22 @@ Three things sit alongside the markdown:
   — it can be rebuilt from the markdown files at any time with
   `vault_reindex`, and it is git-ignored.
 
-  Lexical ranking lives in an FTS5 virtual table (`documents_fts`) over
-  title, tags, and body. SQLite's built-in BM25 ranks results and AFTER
-  INSERT / UPDATE / DELETE triggers on the regular `documents` table keep
-  the FTS index in sync without any extra write path. Vector ranking
-  lives in a sqlite-vec `embeddings_vec` virtual table that mirrors the
-  durable `embeddings` cache and exposes KNN queries via `MATCH ... AND
-  k = ?` with cosine distance. Both indexes are SQL-native — search is
-  one prepared statement per ranker, not a JavaScript scan.
+  Lexical ranking lives in two FTS5 virtual tables — `chunks_fts` over
+  chunk text and `documents_fts` over title, tags, and body — kept in
+  sync by AFTER INSERT / UPDATE / DELETE triggers on the underlying
+  `chunks` / `documents` tables. The default lexical granularity is
+  **chunk** (since v1.29.0): the BM25 score over `chunks_fts` is rolled
+  up to each document's best chunk, then *tiered* with a column-restricted
+  title/tag pass over `documents_fts` so every body match ranks above
+  every title-only match. Per-chunk scoring stops a long, multi-topic
+  document from diluting a relevant topic; the tiered combine preserves
+  title- and tag-only retrieval. Callers that need the previous behavior
+  pass `lexicalGranularity: "document"` to `vault_search`;
+  `vault_search_related` is unchanged (still document-granularity).
+  Vector ranking lives in a sqlite-vec `embeddings_vec` virtual table
+  that mirrors the durable `embeddings` cache and exposes KNN queries via
+  `MATCH ... AND k = ?` with cosine distance. Both indexes are SQL-native
+  — search is one prepared statement per ranker, not a JavaScript scan.
 
   **Prerequisite.** sqlite-vec ships a loadable extension (`vec0.dylib`
   / `.so` / `.dll`) and Daftari loads it at index-db open time via
@@ -232,18 +245,41 @@ the drift and triggers a full reindex.
 The markdown files are the single source of truth. Delete every `.db` file and
 the vault loses nothing — rebuild and continue.
 
-#### Adoption: `daftari backfill`
+**Path confinement.** Every vault path resolves through `realpath`'d
+canonicalization before any read or write, and a resolved path that
+escapes the realpath'd vault root is rejected. A symlinked file cannot
+read or write outside the vault, even when the vault itself sits under a
+symlinked parent.
 
-An existing wiki rarely arrives with Daftari's frontmatter already in place.
-`daftari backfill` adopts one without a manual migration sprint: it walks the
-vault and derives frontmatter defaults **deterministically** — no LLM calls —
-from git history and body conventions. `title` comes from the first H1 (else the
-filename); `created` / `updated` / `updated_by` from git (`--diff-filter=A`
-first-add, last commit, author mapped through an optional `backfill.identity_map`
-in `.daftari/config.yaml`); `collection` from the parent folder; and
-`status: canonical` / `confidence: medium` / `provenance: direct` /
-`domain: accumulation` as suggested defaults — never asserted, ratified by a
-human.
+**Report, don't coerce.** `reindexVault` no longer launders schema-invalid
+frontmatter into defaults. `ReindexResult.invalidFrontmatter` lists every
+document that was indexed but whose frontmatter violated the schema (and
+was indexed against coerced defaults), and `ReindexResult.skipped` reports
+files that could not be indexed at all. The markdown remains the source of
+truth; `vault_lint` is the repair path. Adjacent to this: `created` /
+`updated` values that are not strict ISO `YYYY-MM-DD` are normalized at
+the index boundary (`2026-3-1` → `2026-03-01`) or stored as the empty
+string when unrecoverable, so date arithmetic in search and lint can't
+throw on poisoned input — but the source file is preserved verbatim,
+honoring the non-destructive write invariant.
+
+#### Adoption
+
+An existing wiki rarely arrives with Daftari's frontmatter already in place
+— or with its own git history, or living under a sync-friendly filesystem.
+Three adoption surfaces address those, all CLI-only because adoption is a
+one-time operator act, not something an agent should reach for
+mid-conversation:
+
+**`daftari backfill`** adopts a wiki without a manual migration sprint: it
+walks the vault and derives frontmatter defaults **deterministically** —
+no LLM calls — from git history and body conventions. `title` comes from
+the first H1 (else the filename); `created` / `updated` / `updated_by`
+from git (`--diff-filter=A` first-add, last commit, author mapped through
+an optional `backfill.identity_map` in `.daftari/config.yaml`);
+`collection` from the parent folder; and `status: canonical` /
+`confidence: medium` / `provenance: direct` / `domain: accumulation` as
+suggested defaults — never asserted, ratified by a human.
 
 It is a two-step plan/apply, and the asymmetry is deliberate.
 `daftari backfill --plan [--scope <folder>]` derives proposals and stages them to
@@ -254,9 +290,28 @@ and commits them in a single commit (honoring `auto_commit`). `--scope` is
 plan file is never staged or committed — the apply commit is the durable audit
 trail. Existing frontmatter is preserved field-by-field (see
 [Non-destructive frontmatter writes](#non-destructive-frontmatter-writes)); a doc
-whose frontmatter already validates is reported conformant and skipped. CLI-only
-for v1 — there is no MCP tool, because adoption is a one-time operator act, not
-something an agent should reach for mid-conversation.
+whose frontmatter already validates is reported conformant and skipped.
+
+**`daftari import obsidian <vault>`** is an Obsidian-aware wrapper over
+`backfill`. It harvests inline `#tags` from the document body into the
+canonical `tags` field, maps Web Clipper's `source` key onto `sources[]`,
+normalizes ISO-datetime `created`/`updated` (as Obsidian and its plugins
+write them) to the schema's strict `YYYY-MM-DD`, preserves all other
+existing and custom frontmatter, and leaves wikilinks untouched (Daftari
+already resolves them). `listFiles` explicitly excludes `.obsidian/` and
+`.trash/` so plugin state does not leak into the index. On a non-git
+vault it announces it will `git init` before doing anything, and
+scaffolds the `.daftari/*` gitignore rules on apply.
+
+**`git_dir` config / `--external-git-dir`.** A cloud-synced vault
+(iCloud, Dropbox, OneDrive) needs version history without a churning
+`.git/` inside the sync folder. The `git_dir` key in
+`.daftari/config.yaml` — and the `daftari import … --external-git-dir[=path]`
+flag, which writes it for you on apply — keeps the vault's git data
+outside the sync root via `git init --separate-git-dir`. The sentinel
+value `external` derives a per-vault path under the platform data home;
+an explicit path is also accepted. Auto-commit and all other write-path
+git callers honor the resolved `gitDir`. History is per-device by design.
 
 **Field-name collisions.** A wiki that predates Daftari often uses one of the
 reserved enum field names — `status`, `confidence`, `domain`, `provenance` — with
@@ -297,6 +352,15 @@ A missing or unmatched role resolves to a deny-all **guest**. A malformed
 config makes the server refuse to start: a permission layer that silently loads
 a broken policy is worse than one that won't boot.
 
+**Reads are gated end-to-end.** Search results filter out hits in
+collections the role cannot read *before* any post-processing runs (so a
+coverage pull or current-source resolution never surfaces content from a
+denied collection). `vault_provenance` is gated on `canRead` for the
+target's collection: the provenance log carries a `frontmatter_diff` for
+every write, and reading that log on an unreadable doc would leak field
+content. `vault_ratify` and `vault_edge_contest` require the explicit
+`ratify` grant; a role can write but not issue curation verdicts.
+
 ### Layer 3 — Write safety
 
 The first half of the moat. Multiple agents may write to one vault; Layer 3
@@ -321,6 +385,16 @@ The locks are table stakes — single-writer safety is the floor, not the moat.
 What is genuinely differentiated here is **auto-commit + provenance**: a
 complete, attributable history of who changed what, produced without anyone
 having to remember to record it.
+
+**Stage-time write gate.** `vault_stage_action` is the producer side of
+the staged-action queue (see Layer 4), and the proposal itself is a
+write-shaped act — it sits in the queue until a human ratifies it. The
+producer is therefore gated on the role's `write` permission for the
+target's collection, not just on read access, so a read-only role can
+never even *propose* a change for someone else to approve. The matching
+write tool re-checks `canWrite` / `canPromote` again at dispatch, but
+the front-gate keeps malicious or buggy proposals from sitting in the
+queue for 14 days.
 
 #### Known limitations
 
@@ -454,44 +528,128 @@ The second half of the moat. Storing knowledge is easy; keeping a growing vault
   housekeeping sweep on each run — the queue can grow stale, but it never grows
   unbounded.
 - **derives_from edges.** The earned re-derivation graph (§11.3) — the trust
-  substrate the future consolidation loop's strength model reads. An edge
+  substrate the consolidation loop's strength model reads. An edge
   `from → to` asserts that `from`'s content derives from `to`, and it is never
   declared into trust: the first observation seeds a zero-strength `candidate`,
   and only *blind* re-derivations that vary a recorded axis
   (prompt | input-neighborhood | model) count as independent votes
-  (`k_survived`, capped). Strength is recomputed from the trail on every read,
-  never kept as a counter, and it *ages* — halving per 90 days since the last
-  qualifying re-test — so an un-retested edge drops out of `trigger-bearing`
-  on its own and entrenchment is structurally impossible. A replayed
-  attestation (same observer, same axis) counts again only after a minimum
-  gap, so one caller cannot pump strength in a sitting. `vault_edge_observe`
-  records sightings (the producer — normally the loop), `vault_edge_contest`
-  records a case-2 contradiction — the edge is revoked *and* a tension is
-  logged, never a silent decrement, and only fresh observations can re-earn
-  it — and `vault_edges` lists edges with live aged strength. Storage mirrors
-  staged actions: an append-only log at `.daftari/edges.jsonl` is the source
-  of truth, with a derived `derives_from_edges` table in the ephemeral index
-  (rebuilt on reindex, materialized at startup) for the loop's future
-  traversal engine.
-- **Two-gate envelope (consolidation loop, Stage 3).** `daftari consolidate`
-  (Component A — the birth/revision curation loop) consults a two-gate
-  envelope before every edge `do()`: an **invariants** gate (e.g. it refuses
-  to act on an edge whose endpoint carries an unresolved tension) and a
-  **trust-budget** gate. The envelope is wired **live but shadowed** — its
-  verdict is computed and recorded, never enacted. Each decision is journaled
-  to the shared `.daftari/shadow-actions.jsonl` as `decision: "admitted"` or
-  `decision: "gated"` (with the gate and reason), and `vault_lint` surfaces a
-  distinct envelope-gated view alongside the existing would-gate calibration
-  section. The §8 closures: a loop decision records `decided_by_principal`
-  (the authenticated identity) on the staged-action / contest-tension it
-  produces, and `vault_tension_resolve` is gated on `canRatify` for
-  loop-authored tensions, so the loop cannot close its own tensions.
+  (`k_survived`, capped). Direction is decided by a temperature-0
+  foundational-ordering judgment elicited in **both presentation orders** —
+  the edge is committed directed only when the orders agree; an order-contested
+  pair becomes a direction-unconfirmed pending edge and an interpretive tension
+  for human adjudication. Edge keys are canonical, so a post-edit direction
+  flip collapses to one symmetric edge rather than forking a contradictory
+  twin. Strength is recomputed from the trail on every read, never kept as a
+  counter, and it *ages* — halving per 90 days since the last qualifying
+  re-test — so an un-retested edge drops out of `trigger-bearing` on its own
+  and entrenchment is structurally impossible. A replayed attestation (same
+  observer, same axis) counts again only after a minimum gap, so one caller
+  cannot pump strength in a sitting. `vault_edge_observe` records sightings
+  (the producer — normally the loop), `vault_edge_contest` records a case-2
+  contradiction — the edge is revoked *and* a tension is logged, never a
+  silent decrement, and only fresh observations can re-earn it — and
+  `vault_edges` lists edges with live aged strength. Storage mirrors staged
+  actions: an append-only log at `.daftari/edges.jsonl` is the source of
+  truth, with a derived `derives_from_edges` table in the ephemeral index
+  (rebuilt on reindex, materialized at startup) for the loop's traversal
+  engine.
+
+## The consolidation loop
+
+`daftari consolidate` is the cortex curation loop — the autonomous half of
+the curation moat. It is a CLI subcommand, not an MCP tool: a long-running
+or cron-driven process that *proposes* changes (stages actions, seeds
+edges) while a human ratifies through the normal MCP surface. Operationally
+the loop runs as its own RBAC principal (e.g.
+`--user agent:curation-loop --role curation-loop`) with `write` but not
+`ratify`, so the §11.6 attribution model keeps every loop-authored
+artifact traceable to the authenticated identity rather than the
+caller-supplied `agent` claim.
+
+The loop ships in stages, all live today, and each stage layers a new
+discipline on the previous one's queues:
+
+- **Stage 1 — scheduler.** `--mode scan` computes three clocks (event /
+  decay / backstop) over the `derives_from` edge store + git history and
+  ranks the due work into four slices under a compute budget. Pure
+  read-side, no LLM, no writes. Exit code 7 surfaces an unreachable
+  event-clock baseline as a cron-alertable signal rather than a silent
+  success.
+- **Stage 2 — Component A (birth / revision).** `--mode birth` re-derives
+  each unprocessed doc's top-K embedding neighbors, judges direction via
+  the both-orders foundational-ordering prompt, and emits zero-strength
+  `candidate` edges (`vault_edge_observe`). `--mode revision` casts an
+  M-vote panel on each due edge and decides **by majority**: survives
+  accrues strength, fails contests once (`vault_edge_contest`), ties
+  surface without churning edge state. Full top-K and per-neighbor
+  verdicts are logged to `.daftari/{birth,revision}-trace.jsonl` for
+  recall@K evaluation, and a `--report decorrelation --fixture <path>`
+  side mode measures the elicitation prompt's direction-recovery
+  accuracy against a ground-truth fixture (PASS gate ≥ 85%, exit 6 on
+  fail).
+- **Stage 3 — two-gate envelope.** Before each edge `do()` the loop
+  consults a two-gate envelope: an **invariants** gate (refuses to act on
+  an edge whose endpoint carries an unresolved tension, missing
+  provenance, or formal-stale decay) and a **trust-budget** gate. The
+  envelope is wired **live but shadowed** — its verdict is computed and
+  journaled to `.daftari/shadow-actions.jsonl` as
+  `decision: "admitted"` or `decision: "gated"` (with the gate and
+  reason), but never enacted. `vault_lint` surfaces a distinct
+  envelope-gated view alongside the existing would-gate calibration
+  section. §8 closures: a loop decision records `decided_by_principal`
+  (the authenticated identity) on the staged-action / contest-tension
+  it produces, and `vault_tension_resolve` is gated on `canRatify` for
+  loop-authored tensions — the loop cannot close its own tensions.
+- **Stage 4 — coverage/equity instrumentation.** `vault_lint` reports a
+  `coverageEquity` summary surfacing four budget-drift ratchets before
+  any auto-write tier graduates: **strength-distribution drift** (edges
+  split into core vs periphery by blast, with per-group strength
+  quantiles and the core−periphery median gap), **standing
+  backstop-overdue** count (edges past the 90-day max interval, computed
+  without a consolidate run), **action-mix drift** (the cheap-link
+  fraction over edge-op + live pending/ratified staged actions, excluding
+  dead expired/rejected proposals), and **direction-resolution** (directed
+  vs symmetric, with the unresolved fraction). Read-only — a monitor,
+  never a target: a guard test forbids any `src/consolidate/` module from
+  importing the coverage-equity module.
+
+Stage 2's edge writes also route through `shadow_mode: true` when the
+config sets it — every doc-write and edge-write tool becomes
+compute-but-don't-write, the would-be `do()` is journaled with its impact
+(convex blast scaling) and budget (vault-state function of the
+ratification-queue depth), and `vault_ratify` returns
+`applied: false, shadow: true` instead of recording a false `ratified`.
+This is the calibration posture the cortex loop runs in until
+coverage/equity ratchets clear and the auto-write tier graduates.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
 process silently rewrites or deletes knowledge. Every change is a deliberate,
 attributable act. The staged-action queue is the same principle pushed one step
 further — even an autonomous curation loop only ever *proposes*; a human ratifies
 before anything is written.
+
+## Doc-to-code coherence
+
+`describes` is a built-in optional frontmatter relationship — a string
+array of bindings, each `repo:path` or `repo:path::symbol` — that
+declares which code a doc documents. It is a first-class edge kind
+alongside `sources` and `superseded_by`, not a side channel.
+
+`daftari audit` is the cross-repo coherence audit. With `--code-repo`,
+code repos join the audit as reference targets (`type: code`): indexed
+by path only, no frontmatter parsing, no content read, excluded from
+staleness. The audit classifies each `describes` entry as a cross-repo
+edge and flags any whose target file is missing
+(`fail_on.broken_describes`, default 1). An opt-in `--semantic` pass
+reads each resolvable binding's doc *and* code and judges whether the
+doc still describes the code (`coherent` / `drifted` / `contradicted` /
+`skipped`); `--auto-tension` logs drift as a tension in the docs vault.
+Every non-markdown read is guarded (size cap, binary sniff, strict
+UTF-8). Default audits need no API key and make no network calls —
+semantic drift is opt-in. The cortex quality sampler (`daftari eval`)
+follows the same edge kind: vault-resident code loads as a separate,
+non-citable context node, so the answerer is never asked to retrieve
+code on the agent's behalf.
 
 ## The request path
 
@@ -502,8 +660,27 @@ A **read** (`vault_read`, `vault_index`, `vault_status`, `vault_search`):
    Denied collections are filtered out of results entirely.
 3. **Layer 1** reads the markdown (or queries the index) and returns it, with
    an advisory frontmatter validation report attached.
+4. (`vault_search` only) Two additive, lossless post-passes run on the
+   RBAC-filtered hit list — never re-ranking, never leaking content from
+   denied collections:
+   - **Coverage pass.** When the top seeds share a frontmatter tag with
+     at least two of the top-K, the index is queried for other docs
+     carrying that tag inside the seeds' `created`-date window
+     (padded, span-capped) and they are *appended* — `viaCoverage: true`,
+     `coverageReason: "entity-window"` — bounded by a doc-count and a
+     token-budget cap (stale-first eviction). The pass stays silent when
+     no signal fires, so single-fact queries are unaffected.
+   - **Current-source foregrounding.** For any hit (ranked or
+     coverage-added) whose document carries `superseded_by`, the chain is
+     walked to its terminal-current head; the hit gains a structured
+     `currentSource` field of kind `resolved` / `restricted` / `dangling`
+     / `cycle`. An unreadable hop at any depth degrades to `restricted`,
+     leaking neither path nor title. daftari authors the relation; the
+     successor snippet is read verbatim from indexed content, never
+     synthesized.
 
-A **write** (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`):
+A **write** (`vault_write`, `vault_append`, `vault_promote`,
+`vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`):
 
 1. The server receives the tool call.
 2. **Layer 2** checks the role's `write` permission (and `promote` for
@@ -517,7 +694,9 @@ A **write** (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`):
 5. The merged frontmatter is validated; an invalid write is rejected before
    anything touches disk.
 6. **Layer 1** writes the markdown file, serialized non-destructively (undeclared
-   fields preserved).
+   fields preserved). `vault_merge` writes the target + both sources in one
+   commit (modeled on the backfill multi-file commit, not single-file
+   `performWrite`).
 7. **Layer 3** auto-commits to git and appends a provenance entry.
 8. The search index is refreshed for the changed file.
 9. The lock is released.
