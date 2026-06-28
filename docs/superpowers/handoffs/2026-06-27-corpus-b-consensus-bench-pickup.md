@@ -37,6 +37,29 @@ Scaffold `docs/plans/2026-06-27-decision-substrate-demand-validation.md` (`a0740
 3. **Arm C wiring** — `resolveCurrent` + held-out box as ground truth.
 4. **The run** — on post-cutoff items (#67–76, contamination-safe), recency vs daftari + no-mint/tension checks. The oracle-edge arm is near-tautological (like contract CB3); the CB4-analog (cortex-ACQUIRED edges from the archives) is the publishable contribution.
 
+## Design brainstorm (later 2026-06-27) — decisions locked, spec DEFERRED, ONE open question
+
+Ran the corpus-design brainstorm before building further. Outcome: most of the design is already settled (or already built), the scope is already staged Trump-first, and the spec was **deferred** (Track 1 demand-validation is the needle-mover, not this). No spec written. Decisions captured here so the build can resume without re-brainstorming.
+
+**Locked (all consistent with this handoff or already built):**
+- **Arm conditions = BOTH, as a decomposition** (mirrors framing-A's extraction-vs-resolution split):
+  - **Condition 2 — asymmetric / oracle-edge:** daftari handed the human-authored supersession chain; the near-tautological CB3-analog. Upper-bound sanity check.
+  - **Condition 1 — symmetric / cortex-ACQUIRED edges from the archives:** the CB4-analog, **the publishable contribution**. This is the real test.
+  - The gap (C2 − C1) = daftari's extraction loss, quantified (the 4× contract-pipeline lesson, measured not assumed).
+- **Contamination = post-cutoff anchor (#67–76, clean primary) + pre-cutoff extension** only where a coherent perturbation exists (numeric/factual items perturb; wording decisions mostly don't), reported as a separate secondary set, never pooled. NB: perturbation is *weaker* here than contracts — post-cutoff is the robust defense.
+- **Labeling = deterministic-only + human (Mihir) spot-check.** Score only instances where alignment is citation-anchored (`rv per consensus #N`) and stale-vs-novel is determinable from the diff. No LLM aligner (no contamination). Small N is the accepted cost.
+- **QA buckets (3):** current-decision (baseline competence) / stale-restatement-trap (recency returns stale → daftari's clean win) / live-tension-not-supersession (the keystone — daftari must refuse to present a still-contested item as settled, where recency AND any minting baseline are tempted).
+- **Scope = staged, Trump-first cheap falsifier** (already decided in this handoff; the brainstorm's "scale-in-from-start vs gate-behind-pilot" question resolves to **gate behind pilot**).
+
+**THE ONE OPEN DECISION (resolve before writing the spec):** which arm set?
+- **Recency-only** (this handoff's NEXT plan): recency vs daftari + no-mint/tension. Cheaper, faster to the falsifier; cortex-acquired-edge-vs-recency carries the paper. Risk: leaves "why not just have an LLM read the archives?" unanswered.
+- **Recency + llm-consolidate** (chosen in the brainstorm session as the "beat LLM-consolidation" bar): adds a third arm (LLM reads raw archives), pre-empts that reviewer, mirrors framing-A's honest bar. Cost: a second LLM arm + cross-judge on a tiny post-cutoff N.
+- Mihir leaned toward the harder bar in-session but **deferred the build**, so this is left explicitly UNDECIDED. Decide here first.
+
+**Build's step-1 gate (whichever arm set):** on the post-cutoff pilot (#67–76), confirm the *baseline you're beating actually fails* before scaling acquisition — recency fails on those specific items (recency-only), and/or llm-consolidate fails reading the stream (if that arm is kept). If the baseline already recovers current consensus, the win localizes to the tension/tainted subset (the clean-contract-clause outcome) — know that cheaply, first.
+
+**Strategic correction carried in:** corpus (B) is a **paper mechanism-proof, NOT a market answer** (cost-of-fabrication thesis is dead, edge ⊥ stakes). Lower priority than Track 1. Don't let it crowd out the demand conversations.
+
 ## Gotchas / carry
 - Real chains DON'T always terminate active: #4→#15 dead-ends at a superseded item ("Superseded by lead rewrite", unlisted). `resolveCurrent` returns unresolved — correct (no-mint), not a bug.
 - `{{0}}N.` template = zero-padding for alignment; real num is the anchor `C<n>`. Active items are `'''...'''` lines; superseded/canceled wrapped in `{{hide|header|...|content=...}}` — statement lives in `content=`.
