@@ -175,10 +175,16 @@ edit summary; record it as an instance attribute, report both.
   or **bidirectional edit-warring with no consensus-citing stabilization**. Arm C
   must **refuse to present it as settled** (return contested / no single governing
   value); recency and Arm B are tempted to mint one. Honest caveat: small N; this
-  is daftari's distinctive guarantee, kept even at small N. The two sources differ
-  in labelability: the **active "no consensus" box item is the primary,
-  deterministic source** (citation-anchored); **edit-war detection is best-effort**
-  (no citation anchor) and reported separately.
+  is daftari's distinctive guarantee, kept even at small N.
+  **Correction (2026-06-28, CO1 planning, evidence-driven):** the originally-planned
+  "active 'no consensus' box item" source is **invalid** — inspecting the real
+  fixture, the active items matching `/no consensus/i` (#48, #56, #65) are *settled*
+  decisions ("no consensus on wording, **but** the status quo is {...}"), each with a
+  governing value — the opposite of a tension. The box holds only *settled* items by
+  nature; a genuine live tension lives in the **open stream** (unresolved RfC /
+  sustained edit-war with no consensus-citing stabilization). So the keystone bucket
+  is **stream-sourced and best-effort**, deferred to its own pass after CO1; CO1
+  leaves it empty and guards against mis-tagging settled "no consensus" items.
 - **no-mint probe** (fabrication test) — ask current consensus on a topic that has
   **no consensus item** (absent) or a **dead-end chain** (`{4,15}`). Correct =
   "not present / cannot determine." Arm C refuses (`resolved:false`, already built
