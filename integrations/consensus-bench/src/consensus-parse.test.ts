@@ -42,6 +42,25 @@ describe("parseConsensus", () => {
     expect(item4?.statement).not.toContain("headerstyle");
   });
 
+  test("an active item carries no supersededBy edge even when its statement opens with 'Supersedes'", () => {
+    const items = parseConsensus(FIXTURE);
+    // #30 is active and its statement begins "Supersedes [[#C24|#24]]...". The
+    // leading ref is the reverse (supersedes) edge, NOT a supersededBy pointer.
+    // An active item is current by definition: nothing in-corpus supersedes it.
+    const item30 = items.find((i) => i.num === 30);
+    expect(item30?.status).toBe("active");
+    expect(item30?.supersededBy).toEqual([]);
+    expect(item30?.supersedes).toContain(24);
+  });
+
+  test("captures every predecessor when an item supersedes more than one", () => {
+    const items = parseConsensus(FIXTURE);
+    // #39 "Supersedes [[#C21|#21]] and [[#C36|#36]]" — both must be recorded.
+    const item39 = items.find((i) => i.num === 39);
+    expect(item39?.supersedes).toContain(21);
+    expect(item39?.supersedes).toContain(36);
+  });
+
   test("parses every item without dropping any (contiguous 1..76)", () => {
     const items = parseConsensus(FIXTURE);
     expect(items).toHaveLength(76);

@@ -33,12 +33,19 @@ export function parseConsensus(wikitext: string): ConsensusItem[] {
     const after = wikitext.slice(start);
     const body = wikitext.slice(start, end);
     const header = extractHeader(after);
+    const status = classifyStatus(header);
     items.push({
       num,
       anchor,
-      status: classifyStatus(header),
+      status,
       statement: extractStatement(body),
-      supersededBy: extractItemRefs(header),
+      // The supersededBy pointer lives in the hide header of a superseded/
+      // canceled item ("Superseded by [[#C15|#15]]"). An active item has no
+      // such header — its "header" is the start of its statement, which may
+      // itself open with "Supersedes [[#C..]]" (the reverse edge). Scraping
+      // refs from an active item's header would mis-record its predecessor as
+      // a successor, so only superseded/canceled items carry a supersededBy.
+      supersededBy: status === "active" ? [] : extractItemRefs(header),
       supersedes: extractSupersedes(body),
     });
   }
@@ -46,9 +53,14 @@ export function parseConsensus(wikitext: string): ConsensusItem[] {
 }
 
 // The reverse edge: a "Supersedes [[#C11|#11]]" phrase in the item body names
-// the predecessor(s) this item replaced.
+// the predecessor(s) this item replaced. One item can supersede several at once
+// ("Supersedes [[#C21|#21]] and [[#C36|#36]]"), so capture every ref in that
+// sentence — bounded to the first "." or newline so later, unrelated anchor
+// links in the statement don't leak in as predecessors.
 function extractSupersedes(body: string): number[] {
-  return [...body.matchAll(/\bSupersedes\s+\[\[#C(\d+)/gi)].map((m) => Number(m[1]));
+  const m = body.match(/\bSupersedes\b([^.\n]*)/i);
+  if (!m) return [];
+  return [...m[1].matchAll(/#C(\d+)\b/g)].map((x) => Number(x[1]));
 }
 
 // The "header" is the text between the anchor and the first hide-template
