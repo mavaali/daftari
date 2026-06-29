@@ -52,8 +52,14 @@ const SRC = readFileSync(
 );
 
 describe("derivation prompt drift-guard", () => {
+  // NB: src defines the prompt via multi-line string CONCATENATION ("..." + "..."),
+  // so the joined runtime string is NOT a substring of the file — a whole-string
+  // SRC.includes(DERIVATION_SYSTEM) is infeasible. Sample enough distinctive phrases
+  // (incl. the middle clause) that any wording change trips at least one.
   const SYS_PHRASES = [
     "You assess whether one document's central claim is a load-bearing derivation of",
+    "a premise it could not stand without — not a",
+    "passing reference, a citation, or mere co-occurrence",
     "Be conservative: when the",
   ];
   const BODY_PHRASES = [
@@ -102,6 +108,9 @@ describe("parseCb4Derivation", () => {
   test("invalid shape -> null (unparseable)", () => {
     expect(parseCb4Derivation("not json")).toBeNull();
     expect(parseCb4Derivation('{"related":"yes"}')).toBeNull();
+  });
+  test("related:true with empty reason -> null (reason gate)", () => {
+    expect(parseCb4Derivation('{"related":true,"premise":"A","reason":""}')).toBeNull();
   });
 });
 
@@ -454,10 +463,19 @@ Imports `openRouterClient(process.env.OPENROUTER_API_KEY)`, builds `truePairs` +
   For each control pair, `acquireDerivation(client, textA, textB)`; count
   `related===true` (false-positive). Record premise distribution descriptively.
   Supersessions minted = 0 (structural; assert acquireDerivation has no supersede path).
-- **foil:** for each true pair, governing is slot A (govText passed as textA),
-  `classifyFoilTrue(await acquireFoil(client, govText, staleText), "A")` →
-  {correct | wrong-direction | neither}. For each control pair,
-  `classifyFoilControl(await acquireFoil(client, textA, textB))` → {correct | fabricate}.
+- **foil:** for each true pair, **randomize which slot governing occupies by index
+  parity** and map the side back (avoids a model position-bias inflating the
+  correct-direction rate / understating fabrication — the spec's "both orders"
+  requirement):
+
+  ```javascript
+  const govA = i % 2 === 0;
+  const ta = govA ? p.govText : p.staleText;
+  const tb = govA ? p.staleText : p.govText;
+  const governingSide = govA ? "A" : "B";
+  const cls = classifyFoilTrue(await acquireFoil(client, ta, tb), governingSide); // correct | wrong-direction | neither
+  ```
+  For each control pair, `classifyFoilControl(await acquireFoil(client, textA, textB))` → {correct | fabricate}.
 - Compute the **oracle→acquired gap = 16 − (daftari-way recall count)**.
 - `writeFileSync` the metrics table + per-row to scratch (NOT console.log).
 
