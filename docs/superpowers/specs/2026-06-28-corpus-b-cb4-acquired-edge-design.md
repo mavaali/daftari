@@ -80,8 +80,15 @@ via the Arm B `LlmClient` (`anthropic/claude-haiku-4.5`, temp 0).
   Ground truth: a real supersession relation exists; **governing supersedes stale**
   (governing is current, per the box-confirmed revert).
 - **Control pairs (~15, unrelated):** governing passages from *different* consensus
-  items paired together (deterministic pairing, e.g. item *i* with item *i+k*). No
-  supersession relation. Ground truth: none.
+  items. **Pairing must dedupe on `governingNum`, NOT pair by instance index** —
+  only **18 distinct `governingNum`** values exist across the 37 instances (item 37
+  appears 8×, item 70 7×), so an index offset would pair same-item passages, which
+  are NOT unrelated. Construct controls by taking one instance per distinct
+  `governingNum` and pairing items with *different* numbers (the 18-distinct ceiling
+  makes ~15 achievable). Ground truth: no relation. **This item-level dedup is
+  load-bearing, not cosmetic:** a same-item control would make the foil's mint there
+  not-cleanly-a-fabrication and would *overstate* the foil's fabrication rate (and
+  daftari-way's false-positive).
 
 ## Metrics
 
@@ -132,12 +139,16 @@ bounded to the fixture set, no loops.)
 
 ## Reading (characterization, stated straight — no contrived kill)
 
-- High daftari-way recall → the cortex acquires the relation unaided (closes the
-  oracle gap; supersession then needs only a cheap human confirm).
-- Low daftari-way recall → the honest **acquisition gap**: daftari's conservative
-  derivation classifier does not flag competing-version conflicts (they are
-  tensions, not derivations), so supersession stays a deliberate act — the thesis,
-  with its curation cost named.
+- **Low daftari-way recall is the *predicted* outcome, not a surprise.** The
+  derivation classifier detects load-bearing *premise* dependency; stale-vs-governing
+  are competing *versions* (a tension), which the conservative classifier is built to
+  *not* flag as a derivation. So a low `related` rate reads as **confirmation of
+  design** — daftari treats these as tensions to surface, not derivations to link,
+  and supersession stays a deliberate human act (the thesis, with its curation cost
+  named). Report it as such, not as a deficiency.
+- High daftari-way recall (the less-expected case) → the cortex also acquires the
+  relation as a derivation, closing the oracle gap; supersession then needs only a
+  cheap human confirm.
 - Either way, the **foil fabricates (F) while daftari-way mints 0** — the
   sovereignty evidence. If Haiku-foil is conservative, F is a **lower bound** (a
   more aggressive model would mint more); stated as such.
