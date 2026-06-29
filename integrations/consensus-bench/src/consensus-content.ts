@@ -10,6 +10,10 @@ export interface RevertDiff {
   citedNum: number;
   governingNum: number;
   diffHtml: string;
+  // Consensus-item numbers carried by inline markers in revision `revid`'s full
+  // content (extractMarkerNums). Optional: absent in the diff-only single fixture;
+  // populated by the pull script for the full run.
+  markerNums?: number[];
 }
 
 export interface DiffSource {
@@ -25,5 +29,6 @@ export function loadDiffsFromFile(path: string): RevertDiff[] {
     citedNum: Number(d.citedNum),
     governingNum: Number(d.governingNum),
     diffHtml: String(d.diffHtml ?? ""),
+    ...(Array.isArray(d.markerNums) ? { markerNums: d.markerNums.map(Number) } : {}),
   }));
 }

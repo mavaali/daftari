@@ -37,4 +37,21 @@ describe("armC (daftari)", () => {
     const c = armC(BOX, noMarker, passage, REAL.diffHtml);
     expect(c.classification).toBe("unscorable");
   });
+
+  test("uses content markerNums when present (governing even if marker not in diff window)", () => {
+    const passage = parsePassage(REAL.diffHtml);
+    // citedNum 70, marker NOT in this stripped diff, but present in revision content.
+    const stripped = REAL.diffHtml.replace(/consensus 70|#C70/gi, "REDACTED");
+    const withMarkers = { ...REAL, citedNum: 70, governingNum: 70, markerNums: [70] };
+    const c = armC(BOX, withMarkers, passage, stripped);
+    expect(c.classification).toBe("governing");
+  });
+
+  test("unscorable when content markerNums exist but omit the governing item", () => {
+    const passage = parsePassage(REAL.diffHtml);
+    const stripped = REAL.diffHtml.replace(/consensus 70|#C70/gi, "REDACTED");
+    const withMarkers = { ...REAL, citedNum: 70, governingNum: 70, markerNums: [12, 34] };
+    const c = armC(BOX, withMarkers, passage, stripped);
+    expect(c.classification).toBe("unscorable");
+  });
 });
