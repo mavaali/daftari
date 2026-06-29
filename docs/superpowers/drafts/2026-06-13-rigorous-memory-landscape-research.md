@@ -250,3 +250,70 @@ knowledge, it has a conventionality-bias failure mode making human ratify
 non-optional, and it's the priciest option in a cost-skeptical market. A legitimate,
 fundable **research bet** — gated on Experiment #1, which is cheap enough to run
 before almost anything else and can falsify the whole vision in a week.
+
+---
+
+# Addendum — Evo-Memory / ReMem (Google DeepMind, arXiv 2511.20857)
+
+Surfaced 2026-06-13 via a third-party summary that claimed it "validates Daftari's
+explicit-tool architecture." **The paper is real and good; the summary was ungrounded
+generation fitted to a flattering conclusion.** Both verified against the paper (abs +
+html v2). Recorded straight so the spun version is not re-imported.
+
+## What the paper actually is [DATA]
+
+"Evo-Memory: Benchmarking LLM Agent Test-time Learning with Self-Evolving Memory"
+(Wei et al.; Google DeepMind — Sachdeva, Coleman — + UIUC, corresp. twei10@illinois.edu;
+v1 Nov 2025 / v2 May 2026). A streaming benchmark + a method, **ReMem**, an
+"action-think-memory refine" loop where refine "exploit[s] useful experiences,
+**prun[es] noise**, and reorganiz[es] Mt" (§3.3; pruning rates in App B.2). Headline
+result = **multi-turn success rate** (BabyAI 0.61→0.92, Claude 3.7, Table 4) over a
+passive "History" baseline; ALFWorld **22.6→11.5 steps** appears only in a Fig. 4
+caption, baseline unnamed.
+
+## Rung placement [HYPOTHESIS]
+
+**Rung 2** — intervention on memory (refine / prune / reorganize) for next-task
+performance (test-time learning). **Not Rung 3:** no re-derivation, no counterfactual,
+no earned-trust-by-survival. Adjacent to ElephantBroker/ReMem, not to Daftari's moat.
+
+## What it genuinely contributes to our thesis [DATA-grounded]
+
+A **DeepMind benchmark showing active memory-evolution beats passive accumulation** on
+streaming multi-turn tasks. This is **external efficacy evidence that Rung-2 rigor can
+pay** — a counter to the "market fleeing Rung-2 (Mem0 ripped out its graph) ⇒ rigor
+doesn't pay" threat above. But it is **category-level** (shared with EB/ReMem), NOT
+Daftari-specific.
+
+## Corrections to the spun summary (do not re-import)
+
+- "Explicit/agent-driven curation beats automated background extraction" — **NOT IN THE
+  PAPER.** No such comparison exists. This was the invented bridge to Daftari's MCP-tool
+  architecture; it has no support.
+- "Smaller models with pruning match massive models with static memory" — **FALSE.**
+  Smaller models "benefit most" but stay below larger variants (Tables 4–5).
+- "r/MCPservers developers cite this paper to abandon automated extraction" —
+  unverifiable, fabricated social proof.
+- The 22.6→11.5 / "49%" figure is real but a caption side-result, not the headline.
+
+## Tension with Daftari — open question (the part the summary buried)
+
+ReMem's gains come **partly from pruning/discarding** obsolete memories — direct
+evidence that **deletion helps**. **Daftari's charter is never-delete.** So this paper,
+read straight, *challenges* the never-delete stance rather than endorsing it.
+
+**Reconciliation to TEST, not assert [HYPOTHESIS]:** ReMem prunes the *working set /
+context*; Daftari never deletes the *substrate* but its forgetting-curve scheduler
+controls *what surfaces*. Daftari may capture ReMem's working-set economy (lean active
+context) *without* irreversibility (git keeps everything) — "**prune what surfaces, not
+what exists.**" If that holds, the pruning result becomes Daftari-favorable. Kill
+condition: if measured gains require *substrate* deletion (not just surfacing control),
+the never-delete charter costs performance and must be defended on other grounds
+(reversibility/audit) rather than claimed as free.
+
+## Honest citation guidance
+
+Cite as *external efficacy evidence that Rung-2 memory-evolution improves agent
+performance* — never as "DeepMind validates Daftari's architecture." A reviewer who
+reads the paper catches the latter, and it burns credibility exactly where falsifiable
+claims are being made.

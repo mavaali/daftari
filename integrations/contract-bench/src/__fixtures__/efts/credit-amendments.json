@@ -1,0 +1,233 @@
+{
+  "hits": {
+    "total": {
+      "value": 11,
+      "relation": "eq"
+    },
+    "hits": [
+      {
+        "_index": "edgar_file",
+        "_id": "0001084991-17-000058:fourthamendmentofsecuritya.htm",
+        "_score": 8.848213,
+        "_source": {
+          "ciks": [
+            "0001084991"
+          ],
+          "period_ending": "2017-08-31",
+          "file_num": [
+            "001-31398"
+          ],
+          "display_names": [
+            "NATURAL GAS SERVICES GROUP INC  (NGS)  (CIK 0001084991)"
+          ],
+          "xsl": null,
+          "sequence": 2,
+          "root_forms": [
+            "8-K"
+          ],
+          "file_date": "2017-09-07",
+          "biz_states": [
+            "TX"
+          ],
+          "sics": [
+            "1389"
+          ],
+          "form": "8-K",
+          "adsh": "0001084991-17-000058",
+          "film_num": [
+            "171072418"
+          ],
+          "biz_locations": [
+            "Midland, TX"
+          ],
+          "file_type": "EX-10.1",
+          "file_description": "EXHIBIT 10.1",
+          "inc_states": [],
+          "items": [
+            "2.03",
+            "9.01"
+          ]
+        }
+      },
+      {
+        "_index": "edgar_file",
+        "_id": "0001084991-23-000007:ex101secondamendmenttocred.htm",
+        "_score": 8.784375,
+        "_source": {
+          "ciks": [
+            "0001084991"
+          ],
+          "period_ending": "2023-01-18",
+          "file_num": [
+            "001-31398"
+          ],
+          "display_names": [
+            "NATURAL GAS SERVICES GROUP INC  (NGS)  (CIK 0001084991)"
+          ],
+          "xsl": null,
+          "sequence": 2,
+          "root_forms": [
+            "8-K"
+          ],
+          "file_date": "2023-01-23",
+          "biz_states": [
+            "TX"
+          ],
+          "sics": [
+            "1389"
+          ],
+          "form": "8-K",
+          "adsh": "0001084991-23-000007",
+          "film_num": [
+            "23544510"
+          ],
+          "biz_locations": [
+            "Midland, TX"
+          ],
+          "file_type": "EX-10.1",
+          "file_description": "EX-10.1 SECOND AMENDMENT TO CREDIT AGREEMENT DATED JANUARY 18, 2023",
+          "inc_states": [],
+          "items": [
+            "1.01",
+            "2.03",
+            "9.01"
+          ]
+        }
+      },
+      {
+        "_index": "edgar_file",
+        "_id": "0001084991-23-000007:ngs-20230118.htm",
+        "_score": 8.047518,
+        "_source": {
+          "ciks": [
+            "0001084991"
+          ],
+          "period_ending": "2023-01-18",
+          "file_num": [
+            "001-31398"
+          ],
+          "display_names": [
+            "NATURAL GAS SERVICES GROUP INC  (NGS)  (CIK 0001084991)"
+          ],
+          "xsl": null,
+          "sequence": 1,
+          "root_forms": [
+            "8-K"
+          ],
+          "file_date": "2023-01-23",
+          "biz_states": [
+            "TX"
+          ],
+          "sics": [
+            "1389"
+          ],
+          "form": "8-K",
+          "adsh": "0001084991-23-000007",
+          "film_num": [
+            "23544510"
+          ],
+          "biz_locations": [
+            "Midland, TX"
+          ],
+          "file_type": "8-K",
+          "file_description": "8-K",
+          "inc_states": [],
+          "items": [
+            "1.01",
+            "2.03",
+            "9.01"
+          ]
+        }
+      },
+      {
+        "_index": "edgar_file",
+        "_id": "0001084991-22-000128:ngs-20221212.htm",
+        "_score": 8.047404,
+        "_source": {
+          "ciks": [
+            "0001084991"
+          ],
+          "period_ending": "2022-12-12",
+          "file_num": [
+            "001-31398"
+          ],
+          "display_names": [
+            "NATURAL GAS SERVICES GROUP INC  (NGS)  (CIK 0001084991)"
+          ],
+          "xsl": null,
+          "sequence": 1,
+          "root_forms": [
+            "8-K"
+          ],
+          "file_date": "2022-12-15",
+          "biz_states": [
+            "TX"
+          ],
+          "sics": [
+            "1389"
+          ],
+          "form": "8-K",
+          "adsh": "0001084991-22-000128",
+          "film_num": [
+            "221465226"
+          ],
+          "biz_locations": [
+            "Midland, TX"
+          ],
+          "file_type": "8-K",
+          "file_description": "8-K",
+          "inc_states": [],
+          "items": [
+            "1.01",
+            "2.03",
+            "9.01"
+          ]
+        }
+      },
+      {
+        "_index": "edgar_file",
+        "_id": "0001084991-17-000058:promissorynote.htm",
+        "_score": 7.7830753,
+        "_source": {
+          "ciks": [
+            "0001084991"
+          ],
+          "period_ending": "2017-08-31",
+          "file_num": [
+            "001-31398"
+          ],
+          "display_names": [
+            "NATURAL GAS SERVICES GROUP INC  (NGS)  (CIK 0001084991)"
+          ],
+          "xsl": null,
+          "sequence": 4,
+          "root_forms": [
+            "8-K"
+          ],
+          "file_date": "2017-09-07",
+          "biz_states": [
+            "TX"
+          ],
+          "sics": [
+            "1389"
+          ],
+          "form": "8-K",
+          "adsh": "0001084991-17-000058",
+          "film_num": [
+            "171072418"
+          ],
+          "biz_locations": [
+            "Midland, TX"
+          ],
+          "file_type": "EX-10.3",
+          "file_description": "EXHIBIT 10.3",
+          "inc_states": [],
+          "items": [
+            "2.03",
+            "9.01"
+          ]
+        }
+      }
+    ]
+  }
+}
