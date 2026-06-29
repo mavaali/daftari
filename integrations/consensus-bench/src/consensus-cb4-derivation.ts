@@ -13,6 +13,19 @@ export interface DerivationVerdict {
 }
 
 // --- VERBATIM from src/consolidate/derivation-prompt.ts (keep in sync; drift-guarded) ---
+export const DERIVATION_VERDICT_SCHEMA = {
+  type: "object",
+  required: ["related", "premise", "reason"],
+  properties: {
+    related: { type: "boolean" },
+    premise: {
+      enum: ["A", "B", "symmetric"],
+      description: "which doc is the load-bearing premise; ignored when related is false",
+    },
+    reason: { type: "string", minLength: 1 },
+  },
+} as const;
+
 export const DERIVATION_SYSTEM =
   "You assess whether one document's central claim is a load-bearing derivation of " +
   "another's, and if so which is the foundational premise. A load-bearing dependency " +
@@ -56,12 +69,24 @@ export function parseCb4Derivation(raw: string): DerivationVerdict | null {
 // daftari-way acquisition: governing = DOC A, stale = DOC B. The prompt is
 // presentation-order-agnostic by contract; premise is reported descriptively (a
 // derivation foundation, NOT a supersession verdict).
+// Reproduces daftari's completeJson system-prompt assembly verbatim
+// (src/eval/llm.ts): the schema is embedded as a hint so the model returns the
+// {related, premise, reason} shape. Without this the model free-forms keys
+// (e.g. "reasoning") and the parse fails — i.e. this IS daftari's mechanism.
+export function derivationSystemWithSchema(): string {
+  return `${DERIVATION_SYSTEM}\n\nReturn JSON matching:\n${JSON.stringify(DERIVATION_VERDICT_SCHEMA, null, 2)}\nReturn ONLY JSON, no prose.`;
+}
+
 export async function acquireDerivation(
   client: LlmClient,
   govText: string,
   staleText: string,
 ): Promise<DerivationVerdict | null> {
   const body = derivationUserBody("governing", govText, "stale", staleText);
-  const raw = await client.complete({ model: "anthropic/claude-haiku-4.5", system: DERIVATION_SYSTEM, user: body });
+  const raw = await client.complete({
+    model: "anthropic/claude-haiku-4.5",
+    system: derivationSystemWithSchema(),
+    user: body,
+  });
   return parseCb4Derivation(raw);
 }
