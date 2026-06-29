@@ -88,7 +88,9 @@ exactly the minting daftari refuses. ~10–15 probes. Judged assert-vs-refuse.
   the A/B/C table. **Network + cost; NOT in the test suite.**
 
 **Models:** Arm B = `anthropic/claude-haiku-4.5`; judge = a cheap non-Anthropic
-family (default `google/gemini-2.x-flash`), configurable.
+family (e.g. Gemini Flash), configurable. **Exact OpenRouter slugs are pinned in
+the implementation plan** (verified against the live model list at plan time) so a
+wildcard isn't discovered mid-run.
 
 ```
 CO2 diffs ─► parsePassage ─► [governing, stale] ─► armB(Haiku) ─► free-text answer
@@ -103,7 +105,12 @@ CO2 diffs ─► parsePassage ─► [governing, stale] ─► armB(Haiku) ─�
 
 ## Metrics
 
-The A/B/C comparison over the scorable stale-trap instances:
+**Instance set:** Arm B scores over the **33 scorable stale-trap instances from the
+CO2 full 37-run** (37 total − 4 multi-hunk unscorable), the same set Arm A/C were
+scored on. The Arm A and Arm C rows below are the **actual CO2 full-run results**
+(not placeholders); only the Arm B row is to be filled.
+
+The A/B/C comparison over the 33 scorable stale-trap instances:
 
 | | stale | governing | abstain | other / fabricate |
 |---|---|---|---|---|
