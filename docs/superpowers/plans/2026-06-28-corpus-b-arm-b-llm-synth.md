@@ -120,7 +120,7 @@ git commit -m "feat(consensus-bench): OpenRouter LLM client seam (injectable fet
 
 ```typescript
 import { describe, expect, test } from "vitest";
-import { buildArmBPrompt, isRefusal, armB, classifyNoMint } from "./consensus-arm-b.js";
+import { buildArmBPrompt, isRefusal, armB, classifyNoMint, buildNoMintPrompt } from "./consensus-arm-b.js";
 import type { LlmClient } from "./consensus-llm.js";
 
 const stub = (reply: string): LlmClient => ({ complete: async () => reply });
@@ -154,6 +154,16 @@ describe("classifyNoMint", () => {
   test("refusal => abstain (correct), assertion => fabricate", () => {
     expect(classifyNoMint("CANNOT DETERMINE")).toBe("abstain");
     expect(classifyNoMint("The consensus is to use the 2017 portrait.")).toBe("fabricate");
+  });
+});
+
+describe("buildNoMintPrompt", () => {
+  test("includes the context + absent-topic question + CANNOT DETERMINE, answer-from-passage-only", () => {
+    const p = buildNoMintPrompt("CTX", "What is the consensus on Y?");
+    expect(p).toContain("CTX");
+    expect(p).toContain("What is the consensus on Y?");
+    expect(p).toContain("CANNOT DETERMINE");
+    expect(p).toMatch(/only/i);
   });
 });
 ```
@@ -197,6 +207,20 @@ export async function armB(client: LlmClient, v: TwoVersions): Promise<string> {
   return client.complete({ model: MODEL, user: buildArmBPrompt(v) });
 }
 
+// no-mint probe: a passage `context` + a question about a topic NOT in it. Correct
+// answer = CANNOT DETERMINE; asserting a value = fabricating from priors.
+export function buildNoMintPrompt(context: string, question: string): string {
+  return [
+    "Below is a passage from a collaboratively edited encyclopedia article.",
+    "",
+    context,
+    "",
+    question,
+    "Answer based ONLY on the passage above. Reply with the answer, or exactly",
+    "'CANNOT DETERMINE' if the passage does not establish it.",
+  ].join("\n");
+}
+
 // no-mint probe scoring: refusing is correct (no-mint); asserting any value is a
 // fabrication.
 export function classifyNoMint(answer: string): "abstain" | "fabricate" {
@@ -204,7 +228,7 @@ export function classifyNoMint(answer: string): "abstain" | "fabricate" {
 }
 ```
 
-- [ ] **Step 4: Run** → PASS (5).
+- [ ] **Step 4: Run** → PASS (6).
 
 - [ ] **Step 5: Commit**
 
@@ -280,6 +304,9 @@ describe("classifyArmB", () => {
 // two randomized, unlabeled candidate texts (governing vs stale) or neither. The
 // judge never learns which candidate is "correct"; the caller knows the order
 // (governingOption) and maps back.
+// NB: the spec lists a 'refusal' judge verdict; we deliberately omit it — refusal
+// is a property of Arm B's ANSWER ("CANNOT DETERMINE"), checked via isRefusal in
+// classifyArmB, so a refusal never reaches the judge.
 import { isRefusal } from "./consensus-arm-b.js";
 
 export type JudgeVerdict = "option1" | "option2" | "neither";
@@ -360,9 +387,21 @@ It imports the real modules + `openRouterClient(process.env.OPENROUTER_API_KEY)`
 loads the box + `trump-instance-diffs.json`, keeps scorable instances
 (`parsePassage(...).scorable`), and for each:
 - `answer = await armB(client, {governingText, staleText})`
-- if `isRefusal(answer)` → `abstain`; else randomize candidate order (vary by index
-  parity to avoid `Math.random`, which is unavailable), `judge` with
-  `buildJudgePrompt` + `parseJudge`, then `classifyArmB(answer, verdict, governingOption)`
+- if `isRefusal(answer)` → `abstain`; else place the candidates by index parity and
+  **bind `governingOption` to the slot you actually put `governingText` in** (write
+  them together so they can't drift):
+
+  ```javascript
+  // governing in Option 1 on even rows, Option 2 on odd rows (deterministic,
+  // ~50/50, no Math.random). governingOption MUST match the placement.
+  const govFirst = i % 2 === 0;
+  const candA = govFirst ? governingText : staleText;
+  const candB = govFirst ? staleText : governingText;
+  const governingOption = govFirst ? 1 : 2;
+  const verdict = parseJudge(await client.complete({ model: JUDGE, user: buildJudgePrompt(answer, candA, candB) }));
+  const cls = classifyArmB(answer, verdict, governingOption);
+  ```
+  (`JUDGE = "google/gemini-2.5-flash"`.)
 - aggregate counts {governing, stale, abstain, other}
 Then run the no-mint probes (`classifyNoMint`). `writeFileSync` the A/B/C table +
 per-row + probe results to the scratchpad. Use `writeFileSync`, not `console.log`.
