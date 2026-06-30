@@ -113,10 +113,14 @@ on-thesis foil.
 ## Methods — the foil model panel (applies to CB4/CB5/CB6 + contracts)
 
 - **Foil = a model panel, not a single model.** Run the minting/consolidation foil
-  across **Haiku-4.5 (conservative lower bound) + GLM-4.6 (cheap, capable, cross-family)
-  + one more (gpt-4o or gemini-2.5-flash)**; report the fabrication *range*. This
-  converts the current "conservative-model → lower bound" caveat into a model-robustness
-  result. Cost is trivial (<$5 total across all pair sets).
+  across **Haiku-4.5 + GLM-4.6 + GPT-4o**; report the fabrication *range*. **RAN
+  2026-06-29 (CB4 panel, `2026-06-28-corpus-b-cb4.md`): the abstain-offered fabrication
+  is MODEL-DEPENDENT, F = 6–26/49** (Haiku 26, GLM 24, GPT-4o 6 — GPT-4o abstains
+  25/33). The earlier "Haiku = conservative lower bound" assumption is **refuted**: Haiku
+  is near the *high* end; capability and minting-aggressiveness are orthogonal. So the
+  abstain-offered number is the *honest softness*, NOT the headline → **lead the
+  sovereignty contrast with the FORCED condition** (CB6: 17/18 near model-independent),
+  the architectural claim that doesn't depend on model or abstain-option.
 - **The forced-answer condition is the robustness anchor.** Forced (no abstain — the
   realistic consolidation shape), even a capable model must pick a direction → it
   masquerades regardless of capability. A more capable model may abstain *more* in the
