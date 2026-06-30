@@ -19,7 +19,7 @@ export interface ArmCResult {
 
 export function armC(
   items: ConsensusItem[],
-  instance: Pick<RevertDiff, "citedNum">,
+  instance: Pick<RevertDiff, "citedNum" | "markerNums">,
   passage: ParsedPassage,
   diffHtml: string,
 ): ArmCResult {
@@ -28,9 +28,16 @@ export function armC(
     return { classification: "abstain", reason: "unresolved (dead-end/absent) — no-mint" };
   }
   if (!passage.scorable) return { classification: "unscorable", reason: passage.reason };
-  // Non-circular localization: the governing item's marker must tag this passage.
-  if (!markerPresent(diffHtml, res.item.num) && !markerPresent(diffHtml, instance.citedNum)) {
-    return { classification: "unscorable", reason: "no inline consensus marker in diff window" };
+  // Non-circular localization: an inline consensus marker must tag this passage's
+  // governing item. Prefer content-level markers (extractMarkerNums over the full
+  // revision, format-tolerant); fall back to scanning the diff window when content
+  // markers weren't supplied.
+  const localized =
+    instance.markerNums !== undefined
+      ? instance.markerNums.includes(res.item.num) || instance.markerNums.includes(instance.citedNum)
+      : markerPresent(diffHtml, res.item.num) || markerPresent(diffHtml, instance.citedNum);
+  if (!localized) {
+    return { classification: "unscorable", reason: "no inline consensus marker for the governing item" };
   }
   return { answer: passage.governingText, classification: "governing" };
 }

@@ -25,7 +25,7 @@ function decode(s: string): string {
 // Clean text for comparison: drop HTML comments and tags, decode entities,
 // collapse whitespace. Comments are stripped twice (before and after decode) so
 // an entity-encoded `&lt;!-- ... --&gt;` is removed too.
-function cleanText(html: string): string {
+export function cleanText(html: string): string {
   let s = html.replace(/<!--[\s\S]*?-->/g, "");
   s = s.replace(/<[^>]*>/g, "");
   s = decode(s);
