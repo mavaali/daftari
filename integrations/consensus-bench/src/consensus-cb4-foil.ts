@@ -35,7 +35,12 @@ export function classifyFoilControl(v: FoilVerdict): "correct" | "fabricate" {
   return v === "neither" ? "correct" : "fabricate";
 }
 
-export async function acquireFoil(client: LlmClient, textA: string, textB: string): Promise<FoilVerdict> {
-  const raw = await client.complete({ model: "anthropic/claude-haiku-4.5", user: buildFoilPrompt(textA, textB) });
+export async function acquireFoil(
+  client: LlmClient,
+  textA: string,
+  textB: string,
+  model = "anthropic/claude-haiku-4.5",
+): Promise<FoilVerdict> {
+  const raw = await client.complete({ model, user: buildFoilPrompt(textA, textB) });
   return parseFoil(raw);
 }

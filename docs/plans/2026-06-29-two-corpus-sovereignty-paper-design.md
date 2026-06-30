@@ -93,8 +93,14 @@ biased). Run:
   tension; tension-log mints 0).
 
 **Reading:** forced minting masquerades genuine tensions as supersessions; daftari
-preserves all, mints 0. Converts the spine from by-construction → measured (n≈5) +
-structural.
+preserves all, mints 0. Converts the spine from by-construction → measured + structural.
+
+**RAN 2026-06-29 (n=4, `docs/superpowers/results/2026-06-29-corpus-b-cb6.md`):**
+forced masquerade **4/4 across all three models** (Haiku/GLM-4.6/GPT-4o — architectural,
+model-independent); abstain-offered 3/4 (Haiku/GLM) vs 1/4 (GPT-4o — the honest softness);
+daftari mints **0/4** and manufactures **0/4** false conflicts (detector flags 1/4 — only
+the one genuine contradiction; the rest are framing disputes it correctly doesn't flag =
+preserve-not-resolve); second-rater validated 4/4. Spine is now measured + structural.
 
 **Honest caveats (state in-paper):** small n (scale = pull Biden/Reagan/COVID boxes);
 an abstain-offered LLM may flag some (Arm B softness) — the *forced* condition is the
