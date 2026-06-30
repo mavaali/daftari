@@ -5,13 +5,18 @@ import type { LlmClient } from "./consensus-llm.js";
 
 describe("tensionPairs (editor-labeled 'no consensus' items, GT = neither supersedes)", () => {
   test("are genuine tension pairs with both positions present", () => {
-    expect(tensionPairs.length).toBeGreaterThanOrEqual(4);
+    expect(tensionPairs.length).toBeGreaterThanOrEqual(6);
     for (const p of tensionPairs) {
+      expect(p.article.length).toBeGreaterThan(0);
       expect(p.statusQuo.length).toBeGreaterThan(0);
       expect(p.alternative.length).toBeGreaterThan(0);
       expect(p.gt).toBe("neither"); // editor 'no consensus' => neither supersedes
       expect(p.rfc).toMatch(/Archive/);
     }
+  });
+
+  test("span more than one article (answers the 'Trump-specific?' critique)", () => {
+    expect(new Set(tensionPairs.map((p) => p.article)).size).toBeGreaterThanOrEqual(3);
   });
 });
 

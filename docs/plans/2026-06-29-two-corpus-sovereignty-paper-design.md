@@ -95,12 +95,16 @@ biased). Run:
 **Reading:** forced minting masquerades genuine tensions as supersessions; daftari
 preserves all, mints 0. Converts the spine from by-construction → measured + structural.
 
-**RAN 2026-06-29 (n=4, `docs/superpowers/results/2026-06-29-corpus-b-cb6.md`):**
-forced masquerade **4/4 across all three models** (Haiku/GLM-4.6/GPT-4o — architectural,
-model-independent); abstain-offered 3/4 (Haiku/GLM) vs 1/4 (GPT-4o — the honest softness);
-daftari mints **0/4** and manufactures **0/4** false conflicts (detector flags 1/4 — only
-the one genuine contradiction; the rest are framing disputes it correctly doesn't flag =
-preserve-not-resolve); second-rater validated 4/4. Spine is now measured + structural.
+**RAN 2026-06-29 (n=6, 3 articles — Trump/Biden/COVID-19; `docs/superpowers/results/2026-06-29-corpus-b-cb6.md`):**
+forced masquerade **17/18 across the panel** (GLM-4.6 6/6, GPT-4o 6/6, Haiku 5/6 — Haiku
+refused once, so near-architectural not sterile); abstain-offered model-dependent (GLM 5/6
+most aggressive, Haiku 3/6, GPT-4o 2/6 most conservative — the honest softness, and the
+empirical answer to "use GLM?": GLM widens the contrast, capability ≠ conservatism);
+daftari mints **0/6** and manufactures **0/6** false conflicts (detector flags 3/6 — the
+genuinely oppositional items; framing disputes correctly not flagged = preserve-not-resolve);
+second-rater validated 6/6. Survey finding: the box is a RARE institution (only Trump/Biden/
+COVID of 12 candidates) → this mechanism caps ~n=6–8; bigger needs RfC-close harvesting.
+Spine is now measured + structural.
 
 **Honest caveats (state in-paper):** small n (scale = pull Biden/Reagan/COVID boxes);
 an abstain-offered LLM may flag some (Arm B softness) — the *forced* condition is the

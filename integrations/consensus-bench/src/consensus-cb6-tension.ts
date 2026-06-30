@@ -8,6 +8,7 @@
 import type { FoilVerdict } from "./consensus-cb4-foil.js";
 
 export interface TensionPair {
+  article: string; // which article's Current-consensus box
   num: number; // consensus-box item number
   topic: string;
   statusQuo: string; // the wording held by default
@@ -40,11 +41,14 @@ export function masquerades(v: FoilVerdict): boolean {
   return v !== "neither";
 }
 
-// Four currently-active "no consensus" tensions from Talk:Donald_Trump/Current_consensus.
-// (#45 was later superseded by #48, so it is resolved, not active; #4 by #15.) Positions
-// distilled from the linked RfCs; each is gated by the blind second-rater before use.
+// Currently-active "no consensus" tensions from the three articles that maintain a
+// Talk:.../Current_consensus box with such items (surveyed 2026-06-29: of 12 candidate
+// articles only Trump, Biden, COVID-19 have real boxes — it is a rare institution).
+// (Trump #45 was later superseded by #48, #4 by #15 — those are resolved, not active.)
+// Positions distilled from the linked RfCs; each is gated by the blind second-rater.
 export const tensionPairs: TensionPair[] = [
   {
+    article: "Donald Trump",
     num: 15,
     topic: "2016 election result phrasing in the lead",
     statusQuo:
@@ -55,6 +59,7 @@ export const tensionPairs: TensionPair[] = [
     gt: "neither",
   },
   {
+    article: "Donald Trump",
     num: 48,
     topic: "COVID-19 response wording in the lead",
     statusQuo:
@@ -65,6 +70,7 @@ export const tensionPairs: TensionPair[] = [
     gt: "neither",
   },
   {
+    article: "Donald Trump",
     num: 56,
     topic: "Russian bounties wording",
     statusQuo:
@@ -75,6 +81,7 @@ export const tensionPairs: TensionPair[] = [
     gt: "neither",
   },
   {
+    article: "Donald Trump",
     num: 65,
     topic: "Abraham Accords framing",
     statusQuo:
@@ -82,6 +89,28 @@ export const tensionPairs: TensionPair[] = [
     alternative:
       "The Abraham Accords were largely ceremonial agreements between states already at de facto peace, with limited personal involvement from Trump, and are better covered in dedicated foreign-policy articles than emphasized here.",
     rfc: "Talk:Donald Trump/Archive 166 'RfC for inclusion of Abraham Accords' (2023–24); box #65 — included, no consensus on specific wordings.",
+    gt: "neither",
+  },
+  {
+    article: "Joe Biden",
+    num: 2,
+    topic: "gaffes subsection inclusion",
+    statusQuo:
+      "Joe Biden's biography does not include a dedicated subsection on his gaffes; the proposed section is undue weight for a standalone treatment.",
+    alternative:
+      "Joe Biden's biography should include a subsection on his gaffes; his speech mistakes are extensively covered across the political spectrum and he has called himself a 'gaffe machine'.",
+    rfc: "Talk:Joe Biden/Archive 15 'RfC: Section on gaffes' (Mar 2021, closed No consensus); box #2 — no consensus on including a gaffes subsection.",
+    gt: "neither",
+  },
+  {
+    article: "COVID-19 pandemic",
+    num: 7,
+    topic: "lead infobox map prominence",
+    statusQuo:
+      "The lead infobox should feature the confirmed-cases-per-capita map most prominently, with the deaths-per-capita map secondary.",
+    alternative:
+      "The lead infobox should feature the deaths-per-capita map most prominently, since deaths are the most significant measure of the pandemic's impact.",
+    rfc: "Talk:COVID-19 pandemic/Archive 33 'Should we switch the lead infobox map…' RfC; box #7 — no consensus on map prominence.",
     gt: "neither",
   },
 ];
