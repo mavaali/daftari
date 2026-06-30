@@ -266,6 +266,14 @@ We hold ourselves to an adversarial read.
   a single current value (the forced condition, where the contrast is model-independent); a
   memory that abstains on every contested point is not doing the job daftari does (answer
   *and* preserve the tension).
+- **The components are not individually novel (§9).** Bi-temporal supersession-without-
+  deletion (Graphiti), unresolved-contradiction representation (ATMS), the supersession-vs-
+  contradiction distinction (ElephantBroker), and supersession-preserving provenance (Roynard)
+  all predate us. We claim the *structural conjunction* — no-mint of a tension as a
+  by-construction invariant — and the empirical measurement of §4–6, not the constituent ideas.
+  A reviewer who knows ElephantBroker will press hardest here; the defense is that EB's
+  tension/supersession split is LLM-extracted and resolved by confidence decay (model-
+  dependent), which is precisely the difference §6 quantifies.
 - **The keystone is measured at n=6.** Small, because the consensus box is a rare institution
   (3 articles). The structural guarantee is the backbone; the measurement is support. Scaling
   needs broad RfC-close harvesting, which loses the clean editor label.
@@ -286,14 +294,74 @@ partial-clause provenance (0/2). The forced/architectural minter masquerades ten
 
 ## 9. Related work
 
-*(Needs a grounding pass before submission.)* Position against: the accumulation pole
-(consolidation / "sleep" / "dreaming" memory passes that maintain a single current state);
-deterministic consolidation (zero-LLM wiki rewriting); learned-memory / weights-writeback
-approaches; bi-temporal knowledge-graph invalidation; and RAG-maintenance / KB-curation.
-The distinguishing axis throughout is **preserve-not-resolve with a structural no-mint
-guarantee**, versus resolve-into-a-current-value. Prior art that earns trust by accumulation
-or supervisor sign-off is the contrast for the companion paper's trust-by-re-derivation
-claim; here the contrast is narrower and architectural.
+*(Grounded by a deep-research pass, 2026-06-29; verified claims in
+`docs/superpowers/drafts/2026-06-29-related-work-research.md`. Several closest competitors
+are 2026 preprints with no citation track record — re-verify currency at submission.)*
+
+The individual components of preserve-not-resolve are **not novel**, and we cite the prior
+art rather than claim them; the contribution is their *structural conjunction* on a specific
+substrate, plus the empirical measurement of §4–6.
+
+**The consolidation / accumulation pole.** The dominant frame for agent long-term memory is
+consolidation — periodically rewriting memory toward a compact current state. Mem0
+[2504.19413] dynamically extracts and consolidates via ADD/UPDATE/DELETE operations that
+overwrite prior entries; A-MEM [2502.12110] performs "memory evolution," mutating existing
+memories in place; a recent 2026 survey [2603.07670] names "continual consolidation" and
+"learned forgetting" as open frontiers and treats contradiction handling as a write-path
+engineering concern, not a first-class invariant. Generative Agents [2304.03442] is the
+important exception on the preservation axis: its reflections are an *additive* layer over a
+retained observation stream — prior art for "preserve raw, layer inference on top," though it
+makes no supersession or non-fabrication claim.
+
+**Supersession, contradiction, temporal invalidation.** Recording that a fact was superseded
+without deleting it is well-established. Zep/Graphiti [2501.13956] is the strongest instance:
+a bi-temporal graph that *invalidates* (not deletes) an edge on contradiction and retains it
+as history — but it *forces a recency resolution* ("consistently prioritizes new information
+when determining edge invalidation"), so it never holds a tension open. The deep prior art
+for representing an *unresolved* contradiction is the assumption-based truth-maintenance
+system (ATMS) [de Kleer 1986]: contradictory derivations coexist across assumption-
+environments via consistent labels and recorded "nogoods," never collapsing to one belief
+set. **Representing a tension is therefore not our novelty.**
+
+**The closest convergent systems (2026).** ElephantBroker [2603.25097] is the sharpest: it
+distinguishes supersession from contradiction *at the edge level* — a supersession edge
+(old fact's confidence decayed) vs a contradiction edge (both retain confidence) — directly
+our tension-vs-supersession distinction. But that classification is made by an LLM extractor
+(*model-dependent, not structural*); it resolves via confidence decay and a retrieval-scoring
+penalty rather than preserving a tension neutrally; its consolidation engine canonicalizes
+near-duplicates and archives low-confidence facts (an accumulation move); and its only
+*architecture-enforced* guarantees concern safety/contamination, not no-minting. The Roynard
+"Knowledge Layer" [2604.11364] records supersession as a relationship, preserves both claims
+append-only, and requires explicit provenance — but does *not* distinguish an unresolved
+tension from a supersession, makes no non-fabrication guarantee, and (we verified) does not
+specify deterministic detection. TOKI [2606.06240] formalizes contradiction *resolution* as a
+bitemporal operator algebra — the opposite choice: resolve, with theory, rather than preserve.
+
+**Non-fabrication and provenance are behavioral, not structural, in prior work.** Faithfulness
+in RAG is achieved by model alignment, not architecture: Trust-Align [2409.11242] improves
+correct refusal via preference tuning with no by-construction guarantee, and "Correctness is
+not Faithfulness" [2412.18004] shows models post-rationalize (up to 57% of citations unfaithful
+in their experiment). Provenance exists but targets a different relation: Portable Agent Memory
+[2605.11032] provides a Merkle-DAG of derivation lineage (tamper-evidence), not provenance over
+what-supersedes-what; AIS [2112.12870] is an attribution *measurement* framework, not a
+guarantee. *(The inverse-substrate pole — memory written into model weights, e.g. learned-
+memory / Cartridges approaches — is a separate competitor not verified in this pass; check
+before submission.)*
+
+**The gap this paper fills** (narrowed to be reviewer-defensible):
+- **A structural, by-construction no-mint invariant.** No cited system makes "never collapse a
+  tension into a supersession" an architectural guarantee. The closest (ElephantBroker)
+  represents the distinction but resolves it via LLM extraction + confidence decay — exactly
+  the model-dependence §6 measures (the architectural minter masquerades model-independently;
+  the LLM minter's restraint is model-dependent).
+- **The empirical two-corpus invariance.** No prior system is evaluated for non-fabrication +
+  provenance across a recency-*works* control and a recency-*fails* treatment.
+- **Provenance over supersession.** Existing provenance is lineage/tamper-evidence (Portable
+  Agent Memory) or source attribution (Roynard); provenance over *what governs and what it
+  superseded* is thinner prior art.
+- **The substrate.** No cited system targets a human-readable, git-versioned, agent-consumed
+  markdown vault; a competitor has publicly argued markdown is *not* agent memory [Zep blog],
+  which we engage directly rather than ignore.
 
 ## 10. Limitations and future work
 
