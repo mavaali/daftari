@@ -313,29 +313,48 @@ important exception on the preservation axis: its reflections are an *additive* 
 retained observation stream — prior art for "preserve raw, layer inference on top," though it
 makes no supersession or non-fabrication claim.
 
-**Supersession, contradiction, temporal invalidation.** Recording that a fact was superseded
-without deleting it is well-established. Zep/Graphiti [2501.13956] is the strongest instance:
-a bi-temporal graph that *invalidates* (not deletes) an edge on contradiction and retains it
-as history — but it *forces a recency resolution* ("consistently prioritizes new information
-when determining edge invalidation"), so it never holds a tension open. The deep prior art
-for representing an *unresolved* contradiction is the assumption-based truth-maintenance
-system (ATMS) [de Kleer 1986]: contradictory derivations coexist across assumption-
-environments via consistent labels and recorded "nogoods," never collapsing to one belief
-set. **Representing a tension is therefore not our novelty.**
+**Two preservation axes, often conflated.** "Preserving structure" splits into two distinct
+properties, and the prior art sits on different ones:
 
-**The closest convergent systems (2026).** ElephantBroker [2603.25097] is the sharpest: it
-distinguishes supersession from contradiction *at the edge level* — a supersession edge
-(old fact's confidence decayed) vs a contradiction edge (both retain confidence) — directly
-our tension-vs-supersession distinction. But that classification is made by an LLM extractor
-(*model-dependent, not structural*); it resolves via confidence decay and a retrieval-scoring
-penalty rather than preserving a tension neutrally; its consolidation engine canonicalizes
-near-duplicates and archives low-confidence facts (an accumulation move); and its only
-*architecture-enforced* guarantees concern safety/contamination, not no-minting. The Roynard
-"Knowledge Layer" [2604.11364] records supersession as a relationship, preserves both claims
-append-only, and requires explicit provenance — but does *not* distinguish an unresolved
-tension from a supersession, makes no non-fabrication guarantee, and (we verified) does not
-specify deterministic detection. TOKI [2606.06240] formalizes contradiction *resolution* as a
-bitemporal operator algebra — the opposite choice: resolve, with theory, rather than preserve.
+*Supersession-preservation* — keep the *old* fact as history, but resolve which is current.
+Zep/Graphiti [2501.13956] is the strongest instance: a bi-temporal graph that *invalidates*
+(not deletes) an edge on contradiction — setting the old edge's `t_invalid` to the new edge's
+`t_valid` and retaining it as queryable history — but it always **resolves**, "consistently
+prioritizes new information when determining edge invalidation," yielding a single current
+state per relationship. Roynard's "Knowledge Layer" [2604.11364] similarly records
+supersession as a relationship and preserves both claims append-only with explicit
+provenance, but a contradiction *triggers* a supersession (it resolves, and has no
+first-class unresolved state). daftari sits on this axis too — and we claim **no novelty**
+for keeping the superseded fact. Notably, Graphiti's recency-prioritized resolution is the
+*foil* behavior of §5: on our treatment corpus the governing value is not the latest edit, so
+a recency-resolving memory goes stale exactly as the recency baseline does (stated as
+positioning; we did not run Graphiti).
+
+*Tension-preservation* — hold *two still-live* claims open, unresolved, and never let one
+quietly become current. This is the keystone axis, and it has prior art too. The classical
+deep precedent is the assumption-based truth-maintenance system (ATMS) [de Kleer 1986]:
+contradictory derivations coexist across assumption-environments via consistent labels and
+recorded "nogoods," never collapsing to one belief set. In agent memory, ElephantBroker
+[2603.25097] is the sharpest: it emits a *contradiction edge* (both facts retain confidence)
+distinct from a supersession edge — directly our distinction. **So representing a tension is
+not our novelty either.** What no system makes it is a *structural, by-construction*
+property (see below).
+
+**Why the tension-preservers fall short of a structural guarantee.** ElephantBroker, the
+sharpest case, represents the tension/supersession distinction but does not *guarantee*
+no-mint: (i) the classification is made by an LLM extractor — *model-dependent*, exactly the
+dependence §6 measures; (ii) it does not preserve a tension neutrally — the contradiction edge
+carries a retrieval-scoring penalty and the supersession path decays the old fact's
+confidence; (iii) its consolidation engine canonicalizes near-duplicates and archives
+low-confidence facts (an accumulation move); and (iv) its only *architecture-enforced*
+guarantees concern safety/contamination, not the minting of values. So the closest competitor
+*confirms* the gap: representing a tension is not the same as a by-construction invariant that
+one can never become a supersession. Two other recent systems frame the contrast. TOKI
+[2606.06240] formalizes contradiction *resolution* as a bitemporal operator algebra — the
+opposite choice: resolve, with theory, rather than preserve. And classical TMS (ATMS) achieves
+its no-collapse property *structurally* (nogoods are pre-compiled so a label can never contain
+an inconsistent environment), but over logical assumption-sets, not over a human-readable,
+agent-consumed memory substrate.
 
 **Non-fabrication and provenance are behavioral, not structural, in prior work.** Faithfulness
 in RAG is achieved by model alignment, not architecture: Trust-Align [2409.11242] improves
@@ -349,11 +368,15 @@ memory / Cartridges approaches — is a separate competitor not verified in this
 before submission.)*
 
 **The gap this paper fills** (narrowed to be reviewer-defensible):
-- **A structural, by-construction no-mint invariant.** No cited system makes "never collapse a
-  tension into a supersession" an architectural guarantee. The closest (ElephantBroker)
-  represents the distinction but resolves it via LLM extraction + confidence decay — exactly
-  the model-dependence §6 measures (the architectural minter masquerades model-independently;
-  the LLM minter's restraint is model-dependent).
+- **A structural, by-construction no-mint invariant *in an agent-memory system*.** Classical
+  TMS (ATMS) has a structural no-collapse guarantee, but over logical assumption-sets in a
+  reasoning engine — not a persistent, natural-language, agent-consumed memory. Among
+  *agent-memory* systems, none makes no-mint architectural: the closest (ElephantBroker)
+  represents the tension/supersession distinction but resolves it via LLM extraction +
+  confidence decay — exactly the model-dependence §6 measures (the architectural minter
+  masquerades model-independently; the LLM minter's restraint is model-dependent). Our
+  contribution is porting the TMS no-collapse property *to the agent-memory substrate as a
+  by-construction invariant*.
 - **The empirical two-corpus invariance.** No prior system is evaluated for non-fabrication +
   provenance across a recency-*works* control and a recency-*fails* treatment.
 - **Provenance over supersession.** Existing provenance is lineage/tamper-evidence (Portable
