@@ -32,6 +32,14 @@ invariance** (no one has run this measurement).
 | survey | 2603.07670 (Mar 2026) | names continual-consolidation/learned-forgetting as frontier | single-author, no track record → cite as "a recent 2026 survey," NOT "the standard" |
 | **Zep blog** | getzep.com "Markdown is not agent memory" | argues AGAINST markdown as agent memory | engage directly on the substrate axis |
 
+### Verified 2026-06-30 (4 parallel agents, primary sources — the prior "open" systems)
+| system | id / date | what it does | placement |
+|---|---|---|---|
+| **MemGPT / Letta** | 2310.08560 (Oct 2023; now "Letta, formerly MemGPT") | self-editing hierarchical memory; `core_memory_replace` overwrites a changed fact in place | OVERWRITE/consolidation pole — neither axis; no structural no-mint (only syntactic validation) |
+| **Cognee** | Markovic et al. 2505.24478 (May 2025); `topoteretes/cognee` | multi-store KG memory layer (graph+vector+relational DBs — NOT markdown, no git); `memify` updates/prunes; opt-in temporal mode timestamps + recency-resolves | default OVERWRITE pole; weak opt-in supersession; NO tension-preservation; no structural no-mint (LLM extraction; `ontology_valid` flag is advisory). **Cite paper only for existence/KG-framing, NOT supersession (those are docs/blog)** |
+| **Cartridges / Engram** | Eyuboglu et al. 2506.06266 (Jun 2025); Engram company Jun 2026 | memory distilled offline into a trainable KV-cache (key/value vectors via backprop; 38.6× less memory, 26.4× throughput vs ICL) — NOT LoRA | INVERSE-SUBSTRATE pole (memory into model, opaque/non-versioned, no supersession/provenance). Use PAPER's 38.6×/26.4×, not company's "100×". Severe name collision → cite paper not a product URL. Optimizes token-cost, not supersession |
+| **SmartVector** | Xu 2604.20598 (Apr 2026) | hippocampal-consolidation lifecycle; ARCHIVED state + `supersedes`/`superseded_by`, "nothing deleted"; resolves contradictions by recency/authority/feedback majority vote | SUPERSESSION-preservation (axis a) YES; tension-preservation (axis b) NO — votes tensions away (the keystone's forbidden move); no structural no-mint (heuristic, author concedes fallible §11.2; LLM arbiter is Phase-3 future work) |
+
 ## Required corrections / caveats (apply before submission)
 - **ATMS citation → de Kleer 1986 (AIJ)**, NOT the IJCAI-93 PDF (would not parse; secondary).
 - **Do NOT attribute deterministic/zero-LLM to Roynard** — that convergence claim was REFUTED 0-3.
@@ -40,6 +48,6 @@ invariance** (no one has run this measurement).
 
 ## Open questions (NOT resolved this pass — verify against primary before any claim)
 - Did later Mem0 (Mem0g) drop the graph layer? Unresolved — check repo/changelog.
-- **MemGPT/Letta, Cognee, Engram (Stanford Cartridges/weights-writeback), SmartVector (2604.20598), Microsoft Recall benchmark (Stevenic/recall)** — none produced a surviving verified claim; verify each against a primary source before inclusion. Engram (the inverse-substrate competitor) especially.
+- ~~MemGPT/Letta, Cognee, Engram, SmartVector~~ **RESOLVED 2026-06-30** (verified table above; folded into §9). Remaining: **Microsoft Recall benchmark (Stevenic/recall)** — not needed for §9 (it's an eval harness, not a memory-architecture competitor); verify only if cited as eval surface.
 - Is there ANY system whose supersession/contradiction *classification* (not just storage) is deterministic/by-construction rather than LLM-extracted? Confirming the negative across MemGPT/Cognee/Letta would harden the master gap.
 - Stress-test the substrate-differentiator (git-versioned markdown vault) against Cognee and Obsidian/markdown-targeted memory tools before asserting it unclaimed.

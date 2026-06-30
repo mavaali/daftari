@@ -306,9 +306,13 @@ substrate, plus the empirical measurement of §4–6.
 consolidation — periodically rewriting memory toward a compact current state. Mem0
 [2504.19413] dynamically extracts and consolidates via ADD/UPDATE/DELETE operations that
 overwrite prior entries; A-MEM [2502.12110] performs "memory evolution," mutating existing
-memories in place; a recent 2026 survey [2603.07670] names "continual consolidation" and
-"learned forgetting" as open frontiers and treats contradiction handling as a write-path
-engineering concern, not a first-class invariant. Generative Agents [2304.03442] is the
+memories in place; MemGPT/Letta [2310.08560] self-edits hierarchical memory blocks,
+resolving a changed fact by overwriting it in place (`core_memory_replace`); and Cognee
+[2505.24478] is a multi-store knowledge-graph memory layer whose enrichment pass (`memify`)
+updates and prunes nodes (with explicit `delete`/`prune` operations). A recent 2026 survey
+[2603.07670] names "continual consolidation" and "learned forgetting" as open frontiers and
+treats contradiction handling as a write-path engineering concern, not a first-class
+invariant. Generative Agents [2304.03442] is the
 important exception on the preservation axis: its reflections are an *additive* layer over a
 retained observation stream — prior art for "preserve raw, layer inference on top," though it
 makes no supersession or non-fabrication claim.
@@ -324,8 +328,12 @@ prioritizes new information when determining edge invalidation," yielding a sing
 state per relationship. Roynard's "Knowledge Layer" [2604.11364] similarly records
 supersession as a relationship and preserves both claims append-only with explicit
 provenance, but a contradiction *triggers* a supersession (it resolves, and has no
-first-class unresolved state). daftari sits on this axis too — and we claim **no novelty**
-for keeping the superseded fact. Notably, Graphiti's recency-prioritized resolution is the
+first-class unresolved state). SmartVector [2604.20598] makes the pattern explicit: it
+preserves every superseded vector (an `ARCHIVED` state with `supersedes`/`superseded_by`
+edges, "nothing deleted") yet **resolves every contradiction by a recency / source-authority /
+feedback majority vote** — preserve the past, vote-away the present, the move our keystone
+forbids. daftari sits on this axis too — and we claim **no novelty** for keeping the
+superseded fact. Notably, Graphiti's recency-prioritized resolution is the
 *foil* behavior of §5: on our treatment corpus the governing value is not the latest edit, so
 a recency-resolving memory goes stale exactly as the recency baseline does (stated as
 positioning; we did not run Graphiti).
@@ -363,9 +371,13 @@ not Faithfulness" [2412.18004] shows models post-rationalize (up to 57% of citat
 in their experiment). Provenance exists but targets a different relation: Portable Agent Memory
 [2605.11032] provides a Merkle-DAG of derivation lineage (tamper-evidence), not provenance over
 what-supersedes-what; AIS [2112.12870] is an attribution *measurement* framework, not a
-guarantee. *(The inverse-substrate pole — memory written into model weights, e.g. learned-
-memory / Cartridges approaches — is a separate competitor not verified in this pass; check
-before submission.)*
+guarantee. The **inverse-substrate pole** writes memory *into the model* rather than an
+external store: Cartridges [2506.06266] distills a corpus offline into a trainable KV-cache
+(key/value vectors trained by back-propagation; 38.6× less memory and 26.4× higher throughput
+than in-context learning), productized as Engram (2026). Such memory is opaque, non-versioned,
+and carries no supersession or provenance representation — the inverse substrate choice to a
+human-readable, git-versioned store. It optimizes for token-cost, not supersession, so the
+contrast is one of substrate and aim, not a head-to-head on our axis.
 
 **The gap this paper fills** (narrowed to be reviewer-defensible):
 - **A structural, by-construction no-mint invariant *in an agent-memory system*.** Classical
@@ -383,7 +395,9 @@ before submission.)*
   Agent Memory) or source attribution (Roynard); provenance over *what governs and what it
   superseded* is thinner prior art.
 - **The substrate.** No cited system targets a human-readable, git-versioned, agent-consumed
-  markdown vault; a competitor has publicly argued markdown is *not* agent memory [Zep blog],
+  markdown vault: the surveyed systems store memory in databases (Cognee — graph + vector +
+  relational backends), opaque trainable tensors (Cartridges/Engram), or knowledge graphs
+  (Graphiti); and a competitor has publicly argued markdown is *not* agent memory [Zep blog],
   which we engage directly rather than ignore.
 
 ## 10. Limitations and future work
