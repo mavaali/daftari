@@ -78,6 +78,29 @@ the conflict into a generated answer. Both hand the agent a clean story that
 isn't true. Daftari refuses, because collapsing a contest into a winner is an act
 of ownership — and ownership belongs to the principal, not the memory.
 
+```mermaid
+flowchart TB
+    I["Two entries disagree — A: X, B: Y<br/><i>neither has replaced the other</i>"]
+    I --> R["Retrieval system"]
+    I --> D["Decision engine"]
+    I --> F["Daftari<br/>stores + points"]
+
+    R --> R1["Returns one hit —<br/>blind to the conflict"]
+    D --> D1["Invents a value<br/>neither source holds"]
+    F --> F1["A real edge exists →<br/>follow it · <b>current</b>"]
+    F --> F2["No edge →<br/>log the tension · <b>contested</b>"]
+
+    R1 --> X(["collapses"])
+    D1 --> X
+    F1 --> Y(["resolves by discovery"])
+    F2 --> Y
+
+    class R1,D1,X bad
+    class F,F1,F2,Y good
+    classDef bad fill:#F6E3DC,stroke:#C2603F,color:#5C2A18
+    classDef good fill:#DCEEEC,stroke:#3A8A82,color:#173E3A
+```
+
 This is the same instinct as the [jugalbandi
 protocol](/blog/jugalbandi-protocol-what-happens-when-you-force-ai-agents-to-argue),
 one layer down. There I forced agents to argue rather than agree too early.

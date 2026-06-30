@@ -1,15 +1,79 @@
 # Architecture
 
-Daftari is a single MCP server process. It is started against one vault
-directory, runs as one access identity for its lifetime, and serves 25 MCP
-tools over stdio. Five additional surfaces are CLI-only —
-`daftari backfill`, `daftari import obsidian`, `daftari audit`,
-`daftari eval`, and `daftari consolidate` — plus a one-shot
-`daftari --init` scaffolder; they are introduced in the relevant sections
-below (see [Adoption](#adoption), [The consolidation loop](#the-consolidation-loop),
-and [Doc-to-code coherence](#doc-to-code-coherence)). This document
-explains how a tool call travels through the system and why the design is
-shaped the way it is.
+A knowledge vault has an easy job and a hard job. The easy job is holding what
+you give it. The hard job is still being trustworthy a year later — after a
+dozen agents have written to it, after half its facts have quietly gone out of
+date, after two notes have started to contradict each other and nobody noticed.
+
+Most of this document is about the hard job. The easy job fits in a paragraph:
+Daftari is a single MCP server, started against one vault directory, running as
+one access identity for its lifetime, serving 25 tools over stdio. Five more
+surfaces are CLI-only — `daftari backfill`, `daftari import obsidian`,
+`daftari audit`, `daftari eval`, and `daftari consolidate` — plus a one-shot
+`daftari --init` scaffolder; each is introduced below where it earns its place
+(see [Adoption](#adoption), [The consolidation loop](#the-consolidation-loop),
+and [Doc-to-code coherence](#doc-to-code-coherence)).
+
+That's it for the easy job. The rest is the four layers a single tool call falls
+through, and — the part worth your attention — *why each layer refuses to do
+slightly more than it does.* The restraint is the design.
+
+## The core idea
+
+Before the layers, the one idea they all serve. Daftari is memory for an agent
+that *acts on what it is handed and cannot sanity-check it first* — so every
+judgment a human reader would supply for free has to move into the memory itself.
+There are three such judgments, and the design collapses none of them into a
+convenient answer:
+
+- **What's current.** When a fact changes, point to the latest source by
+  *following a real edge* — a supersession — never by guessing.
+- **What's grounded.** Every entry traces to where it came from. The memory
+  never mints a value of its own; it stores and points, it does not invent.
+- **What's contested.** When two facts genuinely disagree and neither has
+  replaced the other, that disagreement is a first-class object — a *tension* —
+  held open, not flattened into a false resolution.
+
+Everywhere else the reflex is to collapse. A retrieval system returns one hit,
+blind to the conflict; a decision engine resolves the conflict into a generated
+answer. Both hand the agent a clean story that isn't true. Daftari's move is the
+opposite, and it is the same move at every layer: *compute the signal — staleness,
+decay, derivation — then, at the moment of action, throw the minted value away and
+author only the relation.* A `superseded_by` edge. A logged tension. Never an
+invented value.
+
+```mermaid
+flowchart TB
+    I["Two entries disagree — A: X, B: Y<br/><i>neither has replaced the other</i>"]
+    I --> R["Retrieval system"]
+    I --> D["Decision engine"]
+    I --> F["Daftari<br/>stores + points"]
+
+    R --> R1["Returns one hit —<br/>blind to the conflict"]
+    D --> D1["Invents a value<br/>neither source holds"]
+    F --> F1["A real edge exists →<br/>follow it · <b>current</b>"]
+    F --> F2["No edge →<br/>log the tension · <b>contested</b>"]
+
+    R1 --> X(["collapses"])
+    D1 --> X
+    F1 --> Y(["resolves by discovery"])
+    F2 --> Y
+
+    class R1,D1,X bad
+    class F,F1,F2,Y good
+    classDef bad fill:#F6E3DC,stroke:#C2603F,color:#5C2A18
+    classDef good fill:#DCEEEC,stroke:#3A8A82,color:#173E3A
+```
+
+One line holds the whole system together, and the reason to like it is that it is
+*falsifiable* — you can point at any record and check whether it faked a
+resolution:
+
+> **A tension may never masquerade as a supersession.**
+
+The argument for *why* — memory you own for a model you rent, and the centuries-old
+ledger discipline behind it — lives in the [manifesto](manifesto.md). The rest of
+*this* document is how the four layers make that one law structural.
 
 ## The layered model
 
@@ -39,14 +103,30 @@ shaped the way it is.
                        └─────────────────────────────┘
 ```
 
-Read the layers as concerns, not as a strict call stack — a read touches only
-layers 2 and 1; a write travels through 2, 3, 4, and 1. The numbering follows
-the README's four-layer model.
+Read the layers as concerns, not as a call stack. Nothing marches top to bottom
+every time: a read touches only layers 2 and 1; a write travels through 2, 3, 4,
+and 1. The numbering follows the README's four-layer model. The sections below
+walk them foundation-first — Storage, then the access, safety, and curation
+concerns stacked on top — which is not the order a call visits them, so read for
+*what each layer is responsible for*, not for a sequence.
 
 ### Layer 1 — Storage
 
-The vault is a directory of markdown files, each with a YAML frontmatter block.
-Frontmatter *is* the metadata layer; there is no separate metadata store.
+Start at the bottom, because the bottom is the whole bet. The vault is a
+directory of markdown files, each with a YAML frontmatter block — and that is
+the entire source of truth. Frontmatter *is* the metadata layer; there is no
+separate metadata store, no document database, no second copy of anything that
+matters. If that sounds austere, it buys a property worth the austerity:
+**delete every `.db` file and the vault loses nothing.** Everything else in this
+layer — git, the search index, the lock store — is either history or a cache you
+can rebuild from the markdown at any time.
+
+This is also the deepest layer in the document, because the index, the embedding
+cache, clustering, and one-time adoption all live here. If you're reading for the
+shape of the system, the three things just below are the spine — the rest of
+Layer 1 is reference depth, and the `####` subsections (thematic clustering,
+reactive indexing, adoption) are safe to skip on a first pass and return to when
+you need them.
 
 Three things sit alongside the markdown:
 
@@ -63,31 +143,42 @@ Three things sit alongside the markdown:
   Lexical ranking lives in two FTS5 virtual tables — `chunks_fts` over
   chunk text and `documents_fts` over title, tags, and body — kept in
   sync by AFTER INSERT / UPDATE / DELETE triggers on the underlying
-  `chunks` / `documents` tables. The default lexical granularity is
-  **chunk** (since v1.29.0): the BM25 score over `chunks_fts` is rolled
-  up to each document's best chunk, then *tiered* with a column-restricted
-  title/tag pass over `documents_fts` so every body match ranks above
-  every title-only match. Per-chunk scoring stops a long, multi-topic
-  document from diluting a relevant topic; the tiered combine preserves
-  title- and tag-only retrieval. Callers that need the previous behavior
-  pass `lexicalGranularity: "document"` to `vault_search`;
-  `vault_search_related` is unchanged (still document-granularity).
+  `chunks` / `documents` tables.
+
+  The default lexical granularity is **chunk** (since v1.29.0). The BM25
+  score over `chunks_fts` is rolled up to each document's *best* chunk, then
+  *tiered* with a column-restricted title/tag pass over `documents_fts`:
+
+  $$\text{score}_{\text{lex}}(d) = \max_{c \,\in\, d}\text{BM25}(c)\ \in\ (0.5,\,1] \ \text{ for a body match}; \qquad (0,\,0.5] \ \text{ for a title/tag-only match}$$
+
+  The bands are disjoint by construction, so *every* body match outranks
+  *every* title-only match regardless of the raw BM25 magnitudes — which is
+  why a de-weighted single score (a `0.99` max) couldn't hold the ordering
+  but two non-overlapping intervals can. The two halves earn their keep
+  separately: best-chunk scoring stops a long, multi-topic document from
+  diluting a relevant topic, and the tiered combine preserves title- and
+  tag-only retrieval. Callers that need the previous behavior pass
+  `lexicalGranularity: "document"` to `vault_search`; `vault_search_related`
+  is unchanged (still document-granularity).
+
   Vector ranking lives in a sqlite-vec `embeddings_vec` virtual table
   that mirrors the durable `embeddings` cache and exposes KNN queries via
   `MATCH ... AND k = ?` with cosine distance. Both indexes are SQL-native
   — search is one prepared statement per ranker, not a JavaScript scan.
 
   **Prerequisite.** sqlite-vec ships a loadable extension (`vec0.dylib`
-  / `.so` / `.dll`) and Daftari loads it at index-db open time via
-  `better-sqlite3`'s `db.loadExtension()`. The `sqlite-vec` npm package
-  contains pre-built binaries for darwin/linux/windows on x64 and arm64,
-  and the `better-sqlite3` npm prebuilt enables extension loading by
-  default — so for the common case `npm install` is the only step
-  needed. If a custom `better-sqlite3` build with extension loading
-  disabled is installed, `openIndexDb` returns a Result.err with
-  actionable text: `npm rebuild better-sqlite3 --build-from-source`.
-  The server refuses to start on this failure rather than silently
-  falling back to JavaScript cosine.
+  / `.so` / `.dll`), and Daftari loads it at index-db open time via
+  `better-sqlite3`'s `db.loadExtension()`. For the common case this is
+  invisible: the `sqlite-vec` npm package contains pre-built binaries for
+  darwin/linux/windows on x64 and arm64, and the `better-sqlite3` prebuilt
+  enables extension loading by default — so `npm install` is the only step
+  needed.
+
+  The one way it breaks is a custom `better-sqlite3` build with extension
+  loading disabled. There, `openIndexDb` returns a `Result.err` with
+  actionable text (`npm rebuild better-sqlite3 --build-from-source`), and
+  the server refuses to start rather than silently falling back to a
+  JavaScript cosine scan.
 
   The vector embeddings are produced by a configurable
   **`EmbeddingProvider`** (see `src/search/embedding-provider.ts`). Each
@@ -131,35 +222,42 @@ Three things sit alongside the markdown:
   `embed()` actually has texts to embed, not at startup. With the
   content-addressed cache above, a startup that finds every chunk hash
   already in the cache (the common case — nothing in the vault changed
-  since the last run) never loads the model at all. After the transport
-  is open and the freshness check has finished, the server kicks off a
-  background `warmModel()` so the first user search does not pay the
-  ~500ms cold start. The warm-up is gated by the optional
-  `warm_embeddings` flag in `.daftari/config.yaml` (default `true`); set
-  it to `false` for read-only roles that never embed or for low-memory
-  deployments where the ~100MB model footprint is unwelcome. A warm-up
-  failure (no network on first run, model download blocked) is logged
-  but never crashes the server — the next `embed()` call retries.
+  since the last run) never loads the model at all.
+
+  To keep the *first* search fast anyway, the server kicks off a background
+  `warmModel()` once the transport is open and the freshness check has
+  finished, so that search does not pay the ~500ms cold start. The warm-up
+  is gated by the optional `warm_embeddings` flag in `.daftari/config.yaml`
+  (default `true`); set it to `false` for read-only roles that never embed,
+  or for low-memory deployments where the ~100MB model footprint is
+  unwelcome. A warm-up failure (no network on first run, model download
+  blocked) is logged but never crashes the server — the next `embed()` call
+  retries.
 
   Embeddings are stored in a separate, **content-addressed** `embeddings`
-  table keyed by `(content_hash, model)`, with a `dim` column recording
-  the vector dimension as defense-in-depth against a corrupt or cross-
-  provider mix. A `chunks` row carries the `sha256` of its text and joins
-  to the `embeddings` table for the current model — so an embedding is
-  the property of a chunk's text, not of a file path or its mtime. A reindex hashes every chunk, asks the cache which
-  hashes already have a row for the current model, and only embeds the
-  misses. The cost of a reindex therefore scales with the number of *changed
-  chunks*, not the size of the vault: an edit to one paragraph re-embeds one
-  chunk, a rename re-embeds zero, a paragraph moved verbatim to another file
-  re-embeds zero. On the first reindex after a schema bump the cache is
-  empty, so a one-time full embed populates it; every subsequent reindex is
-  incremental. After writing chunks, the reindex runs an internal `vault_gc`
-  step that drops embeddings rows whose `content_hash` is no longer
-  referenced by any chunk, so the cache does not accumulate orphans across
-  edits. The composite primary key on `(content_hash, model)` is
-  deliberate — a future model migration can keep both the old and new
-  model's embeddings present under the same hash, so a roll-forward does
-  not have to clear the cache first.
+  table keyed by `(content_hash, model)`, with a `dim` column recording the
+  vector dimension as defense-in-depth against a corrupt or cross-provider
+  mix. A `chunks` row carries the `sha256` of its text and joins to the
+  `embeddings` table for the current model. The consequence is the key
+  idea: an embedding is the property of a chunk's *text*, not of a file path
+  or its mtime.
+
+  That property is what makes reindexing cheap. A reindex hashes every
+  chunk, asks the cache which hashes already have a row for the current
+  model, and only embeds the misses — so its cost scales with the number of
+  *changed chunks*, not the size of the vault. Edit one paragraph and you
+  re-embed one chunk; rename a file and you re-embed zero; move a paragraph
+  verbatim to another file and you re-embed zero. (The first reindex after a
+  schema bump finds an empty cache, so it pays a one-time full embed; every
+  reindex after that is incremental.)
+
+  Two housekeeping properties keep the cache honest over time. After writing
+  chunks, the reindex runs an internal `vault_gc` step that drops embeddings
+  rows whose `content_hash` is no longer referenced by any chunk, so orphans
+  don't accumulate across edits. And the composite primary key on
+  `(content_hash, model)` is deliberate: a future model migration can keep
+  both the old and new model's embeddings present under the same hash, so a
+  roll-forward never has to clear the cache first.
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
@@ -193,16 +291,18 @@ cluster centroid; **`relatedTags`** are the most frequent tags. Themes are
 sorted by `documentCount` desc.
 
 v1's partition is one-doc-one-theme: each document's `documentCount`
-contribution lives in exactly one cluster (its pooled centroid). To
-surface the cross-cutting documents the partition hides, each theme
-also reports **`secondaryDocs`** — documents whose primary cluster is
-elsewhere but whose pooled vector is close enough to this theme's
-centroid (within a similarity delta of the primary alignment, above an
-absolute floor, capped per doc) that the doc plausibly belongs here
-too. This is soft reporting on top of a hard partition; it does not
-change `documentCount`. Density-aware HDBSCAN, true multi-theme
-membership (where a doc's chunks live in genuinely different topic
-regions), a seeded-search / coverage mode, and LLM-generated labels are
+contribution lives in exactly one cluster (its pooled centroid). That hard
+partition hides the cross-cutting documents — the ones that genuinely belong
+to two themes at once.
+
+To surface them without breaking the partition, each theme also reports
+**`secondaryDocs`**: documents whose primary cluster is elsewhere but whose
+pooled vector is close enough to this theme's centroid (within a similarity
+delta of the primary alignment, above an absolute floor, capped per doc) that
+the doc plausibly belongs here too. This is soft reporting layered on a hard
+partition; it does not change `documentCount`. Density-aware HDBSCAN, true
+multi-theme membership (where a doc's chunks live in genuinely different topic
+regions), a seeded-search / coverage mode, and LLM-generated labels are all
 deferred.
 
 `coherence` is `null` for singleton clusters — a one-doc cluster has no
@@ -242,8 +342,10 @@ the reconciliation backstop: if the watcher drops events (chokidar /
 FSEvents are not 100% reliable on large vaults), the next startup catches
 the drift and triggers a full reindex.
 
-The markdown files are the single source of truth. Delete every `.db` file and
-the vault loses nothing — rebuild and continue.
+Which is the promise from the top of this layer, now earned: the markdown files
+are the single source of truth, and everything in this section — the FTS5
+tables, the vectors, the watcher's bookkeeping — is a cache the markdown can
+regenerate. Throw the `.db` files away and rebuild; nothing of meaning is lost.
 
 **Path confinement.** Every vault path resolves through `realpath`'d
 canonicalization before any read or write, and a resolved path that
@@ -253,15 +355,17 @@ symlinked parent.
 
 **Report, don't coerce.** `reindexVault` no longer launders schema-invalid
 frontmatter into defaults. `ReindexResult.invalidFrontmatter` lists every
-document that was indexed but whose frontmatter violated the schema (and
-was indexed against coerced defaults), and `ReindexResult.skipped` reports
-files that could not be indexed at all. The markdown remains the source of
-truth; `vault_lint` is the repair path. Adjacent to this: `created` /
-`updated` values that are not strict ISO `YYYY-MM-DD` are normalized at
-the index boundary (`2026-3-1` → `2026-03-01`) or stored as the empty
-string when unrecoverable, so date arithmetic in search and lint can't
-throw on poisoned input — but the source file is preserved verbatim,
-honoring the non-destructive write invariant.
+document that was indexed but whose frontmatter violated the schema (and was
+indexed against coerced defaults), and `ReindexResult.skipped` reports files
+that could not be indexed at all. The markdown remains the source of truth;
+`vault_lint` is the repair path.
+
+Dates are the one place this gets subtle. A `created` / `updated` value that
+isn't strict ISO `YYYY-MM-DD` is normalized *at the index boundary*
+(`2026-3-1` → `2026-03-01`), or stored as the empty string when unrecoverable,
+so date arithmetic in search and lint can't throw on poisoned input. The source
+file is still preserved verbatim — the normalization lives in the index, not on
+disk — honoring the non-destructive write invariant.
 
 #### Adoption
 
@@ -285,12 +389,14 @@ It is a two-step plan/apply, and the asymmetry is deliberate.
 `daftari backfill --plan [--scope <folder>]` derives proposals and stages them to
 a transient `.daftari/backfill-plan.jsonl`, modifying no markdown.
 `daftari backfill --apply --scope <folder> [--yes]` writes one folder's proposals
-and commits them in a single commit (honoring `auto_commit`). `--scope` is
-**required on apply** so a whole-vault rewrite can never happen by accident. The
-plan file is never staged or committed — the apply commit is the durable audit
-trail. Existing frontmatter is preserved field-by-field (see
-[Non-destructive frontmatter writes](#non-destructive-frontmatter-writes)); a doc
-whose frontmatter already validates is reported conformant and skipped.
+and commits them in a single commit (honoring `auto_commit`).
+
+The guard rails matter here. `--scope` is **required on apply**, so a
+whole-vault rewrite can never happen by accident. The plan file is never staged
+or committed — the apply commit is the durable audit trail. Existing frontmatter
+is preserved field-by-field (see
+[Non-destructive frontmatter writes](#non-destructive-frontmatter-writes)), and a
+doc whose frontmatter already validates is reported conformant and skipped.
 
 **`daftari import obsidian <vault>`** is an Obsidian-aware wrapper over
 `backfill`. It harvests inline `#tags` from the document body into the
@@ -318,27 +424,37 @@ reserved enum field names — `status`, `confidence`, `domain`, `provenance` —
 its own vocabulary (`status: ACTIVE`, `domain: Architecture`). Backfill preserves
 the author's value rather than laundering it into a Daftari default, then *detects
 the collision*: a present built-in enum field whose value is outside that field's
-enum. `--plan` lists every collision (`path · field: value`) and reports per-scope
-**coverage** — how many docs will catalog cleanly versus be blocked — so the
-operator sees the cost before applying. `--apply` skips a colliding doc whole
-(the apply guard rejects the preserved out-of-enum value) with a rename-guidance
-message, leaving the file untouched on disk; the coverage report keeps a
-mostly-colliding folder from looking silently cataloged. The resolution is the
-operator's: rename the field (`status` → `wiki_status`), and on re-run the value
-rides along as a preserved custom field while Daftari's built-in `status` takes
-its default. This is the missing *semantic* safety check that complements the
-field-by-field preservation above — the bytes are safe, and now the *meaning* is
-too.
+enum.
+
+The plan/apply split makes the collision visible before it bites. `--plan` lists
+every collision (`path · field: value`) and reports per-scope **coverage** — how
+many docs will catalog cleanly versus be blocked — so the operator sees the cost
+before applying. `--apply` then skips a colliding doc whole (the apply guard
+rejects the preserved out-of-enum value) with a rename-guidance message, leaving
+the file untouched on disk; the coverage report is what keeps a mostly-colliding
+folder from looking silently cataloged.
+
+Resolving a collision is the operator's call: rename the field (`status` →
+`wiki_status`), and on re-run the old value rides along as a preserved custom
+field while Daftari's built-in `status` takes its default. This is the missing
+*semantic* safety check that complements the field-by-field preservation above —
+the bytes are safe, and now the *meaning* is too.
 
 ### Layer 2 — ACL (multi-tenant access control)
+
+Most systems answer "who are you?" with a login. Daftari refuses the question.
+There is no user database, no password, no session — because identity here isn't
+a thing the caller proves, it's a decision the operator makes at startup. You
+launch the server *as* a role, and that role governs every tool call for the
+life of the process. Access control is the first thing a call hits after it
+arrives, and it is the one layer a read cannot skip.
 
 RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
 per-collection `read` / `write` permissions plus two verdict grants: `promote`
 (draft → canonical) and `ratify` (§11.6 — approve/reject staged actions and
 contest derives_from edges; the curation-verdict tier). The server is started
-with `--user` and `--role`; that role governs every tool call for the life of
-the process. There is no user-management system and no login — identity is an
-operational decision made at startup.
+with `--user` and `--role`. There is no user-management system to administer:
+the policy lives in one file and the identity lives in one flag.
 
 An **agent principal** is just a role (§11.6): the future consolidation loop
 runs as, e.g., `--user agent:curation-loop --role curation-loop` against a role
@@ -363,8 +479,16 @@ content. `vault_ratify` and `vault_edge_contest` require the explicit
 
 ### Layer 3 — Write safety
 
-The first half of the moat. Multiple agents may write to one vault; Layer 3
-makes those writes *safe and attributable* — it does not orchestrate them.
+Here is the assumption every storage system makes without saying it: that a
+write is a *moment*. You had the file, you changed it, done. But when several
+agents share one vault, a write isn't a moment — it's an interval, and other
+writers live inside it. Layer 3, the first half of the moat, exists to make that
+interval safe and attributable. Note what it does **not** do: it does not
+orchestrate the writers, and it does not merge them. Safety is not coordination,
+and conflating the two is how you end up building a workflow engine you never
+meant to build.
+
+Three mechanisms, in order of how much they matter:
 
 - **File-level write locks**, SQLite-backed, with a 60-second TTL. A writer
   acquires the lock for one file; a competing writer fails cleanly with a
@@ -372,7 +496,7 @@ makes those writes *safe and attributable* — it does not orchestrate them.
   automatically, so a crashed writer cannot wedge the vault. This is a safety
   mechanism — single-writer-per-file — not a coordination protocol.
 - **Auto-commit.** Every successful write is committed to git, authored by the
-  acting identity. The history is complete and attributable without anyone
+  acting identity. The history *is* complete and attributable without anyone
   having to remember to commit. Vaults that set `auto_commit: false` skip this
   step — the write is still durable and provenance-logged, but the caller owns
   git (useful when the vault is a subdirectory of a larger repo with its own
@@ -382,9 +506,12 @@ makes those writes *safe and attributable* — it does not orchestrate them.
   frontmatter. `vault_provenance` reads it back.
 
 The locks are table stakes — single-writer safety is the floor, not the moat.
-What is genuinely differentiated here is **auto-commit + provenance**: a
-complete, attributable history of who changed what, produced without anyone
-having to remember to record it.
+What is genuinely differentiated is the second and third together: **a complete,
+attributable history of who changed what, produced without anyone having to
+remember to record it.** That is the same idea as
+[trust is a ledger, not a feeling](https://www.waglesworld.com/blog/trust-is-a-ledger-not-a-feeling-rethinking-control-in-agentic-ai) —
+you don't earn trust by being careful, you earn it by leaving a record that
+survives whether you were careful or not.
 
 **Stage-time write gate.** `vault_stage_action` is the producer side of
 the staged-action queue (see Layer 4), and the proposal itself is a
@@ -462,99 +589,147 @@ field-by-field" promise actually hold.
 
 ### Layer 4 — Curation
 
-The second half of the moat. Storing knowledge is easy; keeping a growing vault
-*coherent* is the real problem. The curation engine is deliberately
-**advisory** — it surfaces problems and never auto-fixes:
+This is the hard job from the opening, and the second half of the moat. Storing
+knowledge is easy; keeping a growing vault *coherent* — keeping it from rotting
+quietly while it still looks fine — is the real problem. The instinct is to have
+the system fix the rot itself: notice a stale fact, update it; notice a
+contradiction, resolve it. Daftari refuses that instinct on purpose. The
+curation engine is deliberately **advisory** — it surfaces problems and never
+auto-fixes. It is the difference between a smoke detector and a sprinkler: one
+tells you something is wrong, the other acts on that judgment for you, and you
+do not want software making the second kind of call about what your knowledge
+*means*.
+
+Three of its concerns are simple enough to state in a line:
 
 - **Staleness.** Each document has a `ttl_days`. Past it, the document is
   flagged stale with a decay score. Stale does not mean deleted — it means "a
   human or agent should re-verify this."
-- **Tensions.** When two documents contradict each other, `vault_tension_log`
-  records the contradiction — both sources, both claims — with status
-  `unresolved`. It records; it does not resolve. Each entry carries a `kind`
-  (`temporal` | `factual` | `interpretive` | `unspecified` for legacy
-  entries), and closure is a deliberate act via `vault_tension_resolve` with
-  a `resolution` block of its own kind (`superseded` | `corrected` |
-  `accepted` | `invalid`). `accepted` resolutions mark a deliberately
-  persistent disagreement — the tension stays in the log as a stable
-  acknowledged feature of the vault rather than a defect. `vault_lint`
-  reports the distribution by kind, by resolution kind, and the stable
-  acknowledged count. Unresolved tensions also carry an **aging tier**
-  derived from their logged date (Fresh ≤30d, Aging 31–90d, Stale >90d).
-  Stale tensions get kind-specific lint copy — the temporal smell is
-  "deprecate the older doc"; the factual smell is "investigate"; the
-  interpretive smell is "decide explicitly" (`accepted` vs `invalid`).
-  `unspecified` legacy entries and `accepted` resolutions are excluded
-  from aging by design. `vault_tension_clusters` computes connected
-  components over the live tension graph (unresolved, non-accepted edges
-  only). Cluster IDs are content-addressed — the first 8 hex chars of
-  `sha256(canonical-sorted member paths)` — so identical membership
-  always renders the identical id across runs, and any membership change
-  produces a fresh id by construction. `vault_lint` reports the cluster
-  count, the max cluster size, and flags clusters that are large (>5
-  docs, a composability smell) or aged (oldest tension >90 days, tech
-  debt). `vault_tension_blast` computes the **blast radius** of a
-  contested doc or cluster — the transitive closure of downstream docs
-  that cite or link a contested node. Two confidence channels:
-  `primary_blast` counts docs reached via the frontmatter `sources` edge
-  (authoritative provenance); `advisory_blast` counts docs reached only
-  via in-vault markdown links (suggestive). `superseded_by` is not a
-  blast edge — the doc that supersedes a contested doc is the
-  replacement, not an inheritor.
 - **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
   old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
   questions raised but unanswered anywhere in the vault) and produces a report.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
-- **Staged actions.** A persistent queue of *proposed* vault changes awaiting
-  human ratification — the "always-stage, never auto-apply" tier that lets a
-  background curation loop suggest changes without ever enacting them.
-  `vault_stage_action` (the producer — normally the loop, exposed for testing and
-  future callers) records a proposed `promote` / `deprecate` / `supersede` /
-  `merge` / `confidence-up` with a rationale, a proposed diff, and a TTL (default
-  14 days). `vault_ratify` (the consumer) lets a human `approve` or `reject` one
-  pending action; on approve it dispatches to the matching write tool, which
-  auto-commits — `promote` → `vault_promote`, `deprecate` → `vault_deprecate`,
-  `supersede` → `vault_supersede`, `confidence-up` → `vault_set_confidence`,
-  `merge` → `vault_merge` (the §11.4 write tools). A dispatch failure (including
-  a malformed proposed diff) leaves the action pending so it can be retried.
-  (`ratified-pending-tool` is a legacy status from before §11.4 wired up the last
-  three tools; it is no longer produced.) Storage mirrors the
-  rest of Daftari: an append-only canonical log at
-  `.daftari/staged-actions.jsonl` is the source of truth, with a derived
-  `staged_actions` table in the ephemeral index rebuilt from it. `vault_lint`
-  surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
-  housekeeping sweep on each run — the queue can grow stale, but it never grows
-  unbounded.
-- **derives_from edges.** The earned re-derivation graph (§11.3) — the trust
-  substrate the consolidation loop's strength model reads. An edge
-  `from → to` asserts that `from`'s content derives from `to`, and it is never
-  declared into trust: the first observation seeds a zero-strength `candidate`,
-  and only *blind* re-derivations that vary a recorded axis
-  (prompt | input-neighborhood | model) count as independent votes
-  (`k_survived`, capped). Direction is decided by a temperature-0
-  foundational-ordering judgment elicited in **both presentation orders** —
-  the edge is committed directed only when the orders agree; an order-contested
-  pair becomes a direction-unconfirmed pending edge and an interpretive tension
-  for human adjudication. Edge keys are canonical, so a post-edit direction
-  flip collapses to one symmetric edge rather than forking a contradictory
-  twin. Strength is recomputed from the trail on every read, never kept as a
-  counter, and it *ages* — halving per 90 days since the last qualifying
-  re-test — so an un-retested edge drops out of `trigger-bearing` on its own
-  and entrenchment is structurally impossible. A replayed attestation (same
-  observer, same axis) counts again only after a minimum gap, so one caller
-  cannot pump strength in a sitting. `vault_edge_observe` records sightings
-  (the producer — normally the loop), `vault_edge_contest` records a case-2
-  contradiction — the edge is revoked *and* a tension is logged, never a
-  silent decrement, and only fresh observations can re-earn it — and
-  `vault_edges` lists edges with live aged strength. Storage mirrors staged
-  actions: an append-only log at `.daftari/edges.jsonl` is the source of
-  truth, with a derived `derives_from_edges` table in the ephemeral index
-  (rebuilt on reindex, materialized at startup) for the loop's traversal
-  engine.
+
+The other three are where the curation engine does its real thinking, and each
+earns its own section below.
+
+#### Tensions
+
+When two documents contradict each other, `vault_tension_log` records the
+contradiction — both sources, both claims — with status `unresolved`. It
+records; it does not resolve. That refusal is the whole point: a contradiction
+is information, and a system that quietly picks a winner destroys it.
+
+Every entry carries a `kind` — `temporal`, `factual`, `interpretive`, or
+`unspecified` for legacy entries — and closure is a deliberate act via
+`vault_tension_resolve`, which attaches a `resolution` block of its own kind
+(`superseded`, `corrected`, `accepted`, or `invalid`). One resolution is
+special. An `accepted` tension marks a *deliberately persistent* disagreement —
+it stays in the log as a stable, acknowledged feature of the vault rather than a
+defect to clear. `vault_lint` reports the distribution by kind, by resolution
+kind, and the stable-acknowledged count.
+
+Unresolved tensions also carry an **aging tier** derived from their logged date:
+Fresh (≤30d), Aging (31–90d), Stale (>90d). A stale tension gets kind-specific
+lint copy, because the right next move depends on the kind — the temporal smell
+is "deprecate the older doc," the factual smell is "investigate," the
+interpretive smell is "decide explicitly" (`accepted` vs `invalid`). Legacy
+`unspecified` entries and `accepted` resolutions are excluded from aging by
+design; neither is a defect waiting to be cleared.
+
+Tensions rarely stay isolated, so two tools look at them in aggregate.
+`vault_tension_clusters` computes connected components over the live tension
+graph (unresolved, non-accepted edges only). Cluster IDs are content-addressed —
+the first 8 hex chars of `sha256(canonical-sorted member paths)` — so identical
+membership always renders the identical id across runs, and any membership
+change produces a fresh id by construction. `vault_lint` reports the cluster
+count and the max cluster size, and flags clusters that are large (>5 docs, a
+composability smell) or aged (oldest tension >90 days, tech debt).
+
+`vault_tension_blast` then computes the **blast radius** of a contested doc or
+cluster — the transitive closure of downstream docs that cite or link a
+contested node — across two confidence channels. `primary_blast` counts docs
+reached via the frontmatter `sources` edge (authoritative provenance);
+`advisory_blast` counts docs reached only via in-vault markdown links
+(suggestive). `superseded_by` is deliberately *not* a blast edge: the doc that
+supersedes a contested doc is its replacement, not an inheritor of its problem.
+
+#### Staged actions
+
+A persistent queue of *proposed* vault changes awaiting human ratification — the
+"always-stage, never auto-apply" tier that lets a background curation loop
+suggest changes without ever enacting them.
+
+The queue has two ends. `vault_stage_action` is the producer (normally the loop,
+exposed for testing and future callers): it records a proposed `promote` /
+`deprecate` / `supersede` / `merge` / `confidence-up` with a rationale, a
+proposed diff, and a TTL (default 14 days). `vault_ratify` is the consumer: a
+human `approve`s or `reject`s one pending action. On approve it dispatches to the
+matching write tool, which auto-commits — `promote` → `vault_promote`,
+`deprecate` → `vault_deprecate`, `supersede` → `vault_supersede`,
+`confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
+write tools). A dispatch failure, including a malformed proposed diff, leaves the
+action pending so it can be retried. (The legacy `ratified-pending-tool` status,
+from before §11.4 wired up the last three tools, is no longer produced.)
+
+Storage mirrors the rest of Daftari: an append-only canonical log at
+`.daftari/staged-actions.jsonl` is the source of truth, with a derived
+`staged_actions` table in the ephemeral index rebuilt from it. `vault_lint`
+surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
+housekeeping sweep on each run — the queue can grow stale, but it never grows
+unbounded.
+
+#### derives_from edges
+
+The earned re-derivation graph (§11.3) is the trust substrate the consolidation
+loop's strength model reads. An edge `from → to` asserts that `from`'s content
+derives from `to`, and the governing rule is that it is *never declared into
+trust*. The first observation only seeds a zero-strength `candidate`; trust is
+earned afterward, and only by the right kind of evidence.
+
+That evidence is a *blind* re-derivation that varies a recorded axis (prompt,
+input-neighborhood, or model). Those are the independent votes (`k_survived`,
+capped) — re-reaching the same conclusion the same way doesn't count. Direction
+is decided by a temperature-0 foundational-ordering judgment elicited in **both
+presentation orders**, and the edge is committed directed only when the orders
+agree. An order-contested pair becomes a direction-unconfirmed pending edge and
+an interpretive tension for human adjudication. Edge keys are canonical, so a
+post-edit direction flip collapses to one symmetric edge rather than forking a
+contradictory twin.
+
+Strength is never stored as a counter. It is recomputed from the trail on every
+read, and it *ages* — halving per 90 days since the last qualifying re-test:
+
+$$S(\text{edge}) = \min(k_{\text{survived}},\, K_{\max}) \times \left(\tfrac{1}{2}\right)^{\Delta t / 90\text{d}}, \qquad \Delta t = t_{\text{now}} - t_{\text{last qualifying re-test}}$$
+
+An edge is `trigger-bearing` only while $S \ge \theta$. The exponent is the whole
+argument: as $\Delta t$ grows, the half-life factor drives $S \to 0$ no matter how
+many votes the edge once earned — strength keeps *no* memory of past votes beyond
+the decaying trail, so an un-retested edge drops out on its own and entrenchment
+is structurally impossible, not merely discouraged. A replayed attestation (same
+observer, same axis) counts again only after a minimum gap, so one caller can't
+pump strength in a single sitting.
+
+The tools split producer from consumer the same way the staged queue does:
+`vault_edge_observe` records sightings (the producer — normally the loop);
+`vault_edge_contest` records a case-2 contradiction — the edge is revoked *and* a
+tension is logged, never a silent decrement, and only fresh observations can
+re-earn it; `vault_edges` lists edges with their live aged strength. Storage
+mirrors staged actions: an append-only log at `.daftari/edges.jsonl` is the
+source of truth, with a derived `derives_from_edges` table in the ephemeral index
+(rebuilt on reindex, materialized at startup) for the loop's traversal engine.
 
 ## The consolidation loop
+
+If Layer 4 is the vault noticing what needs attention, the consolidation loop is
+the vault doing something about it — the way a mind consolidates memory in sleep:
+revisit what's due, re-derive it instead of re-reading it, and let trust be
+*earned* by surviving that re-derivation rather than declared once and frozen.
+(That framing has its own essay —
+[compile what compounds, summarize what speculates](https://www.waglesworld.com/blog/compile-what-compounds-summarize-what-speculates) —
+and the loop is the sequel it promised.)
 
 `daftari consolidate` is the cortex curation loop — the autonomous half of
 the curation moat. It is a CLI subcommand, not an MCP tool: a long-running
@@ -628,32 +803,123 @@ attributable act. The staged-action queue is the same principle pushed one step
 further — even an autonomous curation loop only ever *proposes*; a human ratifies
 before anything is written.
 
+## Accumulation vs. generative domains
+
+All of that curation machinery — staleness, tensions, the loop — quietly assumes
+it knows *which* knowledge is worth maintaining. It doesn't, until a document
+says so. There is one assumption a knowledge store makes so quietly you never
+catch it making it: that every document wants to be true forever. Store this, it
+hears, and silently completes the sentence — *...as permanent fact.* That default
+is wrong, and it is wrong in a way no single threshold can fix, because it is
+asking one notion of memory to govern two kinds of knowledge that have nothing in
+common. Minds don't make that mistake; we carry at least two kinds of memory
+([the long version is here](https://www.waglesworld.com/blog/compile-what-compounds-summarize-what-speculates)).
+So every Daftari document declares a `domain`, and the distinction is
+load-bearing.
+
+**Accumulation domain.** Knowledge that *compounds*. A competitive-intelligence
+note, a pricing breakdown, a researched comparison. Each write builds on the
+last; the document is meant to become more complete and more trustworthy over
+time. Accumulation documents are *compiled*: the agent does the synthesis once
+and writes the durable result. They are the documents that earn canonical
+status, accrue inbound links, and are cross-referenced.
+
+**Generative domain.** Knowledge that is *speculative or single-shot*. A
+moonshot sketch, a brainstorm, a "what if" note. These are summaries, not
+compiled canon. They are expected to be provisional — the agent flags tensions
+in them but does not invest in cross-referencing or hardening them.
+
+Why the schema distinction matters: the two domains have different curation
+economics. An accumulation document that goes stale is a *problem* — it was
+supposed to stay true. A generative document that goes stale is *expected* —
+that is what speculation does. Tooling that treated both the same would either
+nag about every brainstorm or quietly trust every stale fact. The `domain`
+field lets the curation layer apply the right standard to each: hold
+accumulation knowledge to a high bar, and let generative knowledge be
+provisional without penalty.
+
+That split — compile what compounds, summarize what speculates — is the same
+idea as "compilation over retrieval", applied one level down: not just *whether*
+to compile, but *which knowledge is even worth compiling*.
+
 ## Doc-to-code coherence
+
+So far every edge has pointed *inward* — one document at another. The last one
+points outward, at code, and it obeys the same rule: discover drift, never
+auto-rewrite it. When a doc describes code and the code moves on, that is just a
+contradiction in a wider vault — and Daftari logs it as a tension rather than
+silently editing the doc to match.
 
 `describes` is a built-in optional frontmatter relationship — a string
 array of bindings, each `repo:path` or `repo:path::symbol` — that
 declares which code a doc documents. It is a first-class edge kind
 alongside `sources` and `superseded_by`, not a side channel.
 
-`daftari audit` is the cross-repo coherence audit. With `--code-repo`,
-code repos join the audit as reference targets (`type: code`): indexed
-by path only, no frontmatter parsing, no content read, excluded from
-staleness. The audit classifies each `describes` entry as a cross-repo
-edge and flags any whose target file is missing
-(`fail_on.broken_describes`, default 1). An opt-in `--semantic` pass
-reads each resolvable binding's doc *and* code and judges whether the
-doc still describes the code (`coherent` / `drifted` / `contradicted` /
-`skipped`); `--auto-tension` logs drift as a tension in the docs vault.
-Every non-markdown read is guarded (size cap, binary sniff, strict
-UTF-8). Default audits need no API key and make no network calls —
-semantic drift is opt-in. The cortex quality sampler (`daftari eval`)
-follows the same edge kind: vault-resident code loads as a separate,
-non-citable context node, so the answerer is never asked to retrieve
-code on the agent's behalf.
+`daftari audit` is the cross-repo coherence audit. With `--code-repo`, code
+repos join the audit as reference targets (`type: code`): indexed by path only,
+with no frontmatter parsing, no content read, and exclusion from staleness. The
+audit classifies each `describes` entry as a cross-repo edge and flags any whose
+target file is missing (`fail_on.broken_describes`, default 1).
 
-## The request path
+That much is free — a default audit needs no API key and makes no network calls.
+The deeper check is opt-in. A `--semantic` pass reads each resolvable binding's
+doc *and* code and judges whether the doc still describes the code (`coherent` /
+`drifted` / `contradicted` / `skipped`), and `--auto-tension` logs any drift as a
+tension in the docs vault. Every non-markdown read is guarded (size cap, binary
+sniff, strict UTF-8).
 
-A **read** (`vault_read`, `vault_index`, `vault_status`, `vault_search`):
+The cortex quality sampler (`daftari eval`) follows the same edge kind:
+vault-resident code loads as a separate, non-citable context node, so the
+answerer is never asked to retrieve code on the agent's behalf.
+
+## A fact's life — the request path
+
+Everything above is the machinery at rest. Watch it move, and the four layers
+stop being a catalog and become the stages of one fact's life. Take a concrete
+one: *Plan Pro costs $40/month.* Follow it from the moment an agent writes it to
+the moment another agent reads it back, and each layer shows up exactly when the
+fact touches it.
+
+**The write.** An agent — running as some `--user` / `--role` — calls
+`vault_write`. **Layer 2** asks first: can this role write this collection? If
+not, the call dies here and nothing is touched. If it may, **Layer 3** takes the
+file's lock; a competing writer fails cleanly rather than corrupting anything (no
+queue, no merge). When the agent passed a `base_version`, the file is re-hashed
+*inside* the lock — if someone changed it since the read, that's a stale write,
+rejected and logged `rejected_stale`, and nothing lands. The new frontmatter is
+merged *under* the existing document (every prior field preserved, the payload
+winning per key, an explicit `null` the only way to delete) and validated; an
+invalid write dies before it reaches disk. Only then does **Layer 1** serialize
+the markdown non-destructively, auto-commit to git as the acting identity, append
+a provenance entry, and refresh the index. The lock releases. One fact, now
+durable and attributable.
+
+**The contradiction.** Three months pass and the price is $50. An agent writes
+the new fact — and here is the fork the whole system was built around. If the new
+document *supersedes* the old by a real edge (the agent records `superseded_by`,
+or a ratified staged action does), that is resolution that *happened*: follow the
+pointer. If the two merely *disagree* and neither has replaced the other,
+`vault_tension_log` records a tension — both claims, status unresolved — and it
+stays open. What the memory must never do is dress the second up as the first.
+And notice what did *not* happen at either branch: nothing fused $40 and $50 into
+a $45 that no source ever held. The memory stored and pointed; it did not invent.
+
+**The recall.** Later still, a third agent searches "Plan Pro price." **Layer 2**
+filters denied collections out before anything else runs. **Layer 1** returns the
+ranked hits (the chunk-BM25 + vector machinery from Storage). Then two additive,
+lossless post-passes run — never re-ranking, never leaking. The *coverage* pass
+appends tag-and-date-window neighbors the ranker alone would miss, and stays
+silent when no signal fires. *Current-source foregrounding* walks the $40 hit's
+`superseded_by` chain to its live head and annotates it with the $50 source as
+its `currentSource` — and again, daftari authored only the *relation*; the
+successor snippet is read verbatim from the index, never synthesized. An
+unreadable hop degrades to `restricted`, leaking neither path nor title. The
+agent gets the current price, the trail back to the old one, and — if a tension
+was logged instead of a supersession — the disagreement surfaced rather than
+quietly settled. That is the entire product, in one fact's lifetime.
+
+**The exact ordering, for lookup.** A **read** (`vault_read`, `vault_index`,
+`vault_status`, `vault_search`):
 
 1. The server receives the tool call.
 2. **Layer 2** checks the role's `read` permission for the target collection.
@@ -705,31 +971,42 @@ Every tool handler returns a `Result<T, Error>` — it never throws. A failure a
 any step is a value the server turns into an MCP error response; the stdio
 connection is never taken down by a bug in one tool.
 
-## Accumulation vs. generative domains
+## Honest assessment
 
-Every document declares a `domain`, and the distinction is load-bearing.
+Every restraint in this document is a bet, and a bet can lose. Here are the load-
+bearing ones, stated plainly enough that a future reader — or a future me — can
+check whether they held.
 
-**Accumulation domain.** Knowledge that *compounds*. A competitive-intelligence
-note, a pricing breakdown, a researched comparison. Each write builds on the
-last; the document is meant to become more complete and more trustworthy over
-time. Accumulation documents are *compiled*: the agent does the synthesis once
-and writes the durable result. They are the documents that earn canonical
-status, accrue inbound links, and are cross-referenced.
+**Advisory-only is the central wager.** The whole design refuses to auto-resolve
+anything: it flags staleness, records tensions, stages actions, and waits for a
+human or a ratifying role to act. That is right *if* ratification keeps pace with
+the flags. If a vault grows large enough that advisory output piles up faster
+than anyone clears it, "advisory" quietly becomes "ignored," and the curation
+layer is decorative. The kill signal is visible in the system's own numbers: the
+staged-action queue and the unresolved-tension count growing without bound across
+real use. If they do, advisory restraint was a luxury for small vaults, not a
+principle.
 
-**Generative domain.** Knowledge that is *speculative or single-shot*. A
-moonshot sketch, a brainstorm, a "what if" note. These are summaries, not
-compiled canon. They are expected to be provisional — the agent flags tensions
-in them but does not invest in cross-referencing or hardening them.
+**One identity per process** makes access control a single flag instead of a user
+database — but it pushes multi-tenancy out to deployment: you get N identities by
+running N processes, not by authenticating N callers at runtime. That trade is
+clean today. It inverts the day a real deployment needs per-request identity
+inside one process, at which point the startup-identity model forces an awkward
+proxy in front of it.
 
-Why the schema distinction matters: the two domains have different curation
-economics. An accumulation document that goes stale is a *problem* — it was
-supposed to stay true. A generative document that goes stale is *expected* —
-that is what speculation does. Tooling that treated both the same would either
-nag about every brainstorm or quietly trust every stale fact. The `domain`
-field lets the curation layer apply the right standard to each: hold
-accumulation knowledge to a high bar, and let generative knowledge be
-provisional without penalty.
+**Markdown is truth; the index is disposable** rests on rebuild-from-markdown
+staying *cheap*. It is cheap because embeddings are content-addressed and only
+changed chunks re-embed — but a first cold reindex on a large vault is already
+multi-minute. If that ever becomes multi-hour, "delete the `.db` files and
+continue" stops being a real fallback and becomes a threat, and the disposability
+I keep advertising is disposability you can't afford to use.
 
-That split — compile what compounds, summarize what speculates — is the same
-idea as "compilation over retrieval", applied one level down: not just *whether*
-to compile, but *which knowledge is even worth compiling*.
+**The locks neither queue nor merge.** This is sufficient *because* agents usually
+write to different documents. If contention on a few hot documents turns out to be
+common in practice, "fail cleanly with a locked error" becomes a retry-storm, and
+the coordination I deliberately kept out of Layer 3 reappears as a burden on every
+caller — which is exactly the workflow engine I said I didn't want to build,
+rebuilt by accident, one retry loop at a time.
+
+None of these has tripped yet. But that is what I'd be wrong about, and roughly
+how I'd find out.

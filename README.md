@@ -70,7 +70,10 @@ Point any MCP client (Claude Desktop, Claude Code, an agent SDK) at it.
 
 ## The four layers
 
-Storage and access control are table stakes. The moat is layers 3 and 4.
+All four implement one idea — *resolve only by discovery, never by invention.*
+Read [**The core idea**](docs/architecture.md#the-core-idea) first and the layers
+become its consequences. Storage and access control are table stakes; the moat is
+layers 3 and 4.
 
 |Layer                |What it does                                                                                          |Why it matters                                                         |
 |---------------------|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
