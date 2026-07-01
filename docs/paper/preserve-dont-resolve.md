@@ -435,6 +435,48 @@ contrast is one of substrate and aim, not a head-to-head on our axis.
 - **Stronger-model and forced-condition coverage on contracts** (the contract forced Arm B is
   n=7) would tighten §4 the way §6's panel tightened the keystone.
 
+## References
+
+*(Reading copy for the draft; canonical entries in `references.bib`. All IDs re-verified
+2026-06-30. Author lists are first-author + et al. pending completion, except SmartVector and
+Portable Agent Memory (confirmed solo). arXiv IDs are shown as cited inline.)*
+
+- **[2112.12870]** Rashkin, H., et al. *Measuring Attribution in Natural Language Generation
+  Models.* arXiv, 2021. (AIS)
+- **[2304.03442]** Park, J. S., et al. *Generative Agents: Interactive Simulacra of Human
+  Behavior.* arXiv, 2023.
+- **[2310.08560]** Packer, C., et al. *MemGPT: Towards LLMs as Operating Systems.* arXiv, 2023.
+  (MemGPT / Letta)
+- **[2409.11242]** Song, M., et al. *Measuring and Enhancing Trustworthiness of LLMs in RAG
+  through Grounded Attributions and Learning to Refuse.* arXiv, 2024. (Trust-Align)
+- **[2412.18004]** Wallat, J., et al. *Correctness is not Faithfulness in RAG Attributions.*
+  arXiv, 2024.
+- **[2501.13956]** Rasmussen, P., et al. *Zep: A Temporal Knowledge Graph Architecture for
+  Agent Memory.* arXiv, 2025. (Zep / Graphiti)
+- **[2502.12110]** Xu, W., et al. *A-MEM: Agentic Memory for LLM Agents.* arXiv, 2025.
+- **[2504.19413]** Chhikara, P., et al. *Mem0: Building Production-Ready AI Agents with Scalable
+  Long-Term Memory.* arXiv, 2025.
+- **[2505.24478]** Markovic, V., et al. *Optimizing the Interface Between Knowledge Graphs and
+  LLMs for Complex Reasoning.* arXiv, 2025. (tuning/evaluation study of the Cognee framework)
+- **[2506.06266]** Eyuboglu, S., et al. *Cartridges: Lightweight and General-Purpose Long
+  Context Representations via Self-Study.* arXiv, 2025. (productized as Engram, 2026)
+- **[2603.07670]** Du, P., et al. *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and
+  Emerging Frontiers.* arXiv, 2026.
+- **[2603.25097]** Lupascu, C., et al. *ElephantBroker: A Knowledge-Grounded Cognitive Runtime
+  for Trustworthy AI Agents.* arXiv, 2026.
+- **[2604.11364]** Roynard, M., et al. *The Missing Knowledge Layer in Cognitive Architectures
+  for AI Agents.* arXiv, 2026.
+- **[2604.20598]** Xu, N. *Self-Aware Vector Embeddings for Retrieval-Augmented Generation: A
+  Neuroscience-Inspired Framework for Temporal, Confidence-Weighted, and Relational Knowledge.*
+  arXiv, 2026. (SmartVector)
+- **[2605.11032]** Ravindran, S. K. *Portable Agent Memory: A Protocol for
+  Cryptographically-Verified Memory Transfer Across Heterogeneous AI Agents.* arXiv, 2026.
+- **[2606.06240]** Wang, Z., et al. *TOKI: A Bitemporal Operator Algebra for Contradiction
+  Resolution in LLM-Agent Persistent Memory.* arXiv, 2026.
+- **[de Kleer 1986]** de Kleer, J. *An Assumption-based TMS.* Artificial Intelligence
+  28(2):127–162, 1986. (ATMS)
+- **[Zep blog]** Zep. *Markdown is not agent memory.* blog.getzep.com, 2026.
+
 ---
 
 ### Appendix: evidence map (all runs produced; pointers)
