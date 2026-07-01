@@ -75,6 +75,7 @@
     "vitest": "^4.1.6"
   },
   "overrides": {
-    "protobufjs": "^7.6.1"
+    "protobufjs": "^7.6.1",
+    "hono": "^4.12.25"
   }
 }
