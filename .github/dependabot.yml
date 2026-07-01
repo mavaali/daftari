@@ -8,10 +8,11 @@
 # itself (e.g. hono via @modelcontextprotocol/sdk, protobufjs via
 # onnxruntime-web). Those still need an npm `overrides` entry added by hand.
 #
-# Grouping strategy: all minor + patch bumps in a directory land in a single
-# PR to cut noise; MAJOR bumps arrive as individual PRs so each breaking
-# upgrade gets its own review (this is how the vitest 1.x -> 4.x router bump
-# would surface).
+# Tamed 2026-07-01: major bumps are ignored (the first run opened a batch of
+# breaking majors, each of which needs manual review anyway), and the eval /
+# benchmark npm dirs plus the pip integration are dropped as low-value churn.
+# What remains is quiet, grouped minor+patch on the two shipping packages plus
+# grouped GitHub Actions. Security updates are unaffected by any of this.
 
 version: 2
 
@@ -29,6 +30,9 @@ updates:
       npm-minor-and-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # ---- npm: multi-vault router ----
   - package-ecosystem: npm
@@ -43,60 +47,9 @@ updates:
       npm-minor-and-patch:
         patterns: ["*"]
         update-types: [minor, patch]
-
-  # ---- npm: eval / benchmark harnesses (lower cadence, tighter cap) ----
-  - package-ecosystem: npm
-    directory: "/integrations/consensus-bench"
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
-    labels:
-      - dependencies
-      - integrations
-    groups:
-      bench-deps:
-        patterns: ["*"]
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: "/integrations/contract-bench"
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
-    labels:
-      - dependencies
-      - integrations
-    groups:
-      bench-deps:
-        patterns: ["*"]
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: "/integrations/recall-bench"
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
-    labels:
-      - dependencies
-      - integrations
-    groups:
-      bench-deps:
-        patterns: ["*"]
-        update-types: [minor, patch]
-
-  # ---- pip: langchain integration ----
-  - package-ecosystem: pip
-    directory: "/integrations/langchain"
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
-    labels:
-      - dependencies
-      - integrations
-    groups:
-      langchain-deps:
-        patterns: ["*"]
-        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # ---- GitHub Actions used by the workflows ----
   - package-ecosystem: github-actions
