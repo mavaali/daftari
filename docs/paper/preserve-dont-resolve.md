@@ -307,9 +307,11 @@ partial-clause provenance (0/2). The forced/architectural minter masquerades ten
 
 ## 9. Related work
 
-*(Grounded by a deep-research pass, 2026-06-29; verified claims in
-`docs/superpowers/drafts/2026-06-29-related-work-research.md`. Several closest competitors
-are 2026 preprints with no citation track record, re-verify currency at submission.)*
+*(Grounded by a deep-research pass, 2026-06-29; all cited IDs re-verified against primary
+sources 2026-06-30: each resolves and every attributed claim is body-grounded (the Graphiti
+"consistently prioritizes new information" quote, the Cartridges 38.6×/26.4× figures, and the
+57%-unfaithful figure confirmed verbatim). Several closest competitors are 2026 preprints with
+no citation track record; re-verify currency again at submission.)*
 
 The individual components of preserve-not-resolve are **not novel**, and we cite the prior
 art rather than claim them; the contribution is their *structural conjunction* on a specific
@@ -321,8 +323,9 @@ consolidation, periodically rewriting memory toward a compact current state. Mem
 overwrite prior entries; A-MEM [2502.12110] performs "memory evolution," mutating existing
 memories in place; MemGPT/Letta [2310.08560] self-edits hierarchical memory blocks,
 resolving a changed fact by overwriting it in place (`core_memory_replace`); and Cognee
-[2505.24478] is a multi-store knowledge-graph memory layer whose enrichment pass (`memify`)
-updates and prunes nodes (with explicit `delete`/`prune` operations). A recent 2026 survey
+is a multi-store knowledge-graph memory layer whose enrichment pass (`memify`) updates and
+prunes nodes, with explicit `delete`/`prune` operations (mechanism per its documentation;
+[2505.24478] is a tuning/evaluation study of the framework). A recent 2026 survey
 [2603.07670] names "continual consolidation" and "learned forgetting" as open frontiers and
 treats contradiction handling as a write-path engineering concern, not a first-class
 invariant. Generative Agents [2304.03442] is the
@@ -340,8 +343,8 @@ Zep/Graphiti [2501.13956] is the strongest instance: a bi-temporal graph that *i
 prioritizes new information when determining edge invalidation," yielding a single current
 state per relationship. Roynard's "Knowledge Layer" [2604.11364] similarly records
 supersession as a relationship and preserves both claims append-only with explicit
-provenance, but a contradiction *triggers* a supersession (it resolves, and has no
-first-class unresolved state). SmartVector [2604.20598] makes the pattern explicit: it
+provenance, but it has no first-class unresolved state: supersession, evidence-gated, is its
+only preservation-with-linkage mechanism (it resolves). SmartVector [2604.20598] makes the pattern explicit: it
 preserves every superseded vector (an `ARCHIVED` state with `supersedes`/`superseded_by`
 edges, "nothing deleted") yet **resolves every contradiction by a recency / source-authority /
 feedback majority vote**: preserve the past, vote-away the present, the move our keystone
