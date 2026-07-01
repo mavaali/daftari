@@ -12,8 +12,8 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - name: Build sdist and wheel
         working-directory: integrations/langchain
         run: uv build
