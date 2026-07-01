@@ -434,6 +434,24 @@ contrast is one of substrate and aim, not a head-to-head on our axis.
   absent here.
 - **Stronger-model and forced-condition coverage on contracts** (the contract forced Arm B is
   n=7) would tighten §4 the way §6's panel tightened the keystone.
+- **As-of-date querying is not first-class.** Because every write auto-commits, the vault's
+  transaction-time history (what a document said at any past moment) is preserved losslessly and
+  is fully auditable, which already separates it from an overwrite-in-place file store. It is
+  not, however, queryable as a capability: search, edge traversal, and current-source resolution
+  all run against a derived index that is not itself versioned, so answering "what did the vault
+  hold on date X" requires checking out the historical revision and reindexing it in isolation
+  rather than a lookup. A bounded version (reindex a historical checkout into a scratch index) is
+  a small tool; a hot-path version (transaction time carried in the index) is heavier. Distinct
+  again is valid-time, the real-world interval during which a fact was true independent of when it
+  was written, which the frontmatter does not model at all. Systems built bitemporal-native (Zep
+  and Graphiti [2501.13956], TOKI [2606.06240]) treat both axes as first-class; we leave them
+  unpulled here because the corpus that would demand valid-time, contract amendment chains, is
+  recency-resolvable (§4) and so is out of scope as an empirical surface.
+- **Access control is collection-grained, not sub-document.** Roles gate whole collections, which
+  isolates facts at the document and collection boundary but cannot partition a single document
+  across users. Finer isolation (per-section or per-fact) is future work gated on a
+  multi-stakeholder shared-decision use case; until such a use case is real, per-decision
+  documents under collection ACL are the intended pattern.
 
 ## References
 
