@@ -1,0 +1,111 @@
+# Dependabot version-update config.
+#
+# Scope note: this file configures scheduled VERSION updates only. Security
+# updates are enabled separately at the repo level and run regardless of the
+# schedule below; the `groups` blocks here also apply to grouped security PRs.
+#
+# Limitation to remember: Dependabot cannot fix a *transitive* vulnerability by
+# itself (e.g. hono via @modelcontextprotocol/sdk, protobufjs via
+# onnxruntime-web). Those still need an npm `overrides` entry added by hand.
+#
+# Grouping strategy: all minor + patch bumps in a directory land in a single
+# PR to cut noise; MAJOR bumps arrive as individual PRs so each breaking
+# upgrade gets its own review (this is how the vitest 1.x -> 4.x router bump
+# would surface).
+
+version: 2
+
+updates:
+  # ---- npm: root package (the MCP server) ----
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      npm-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ---- npm: multi-vault router ----
+  - package-ecosystem: npm
+    directory: "/packages/router"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      npm-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ---- npm: eval / benchmark harnesses (lower cadence, tighter cap) ----
+  - package-ecosystem: npm
+    directory: "/integrations/consensus-bench"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - integrations
+    groups:
+      bench-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: "/integrations/contract-bench"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - integrations
+    groups:
+      bench-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: "/integrations/recall-bench"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - integrations
+    groups:
+      bench-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ---- pip: langchain integration ----
+  - package-ecosystem: pip
+    directory: "/integrations/langchain"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - integrations
+    groups:
+      langchain-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ---- GitHub Actions used by the workflows ----
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - ci
+    groups:
+      actions:
+        patterns: ["*"]
