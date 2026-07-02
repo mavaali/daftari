@@ -119,7 +119,7 @@ export async function applyPlan(
       skipped.push({ path: entry.path, reason: resolved.error.message });
       continue;
     }
-    const existing = await readFile(resolved.value);
+    const existing = await readFile(resolved.value.absPath);
     if (!existing.ok) {
       skipped.push({ path: entry.path, reason: existing.error.message });
       continue;
@@ -138,7 +138,7 @@ export async function applyPlan(
     }
 
     try {
-      await writeFile(resolved.value, rendered.value, "utf-8");
+      await writeFile(resolved.value.absPath, rendered.value, "utf-8");
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       skipped.push({ path: entry.path, reason: `write failed: ${reason}` });

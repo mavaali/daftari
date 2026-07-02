@@ -55,7 +55,8 @@ describe("resolveVaultPath", () => {
     const result = resolveVaultPath(VAULT, "pricing/helios-consumption-pricing.md");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value).toBe(resolve(VAULT, "pricing/helios-consumption-pricing.md"));
+    expect(result.value.absPath).toBe(resolve(VAULT, "pricing/helios-consumption-pricing.md"));
+    expect(result.value.relPath).toBe("pricing/helios-consumption-pricing.md");
   });
 
   it("rejects path traversal outside the vault root", () => {
@@ -68,6 +69,38 @@ describe("resolveVaultPath", () => {
   it("rejects a path that resolves to the vault root itself", () => {
     const result = resolveVaultPath(VAULT, ".");
     expect(result.ok).toBe(false);
+  });
+});
+
+// The lock key, provenance, and commit path are all derived from the resolved
+// relPath. Two spellings of the same file must collapse to one canonical
+// relPath, or they take out DISTINCT write locks and the optimistic-concurrency
+// guard is defeated (#127/#128 closed the identity checks but left the lock key
+// keyed on the raw caller string — this is the other half of that fix).
+describe("resolveVaultPath canonical relPath (lock-key aliasing, #127/#128)", () => {
+  it("collapses aliased spellings of one path to a single canonical relPath", () => {
+    const spellings = [
+      "pricing/helios-consumption-pricing.md",
+      "./pricing/helios-consumption-pricing.md",
+      "pricing//helios-consumption-pricing.md",
+      "pricing/./helios-consumption-pricing.md",
+    ];
+    for (const spelling of spellings) {
+      const result = resolveVaultPath(VAULT, spelling);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.relPath).toBe("pricing/helios-consumption-pricing.md");
+    }
+  });
+
+  it("keeps genuinely distinct files on distinct relPaths", () => {
+    const a = resolveVaultPath(VAULT, "pricing/one.md");
+    const b = resolveVaultPath(VAULT, "pricing/two.md");
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.value.relPath).toBe("pricing/one.md");
+    expect(b.value.relPath).toBe("pricing/two.md");
+    expect(a.value.relPath).not.toBe(b.value.relPath);
   });
 });
 
@@ -113,6 +146,10 @@ describe("resolveVaultPath symlink confinement", () => {
 
     const result = resolveVaultPath(vault, "alias.md");
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The canonical relPath resolves THROUGH the symlink to the real file, so a
+    // write via `alias.md` and a write via `notes/real.md` take the same lock.
+    expect(result.value.relPath).toBe(join("notes", "real.md"));
   });
 });
 

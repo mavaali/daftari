@@ -426,7 +426,7 @@ export async function vaultWrite(
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
 
-  const existing = await readFile(resolved.value);
+  const existing = await readFile(resolved.value.absPath);
   let oldFrontmatter: Frontmatter | null = null;
   let oldRaw: Record<string, unknown> | null = null;
   if (existing.ok) {
@@ -545,8 +545,11 @@ export async function vaultWrite(
 
   return performWrite({
     vaultRoot,
-    relPath: path.value,
-    absPath: resolved.value,
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath (resolved.value.relPath), never the raw caller string: aliased
+    // spellings of one file must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
     agent: agent.value,
     tool: "vault_write",
     action: isUpdate ? "update" : "create",
@@ -594,7 +597,7 @@ export async function vaultAppend(
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
 
-  const existing = await readFile(resolved.value);
+  const existing = await readFile(resolved.value.absPath);
   if (!existing.ok) {
     return err(new Error(`vault_append: document not found: ${path.value}`));
   }
@@ -658,8 +661,11 @@ export async function vaultAppend(
 
   return performWrite({
     vaultRoot,
-    relPath: path.value,
-    absPath: resolved.value,
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath (resolved.value.relPath), never the raw caller string: aliased
+    // spellings of one file must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
     agent: agent.value,
     tool: "vault_append",
     action: "append",
@@ -704,7 +710,7 @@ export async function vaultPromote(
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
 
-  const existing = await readFile(resolved.value);
+  const existing = await readFile(resolved.value.absPath);
   if (!existing.ok) {
     return err(new Error(`vault_promote: document not found: ${path.value}`));
   }
@@ -749,8 +755,11 @@ export async function vaultPromote(
 
   return performWrite({
     vaultRoot,
-    relPath: path.value,
-    absPath: resolved.value,
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath (resolved.value.relPath), never the raw caller string: aliased
+    // spellings of one file must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
     agent: agent.value,
     tool: "vault_promote",
     action: "promote",
@@ -801,7 +810,7 @@ export async function vaultDeprecate(
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
 
-  const existing = await readFile(resolved.value);
+  const existing = await readFile(resolved.value.absPath);
   if (!existing.ok) {
     return err(new Error(`vault_deprecate: document not found: ${path.value}`));
   }
@@ -834,8 +843,11 @@ export async function vaultDeprecate(
 
   return performWrite({
     vaultRoot,
-    relPath: path.value,
-    absPath: resolved.value,
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath (resolved.value.relPath), never the raw caller string: aliased
+    // spellings of one file must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
     agent: agent.value,
     tool: "vault_deprecate",
     action: "deprecate",
@@ -888,7 +900,7 @@ export async function vaultSetConfidence(
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
 
-  const existing = await readFile(resolved.value);
+  const existing = await readFile(resolved.value.absPath);
   if (!existing.ok) {
     return err(new Error(`vault_set_confidence: document not found: ${path.value}`));
   }
@@ -940,8 +952,11 @@ export async function vaultSetConfidence(
 
   return performWrite({
     vaultRoot,
-    relPath: path.value,
-    absPath: resolved.value,
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath (resolved.value.relPath), never the raw caller string: aliased
+    // spellings of one file must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
     agent: agent.value,
     tool: "vault_set_confidence",
     action: "confidence-set",
@@ -1002,12 +1017,12 @@ export async function vaultSupersede(
   const resolvedNew = resolveVaultPath(vaultRoot, newPath.value);
   if (!resolvedNew.ok) return resolvedNew;
 
-  const existing = await readFile(resolvedOld.value);
+  const existing = await readFile(resolvedOld.value.absPath);
   if (!existing.ok) {
     return err(new Error(`vault_supersede: document not found: ${oldPath.value}`));
   }
   // The successor must be a real document — superseded_by must never dangle.
-  const successor = await readFile(resolvedNew.value);
+  const successor = await readFile(resolvedNew.value.absPath);
   if (!successor.ok) {
     return err(new Error(`vault_supersede: successor not found: ${newPath.value}`));
   }
@@ -1041,8 +1056,9 @@ export async function vaultSupersede(
 
   return performWrite({
     vaultRoot,
-    relPath: oldPath.value,
-    absPath: resolvedOld.value,
+    // Canonical relPath keys the lock/provenance/commit (#127/#128).
+    relPath: resolvedOld.value.relPath,
+    absPath: resolvedOld.value.absPath,
     agent: agent.value,
     tool: "vault_supersede",
     action: "supersede",
@@ -1116,11 +1132,11 @@ export async function vaultMerge(
       : {};
 
   // Resolve all three paths up front and run every identity check against the
-  // resolved absolute paths, never the raw caller strings: `pricing/a.md` and
-  // `./pricing/a.md` name the same file but differ as strings, which would
-  // otherwise defeat the path_a≠path_b guard and the source-is-target skip
-  // below (writing one file twice in a single commit and superseding it against
-  // itself).
+  // CANONICAL relPath, never the raw caller strings: `pricing/a.md`,
+  // `./pricing/a.md`, and a symlink alias all name the same file but differ as
+  // strings (and as absPaths, for a symlink), which would otherwise defeat the
+  // path_a≠path_b guard and the source-is-target skip below (writing one file
+  // twice in a single commit and superseding it against itself).
   const resolvedA = resolveVaultPath(vaultRoot, pathA.value);
   if (!resolvedA.ok) return resolvedA;
   const resolvedB = resolveVaultPath(vaultRoot, pathB.value);
@@ -1128,13 +1144,13 @@ export async function vaultMerge(
   const resolvedTarget = resolveVaultPath(vaultRoot, targetPath.value);
   if (!resolvedTarget.ok) return resolvedTarget;
 
-  if (resolvedA.value === resolvedB.value) {
+  if (resolvedA.value.relPath === resolvedB.value.relPath) {
     return err(new Error("vault_merge: path_a and path_b must differ"));
   }
 
-  const existingA = await readFile(resolvedA.value);
+  const existingA = await readFile(resolvedA.value.absPath);
   if (!existingA.ok) return err(new Error(`vault_merge: document not found: ${pathA.value}`));
-  const existingB = await readFile(resolvedB.value);
+  const existingB = await readFile(resolvedB.value.absPath);
   if (!existingB.ok) return err(new Error(`vault_merge: document not found: ${pathB.value}`));
   const parsedA = parseDocument(existingA.value);
   if (!parsedA.ok) return parsedA;
@@ -1179,7 +1195,7 @@ export async function vaultMerge(
   // overrides, stamp provenance/updated/updated_by. If the target file already
   // exists, preserve its `created` (the vault_write update idiom); otherwise
   // inherit path_a's. The supplied body replaces whatever was there.
-  const existingTarget = await readFile(resolvedTarget.value);
+  const existingTarget = await readFile(resolvedTarget.value.absPath);
   let targetOldFrontmatter: Frontmatter | null = null;
   let targetCreated = parsedA.value.frontmatter.created;
   if (existingTarget.ok) {
@@ -1216,8 +1232,10 @@ export async function vaultMerge(
   // the target is superseded to point at the target.
   const writes: MergeWrite[] = [];
   writes.push({
-    relPath: targetPath.value,
-    absPath: resolvedTarget.value,
+    // Canonical relPath keys the per-file lock, provenance, and commit path so
+    // aliased spellings collapse to one lock (#127/#128).
+    relPath: resolvedTarget.value.relPath,
+    absPath: resolvedTarget.value.absPath,
     fileText: serializeDocument(
       stampedTarget,
       body,
@@ -1229,13 +1247,25 @@ export async function vaultMerge(
     action: "merge",
   });
   for (const source of [
-    { path: pathA.value, abs: resolvedA.value, parsed: parsedA.value },
-    { path: pathB.value, abs: resolvedB.value, parsed: parsedB.value },
+    {
+      path: pathA.value,
+      abs: resolvedA.value.absPath,
+      rel: resolvedA.value.relPath,
+      parsed: parsedA.value,
+    },
+    {
+      path: pathB.value,
+      abs: resolvedB.value.absPath,
+      rel: resolvedB.value.relPath,
+      parsed: parsedB.value,
+    },
   ]) {
-    // Compare resolved absolute paths, not raw strings: a source that aliases
-    // the target (e.g. target `./pricing/a.md`, source `pricing/a.md`) is the
-    // fold-into-A case — write it once with the merged body, never supersede it.
-    if (source.abs === resolvedTarget.value) continue;
+    // Compare canonical relPaths, not raw strings or absPaths: a source that
+    // aliases the target — lexically (`./pricing/a.md`) OR via a symlink — is
+    // the fold-into-A case: write it once with the merged body, never supersede
+    // it. A symlink alias has a distinct absPath, so an absPath compare would
+    // miss it and clobber the merged body with the superseded write (#127/#128).
+    if (source.rel === resolvedTarget.value.relPath) continue;
     const supersededFm: Frontmatter = {
       ...source.parsed.frontmatter,
       status: "superseded",
@@ -1244,7 +1274,7 @@ export async function vaultMerge(
       updated_by: agent.value,
     };
     writes.push({
-      relPath: source.path,
+      relPath: source.rel,
       absPath: source.abs,
       fileText: serializeDocument(
         supersededFm,

@@ -92,7 +92,7 @@ export async function generatePlan(
 
     const resolved = resolveVaultPath(vaultRoot, relPath);
     if (!resolved.ok) return resolved;
-    const source = await readFile(resolved.value);
+    const source = await readFile(resolved.value.absPath);
     if (!source.ok) return source;
 
     const parsed = parseDocument(source.value);
@@ -125,7 +125,7 @@ export async function generatePlan(
       body: parsed.value.content,
       raw: parsed.value.raw,
       git,
-      mtimeDate: await mtimeDate(resolved.value),
+      mtimeDate: await mtimeDate(resolved.value.absPath),
       identityMap: opts.identityMap,
       invoker: opts.invoker,
       obsidian: opts.obsidian,

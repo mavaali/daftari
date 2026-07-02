@@ -37,9 +37,29 @@ function realpathConfined(p: string): string | null {
   }
 }
 
-// Resolves a vault-relative path to an absolute path, refusing anything that
-// escapes the vault root (path traversal) or resolves to the root itself.
-export function resolveVaultPath(vaultRoot: string, relativePath: string): Result<string, Error> {
+// A resolved, vault-confined path.
+//
+// `absPath` is the lexical absolute target — what readFile/writeFile operate
+// on (following any symlink, as before). `relPath` is the CANONICAL
+// vault-relative form, `relative(realRoot, realTarget)`: every spelling of the
+// same physical file (`a/b.md`, `./a/b.md`, `a//b.md`, `a/./b.md`, a symlink
+// alias, or — on a case-insensitive fs — `A/B.md` for an existing `a/b.md`)
+// collapses to one string. It is the ONLY safe key for the write lock, the
+// optimistic-concurrency check, provenance, and the commit path: keying any of
+// those on the raw caller string lets two spellings acquire distinct locks and
+// silently clobber each other (#127/#128).
+export interface ResolvedVaultPath {
+  absPath: string;
+  relPath: string;
+}
+
+// Resolves a vault-relative path, refusing anything that escapes the vault root
+// (path traversal) or resolves to the root itself. Returns both the absolute
+// target and the canonical vault-relative form (see ResolvedVaultPath).
+export function resolveVaultPath(
+  vaultRoot: string,
+  relativePath: string,
+): Result<ResolvedVaultPath, Error> {
   const root = resolve(vaultRoot);
   const target = resolve(root, relativePath);
   const rel = relative(root, target);
@@ -60,7 +80,7 @@ export function resolveVaultPath(vaultRoot: string, relativePath: string): Resul
   if (realRel === "" || realRel.startsWith("..") || isAbsolute(realRel)) {
     return err(new Error(`path escapes vault root: ${relativePath}`));
   }
-  return ok(target);
+  return ok({ absPath: target, relPath: realRel });
 }
 
 export async function directoryExists(path: string): Promise<boolean> {

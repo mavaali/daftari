@@ -366,7 +366,7 @@ export async function vaultProvenance(
     let collection = filePath.split("/")[0] ?? "";
     const resolved = resolveVaultPath(vaultRoot, filePath);
     if (resolved.ok) {
-      const content = await readFile(resolved.value);
+      const content = await readFile(resolved.value.absPath);
       if (content.ok) {
         const parsed = parseDocument(content.value);
         if (parsed.ok && parsed.value.frontmatter.collection) {

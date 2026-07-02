@@ -102,6 +102,37 @@ describe("write tools", () => {
       expect(entry?.frontmatter_diff?.title?.after).toBe("Serverless Cost Notes");
     }, 60_000);
 
+    // #127/#128 regression. The write lock must be keyed on the CANONICAL
+    // vault-relative path, not the raw caller string. Two spellings of one file
+    // (`pricing/new-note.md` and `pricing/./new-note.md`) resolve to the same
+    // document; if they took out DISTINCT locks, two concurrent writers would
+    // both "hold the file" and silently clobber each other — and the
+    // base_version optimistic-concurrency guard, which runs under that same
+    // lock, is defeated. Pre-hold the canonical lock under a different holder,
+    // then confirm an aliased write is DENIED and never lands on disk.
+    it("keys the write lock on the canonical path, so aliased spellings contend", async () => {
+      const lockDbResult = openLockDb(vault);
+      expect(lockDbResult.ok).toBe(true);
+      if (!lockDbResult.ok) return;
+      const lockDb = lockDbResult.value;
+      const held = acquireLock(lockDb, "pricing/new-note.md", "agent:other");
+      expect(held.ok).toBe(true);
+      lockDb.close();
+
+      const result = await vaultWrite(vault, {
+        path: "pricing/./new-note.md", // aliased spelling of pricing/new-note.md
+        body: "# Serverless Cost Notes\n\nAliased write.\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("locked by agent:other");
+      // The aliased write must not have slipped past the lock onto disk.
+      expect(existsSync(join(vault, "pricing/new-note.md"))).toBe(false);
+    }, 60_000);
+
     it("round-trips the questions_answered / questions_raised fields", async () => {
       const result = await vaultWrite(vault, {
         path: "pricing/questions-note.md",

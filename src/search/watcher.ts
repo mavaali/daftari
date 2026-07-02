@@ -247,7 +247,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
     // path after their in-process indexDocument() returns; if it's there,
     // the event was Daftari's own write and the index is already current.
     const resolvedAbs = resolveVaultPath(root, relPath);
-    if (resolvedAbs.ok && consumeSelfWrite(resolvedAbs.value)) {
+    if (resolvedAbs.ok && consumeSelfWrite(resolvedAbs.value.absPath)) {
       return;
     }
 
@@ -293,7 +293,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
         // the file is back, treat the event as a change instead.
         const absResolved = resolveVaultPath(root, relPath);
         if (absResolved.ok) {
-          const present = await resolved.statFn(absResolved.value);
+          const present = await resolved.statFn(absResolved.value.absPath);
           if (present.exists) {
             const r = await resolved.indexFn(root, relPath);
             if (!r.ok) {
