@@ -97,7 +97,7 @@ async function buildManifest(vaultRoot: string): Promise<Record<string, number> 
     const resolved = resolveVaultPath(vaultRoot, relPath);
     if (!resolved.ok) return null;
     try {
-      const st = await stat(resolved.value);
+      const st = await stat(resolved.value.absPath);
       manifest[relPath] = st.mtimeMs;
     } catch {
       return null;
@@ -238,7 +238,7 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
   const resolved = resolveVaultPath(vaultRoot, relPath);
   if (!resolved.ok)
     return { kind: "skipped", reason: `path could not be resolved: ${resolved.error.message}` };
-  const file = await readFile(resolved.value);
+  const file = await readFile(resolved.value.absPath);
   if (!file.ok) return { kind: "skipped", reason: `file could not be read: ${file.error.message}` };
   const parsed = parseDocument(file.value);
   if (!parsed.ok) return { kind: "skipped", reason: parsed.error.message };
@@ -586,7 +586,7 @@ export async function indexDocument(
       const resolved = resolveVaultPath(vaultRoot, relPath);
       if (resolved.ok) {
         try {
-          const st = await stat(resolved.value);
+          const st = await stat(resolved.value.absPath);
           stored[relPath] = st.mtimeMs;
           writeManifest(db, stored);
         } catch {

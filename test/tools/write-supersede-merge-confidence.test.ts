@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
@@ -356,6 +356,38 @@ describe("vault_merge", () => {
 
     const b = await vaultRead(vault, "pricing/b.md");
     expect(b.ok && b.value.frontmatter.status).toBe("superseded");
+  }, 60_000);
+
+  // Like the `./` fold-in test above, but the source aliases the target via a
+  // SYMLINK, not a lexical spelling. The self-target skip must compare CANONICAL
+  // relPaths, not lexical absPaths: a symlink alias has a distinct absPath, so
+  // an absPath-keyed skip would fail to fire and the source's superseded body
+  // would clobber the merged target (same inode, last-write-wins) (#127/#128).
+  it("folds into A (not double-write) when a source aliases the target via a symlink", async () => {
+    await seed(vault, "pricing/a.md", { created: "2026-04-01" });
+    await seed(vault, "pricing/b.md");
+    // pricing/a-alias.md → pricing/a.md (both inside the vault).
+    symlinkSync(join(vault, "pricing/a.md"), join(vault, "pricing/a-alias.md"));
+
+    const result = await vaultMerge(vault, {
+      path_a: "pricing/a-alias.md", // symlink alias of the target
+      path_b: "pricing/b.md",
+      target_path: "pricing/a.md",
+      body: "# A\n\nFolded via symlink.\n",
+      agent: AGENT,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // a.md must carry the MERGED body and must NOT be superseded against itself.
+    const a = await vaultRead(vault, "pricing/a.md");
+    expect(a.ok && a.value.content).toContain("Folded via symlink.");
+    expect(a.ok && a.value.frontmatter.status).not.toBe("superseded");
+    expect(a.ok && a.value.frontmatter.created).toBe("2026-04-01");
+
+    const b = await vaultRead(vault, "pricing/b.md");
+    expect(b.ok && b.value.frontmatter.status).toBe("superseded");
+    expect(b.ok && b.value.frontmatter.superseded_by).toBe("pricing/a.md");
   }, 60_000);
 
   it("rejects when a source does not exist", async () => {

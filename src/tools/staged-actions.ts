@@ -83,7 +83,7 @@ export async function vaultStageAction(
 
   const resolved = resolveVaultPath(vaultRoot, targetPath.value);
   if (!resolved.ok) return resolved;
-  const exists = await readFile(resolved.value);
+  const exists = await readFile(resolved.value.absPath);
 
   // RBAC (S2): staging proposes a mutation to the target document, so it
   // requires WRITE access to that document's collection — not merely any read

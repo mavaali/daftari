@@ -45,7 +45,7 @@ import type { ToolDefinition } from "./read.js";
 function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
   const resolved = resolveVaultPath(vaultRoot, relPath.trim());
   if (!resolved.ok) return resolved;
-  return ok(relative(resolve(vaultRoot), resolved.value));
+  return ok(relative(resolve(vaultRoot), resolved.value.absPath));
 }
 
 function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
@@ -77,7 +77,7 @@ async function requireDocument(
 ): Promise<Result<void, Error>> {
   const resolved = resolveVaultPath(vaultRoot, relPath);
   if (!resolved.ok) return resolved;
-  const exists = await readFile(resolved.value);
+  const exists = await readFile(resolved.value.absPath);
   if (!exists.ok) {
     return err(new Error(`${tool}: document not found: ${relPath}`));
   }

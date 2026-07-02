@@ -80,7 +80,7 @@ export async function vaultRead(
   const resolved = resolveVaultPath(vaultRoot, path);
   if (!resolved.ok) return resolved;
 
-  const file = await readFile(resolved.value);
+  const file = await readFile(resolved.value.absPath);
   if (!file.ok) return file;
 
   const parsed = parseDocument(file.value);
@@ -162,7 +162,7 @@ export async function vaultIndex(
   for (const relPath of list.value) {
     const resolved = resolveVaultPath(vaultRoot, relPath);
     if (!resolved.ok) continue;
-    const file = await readFile(resolved.value);
+    const file = await readFile(resolved.value.absPath);
     if (!file.ok) continue;
     const parsed = parseDocument(file.value);
     if (!parsed.ok) continue;
