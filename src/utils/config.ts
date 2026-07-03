@@ -6,7 +6,7 @@
 // refuses to start. A *missing* config is not malformed — it just yields an
 // empty role set, so every --role resolves to the deny-all guest.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { load as parseYaml } from "js-yaml";
@@ -457,11 +457,69 @@ function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefin
   return ok(gitDirAbs);
 }
 
+// mtime-keyed cache for loadConfig (finding E2). loadConfig sits on the write
+// hot path — 7 call sites in tools/write.ts invoke it per handler while the
+// write lock is held, each doing a readFileSync + full YAML parse + full
+// validation. The config is effectively static between edits, so we memoise the
+// parsed+validated Result keyed by the resolved config path, invalidating when
+// the file's mtime changes or the file appears/disappears. A cheap statSync
+// replaces the read+parse+validate on the common hit path.
+//
+// The `mtimeMs` sentinel `null` marks the "file absent" state, so a config that
+// disappears and later reappears (or vice-versa) busts the cache correctly —
+// statSync throwing ENOENT is itself a cache key, distinct from any real mtime.
+// The server already fs-watches the vault, but this cache must never serve a
+// stale config across an edit; an mtime bump is what busts it.
+interface ConfigCacheEntry {
+  mtimeMs: number | null;
+  result: Result<DaftariConfig, Error>;
+}
+const configCache = new Map<string, ConfigCacheEntry>();
+
+// Test-only hook: clears the memoised config so a suite can exercise fresh
+// loads without leaking cache state across cases. Not part of the runtime path.
+export function clearConfigCache(): void {
+  configCache.clear();
+}
+
 // Loads and validates the vault's RBAC config. A missing file is not an error
 // — it produces an empty role set. A file that parses but violates the schema,
 // or fails to parse at all, returns Result.err so the server can refuse to
 // start.
+//
+// The parsed+validated result is memoised keyed by the resolved config path and
+// the file's mtime (finding E2). An unchanged file returns the cached Result
+// after only a statSync; a changed, appearing, or disappearing file busts the
+// entry and re-parses. Validation behaviour is identical to a fresh load — the
+// cache only skips repeated work for a byte-identical file.
 export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
+  const path = configPath(vaultRoot);
+  const key = resolve(path);
+
+  let mtimeMs: number | null;
+  try {
+    mtimeMs = statSync(path).mtimeMs;
+  } catch (e) {
+    // A missing file is the empty-config case; any other stat error falls
+    // through to loadConfigUncached, which reports it via readFileSync.
+    mtimeMs = (e as NodeJS.ErrnoException).code === "ENOENT" ? null : Number.NaN;
+  }
+
+  const cached = configCache.get(key);
+  // A NaN mtime (non-ENOENT stat error) never satisfies `===`, so such a case
+  // always re-parses rather than serving a stale hit.
+  if (cached !== undefined && cached.mtimeMs === mtimeMs) {
+    return cached.result;
+  }
+
+  const result = loadConfigUncached(vaultRoot);
+  configCache.set(key, { mtimeMs, result });
+  return result;
+}
+
+// The full read + parse + validate. Kept as a separate function so loadConfig
+// can wrap it with the mtime cache without changing any validation logic.
+function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   let text: string;
   try {
     text = readFileSync(configPath(vaultRoot), "utf-8");
