@@ -594,6 +594,30 @@ and carries no supersession or provenance representation, the inverse substrate 
 human-readable, git-versioned store. It optimizes for token-cost, not supersession, so the
 contrast is one of substrate and aim, not a head-to-head on our axis.
 
+**A reproducible accumulation-corpus benchmark, and the limit of measuring one corpus.**
+data-olympus [data-olympus] is the nearest peer on substrate: a governance-grade knowledge
+base of markdown files with YAML frontmatter kept in git (no database, no proprietary schema,
+the substrate choice we defend in §2), paired with a deterministically reproducible retrieval
+benchmark of 250 generated concepts and 500 queries spanning lifecycle-status,
+lifecycle-graph, curated-trigger, and loosely-phrased semantic categories. Its published
+numbers are an honest ground truth for what a governed store with an explicit status field
+achieves on the accumulation half: staleness 0.000 on lifecycle-graph queries where a BM25
+baseline scores 1.000 (it never serves a superseded rule), recall 1.000 on lifecycle-status
+and on curated triggers, a 0.000 out-of-scope false-positive rate under abstention, and the
+keyword-retrieval failure mode published rather than buried (0.036 recall on loosely phrased
+queries that share almost no words with the authored rule, where the authors note every
+keyword method does poorly and vector retrieval has the edge). We take these figures from the
+project's benchmark and did not independently reproduce them. The two-corpus thesis does not
+compete with this result; it holds that the result measures a strict subset of what a memory
+substrate must. The staleness-and-supersede axis these numbers characterize lives entirely in
+the accumulation corpus. The tension axis, two live documents contradicting without
+adjudication, lives in the generative corpus, and no accumulation-only benchmark can surface
+it, because a supersede chain has already collapsed the boundary case into a linear order
+before any query is scored. The measurement is right; the frame is one corpus too narrow. That
+data-olympus reaches these numbers on the same markdown-in-git substrate we adopt sharpens
+rather than blunts the point: the separating variable is not the store but whether the
+evaluation admits an unresolved state at all.
+
 **The gap this paper fills** (narrowed to be reviewer-defensible):
 - **A structural, by-construction no-mint invariant *in an agent-memory system*.** Classical
   TMS (ATMS) has a structural no-collapse guarantee, but over logical assumption-sets in a
@@ -606,8 +630,9 @@ contrast is one of substrate and aim, not a head-to-head on our axis.
 - **Provenance over supersession.** Existing provenance is lineage/tamper-evidence (Portable
   Agent Memory) or source attribution (Roynard); provenance over *what governs and what it
   superseded* is thinner prior art.
-- **The substrate.** No cited system targets a human-readable, git-versioned, agent-consumed
-  markdown vault: the surveyed systems store memory in databases, opaque trainable tensors,
+- **The substrate.** Almost no cited system targets a human-readable, git-versioned, agent-consumed
+  markdown vault (data-olympus is the exception, and shares it; our distinction from it is the
+  two-corpus frame, not the store): the surveyed systems store memory in databases, opaque trainable tensors,
   or knowledge graphs, and a competitor has publicly argued markdown is *not* agent memory
   [Zep blog] because plain files lack a structured query surface. We take the point and
   invert it: in daftari the query surface *is* a graph-and-vector index (§2), but a derived,
@@ -745,6 +770,9 @@ disclosed prompt being run against it.
 - **[de Kleer 1986]** de Kleer, J. *An Assumption-based TMS.* Artificial Intelligence
   28(2):127–162, 1986. (ATMS)
 - **[Zep blog]** Zep. *Markdown is not agent memory.* blog.getzep.com, 2026.
+- **[data-olympus]** knaisoma. *data-olympus: a git-native, governance-grade knowledge base with a
+  reproducible retrieval benchmark.* github.com/knaisoma/data-olympus, 2026. (benchmark figures per
+  the repository's WHY.md; not independently reproduced here)
 
 ---
 
