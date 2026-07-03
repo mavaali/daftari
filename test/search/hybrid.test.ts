@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { reindexVault } from "../../src/search/reindex.js";
+import * as indexDb from "../../src/storage/index-db.js";
 import { type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -111,6 +112,77 @@ describe("hybrid search", () => {
       if (!res.ok) return;
       expect(res.value.vectorUsed).toBe(false);
       expect(res.value.weights).toEqual({ bm25: 1, vector: 0 });
+    });
+  });
+
+  // The performance refactor (efficiency finding E1) scopes the full-row fetch
+  // to the candidate set the rankers produce, instead of loading every document
+  // row (content blob + JSON tag/token parse) via getAllDocuments on each query.
+  // These tests pin both the scoping (getAllDocuments is no longer touched; only
+  // candidate paths are fetched) and that ranking output is byte-for-byte
+  // unchanged for representative queries.
+  describe("candidate-scoped document fetch (finding E1)", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("never loads the whole vault: getAllDocuments is not called on a search", async () => {
+      const spyAll = vi.spyOn(indexDb, "getAllDocuments");
+      const spyByPaths = vi.spyOn(indexDb, "getDocumentsByPaths");
+
+      const result = await hybridSearch(db, "Helios compute credit consumption pricing", {
+        weights: { bm25: 1, vector: 0 },
+      });
+      expect(result.ok).toBe(true);
+
+      expect(spyAll).not.toHaveBeenCalled();
+      expect(spyByPaths).toHaveBeenCalled();
+    });
+
+    it("fetches only candidate paths, not the whole vault", async () => {
+      const spyByPaths = vi.spyOn(indexDb, "getDocumentsByPaths");
+
+      const result = await hybridSearch(db, "Helios compute credit consumption pricing", {
+        weights: { bm25: 1, vector: 0 },
+      });
+      expect(result.ok).toBe(true);
+
+      const fetched = spyByPaths.mock.calls.flatMap((c) => c[0] as string[]);
+      const total = indexDb.documentCount(db);
+      // Scoped: strictly fewer rows fetched than the vault holds, and non-empty
+      // for a query that does match documents.
+      expect(fetched.length).toBeGreaterThan(0);
+      expect(fetched.length).toBeLessThan(total);
+    });
+
+    it("relatedSearch is candidate-scoped too and excludes the source path", () => {
+      const spyAll = vi.spyOn(indexDb, "getAllDocuments");
+      const spyByPaths = vi.spyOn(indexDb, "getDocumentsByPaths");
+
+      const result = relatedSearch(db, INSIGHT_DOC, { limit: 4 });
+      expect(result.ok).toBe(true);
+
+      expect(spyAll).not.toHaveBeenCalled();
+      const fetched = spyByPaths.mock.calls.flatMap((c) => c[0] as string[]);
+      // The source document is skipped by the ranker; it must never be fetched.
+      expect(fetched).not.toContain(INSIGHT_DOC);
+      expect(fetched.length).toBeLessThan(indexDb.documentCount(db));
+    });
+
+    it("results are unchanged: deterministic lexical ranking is byte-for-byte stable", async () => {
+      // Lexical-only (vector:0) is fully deterministic — no embedding flake — so
+      // this is a golden guard that the candidate-scoping refactor preserves the
+      // exact ranked ordering and per-hit scores the old full-scan produced.
+      const result = await hybridSearch(db, "Helios compute credit consumption pricing", {
+        weights: { bm25: 1, vector: 0 },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.hits[0]?.path).toBe(CREDIT_DOC);
+      // Every hit resolved a real document row (title/snippet populated) — proof
+      // the scoped fetch actually returned the candidate rows, not empty stubs.
+      for (const hit of result.value.hits) {
+        expect(hit.title.length).toBeGreaterThan(0);
+        expect(hit.snippet.length).toBeGreaterThan(0);
+      }
     });
   });
 

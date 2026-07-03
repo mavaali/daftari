@@ -20,9 +20,9 @@ import { computeDecay, type DecayState } from "../curation/decay.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import {
   embeddingToBlob,
-  getAllDocuments,
   getChunksForPath,
   getDocument,
+  getDocumentsByPaths,
   type IndexDb,
 } from "../storage/index-db.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
@@ -253,9 +253,6 @@ function rankDocuments(
   queryTokensForSnippet: string[],
   opts: RankOptions,
 ): { hits: HybridHit[]; vectorUsed: boolean } {
-  const documents = getAllDocuments(db);
-  const byPath = new Map(documents.map((d) => [d.path, d]));
-
   let bm25Norm: Map<string, number>;
   if (opts.lexicalGranularity === "chunk") {
     // Body granularity (the dilution fix) TIERED with a clean title/tag signal
@@ -283,6 +280,15 @@ function rankDocuments(
   const weights: HybridWeights = vectorUsed ? opts.weights : { bm25: 1, vector: 0 };
 
   const candidates = new Set<string>([...bm25Norm.keys(), ...vectorNorm.keys()]);
+
+  // Fetch full rows for ONLY the candidate paths — not the whole vault. The
+  // FTS + vector rankers above have already collapsed the vault to a small set
+  // (typically < 100), so the expensive full-row read (content blob + JSON
+  // tag/token parse in rowToDocument) is scoped to that set instead of running
+  // O(vault) on every query. The related-search source path is excluded from
+  // the fetch — the loop below skips it anyway, so its row is never needed.
+  const fetchPaths = [...candidates].filter((path) => path !== opts.excludePath);
+  const byPath = new Map(getDocumentsByPaths(db, fetchPaths).map((d) => [d.path, d]));
 
   const hits: HybridHit[] = [];
   for (const path of candidates) {
