@@ -9,7 +9,7 @@
 // The provenance log is a separate advisory audit trail.
 
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite } from "../access/rbac.js";
@@ -70,6 +70,24 @@ function requireIndexReady(): Result<void, Error> {
 // the top-level directory of its vault-relative path.
 function collectionOf(relPath: string, fm: Frontmatter): string {
   return fm.collection || (relPath.split("/")[0] ?? "");
+}
+
+// The collection the write gate for a *new* write must key off: the top-level
+// directory the bytes physically land in, i.e. the resolved target path's first
+// path segment — NEVER the caller-declared frontmatter.collection. Honoring the
+// declared string let a role with write on collection A drop a file into
+// collection B by lying in the frontmatter (S1, 2026-07-01 review): the gate
+// checked A while `resolveVaultPath` wrote into B.
+//
+// `relPath` is lexically canonicalized against the vault root so an aliased path
+// (`competitive-intel/../pricing/x.md`) resolves to its true top-level dir
+// before the gate. This is pure path math — no disk I/O — so the check still
+// runs before we touch the target, preserving "deny before revealing anything".
+// A path that escapes the root yields a `..`-leading segment, which no role can
+// write; `resolveVaultPath` rejects it properly downstream.
+function targetCollection(vaultRoot: string, relPath: string): string {
+  const rel = relative(resolve(vaultRoot), resolve(vaultRoot, relPath));
+  return rel.split(sep)[0] ?? "";
 }
 
 // Resolves an extension field's serializable value from the raw frontmatter:
@@ -407,12 +425,15 @@ export async function vaultWrite(
 
   // RBAC is checked before any file I/O or frontmatter validation: an
   // unauthorized caller is denied without learning anything about the target.
+  // The gate keys off the directory the bytes physically land in (the resolved
+  // target path's top-level dir), NOT the caller-declared frontmatter.collection
+  // — otherwise a role with write on collection A could write into collection B
+  // by declaring `collection: A` while pointing `path` at B (S1). The declared
+  // collection is allowed to differ from the physical dir (e.g. a draft staged
+  // in _drafts/ that declares its destination collection); it just never widens
+  // access.
   if (access) {
-    const declared = rawFrontmatter.collection;
-    const collection =
-      typeof declared === "string" && declared.length > 0
-        ? declared
-        : (path.value.split("/")[0] ?? "");
+    const collection = targetCollection(vaultRoot, path.value);
     if (!canWrite(access.role, collection)) {
       return err(
         new Error(
@@ -1164,20 +1185,17 @@ export async function vaultMerge(
   // RBAC: a merge writes/mutates all three docs, so the caller needs write on
   // each one's collection.
   if (access) {
-    // The target's collection is the override, else path_a's *raw* collection
-    // (the value actually serialized into the target below — not the validated
-    // frontmatter, which may differ if path_a's raw collection is malformed),
-    // else the target path's top-level dir. Deriving it from the same source
-    // the write uses keeps the gate and the write in agreement.
-    const rawACollection = parsedA.value.raw.collection;
+    // path_a and path_b are gated on their existing on-disk collections. The
+    // target is gated on the directory the merged bytes physically land in — the
+    // resolved target path's top-level dir — NOT the caller-declared collection
+    // (override or path_a's raw value). Keying the target gate off a declared
+    // string let a role with write on collection A write the merge result into
+    // collection B by pointing target_path at B while declaring `collection: A`
+    // (S1, same shape as vault_write).
     const collections = [
       collectionOf(pathA.value, parsedA.value.frontmatter),
       collectionOf(pathB.value, parsedB.value.frontmatter),
-      typeof frontmatterOverrides.collection === "string" && frontmatterOverrides.collection
-        ? frontmatterOverrides.collection
-        : typeof rawACollection === "string" && rawACollection
-          ? rawACollection
-          : (targetPath.value.split("/")[0] ?? ""),
+      targetCollection(vaultRoot, targetPath.value),
     ];
     for (const collection of collections) {
       if (!canWrite(access.role, collection)) {

@@ -419,3 +419,125 @@ describe("vault_merge", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+// S1 (2026-07-01 security review): the write gate must key off the directory the
+// bytes physically land in — the resolved target path's top-level dir — never a
+// caller-declared frontmatter.collection. Honoring the declared string let a
+// role with write on collection A drop a file into collection B by lying in the
+// frontmatter (and, without base_version, overwrite existing B docs).
+describe("write-side ACL: path vs declared collection (S1)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("vault_write denies a path in an unwritable collection even when frontmatter.collection names a writable one", async () => {
+    // analyst may write competitive-intel, NOT pricing.
+    const result = await vaultWrite(
+      vault,
+      {
+        path: "pricing/leak.md",
+        body: "# Leak\n\nSecret pricing.\n",
+        frontmatter: frontmatter({ collection: "competitive-intel" }),
+        agent: AGENT,
+      },
+      ANALYST,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+    // And the bytes must NOT have landed in pricing/.
+    const read = await vaultRead(vault, "pricing/leak.md");
+    expect(read.ok).toBe(false);
+  });
+
+  it("vault_write denies an aliased path that resolves into an unwritable collection", async () => {
+    const result = await vaultWrite(
+      vault,
+      {
+        // Lexically canonicalizes to pricing/leak2.md.
+        path: "competitive-intel/../pricing/leak2.md",
+        body: "# Leak\n\nSecret pricing.\n",
+        frontmatter: frontmatter({ collection: "competitive-intel" }),
+        agent: AGENT,
+      },
+      ANALYST,
+    );
+    expect(result.ok).toBe(false);
+    const read = await vaultRead(vault, "pricing/leak2.md");
+    expect(read.ok).toBe(false);
+  });
+
+  it("vault_write allows a write when the path's collection is writable (declared matches dir)", async () => {
+    const result = await vaultWrite(
+      vault,
+      {
+        path: "competitive-intel/note.md",
+        body: "# Note\n\nBody.\n",
+        frontmatter: frontmatter({ collection: "competitive-intel" }),
+        agent: AGENT,
+      },
+      ANALYST,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("vault_write gates on the physical dir, not a mismatched declared collection (option a, not b)", async () => {
+    // A declared collection that differs from the physical dir is a real pattern
+    // (see fixture _drafts/moonshot). The gate is the physical dir the caller can
+    // write; the mismatched declared string is not itself rejected.
+    const result = await vaultWrite(
+      vault,
+      {
+        path: "competitive-intel/staged.md",
+        body: "# Staged\n\nBody.\n",
+        frontmatter: frontmatter({ collection: "some-future-collection" }),
+        agent: AGENT,
+      },
+      ANALYST,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("vault_merge denies a target in an unwritable collection even when frontmatter.collection names a writable one", async () => {
+    await seed(vault, "competitive-intel/a.md", { collection: "competitive-intel" });
+    await seed(vault, "competitive-intel/b.md", { collection: "competitive-intel" });
+    const result = await vaultMerge(
+      vault,
+      {
+        path_a: "competitive-intel/a.md",
+        path_b: "competitive-intel/b.md",
+        target_path: "pricing/merged.md",
+        body: "# Merged\n\nCombined.\n",
+        frontmatter: { collection: "competitive-intel" },
+        agent: AGENT,
+      },
+      ANALYST,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+    const read = await vaultRead(vault, "pricing/merged.md");
+    expect(read.ok).toBe(false);
+  });
+
+  it("vault_merge allows a merge fully within a writable collection", async () => {
+    await seed(vault, "competitive-intel/a.md", { collection: "competitive-intel" });
+    await seed(vault, "competitive-intel/b.md", { collection: "competitive-intel" });
+    const result = await vaultMerge(
+      vault,
+      {
+        path_a: "competitive-intel/a.md",
+        path_b: "competitive-intel/b.md",
+        target_path: "competitive-intel/merged.md",
+        body: "# Merged\n\nCombined.\n",
+        agent: AGENT,
+      },
+      ANALYST,
+    );
+    expect(result.ok).toBe(true);
+  });
+});
