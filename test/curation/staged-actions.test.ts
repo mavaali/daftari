@@ -116,6 +116,50 @@ describe("staged-actions", () => {
     expect(fetched.value.ratificationReason).toBe("Confirmed — analysis is settled");
   });
 
+  it("returns the collapsed post-decision row without re-reading the whole log", async () => {
+    // recordDecision collapses the pre-existing log once and applies the new
+    // decision to that map in memory (rather than re-reading + re-collapsing
+    // the file a second time). The returned row must still reflect the decision
+    // exactly, even with many unrelated prior actions in the log.
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const s = await stageAction(vault, { ...sampleInput, targetPath: `specs/doc-${i}.md` });
+      if (!s.ok) return;
+      ids.push(s.value.id);
+    }
+    const target = ids[2] as string;
+    const decided = await recordDecision(vault, target, {
+      status: "ratified",
+      ratifiedAt: "2026-06-08T09:15:00Z",
+      ratifiedBy: "human:mihir",
+      reason: "Confirmed",
+      decidedByPrincipal: "human:mihir",
+    });
+    expect(decided.ok).toBe(true);
+    if (!decided.ok) return;
+    // The returned row is the collapsed CURRENT state for that id.
+    expect(decided.value.id).toBe(target);
+    expect(decided.value.status).toBe("ratified");
+    expect(decided.value.ratifiedBy).toBe("human:mihir");
+    expect(decided.value.ratificationReason).toBe("Confirmed");
+    expect(decided.value.decidedByPrincipal).toBe("human:mihir");
+    // The other actions are untouched and still pending on re-read.
+    const still = await getStagedActionById(vault, ids[0] as string);
+    expect(still.ok && still.value?.status).toBe("pending");
+
+    // A subsequent decision on the SAME id collapses on top of the first —
+    // proving the in-memory apply used the freshly-appended decision, not a
+    // stale pre-decision snapshot.
+    const again = await recordDecision(vault, target, {
+      status: "rejected",
+      ratifiedAt: "2026-06-09T09:15:00Z",
+      ratifiedBy: "human:mihir",
+    });
+    expect(again.ok && again.value.status).toBe("rejected");
+    const reread = await getStagedActionById(vault, target);
+    expect(reread.ok && reread.value?.status).toBe("rejected");
+  });
+
   it("sweeps pending actions past their expiry into expired status", async () => {
     // Staged 30 days before "now": well past the 14-day ttl.
     await stageAction(vault, { ...sampleInput, proposedAt: "2026-05-01T00:00:00Z" });

@@ -120,6 +120,27 @@ Body.
     expect(result.value.validation.valid).toBe(false);
   });
 
+  it("rejects a pathologically large source before parsing (size guard)", () => {
+    // A multi-megabyte doc — reachable via `daftari import` — must not be fed
+    // to gray-matter's synchronous parse (OOM / event-loop-block risk). The
+    // guard returns an err Result rather than parsing.
+    const huge = `---\ntitle: "x"\n---\n${"a".repeat(6 * 1024 * 1024)}`;
+    const result = parseDocument(huge);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("too large");
+  });
+
+  it("parses a document just under the size cap normally", () => {
+    // A large-but-tolerable body (well under the cap) parses as usual — the
+    // guard must not reject ordinary docs.
+    const big = `${VALID}\n${"word ".repeat(50_000)}`;
+    const result = parseDocument(big);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hasFrontmatter).toBe(true);
+  });
+
   it("returns an error for malformed YAML frontmatter", () => {
     const result = parseDocument(`---
 title: "unterminated

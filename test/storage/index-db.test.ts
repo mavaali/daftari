@@ -303,6 +303,58 @@ describe("index-db", () => {
         new Set([referencedHash]),
       );
     });
+
+    it("batch-reaps many orphans and mirrors the deletes into embeddings_vec", () => {
+      // Behavior-preservation guard for the batched NOT EXISTS / IN-list rewrite:
+      // with a mix of referenced and orphaned hashes the gc must drop exactly
+      // the orphans from BOTH `embeddings` and `embeddings_vec`, and leave the
+      // referenced rows in both stores.
+      const dim = LOCAL_MINILM_DIM;
+      const vec = new Float32Array(dim).fill(0.1);
+      const referenced: string[] = [];
+      const orphans: string[] = [];
+      for (let i = 0; i < 25; i++) {
+        const h = sha256Hex(`ref-${i}`);
+        referenced.push(h);
+        insertEmbedding(db, h, MODEL, vec, "2026-05-20T00:00:00Z", dim);
+        insertEmbeddingVec(db, h, MODEL, vec);
+        insertChunkRow(db, {
+          path: `pricing/ref-${i}.md`,
+          chunkIndex: 0,
+          text: `ref-${i}`,
+          contentHash: h,
+        });
+      }
+      for (let i = 0; i < 40; i++) {
+        const h = sha256Hex(`orphan-${i}`);
+        orphans.push(h);
+        insertEmbedding(db, h, MODEL, vec, "2026-05-20T00:00:00Z", dim);
+        insertEmbeddingVec(db, h, MODEL, vec);
+      }
+
+      const removed = gcOrphanedEmbeddings(db);
+      expect(removed).toBe(40);
+      expect(embeddingCount(db)).toBe(25);
+      expect(existingEmbeddingHashes(db, MODEL, [...referenced, ...orphans])).toEqual(
+        new Set(referenced),
+      );
+      // The vec mirror mirrors the deletes: only the 25 referenced rows remain.
+      const vecCount = (
+        db.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as { n: number }
+      ).n;
+      expect(vecCount).toBe(25);
+    });
+
+    it("is a no-op when every embedding is referenced", () => {
+      const dim = LOCAL_MINILM_DIM;
+      const vec = new Float32Array(dim).fill(0.2);
+      const h = sha256Hex("kept");
+      insertEmbedding(db, h, MODEL, vec, "2026-05-20T00:00:00Z", dim);
+      insertEmbeddingVec(db, h, MODEL, vec);
+      insertChunkRow(db, { path: "pricing/kept.md", chunkIndex: 0, text: "kept", contentHash: h });
+      expect(gcOrphanedEmbeddings(db)).toBe(0);
+      expect(embeddingCount(db)).toBe(1);
+    });
   });
 
   describe("FTS5 sync", () => {

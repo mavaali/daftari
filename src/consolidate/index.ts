@@ -100,6 +100,11 @@ shadow_mode off, edge_observe/contest land for real — but Stage 2 ships with
 NO auto-write graduation, so even off-shadow only the auto-write tier from
 spec §4.2 lands (link / confidence-down / tension_log / contest revoke).
 
+Any mode other than 'scan' REQUIRES shadow_mode to be set explicitly in
+.daftari/config.yaml (true = calibrate/journal only, false = write edges live).
+The loop refuses to run live under an implicit default so a cron pass can't
+silently start writing.
+
 What it does:
   Computes three clocks (event / decay / backstop) over the derives_from edge
   store + git history at session start, ranks the due work into four slices
@@ -321,6 +326,19 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       const cfg = await loadConfig(vaultRoot);
       if (!cfg.ok) {
         process.stderr.write(`consolidate: ${cfg.error.message}\n`);
+        return 2;
+      }
+      // S5: mode != scan writes edges to the store. Refuse to run live unless the
+      // operator has explicitly chosen a shadow_mode posture — otherwise a cron
+      // `consolidate --mode both` on a vault whose config predates shadow_mode
+      // would silently write live. Checked before constructing the LLM so a
+      // misconfigured run costs nothing.
+      if (!cfg.value.shadowModeSet) {
+        process.stderr.write(
+          `consolidate: refusing to run live (mode ${mode}) without an explicit ` +
+            "shadow_mode in .daftari/config.yaml — set shadow_mode: true to calibrate " +
+            "(journal only, no writes) or shadow_mode: false to write edges live\n",
+        );
         return 2;
       }
       const llmRes = constructLlm(transport);

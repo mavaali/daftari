@@ -1,10 +1,11 @@
 import { resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveAccess } from "../../src/access/rbac.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
+import * as indexDb from "../../src/storage/index-db.js";
 import { openIndexDb } from "../../src/storage/index-db.js";
 import { vaultReindex } from "../../src/tools/search.js";
-import { vaultThemes } from "../../src/tools/themes.js";
+import { __resetThemesCache, vaultThemes } from "../../src/tools/themes.js";
 import { loadConfig } from "../../src/utils/config.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -26,6 +27,11 @@ describe("vault_themes", () => {
 
   afterAll(() => {
     cleanupVault(vault);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __resetThemesCache();
   });
 
   it("returns the expected output shape with themes sorted by documentCount desc", async () => {
@@ -208,6 +214,94 @@ describe("vault_themes", () => {
     const notInt = await vaultThemes(vault, { k: 2.5 });
     expect(notInt.ok).toBe(false);
   });
+
+  // --- E3: load/compute-avoidance -----------------------------------------
+
+  it("does not decode out-of-scope embeddings when a collection filter is given (E3)", async () => {
+    // Establish the unscoped decode count as a baseline: an unfiltered call
+    // must decode strictly more embeddings than a single-collection call,
+    // because a scoped call must never load out-of-collection embeddings.
+    __resetThemesCache();
+    const decodeSpy = vi.spyOn(indexDb, "blobToEmbedding");
+
+    const unfiltered = await vaultThemes(vault, {});
+    expect(unfiltered.ok).toBe(true);
+    const unfilteredDecodes = decodeSpy.mock.calls.length;
+    expect(unfilteredDecodes).toBeGreaterThan(0);
+
+    decodeSpy.mockClear();
+    __resetThemesCache();
+    const scoped = await vaultThemes(vault, { collection: "pricing" });
+    expect(scoped.ok).toBe(true);
+    const scopedDecodes = decodeSpy.mock.calls.length;
+
+    // The scoped call loaded fewer embeddings than the whole-vault call —
+    // proving out-of-scope embeddings were filtered in SQL, not after the load.
+    expect(scopedDecodes).toBeGreaterThan(0);
+    expect(scopedDecodes).toBeLessThan(unfilteredDecodes);
+  }, 60_000);
+
+  it("does not re-decode embeddings on a second call with an unchanged index (E3 cache)", async () => {
+    __resetThemesCache();
+    const decodeSpy = vi.spyOn(indexDb, "blobToEmbedding");
+
+    const first = await vaultThemes(vault, {});
+    expect(first.ok).toBe(true);
+    const firstDecodes = decodeSpy.mock.calls.length;
+    expect(firstDecodes).toBeGreaterThan(0);
+
+    decodeSpy.mockClear();
+    const second = await vaultThemes(vault, {});
+    expect(second.ok).toBe(true);
+    // A cache hit against the unchanged index must re-pool nothing.
+    expect(decodeSpy.mock.calls.length).toBe(0);
+
+    // ...and the cached result must be identical to the first call.
+    if (!first.ok || !second.ok) return;
+    expect(second.value.totalDocuments).toBe(first.value.totalDocuments);
+    expect(second.value.selectedK).toBe(first.value.selectedK);
+    expect(second.value.themes.map((t) => t.label)).toEqual(first.value.themes.map((t) => t.label));
+    expect(second.value.themes.map((t) => t.documentCount)).toEqual(
+      first.value.themes.map((t) => t.documentCount),
+    );
+  }, 60_000);
+
+  it("invalidates the cache and re-pools after the index content changes (E3 cache)", async () => {
+    // A separate vault so the mutation does not leak into the shared suite.
+    const isolated = makeTempVault();
+    try {
+      const reindex = await vaultReindex(isolated);
+      expect(reindex.ok).toBe(true);
+      __resetThemesCache();
+
+      const decodeSpy = vi.spyOn(indexDb, "blobToEmbedding");
+      const first = await vaultThemes(isolated, {});
+      expect(first.ok).toBe(true);
+      expect(decodeSpy.mock.calls.length).toBeGreaterThan(0);
+
+      // Mutate the index content: drop half the embeddings. The signature
+      // must change and the next call must re-pool rather than serve stale
+      // pooled vectors.
+      const dbResult = openIndexDb(isolated, LOCAL_MINILM_DIM);
+      expect(dbResult.ok).toBe(true);
+      if (!dbResult.ok) return;
+      const db = dbResult.value;
+      db.exec("DELETE FROM embeddings;");
+      db.close();
+
+      decodeSpy.mockClear();
+      const second = await vaultThemes(isolated, {});
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      // Every embedding was dropped, so every doc is now skipped and no
+      // embeddings decode — but crucially the cache did NOT serve the stale
+      // pre-deletion themes.
+      expect(second.value.totalDocuments).toBe(0);
+      expect(second.value.themes.length).toBe(0);
+    } finally {
+      cleanupVault(isolated);
+    }
+  }, 60_000);
 
   it("includes a secondaryDocs array on every theme", async () => {
     const result = await vaultThemes(vault, {});

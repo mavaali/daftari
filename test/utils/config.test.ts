@@ -83,6 +83,34 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  // Whether shadow_mode was EXPLICITLY declared (vs defaulted) — the consolidate
+  // loop refuses live writes unless the operator has made an explicit choice.
+  describe("shadowModeSet tracking", () => {
+    it("is false when no config file exists", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.shadowModeSet).toBe(false);
+    });
+
+    it("is false when shadow_mode is omitted", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.shadowModeSet).toBe(false);
+    });
+
+    it("is true when shadow_mode is explicitly set (even to false)", () => {
+      writeConfig("version: 1\nvault_name: v\nshadow_mode: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.shadowMode).toBe(false);
+      expect(result.value.shadowModeSet).toBe(true);
+    });
+  });
+
   describe("watch (issue #38 PR 3)", () => {
     it("defaults to true when no config file exists", () => {
       const result = loadConfig(dir);
@@ -410,6 +438,16 @@ describe("loadConfig — schema extensions", () => {
         name: "pattern is not a valid regular expression",
         yaml: "schema_extensions:\n  f:\n    type: string\n    pattern: '([unclosed'\n",
         contains: "not a valid regular expression",
+      },
+      {
+        name: "pattern risks catastrophic backtracking (nested quantifier)",
+        yaml: "schema_extensions:\n  f:\n    type: string\n    pattern: '(a+)+$'\n",
+        contains: "catastrophic backtracking",
+      },
+      {
+        name: "pattern risks catastrophic backtracking (quantified overlapping alternation)",
+        yaml: "schema_extensions:\n  f:\n    type: string\n    pattern: '(a|a)*$'\n",
+        contains: "catastrophic backtracking",
       },
       {
         name: "required is not a boolean",
