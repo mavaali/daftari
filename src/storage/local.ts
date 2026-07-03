@@ -37,6 +37,32 @@ function realpathConfined(p: string): string | null {
   }
 }
 
+// Memoized real (symlink-resolved) vault roots, keyed by the lexically resolved
+// vaultRoot. The vault root does not change during a process, so realpath'ing it
+// once and reusing the result is safe — and it removes N redundant realpath
+// syscalls from the per-file loops in vaultIndex/vaultStatus (E4). ONLY the root
+// is cached; every untrusted caller-supplied TARGET is still fully realpath'd on
+// each call so the #142 symlink-escape protection is unchanged.
+const realRootCache = new Map<string, string>();
+
+// Resolves and memoizes the real (symlink-resolved) vault root for a lexically
+// resolved root path. Returns null if the root cannot be resolved (same
+// fail-closed contract as realpathConfined).
+function resolveRealRoot(root: string): string | null {
+  const cached = realRootCache.get(root);
+  if (cached !== undefined) return cached;
+  const realRoot = realpathConfined(root);
+  if (realRoot === null) return null;
+  realRootCache.set(root, realRoot);
+  return realRoot;
+}
+
+// Clears the memoized real-root cache. Exported for tests that create and tear
+// down temporary vault roots at the same absolute path within one process.
+export function __clearRealRootCache(): void {
+  realRootCache.clear();
+}
+
 // A resolved, vault-confined path.
 //
 // `absPath` is the lexical absolute target — what readFile/writeFile operate
@@ -71,7 +97,7 @@ export function resolveVaultPath(
   // real paths for both the root and the target and re-check confinement. The
   // root is realpath'd too because the vault may itself sit under a symlinked
   // prefix (e.g. macOS /var → /private/var).
-  const realRoot = realpathConfined(root);
+  const realRoot = resolveRealRoot(root);
   const realTarget = realpathConfined(target);
   if (realRoot === null || realTarget === null) {
     return err(new Error(`path escapes vault root: ${relativePath}`));
