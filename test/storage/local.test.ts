@@ -1,8 +1,24 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { directoryExists, listFiles, readFile, resolveVaultPath } from "../../src/storage/local.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Wrap node:fs so realpathSync calls can be counted. Every other export passes
+// through to the real implementation.
+const realpathSpy = vi.fn((...args: unknown[]) => realFs.realpathSync(...(args as [string])));
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return { ...actual, realpathSync: (...args: unknown[]) => realpathSpy(...args) };
+});
+const realFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+import {
+  __clearRealRootCache,
+  directoryExists,
+  listFiles,
+  readFile,
+  resolveVaultPath,
+} from "../../src/storage/local.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
 
@@ -150,6 +166,51 @@ describe("resolveVaultPath symlink confinement", () => {
     // The canonical relPath resolves THROUGH the symlink to the real file, so a
     // write via `alias.md` and a write via `notes/real.md` take the same lock.
     expect(result.value.relPath).toBe(join("notes", "real.md"));
+  });
+});
+
+// E4: vaultIndex/vaultStatus call resolveVaultPath once per markdown file, and
+// resolveVaultPath realpath's the vault ROOT to see through a symlinked prefix.
+// The root does not change during a process, so it must be realpath'd once and
+// memoized rather than N times. The untrusted TARGET is still realpath'd every
+// call — that is the #142 symlink-escape protection and must not be weakened.
+describe("resolveVaultPath root realpath memoization (E4)", () => {
+  beforeEach(() => {
+    __clearRealRootCache();
+    realpathSpy.mockClear();
+  });
+  afterEach(() => {
+    __clearRealRootCache();
+  });
+
+  it("realpaths the vault root once across many resolveVaultPath calls", () => {
+    const files = [
+      "pricing/helios-consumption-pricing.md",
+      "pricing/one.md",
+      "pricing/two.md",
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
+    ];
+    for (const f of files) resolveVaultPath(VAULT, f);
+
+    // The resolved VAULT root must be realpath'd exactly once, not once per
+    // file. Pre-fix this would be files.length.
+    const rootCalls = realpathSpy.mock.calls.filter(([p]) => p === resolve(VAULT));
+    expect(rootCalls.length).toBe(1);
+  });
+
+  it("still realpaths each distinct target (symlink-escape protection intact)", () => {
+    // Prime the root cache so we only measure target resolutions.
+    resolveVaultPath(VAULT, "pricing/one.md");
+    realpathSpy.mockClear();
+
+    resolveVaultPath(VAULT, "pricing/one.md");
+    resolveVaultPath(VAULT, "pricing/two.md");
+    // Two calls, two distinct targets: each target must be realpath-resolved,
+    // and the (now-cached) root must NOT be realpath'd again.
+    const rootCalls = realpathSpy.mock.calls.filter(([p]) => p === resolve(VAULT));
+    expect(rootCalls.length).toBe(0);
+    const targetCalls = realpathSpy.mock.calls.filter(([p]) => p !== resolve(VAULT));
+    expect(targetCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
 
