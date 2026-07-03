@@ -78,16 +78,24 @@ Three cells:
 |---|---|---|---|---|
 | **data-olympus** | their `Index.search(status="active")` over the same corpus | No — both docs return as `active`, ranked by FTS, no contradiction signal | `pick` or `fabricate` | `staleness 0.000` (their published win) |
 | **daftari − tension-graph** | daftari search + supersede-chain, tension tools *withheld* | No — same structural gap as data-olympus | `pick` or `fabricate` | should match data-olympus |
-| **daftari + tension-graph** | daftari search + `vault_tension_blast`/`clusters` available | Yes — feud is a first-class queryable object | **`surface`** | equal to the middle cell (no regression) |
+| **daftari + tension-graph** | daftari search + tension-graph reachable (two variants, below) | Yes — feud is a first-class queryable object | **`surface`** | equal to the middle cell (no regression) |
+
+Cell 3 runs as **two variants**, because the single biggest inspection surprise is that **tensions do not surface in `vault_search`** — the tension-graph is reachable only via the dedicated tools (`src/search/hybrid.ts`, `src/storage/index-db.ts` — no tensions table; confirmed no search integration). That gap is itself a measurable variable, not a blocker:
+
+- **3a — dedicated-tools:** tensions reachable only via `vault_tension_blast`/`clusters`, *not* mandated in the prompt. Tests whether a naive agent — one that just searches — ever discovers the feud on its own.
+- **3b — surfaced-in-search:** the harness adapter post-joins search results against `.daftari/tensions.md` by path and injects a `[contested: A vs B]` marker inline, simulating a search-integrated substrate *without shipping a real `vault_search` feature* (~a dozen lines in the adapter; no `index-db` schema change).
+
+**The delta between 3a and 3b is the measured value of surfacing tensions in search.** If 3a already wins, search-integration is polish — ship it later on evidence. If 3a collapses (agent never calls the tool) but 3b wins, the run has *proven* the retrieval surface is necessary, and specifies its shape, before any product code is written. This is why the surface is a benchmark variable, not a prerequisite: building it first would pre-commit the answer and destroy the signal.
 
 - **The accumulation spine (fair comparison):** cells 1 and 2 should track each other on the reused strata. If **daftari − tension-graph loses to data-olympus** on those strata, that is a legitimate, publishable finding — it matches their `staleness = 0.000` result and calibrates our position honestly (per the no-monetization-lens, adversarial-honesty stance). Publish it.
-- **The differentiator (unfair-by-design):** cell 3 must win *uniquely* on the feud stratum. The win is not "cell 3 has an extra tool" — see the anti-gaming protocol below, which is the crux of the whole design.
+- **The differentiator (unfair-by-design):** cell 3 must win *uniquely* on the feud stratum. The win is not "cell 3 has an extra tool."
 
-**Anti-gaming protocol (load-bearing — read this twice).** The single biggest inspection surprise is that **tensions do not surface in `vault_search`** (`src/search/hybrid.ts`, `src/storage/index-db.ts` — no tensions table; confirmed no search integration). So a naive design where cell 3 is simply *told* "call `vault_tension_blast` first" would measure tool-availability, not substrate power — and a reviewer would call it engineered. To keep the win attributable to the substrate:
+**Anti-gaming protocol (load-bearing — read this twice).** A naive design where cell 3 is simply *told* "call `vault_tension_blast` first" would measure tool-availability, not substrate power — a reviewer would call it engineered. To keep the win attributable to the substrate:
 
-- **Identical agent protocol and tool budget across all three cells.** Every cell gets the same system prompt, the same "answer the query using the tools available; flag if the evidence is unsettled" instruction, and the same number of tool calls. The *only* difference is which tools the substrate exposes.
-- The tension-graph advantage must come from the substrate *having a queryable object to return* — cell 3 can discover the feud because `vault_tension_blast`/`clusters` exist and return it; cells 1 and 2 cannot, because their substrate has nowhere to store "unresolved contradiction." That is a substrate-representation difference, not a prompt difference.
-- **Stretch (optional, strongest form):** give cells 1 and 2 a hypothetical "list any contradictions touching these docs" tool that their substrate simply cannot populate (returns empty because `status` has no `contested` value). This makes the structural inability explicit rather than implied. Flag as a §9 decision — it is more convincing but more build.
+- **Identical agent protocol and tool budget across all cells and both cell-3 variants.** Every cell gets the same system prompt, the same "answer the query using the tools available; flag if the evidence is unsettled" instruction, and the same number of tool calls. The *only* difference is what the substrate exposes (dedicated tools for 3a; an inline marker for 3b).
+- The tension-graph advantage must come from the substrate *having a queryable object to return* — cell 3 can discover the feud because the tension-graph exists and returns it; cells 1 and 2 cannot, because their substrate has nowhere to store "unresolved contradiction." That is a substrate-representation difference, not a prompt difference — and it holds whether tensions arrive via a tool (3a) or inline (3b), because data-olympus can produce neither.
+- **Note on 3b and the gaming optics:** surfacing tensions inline looks *more* natural than a special-tool call, not less — it removes the "you gave one arm a magic tool" smell. The categorical claim survives either way: the point is the substrate *can* carry the `contested` annotation and data-olympus's schema (`status ∈ {active, accepted, superseded}`) cannot.
+- **Stretch (optional, strongest form):** give cells 1 and 2 a hypothetical "list any contradictions touching these docs" tool that their substrate simply cannot populate (returns empty because `status` has no `contested` value). Makes the structural inability explicit rather than implied. Flag as a §9 decision — more convincing but more build.
 
 ---
 
@@ -115,11 +123,13 @@ New metrics (feud stratum only):
 
 **Answer classification.** `{surface, pick, fabricate}` is not derivable from a ranked id list — it requires reading the agent's natural-language answer. Two options, decide in §9: (a) a rubric-scored **LLM judge** (blind, cross-family — reuse the `OPENROUTER_API_KEY` second-rater pattern already in the repo), or (b) a **structured-output contract** where the agent must emit `{answer, evidence_state ∈ {settled, contested, unknown}, cited_docs[]}` and we score `evidence_state` deterministically against the corpus's ground-truth state. Option (b) is cleaner and cheaper and removes judge variance; recommend (b) as primary, (a) as a validation cross-check on a sample.
 
-Results table shape (one row per cell × stratum, matching their `report.md` layout in `run.py:300–411`):
+Results table shape (one row per cell × stratum, matching their `report.md` layout in `run.py:300–411`; cell 3 emits two rows, `daftari+tg (3a)` and `daftari+tg (3b)`, so the 3a→3b delta is a first-class row in the report):
 
 ```
 | Cell | Stratum | Recall@k | Staleness | Miss | Surface | Pick | Fabricate | Mean Tokens | N |
 ```
+
+The **3b − 3a delta on `feud_surface_rate`** is the reported "value of surfacing tensions in search" number that governs whether the real `vault_search` feature earns its place (§9).
 
 ---
 
@@ -144,14 +154,16 @@ Concrete build order. No owners, no dates.
 4. **Corpus loaders (two targets):**
    - *data-olympus target:* the feud pairs are already valid markdown in their bundle; their `Index` ingests them unchanged (no tension state — that is the point).
    - *daftari target:* a prep script that (i) writes the same docs into a daftari vault, (ii) `vault_index` / `vault_reindex`, and (iii) **pre-logs a `TensionEntry` per feud pair via `vault_tension_log`** (tensions are not in the documents; they live in `.daftari/tensions.md`, `src/curation/tension.ts:97–110`). This is a mandatory, non-obvious step.
-5. **Agent adapter** (new; their harness is retrieval-only): a small CLI that, per cell, drives the substrate's MCP surface + an LLM, with the identical prompt/tool-budget of §4, and emits the structured `{answer, evidence_state, cited_docs}` contract of §5.
-6. **Metrics computation:** reuse `benchmarks/metrics.py` for accumulation strata; add `feud_*` and `recovery_rate` as pure functions in a sibling module. Deterministic scoring of `evidence_state` against ground-truth corpus state.
-7. **Recovery pass:** script that calls `vault_tension_resolve` on each feud, then re-runs the feud queries through the cell-3 adapter only.
-8. **Report writer:** extend their `write_report` table shape (§5) to include the feud columns; emit MD (primary) and optionally LaTeX for the paper.
+5. **Agent adapter** (new; their harness is retrieval-only): a small CLI that, per cell, drives the substrate's MCP surface + an LLM, with the identical prompt/tool-budget of §4, and emits the structured `{answer, evidence_state, cited_docs}` contract of §5. Cell 3 runs twice:
+   - *3a — dedicated-tools:* tension tools exposed but not mandated.
+   - *3b — surfaced-in-search:* a **post-search join in the adapter** — after `vault_search` returns, look up each result path in `.daftari/tensions.md` and inject a `[contested: A vs B]` marker into the payload the agent sees. This simulates search-integration *without touching `vault_search` or `index-db`* (~a dozen lines). It is a harness affordance, not a product feature; keep it isolated so the real feature decision (§9) stays downstream of the measured 3b−3a delta.
+6. **Metrics computation:** reuse `benchmarks/metrics.py` for accumulation strata; add `feud_*` and `recovery_rate` as pure functions in a sibling module. Deterministic scoring of `evidence_state` against ground-truth corpus state. Compute and report the **3b−3a `feud_surface_rate` delta** explicitly.
+7. **Recovery pass:** script that calls `vault_tension_resolve` on each feud, then re-runs the feud queries through the cell-3 adapter (both variants).
+8. **Report writer:** extend their `write_report` table shape (§5) to include the feud columns and the two cell-3 rows; emit MD (primary) and optionally LaTeX for the paper.
 
 **Prerequisites / gaps surfaced during inspection (must be resolved before or during build):**
 
-- **Tensions absent from search** (`src/search/hybrid.ts` has no tension path). *Not a blocker for the benchmark* — the cell-3 agent reaches tensions via `vault_tension_blast`/`clusters` — but it *is* the reason the anti-gaming protocol (§4) exists, and it is a real product gap worth naming in the paper's limitations.
+- **Tensions absent from search** (`src/search/hybrid.ts` has no tension path). *Not a blocker for the benchmark* — 3a reaches tensions via the dedicated tools; 3b simulates search-integration with an adapter-level post-join (§7 step 5), so no product feature is required to benchmark either. It *is* the reason the anti-gaming protocol (§4) exists, a real product gap worth naming in the paper's limitations, and the thing the 3b−3a delta is designed to price. **Do not build the real `vault_search` integration before the benchmark** — it would pre-commit the answer to whether the surface is needed and destroy the signal.
 - **`vault_tension_log` does not validate that `sourceA`/`sourceB` exist** (Explore finding; `tension.ts:135–147`). Harmless here (we control the corpus) but means the prep script must get paths right — no safety net.
 - **Blast recomputed per call** (`tension-blast.ts:207–278`, rebuilds reverse-maps each time). Fine at benchmark scale; note if corpus grows large.
 - **No concurrency guard on `.daftari/tensions.md`** (read-modify-write, `tension.ts:131–382`). The prep script must log tensions **serially**, not in parallel, or it will corrupt the log.
@@ -176,6 +188,7 @@ Concrete build order. No owners, no dates.
 4. **Publish the `daftari − tension-graph` cell?** — recommend **yes**. It is the honesty move: it shows the supersede-chain-only version of daftari behaves like data-olympus, which both calibrates our position and makes the tension-graph win attributable. (Matches the adversarial-honesty and no-monetization-lens tenets.)
 5. **Answer scorer** — deterministic `evidence_state` (recommended) vs blind cross-family LLM judge (the `OPENROUTER_API_KEY` second-rater pattern) vs both. Recommend deterministic primary + LLM-judge on a sample as validation.
 6. **Pre-registered margin threshold** for the kill condition (§6) — pick the number before running, not after.
+7. **Surface tensions in `vault_search`?** — recommend **not before the benchmark**. Run cell-3 as 3a (dedicated-tools) and 3b (adapter-simulated search-integration, §4/§7); the measured 3b−3a `feud_surface_rate` delta decides whether the real feature earns its place, and specifies its shape (annotate result? inject synthetic result? down-rank the contested doc?) from evidence rather than guess. Building it first pre-commits the answer. The real feature is a follow-on gated on this number, not a prerequisite.
 
 ---
 
