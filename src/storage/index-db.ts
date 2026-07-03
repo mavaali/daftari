@@ -690,6 +690,30 @@ export function getDocument(db: IndexDb, path: string): IndexedDocument | null {
   return row ? rowToDocument(row) : null;
 }
 
+// Fetches the full document rows for a specific set of paths in one chunked
+// pass, instead of loading the whole `documents` table. The search hot path
+// uses this to scope the full-row read (content blob + JSON tag/token parse)
+// to the small candidate set the FTS/vector rankers already produced, rather
+// than paying O(vault) per query. The IN() list is chunked to stay under
+// SQLite's variable limit (default 999) — same pattern as
+// existingEmbeddingHashes. Order is unspecified (callers rank the result);
+// paths with no matching row are simply absent, and duplicate input paths
+// collapse to one row.
+export function getDocumentsByPaths(db: IndexDb, paths: string[]): IndexedDocument[] {
+  if (paths.length === 0) return [];
+  const out: IndexedDocument[] = [];
+  const BATCH = 500;
+  for (let start = 0; start < paths.length; start += BATCH) {
+    const slice = paths.slice(start, start + BATCH);
+    const placeholders = slice.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT * FROM documents WHERE path IN (${placeholders})`)
+      .all(...slice) as DocumentRow[];
+    for (const r of rows) out.push(rowToDocument(r));
+  }
+  return out;
+}
+
 interface ChunkJoinRow {
   path: string;
   chunk_index: number;
