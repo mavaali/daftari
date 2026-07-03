@@ -10,7 +10,6 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { load as parseYaml } from "js-yaml";
-import { hasCatastrophicBacktracking } from "./redos.js";
 import {
   BUILTIN_FRONTMATTER_FIELDS,
   type ExtensionValue,
@@ -20,6 +19,7 @@ import {
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
 import { sha256Hex } from "./hash.js";
+import { hasCatastrophicBacktracking } from "./redos.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
