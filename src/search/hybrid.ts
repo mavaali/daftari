@@ -321,6 +321,14 @@ export interface HybridSearchOptions {
   weights?: HybridWeights;
   limit?: number;
   lexicalGranularity?: "document" | "chunk";
+  // When true, return EVERY ranked candidate instead of just the top `limit`.
+  // An RBAC-filtering caller sets this so it can drop restricted-collection
+  // hits and THEN slice to its user-facing `limit` — otherwise restricted docs
+  // occupying the top-`limit` slots would shrink the permitted set below
+  // `limit` (results are ranked, then sliced, before the tool handler runs
+  // canRead). The extra candidates cost nothing to materialize: rankDocuments
+  // already builds a hit (snippet included) for every candidate before slicing.
+  overFetch?: boolean;
 }
 
 // Ranks vault documents against a free-text query.
@@ -337,6 +345,9 @@ export async function hybridSearch(
   // where it doesn't (docs/superpowers/results/2026-06-24-chunk-bm25-answer-quality.md).
   // Title/tag-safe via the tiered combine (#157). Callers opt back with "document".
   const lexicalGranularity = options.lexicalGranularity ?? "chunk";
+  // Over-fetch returns all ranked candidates so an RBAC caller can filter then
+  // slice; the plain path keeps the top-`limit` contract other callers rely on.
+  const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
   const matchQuery = buildMatchQuery(query);
   const snippetTokens = tokenize(query);
 
@@ -350,7 +361,7 @@ export async function hybridSearch(
 
   const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, snippetTokens, {
     weights,
-    limit,
+    limit: rankLimit,
     excludePath: undefined,
     lexicalGranularity,
   });
@@ -384,6 +395,9 @@ export function relatedSearch(
 ): Result<RelatedSearchResult, Error> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  // See hybridSearch: over-fetch lets the RBAC-filtering tool handler drop
+  // restricted hits before slicing to the user-facing limit.
+  const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
 
   const doc = getDocument(db, path);
   if (!doc) {
@@ -413,7 +427,7 @@ export function relatedSearch(
 
   const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, doc.tokens, {
     weights,
-    limit,
+    limit: rankLimit,
     excludePath: path,
     lexicalGranularity: "document",
   });
