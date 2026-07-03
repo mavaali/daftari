@@ -412,6 +412,16 @@ describe("loadConfig — schema extensions", () => {
         contains: "not a valid regular expression",
       },
       {
+        name: "pattern risks catastrophic backtracking (nested quantifier)",
+        yaml: "schema_extensions:\n  f:\n    type: string\n    pattern: '(a+)+$'\n",
+        contains: "catastrophic backtracking",
+      },
+      {
+        name: "pattern risks catastrophic backtracking (quantified overlapping alternation)",
+        yaml: "schema_extensions:\n  f:\n    type: string\n    pattern: '(a|a)*$'\n",
+        contains: "catastrophic backtracking",
+      },
+      {
         name: "required is not a boolean",
         yaml: "schema_extensions:\n  f:\n    type: string\n    required: yes-please\n",
         contains: "'required' must be true or false",

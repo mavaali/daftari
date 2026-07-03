@@ -27,6 +27,13 @@ export interface FrontmatterValidation {
   report: ValidationReport;
 }
 
+// Upper bound on the length of a value a config-declared `pattern` is run
+// against. Config load already screens patterns for catastrophic backtracking
+// (utils/redos.ts), but JS regex is synchronous — this caps worst-case work so
+// no pattern, safe or not, can be driven by an unbounded value. Generous enough
+// for the structured short fields patterns are meant for (ids, slugs, urls).
+const MAX_PATTERN_INPUT_LENGTH = 4096;
+
 // Validates one config-declared extension field against the raw frontmatter,
 // appending any problem to `issues`. Advisory, like the built-in checks: a
 // missing optional field is fine, a missing field with a declared default is
@@ -52,8 +59,18 @@ function validateExtensionField(
         issues.push({ field, message: `expected string, got ${typeof v}` });
         return;
       }
-      if (ext.pattern && !new RegExp(ext.pattern).test(v)) {
-        issues.push({ field, message: `does not match pattern /${ext.pattern}/` });
+      if (ext.pattern) {
+        // Defense-in-depth against ReDoS: config load screens patterns for
+        // catastrophic backtracking, but JS regex is synchronous, so never run
+        // even a linear-safe pattern against an unbounded value.
+        if (v.length > MAX_PATTERN_INPUT_LENGTH) {
+          issues.push({
+            field,
+            message: `value too long to pattern-validate (${v.length} > ${MAX_PATTERN_INPUT_LENGTH})`,
+          });
+        } else if (!new RegExp(ext.pattern).test(v)) {
+          issues.push({ field, message: `does not match pattern /${ext.pattern}/` });
+        }
       }
       return;
     }

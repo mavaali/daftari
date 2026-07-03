@@ -19,6 +19,7 @@ import {
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
 import { sha256Hex } from "./hash.js";
+import { hasCatastrophicBacktracking } from "./redos.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -286,6 +287,16 @@ function validateExtension(field: string, raw: unknown): Result<SchemaExtension,
       new RegExp(obj.pattern);
     } catch {
       return err(new Error(`${where}: 'pattern' is not a valid regular expression`));
+    }
+    // The pattern is run against caller-supplied frontmatter on the write path;
+    // a backtracking-prone pattern would be a synchronous-regex DoS lever.
+    if (hasCatastrophicBacktracking(obj.pattern)) {
+      return err(
+        new Error(
+          `${where}: 'pattern' risks catastrophic backtracking (ReDoS) — ` +
+            "avoid nested or overlapping quantifiers such as (a+)+ or (a|a)*",
+        ),
+      );
     }
     pattern = obj.pattern;
   }
