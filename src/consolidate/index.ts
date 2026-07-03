@@ -20,6 +20,11 @@ import { type DerivesFromEdge, listEdges } from "../curation/edges.js";
 import { addTension, listTensions } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
+import {
+  createOpenRouterClient,
+  type LlmTransport,
+  resolveTransport,
+} from "../eval/llm-openrouter.js";
 import { err, ok } from "../frontmatter/types.js";
 import { vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
@@ -37,6 +42,7 @@ import {
   CONSOLIDATE_AGENT,
   CONSOLIDATE_DEFAULT_BUDGET,
   CONSOLIDATE_DEFAULT_MODEL,
+  CONSOLIDATE_DEFAULT_MODEL_OPENROUTER,
   CONSOLIDATE_PANEL_SIZE,
   estimateCostUSD,
   isModelPriced,
@@ -58,13 +64,21 @@ const HELP = `daftari consolidate — cortex loop scheduler + Component A (shado
 Usage:
   daftari consolidate [--vault <path>] [--budget <n>] [--mode <m>]
                       [--max-panels <n>] [--max-births <n>] [--model <id>]
+                      [--transport anthropic|openrouter]
   daftari consolidate --report decorrelation --fixture <path> [--model <id>]
+                      [--transport anthropic|openrouter]
+
+Transport (--transport, default 'anthropic'; env fallback DAFTARI_LLM_TRANSPORT):
+  anthropic   @anthropic-ai/sdk, requires ANTHROPIC_API_KEY.
+  openrouter  OpenRouter /chat/completions, requires OPENROUTER_API_KEY.
+              Default model becomes ${CONSOLIDATE_DEFAULT_MODEL_OPENROUTER};
+              pass OpenRouter slugs (e.g. openai/gpt-4o-mini) to --model.
 
 Modes (--mode, default 'scan'):
   scan      Stage 1: emit the edge due-queue + birth queue. No LLM, no writes.
   birth     Stage 2: re-derive each unprocessed doc's top-K neighbors and
-            edge_observe the survivors as k=0 candidates. (Requires
-            ANTHROPIC_API_KEY.)
+            edge_observe the survivors as k=0 candidates. (Requires the
+            selected transport's API key.)
   revision  Stage 2: cast an M-vote panel on each due edge, emit edge_observe
             (survives) or edge_contest (fails) per vote.
   both      birth then revision (the full pass).
@@ -90,12 +104,12 @@ Reports:
     inter-axis agreement, error correlation. PASS/FAIL gates on ACCURACY: exits
     6 if majority accuracy < CONSOLIDATE_DIRECTION_MIN_ACCURACY (the foundational
     prompt did not recover direction well enough — fix the elicitation/fixture).
-    Requires ANTHROPIC_API_KEY. A real fixture lives at
+    Requires the selected transport's API key. A real fixture lives at
     tests/fixtures/decorrelation-fixture-v2.json.
 
 Exit codes:
   0 — ran cleanly
-  2 — config error (no vault, bad flags, missing ANTHROPIC_API_KEY in LLM mode)
+  2 — config error (no vault, bad flags, missing transport API key in LLM mode)
   3 — runtime error (edge store / vault I/O)
   4 — ran, but backstop-overdue work was left unserved (cron-alertable)
   5 — ran, but one or more trace writes failed (recall-evaluation data lost)
@@ -120,6 +134,23 @@ function canon(p: string): string {
 
 type Mode = "scan" | "birth" | "revision" | "both";
 const VALID_MODES: ReadonlySet<string> = new Set(["scan", "birth", "revision", "both"]);
+
+// Transport-aware LLM construction. The key check runs before the constructor
+// so a missing key fails fast with a clear message rather than the client's
+// terse internal throw.
+function constructLlm(transport: LlmTransport): { llm: LlmClient } | { error: string } {
+  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
+  if (!process.env[keyVar]) {
+    return { error: `${keyVar} env var is required (transport: ${transport})` };
+  }
+  try {
+    return {
+      llm: transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient(),
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 export async function runConsolidate(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -169,7 +200,17 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       process.stderr.write(`consolidate: ${maxPanels.error}\n`);
       return 2;
     }
-    const model = flag(argv, "model") ?? CONSOLIDATE_DEFAULT_MODEL;
+    const transportRes = resolveTransport(flag(argv, "transport"));
+    if (!transportRes.ok) {
+      process.stderr.write(`consolidate: ${transportRes.error.message}\n`);
+      return 2;
+    }
+    const transport = transportRes.value;
+    const model =
+      flag(argv, "model") ??
+      (transport === "openrouter"
+        ? CONSOLIDATE_DEFAULT_MODEL_OPENROUTER
+        : CONSOLIDATE_DEFAULT_MODEL);
 
     const now = new Date();
     const state = readConsolidateState(vaultRoot);
@@ -260,21 +301,12 @@ export async function runConsolidate(argv: string[]): Promise<number> {
         process.stderr.write(`consolidate: ${cfg.error.message}\n`);
         return 2;
       }
-      // ANTHROPIC_API_KEY check before constructing the client — fail-fast with
-      // a clear message rather than the SDK's terse internal throw.
-      if (!process.env.ANTHROPIC_API_KEY) {
-        process.stderr.write(
-          "consolidate: ANTHROPIC_API_KEY env var is required for --mode != scan\n",
-        );
+      const llmRes = constructLlm(transport);
+      if ("error" in llmRes) {
+        process.stderr.write(`consolidate: ${llmRes.error}\n`);
         return 2;
       }
-      let llm: LlmClient;
-      try {
-        llm = createAnthropicClient();
-      } catch (e) {
-        process.stderr.write(`consolidate: ${e instanceof Error ? e.message : String(e)}\n`);
-        return 2;
-      }
+      const llm = llmRes.llm;
 
       stage2.shadowMode = cfg.value.shadowMode;
       const observe = makeObserve({
@@ -618,13 +650,6 @@ async function runDecorrelationReportCli(argv: string[]): Promise<number> {
     process.stderr.write("consolidate --report decorrelation: --fixture <path> is required\n");
     return 2;
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    process.stderr.write(
-      "consolidate --report decorrelation: ANTHROPIC_API_KEY env var is required\n",
-    );
-    return 2;
-  }
-
   const fixtureRes = loadFixture(fixturePath);
   if (!fixtureRes.ok) {
     process.stderr.write(`consolidate: ${fixtureRes.error.message}\n`);
@@ -635,15 +660,23 @@ async function runDecorrelationReportCli(argv: string[]): Promise<number> {
     return 2;
   }
 
-  let llm: LlmClient;
-  try {
-    llm = createAnthropicClient();
-  } catch (e) {
-    process.stderr.write(`consolidate: ${e instanceof Error ? e.message : String(e)}\n`);
+  const transportRes = resolveTransport(flag(argv, "transport"));
+  if (!transportRes.ok) {
+    process.stderr.write(`consolidate: ${transportRes.error.message}\n`);
     return 2;
   }
+  const llmRes = constructLlm(transportRes.value);
+  if ("error" in llmRes) {
+    process.stderr.write(`consolidate: ${llmRes.error}\n`);
+    return 2;
+  }
+  const llm = llmRes.llm;
 
-  const model = flag(argv, "model") ?? CONSOLIDATE_DEFAULT_MODEL;
+  const model =
+    flag(argv, "model") ??
+    (transportRes.value === "openrouter"
+      ? CONSOLIDATE_DEFAULT_MODEL_OPENROUTER
+      : CONSOLIDATE_DEFAULT_MODEL);
   const reportRes = await runDecorrelation(
     fixtureRes.value,
     { llm },

@@ -62,7 +62,16 @@ const { runConsolidate } = await import("../../src/consolidate/index.js");
 const { addTension } = await import("../../src/curation/tension.js");
 
 let dir: string;
+// Hermeticity: a developer shell with DAFTARI_LLM_TRANSPORT=openrouter (and a
+// real OPENROUTER_API_KEY) must not flip these tests onto the UNMOCKED
+// openrouter client and hit the live API. Save + clear per test.
+const savedTransportEnv: Record<string, string | undefined> = {};
+const TRANSPORT_ENV_KEYS = ["DAFTARI_LLM_TRANSPORT", "OPENROUTER_API_KEY"];
 beforeEach(() => {
+  for (const k of TRANSPORT_ENV_KEYS) {
+    savedTransportEnv[k] = process.env[k];
+    delete process.env[k];
+  }
   dir = mkdtempSync(join(tmpdir(), "daftari-stage2-"));
   mkdirSync(join(dir, ".daftari"), { recursive: true });
   // Two trivial docs so loadDocuments has something to return.
@@ -79,6 +88,10 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
   delete process.env.ANTHROPIC_API_KEY;
+  for (const k of TRANSPORT_ENV_KEYS) {
+    if (savedTransportEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedTransportEnv[k];
+  }
 });
 
 function captureStdout(): { out: string[]; restore: () => void } {
