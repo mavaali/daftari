@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { AccessContext } from "../../src/access/rbac.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -336,5 +337,126 @@ describe("vault_search coverage pass", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.hits.some((h) => h.viaCoverage)).toBe(false);
+  });
+});
+
+// Builds a bare vault where each note declares its own collection — needed to
+// place restricted-collection docs in the top ranked slots for the RBAC
+// over-fetch test. Distinct tags per note keep the coverage pass quiet so the
+// hit count reflects only the ranked (RBAC-filtered) set.
+function collectionVault(
+  notes: { name: string; collection: string; tags: string[]; created: string; body: string }[],
+): string {
+  const dir = mkdtempSync(join(tmpdir(), "daftari-rbac-"));
+  mkdirSync(join(dir, "notes"), { recursive: true });
+  for (const n of notes) {
+    writeFileSync(
+      join(dir, "notes", n.name),
+      `---\ntitle: ${n.name}\ncollection: ${n.collection}\ndomain: accumulation\nstatus: canonical\nconfidence: high\ncreated: ${n.created}\nupdated: ${n.created}\ntags: [${n.tags.join(", ")}]\n---\n\n${n.body}\n`,
+    );
+  }
+  return dir;
+}
+
+function accessReading(...collections: string[]): AccessContext {
+  return {
+    user: "u",
+    roleName: "r",
+    role: { read: collections, write: [], promote: false, ratify: false },
+  };
+}
+
+describe("vault_search RBAC over-fetch", () => {
+  let vault: string;
+
+  // Two restricted-collection docs match the query heavily (all three terms,
+  // repeated) so they occupy the top-2 ranked slots; three public docs match
+  // weakly (one term) and rank below the cut. With limit:2 a pre-slice-RBAC
+  // filter would return zero permitted hits — the bug. Distinct tags keep the
+  // coverage pass silent, so hit count == ranked permitted count.
+  const HEAVY =
+    "zephyr protocol calibration zephyr protocol calibration zephyr protocol calibration";
+  const LIGHT = "zephyr overview note";
+  beforeAll(async () => {
+    vault = collectionVault([
+      { name: "s1.md", collection: "secret", tags: ["t1"], created: "2026-03-01", body: HEAVY },
+      { name: "s2.md", collection: "secret", tags: ["t2"], created: "2026-03-02", body: HEAVY },
+      { name: "p1.md", collection: "public", tags: ["t3"], created: "2026-03-03", body: LIGHT },
+      { name: "p2.md", collection: "public", tags: ["t4"], created: "2026-03-04", body: LIGHT },
+      { name: "p3.md", collection: "public", tags: ["t5"], created: "2026-03-05", body: LIGHT },
+    ]);
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+  }, 60_000);
+  afterAll(() => cleanupVault(vault));
+
+  it("returns a full page of permitted hits when restricted docs occupy the top slots", async () => {
+    const res = await vaultSearch(
+      vault,
+      { query: "zephyr protocol calibration", limit: 2, weights: { bm25: 1, vector: 0 } },
+      accessReading("public"),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The caller can read 3 public docs; with the restricted docs ranked on top,
+    // it must still receive `limit` (2) permitted results, not fewer.
+    expect(res.value.hits.length).toBe(2);
+    expect(res.value.hits.every((h) => h.collection === "public")).toBe(true);
+  });
+
+  it("never leaks a restricted-collection doc into the results", async () => {
+    const res = await vaultSearch(
+      vault,
+      { query: "zephyr protocol calibration", limit: 5, weights: { bm25: 1, vector: 0 } },
+      accessReading("public"),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.some((h) => h.collection === "secret")).toBe(false);
+  });
+
+  it("still caps a wildcard reader at the user-facing limit", async () => {
+    // Over-fetch must not leak past the slice: a reader who CAN see everything
+    // still gets exactly `limit` ranked hits, not the whole over-fetched set.
+    const res = await vaultSearch(
+      vault,
+      { query: "zephyr protocol calibration", limit: 2, weights: { bm25: 1, vector: 0 } },
+      accessReading("*"),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.filter((h) => !h.viaCoverage).length).toBe(2);
+  });
+});
+
+describe("vault_search_related RBAC over-fetch", () => {
+  let vault: string;
+
+  const HEAVY =
+    "zephyr protocol calibration zephyr protocol calibration zephyr protocol calibration";
+  const LIGHT = "zephyr overview note";
+  beforeAll(async () => {
+    vault = collectionVault([
+      { name: "src.md", collection: "public", tags: ["t0"], created: "2026-03-01", body: HEAVY },
+      { name: "s1.md", collection: "secret", tags: ["t1"], created: "2026-03-02", body: HEAVY },
+      { name: "s2.md", collection: "secret", tags: ["t2"], created: "2026-03-03", body: HEAVY },
+      { name: "p1.md", collection: "public", tags: ["t3"], created: "2026-03-04", body: LIGHT },
+      { name: "p2.md", collection: "public", tags: ["t5"], created: "2026-03-05", body: LIGHT },
+    ]);
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+  }, 60_000);
+  afterAll(() => cleanupVault(vault));
+
+  it("returns a full page of permitted related hits when restricted docs rank on top", async () => {
+    const res = await vaultSearchRelated(
+      vault,
+      { path: "notes/src.md", limit: 2, weights: { bm25: 1, vector: 0 } },
+      accessReading("public"),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.length).toBe(2);
+    expect(res.value.hits.every((h) => h.collection === "public")).toBe(true);
   });
 });

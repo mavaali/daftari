@@ -133,17 +133,27 @@ export async function vaultSearch(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
+    const limit = parseLimit(args.limit);
+    // Over-fetch every ranked candidate so RBAC filtering happens BEFORE the
+    // user-facing slice. If we sliced to `limit` first (the old behaviour),
+    // restricted docs occupying the top-`limit` slots would be dropped by
+    // canRead below and shrink the permitted page below `limit`, even though
+    // more readable docs ranked just past the cut.
     const result = await hybridSearch(db, query, {
       weights: parseWeights(args.weights),
-      limit: parseLimit(args.limit),
+      limit,
+      overFetch: true,
     });
     if (!result.ok) return result;
 
     // RBAC: drop hits in collections the role cannot read (only when an access
-    // context is present). Enrichment then runs on the surviving hits.
-    const ranked = access
+    // context is present), THEN slice to the user-facing limit. Filtering the
+    // full candidate set first is what makes the page a full `limit` of
+    // permitted results. Enrichment then runs on the surviving hits.
+    const permittedRanked = access
       ? result.value.hits.filter((h) => canRead(access.role, h.collection))
       : result.value.hits;
+    const ranked = permittedRanked.slice(0, limit);
 
     // Coverage pass: conditionally widen the ranked set with same-entity docs in
     // the seeds' date window. Quiet (returns `ranked` unchanged) when no signal
@@ -200,13 +210,22 @@ export async function vaultSearchRelated(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
+    const limit = parseLimit(args.limit);
+    // Over-fetch, then RBAC-filter, then slice — same ordering as vaultSearch so
+    // restricted docs in the top-`limit` slots can't shrink the permitted page.
     const result = relatedSearch(db, path, {
       weights: parseWeights(args.weights),
-      limit: parseLimit(args.limit),
+      limit,
+      overFetch: true,
     });
-    if (!result.ok || !access) return result;
-    // RBAC: drop related hits in collections the role cannot read.
-    const hits = result.value.hits.filter((h) => canRead(access.role, h.collection));
+    if (!result.ok) return result;
+    // RBAC: drop related hits in collections the role cannot read (when an
+    // access context is present), THEN slice to the user-facing limit. The slice
+    // runs unconditionally because over-fetch returned the full candidate set.
+    const permitted = access
+      ? result.value.hits.filter((h) => canRead(access.role, h.collection))
+      : result.value.hits;
+    const hits = permitted.slice(0, limit);
     return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();
