@@ -52,6 +52,20 @@ describe("runConsolidate", () => {
     expect(code).toBe(2);
   });
 
+  it("exits 2 on a non-positive --max-llm-calls", async () => {
+    writeFileSync(join(dir, "a.md"), "# a\n");
+    await commit(dir, ["."], "init", "agent:test");
+    silenceStdout();
+    const errs: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((s) => {
+      errs.push(String(s));
+      return true;
+    });
+    const code = await runConsolidate(["--vault", dir, "--max-llm-calls", "0"]);
+    expect(code).toBe(2);
+    expect(errs.join("")).toContain("max-llm-calls");
+  });
+
   it("advances the baseline commit on each run (steady state)", async () => {
     writeFileSync(join(dir, "a.md"), "# a\n");
     await commit(dir, ["."], "init", "agent:test");

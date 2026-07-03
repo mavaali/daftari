@@ -37,6 +37,7 @@ import {
   type BirthOutcome,
   birthOne,
 } from "./birth.js";
+import { withCallBudget } from "./call-budget.js";
 import { birthQueue, type DueEdge, decayBackstopDue, eventDue } from "./clocks.js";
 import {
   CONSOLIDATE_AGENT,
@@ -63,10 +64,20 @@ const HELP = `daftari consolidate — cortex loop scheduler + Component A (shado
 
 Usage:
   daftari consolidate [--vault <path>] [--budget <n>] [--mode <m>]
-                      [--max-panels <n>] [--max-births <n>] [--model <id>]
-                      [--transport anthropic|openrouter]
+                      [--max-panels <n>] [--max-births <n>] [--max-llm-calls <n>]
+                      [--model <id>] [--transport anthropic|openrouter]
   daftari consolidate --report decorrelation --fixture <path> [--model <id>]
                       [--transport anthropic|openrouter]
+
+Cost controls:
+  --budget <n>         QUEUE-ITEM budget (default ${CONSOLIDATE_DEFAULT_BUDGET}): how many due births/edges
+                       are dispatched. NOT a spend cap — each birth item fans out
+                       to ~40 LLM calls, so real calls ~= items x fan-out.
+  --max-births <n>     Cap dispatched birth items (bounds calls via item count).
+  --max-panels <n>     Cap dispatched revision panels.
+  --max-llm-calls <n>  Hard ceiling on total Stage-2 LLM calls this session — the
+                       real spend cap. Once hit, further calls short-circuit
+                       without hitting the network. Default: unlimited.
 
 Transport (--transport, default 'anthropic'; env fallback DAFTARI_LLM_TRANSPORT):
   anthropic   @anthropic-ai/sdk, requires ANTHROPIC_API_KEY.
@@ -200,6 +211,17 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       process.stderr.write(`consolidate: ${maxPanels.error}\n`);
       return 2;
     }
+    // --max-llm-calls is a REAL spend cap on Stage-2 LLM calls, distinct from
+    // --budget (a queue-item budget). Undefined = unlimited (current behavior).
+    const maxLlmCalls = parseOptionalInt(flag(argv, "max-llm-calls"));
+    if (maxLlmCalls.error) {
+      process.stderr.write(`consolidate: ${maxLlmCalls.error}\n`);
+      return 2;
+    }
+    if (maxLlmCalls.value !== null && maxLlmCalls.value <= 0) {
+      process.stderr.write("consolidate: --max-llm-calls must be a number > 0\n");
+      return 2;
+    }
     const transportRes = resolveTransport(flag(argv, "transport"));
     if (!transportRes.ok) {
       process.stderr.write(`consolidate: ${transportRes.error.message}\n`);
@@ -306,7 +328,10 @@ export async function runConsolidate(argv: string[]): Promise<number> {
         process.stderr.write(`consolidate: ${llmRes.error}\n`);
         return 2;
       }
-      const llm = llmRes.llm;
+      // Cap total Stage-2 LLM spend when --max-llm-calls is given (a real spend
+      // bound; --budget only caps queue items). Undefined leaves calls unlimited.
+      const llm =
+        maxLlmCalls.value !== null ? withCallBudget(llmRes.llm, maxLlmCalls.value) : llmRes.llm;
 
       stage2.shadowMode = cfg.value.shadowMode;
       const observe = makeObserve({
