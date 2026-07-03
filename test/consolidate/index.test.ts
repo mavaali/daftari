@@ -52,6 +52,67 @@ describe("runConsolidate", () => {
     expect(code).toBe(2);
   });
 
+  describe("shadow_mode safety gate (S5)", () => {
+    // A live loop that writes edges without the operator ever choosing to is a
+    // surprising, money- and state-touching default. Require an explicit choice.
+    function withoutApiKeys(run: () => Promise<void>): Promise<void> {
+      const a = process.env.ANTHROPIC_API_KEY;
+      const o = process.env.OPENROUTER_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENROUTER_API_KEY;
+      return run().finally(() => {
+        if (a !== undefined) process.env.ANTHROPIC_API_KEY = a;
+        if (o !== undefined) process.env.OPENROUTER_API_KEY = o;
+      });
+    }
+
+    it("refuses mode != scan when shadow_mode is not set in config", async () => {
+      writeFileSync(join(dir, "a.md"), "# a\n");
+      await commit(dir, ["."], "init", "agent:test");
+      silenceStdout();
+      const errs: string[] = [];
+      vi.spyOn(process.stderr, "write").mockImplementation((s) => {
+        errs.push(String(s));
+        return true;
+      });
+      await withoutApiKeys(async () => {
+        const code = await runConsolidate(["--vault", dir, "--mode", "birth"]);
+        expect(code).toBe(2);
+        expect(errs.join("")).toContain("shadow_mode");
+        expect(errs.join("")).toContain("refus");
+      });
+    });
+
+    it("does NOT refuse when shadow_mode is explicitly set", async () => {
+      writeFileSync(join(dir, "a.md"), "# a\n");
+      writeFileSync(
+        join(dir, ".daftari", "config.yaml"),
+        "version: 1\nvault_name: v\nshadow_mode: true\n",
+      );
+      await commit(dir, ["."], "init", "agent:test");
+      silenceStdout();
+      const errs: string[] = [];
+      vi.spyOn(process.stderr, "write").mockImplementation((s) => {
+        errs.push(String(s));
+        return true;
+      });
+      await withoutApiKeys(async () => {
+        // Proceeds past the gate (may still exit for a missing API key), but the
+        // shadow_mode refusal must never appear.
+        await runConsolidate(["--vault", dir, "--mode", "birth"]);
+        expect(errs.join("")).not.toContain("refus");
+      });
+    });
+
+    it("does NOT refuse in scan mode (no writes possible)", async () => {
+      writeFileSync(join(dir, "a.md"), "# a\n");
+      await commit(dir, ["."], "init", "agent:test");
+      silenceStdout();
+      const code = await runConsolidate(["--vault", dir, "--mode", "scan"]);
+      expect(code).toBe(0);
+    });
+  });
+
   it("advances the baseline commit on each run (steady state)", async () => {
     writeFileSync(join(dir, "a.md"), "# a\n");
     await commit(dir, ["."], "init", "agent:test");

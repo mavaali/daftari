@@ -83,6 +83,34 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  // Whether shadow_mode was EXPLICITLY declared (vs defaulted) — the consolidate
+  // loop refuses live writes unless the operator has made an explicit choice.
+  describe("shadowModeSet tracking", () => {
+    it("is false when no config file exists", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.shadowModeSet).toBe(false);
+    });
+
+    it("is false when shadow_mode is omitted", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.shadowModeSet).toBe(false);
+    });
+
+    it("is true when shadow_mode is explicitly set (even to false)", () => {
+      writeConfig("version: 1\nvault_name: v\nshadow_mode: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.shadowMode).toBe(false);
+      expect(result.value.shadowModeSet).toBe(true);
+    });
+  });
+
   describe("watch (issue #38 PR 3)", () => {
     it("defaults to true when no config file exists", () => {
       const result = loadConfig(dir);

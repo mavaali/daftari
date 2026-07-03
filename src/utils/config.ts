@@ -102,6 +102,10 @@ export interface DaftariConfig {
   // posture Decision 3 (§10.4) requires before the loop ever acts live.
   // Defaults to false: a normal vault writes normally.
   shadowMode: boolean;
+  // Whether `shadow_mode` was EXPLICITLY declared in config (vs defaulted).
+  // The consolidate loop refuses live writes (mode != scan) unless the operator
+  // has made an explicit choice, so a surprising default can't spend or mutate.
+  shadowModeSet: boolean;
   // Absolute path to an external git directory (git's --separate-git-dir), or
   // undefined for a normal in-vault .git. Lets a cloud-synced vault hold only a
   // static `.git` file while git's churn lives off-cloud. Always resolved
@@ -122,6 +126,7 @@ function emptyConfig(): DaftariConfig {
     embeddingProvider: "local-minilm",
     backfillIdentityMap: {},
     shadowMode: false,
+    shadowModeSet: false,
     gitDir: undefined,
   };
 }
@@ -530,7 +535,8 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
   }
 
   let shadowMode = false;
-  if (root.shadow_mode !== undefined) {
+  const shadowModeSet = root.shadow_mode !== undefined;
+  if (shadowModeSet) {
     if (typeof root.shadow_mode !== "boolean") {
       return err(new Error("malformed config: 'shadow_mode' must be true or false"));
     }
@@ -586,6 +592,7 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
     embeddingProvider,
     backfillIdentityMap: backfillIdentityMap.value,
     shadowMode,
+    shadowModeSet,
     gitDir: gitDir.value,
   });
 }
