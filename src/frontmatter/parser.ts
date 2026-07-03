@@ -17,7 +17,25 @@ export interface ParsedDocument {
   hasFrontmatter: boolean;
 }
 
+// Upper bound on the source we will hand to gray-matter's synchronous parse.
+// A pathologically large `.md` — reachable via `daftari import` over an
+// arbitrary folder — would otherwise block the event loop (and risk OOM) while
+// matter() parses it in one shot. 5 MiB is far larger than any legitimate
+// curated markdown doc; anything past it is treated as non-content and skipped
+// with an err Result rather than parsed. Measured in UTF-8 bytes, not JS string
+// length, so multi-byte content is bounded by real memory cost.
+export const MAX_PARSE_BYTES = 5 * 1024 * 1024;
+
 export function parseDocument(source: string): Result<ParsedDocument, Error> {
+  const byteLength = Buffer.byteLength(source, "utf-8");
+  if (byteLength > MAX_PARSE_BYTES) {
+    return err(
+      new Error(
+        `document too large to parse: ${byteLength} bytes exceeds the ${MAX_PARSE_BYTES}-byte cap`,
+      ),
+    );
+  }
+
   let extracted: matter.GrayMatterFile<string>;
   try {
     extracted = matter(source);
