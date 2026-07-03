@@ -82,7 +82,13 @@ export const CONSOLIDATE_PRICING_PER_MTOKEN: Record<string, { input: number; out
   "claude-haiku-4-5-20251001": { input: 1.0, output: 5.0 },
   "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
   "claude-opus-4-8": { input: 15.0, output: 75.0 },
+  // OpenRouter slug for the same Haiku model (passthrough pricing).
+  "anthropic/claude-haiku-4.5": { input: 1.0, output: 5.0 },
 };
+
+// Default model on the openrouter transport — the same Haiku the anthropic
+// default resolves to, addressed by its OpenRouter slug.
+export const CONSOLIDATE_DEFAULT_MODEL_OPENROUTER = "anthropic/claude-haiku-4.5";
 
 // True when the model has its own pricing row (vs falling back to Haiku rates).
 export function isModelPriced(model: string): boolean {

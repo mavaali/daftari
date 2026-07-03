@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OpenRouter LLM transport for `daftari consolidate`** (`--transport
+  anthropic|openrouter`, env fallback `DAFTARI_LLM_TRANSPORT`). A second
+  model-family client (`createOpenRouterClient`) implementing the same
+  `LlmClient` contract as the Anthropic client, promoted from the
+  decorrelation shim. On the openrouter transport the CLI gates on
+  `OPENROUTER_API_KEY` (not `ANTHROPIC_API_KEY`), defaults the model to
+  `anthropic/claude-haiku-4.5`, and accepts any OpenRouter slug via `--model`.
+  This is the substrate for the Stage-5 multi-model graduation gate (spec §12
+  amendment, 2026-07-02): single-family panel votes are ~92% error-correlated,
+  so `k_survived` needs a second model family before any auto-write tier can
+  graduate. `completeWithTools` is deliberately unsupported on this transport
+  (only `daftari eval` drives tools; eval stays on anthropic).
+
 ## [1.29.0] - 2026-06-25
 
 ### Changed
