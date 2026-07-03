@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { load as parseYaml } from "js-yaml";
+import { hasCatastrophicBacktracking } from "./redos.js";
 import {
   BUILTIN_FRONTMATTER_FIELDS,
   type ExtensionValue,
@@ -286,6 +287,16 @@ function validateExtension(field: string, raw: unknown): Result<SchemaExtension,
       new RegExp(obj.pattern);
     } catch {
       return err(new Error(`${where}: 'pattern' is not a valid regular expression`));
+    }
+    // The pattern is run against caller-supplied frontmatter on the write path;
+    // a backtracking-prone pattern would be a synchronous-regex DoS lever.
+    if (hasCatastrophicBacktracking(obj.pattern)) {
+      return err(
+        new Error(
+          `${where}: 'pattern' risks catastrophic backtracking (ReDoS) — ` +
+            "avoid nested or overlapping quantifiers such as (a+)+ or (a|a)*",
+        ),
+      );
     }
     pattern = obj.pattern;
   }
