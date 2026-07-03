@@ -496,12 +496,18 @@ export async function indexDocument(
   vaultRoot: string,
   relPath: string,
 ): Promise<Result<IndexDocumentResult, Error>> {
-  const dbCheck = openIndexForActiveProvider(vaultRoot);
-  if (!dbCheck.ok) return dbCheck;
-  const indexEmpty = documentCount(dbCheck.value) === 0;
-  dbCheck.value.close();
+  // Open the index once and keep this handle for both the empty-check and the
+  // incremental write. The previous code opened, checked the count, closed,
+  // then reopened — paying the sqlite-vec extension load and 1-vector ABI
+  // smoke-test twice per write (finding E5). If the index turns out to be
+  // empty we close this handle and delegate to reindexVault, which manages
+  // its own connection.
+  const dbResult = openIndexForActiveProvider(vaultRoot);
+  if (!dbResult.ok) return dbResult;
+  const db = dbResult.value;
 
-  if (indexEmpty) {
+  if (documentCount(db) === 0) {
+    db.close();
     const full = await reindexVault(vaultRoot);
     if (!full.ok) return full;
     return ok({
@@ -514,13 +520,11 @@ export async function indexDocument(
 
   const outcome = await stageOne(vaultRoot, relPath);
   if (outcome.kind !== "staged") {
+    db.close();
     return err(new Error(`cannot index document: ${relPath} (${outcome.reason})`));
   }
   const { doc, chunks, hashes } = outcome.staged;
 
-  const dbResult = openIndexForActiveProvider(vaultRoot);
-  if (!dbResult.ok) return dbResult;
-  const db = dbResult.value;
   const createdAt = new Date().toISOString();
 
   try {
