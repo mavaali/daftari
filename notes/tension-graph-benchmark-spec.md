@@ -239,7 +239,23 @@ Co-retrieved topics (n=90): all cells 0.69–0.86, overlapping CIs — substrate
 
 **Publication-grade conclusion (Phase 1).** On feuds where retrieval buries one side, the accumulation baseline surfaces the contradiction essentially never (2.2%, CI to 4.7%); the tension-graph surfaces it 44% inline / 18% via tool, both p<1e-5, robust across three model families. Where both sides co-retrieve, the substrate adds little. The primitive's value is the recall-limited regime, and **inline delivery (3b) dominates the dedicated tool (3a)** — the tool only helps models that reliably invoke it.
 
-**Caveats (Phase 1):** information-faithful stand-in, NOT the live daftari MCP (retrieval = data-olympus `Index`, tensions from manifest) — Phase 2. 15 buried topics; synthetic corpus.
+**Read 5 — publication panel, Phase 2: LIVE daftari substrate (675 trials).** Real daftari `reindexVault` + `hybridSearch` (embeddings on, `vector=true`) + `addTension`/`listTensions` over a throwaway temp vault; corpus authored daftari-native (retrieval signal in the body). Same 3 models × 3 reps. Harness: `benchmarks/tension-graph/phase2_build_contexts.ts` → `contexts.jsonl` → Python replay (`run_panel.py --contexts`). Artifact: `results/phase2/` + `results/phase2_contexts.jsonl`.
+
+**Fidelity check passed:** daftari's hybrid retrieval buries the divergent side **15/25 — identical to data-olympus's FTS**. Embeddings did NOT rescue the buried side; the recall-limited regime is real on daftari's actual retrieval.
+
+Buried topics (n=135), Phase 1 stand-in → Phase 2 live:
+
+| Cell | P1 stand-in | P2 live daftari | P2 vs no-tg |
+|---|---|---|---|
+| daftari-no-tg | 0.022 | 0.081 | baseline |
+| daftari-tg-3a | 0.185 | 0.422 | z=6.45, p=1.1e-10 |
+| daftari-tg-3b | 0.444 | 0.459 | z=6.99, p=2.8e-12 |
+
+Co-retrieved (n=90): no-tg 0.933, tg 0.97–1.00 (daftari's stronger retrieval surfaces these unaided; substrate adds little). Per-model buried robustness: tg-3b 0.42–0.51 across all three; tg-3a model-dependent (gpt-5.4-mini 0.956, gemini 0.044 — doesn't invoke the tool).
+
+**Final conclusion (substrate-validated).** On feuds where retrieval buries one side, the accumulation baseline surfaces the contradiction ~8%; the tension-graph surfaces it ~42–46%, p<1e-10, robust across three model families and across BOTH the stand-in and the live daftari substrate. Where both sides co-retrieve, the substrate adds little. The primitive's value is the recall-limited regime; **inline (3b) is the robust delivery mechanism, the dedicated tool (3a) only helps models that invoke it**. The stand-in caveat is now retired.
+
+**Remaining caveats:** synthetic corpus (25 feud topics / 15 buried); single benchmark family; a real-world corpus would sharpen external validity. This is now a candidate empirical section for the paper (§8).
 
 ### Inspection notes (grounding, not decisions)
 
