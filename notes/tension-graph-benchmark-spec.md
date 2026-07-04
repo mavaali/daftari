@@ -195,7 +195,7 @@ Concrete build order. No owners, no dates.
 4. **Publish the `daftari − tension-graph` cell?** — recommend **yes**. It is the honesty move: it shows the supersede-chain-only version of daftari behaves like data-olympus, which both calibrates our position and makes the tension-graph win attributable. (Matches the adversarial-honesty and no-monetization-lens tenets.)
 5. **Answer scorer** — deterministic `evidence_state` (recommended) vs blind cross-family LLM judge (the `OPENROUTER_API_KEY` second-rater pattern) vs both. Recommend deterministic primary + LLM-judge on a sample as validation.
 6. **Pre-registered margin threshold** for the kill condition (§6) — pick the number before running, not after.
-7. **Surface tensions in `vault_search`?** — recommend **not before the benchmark**. Run cell-3 as 3a (dedicated-tools) and 3b (adapter-simulated search-integration, §4/§7); the measured 3b−3a `feud_surface_rate` delta decides whether the real feature earns its place, and specifies its shape (annotate result? inject synthetic result? down-rank the contested doc?) from evidence rather than guess. Building it first pre-commits the answer. The real feature is a follow-on gated on this number, not a prerequisite.
+7. **Surface tensions in `vault_search`?** — the benchmark answered this. Read 4 (900 trials, 3 models): on buried feuds, inline surfacing (3b) 0.444 vs dedicated-tool (3a) 0.185 vs baseline 0.022 — **3b beats 3a across every model**, because weaker models don't reliably invoke the tool. This **flips the earlier single-run lean** (which had 3a≥3b). Evidence now favors building tensions-in-`vault_search`: inline delivery is the robust mechanism. Still a follow-on, but the number now points toward the feature, not away. (Confirm on the live-daftari substrate, Phase 2, before committing product work.)
 
 ---
 
@@ -222,7 +222,24 @@ All runs: OpenRouter, deterministic classifier, offline-stand-in daftari cells (
 - **Model capability is load-bearing.** gpt-4o-mini ignored surfaced tensions; gpt-5.4-mini heeds them. Advisory surfacing needs a capable consumer — recording a tension is necessary but not sufficient (ties to the advisory-vs-autonomous axis).
 - **3a ≥ 3b here (delta −0.10).** The dedicated tool matched/beat the inline marker; inline occasionally induced a fabrication/synthesis (compute-model). This is early evidence *against* rushing to build tensions-in-`vault_search` (§9 item 7) — the dedicated tool is at least as good with a capable model.
 
-**Caveats bounding all of the above:** n=5 buried topics; single run, no variance/repetitions; one model family; daftari cells are information-faithful stand-ins, not the live MCP. A publication-grade run needs more buried topics, repetitions, and the live-daftari substrate.
+**Caveats bounding Reads 1–3:** small n; single run; one model family. Superseded by Read 4.
+
+**Read 4 — publication panel, Phase 1 (25 topics, 15 buried; 3 neutral models × 3 reps @ temp 0.7; 900 trials).** Artifact: `benchmarks/tension-graph/results/{trials.jsonl,summary.md}`.
+
+Buried topics (n=135 trials):
+
+| Cell | surface | 95% CI | vs no-tg |
+|---|---|---|---|
+| data-olympus | 0.007 | [0.000, 0.022] | — |
+| daftari-no-tg | 0.022 | [0.000, 0.047] | baseline |
+| daftari-tg-3a | 0.185 | [0.120, 0.251] | z=4.39, p=1.1e-5 |
+| daftari-tg-3b | **0.444** | [0.361, 0.528] | z=8.20, p=2.2e-16 |
+
+Co-retrieved topics (n=90): all cells 0.69–0.86, overlapping CIs — substrate adds little. Per-model buried surfacing robust: no-tg 0.00–0.07, tg-3b 0.36–0.51, tg-3a 0.04–0.38 (model-dependent) across gpt-5.4-mini / gemini-2.5-flash / gpt-5-mini.
+
+**Publication-grade conclusion (Phase 1).** On feuds where retrieval buries one side, the accumulation baseline surfaces the contradiction essentially never (2.2%, CI to 4.7%); the tension-graph surfaces it 44% inline / 18% via tool, both p<1e-5, robust across three model families. Where both sides co-retrieve, the substrate adds little. The primitive's value is the recall-limited regime, and **inline delivery (3b) dominates the dedicated tool (3a)** — the tool only helps models that reliably invoke it.
+
+**Caveats (Phase 1):** information-faithful stand-in, NOT the live daftari MCP (retrieval = data-olympus `Index`, tensions from manifest) — Phase 2. 15 buried topics; synthetic corpus.
 
 ### Inspection notes (grounding, not decisions)
 
