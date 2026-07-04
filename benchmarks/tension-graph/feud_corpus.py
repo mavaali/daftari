@@ -401,6 +401,91 @@ def _iter_vocab_conflicts() -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# Divergent regime (the validity-test corpus)
+# ---------------------------------------------------------------------------
+# The shared-regime corpus (above) authors BOTH sides with the same triggers, so
+# a query retrieves both and a capable model surfaces the contradiction unaided
+# (measured 2026-07-04 — every cell surfaced, tension-graph showed no marginal
+# value). That run did not isolate the primitive because the cells received
+# identical document payloads.
+#
+# The divergent regime creates the condition the hypothesis actually needs: side
+# A is authored in the query's vocabulary (retrieves into top-k); side B is
+# authored in genuinely DIFFERENT vocabulary (a second team's framing of the same
+# decision) and carries NO query-matching triggers, so ordinary lexical retrieval
+# buries it. The two sides are linked only by the id-based tension edge. A
+# retrieval baseline then sees only side A and answers "settled"; the tension
+# graph is the only thing that can surface the buried side B.
+#
+# Layer onto data-olympus's full base corpus (their published 250 concepts) so
+# top-k is genuinely selective — NOT a contrived tiny corpus. Whether B actually
+# falls out of top-k is an empirical question measured before any model call; if
+# it does not, that is a kill signal, not something to tune away.
+
+_DIV_TIER_A = "T2"
+_DIV_TIER_B = "T3"
+
+
+def _divergent_body(slug: str, side: FeudSide) -> str:
+    bullets = "\n".join(f"- {t.capitalize()}." for t in side.vocab)
+    return (
+        f"# {slug} standard\n\n{side.claim}\n\n## Position\n\n{bullets}\n\n"
+        f"An active standard. It does not supersede any other document.\n"
+    )
+
+
+def _write_div(
+    dest: Path, doc_id: str, tier: str, title: str, applies_when: list[str], body: str
+) -> None:
+    p = dest / _DIR_FOR_TIER[tier] / f"{doc_id}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # No colon in the description value — an unquoted ': ' breaks the YAML block
+    # and the id falls back to a path-derived slug.
+    fm = _frontmatter(doc_id, tier, title, f"Active standard for {title}.", applies_when)
+    p.write_text(fm + body, encoding="utf-8")
+
+
+def generate_feud_corpus_divergent(dest: Path, *, n: int | None = None) -> FeudCorpusManifest:
+    """Divergent-regime feuds: side A query-aligned, side B lexically divergent
+    and query-invisible. Both active, linked only by the tension edge. doc_a is
+    always the query-aligned side."""
+    from pathlib import Path as _Path
+
+    dest = _Path(dest)
+    _assert_topic_disjointness()
+    keys = list(_FEUD_TOPICS.keys())
+    if n is not None:
+        keys = keys[:n]
+
+    concepts: list[Concept] = []
+    feuds: list[FeudRecord] = []
+    for topic in keys:
+        spec = _FEUD_TOPICS[topic]
+        a, b = spec.side_a, spec.side_b
+        a_id = f"FEUDD_{topic}_{a.slug}".upper().replace("-", "_")
+        b_id = f"FEUDD_{topic}_{b.slug}".upper().replace("-", "_")
+        # A carries the shared (label-matching) triggers so a NEUTRAL label query
+        # retrieves it; B carries only its divergent vocab so the same neutral
+        # query buries it. This isolates retrieval as the single variable (the
+        # query no longer editorializes toward A).
+        _write_div(dest, a_id, _DIV_TIER_A, f"{a.slug} standard", list(spec.shared_triggers),
+                   _divergent_body(a.slug, a))
+        _write_div(dest, b_id, _DIV_TIER_B, f"{b.slug} standard", list(b.vocab),
+                   _divergent_body(b.slug, b))
+        for doc_id, tier, side in ((a_id, _DIV_TIER_A, a), (b_id, _DIV_TIER_B, b)):
+            concepts.append(Concept(
+                id=doc_id, path=f"{_DIR_FOR_TIER[tier]}/{doc_id}.md", tier=tier,
+                type=_FEUD_TYPE, status=_FEUD_STATUS, title=f"{side.slug} standard",
+                topic=topic, body=_divergent_body(side.slug, side),
+            ))
+        feuds.append(FeudRecord(
+            topic=topic, label=spec.label, doc_a_id=a_id, doc_b_id=b_id,
+            claim_a=a.claim, claim_b=b.claim, shared_triggers=list(spec.shared_triggers),
+        ))
+    return FeudCorpusManifest(concepts=concepts, feuds=feuds)
+
+
 def main() -> None:  # pragma: no cover - manual smoke run
     import tempfile
     from pathlib import Path as _Path

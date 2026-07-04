@@ -95,6 +95,31 @@ def build_feud_queries(manifest: FeudCorpusManifest) -> list[FeudQuery]:
     return queries
 
 
+def build_feud_queries_divergent(manifest: FeudCorpusManifest) -> list[FeudQuery]:
+    """Divergent-regime queries: phrased in side A's (query-aligned) vocabulary so
+    ordinary retrieval finds A and buries the divergent side B. gold = both sides;
+    surfacing B requires the id-based tension link, not lexical retrieval."""
+    from benchmarks.feud_corpus import _FEUD_TOPICS  # noqa: PLC0415
+
+    queries: list[FeudQuery] = []
+    for f in manifest.feuds:
+        a = _FEUD_TOPICS[f.topic].side_a
+        t0, t1 = a.vocab[0], a.vocab[1]
+        text = (
+            f"Our team is standardizing on {t0} and {t1}. "
+            f"What is the governing rule we should follow?"
+        )
+        queries.append(FeudQuery(
+            text=text,
+            stratum="feud",
+            gold_ids=[f.doc_a_id, f.doc_b_id],
+            topic=f.topic,
+            doc_a_id=f.doc_a_id,
+            doc_b_id=f.doc_b_id,
+        ))
+    return queries
+
+
 # ---------------------------------------------------------------------------
 # yaml round-trip (same shape as governance_queries.write/load_governance_queries)
 # ---------------------------------------------------------------------------

@@ -77,9 +77,14 @@ def _rank(idx: object, query: str, *, k: int = 6) -> list[RetrievedDoc]:
     return out
 
 
-def _feud_for_query(feuds: list[FeudRecord], gold_ids: set[str]) -> FeudRecord | None:
+def _feud_for_retrieved(feuds: list[FeudRecord], retrieved_ids: set[str]) -> FeudRecord | None:
+    """Faithful tension join: a tension surfaces iff one of ITS participants is in
+    the retrieved set — exactly what a real vault_tension_blast post-join does.
+    Crucially this does NOT consult gold; if only the aligned side A is retrieved
+    (B buried), the A->tension->B link is what pulls the buried side into view.
+    That id-based, lexical-independent link is the mechanism under test."""
     for f in feuds:
-        if {f.doc_a_id, f.doc_b_id} & gold_ids:
+        if {f.doc_a_id, f.doc_b_id} & retrieved_ids:
             return f
     return None
 
@@ -88,15 +93,16 @@ def build_context(
     *,
     cell: str,
     query: str,
-    gold_ids: list[str],
     idx: object,
     feuds: list[FeudRecord],
     k: int = 6,
 ) -> Context:
-    """Construct the query context for one cell. gold_ids identify the feud so
-    the tension-aware cells can attach the (pre-logged) tension record."""
+    """Construct the query context for one cell. Tension attachment is keyed on
+    the RETRIEVED docs (not gold), so the tension-graph earns its keep only by its
+    id-based link surfacing a side that retrieval did not."""
     docs = _rank(idx, query, k=k)
-    feud = _feud_for_query(feuds, set(gold_ids))
+    retrieved_ids = {d.id for d in docs}
+    feud = _feud_for_retrieved(feuds, retrieved_ids)
 
     if cell in (DATA_OLYMPUS, DAFTARI_NO_TG) or feud is None:
         # No tension representation reaches the agent.

@@ -19,9 +19,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from benchmarks.agent import MockLLM, run_agent
-from benchmarks.feud_corpus import generate_feud_corpus
+from benchmarks.feud_corpus import (
+    generate_feud_corpus,
+    generate_feud_corpus_divergent,
+)
 from benchmarks.feud_metrics import classify_feud, feud_rates, surface_rate_delta
-from benchmarks.feud_queries import build_feud_queries
+from benchmarks.feud_queries import (
+    build_feud_queries,
+    build_feud_queries_divergent,
+)
 from benchmarks.governance_corpus import generate_governance_corpus
 from benchmarks.substrate import (
     ALL_CELLS,
@@ -37,14 +43,29 @@ class CellResult:
     labels: list[str]
 
 
-def run_feud_benchmark(*, llm_factory, gov_n: int = 15) -> dict:
+def run_feud_benchmark(*, llm_factory, regime: str = "shared", gov_n: int = 15) -> dict:
     """Run every cell over the feud stratum. ``llm_factory`` is called per cell to
-    get an LLM (so cell-specific mock policies like diligent_3a can differ)."""
+    get an LLM (so cell-specific mock policies like diligent_3a can differ).
+
+    regime='shared'    : both sides co-retrieve (measures nothing once the model
+                         is capable — see the 2026-07-04 result).
+    regime='divergent' : side B authored in divergent vocab over the full 250-
+                         concept base corpus, so retrieval buries it; the tension
+                         link is the only path to it. This is the validity test.
+    """
     td = Path(tempfile.mkdtemp())
     bundle = td / "kb"
-    generate_governance_corpus(bundle, n=gov_n, seed=0)
-    manifest = generate_feud_corpus(bundle)
-    queries = build_feud_queries(manifest)
+    if regime == "divergent":
+        from benchmarks.corpus_gen import generate_corpus  # noqa: PLC0415
+        generate_corpus(bundle, n=250, seed=0)  # distractor bed (their turf)
+        manifest = generate_feud_corpus_divergent(bundle)
+        # NEUTRAL label query (same one that got 10/10 in shared): A retrieves via
+        # its label-matching triggers, B is buried. Isolates retrieval; no A-bias.
+        queries = build_feud_queries(manifest)
+    else:
+        generate_governance_corpus(bundle, n=gov_n, seed=0)
+        manifest = generate_feud_corpus(bundle)
+        queries = build_feud_queries(manifest)
 
     from data_olympus.index import Index  # type: ignore[attr-defined]
 
@@ -59,7 +80,6 @@ def run_feud_benchmark(*, llm_factory, gov_n: int = 15) -> dict:
             ctx = build_context(
                 cell=cell,
                 query=q.text,
-                gold_ids=q.gold_ids,
                 idx=idx,
                 feuds=manifest.feuds,
             )
@@ -100,6 +120,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the feud-stratum benchmark")
     parser.add_argument("--live", action="store_true", help="use OpenRouter (billed)")
     parser.add_argument("--model", default="openai/gpt-4o-mini")
+    parser.add_argument("--regime", default="shared", choices=["shared", "divergent"])
     parser.add_argument("--diligent-3a", action="store_true",
                         help="mock: make the 3a agent call the tension tool")
     args = parser.parse_args()
@@ -114,7 +135,8 @@ def main() -> None:
         def factory(cell: str):
             return MockLLM(diligent_3a=args.diligent_3a and cell == DAFTARI_TG_3A)
 
-    report = run_feud_benchmark(llm_factory=factory)
+    report = run_feud_benchmark(llm_factory=factory, regime=args.regime)
+    print(f"[regime={args.regime}]")
     print(format_report(report, mock=not args.live))
 
 

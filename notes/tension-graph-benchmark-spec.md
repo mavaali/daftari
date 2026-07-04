@@ -199,6 +199,31 @@ Concrete build order. No owners, no dates.
 
 ---
 
+## Results log — live reads (2026-07-04)
+
+All runs: OpenRouter, deterministic classifier, offline-stand-in daftari cells (retrieval = data-olympus `Index`; tensions from the manifest). Small n, single run, no repetitions — directional, not final.
+
+**Read 1 — shared regime, gpt-4o-mini (both sides co-retrieve).** Every cell surfaced 1.00, delta 0. Confounded: all cells received both feud docs, so a capable model surfaces the contradiction unaided. Did not isolate the primitive.
+
+**Read 2 — divergent regime, A-perspective query, gpt-4o-mini.** Tension-graph lifted surface 0.00→0.20 (3b) — small. Two confounds found: (1) the query editorialized toward A ("we're standardizing on {A}"), suppressing surfacing even when B was visible; (2) gpt-4o-mini ignored an explicit inline `[CONTESTED]` marker ~2/3 of the time — a weak model doesn't heed a surfaced tension.
+
+**Read 3 — divergent regime, NEUTRAL query, gpt-5.4-mini (confound #1 removed, capable model).** B buried 5/10 topics (honest, non-tuned). Isolated result:
+
+| Cell | surface | pick | fabricate | miss | surface on 5 BURIED topics |
+|---|---|---|---|---|---|
+| data-olympus | 0.50 | 0.30 | 0.00 | 0.20 | **0/5** |
+| daftari-no-tg | 0.50 | 0.30 | 0.00 | 0.20 | **0/5** |
+| daftari-tg-3a | 0.90 | 0.10 | 0.00 | 0.00 | **4/5** |
+| daftari-tg-3b | 0.80 | 0.00 | 0.10 | 0.10 | **3/5** |
+
+**Conclusion (scoped).** The tension-graph's value is real but **confined to the recall-limited regime**: where retrieval buries one side, the baseline surfaces 0/5 (it cannot surface what it never retrieved) while the tension-graph surfaces 3–4/5 via its id-based link. Where both sides co-retrieve, the substrate adds nothing (all cells surface). This survives the §6 kill condition — tg beats no-tg on feud queries — but only in the buried regime, which must be stated as the honest scope, not inflated to a general claim.
+
+**Two findings beyond the headline:**
+- **Model capability is load-bearing.** gpt-4o-mini ignored surfaced tensions; gpt-5.4-mini heeds them. Advisory surfacing needs a capable consumer — recording a tension is necessary but not sufficient (ties to the advisory-vs-autonomous axis).
+- **3a ≥ 3b here (delta −0.10).** The dedicated tool matched/beat the inline marker; inline occasionally induced a fabrication/synthesis (compute-model). This is early evidence *against* rushing to build tensions-in-`vault_search` (§9 item 7) — the dedicated tool is at least as good with a capable model.
+
+**Caveats bounding all of the above:** n=5 buried topics; single run, no variance/repetitions; one model family; daftari cells are information-faithful stand-ins, not the live MCP. A publication-grade run needs more buried topics, repetitions, and the live-daftari substrate.
+
 ### Inspection notes (grounding, not decisions)
 
 - data-olympus is real, reproducible, Apache-2.0. Committed results: `data-olympus` staleness `0.000` vs `bm25` `0.050`; on `graph` queries bm25 stales `1.000` while data-olympus holds `0.000` (`benchmarks/results/report.md`). Their win is genuine and narrow — supersession, not contradiction.
