@@ -218,6 +218,216 @@ _FEUD_TOPICS: dict[str, FeudSpec] = {
             "Use auto-increment integers: monotonic, index-friendly, database-assigned keys.",
         ),
     ),
+    "serialization-format": FeudSpec(
+        label="the wire serialization format",
+        shared_triggers=["serialization format", "wire encoding", "payload format", "data interchange"],
+        side_a=FeudSide(
+            "json",
+            ["human-readable", "self-describing", "text-based", "schemaless"],
+            "Use JSON: human-readable, self-describing text payloads.",
+        ),
+        side_b=FeudSide(
+            "protobuf",
+            ["binary", "code-generated", "compact", "predefined-schema"],
+            "Use Protobuf: compact binary payloads from a predefined schema.",
+        ),
+    ),
+    "config-language": FeudSpec(
+        label="the configuration file language",
+        shared_triggers=["configuration file", "config format", "settings file", "app config"],
+        side_a=FeudSide(
+            "yaml",
+            ["indentation-based", "anchors", "multi-document", "whitespace-significant"],
+            "Use YAML: indentation-based configuration with anchors.",
+        ),
+        side_b=FeudSide(
+            "toml",
+            ["explicit-tables", "typed-values", "ini-like", "bracketed"],
+            "Use TOML: explicit, typed, bracketed tables.",
+        ),
+    ),
+    "css-methodology": FeudSpec(
+        label="the CSS authoring methodology",
+        shared_triggers=["css methodology", "styling approach", "stylesheet strategy", "class naming"],
+        side_a=FeudSide(
+            "utility",
+            ["utility-first", "atomic", "inline-composition", "design-tokens"],
+            "Use utility-first CSS: compose atomic classes in markup.",
+        ),
+        side_b=FeudSide(
+            "semantic",
+            ["semantic-classes", "component-scoped", "named-blocks", "cascade"],
+            "Use semantic CSS: named component classes in stylesheets.",
+        ),
+    ),
+    "render-strategy": FeudSpec(
+        label="the page render strategy",
+        shared_triggers=["page rendering", "render location", "html output", "first paint"],
+        side_a=FeudSide(
+            "ssr",
+            ["server-side", "prehydrated", "fast-first-byte", "server-round-trip"],
+            "Render server-side: send prehydrated HTML for a fast first paint.",
+        ),
+        side_b=FeudSide(
+            "csr",
+            ["client-side", "browser-hydrated", "spa", "javascript-bundle"],
+            "Render client-side: ship a JS bundle and render in the browser.",
+        ),
+    ),
+    "type-discipline": FeudSpec(
+        label="the type-checking discipline",
+        shared_triggers=["type checking", "type discipline", "type system", "static analysis"],
+        side_a=FeudSide(
+            "static",
+            ["compile-time", "annotations", "ahead-of-time", "checked-early"],
+            "Use static typing: compile-time annotations checked ahead of time.",
+        ),
+        side_b=FeudSide(
+            "dynamic",
+            ["run-time", "duck-typing", "late-bound", "flexible-shapes"],
+            "Use dynamic typing: runtime duck-typing with flexible shapes.",
+        ),
+    ),
+    "failure-signaling": FeudSpec(
+        label="how functions signal failure",
+        shared_triggers=["error handling", "failure signaling", "fault propagation", "recoverable faults"],
+        side_a=FeudSide(
+            "exceptions",
+            ["throw", "stack-unwinding", "try-catch", "implicit-propagation"],
+            "Signal failures with exceptions: throw and catch, unwinding the stack.",
+        ),
+        side_b=FeudSide(
+            "results",
+            ["return-values", "explicit-branch", "result-type", "no-unwinding"],
+            "Signal failures with result values: explicit branches, no unwinding.",
+        ),
+    ),
+    "di-wiring": FeudSpec(
+        label="the dependency wiring approach",
+        shared_triggers=["dependency injection", "object wiring", "dependency graph", "service assembly"],
+        side_a=FeudSide(
+            "constructor",
+            ["constructor-injection", "explicit-deps", "compile-checked", "no-global-lookup"],
+            "Wire via constructor injection: explicit, compile-checked dependencies.",
+        ),
+        side_b=FeudSide(
+            "locator",
+            ["service-locator", "runtime-resolution", "registry-lookup", "hidden-deps"],
+            "Wire via a service locator: runtime registry lookup.",
+        ),
+    ),
+    "api-versioning": FeudSpec(
+        label="the API versioning scheme",
+        shared_triggers=["api versioning", "version scheme", "backward compatibility", "version negotiation"],
+        side_a=FeudSide(
+            "url",
+            ["path-segment", "versioned-url", "v1-prefix", "route-based"],
+            "Version in the URL path: /v1/ route prefixes.",
+        ),
+        side_b=FeudSide(
+            "header",
+            ["accept-header", "content-negotiation", "header-based", "invisible-url"],
+            "Version via headers: content negotiation, clean URLs.",
+        ),
+    ),
+    "pagination-style": FeudSpec(
+        label="the list pagination style",
+        shared_triggers=["pagination style", "result paging", "page traversal", "large result sets"],
+        side_a=FeudSide(
+            "offset",
+            ["offset-limit", "page-numbers", "skip-count", "random-access"],
+            "Paginate by offset: page numbers and limits, random access.",
+        ),
+        side_b=FeudSide(
+            "cursor",
+            ["cursor-token", "keyset", "stable-ordering", "sequential-only"],
+            "Paginate by cursor: opaque keyset tokens, stable ordering.",
+        ),
+    ),
+    "cache-write-policy": FeudSpec(
+        label="the cache write policy",
+        shared_triggers=["cache policy", "write propagation", "cache coherence", "cache updates"],
+        side_a=FeudSide(
+            "write-through",
+            ["synchronous-persist", "immediate", "consistent", "higher-latency"],
+            "Write-through: persist synchronously on every write.",
+        ),
+        side_b=FeudSide(
+            "write-back",
+            ["deferred-persist", "dirty-buffer", "eventual", "lower-latency"],
+            "Write-back: buffer dirty data and persist later.",
+        ),
+    ),
+    "delivery-strategy": FeudSpec(
+        label="the deployment delivery strategy",
+        shared_triggers=["deployment strategy", "release delivery", "cutover plan", "traffic shifting"],
+        side_a=FeudSide(
+            "blue-green",
+            ["parallel-environment", "instant-switch", "full-standby", "atomic-cutover"],
+            "Blue-green: switch traffic to a fully provisioned standby environment.",
+        ),
+        side_b=FeudSide(
+            "rolling",
+            ["incremental-replace", "node-by-node", "no-standby", "gradual-shift"],
+            "Rolling: replace instances incrementally, no standby.",
+        ),
+    ),
+    "secret-lifetime": FeudSpec(
+        label="the credential lifetime policy",
+        shared_triggers=["credential lifetime", "secret rotation", "key validity", "credential policy"],
+        side_a=FeudSide(
+            "static",
+            ["long-lived", "manually-rotated", "stored-credential", "stable-value"],
+            "Use long-lived credentials rotated manually.",
+        ),
+        side_b=FeudSide(
+            "dynamic",
+            ["short-lived", "auto-issued", "ephemeral", "just-in-time"],
+            "Use short-lived credentials issued just-in-time.",
+        ),
+    ),
+    "session-model": FeudSpec(
+        label="the user session model",
+        shared_triggers=["user session", "session model", "login state", "session handling"],
+        side_a=FeudSide(
+            "stateful",
+            ["server-side-session", "session-store", "sticky", "revocable"],
+            "Stateful sessions: a server-side session store, revocable.",
+        ),
+        side_b=FeudSide(
+            "stateless",
+            ["self-contained-token", "no-server-state", "signed-claims", "horizontally-scalable"],
+            "Stateless: self-contained signed tokens, no server state.",
+        ),
+    ),
+    "schema-timing": FeudSpec(
+        label="when data schema is enforced",
+        shared_triggers=["schema enforcement", "validation timing", "schema strategy", "structure guarantee"],
+        side_a=FeudSide(
+            "on-write",
+            ["validate-on-ingest", "strict", "reject-early", "write-time-check"],
+            "Enforce schema on write: validate and reject bad data at ingest.",
+        ),
+        side_b=FeudSide(
+            "on-read",
+            ["schema-on-read", "late-binding", "tolerant-ingest", "interpret-at-query"],
+            "Enforce schema on read: interpret structure at query time.",
+        ),
+    ),
+    "test-doubles": FeudSpec(
+        label="the test isolation approach",
+        shared_triggers=["test doubles", "test isolation", "dependency substitution", "test seams"],
+        side_a=FeudSide(
+            "mocks",
+            ["mock-objects", "behavior-verification", "expectation-based", "strict-interaction"],
+            "Use mocks: verify interactions against preset expectations.",
+        ),
+        side_b=FeudSide(
+            "fakes",
+            ["in-memory-fake", "state-verification", "working-implementation", "realistic-behavior"],
+            "Use fakes: lightweight working implementations, verify state.",
+        ),
+    ),
 }
 
 # Feud docs are authored by two DIFFERENT scopes to dramatize the standing
