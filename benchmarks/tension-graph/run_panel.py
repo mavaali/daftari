@@ -25,7 +25,7 @@ from benchmarks.corpus_gen import generate_corpus
 from benchmarks.feud_corpus import generate_feud_corpus_divergent
 from benchmarks.feud_metrics import SURFACE, classify_feud
 from benchmarks.feud_queries import build_feud_queries
-from benchmarks.substrate import ALL_CELLS, build_context
+from benchmarks.substrate import ALL_CELLS, Context, RetrievedDoc, build_context
 
 K = 6
 
@@ -76,7 +76,49 @@ def run_panel(*, models, reps, temperature, out_dir: Path):
                         fh.flush()
     _summarize(jsonl, out_dir / "summary.md", models=models, reps=reps,
                temperature=temperature, n_topics=len(queries),
-               n_buried=sum(buried.values()))
+               n_buried=sum(buried.values()),
+               substrate_label="information-faithful stand-in (NOT live daftari MCP)")
+    return out_dir
+
+
+def run_panel_from_contexts(*, contexts_path: Path, models, reps, temperature,
+                            out_dir: Path):
+    """Phase 2: replay contexts produced from REAL daftari retrieval
+    (phase2_build_contexts.ts). The agent/classifier/stats are identical to the
+    stand-in run — only the substrate that produced the contexts changed."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    jsonl = out_dir / "trials.jsonl"
+    ctx_records = [json.loads(line) for line in
+                   Path(contexts_path).read_text().splitlines() if line.strip()]
+    topics = {r["topic"] for r in ctx_records}
+    n_buried = len({r["topic"] for r in ctx_records if r["buried"]})
+
+    with jsonl.open("w", encoding="utf-8") as fh:
+        for model in models:
+            llm = OpenRouterLLM(model, temperature=temperature)
+            for rec in ctx_records:
+                docs = [RetrievedDoc(id=d["id"], title=d["title"], snippet=d["snippet"])
+                        for d in rec["docs"]]
+                ctx = Context(
+                    query=rec["query"], docs=docs,
+                    inline_contested=rec.get("inline_contested"),
+                    tension_tool_available=bool(rec.get("tension_records")),
+                    _tension_records=rec.get("tension_records", []),
+                )
+                for rep in range(reps):
+                    try:
+                        ans = run_agent(llm, ctx)
+                        label = classify_feud(ans, gold_a=rec["gold_a"], gold_b=rec["gold_b"])
+                    except Exception:  # noqa: BLE001
+                        label = "error"
+                    fh.write(json.dumps({
+                        "model": model, "cell": rec["cell"], "topic": rec["topic"],
+                        "rep": rep, "buried": rec["buried"], "label": label,
+                    }) + "\n")
+                    fh.flush()
+    _summarize(jsonl, out_dir / "summary.md", models=models, reps=reps,
+               temperature=temperature, n_topics=len(topics), n_buried=n_buried,
+               substrate_label="LIVE daftari (real hybridSearch + tensions)")
     return out_dir
 
 
@@ -110,16 +152,18 @@ def _load(jsonl: Path) -> list[dict]:
 
 
 def _summarize(jsonl: Path, out_md: Path, *, models, reps, temperature,
-               n_topics, n_buried) -> None:
+               n_topics, n_buried, substrate_label) -> None:
     rows = _load(jsonl)
+    # Cells actually present in the data, in canonical order.
+    cells = [c for c in ALL_CELLS if any(r["cell"] == c for r in rows)]
     lines = [
-        "# Feud panel — publication-grade (Phase 1: stand-in substrate)",
+        "# Feud panel — publication-grade",
         "",
         f"Models: {', '.join(models)}  ",
         f"Reps: {reps}  Temperature: {temperature}  ",
         f"Topics: {n_topics} ({n_buried} buried, {n_topics - n_buried} co-retrieved)  ",
         "Regime: divergent, neutral query, 250-concept base bed  ",
-        "Substrate: information-faithful stand-in (NOT live daftari MCP)  ",
+        f"Substrate: {substrate_label}  ",
         "",
     ]
 
@@ -137,7 +181,7 @@ def _summarize(jsonl: Path, out_md: Path, *, models, reps, temperature,
         lines += [f"## Surfacing rate — {scope} topics", "",
                   "| Cell | surface | 95% CI | fabricate | miss | trials |",
                   "|---|---|---|---|---|---|"]
-        for cell in ALL_CELLS:
+        for cell in cells:
             s, n = rate(sub, cell)
             fab, _ = rate(sub, cell, "fabricate")
             miss, _ = rate(sub, cell, "miss")
@@ -180,9 +224,16 @@ def main() -> None:
     ap.add_argument("--models", nargs="+",
                     default=["openai/gpt-5.4-mini", "google/gemini-2.5-flash", "openai/gpt-5-mini"])
     ap.add_argument("--out", default="benchmarks/tg_panel")
+    ap.add_argument("--contexts", default=None,
+                    help="Phase 2: replay real-daftari contexts.jsonl instead of the stand-in")
     args = ap.parse_args()
-    out = run_panel(models=args.models, reps=args.reps, temperature=args.temperature,
-                    out_dir=Path(args.out))
+    if args.contexts:
+        out = run_panel_from_contexts(contexts_path=Path(args.contexts), models=args.models,
+                                      reps=args.reps, temperature=args.temperature,
+                                      out_dir=Path(args.out))
+    else:
+        out = run_panel(models=args.models, reps=args.reps, temperature=args.temperature,
+                        out_dir=Path(args.out))
     print((out / "summary.md").read_text())
 
 
