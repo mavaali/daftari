@@ -4,6 +4,12 @@
 **Branch:** `mihir/tension-graph-benchmark-spec` (no PR — push only).
 **Relates to:** PR #168 (paper draft), and the data-olympus repo (`github.com/knaisoma/data-olympus`, Apache-2.0), inspected at commit-of-clone on 2026-07-03.
 
+> **Build progress (2026-07-03).** Decision-free scaffold (§7 steps 1–3) built and verified; code in `benchmarks/tension-graph/`.
+> - **§7.1 reproducibility gate — PASSED.** At pinned SHA `ccaffdb` (v0.2.0), `generate_artifacts` regenerates their committed `report.md`/`results.json` **bit-for-bit identical**. Their baseline is genuinely reproducible.
+> - **§7.2 feud corpus generator** — `feud_corpus.py`: 10 co-active contradiction pairs (20 docs), all `status: active`, no supersession link. Disjointness suite `test_feud_disjoint.py` green (5/5); two real fairness leaks were caught by the integrity check and fixed (`repository` as monorepo's distinctive vocab; `tests` in the trophy label).
+> - **§7.3 feud query stratum** — `feud_queries.py`: fifth stratum, gold = both sides. **Retrieval sanity: 10/10 feud queries return BOTH live docs via their `Index.search`, with no contradiction signal** — the structural ceiling, shown against their own harness.
+> - **Stopped at the agent-adapter boundary** (§9 item 2 open on the answer contract). Agent model decided: neutral third-party via OpenRouter.
+
 ---
 
 ## 1. Strategic frame
@@ -183,7 +189,7 @@ Concrete build order. No owners, no dates.
 ## 9. Open decisions (need Mihir before implementation)
 
 1. **Corpus fork** — recommend **hybrid** (governance corpus + documented feud-augmentation, §2). Confirm, or override to A-pure / B-pure.
-2. **Agent adapter — which LLM, which prompt shape** *(top blocker)*. daftari's own client is Anthropic-only; the benchmark agent can be anything. Decide: (a) model (Claude vs a neutral third model to avoid "you tested your own stack"), (b) the exact answer contract — recommend the structured `{answer, evidence_state, cited_docs}` of §5 over a free-text + LLM-judge, to kill judge variance. This decision gates steps 5–6 of §7.
+2. **Agent adapter — which LLM, which prompt shape** *(top blocker)*. daftari's own client is Anthropic-only; the benchmark agent can be anything. **DECIDED 2026-07-03: neutral third-party model via OpenRouter** (the `OPENROUTER_API_KEY` second-rater wiring already in the repo) — pre-empts the "you tested on your own stack" objection. Still open: (b) the exact answer contract — recommend the structured `{answer, evidence_state, cited_docs}` of §5 over a free-text + LLM-judge, to kill judge variance. The model choice unblocks steps 5–6 of §7 up to the contract.
 3. **Anti-gaming form** — minimal (identical tool budget, §4) vs strong (give cells 1–2 a contradiction-listing tool their substrate can't populate). Recommend at least minimal; strong is more convincing but more build.
 4. **Publish the `daftari − tension-graph` cell?** — recommend **yes**. It is the honesty move: it shows the supersede-chain-only version of daftari behaves like data-olympus, which both calibrates our position and makes the tension-graph win attributable. (Matches the adversarial-honesty and no-monetization-lens tenets.)
 5. **Answer scorer** — deterministic `evidence_state` (recommended) vs blind cross-family LLM judge (the `OPENROUTER_API_KEY` second-rater pattern) vs both. Recommend deterministic primary + LLM-judge on a sample as validation.
