@@ -618,6 +618,35 @@ data-olympus reaches these numbers on the same markdown-in-git substrate we adop
 rather than blunts the point: the separating variable is not the store but whether the
 evaluation admits an unresolved state at all.
 
+**The augmentation, measured.** The claim that no accumulation-only benchmark can surface the
+tension axis is testable, so we tested it. Starting from data-olympus's own corpus (regenerated
+bit-for-bit at its pinned release), we add a documented, regenerable *feud* stratum: pairs of
+co-active documents contradicting on one topic with no `superseded_by` link and no recency
+ordering between them, the boundary case a supersede chain cannot represent. To keep the case
+non-trivial we author one side in the query's vocabulary and the other in a divergent framing (a
+second team's language for the same decision), so ordinary retrieval surfaces the first and
+buries the second; whether it does is measured, not assumed (15 of 25 topics bury the divergent
+side under a 250-concept bed, the other 10 co-retrieve). An agent, under an identical prompt and
+tool budget across arms, then answers and emits a structured evidence-state (`settled` |
+`contested` | `unknown`) scored deterministically into {surface, pick, fabricate}. On the buried
+topics, a supersede-chain arm (daftari with its tension index withheld, the closest in-system
+stand-in for an accumulation store's read path) surfaces the contradiction on 0.08 of trials;
+the tension-graph arm surfaces it on 0.42-0.46 (two-proportion z of 6.5-7.0, p < 1e-10), pooled
+over three neutral models (`gpt-5.4-mini`, `gemini-2.5-flash`, `gpt-5-mini`) at three
+repetitions. The mechanism is the one the frame predicts: the tension edge is an id-level,
+lexical-independent link, so it reaches the side retrieval could not; the supersede chain has no
+such object to return. Two honesty bounds. First, the win is confined to the recall-limited
+regime: on the 10 co-retrieved topics every arm surfaces at 0.9-1.0, because a capable model
+surfaces a contradiction it can already see, so the defensible claim is not "an accumulation
+store cannot surface a tension" but "it cannot surface one its retrieval buries," the realistic
+case at scale. Second, the result replicates on daftari's own hybrid (BM25 + embedding)
+retrieval rather than a stand-in ranker (the embedding signal did not rescue the buried side,
+burial held at 15/25), and inline surfacing is the robust delivery while a dedicated look-up tool
+helps only models that reliably invoke it. This is a supplementary measurement on a synthetic
+augmentation, not a load-bearing claim of the two-corpus thesis (which rests on §4-6); it is
+included because it converts the "one corpus too narrow" argument from assertion to demonstration
+on the peer's own substrate.
+
 **The gap this paper fills** (narrowed to be reviewer-defensible):
 - **A structural, by-construction no-mint invariant *in an agent-memory system*.** Classical
   TMS (ATMS) has a structural no-collapse guarantee, but over logical assumption-sets in a
@@ -683,6 +712,13 @@ and the evaluation runners for every experiment in §4-6 live in the same reposi
 `integrations/contract-bench` and `integrations/consensus-bench`. The unit tests that pin
 each foil prompt's shape (Appendix B) are part of that repository's committed test suite and
 run in CI alongside the rest of daftari's tests.
+
+The feud-augmentation harness for the data-olympus head-to-head (§9), including the corpus
+generators, the deterministic {surface, pick, fabricate} scorer, the disjointness tests, and the
+committed panel results (both a stand-in-ranker run and a live-daftari-retrieval run over three
+neutral models), lives in the repository under `benchmarks/tension-graph/`. It runs against a
+vendored checkout of data-olympus at a pinned commit (recorded in that directory's README), whose
+own benchmark we regenerate bit-for-bit as the reproducibility gate.
 
 The contract fixtures are value-perturbed derivatives of public SEC EDGAR credit-agreement
 filings (Natural Gas Services Group, PetroQuest), not the verbatim filing text: durations,
