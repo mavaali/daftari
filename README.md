@@ -416,6 +416,34 @@ fail_on:
   transitive_staleness: 100          # default: generous; teams tune
 ```
 
+## Tension Court
+
+Tensions wait in a log; the court turns them into decidable cases. `daftari
+court` compiles a **docket** — every open tension briefed and ranked (stale
+first, then by blast radius): both sides' claims, the present state of their
+documents, the downstream stakes, cluster membership, and **precedents** —
+past rulings on disputes that shared a document, a collection pair, or a
+kind.
+
+```bash
+# The docket — a 5-minute weekly ritual
+daftari court --vault ./my-vault
+
+# One case's full brief (verbatim rationales from cited precedents)
+daftari court --tension tension-abc123
+
+# Rule. The rationale is recorded verbatim and cited by future dockets.
+daftari court rule tension-abc123 --kind corrected \
+  --rationale "Vendor pricing page confirmed the entry tier on 2026-07-10."
+```
+
+Rulings go through the same `resolveTension` write path as
+`vault_tension_resolve` — a ruling records the closure, it never edits the
+disputed documents. Precedent retrieval is deterministic (shared-document >
+collection-pair > same-kind; no LLM): the court retrieves how this house has
+resolved similar disputes before, and whether a precedent applies stays the
+human's judgment. Memory grows case law.
+
 ## Belief archaeology
 
 Git is the version layer, so the vault can answer **"what did we believe on

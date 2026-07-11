@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`daftari court` — the Tension Court.** Common-law memory over the
+  tension log. `daftari court` compiles a **docket**: every open tension
+  briefed and ranked by priority (aging tier stale→fresh, then blast size,
+  then age) — both sides' claims verbatim with the present status and decay
+  of their documents ("gone" when a side was deleted), the union blast
+  radius a ruling would settle (reusing `computeBlast` and the
+  reverse-source/link maps from `vault_tension_blast`), tension-cluster
+  membership, and **precedents**: past rulings retrieved by a deterministic
+  three-tier match (shared-document > collection-pair > same-kind; newest
+  first within a tier, capped at 3, no LLM). `--tension <id>` renders a
+  single case's full brief including precedent rationales verbatim.
+  `daftari court rule <id> --kind superseded|corrected|accepted|invalid
+  [--rationale …] [--references …] [--by …]` records the ruling through the
+  same `resolveTension` write path as `vault_tension_resolve`; the rationale
+  is recorded verbatim and cited by future dockets — a ruling is precedent
+  the moment it lands, because a precedent IS a resolved tension. The court
+  retrieves and briefs; it never decides, and a ruling never edits the
+  disputed documents. Markdown to stdout, `--output` / `--output-json`;
+  audit-convention exit codes (0/2/3).
+
 - **`daftari asof` — belief archaeology.** A read-only CLI report over the
   vault's git history: `daftari asof <ref-or-date>` resolves a git ref or a
   `YYYY-MM-DD` date (the last commit on or before that day) and reports the
