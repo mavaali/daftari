@@ -56,7 +56,7 @@ compiles; the vault preserves; *you* keep the judgment. See
 
 ## What it is
 
-A directory of markdown files with YAML frontmatter, exposed to agents as 14
+A directory of markdown files with YAML frontmatter, exposed to agents as 26
 MCP tools over stdio. The vault is plain text: you can read it in any editor,
 `git log` it, grep it. Daftari adds the machinery agents need to treat it as a
 shared workspace.
@@ -86,11 +86,22 @@ layers 3 and 4.
 
 **Read:** `vault_read`, `vault_index`, `vault_status`
 
+**Attest:** `vault_receipt` — compile an epistemic receipt for the documents
+an answer cites: per-source status, confidence, provenance, freshness, exact
+content-version hash, supersession-chain resolution, and open tensions, plus
+deterministic summary flags, the vault's git HEAD as an as-of anchor, and a
+recomputable hash over the whole receipt. Attach it to the answer so any
+consumer can see what the answer stands on.
+
 **Search:** `vault_search` (hybrid BM25 + vector), `vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
 
-**Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`
+**Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`
 
-**Curate:** `vault_tension_log`, `vault_lint`, `vault_provenance`
+**Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_lint`, `vault_provenance`
+
+**Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`
+
+**Ratify:** `vault_stage_action`, `vault_ratify`
 
 The curation engine is advisory: `vault_lint` reports problems and
 `vault_tension_log` records contradictions. Neither auto-fixes anything. Every
