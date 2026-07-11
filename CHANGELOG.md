@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`daftari asof` — belief archaeology.** A read-only CLI report over the
+  vault's git history: `daftari asof <ref-or-date>` resolves a git ref or a
+  `YYYY-MM-DD` date (the last commit on or before that day) and reports the
+  vault's belief state at that point plus the drift since — documents
+  added/removed, `status`/`confidence` transitions, body-change counts, and
+  tensions opened or resolved (the committed `.daftari/tensions.md` is parsed
+  at both points with the live parser via the newly exported
+  `parseTensionLog`). `--doc <path>` adds a single-document trajectory
+  (frontmatter then vs now, every commit touching it since); `--blast <path>`
+  adds a **counterfactual replay** — the blast radius of the document
+  computed over the tree *as of the commit* (reusing `computeBlast` and the
+  reverse source/link maps from `vault_tension_blast`), each downstream
+  document annotated with its status today ("this fact turned out wrong — who
+  had inherited it, and where are they now?"). Strictly read-only plumbing:
+  `git ls-tree` + one `git cat-file --batch` process for the whole historical
+  tree — no checkout, no worktree, no index, no API key. Historical trees are
+  filtered with the live loader's exclusion rules (dotfiles, `.daftari/`,
+  `node_modules`, `.obsidian/`, `.trash/`) so then/now diffs can't report
+  phantom drift. Markdown to stdout, `--output` / `--output-json` to files;
+  audit-convention exit codes (0 report, 2 config/usage, 3 runtime). Pairs
+  with `vault_receipt`: a receipt's `vaultHead` is the anchor to hand back to
+  `asof`.
+
 - **`vault_receipt` — the epistemic receipt.** A new read-only MCP tool that
   compiles, for the set of documents an answer cites, a single attachable
   artifact: per-source status / confidence / provenance / freshness (decay),

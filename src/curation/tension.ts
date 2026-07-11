@@ -279,6 +279,22 @@ function parseBlock(block: string): TensionEntry | null {
   return entry;
 }
 
+// Parses a raw tensions.md body into entries. Exposed separately from
+// listTensions so consumers that hold historical file content (e.g.
+// `daftari asof` reading the log at a past commit) parse with the exact
+// same rules as the live read path.
+export function parseTensionLog(raw: string): TensionEntry[] {
+  const entries: TensionEntry[] = [];
+  // Each entry starts at a line beginning with "## ".
+  for (const block of raw.split(/(?=^## )/m)) {
+    const trimmed = block.trim();
+    if (!trimmed.startsWith("## ")) continue;
+    const entry = parseBlock(trimmed);
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
 // Reads back every logged tension, optionally filtered to one status. A
 // missing log is not an error — it just means no tensions have been logged.
 export async function listTensions(
@@ -294,15 +310,7 @@ export async function listTensions(
     return err(new Error(`cannot read tension log: ${reason}`));
   }
 
-  const entries: TensionEntry[] = [];
-  // Each entry starts at a line beginning with "## ".
-  for (const block of raw.split(/(?=^## )/m)) {
-    const trimmed = block.trim();
-    if (!trimmed.startsWith("## ")) continue;
-    const entry = parseBlock(trimmed);
-    if (entry) entries.push(entry);
-  }
-
+  const entries = parseTensionLog(raw);
   return ok(status ? entries.filter((e) => e.status === status) : entries);
 }
 

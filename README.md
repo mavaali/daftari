@@ -416,6 +416,34 @@ fail_on:
   transitive_staleness: 100          # default: generous; teams tune
 ```
 
+## Belief archaeology
+
+Git is the version layer, so the vault can answer **"what did we believe on
+March 3?"** `daftari asof` is a read-only report over the repo's history — no
+checkout, no index, no API key:
+
+```bash
+# The vault's belief state at a date (or any git ref), plus the drift since
+daftari asof 2026-03-03 --vault ./my-vault
+
+# One document's trajectory: frontmatter then vs now, commits in between
+daftari asof HEAD~20 --doc pricing/helios-consumption-pricing.md
+
+# Counterfactual replay: this fact turned out wrong — who had inherited it
+# at the time, and where are they now?
+daftari asof 2026-03-03 --blast pricing/helios-consumption-pricing.md
+```
+
+The default report shows the document and tension state at that point and
+the drift since: documents added/removed, `status`/`confidence` transitions,
+and tensions opened or resolved. `--blast` computes the blast radius of a
+document over the tree *as of the commit* (same source/link edge semantics as
+`vault_tension_blast`), annotating each downstream document with its status
+today — the post-mortem view for a fact that was later corrected. Markdown to
+stdout by default; `--output` / `--output-json` write files. Pairs with
+`vault_receipt`: a receipt's `vaultHead` is exactly the anchor to hand back
+to `asof`.
+
 ## Development
 
 ```
