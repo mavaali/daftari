@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **CB7 decision-divergence bench** (`integrations/consensus-bench`,
+  benchmark tooling only). Implements the
+  2026-07-11 CB7 design: instance assembly from existing artifacts (CB6
+  tension pairs, CO2 stale-trap diffs, consensus-box supersession chains as
+  settled controls — CB6 tension items excluded from the control set),
+  condition renderer with locked validity invariants (task text
+  byte-identical across memory conditions; the collapsed block carries one
+  value and no epistemic language; settled controls give the foil the
+  governing value), deterministic enum scorer (divergence, calibration,
+  hedge tax — no LLM judge on primary metrics), and `cb7-runner.mjs` for the
+  live panel run (`--gate` mode runs the second-rater leakage check).
+  M-collapsed for tensions holds the challenger position (recency /
+  last-write-wins) rather than the spec's CB6-foil-verdict, a deterministic
+  deviation recorded in the module.
+
 ### Added
 
 - **`daftari court` — the Tension Court.** Common-law memory over the
