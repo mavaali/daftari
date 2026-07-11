@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`vault_receipt` — the epistemic receipt.** A new read-only MCP tool that
+  compiles, for the set of documents an answer cites, a single attachable
+  artifact: per-source status / confidence / provenance / freshness (decay),
+  the exact content-version hash, a filesystem-walked resolution of the
+  supersession chain (`resolved` / `restricted` / `dangling` / `cycle`), and
+  every unresolved tension touching the source — plus a deterministic summary
+  (`byStatus`, `openTensions`, oldest/newest `updated`, sorted
+  machine-readable flags such as `cites-stale`, `cites-contested`,
+  `cites-superseded`, `supersession-unresolved`; empty flags mean current,
+  grounded, and uncontested), the vault's git HEAD as an as-of anchor, and a
+  recomputable SHA-256 over the whole receipt. Discipline: the receipt only
+  reads (frontmatter, tension log, git); flags are deterministic derivations;
+  the optional caller-supplied `claim` rides verbatim and is never
+  interpolated into Daftari-authored text. RBAC mirrors the read path: a
+  receipt over an unreadable collection is denied, an unreadable supersession
+  hop degrades to `restricted`, and a tension is visible only when both
+  sources' collections are readable (the `vault_status` precedent). README
+  tool list updated to the full 26-tool surface (the "14 tools" count
+  predated the edge / staged-action / tension-graph tools).
+
 - **OpenRouter LLM transport for `daftari consolidate`** (`--transport
   anthropic|openrouter`, env fallback `DAFTARI_LLM_TRANSPORT`). A second
   model-family client (`createOpenRouterClient`) implementing the same
