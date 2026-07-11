@@ -31,6 +31,7 @@ const USAGE = `daftari — an MCP server that exposes a curated markdown vault t
 Usage:
   daftari --init [path]               Scaffold a new vault (default: ./daftari-vault)
   daftari --vault <path> [options]    Start the MCP server (stdio) against a vault
+  daftari asof <ref-or-date>          Belief archaeology — the vault at a past commit (see: daftari asof --help)
   daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
@@ -228,6 +229,12 @@ export async function initVault(targetPath: string): Promise<number> {
 }
 
 export async function run(argv: string[]): Promise<void> {
+  if (argv[0] === "asof") {
+    const { runAsof } = await import("./asof/index.js");
+    process.exitCode = await runAsof(argv.slice(1));
+    return;
+  }
+
   if (argv[0] === "audit") {
     const { runAudit } = await import("./audit/index.js");
     process.exitCode = await runAudit(argv.slice(1));
