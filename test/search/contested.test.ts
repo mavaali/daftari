@@ -95,4 +95,27 @@ describe("contested", () => {
     await logTension(vault);
     expect(contestedFor(vault, db, "pricing/no-such-doc.md")).toBeNull();
   });
+
+  it("caps at 3 (date desc, then logged order desc) and reports the true total", async () => {
+    // Four same-day tensions on DOC_A: the tiebreak is logged order.
+    for (const n of [1, 2, 3, 4]) {
+      await logTension(vault, { title: `t${n}`, claimB: `counter-claim ${n}` });
+    }
+    const hit = contestedFor(vault, db, DOC_A);
+    expect(hit?.contestedCount).toBe(4);
+    expect(hit?.contested).toHaveLength(3);
+    // Most recently logged first.
+    expect(hit?.contested.map((c) => c.claimOther)).toEqual([
+      "counter-claim 4",
+      "counter-claim 3",
+      "counter-claim 2",
+    ]);
+  });
+
+  it("orders by date desc before logged order", async () => {
+    await logTension(vault, { date: "2026-07-12", claimB: "newer" });
+    await logTension(vault, { date: "2026-07-01", claimB: "older" });
+    const hit = contestedFor(vault, db, DOC_A);
+    expect(hit?.contested.map((c) => c.claimOther)).toEqual(["newer", "older"]);
+  });
 });
