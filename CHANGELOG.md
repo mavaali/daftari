@@ -114,6 +114,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loses to inline across all panel models. Tensions remain advisory and
   never affect ranking.
 
+### Security
+
+- **Tension tools now enforce the both-sides visibility rule** (#212).
+  `vault_tension_clusters` and `vault_tension_blast` compute over only the
+  tensions whose BOTH sides the caller can read — filtered before
+  aggregation, so counts, cluster sizes, and blast seeds reveal nothing
+  about hidden entries. `vault_tension_log` refuses to record claims naming
+  a document the caller cannot read (denial names the caller-supplied path
+  only); `vault_tension_resolve` returns the exact not-found error for
+  invisible tensions, checked before the loop-authored ratify rule. This
+  closes the bypass around #211's contested-annotation gate: one rule
+  (`collectionForPath` + `canSeeTension`) now governs every tension
+  surface. No-RBAC deployments are unaffected. Known residual (accepted):
+  sequential tension ids still reveal the total entry count to callers who
+  can log. A follow-up consolidation (`sourceReadable`, exported from
+  `tension-access.ts`) then unified the canonicalize → reject-escape →
+  `canRead` sequence into a single predicate adopted by all four call
+  sites — the tension log/blast gates above and #211's contested-annotation
+  filter in `contested.ts` — so one guard now backs every tension-graph tool surface,
+  including contested annotations on `vault_search` hits. Further
+  residuals (accepted, tracked in follow-ups): `vault_status` /
+  `vault_receipt` / court-precedent tension summaries still filter by
+  uncanonicalized top-level segment, and `vault_lint`'s tension-health
+  aggregates count all entries (counts only, no content).
+
 ## [1.29.0] - 2026-06-25
 
 ### Changed

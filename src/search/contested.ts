@@ -14,10 +14,12 @@
 // must mean live disagreement.
 
 import { readFileSync, statSync } from "node:fs";
-import { posix, resolve } from "node:path";
-import { type AccessContext, canRead } from "../access/rbac.js";
+import { resolve } from "node:path";
+import type { AccessContext } from "../access/rbac.js";
 import { parseTensionLog, type TensionKind, tensionsPath } from "../curation/tension.js";
-import { getDocument, type IndexDb } from "../storage/index-db.js";
+import { sourceReadable } from "../curation/tension-access.js";
+import type { IndexDb } from "../storage/index-db.js";
+import { canonicalRel } from "../utils/paths.js";
 
 export interface ContestedTension {
   id?: string; // absent only for legacy entries
@@ -42,18 +44,6 @@ interface SideRecord {
   counterpart: string;
   claimSelf: string;
   claimOther: string;
-}
-
-// Lexical, IO-free canonicalization of a vault-relative path: aliasing
-// (`pricing/../pricing/a.md`) must join its canonical hit (#127/#128 class).
-// A path that escapes the root normalizes to a `..`-leading form, which can
-// never equal an indexed hit path — escapes simply never join. normalize("")
-// returns "." — map it back to "" so the missing-source guard in buildByPath
-// fires on entries with a blank Source line instead of indexing the valid
-// side under a junk "." counterpart.
-function canonicalRel(p: string): string {
-  const n = posix.normalize(p.trim().replace(/\\/g, "/"));
-  return n === "." ? "" : n.replace(/^\.\//, "");
 }
 
 // mtime-keyed cache of the parsed, indexed log — the E2 loadConfig pattern
@@ -128,15 +118,6 @@ function tensionsByPath(vaultRoot: string): Map<string, SideRecord[]> {
   return byPath;
 }
 
-// The counterpart's collection for the RBAC gate: the indexed row when
-// present; the physical first path segment otherwise (the S1/#192 rule —
-// key on where the bytes live, never on a declared string). The fallback
-// errs closed: a `..`-leading or empty segment matches no role's read list.
-function counterpartCollection(db: IndexDb, counterpart: string): string {
-  const doc = getDocument(db, counterpart);
-  return doc?.collection ?? counterpart.split("/")[0] ?? "";
-}
-
 // The per-hit join. Returns null when the hit has no visible unresolved
 // tensions — callers leave the hit untouched (fields absent, never empty).
 //
@@ -156,7 +137,7 @@ export function contestedFor(
   if (records === undefined) return null;
 
   const visible = access
-    ? records.filter((r) => canRead(access.role, counterpartCollection(db, r.counterpart)))
+    ? records.filter((r) => sourceReadable(db, access, r.counterpart))
     : records;
   if (visible.length === 0) return null;
 

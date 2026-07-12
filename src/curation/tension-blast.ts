@@ -38,6 +38,7 @@
 // re-queued, so a sources b sources a terminates after one round trip.
 
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { TensionEntry } from "./tension.js";
 import { loadTensionClusters } from "./tension-clusters.js";
 import {
   buildPathIndexes,
@@ -207,6 +208,7 @@ export function computeBlast(args: ComputeBlastArgs): ComputeBlastOutput {
 export async function computeTensionBlast(
   vaultRoot: string,
   input: TensionBlastInput,
+  entryFilter: (entries: TensionEntry[]) => TensionEntry[] = (e) => e,
 ): Promise<Result<TensionBlastResult, Error>> {
   const hasDoc = typeof input.document === "string" && input.document.length > 0;
   const hasCluster = typeof input.cluster_id === "string" && input.cluster_id.length > 0;
@@ -224,7 +226,7 @@ export async function computeTensionBlast(
   const docs = docsResult.value;
   const knownPaths = new Set(docs.map((d) => d.path));
 
-  const clustersResult = await loadTensionClusters(vaultRoot);
+  const clustersResult = await loadTensionClusters(vaultRoot, new Date(), entryFilter);
   if (!clustersResult.ok) return clustersResult;
   const clusters = clustersResult.value.clusters;
 

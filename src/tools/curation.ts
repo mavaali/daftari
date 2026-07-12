@@ -33,12 +33,15 @@ import {
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
+import { canSeeTension, sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { IndexDb } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForActiveProvider } from "./search.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
 // (or any role with no read access) is denied.
@@ -50,6 +53,16 @@ function requireReadAccess(tool: string, access?: AccessContext): Result<void, E
     };
   }
   return ok(undefined);
+}
+
+// Read-only index handle for collection lookups. openIndexForActiveProvider
+// ONLY — never ensureIndexReady, which reindexes on an empty index; these
+// tools must never reindex. Open failure degrades to null: visibility then
+// gates on the pure first-segment rule (fail-closed), and the tool call
+// itself never fails for RBAC-lookup reasons.
+function openIndexForAccessOrNull(vaultRoot: string): IndexDb | null {
+  const opened = openIndexForActiveProvider(vaultRoot);
+  return opened.ok ? opened.value : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +109,27 @@ export async function vaultTensionLog(
           `(unspecified is for legacy entries only and is never loggable)`,
       ),
     );
+  }
+
+  // #212: you cannot quote what you cannot read. The check resolves each
+  // side's collection, but the denial names the caller-supplied path, never
+  // the resolved collection — naming the collection would leak a
+  // frontmatter-declared collection for existing docs.
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      for (const side of [sourceA.value, sourceB.value]) {
+        if (!sourceReadable(db, access, side)) {
+          return err(
+            new Error(
+              `access denied: role '${access.roleName}' cannot log a tension naming '${side}'`,
+            ),
+          );
+        }
+      }
+    } finally {
+      db?.close();
+    }
   }
 
   return addTension(vaultRoot, {
@@ -174,6 +208,19 @@ export async function vaultTensionResolve(
   const all = await listTensions(vaultRoot);
   if (!all.ok) return all;
   const target = all.value.find((t) => t.id === id.trim());
+  // #212: an invisible tension must be indistinguishable from a nonexistent
+  // one — checked BEFORE the ratify rule, whose error would otherwise
+  // confirm existence to a caller who cannot see the entry.
+  if (target && access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      if (!canSeeTension(db, access, target.sourceA, target.sourceB)) {
+        return err(new Error(`tension not found: ${id.trim()}`));
+      }
+    } finally {
+      db?.close();
+    }
+  }
   if (target && target.loggedBy === CONSOLIDATE_AGENT && access && !canRatify(access.role)) {
     return err(
       new Error(`access denied: role '${access.roleName}' cannot resolve a loop-authored tension`),
@@ -210,7 +257,15 @@ export async function vaultTensionClusters(
 ): Promise<Result<TensionClustersResult, Error>> {
   const allowed = requireReadAccess("vault_tension_clusters", access);
   if (!allowed.ok) return allowed;
-  return loadTensionClusters(vaultRoot);
+
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    return await loadTensionClusters(vaultRoot, new Date(), (entries) =>
+      visibleTensions(db, entries, access),
+    );
+  } finally {
+    db?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +306,19 @@ export async function vaultTensionBlast(
     if (trimmed.length > 0) cluster_id = trimmed;
   }
 
-  return computeTensionBlast(vaultRoot, { document, cluster_id });
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    if (document !== undefined && access && !sourceReadable(db, access, document)) {
+      return err(
+        new Error(`access denied: role '${access.roleName}' cannot blast from '${document}'`),
+      );
+    }
+    return await computeTensionBlast(vaultRoot, { document, cluster_id }, (entries) =>
+      visibleTensions(db, entries, access),
+    );
+  } finally {
+    db?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------

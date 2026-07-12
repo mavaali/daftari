@@ -174,8 +174,11 @@ export function computeTensionClusters(
 export async function loadTensionClusters(
   vaultRoot: string,
   now: Date = new Date(),
+  // Visibility policy injected by the tool layer (#212) so this module never
+  // imports RBAC. Identity when omitted — non-tool callers see everything.
+  entryFilter: (entries: TensionEntry[]) => TensionEntry[] = (e) => e,
 ): Promise<Result<TensionClustersResult, Error>> {
   const tensions = await listTensions(vaultRoot);
   if (!tensions.ok) return err(tensions.error);
-  return ok(computeTensionClusters(tensions.value, now));
+  return ok(computeTensionClusters(entryFilter(tensions.value), now));
 }

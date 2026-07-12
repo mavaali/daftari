@@ -699,6 +699,22 @@ export function getDocument(db: IndexDb, path: string): IndexedDocument | null {
   return row ? rowToDocument(row) : null;
 }
 
+// The collection that RBAC-gates access to `path`: the indexed row when
+// present; the path's first segment otherwise (the S1/#192 rule — key on
+// where the bytes live, never on a caller-declared string). `db` null means
+// the index is unavailable: gating degrades to the pure segment rule. That
+// fallback is only as fail-closed as the role config is sane — it does not
+// itself guard against blank or `..`-escaping paths; callers that need the
+// config-independent guard use tension-access's `sourceReadable`, which
+// canonicalizes and rejects such paths before resolving the collection.
+export function collectionForPath(db: IndexDb | null, path: string): string {
+  if (db !== null) {
+    const doc = getDocument(db, path);
+    if (doc) return doc.collection;
+  }
+  return path.split("/")[0] ?? "";
+}
+
 // Fetches the full document rows for a specific set of paths in one chunked
 // pass, instead of loading the whole `documents` table. The search hot path
 // uses this to scope the full-row read (content blob + JSON tag/token parse)
