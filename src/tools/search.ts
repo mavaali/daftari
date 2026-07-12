@@ -8,6 +8,7 @@
 
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { contestedFor } from "../search/contested.js";
 import {
   applyCoveragePass,
   DEFAULT_COVERAGE_OPTIONS,
@@ -171,9 +172,18 @@ export async function vaultSearch(
     // (inside resolveCurrentSource), not the status string. The resolver no-ops
     // for hits with no successor. This is the suppression lever composing with
     // the coverage recall lever.
+    //
+    // Contested post-join (same pass): surface unresolved tensions inline.
+    // The feud benchmark measured this shape — inline beats a dedicated tool
+    // the agent must choose to call. Advisory only; never a score input.
     for (const hit of permitted) {
       const cs = resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
+      const ct = contestedFor(vaultRoot, db, hit.path, access);
+      if (ct) {
+        hit.contested = ct.contested;
+        hit.contestedCount = ct.contestedCount;
+      }
     }
 
     // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if
@@ -281,7 +291,10 @@ export const searchTools: ToolDefinition[] = [
     description:
       "Hybrid search across the vault: BM25 lexical ranking combined with " +
       "vector semantic similarity. Returns ranked documents with snippets. " +
-      "Falls back to lexical-only ranking if embeddings are unavailable.",
+      "Falls back to lexical-only ranking if embeddings are unavailable. " +
+      "Hits may carry `contested`: unresolved recorded tensions involving " +
+      "the document, with both claims shown (`claimSelf`/`claimOther`); " +
+      "`contestedCount` gives the total when more than 3 exist.",
     inputSchema: {
       type: "object",
       properties: {
