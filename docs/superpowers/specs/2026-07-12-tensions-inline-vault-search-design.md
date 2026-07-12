@@ -44,6 +44,11 @@ contested?: ContestedTension[]; // capped at 3, most recent first
 contestedCount?: number;        // TOTAL matching tensions (may exceed 3)
 ```
 
+Ordering: by entry `date` descending, tie-broken by position in the log file
+(later block first — the log is append-only, so file order is logged order).
+Entry dates are day-granular, so the tiebreak is load-bearing for same-day
+tensions and must be deterministic.
+
 Orientation is normalized: `claimSelf` is always the hit's own side,
 regardless of whether the hit is the entry's `sourceA` or `sourceB`.
 
