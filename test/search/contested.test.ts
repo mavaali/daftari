@@ -118,4 +118,52 @@ describe("contested", () => {
     const hit = contestedFor(vault, db, DOC_A);
     expect(hit?.contested.map((c) => c.claimOther)).toEqual(["newer", "older"]);
   });
+
+  const readsOnlyPricing: AccessContext = {
+    user: "t",
+    roleName: "analyst",
+    role: { read: ["pricing"], write: [], promote: false, ratify: false },
+  };
+  const readsBoth: AccessContext = {
+    user: "t",
+    roleName: "lead",
+    role: {
+      read: ["pricing", "competitive-intel"],
+      write: [],
+      promote: false,
+      ratify: false,
+    },
+  };
+
+  it("omits the annotation entirely when the counterpart's collection is unreadable", async () => {
+    await logTension(vault);
+    // DOC_A's counterpart is DOC_B (competitive-intel): unreadable ⇒ omit.
+    expect(contestedFor(vault, db, DOC_A, readsOnlyPricing)).toBeNull();
+    // Same role, hit on the readable counterpart of an unreadable doc:
+    // DOC_B's counterpart is DOC_A (pricing): readable ⇒ annotate.
+    expect(contestedFor(vault, db, DOC_B, readsOnlyPricing)).not.toBeNull();
+    // A role reading both sees it from both sides.
+    expect(contestedFor(vault, db, DOC_A, readsBoth)).not.toBeNull();
+  });
+
+  it("contestedCount counts only visible tensions", async () => {
+    await logTension(vault); // counterpart competitive-intel (hidden)
+    await logTension(vault, {
+      sourceB: "pricing/enterprise-tier-launch.md",
+      claimB: "tier launch contradicts credit pricing",
+    }); // counterpart pricing (visible)
+    const hit = contestedFor(vault, db, DOC_A, readsOnlyPricing);
+    expect(hit?.contestedCount).toBe(1);
+    expect(hit?.contested[0]?.counterpart).toBe("pricing/enterprise-tier-launch.md");
+  });
+
+  it("falls back to the first path segment when the counterpart is not indexed", async () => {
+    await logTension(vault, {
+      sourceB: "competitive-intel/deleted-since-logging.md",
+      claimB: "gone but logged",
+    });
+    // Segment says competitive-intel: hidden from pricing-only, visible to both-reader.
+    expect(contestedFor(vault, db, DOC_A, readsOnlyPricing)).toBeNull();
+    expect(contestedFor(vault, db, DOC_A, readsBoth)).not.toBeNull();
+  });
 });
