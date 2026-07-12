@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AccessContext } from "../../src/access/rbac.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
-import { listTensions, resolveTension } from "../../src/curation/tension.js";
+import { addTension, listTensions, resolveTension } from "../../src/curation/tension.js";
 import {
   curationTools,
   vaultLint,
@@ -311,6 +312,94 @@ describe("curation tools", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.count).toBe(1);
+    });
+  });
+
+  describe("tension RBAC alignment (#212)", () => {
+    const pricingOnly: AccessContext = {
+      user: "t",
+      roleName: "analyst",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const both: AccessContext = {
+      user: "t",
+      roleName: "lead",
+      role: { read: ["pricing", "intel"], write: [], promote: false, ratify: false },
+    };
+
+    async function seedCrossTension(v: string) {
+      mkdirSync(join(v, "pricing"), { recursive: true });
+      mkdirSync(join(v, "intel"), { recursive: true });
+      writeFileSync(join(v, "pricing/a.md"), "---\ntitle: A\n---\nbody a");
+      writeFileSync(join(v, "pricing/b.md"), "---\ntitle: B\n---\nbody b");
+      writeFileSync(join(v, "intel/c.md"), "---\ntitle: C\n---\nbody c");
+      const t1 = await addTension(v, {
+        title: "in-pricing",
+        kind: "factual",
+        sourceA: "pricing/a.md",
+        claimA: "x",
+        sourceB: "pricing/b.md",
+        claimB: "y",
+        loggedBy: "test",
+      });
+      const t2 = await addTension(v, {
+        title: "cross",
+        kind: "factual",
+        sourceA: "pricing/a.md",
+        claimA: "x",
+        sourceB: "intel/c.md",
+        claimB: "z",
+        loggedBy: "test",
+      });
+      if (!t1.ok || !t2.ok) throw new Error("seed failed");
+      return { t1: t1.value, t2: t2.value };
+    }
+
+    it("clusters: hidden tensions are absent from members AND counts", async () => {
+      await seedCrossTension(vault);
+      const restricted = await vaultTensionClusters(vault, {}, pricingOnly);
+      expect(restricted.ok).toBe(true);
+      if (!restricted.ok) return;
+      const docs = restricted.value.clusters.flatMap((c) => c.documents);
+      expect(docs).not.toContain("intel/c.md");
+      // Only the in-pricing tension remains: exactly one cluster of the pair.
+      expect(restricted.value.clusters).toHaveLength(1);
+      expect(restricted.value.clusters[0]?.documents.sort()).toEqual([
+        "pricing/a.md",
+        "pricing/b.md",
+      ]);
+      // Spec case 6's "absent from counts": the surviving cluster counts only
+      // the visible tension.
+      expect(restricted.value.clusters[0]?.tension_count).toBe(1);
+
+      const full = await vaultTensionClusters(vault, {}, both);
+      expect(full.ok).toBe(true);
+      if (!full.ok) return;
+      expect(full.value.clusters.flatMap((c) => c.documents)).toContain("intel/c.md");
+    });
+
+    it("blast: unreadable explicit doc is denied by path, before existence", async () => {
+      await seedCrossTension(vault);
+      const denied = await vaultTensionBlast(vault, { document: "intel/c.md" }, pricingOnly);
+      expect(denied.ok).toBe(false);
+      if (denied.ok) return;
+      expect(denied.error.message).toContain("access denied");
+      expect(denied.error.message).toContain("intel/c.md");
+      // Purely input-derived: a NONEXISTENT doc in an unreadable collection
+      // gets the identical denial shape, not "not found".
+      const ghost = await vaultTensionBlast(vault, { document: "intel/ghost.md" }, pricingOnly);
+      expect(ghost.ok).toBe(false);
+      if (ghost.ok) return;
+      expect(ghost.error.message).toContain("access denied");
+      expect(ghost.error.message).not.toContain("not found");
+    });
+
+    it("blast: hidden tensions do not seed cluster membership", async () => {
+      await seedCrossTension(vault);
+      const res = await vaultTensionBlast(vault, { document: "pricing/a.md" }, pricingOnly);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.cluster_documents).not.toContain("intel/c.md");
     });
   });
 });

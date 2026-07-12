@@ -33,12 +33,16 @@ import {
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
+import { visibleTensions } from "../curation/tension-access.js";
 import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { collectionForPath, type IndexDb } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
+import { canonicalRel } from "../utils/paths.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForActiveProvider } from "./search.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
 // (or any role with no read access) is denied.
@@ -50,6 +54,16 @@ function requireReadAccess(tool: string, access?: AccessContext): Result<void, E
     };
   }
   return ok(undefined);
+}
+
+// Read-only index handle for collection lookups. openIndexForActiveProvider
+// ONLY — never ensureIndexReady, which reindexes on an empty index; these
+// tools must never reindex. Open failure degrades to null: visibility then
+// gates on the pure first-segment rule (fail-closed), and the tool call
+// itself never fails for RBAC-lookup reasons.
+function openIndexForAccessOrNull(vaultRoot: string): IndexDb | null {
+  const opened = openIndexForActiveProvider(vaultRoot);
+  return opened.ok ? opened.value : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +224,15 @@ export async function vaultTensionClusters(
 ): Promise<Result<TensionClustersResult, Error>> {
   const allowed = requireReadAccess("vault_tension_clusters", access);
   if (!allowed.ok) return allowed;
-  return loadTensionClusters(vaultRoot);
+
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    return await loadTensionClusters(vaultRoot, new Date(), (entries) =>
+      visibleTensions(db, entries, access),
+    );
+  } finally {
+    db?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +273,26 @@ export async function vaultTensionBlast(
     if (trimmed.length > 0) cluster_id = trimmed;
   }
 
-  return computeTensionBlast(vaultRoot, { document, cluster_id });
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    if (document !== undefined && access) {
+      const canonical = canonicalRel(document);
+      const readable =
+        canonical.length > 0 &&
+        !canonical.startsWith("..") &&
+        canRead(access.role, collectionForPath(db, canonical));
+      if (!readable) {
+        return err(
+          new Error(`access denied: role '${access.roleName}' cannot blast from '${document}'`),
+        );
+      }
+    }
+    return await computeTensionBlast(vaultRoot, { document, cluster_id }, (entries) =>
+      visibleTensions(db, entries, access),
+    );
+  } finally {
+    db?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
