@@ -293,8 +293,8 @@ export const searchTools: ToolDefinition[] = [
       "vector semantic similarity. Returns ranked documents with snippets. " +
       "Falls back to lexical-only ranking if embeddings are unavailable. " +
       "Hits may carry `contested`: unresolved recorded tensions involving " +
-      "the document, with both claims shown (`claimSelf`/`claimOther`); " +
-      "`contestedCount` gives the total when more than 3 exist.",
+      "the document, with both claims shown (`claimSelf`/`claimOther`), " +
+      "capped at 3 per hit; `contestedCount` reports the true total.",
     inputSchema: {
       type: "object",
       properties: {

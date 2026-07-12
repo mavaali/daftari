@@ -139,6 +139,7 @@ describe("search tools", () => {
       const result = await vaultSearch(vault, { query: "pricing" });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
+      expect(result.value.hits.length).toBeGreaterThan(0);
       for (const hit of result.value.hits) {
         expect(hit.contested).toBeUndefined();
         expect(hit.contestedCount).toBeUndefined();
