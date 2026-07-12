@@ -60,11 +60,59 @@ export function buildTensionInstances(pairs: TensionPair[]): Cb7Instance[] {
   }));
 }
 
+// cleanBoxStatement — strip consensus-process apparatus from a box statement
+// so a settled wording reads as prose, not as an excerpt from a dispute
+// pipeline. The 2026-07-11 gate failure found the leak: settled wordings
+// carried `Supersedes [[#C35|#35]].` prefixes and `{{tq|…}}` templates that
+// the (hand-distilled) tension wordings lack — a differential watermark
+// between the arms, which is exactly what the gate exists to catch.
+//   - drop a leading "Supersedes [[#C..|#..]] (and [[#C..|#..]])." sentence
+//   - unwrap quote templates ({{tq|…}}, {{xt|…}}) to their inner text
+//   - reduce wikilinks to their surface text
+//   - drop any remaining {{…}} template and wiki bold/italic quotes
+export function cleanBoxStatement(raw: string): string {
+  let s = raw;
+  s = s.replace(/^Supersedes\s+\[\[[^\]]*\]\](?:(?:\s*,\s*|\s+and\s+)\[\[[^\]]*\]\])*\.?\s*/i, "");
+  // Interleave innermost-first: drop non-quote templates (formatting/meta),
+  // then unwrap quote templates — so a quote template that CONTAINED a
+  // formatting template flattens and unwraps on the next pass instead of
+  // being deleted wholesale with its prose (the trump-30 husk failure).
+  for (let i = 0; i < 4; i++) {
+    s = s.replace(/\{\{(?!(?:tq\d*|xt|tqq)\s*\|)[^{}]*\}\}/gi, "");
+    s = s.replace(/\{\{(?:tq\d*|xt|tqq)\s*\|([^{}]*)\}\}/gi, "$1");
+  }
+  s = s.replace(/\[\[(?:[^|\]]*\|)?([^\]]*)\]\]/g, "$1");
+  s = s.replace(/<[^>]+>/g, " ");
+  s = s.replace(/'{2,}/g, "");
+  // Box meta-note to editors about wikilink formatting — meaningless once
+  // the links are reduced to surface text.
+  s = s.replace(/\s*Linking exactly as shown\.?\s*/gi, " ");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// A cleaned statement that lost its payload in cleaning — an empty quotation,
+// a sentence that trails off into a colon, or too little text to be a
+// wording at all. Such a husk must never be presented as a candidate wording.
+export function isHusk(cleaned: string): boolean {
+  if (cleaned.length < 25) return true;
+  if (/""|“”|''/.test(cleaned)) return true;
+  if (/:\s*\.?\s*$/.test(cleaned)) return true;
+  return false;
+}
+
+// True when a cleaned statement still smells of the consensus pipeline —
+// leftover markup or process vocabulary. Such an instance is skipped rather
+// than shipped with a watermark.
+export function hasApparatus(text: string): boolean {
+  return /\{\{|\[\[|#C\d|\bSupersedes\b|\bsuperseded\b|\bRfC\b/i.test(text);
+}
+
 // Settled controls: consensus-box supersession chains. The superseded
 // predecessor's text is the "other" wording; the resolved active terminal is
 // the governing one. Deduped on the terminal (one instance per chain), and an
-// instance is kept only when both statements are non-empty and differ — a
-// chain whose predecessor text didn't parse can't make a two-sided case.
+// instance is kept only when both CLEANED statements are non-empty,
+// apparatus-free, and differ — a chain whose predecessor text didn't parse
+// (or won't come clean) can't make a fair two-sided case.
 //
 // Foil fairness (locked by test): M-collapsed holds the GOVERNING value here.
 // The box is curated, so a consolidation memory over the box gets settled
@@ -87,16 +135,20 @@ export function buildSettledInstances(
     if (!resolved.resolved || !resolved.item) continue;
     const terminal = resolved.item;
     if (seenTerminal.has(terminal.num) || excludeNums.has(terminal.num)) continue;
-    if (item.statement.length === 0 || terminal.statement.length === 0) continue;
-    if (item.statement === terminal.statement) continue;
+    const governing = cleanBoxStatement(terminal.statement);
+    const other = cleanBoxStatement(item.statement);
+    if (governing.length === 0 || other.length === 0) continue;
+    if (governing === other) continue;
+    if (hasApparatus(governing) || hasApparatus(other)) continue;
+    if (isHusk(governing) || isHusk(other)) continue;
     seenTerminal.add(terminal.num);
     out.push({
       id: `settled:trump-${terminal.num}`,
       bucket: "settled",
       topic: `consensus item #${terminal.num}`,
-      positionGoverning: terminal.statement,
-      positionOther: item.statement,
-      collapsedValue: terminal.statement,
+      positionGoverning: governing,
+      positionOther: other,
+      collapsedValue: governing,
       tensionNote: null,
     });
   }

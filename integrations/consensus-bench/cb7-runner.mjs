@@ -73,27 +73,68 @@ const traps = buildTrapInstances(truePairs(diffs));
 const instances = [...tensions, ...settled, ...traps];
 console.log(`instances: tension=${tensions.length} settled=${settled.length} trap=${traps.length}`);
 
-// ── --gate: second-rater leakage check on T1/T2 task prompts ───────────────
+// ── --gate: leakage gate, v2 (2026-07-11 redesign) ──────────────────────────
+// v1 asked the second rater "is this topic contested?" per instance and
+// flagged 13/13 — a constant confound: every instance is a famous contested
+// topic, and the rater knows it regardless of the prompt. That signal is
+// HARMLESS to the design: the wordings are shown identically in both memory
+// conditions, so topic contested-ness cannot produce spurious divergence.
+// The invalidating signal is a DIFFERENTIAL process watermark between the
+// arms (settled wordings carrying `Supersedes [[#C..]]` / `{{tq|…}}`
+// apparatus while tension wordings read as prose — the actual v1 finding).
+// v2 gates on exactly that:
+//   A. deterministic apparatus scan over every wording, all buckets (no API);
+//   B. second-rater residual: the two wordings ALONE (no task text — it is
+//      byte-identical across arms by hermetic test), asked for process
+//      apparatus, reported per arm. Pass = zero flags in both parts.
 if (process.argv.includes("--gate")) {
-  const GATE_SYSTEM =
-    "You are a precise evaluator of experimental prompts. Answer with a single token.";
-  let flagged = 0;
-  for (const [i, inst] of [...tensions, ...settled].entries()) {
-    const rc = renderCase(inst, i, "collapsed");
-    const taskOnly = rc.user.slice(rc.user.indexOf("TASK:"));
-    const q =
-      `Below is a decision task shown to a model (its private memory block has been removed).\n\n` +
-      `"""${taskOnly}"""\n\n` +
-      `From the task text alone — ignoring anything a memory could add — is there any signal ` +
-      `that this particular topic is contested/disputed rather than settled?\n` +
-      `Reply exactly one token: LEAKS or CLEAN.`;
-    const verdict = (await call(SECOND_RATER, GATE_SYSTEM, q, 10)).trim().toUpperCase();
-    const leaks = verdict.startsWith("LEAKS");
-    if (leaks) flagged += 1;
-    console.log(`  ${inst.id}: ${leaks ? "LEAKS ⚠" : "clean"}`);
+  const { hasApparatus } = await import(`${DIST}/consensus-cb7-instances.js`);
+
+  // Traps are exempt: their wordings are raw article passages where wiki
+  // markup appears symmetrically on both sides of every instance, and T3 is
+  // never compared against T1/T2. The watermark risk the gate exists for is
+  // differential between the tension and settled arms.
+  console.log("— part A: deterministic apparatus scan (T1/T2 wordings, no API)");
+  let scanHits = 0;
+  for (const inst of [...tensions, ...settled]) {
+    for (const [side, text] of [
+      ["governing", inst.positionGoverning],
+      ["other", inst.positionOther],
+    ]) {
+      if (hasApparatus(text)) {
+        scanHits += 1;
+        console.log(`  ${inst.id} [${side}]: APPARATUS ⚠  ${text.slice(0, 80)}`);
+      }
+    }
   }
-  console.log(`\ngate: ${flagged} flagged of ${tensions.length + settled.length}`);
-  process.exit(flagged > 0 ? 1 : 0);
+  console.log(`  scan: ${scanHits} hits over ${instances.length * 2} wordings`);
+
+  console.log("\n— part B: second-rater watermark check (T1/T2 wordings only)");
+  const GATE_SYSTEM =
+    "You are a precise evaluator of experimental materials. Answer with a single token.";
+  const flaggedByArm = { tension: 0, settled: 0 };
+  for (const inst of [...tensions, ...settled]) {
+    const q =
+      `Two candidate wordings for a reference-article passage:\n\n` +
+      `Wording 1: ${inst.positionGoverning}\n` +
+      `Wording 2: ${inst.positionOther}\n\n` +
+      `Judge FORM only, not topic: does either wording contain editorial-process ` +
+      `apparatus — wiki markup or templates ({{...}}, [[...]]), item numbers like ` +
+      `#C35, or explicit references to a consensus/supersession/RfC process — ` +
+      `rather than reading as ordinary article prose?\n` +
+      `Reply exactly one token: APPARATUS or CLEAN.`;
+    const verdict = (await call(SECOND_RATER, GATE_SYSTEM, q, 10)).trim().toUpperCase();
+    const hit = verdict.startsWith("APPARATUS");
+    if (hit) flaggedByArm[inst.bucket] += 1;
+    console.log(`  ${inst.id}: ${hit ? "APPARATUS ⚠" : "clean"}`);
+  }
+  console.log(
+    `\ngate v2: scan ${scanHits} · rater tension ${flaggedByArm.tension}/${tensions.length} · ` +
+      `rater settled ${flaggedByArm.settled}/${settled.length}`,
+  );
+  const failed = scanHits > 0 || flaggedByArm.tension > 0 || flaggedByArm.settled > 0;
+  console.log(failed ? "GATE FAILED — fix materials before the full run." : "GATE PASSED.");
+  process.exit(failed ? 1 : 0);
 }
 
 // ── full run ────────────────────────────────────────────────────────────────
