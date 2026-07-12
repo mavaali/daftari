@@ -16,11 +16,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import { type AccessContext, canRead } from "../access/rbac.js";
-import {
-  parseTensionLog,
-  type TensionKind,
-  tensionsPath,
-} from "../curation/tension.js";
+import { parseTensionLog, type TensionKind, tensionsPath } from "../curation/tension.js";
 import { getDocument, type IndexDb } from "../storage/index-db.js";
 
 export interface ContestedTension {
@@ -157,9 +153,7 @@ export function contestedFor(
 
   // Date desc, then log position desc: dates are day-granular, so the file
   // position (logged order) is the load-bearing same-day tiebreak.
-  const ordered = [...visible].sort(
-    (x, y) => y.date.localeCompare(x.date) || y.order - x.order,
-  );
+  const ordered = [...visible].sort((x, y) => y.date.localeCompare(x.date) || y.order - x.order);
 
   return {
     contested: ordered.slice(0, CONTESTED_CAP).map((r) => ({

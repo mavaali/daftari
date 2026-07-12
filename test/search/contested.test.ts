@@ -3,8 +3,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { addTension, resolveTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache, contestedFor } from "../../src/search/contested.js";
-import { openIndexForActiveProvider, vaultReindex } from "../../src/tools/search.js";
 import type { IndexDb } from "../../src/storage/index-db.js";
+import { openIndexForActiveProvider, vaultReindex } from "../../src/tools/search.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 // Two real fixture docs to hang tensions on.
@@ -165,5 +165,22 @@ describe("contested", () => {
     // Segment says competitive-intel: hidden from pricing-only, visible to both-reader.
     expect(contestedFor(vault, db, DOC_A, readsOnlyPricing)).toBeNull();
     expect(contestedFor(vault, db, DOC_A, readsBoth)).not.toBeNull();
+  });
+
+  it("sees a tension appended after a cached empty read (mtime bust, no manual clear)", async () => {
+    expect(contestedFor(vault, db, DOC_A)).toBeNull(); // caches the absent log
+    await logTension(vault); // creates the file — mtime state changes
+    expect(contestedFor(vault, db, DOC_A)).not.toBeNull();
+  });
+
+  it("sees a resolution appended after a cached read", async () => {
+    const entry = await logTension(vault);
+    expect(contestedFor(vault, db, DOC_A)).not.toBeNull(); // caches the live entry
+    await resolveTension(vault, entry.id as string, {
+      resolved_at: new Date().toISOString(),
+      resolved_by: "test",
+      kind: "accepted",
+    });
+    expect(contestedFor(vault, db, DOC_A)).toBeNull();
   });
 });
