@@ -39,6 +39,10 @@ role that never had read on Y.
    read). `vault_tension_resolve` requires the same, layered UNDER the
    existing ratify rule for loop-authored entries (both checks must pass).
    The engine stays advisory; nothing about what a tension *is* changes.
+   Ordering: the visibility check runs BEFORE the loop-authored ratify check
+   — an invisible tension must yield `tension not found` even to a caller
+   who would also fail ratify (running ratify first would leak existence
+   through the ratify error).
 
 ## Architecture (Approach B — one shared rule)
 
@@ -64,9 +68,11 @@ pin this). One rule now governs every tension-visibility decision.
 // True iff the caller may see this tension entry: read access to BOTH
 // sides' collections. `access` undefined ⇒ RBAC unconfigured ⇒ visible,
 // matching every other read surface. Sides are canonicalized before
-// resolution (aliasing must not widen visibility).
+// resolution (aliasing must not widen visibility). `db` null ⇒ the index
+// is unavailable; gating degrades to the pure first-segment rule
+// (fail-closed, never fails the tool call).
 export function canSeeTension(
-  db: IndexDb,
+  db: IndexDb | null,
   access: AccessContext | undefined,
   sourceA: string,
   sourceB: string,
@@ -74,11 +80,14 @@ export function canSeeTension(
 
 // The subset of `entries` visible to the caller, original order preserved.
 export function visibleTensions(
-  db: IndexDb,
+  db: IndexDb | null,
   entries: TensionEntry[],
   access?: AccessContext,
 ): TensionEntry[];
 ```
+
+`collectionForPath` likewise accepts `db: IndexDb | null` (null ⇒ first
+segment of the canonical path).
 
 Path canonicalization: reuse `contested.ts`'s lexical rule. To avoid a
 duplicate, `canonicalRel` is exported from `contested.ts` (it is already the
@@ -88,9 +97,13 @@ imports it. No new canonicalization code.
 ### Tool handler changes (`src/tools/curation.ts`)
 
 All four tension handlers open the index via the existing exported
-`openIndexForActiveProvider` (the `vault_themes` pattern) and close it in a
-`finally`. `requireReadAccess` (hasAnyRead) stays as the outer cheap gate on
-all four — this work tightens, never loosens.
+`openIndexForActiveProvider` ONLY — deliberately NOT `ensureIndexReady`,
+which triggers a synchronous reindex on an empty index (the `vault_themes`
+path); these tools must never reindex. An open failure passes `db: null`
+through to the visibility functions (segment-rule gating) instead of failing
+the call. Close the handle in a `finally`. `requireReadAccess` (hasAnyRead)
+stays as the outer cheap gate on all four — this work tightens, never
+loosens.
 
 - **`vault_tension_clusters`**: after reading the log, filter through
   `visibleTensions` BEFORE handing entries to the clustering pass.
@@ -98,10 +111,14 @@ all four — this work tightens, never loosens.
   caller passes a specific doc path, that path's own collection must also be
   readable (deny with the standard access-denied error otherwise).
 - **`vault_tension_log`**: before appending, deny unless
-  `canSeeTension(db, access, sourceA, sourceB)`. Standard error:
-  `access denied: role '<role>' cannot log a tension naming collection '<c>'`
-  — naming only the collection derived from the CALLER'S OWN input (no new
-  information disclosed).
+  `canSeeTension(db, access, sourceA, sourceB)`. The error names the
+  caller-supplied PATH, never a resolved collection:
+  `access denied: role '<role>' cannot log a tension naming '<path>'`.
+  (Naming the resolved collection would itself be an oracle: for an indexed
+  doc whose frontmatter declares a collection different from its path
+  segment, the resolved name reveals both the doc's existence and its real
+  collection. The vault_provenance denial follows the same path-only rule.)
+  Blast's explicit-doc denial names the caller-supplied path identically.
 - **`vault_tension_resolve`**: after locating the entry by id, if the entry
   is not visible to the caller, return the **same error as a nonexistent
   id** (`tension not found: <id>`) — the denial must not confirm existence.
@@ -127,6 +144,10 @@ gating).
   tension is. No redaction mode. No per-entry ACL metadata.
 - No-RBAC mode (`access` undefined everywhere): bit-for-bit unchanged
   behavior on all four tools.
+- Tension ids are globally sequential (`nextTensionId`), so any caller who
+  can log learns the total entry count — including hidden entries — from
+  the id they receive. Pre-existing, orthogonal to visibility, and changing
+  the id scheme is out of scope; accepted as a known residual count leak.
 
 ## Error handling
 
@@ -157,6 +178,8 @@ Index open failure inside a tension handler: fall back to segment-rule gating
    successfully (no-RBAC mode).
 9. resolve: invisible tension ⇒ error string identical to a genuinely
    nonexistent id (assert string equality between the two cases); visible +
-   loop-authored still requires ratify.
+   loop-authored still requires ratify; AND the ordering regression pin:
+   invisible + loop-authored + non-ratify caller gets `tension not found`,
+   not the ratify error.
 10. contested.ts regression: full existing contested + search test files
     stay green (the `collectionForPath` extraction is behavior-neutral).
