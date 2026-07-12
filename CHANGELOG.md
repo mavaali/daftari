@@ -102,6 +102,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graduate. `completeWithTools` is deliberately unsupported on this transport
   (only `daftari eval` drives tools; eval stays on anthropic).
 
+- **`vault_search` hits carry unresolved tensions inline** (`contested` /
+  `contestedCount`). Each annotation is the full two-sided marker — both
+  claims, kind, counterpart, tension id — post-joined from
+  `.daftari/tensions.md` in the same enrichment pass as `currentSource`,
+  capped at 3 per hit with an honest total. RBAC-gated on the counterpart's
+  collection (unreadable ⇒ omitted entirely, and excluded from the count).
+  Measured motivation: the tension-graph feud benchmark (2026-07-04) — on
+  feuds where retrieval buries one side, agents surface the contradiction
+  ~8% baseline vs ~46% with the tension inline; the dedicated-tool shape
+  loses to inline across all panel models. Tensions remain advisory and
+  never affect ranking.
+
 ## [1.29.0] - 2026-06-25
 
 ### Changed
