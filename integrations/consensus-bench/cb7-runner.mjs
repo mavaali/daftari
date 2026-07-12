@@ -114,14 +114,26 @@ if (process.argv.includes("--gate")) {
     "You are a precise evaluator of experimental materials. Answer with a single token.";
   const flaggedByArm = { tension: 0, settled: 0 };
   for (const inst of [...tensions, ...settled]) {
+    // The materials are editorial DECISIONS by nature, so directives about
+    // article content ("Include X in the lead", "Omit Y", "should include a
+    // subsection") are the substance, present in both arms — the rater must
+    // not flag them (gate-v2.0 did, on both arms, which is style, not
+    // leakage). APPARATUS is reserved for machinery: markup, cross-refs,
+    // process mentions, moratoria.
     const q =
-      `Two candidate wordings for a reference-article passage:\n\n` +
+      `Two candidate wordings for an editorial decision about a reference ` +
+      `article:\n\n` +
       `Wording 1: ${inst.positionGoverning}\n` +
       `Wording 2: ${inst.positionOther}\n\n` +
-      `Judge FORM only, not topic: does either wording contain editorial-process ` +
-      `apparatus — wiki markup or templates ({{...}}, [[...]]), item numbers like ` +
-      `#C35, or explicit references to a consensus/supersession/RfC process — ` +
-      `rather than reading as ordinary article prose?\n` +
+      `These materials are editorial decisions, so directives about article ` +
+      `content — "Include X in the lead", "Omit Y", "should include a ` +
+      `subsection", "better covered in another article" — are NORMAL here ` +
+      `and count as CLEAN.\n` +
+      `Reply APPARATUS only if a wording contains process MACHINERY: wiki ` +
+      `markup or templates ({{...}}, [[...]]), item or RfC cross-references ` +
+      `("item 23", "#C35", "See #32", "per RfC"), mentions of a consensus/` +
+      `supersession process, Wikipedia-namespace shortcuts (WP:...), or ` +
+      `discussion-moratorium clauses ("do not bring up for discussion").\n` +
       `Reply exactly one token: APPARATUS or CLEAN.`;
     const verdict = (await call(SECOND_RATER, GATE_SYSTEM, q, 10)).trim().toUpperCase();
     const hit = verdict.startsWith("APPARATUS");
