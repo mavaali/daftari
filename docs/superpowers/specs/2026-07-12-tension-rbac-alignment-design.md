@@ -56,7 +56,7 @@ role that never had read on Y.
 // present; the canonical path's first segment otherwise (the S1/#192 rule —
 // key on where the bytes live). The fallback errs closed: a `..`-leading or
 // empty segment matches no role's read list.
-export function collectionForPath(db: IndexDb, path: string): string;
+export function collectionForPath(db: IndexDb | null, path: string): string;
 ```
 
 `contested.ts` consumes it with zero behavior change (its existing 14 tests
@@ -174,7 +174,7 @@ Index open failure inside a tension handler: fall back to segment-rule gating
 7. blast: hidden tensions do not seed; explicit doc path in an unreadable
    collection ⇒ access denied.
 8. log: one-sided role denied (error names only the caller-supplied
-   collection); both-sides role logs successfully; no-access-context logs
+   path); both-sides role logs successfully; no-access-context logs
    successfully (no-RBAC mode).
 9. resolve: invisible tension ⇒ error string identical to a genuinely
    nonexistent id (assert string equality between the two cases); visible +
