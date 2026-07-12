@@ -1,8 +1,10 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { addTension, tensionsPath } from "../../src/curation/tension.js";
+import { clearContestedCache } from "../../src/search/contested.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -99,6 +101,76 @@ describe("search tools", () => {
         path: "pricing/ghost.md",
       });
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("contested annotations", () => {
+    afterEach(() => {
+      rmSync(tensionsPath(vault), { force: true });
+      clearContestedCache();
+    });
+
+    it("annotates a hit involved in an unresolved tension", async () => {
+      await addTension(vault, {
+        title: "pricing feud",
+        kind: "factual",
+        sourceA: "pricing/helios-consumption-pricing.md",
+        sourceB: "competitive-intel/vega-insight-positioning.md",
+        claimA: "credits are consumption-priced",
+        claimB: "Vega undercuts on flat pricing",
+        loggedBy: "test",
+      });
+      const result = await vaultSearch(vault, {
+        query: "Helios compute credit consumption pricing",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+      expect(hit?.contested?.[0]).toMatchObject({
+        counterpart: "competitive-intel/vega-insight-positioning.md",
+        claimSelf: "credits are consumption-priced",
+        claimOther: "Vega undercuts on flat pricing",
+        kind: "factual",
+      });
+      expect(hit?.contestedCount).toBe(1);
+    });
+
+    it("leaves hits untouched when no tensions exist (fields absent, not empty)", async () => {
+      const result = await vaultSearch(vault, { query: "pricing" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.hits.length).toBeGreaterThan(0);
+      for (const hit of result.value.hits) {
+        expect(hit.contested).toBeUndefined();
+        expect(hit.contestedCount).toBeUndefined();
+      }
+    });
+
+    it("omits the annotation when the caller cannot read the counterpart", async () => {
+      await addTension(vault, {
+        title: "pricing feud",
+        kind: "factual",
+        sourceA: "pricing/helios-consumption-pricing.md",
+        sourceB: "competitive-intel/vega-insight-positioning.md",
+        claimA: "credits are consumption-priced",
+        claimB: "Vega undercuts on flat pricing",
+        loggedBy: "test",
+      });
+      const access: AccessContext = {
+        user: "t",
+        roleName: "analyst",
+        role: { read: ["pricing"], write: [], promote: false, ratify: false },
+      };
+      const result = await vaultSearch(
+        vault,
+        { query: "Helios compute credit consumption pricing" },
+        access,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+      expect(hit).toBeDefined(); // the hit itself is readable
+      expect(hit?.contested).toBeUndefined(); // the annotation is not
     });
   });
 });

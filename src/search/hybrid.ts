@@ -26,6 +26,7 @@ import {
   type IndexDb,
 } from "../storage/index-db.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
+import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
 import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
 
@@ -47,6 +48,8 @@ export interface HybridHit {
   snippet: string;
   decay: DecayState | null;
   currentSource?: CurrentSource; // populated by the tool handler, not the ranker
+  contested?: ContestedTension[]; // unresolved tensions, capped at 3 — tool handler, not ranker
+  contestedCount?: number; // TOTAL visible tensions (may exceed the cap)
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }
