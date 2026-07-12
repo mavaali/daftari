@@ -23,3 +23,18 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  # Tier 1 regression gate: hermetic golden-baseline suites (staleness +
+  # retrieval). Also runs inside `npm test` above; this named job is the
+  # required PR check with an isolated, readable signal.
+  # docs/superpowers/specs/2026-07-07-regression-suite-design.md
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run test/regression

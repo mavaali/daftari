@@ -35,6 +35,7 @@
     "lint:fix": "biome check --write src test",
     "format": "biome format --write src test",
     "pack:mcpb": "node scripts/pack-mcpb.mjs",
+    "regression:update-baseline": "node scripts/regression-update-baseline.mjs",
     "prepublishOnly": "npm run build",
     "prepare": "husky"
   },

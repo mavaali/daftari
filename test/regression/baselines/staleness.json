@@ -1,0 +1,86 @@
+{
+  "1291684207": {
+    "armC": "unscorable",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1304677605": {
+    "armC": "unscorable",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1309818386": {
+    "armC": "unscorable",
+    "citedNum": 73,
+    "reason": "multi-hunk",
+    "scorable": false
+  },
+  "1321344248": {
+    "armC": "governing",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1325217586": {
+    "armC": "governing",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1334447176": {
+    "armC": "unscorable",
+    "citedNum": 71,
+    "reason": null,
+    "scorable": true
+  },
+  "1334631684": {
+    "armC": "governing",
+    "citedNum": 67,
+    "reason": null,
+    "scorable": true
+  },
+  "1335748675": {
+    "armC": "unscorable",
+    "citedNum": 72,
+    "reason": null,
+    "scorable": true
+  },
+  "1337872519": {
+    "armC": "governing",
+    "citedNum": 67,
+    "reason": null,
+    "scorable": true
+  },
+  "1355848676": {
+    "armC": "governing",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1358996228": {
+    "armC": "governing",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1359333430": {
+    "armC": "unscorable",
+    "citedNum": 73,
+    "reason": "multi-hunk",
+    "scorable": false
+  },
+  "1360778518": {
+    "armC": "governing",
+    "citedNum": 70,
+    "reason": null,
+    "scorable": true
+  },
+  "1361093698": {
+    "armC": "unscorable",
+    "citedNum": 76,
+    "reason": null,
+    "scorable": true
+  }
+}
