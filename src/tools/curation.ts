@@ -33,14 +33,13 @@ import {
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
-import { canSeeTension, visibleTensions } from "../curation/tension-access.js";
+import { canSeeTension, sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { collectionForPath, type IndexDb } from "../storage/index-db.js";
+import type { IndexDb } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
-import { canonicalRel } from "../utils/paths.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForActiveProvider } from "./search.js";
 
@@ -112,19 +111,15 @@ export async function vaultTensionLog(
     );
   }
 
-  // #212: you cannot quote what you cannot read. Deny names the
-  // caller-supplied path only — resolving it to a collection first would
-  // leak a frontmatter-declared collection for existing docs.
+  // #212: you cannot quote what you cannot read. The check resolves each
+  // side's collection, but the denial names the caller-supplied path, never
+  // the resolved collection — naming the collection would leak a
+  // frontmatter-declared collection for existing docs.
   if (access) {
     const db = openIndexForAccessOrNull(vaultRoot);
     try {
       for (const side of [sourceA.value, sourceB.value]) {
-        const canonical = canonicalRel(side);
-        const readable =
-          canonical.length > 0 &&
-          !canonical.startsWith("..") &&
-          canRead(access.role, collectionForPath(db, canonical));
-        if (!readable) {
+        if (!sourceReadable(db, access, side)) {
           return err(
             new Error(
               `access denied: role '${access.roleName}' cannot log a tension naming '${side}'`,
@@ -313,17 +308,10 @@ export async function vaultTensionBlast(
 
   const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
   try {
-    if (document !== undefined && access) {
-      const canonical = canonicalRel(document);
-      const readable =
-        canonical.length > 0 &&
-        !canonical.startsWith("..") &&
-        canRead(access.role, collectionForPath(db, canonical));
-      if (!readable) {
-        return err(
-          new Error(`access denied: role '${access.roleName}' cannot blast from '${document}'`),
-        );
-      }
+    if (document !== undefined && access && !sourceReadable(db, access, document)) {
+      return err(
+        new Error(`access denied: role '${access.roleName}' cannot blast from '${document}'`),
+      );
     }
     return await computeTensionBlast(vaultRoot, { document, cluster_id }, (entries) =>
       visibleTensions(db, entries, access),

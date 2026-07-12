@@ -15,9 +15,10 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { type AccessContext, canRead } from "../access/rbac.js";
+import type { AccessContext } from "../access/rbac.js";
 import { parseTensionLog, type TensionKind, tensionsPath } from "../curation/tension.js";
-import { collectionForPath, type IndexDb } from "../storage/index-db.js";
+import { sourceReadable } from "../curation/tension-access.js";
+import type { IndexDb } from "../storage/index-db.js";
 import { canonicalRel } from "../utils/paths.js";
 
 export interface ContestedTension {
@@ -131,7 +132,7 @@ export function contestedFor(
   if (records === undefined) return null;
 
   const visible = access
-    ? records.filter((r) => canRead(access.role, collectionForPath(db, r.counterpart)))
+    ? records.filter((r) => sourceReadable(db, access, r.counterpart))
     : records;
   if (visible.length === 0) return null;
 

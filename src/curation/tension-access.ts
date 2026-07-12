@@ -28,10 +28,16 @@ export function canSeeTension(
   sourceB: string,
 ): boolean {
   if (!access) return true;
-  return sideReadable(db, access, sourceA) && sideReadable(db, access, sourceB);
+  return sourceReadable(db, access, sourceA) && sourceReadable(db, access, sourceB);
 }
 
-function sideReadable(db: IndexDb | null, access: AccessContext, source: string): boolean {
+// THE single side-readability predicate. Guard order is load-bearing:
+// canonicalize → reject blank/`..`-escaping → canRead(collectionForPath).
+// A side that canonicalizes to blank or escapes the root is readable by no
+// role — such a path can never be a readable vault document — independent
+// of how sane the role config is. Every gate on a caller- or log-supplied
+// source path adopts this function; never hand-roll the sequence.
+export function sourceReadable(db: IndexDb | null, access: AccessContext, source: string): boolean {
   const canonical = canonicalRel(source);
   if (canonical.length === 0 || canonical.startsWith("..")) return false;
   return canRead(access.role, collectionForPath(db, canonical));
