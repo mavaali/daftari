@@ -132,8 +132,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tension-access.ts`) then unified the canonicalize → reject-escape →
   `canRead` sequence into a single predicate adopted by all four call
   sites — the tension log/blast gates above and #211's contested-annotation
-  filter in `contested.ts` — so one guard now backs every tension surface,
-  including contested annotations on `vault_search` hits.
+  filter in `contested.ts` — so one guard now backs every tension-graph tool surface,
+  including contested annotations on `vault_search` hits. Further
+  residuals (accepted, tracked in follow-ups): `vault_status` /
+  `vault_receipt` / court-precedent tension summaries still filter by
+  uncanonicalized top-level segment, and `vault_lint`'s tension-health
+  aggregates count all entries (counts only, no content).
 
 ## [1.29.0] - 2026-06-25
 
