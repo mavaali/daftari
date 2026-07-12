@@ -144,6 +144,33 @@ describe("search tools", () => {
         expect(hit.contestedCount).toBeUndefined();
       }
     });
+
+    it("omits the annotation when the caller cannot read the counterpart", async () => {
+      await addTension(vault, {
+        title: "pricing feud",
+        kind: "factual",
+        sourceA: "pricing/helios-consumption-pricing.md",
+        sourceB: "competitive-intel/vega-insight-positioning.md",
+        claimA: "credits are consumption-priced",
+        claimB: "Vega undercuts on flat pricing",
+        loggedBy: "test",
+      });
+      const access: AccessContext = {
+        user: "t",
+        roleName: "analyst",
+        role: { read: ["pricing"], write: [], promote: false, ratify: false },
+      };
+      const result = await vaultSearch(
+        vault,
+        { query: "Helios compute credit consumption pricing" },
+        access,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+      expect(hit).toBeDefined(); // the hit itself is readable
+      expect(hit?.contested).toBeUndefined(); // the annotation is not
+    });
   });
 });
 
