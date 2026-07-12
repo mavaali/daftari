@@ -5,7 +5,8 @@ import { canSeeTension, visibleTensions } from "../../src/curation/tension-acces
 
 // Pure segment-rule tests: db null throughout. The indexed-row branch of
 // collectionForPath is pinned in test/storage/index-db.test.ts; e2e coverage
-// of handlers passing a real db lives in test/tools/curation.test.ts.
+// of handlers passing a real db will live in test/tools/curation.test.ts once
+// the handlers are wired — Tasks 4-5.
 const role = (read: string[]): AccessContext => ({
   user: "t",
   roleName: "r",

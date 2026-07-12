@@ -702,9 +702,11 @@ export function getDocument(db: IndexDb, path: string): IndexedDocument | null {
 // The collection that RBAC-gates access to `path`: the indexed row when
 // present; the path's first segment otherwise (the S1/#192 rule — key on
 // where the bytes live, never on a caller-declared string). `db` null means
-// the index is unavailable: gating degrades to the pure segment rule.
-// Either fallback errs closed — a `..`-leading or empty segment matches no
-// role's read list.
+// the index is unavailable: gating degrades to the pure segment rule. That
+// fallback is only as fail-closed as the role config is sane — it does not
+// itself guard against blank or `..`-escaping paths; the config-independent
+// guard against those lives in tension-access's `sideReadable`, which
+// canonicalizes and rejects such paths before this function is ever called.
 export function collectionForPath(db: IndexDb | null, path: string): string {
   if (db !== null) {
     const doc = getDocument(db, path);

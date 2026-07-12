@@ -14,10 +14,11 @@
 // must mean live disagreement.
 
 import { readFileSync, statSync } from "node:fs";
-import { posix, resolve } from "node:path";
+import { resolve } from "node:path";
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { parseTensionLog, type TensionKind, tensionsPath } from "../curation/tension.js";
 import { collectionForPath, type IndexDb } from "../storage/index-db.js";
+import { canonicalRel } from "../utils/paths.js";
 
 export interface ContestedTension {
   id?: string; // absent only for legacy entries
@@ -42,18 +43,6 @@ interface SideRecord {
   counterpart: string;
   claimSelf: string;
   claimOther: string;
-}
-
-// Lexical, IO-free canonicalization of a vault-relative path: aliasing
-// (`pricing/../pricing/a.md`) must join its canonical hit (#127/#128 class).
-// A path that escapes the root normalizes to a `..`-leading form, which can
-// never equal an indexed hit path — escapes simply never join. normalize("")
-// returns "." — map it back to "" so the missing-source guard in buildByPath
-// fires on entries with a blank Source line instead of indexing the valid
-// side under a junk "." counterpart.
-export function canonicalRel(p: string): string {
-  const n = posix.normalize(p.trim().replace(/\\/g, "/"));
-  return n === "." ? "" : n.replace(/^\.\//, "");
 }
 
 // mtime-keyed cache of the parsed, indexed log — the E2 loadConfig pattern

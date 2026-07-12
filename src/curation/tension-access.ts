@@ -10,8 +10,8 @@
 // take the filter by injection so they never import RBAC or the index.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
-import { canonicalRel } from "../search/contested.js";
 import { collectionForPath, type IndexDb } from "../storage/index-db.js";
+import { canonicalRel } from "../utils/paths.js";
 import type { TensionEntry } from "./tension.js";
 
 // True iff the caller may see a tension between these two sources. Sides are
