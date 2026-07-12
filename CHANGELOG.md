@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **CB7 decision-divergence bench** (`integrations/consensus-bench`,
+  benchmark tooling only). Implements the
+  2026-07-11 CB7 design: instance assembly from existing artifacts (CB6
+  tension pairs, CO2 stale-trap diffs, consensus-box supersession chains as
+  settled controls — CB6 tension items excluded from the control set),
+  condition renderer with locked validity invariants (task text
+  byte-identical across memory conditions; the collapsed block carries one
+  value and no epistemic language; settled controls give the foil the
+  governing value), deterministic enum scorer (divergence, calibration,
+  hedge tax — no LLM judge on primary metrics), and `cb7-runner.mjs` for the
+  live panel run (`--gate` mode runs the second-rater leakage check).
+  M-collapsed for tensions holds the challenger position (recency /
+  last-write-wins) rather than the spec's CB6-foil-verdict, a deterministic
+  deviation recorded in the module.
+
 ### Added
+
+- **`daftari court` — the Tension Court.** Common-law memory over the
+  tension log. `daftari court` compiles a **docket**: every open tension
+  briefed and ranked by priority (aging tier stale→fresh, then blast size,
+  then age) — both sides' claims verbatim with the present status and decay
+  of their documents ("gone" when a side was deleted), the union blast
+  radius a ruling would settle (reusing `computeBlast` and the
+  reverse-source/link maps from `vault_tension_blast`), tension-cluster
+  membership, and **precedents**: past rulings retrieved by a deterministic
+  three-tier match (shared-document > collection-pair > same-kind; newest
+  first within a tier, capped at 3, no LLM). `--tension <id>` renders a
+  single case's full brief including precedent rationales verbatim.
+  `daftari court rule <id> --kind superseded|corrected|accepted|invalid
+  [--rationale …] [--references …] [--by …]` records the ruling through the
+  same `resolveTension` write path as `vault_tension_resolve`; the rationale
+  is recorded verbatim and cited by future dockets — a ruling is precedent
+  the moment it lands, because a precedent IS a resolved tension. The court
+  retrieves and briefs; it never decides, and a ruling never edits the
+  disputed documents. Markdown to stdout, `--output` / `--output-json`;
+  audit-convention exit codes (0/2/3).
 
 - **`daftari asof` — belief archaeology.** A read-only CLI report over the
   vault's git history: `daftari asof <ref-or-date>` resolves a git ref or a
