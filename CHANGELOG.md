@@ -22,7 +22,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graduate. `completeWithTools` is deliberately unsupported on this transport
   (only `daftari eval` drives tools; eval stays on anthropic).
 
-## [1.29.0] - 2026-06-25
+### Security
+
+- **ReDoS screen on schema-extension `pattern` fields (S3)**. Config-declared
+  regex patterns are now statically screened at config load
+  (`src/utils/redos.ts`): star-height ≥ 2 (`(a+)+`) and quantified overlapping
+  alternations (`(a|ab)*`) are rejected, and the value a pattern runs against
+  is length-capped in `frontmatter/schema.ts` as defense-in-depth. From the
+  2026-07-01 security & efficiency audit.
+- **File-size cap before frontmatter parse**. `frontmatter/parser.ts` rejects
+  sources over 5 MiB (UTF-8 bytes) with an err Result instead of handing them
+  to `matter()`'s synchronous parse (audit E6), closing the event-loop-block /
+  OOM path reachable via `daftari import`.
+- **`consolidate` refuses to run live without an explicit `shadow_mode` (S5)**.
+  Any mode other than `scan` now requires `shadow_mode` to be set in
+  `.daftari/config.yaml` — a cron pass on a vault whose config predates the
+  key can no longer silently start writing edges live. Checked before the LLM
+  client is constructed, so a misconfigured run costs nothing.
+
+### Changed
+
+- **Efficiency tranche from the 2026-07-01 audit (E2–E6)**:
+  - `config.yaml` is cached by mtime instead of re-read + re-validated on
+    every write (E2).
+  - `vault_themes` pushes collection scoping into SQL so out-of-scope
+    embeddings are never loaded, and caches the pooled per-doc vector set by
+    content signature (E3).
+  - single `realpathSync` per file in vault scans (E4).
+  - `indexDocument` reuses one index-DB handle per incremental write instead
+    of open/close/reopen ×3 (E5).
+  - `gcOrphanedEmbeddings` uses `NOT EXISTS` with batched deletes, and
+    `vault_ratify` collapses the staged-actions log once instead of three
+    times (E6).
 
 ### Changed
 

@@ -347,13 +347,6 @@ export function insertEmbeddingVec(
   );
 }
 
-// Deletes the vec-mirror rows for a single content_hash. Used by the
-// orphan gc pass so the vec index never carries vectors whose chunks are
-// gone.
-function deleteEmbeddingsVecForHash(db: IndexDb, contentHash: string): void {
-  db.prepare("DELETE FROM embeddings_vec WHERE content_hash = ?").run(contentHash);
-}
-
 // `expectedVecDim` is the active embedding provider's dim. If the persisted
 // `embeddings_vec` was created at a different dim (or doesn't exist yet),
 // it is dropped and recreated at the expected dim — the durable `embeddings`
@@ -597,26 +590,42 @@ export function insertEmbedding(
 // the vec-mirror counts piggy-back and are not reported separately.
 export function gcOrphanedEmbeddings(db: IndexDb): number {
   // Collect the orphan hashes first so we can drop them from both stores in
-  // one pass. The `embeddings_vec` virtual table doesn't support correlated
-  // subqueries on its meta columns reliably, so we go through prepared
-  // deletes by hash.
+  // one transaction. `NOT EXISTS` with the `idx_chunks_content_hash` index lets
+  // sqlite short-circuit on the first matching chunk per hash, instead of
+  // materializing the full chunk-hash set the old uncorrelated `NOT IN
+  // (SELECT …)` built. `NOT IN` would also silently match nothing if any chunk
+  // hash were NULL; `NOT EXISTS` is null-safe.
   const orphans = db
     .prepare(
-      `SELECT content_hash
-         FROM embeddings
-        WHERE content_hash NOT IN (SELECT content_hash FROM chunks)`,
+      `SELECT e.content_hash AS content_hash
+         FROM embeddings AS e
+        WHERE NOT EXISTS (
+                SELECT 1 FROM chunks AS c WHERE c.content_hash = e.content_hash
+              )`,
     )
     .all() as { content_hash: string }[];
   if (orphans.length === 0) return 0;
+  const hashes = orphans.map((o) => o.content_hash);
+
+  // Batch the deletes: one `DELETE … WHERE content_hash IN (?, ?, …)` per store
+  // per chunk of hashes, rather than a prepared statement fired once per orphan.
+  // Chunk under sqlite's bound-variable ceiling (SQLITE_MAX_VARIABLE_NUMBER,
+  // 999 on the builds better-sqlite3 ships). The `embeddings_vec` virtual table
+  // supports a plain IN-list on its `content_hash` meta column the same way the
+  // per-hash delete did.
+  const BATCH = 500;
   const drop = db.transaction(() => {
-    const dropEmb = db.prepare("DELETE FROM embeddings WHERE content_hash = ?");
-    for (const { content_hash } of orphans) {
-      dropEmb.run(content_hash);
-      deleteEmbeddingsVecForHash(db, content_hash);
+    for (let i = 0; i < hashes.length; i += BATCH) {
+      const batch = hashes.slice(i, i + BATCH);
+      const placeholders = batch.map(() => "?").join(", ");
+      db.prepare(`DELETE FROM embeddings WHERE content_hash IN (${placeholders})`).run(...batch);
+      db.prepare(`DELETE FROM embeddings_vec WHERE content_hash IN (${placeholders})`).run(
+        ...batch,
+      );
     }
   });
   drop();
-  return orphans.length;
+  return hashes.length;
 }
 
 export function setMeta(db: IndexDb, key: string, value: string): void {

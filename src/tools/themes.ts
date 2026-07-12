@@ -148,21 +148,39 @@ function labelTokens(text: string): string[] {
 
 // Loads every (path, content_hash, embedding) row for the active model, in
 // path-then-chunk-index order, and groups embeddings by document path.
-function loadEmbeddingsByPath(db: IndexDb, model: string): Map<string, Float32Array[]> {
+//
+// When `collection` is given the chunk scan is joined to `documents` and
+// filtered to that collection IN SQL, so out-of-scope embeddings are never
+// read out of the database or copied into memory (E3). The collection column
+// is authoritative for scope — the same predicate `buildScopedDocs` applies —
+// so pushing it down here changes nothing about the clustered result, only
+// which rows are loaded.
+function loadEmbeddingsByPath(
+  db: IndexDb,
+  model: string,
+  collection?: string,
+): Map<string, Float32Array[]> {
   interface Row {
     path: string;
     embedding: Buffer | null;
     dim: number | null;
   }
-  const rows = db
-    .prepare(
-      `SELECT c.path AS path, e.embedding AS embedding, e.dim AS dim
+  const sql = collection
+    ? `SELECT c.path AS path, e.embedding AS embedding, e.dim AS dim
+         FROM chunks c
+         JOIN documents d ON d.path = c.path
+         LEFT JOIN embeddings e
+           ON e.content_hash = c.content_hash AND e.model = ?
+        WHERE d.collection = ?
+        ORDER BY c.path, c.chunk_index`
+    : `SELECT c.path AS path, e.embedding AS embedding, e.dim AS dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
-        ORDER BY c.path, c.chunk_index`,
-    )
-    .all(model) as Row[];
+        ORDER BY c.path, c.chunk_index`;
+  const rows = (
+    collection ? db.prepare(sql).all(model, collection) : db.prepare(sql).all(model)
+  ) as Row[];
   const provider = getProvider();
   const expectedDim = provider.dim;
   const out = new Map<string, Float32Array[]>();
@@ -186,40 +204,167 @@ interface ThemesFilters {
   tags?: string[];
 }
 
-// Applies the scope filter (collection, tags), RBAC, and the doc-has-an-
-// embedded-chunk requirement; returns the clusterable doc set and the count
-// of docs the embedding requirement skipped.
-function buildScopedDocs(
-  documents: IndexedDocument[],
-  embeddingsByPath: Map<string, Float32Array[]>,
-  filters: ThemesFilters,
-  access: AccessContext | undefined,
-): { scoped: ScopedDoc[]; skipped: number } {
-  const scoped: ScopedDoc[] = [];
-  let skipped = 0;
-  for (const doc of documents) {
-    if (filters.collection && doc.collection !== filters.collection) continue;
-    if (filters.tags && filters.tags.length > 0) {
-      const hasAll = filters.tags.every((t) => doc.tags.includes(t));
-      if (!hasAll) continue;
-    }
-    if (access && !canRead(access.role, doc.collection)) continue;
+// A cached, pooled per-doc vector set for one (vault, model, collection-scope)
+// keyed by a content signature. `pooled` carries everything clustering needs
+// downstream — the pooled+normalised vector plus the doc metadata used for
+// labels/RBAC — so a cache hit avoids both the embeddings load and the
+// mean-pool. RBAC and the tags filter are applied per-caller against this set
+// (they are cheap and caller-dependent, so they are NOT baked into the cache).
+interface PooledSet {
+  signature: string;
+  docs: PooledDoc[];
+  // Docs that had no embedded chunk (or an all-zero pool). Kept so the
+  // per-caller skipped count can be recomputed after RBAC/tags filtering.
+  unpooledPaths: Set<string>;
+}
 
-    const chunkVecs = embeddingsByPath.get(doc.path) ?? [];
+interface PooledDoc {
+  path: string;
+  title: string;
+  collection: string;
+  tags: string[];
+  vector: Float32Array;
+}
+
+// Process-level memo of the pooled vector set. Keyed by
+// `${vaultRoot} ${model} ${collection ?? "*"}`; the entry's
+// `signature` is checked against the live index signature on every call and a
+// mismatch (any reindex/content change) discards the stale entry. Bounded to
+// one entry per scope key — the working set for a single vault is tiny and the
+// cache is dropped wholesale on signature change.
+const pooledCache = new Map<string, PooledSet>();
+
+// Test-only hook: reset the process-level cache between cases.
+export function __resetThemesCache(): void {
+  pooledCache.clear();
+}
+
+// Cheap content signature for the (collection-scoped) chunk+embedding set of
+// the active model. It changes whenever a chunk is added/removed/re-hashed or
+// an embedding is (re)written, which is exactly when the pooled vectors would
+// differ — so a matching signature guarantees the cached pooling is still
+// valid. `total(embedding)` folds the stored blobs into the aggregate without
+// reading them into JS. `documents.rowid` participation via count keeps a bare
+// collection rename honest. This scans indexes, not the embedding blobs.
+function indexSignature(db: IndexDb, model: string, collection?: string): string {
+  interface SigRow {
+    n: number | null;
+    hashes: string | null;
+    embn: number | null;
+  }
+  const sql = collection
+    ? `SELECT COUNT(*) AS n,
+              group_concat(c.content_hash, '') AS hashes,
+              SUM(CASE WHEN e.content_hash IS NULL THEN 0 ELSE 1 END) AS embn
+         FROM chunks c
+         JOIN documents d ON d.path = c.path
+         LEFT JOIN embeddings e
+           ON e.content_hash = c.content_hash AND e.model = ?
+        WHERE d.collection = ?`
+    : `SELECT COUNT(*) AS n,
+              group_concat(c.content_hash, '') AS hashes,
+              SUM(CASE WHEN e.content_hash IS NULL THEN 0 ELSE 1 END) AS embn
+         FROM chunks c
+         LEFT JOIN embeddings e
+           ON e.content_hash = c.content_hash AND e.model = ?`;
+  const row = (
+    collection ? db.prepare(sql).get(model, collection) : db.prepare(sql).get(model)
+  ) as SigRow;
+  // A tiny FNV-1a over the concatenated hashes keeps the key bounded regardless
+  // of vault size while still varying on any content change.
+  const hashes = row.hashes ?? "";
+  let h = 0x811c9dc5;
+  for (let i = 0; i < hashes.length; i++) {
+    h ^= hashes.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  const hashDigest = (h >>> 0).toString(16);
+  return `${model}:${collection ?? "*"}:${row.n ?? 0}:${row.embn ?? 0}:${hashDigest}`;
+}
+
+// Returns the pooled per-doc vector set for the given scope, using the cache
+// when the live signature matches and rebuilding (load + mean-pool) otherwise.
+// This is the load/compute-avoidance core of the E3 fix: a second call against
+// an unchanged index re-uses the pooled vectors instead of re-reading every
+// embedding and re-pooling it.
+function getPooledSet(
+  db: IndexDb,
+  vaultRoot: string,
+  model: string,
+  documentsByPath: Map<string, IndexedDocument>,
+  collection: string | undefined,
+): PooledSet {
+  const cacheKey = `${vaultRoot} ${model} ${collection ?? "*"}`;
+  const signature = indexSignature(db, model, collection);
+  const cached = pooledCache.get(cacheKey);
+  if (cached && cached.signature === signature) return cached;
+
+  const embeddingsByPath = loadEmbeddingsByPath(db, model, collection);
+  const docs: PooledDoc[] = [];
+  const unpooledPaths = new Set<string>();
+  for (const [path, doc] of documentsByPath) {
+    if (collection && doc.collection !== collection) continue;
+    const chunkVecs = embeddingsByPath.get(path) ?? [];
     const pooled = meanPoolL2(chunkVecs);
     if (!pooled) {
-      // No embedded chunks (or an all-zero pool): count as skipped per
-      // the v1 contract.
-      skipped += 1;
+      unpooledPaths.add(path);
       continue;
     }
-    scoped.push({
+    docs.push({
       path: doc.path,
       title: doc.title,
       collection: doc.collection,
       tags: doc.tags,
       vector: pooled,
     });
+  }
+  const set: PooledSet = { signature, docs, unpooledPaths };
+  pooledCache.set(cacheKey, set);
+  return set;
+}
+
+// Applies the per-caller scope (tags, RBAC) and the doc-has-an-embedded-chunk
+// requirement over a pre-pooled set. The collection filter is already applied
+// upstream in `getPooledSet` (and pushed into SQL), so it is not re-checked
+// here beyond honouring it for the skipped count. Returns the clusterable doc
+// set and the count of docs the embedding requirement skipped.
+//
+// `skipped` must match the pre-cache contract exactly: a doc counts as skipped
+// only if it passes collection + tags + RBAC and yet has no pooled vector.
+function finalizeScope(
+  pooled: PooledSet,
+  documentsByPath: Map<string, IndexedDocument>,
+  filters: ThemesFilters,
+  access: AccessContext | undefined,
+): { scoped: ScopedDoc[]; skipped: number } {
+  const passesTagsAndRbac = (collection: string, tags: string[]): boolean => {
+    if (filters.tags && filters.tags.length > 0) {
+      const hasAll = filters.tags.every((t) => tags.includes(t));
+      if (!hasAll) return false;
+    }
+    if (access && !canRead(access.role, collection)) return false;
+    return true;
+  };
+
+  const scoped: ScopedDoc[] = [];
+  for (const doc of pooled.docs) {
+    if (!passesTagsAndRbac(doc.collection, doc.tags)) continue;
+    scoped.push({
+      path: doc.path,
+      title: doc.title,
+      collection: doc.collection,
+      tags: doc.tags,
+      vector: doc.vector,
+    });
+  }
+
+  let skipped = 0;
+  for (const path of pooled.unpooledPaths) {
+    const doc = documentsByPath.get(path);
+    if (!doc) continue;
+    if (filters.collection && doc.collection !== filters.collection) continue;
+    if (!passesTagsAndRbac(doc.collection, doc.tags)) continue;
+    skipped += 1;
   }
   return { scoped, skipped };
 }
@@ -360,27 +505,40 @@ export async function vaultThemes(
       collection: string;
       tags: string;
     }
-    const docRows = db
-      .prepare("SELECT path, title, collection, tags FROM documents ORDER BY path")
-      .all() as DocRow[];
-    const documents: IndexedDocument[] = docRows.map((r) => ({
-      path: r.path,
-      title: r.title,
-      collection: r.collection,
-      domain: "",
-      status: "",
-      confidence: "",
-      updated: "",
-      tags: JSON.parse(r.tags) as string[],
-      content: "",
-      tokens: [],
-      ttlDays: null,
-      created: "",
-      supersededBy: null,
-    }));
+    // Push the collection filter into the documents scan too: a scoped call
+    // never materialises out-of-scope document rows, and `JSON.parse(tags)`
+    // runs only for in-scope docs (part of the E3 load-avoidance).
+    const collection = parsed.value.collection;
+    const docRows = (
+      collection
+        ? db
+            .prepare(
+              "SELECT path, title, collection, tags FROM documents WHERE collection = ? ORDER BY path",
+            )
+            .all(collection)
+        : db.prepare("SELECT path, title, collection, tags FROM documents ORDER BY path").all()
+    ) as DocRow[];
+    const documentsByPath = new Map<string, IndexedDocument>();
+    for (const r of docRows) {
+      documentsByPath.set(r.path, {
+        path: r.path,
+        title: r.title,
+        collection: r.collection,
+        domain: "",
+        status: "",
+        confidence: "",
+        updated: "",
+        tags: JSON.parse(r.tags) as string[],
+        content: "",
+        tokens: [],
+        ttlDays: null,
+        created: "",
+        supersededBy: null,
+      });
+    }
 
-    const embeddingsByPath = loadEmbeddingsByPath(db, provider.id);
-    const { scoped, skipped } = buildScopedDocs(documents, embeddingsByPath, parsed.value, access);
+    const pooled = getPooledSet(db, vaultRoot, provider.id, documentsByPath, collection);
+    const { scoped, skipped } = finalizeScope(pooled, documentsByPath, parsed.value, access);
 
     if (scoped.length === 0) {
       return ok({

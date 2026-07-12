@@ -140,6 +140,22 @@ describe("validateFrontmatter — schema extensions", () => {
     it("accepts a value that matches", () => {
       expect(extIssues(base({ adr_id: "ADR-042" }), [adr])).toEqual([]);
     });
+
+    // Defense-in-depth against ReDoS: even a linear-safe pattern must not be
+    // run against an unbounded value, since JS regex is synchronous. An
+    // over-long value is rejected with a length issue and the regex is skipped.
+    it("rejects a value too long to pattern-validate instead of running the regex", () => {
+      const huge = "a".repeat(5000);
+      const issues = extIssues(base({ adr_id: huge }), [adr]);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.field).toBe("adr_id");
+      expect(issues[0]?.message).toContain("too long to pattern-validate");
+    });
+
+    it("still pattern-validates a value at the length boundary", () => {
+      const ok = ext({ field: "note", type: "string", pattern: "^a+$" });
+      expect(extIssues(base({ note: "a".repeat(4096) }), [ok])).toEqual([]);
+    });
   });
 
   describe("required and default", () => {

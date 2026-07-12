@@ -345,8 +345,13 @@ export async function recordDecision(
   decision: DecisionInput,
 ): Promise<Result<StagedAction, Error>> {
   try {
-    const before = collapse(readRawRecords(vaultRoot));
-    if (!before.has(id)) return err(new Error(`staged action not found: ${id}`));
+    // Collapse the pre-existing log ONCE. The decision we are about to write is
+    // fully known, so rather than re-reading + re-collapsing the whole file a
+    // second time to learn the post-write state, we apply this one decision to
+    // the collapsed map in memory — identical to collapse()'s decision branch.
+    const collapsed = collapse(readRawRecords(vaultRoot));
+    const existing = collapsed.get(id);
+    if (!existing) return err(new Error(`staged action not found: ${id}`));
 
     const record: RawRecord = {
       id,
@@ -361,9 +366,14 @@ export async function recordDecision(
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
 
-    const after = collapse(readRawRecords(vaultRoot)).get(id);
-    if (!after) return err(new Error(`staged action not found after write: ${id}`));
-    return ok(rowToStagedAction(after));
+    // Mirror the append onto the in-memory row (same field mapping collapse()
+    // applies to a decision record) so the returned row is the post-write state.
+    existing.status = record.status ?? existing.status;
+    existing.ratified_at = record.ratified_at ?? null;
+    existing.ratified_by = record.ratified_by ?? null;
+    existing.ratification_reason = record.ratification_reason ?? null;
+    existing.decided_by_principal = record.decided_by_principal ?? null;
+    return ok(rowToStagedAction(existing));
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot record decision: ${reason}`));
