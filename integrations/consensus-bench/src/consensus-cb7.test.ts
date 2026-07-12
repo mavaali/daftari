@@ -17,6 +17,8 @@ import {
   buildSettledInstances,
   buildTensionInstances,
   buildTrapInstances,
+  cleanBoxStatement,
+  hasApparatus,
   tensionNumsFor,
 } from "./consensus-cb7-instances.js";
 import { parseDecision, renderAll, renderCase } from "./consensus-cb7-render.js";
@@ -60,6 +62,52 @@ describe("cb7 instance assembly", () => {
       expect(inst.positionOther.length).toBeGreaterThan(0);
       expect(inst.positionGoverning).not.toBe(inst.positionOther);
     }
+  });
+
+  it("strips consensus apparatus from settled wordings (2026-07-11 gate fix)", () => {
+    // The v1 gate failure, verbatim shape: a Supersedes prefix + tq template.
+    expect(
+      cleanBoxStatement(
+        "Supersedes [[#C35|#35]]. Include in lead: {{tq|Trump has made many false statements.}}",
+      ),
+    ).toBe("Include in lead: Trump has made many false statements.");
+    expect(cleanBoxStatement('Include "{{tq|Many statements were false.}}" in the lead.')).toBe(
+      'Include "Many statements were false." in the lead.',
+    );
+    expect(cleanBoxStatement("See [[Some Article|the article]] for details.")).toBe(
+      "See the article for details.",
+    );
+    expect(cleanBoxStatement("Supersedes [[#C21|#21]] and [[#C36|#36]]. Keep the map.")).toBe(
+      "Keep the map.",
+    );
+  });
+
+  it("no T1/T2 wording carries apparatus (traps exempt: symmetric article markup)", () => {
+    // The no-apparatus invariant guards the T1-vs-T2 comparison (shared task
+    // template, hedge-tax control): a process watermark on one arm but not
+    // the other is differential leakage. Trap wordings are raw article
+    // passages where wiki markup appears on BOTH sides of every instance —
+    // symmetric within the bucket, and T3 is never compared against T1/T2.
+    const items = parseConsensus(wikitext);
+    const gated = [
+      ...buildTensionInstances(tensionPairs),
+      ...buildSettledInstances(items, tensionNumsFor(tensionPairs, "Donald Trump")),
+    ];
+    for (const inst of gated) {
+      for (const text of [inst.positionGoverning, inst.positionOther]) {
+        expect(text).not.toMatch(/\{\{/);
+        expect(text).not.toMatch(/\[\[/);
+        expect(text).not.toMatch(/\bSupersedes\b/i);
+      }
+    }
+  });
+
+  it("hasApparatus catches markup, item refs, and process vocabulary", () => {
+    expect(hasApparatus("{{tq|x}}")).toBe(true);
+    expect(hasApparatus("see [[#C15|#15]]")).toBe(true);
+    expect(hasApparatus("per the RfC close")).toBe(true);
+    expect(hasApparatus("Supersedes #35")).toBe(true);
+    expect(hasApparatus("Ordinary article prose about a topic.")).toBe(false);
   });
 
   it("excludes CB6 tension items from the settled controls", () => {

@@ -128,6 +128,30 @@ from T1/T2; the keystone claim does not rest on it.
   T1/T2 prompt for leakage — that the memory block, not the task framing,
   carries the contested/settled signal. Any flagged prompt is fixed before the
   run. This gate is about the instrument, not the outcome.
+
+  **Amendment (2026-07-11, gate v2 — after the v1 gate failed 13/13).** The
+  first live gate run flagged every instance, and the failure decomposed into
+  exactly the two causes the risk section anticipated:
+  1. *Real differential leakage* — settled wordings carried raw consensus
+     apparatus from the box wikitext (`Supersedes [[#C35|#35]].` prefixes,
+     `{{tq|…}}` templates) that the hand-distilled tension wordings lacked: an
+     arm-level watermark, invalidating. Fixed in the builder
+     (`cleanBoxStatement` + apparatus/husk rejection, hermetically tested) and
+     the constant `HOLD_ESCALATE` line was reworded from "dispute-resolution
+     process" to "standard editorial review queue".
+  2. *A constant confound in the gate question itself* — asking "is this topic
+     contested?" over famous topics flags everything regardless of framing.
+     That signal is harmless to the design: the wordings are shown identically
+     in both memory conditions, so topic contested-ness cannot generate
+     spurious divergence. What invalidates is a *differential* watermark
+     between the arms.
+  Gate v2 therefore measures the invalidating thing directly: (A) a
+  deterministic apparatus scan over every T1/T2 wording (no API), and (B) the
+  second rater judging the two wordings alone — form, not topic — for
+  editorial-process apparatus, reported per arm. Pass = zero in both parts.
+  Trap wordings are exempt: raw article passages carry wiki markup on both
+  sides of every instance symmetrically, and T3 is never compared against
+  T1/T2.
 - **Order controls:** position A/B order randomized by instance parity (the
   CB4 convention); condition runs interleaved; one run, ~$3–5 total
   (3 models × 2 conditions × 51 instances ≈ 306 calls).
