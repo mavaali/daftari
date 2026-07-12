@@ -87,6 +87,22 @@ export function cleanBoxStatement(raw: string): string {
   // Box meta-note to editors about wikilink formatting — meaningless once
   // the links are reduced to surface text.
   s = s.replace(/\s*Linking exactly as shown\.?\s*/gi, " ");
+  // Item cross-references — "(cf. item 23)", "See #32." — are box-internal
+  // navigation, not article content (the gate-v2 rater caught both).
+  s = s.replace(/\(\s*(?:cf|see)?\.?\s*item\s*\d+\s*\)/gi, "");
+  s = s.replace(/\bsee\s+#?\d+\.?/gi, "");
+  // Drop whole sentences of box governance rather than article content:
+  // discussion moratoria ("Do not bring up for discussion again until…")
+  // and Wikipedia-namespace shortcuts (WP:MEDRS). The remaining sentences
+  // are the content decision itself.
+  s = s
+    .split(/(?<=\.)\s+/)
+    .filter(
+      (sent) => !/bring(?:ing)? up for discussion|\bWP:[A-Z]|\bRfC\b|\bper consensus\b/i.test(sent),
+    )
+    .join(" ");
+  // Removals can strand whitespace before punctuation ("ban , the wall").
+  s = s.replace(/\s+([,.;:])/g, "$1");
   return s.replace(/\s+/g, " ").trim();
 }
 
@@ -104,7 +120,9 @@ export function isHusk(cleaned: string): boolean {
 // leftover markup or process vocabulary. Such an instance is skipped rather
 // than shipped with a watermark.
 export function hasApparatus(text: string): boolean {
-  return /\{\{|\[\[|#C\d|\bSupersedes\b|\bsuperseded\b|\bRfC\b/i.test(text);
+  return /\{\{|\[\[|#C\d|\bSupersedes\b|\bsuperseded\b|\bRfC\b|\bWP:[A-Z]|\bitem\s+\d+\b|\bsee\s+#\d+|bring(?:ing)? up for discussion/i.test(
+    text,
+  );
 }
 
 // Settled controls: consensus-box supersession chains. The superseded

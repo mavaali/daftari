@@ -107,7 +107,34 @@ describe("cb7 instance assembly", () => {
     expect(hasApparatus("see [[#C15|#15]]")).toBe(true);
     expect(hasApparatus("per the RfC close")).toBe(true);
     expect(hasApparatus("Supersedes #35")).toBe(true);
+    expect(hasApparatus("the travel ban (cf. item 23), the wall")).toBe(true);
+    expect(hasApparatus("results. See #32.")).toBe(true);
+    expect(hasApparatus("until WP:MEDRS-level sources are provided")).toBe(true);
+    expect(hasApparatus("Do not bring up for discussion again")).toBe(true);
     expect(hasApparatus("Ordinary article prose about a topic.")).toBe(false);
+    expect(hasApparatus("Omit from the lead a mention of the meetings.")).toBe(false);
+  });
+
+  it("strips item cross-refs and box-governance sentences (gate-v2 rater catches)", () => {
+    // settled:trump-52 — parenthetical item cross-reference.
+    expect(
+      cleanBoxStatement("The lead should contain the Muslim travel ban (cf. item 23), the wall."),
+    ).toBe("The lead should contain the Muslim travel ban, the wall.");
+    // settled:trump-71 — trailing "See #32."
+    expect(cleanBoxStatement("The lead should mention North Korea. See #32.")).toBe(
+      "The lead should mention North Korea.",
+    );
+    // settled:trump-39 — moratorium + WP: sentences drop; content sentences stay.
+    const cleaned = cleanBoxStatement(
+      "Do not include any paragraph regarding mental health. " +
+        "Do not bring up for discussion again until WP:MEDRS-level sources are provided. " +
+        "This does not preclude bringing up for discussion media coverage. " +
+        "This does not prevent inclusion of content about temperamental fitness.",
+    );
+    expect(cleaned).toBe(
+      "Do not include any paragraph regarding mental health. " +
+        "This does not prevent inclusion of content about temperamental fitness.",
+    );
   });
 
   it("excludes CB6 tension items from the settled controls", () => {

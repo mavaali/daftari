@@ -152,6 +152,19 @@ from T1/T2; the keystone claim does not rest on it.
   Trap wordings are exempt: raw article passages carry wiki markup on both
   sides of every instance symmetrically, and T3 is never compared against
   T1/T2.
+
+  **Amendment (2026-07-12, gate v2.1 — after the v2 run flagged 5/12).** The
+  v2 scan passed (0/90) but the rater flagged 2 tension + 3 settled wordings.
+  Inspection split the flags: three genuine residuals the scan regex missed —
+  `(cf. item 23)`, a trailing `See #32.`, and discussion-moratorium/`WP:`
+  sentences — now stripped by the cleaner and covered by `hasApparatus`; and
+  two substance flags (Abraham-Accords emphasis, gaffes-subsection) where the
+  editorial directive ("should include a subsection", "better covered in
+  another article") IS the position under dispute. The rater prompt now
+  defines content directives as CLEAN — these materials are editorial
+  decisions by nature, the style is present in both arms — and reserves
+  APPARATUS for machinery: markup, item/RfC cross-references, process
+  mentions, namespace shortcuts, moratoria.
 - **Order controls:** position A/B order randomized by instance parity (the
   CB4 convention); condition runs interleaved; one run, ~$3–5 total
   (3 models × 2 conditions × 51 instances ≈ 306 calls).
