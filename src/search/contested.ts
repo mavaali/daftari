@@ -47,9 +47,13 @@ interface SideRecord {
 // Lexical, IO-free canonicalization of a vault-relative path: aliasing
 // (`pricing/../pricing/a.md`) must join its canonical hit (#127/#128 class).
 // A path that escapes the root normalizes to a `..`-leading form, which can
-// never equal an indexed hit path — escapes simply never join.
+// never equal an indexed hit path — escapes simply never join. normalize("")
+// returns "." — map it back to "" so the missing-source guard in buildByPath
+// fires on entries with a blank Source line instead of indexing the valid
+// side under a junk "." counterpart.
 function canonicalRel(p: string): string {
-  return posix.normalize(p.trim().replace(/\\/g, "/")).replace(/^\.\//, "");
+  const n = posix.normalize(p.trim().replace(/\\/g, "/"));
+  return n === "." ? "" : n.replace(/^\.\//, "");
 }
 
 // mtime-keyed cache of the parsed, indexed log — the E2 loadConfig pattern

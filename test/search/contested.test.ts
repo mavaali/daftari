@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { addTension, resolveTension, tensionsPath } from "../../src/curation/tension.js";
@@ -171,6 +171,24 @@ describe("contested", () => {
     expect(contestedFor(vault, db, DOC_A)).toBeNull(); // caches the absent log
     await logTension(vault); // creates the file — mtime state changes
     expect(contestedFor(vault, db, DOC_A)).not.toBeNull();
+  });
+
+  it("skips whole entries with a missing source and ignores non-entry garbage", () => {
+    // Degraded-log contract: a hand-edited log with junk text and an entry
+    // missing its Source A line must never annotate — not even the valid
+    // side (Source B), which would otherwise join under a "." counterpart.
+    writeFileSync(
+      tensionsPath(vault),
+      "this is not a tension entry, just stray prose\n" +
+        "random - **Bold:** noise that matches no block format\n" +
+        "\n" +
+        "## 2026-07-12 — broken\n" +
+        "- **Kind:** factual\n" +
+        `- **Source B:** ${DOC_B} says something\n` +
+        "- **Status:** unresolved\n",
+    );
+    expect(contestedFor(vault, db, DOC_B)).toBeNull();
+    expect(contestedFor(vault, db, DOC_A)).toBeNull();
   });
 
   it("sees a resolution appended after a cached read", async () => {
