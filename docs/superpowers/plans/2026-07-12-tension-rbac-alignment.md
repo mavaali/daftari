@@ -373,6 +373,10 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
       expect(restricted.value.clusters[0]?.documents.sort()).toEqual([
         "pricing/a.md", "pricing/b.md",
       ]);
+      // Spec case 6's "absent from counts": the surviving cluster counts only
+      // the visible tension. (Check the field name on TensionClustersResult —
+      // tension_count or similar — and pin it.)
+      expect(restricted.value.clusters[0]?.tension_count).toBe(1);
 
       const full = await vaultTensionClusters(vault, {}, both);
       expect(full.ok).toBe(true);
@@ -411,7 +415,7 @@ Add needed imports at the top of the test file (merge into existing import lines
 - [ ] **Step 2: Run to verify failure**
 
 Run: `npx vitest run test/tools/curation.test.ts -t "tension RBAC"`
-Expected: FAIL — restricted clusters still contain `intel/c.md` (2 clusters not 1); blast returns ok instead of denial.
+Expected: FAIL — restricted clusters still contain `intel/c.md` (pre-change the two tensions share pricing/a.md, so the unfiltered graph is ONE merged 3-doc cluster; the not-toContain and documents-equality assertions are what go red); blast returns ok instead of denial.
 
 - [ ] **Step 3: Implement the handler changes**
 
@@ -438,10 +442,10 @@ function openIndexForAccessOrNull(vaultRoot: string): IndexDb | null {
 }
 ```
 
-`vaultTensionClusters` — replace the body's final line:
+`vaultTensionClusters` — replace the body's final line. Note the access-gated open: in no-RBAC mode these readOnlyHint tools must not create `.daftari/index.db` as a side effect — filtering is identity there anyway.
 
 ```ts
-  const db = openIndexForAccessOrNull(vaultRoot);
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
   try {
     return await loadTensionClusters(vaultRoot, new Date(), (entries) =>
       visibleTensions(db, entries, access),
@@ -454,7 +458,7 @@ function openIndexForAccessOrNull(vaultRoot: string): IndexDb | null {
 `vaultTensionBlast` — after the existing arg coercion and BEFORE calling `computeTensionBlast`, gate the explicit doc (input-only, pre-existence):
 
 ```ts
-  const db = openIndexForAccessOrNull(vaultRoot);
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
   try {
     if (document !== undefined && access) {
       const canonical = canonicalRel(document);
