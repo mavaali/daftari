@@ -201,4 +201,43 @@ describe("contested", () => {
     });
     expect(contestedFor(vault, db, DOC_A)).toBeNull();
   });
+
+  it("indexes a self-tension once, not as two records", async () => {
+    // An intra-document contradiction is a legitimate advisory record; it
+    // must not double-count the hit it names twice.
+    await logTension(vault, {
+      sourceB: DOC_A,
+      claimB: "the same doc also promises flat-rate credits",
+    });
+    const hit = contestedFor(vault, db, DOC_A);
+    expect(hit?.contestedCount).toBe(1);
+    expect(hit?.contested).toHaveLength(1);
+    expect(hit?.contested[0]).toMatchObject({
+      counterpart: DOC_A,
+      claimSelf: "credits are consumption-priced",
+      claimOther: "the same doc also promises flat-rate credits",
+    });
+  });
+
+  it("fails closed on case-variant and unicode-variant logged paths", async () => {
+    // Canonicalization is byte-exact: no case folding, no NFC normalization.
+    // A variant path must never join the canonical hit (no annotation), and a
+    // variant counterpart must hide, not disclose (segment fallback gates on
+    // the variant string, which matches no role's read list exactly or at
+    // worst the same collection — either way nothing new is revealed).
+    await logTension(vault, { sourceA: "PRICING/Helios-Consumption-Pricing.md" });
+    expect(contestedFor(vault, db, DOC_A)).toBeNull();
+
+    rmSync(tensionsPath(vault), { force: true });
+    clearContestedCache();
+
+    // Unicode: a tension logged under the NFD form ("e" + combining acute)
+    // never joins a hit whose canonical index path is the NFC form — the two
+    // are different byte strings and canonicalRel does not normalize.
+    const NFD = "pricing/de\u0301tail.md";
+    const NFC = "pricing/d\u00e9tail.md";
+    await logTension(vault, { sourceA: NFD });
+    expect(contestedFor(vault, db, NFC)).toBeNull();
+    expect(contestedFor(vault, db, DOC_A)).toBeNull();
+  });
 });

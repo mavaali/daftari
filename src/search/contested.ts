@@ -87,7 +87,12 @@ function buildByPath(raw: string): Map<string, SideRecord[]> {
     if (a.length === 0 || b.length === 0) return;
     const base = { order, id: entry.id, kind: entry.kind, date: entry.date };
     add(a, { ...base, counterpart: b, claimSelf: entry.claimA, claimOther: entry.claimB });
-    add(b, { ...base, counterpart: a, claimSelf: entry.claimB, claimOther: entry.claimA });
+    // A self-tension (an intra-document contradiction — legitimate advisory
+    // input) has one hit to annotate, not two: the mirrored add would land
+    // under the same key and inflate contested/contestedCount.
+    if (a !== b) {
+      add(b, { ...base, counterpart: a, claimSelf: entry.claimB, claimOther: entry.claimA });
+    }
   });
   return byPath;
 }
