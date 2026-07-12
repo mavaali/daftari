@@ -199,3 +199,18 @@ provenance / never mints — across *both* regimes. Measured: it does neither.
    "lower bound" caveat to a model-robustness range.
 3. Draft the paper from the skeleton; all evidence is in hand.
 4. Deep-research pass for related work before submission.
+
+## Addendum (2026-07-12) — CB7 closes the answer→decision gap
+
+CB7 (spec `docs/superpowers/specs/2026-07-11-corpus-b-cb7-decision-divergence-design.md`,
+results `docs/superpowers/results/2026-07-12-corpus-b-cb7-decision-divergence.md`)
+adds the decision-level rung the manifesto's kill condition demanded, and the
+kill condition failed to fire: memory representation alone flips the agent's
+action on 15/18 tension presentations across the 3-model panel (held tension →
+escalate 18/18; collapsed value → unilateral commit 15/18), with a hedge tax
+BELOW the collapsed baseline (1/18 vs 3/18) and a near-total decision-level
+replication of the stale-trap result (collapsed commits stale, correct 2/99;
+held 94/97). The paper's spine gains its final section: recency fails (CO2) →
+consolidation inherits it (Arm B) → single-value memory masquerades tensions
+(CB6) → and the agent acts on the masquerade unless the memory holds the
+tension (CB7). Quote all keystone numbers with n=6 stated.
