@@ -6,6 +6,7 @@ import { reindexVault } from "../../src/search/reindex.js";
 import {
   blobToEmbedding,
   clearIndex,
+  collectionForPath,
   deleteDocument,
   documentCount,
   embeddingCount,
@@ -524,6 +525,30 @@ describe("index-db", () => {
       const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
       if (!reopened.ok) throw reopened.error;
       db = reopened.value;
+    });
+  });
+
+  describe("collectionForPath", () => {
+    it("returns the indexed row's collection when present", () => {
+      insertDocument(db, {
+        ...sampleDoc,
+        path: "pricing/indexed.md",
+        collection: "declared-elsewhere",
+      });
+      expect(collectionForPath(db, "pricing/indexed.md")).toBe("declared-elsewhere");
+    });
+
+    it("falls back to the first path segment for unindexed paths", () => {
+      expect(collectionForPath(db, "pricing/never-indexed.md")).toBe("pricing");
+    });
+
+    it("errs closed on escaping or empty paths", () => {
+      expect(collectionForPath(db, "../escape.md")).toBe("..");
+      expect(collectionForPath(db, "")).toBe("");
+    });
+
+    it("uses the pure segment rule when db is null", () => {
+      expect(collectionForPath(null, "pricing/whatever.md")).toBe("pricing");
     });
   });
 });

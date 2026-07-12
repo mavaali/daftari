@@ -17,7 +17,7 @@ import { readFileSync, statSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { parseTensionLog, type TensionKind, tensionsPath } from "../curation/tension.js";
-import { getDocument, type IndexDb } from "../storage/index-db.js";
+import { collectionForPath, type IndexDb } from "../storage/index-db.js";
 
 export interface ContestedTension {
   id?: string; // absent only for legacy entries
@@ -51,7 +51,7 @@ interface SideRecord {
 // returns "." — map it back to "" so the missing-source guard in buildByPath
 // fires on entries with a blank Source line instead of indexing the valid
 // side under a junk "." counterpart.
-function canonicalRel(p: string): string {
+export function canonicalRel(p: string): string {
   const n = posix.normalize(p.trim().replace(/\\/g, "/"));
   return n === "." ? "" : n.replace(/^\.\//, "");
 }
@@ -123,15 +123,6 @@ function tensionsByPath(vaultRoot: string): Map<string, SideRecord[]> {
   return byPath;
 }
 
-// The counterpart's collection for the RBAC gate: the indexed row when
-// present; the physical first path segment otherwise (the S1/#192 rule —
-// key on where the bytes live, never on a declared string). The fallback
-// errs closed: a `..`-leading or empty segment matches no role's read list.
-function counterpartCollection(db: IndexDb, counterpart: string): string {
-  const doc = getDocument(db, counterpart);
-  return doc?.collection ?? counterpart.split("/")[0] ?? "";
-}
-
 // The per-hit join. Returns null when the hit has no visible unresolved
 // tensions — callers leave the hit untouched (fields absent, never empty).
 //
@@ -151,7 +142,7 @@ export function contestedFor(
   if (records === undefined) return null;
 
   const visible = access
-    ? records.filter((r) => canRead(access.role, counterpartCollection(db, r.counterpart)))
+    ? records.filter((r) => canRead(access.role, collectionForPath(db, r.counterpart)))
     : records;
   if (visible.length === 0) return null;
 
