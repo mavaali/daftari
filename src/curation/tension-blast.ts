@@ -38,8 +38,8 @@
 // re-queued, so a sources b sources a terminates after one round trip.
 
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { loadTensionClusters } from "./tension-clusters.js";
 import type { TensionEntry } from "./tension.js";
+import { loadTensionClusters } from "./tension-clusters.js";
 import {
   buildPathIndexes,
   extractLinks,

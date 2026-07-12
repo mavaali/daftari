@@ -33,7 +33,7 @@ import {
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
-import { visibleTensions } from "../curation/tension-access.js";
+import { canSeeTension, visibleTensions } from "../curation/tension-access.js";
 import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { parseDocument } from "../frontmatter/parser.js";
@@ -112,6 +112,31 @@ export async function vaultTensionLog(
     );
   }
 
+  // #212: you cannot quote what you cannot read. Deny names the
+  // caller-supplied path only — resolving it to a collection first would
+  // leak a frontmatter-declared collection for existing docs.
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      for (const side of [sourceA.value, sourceB.value]) {
+        const canonical = canonicalRel(side);
+        const readable =
+          canonical.length > 0 &&
+          !canonical.startsWith("..") &&
+          canRead(access.role, collectionForPath(db, canonical));
+        if (!readable) {
+          return err(
+            new Error(
+              `access denied: role '${access.roleName}' cannot log a tension naming '${side}'`,
+            ),
+          );
+        }
+      }
+    } finally {
+      db?.close();
+    }
+  }
+
   return addTension(vaultRoot, {
     title: title.value,
     sourceA: sourceA.value,
@@ -188,6 +213,19 @@ export async function vaultTensionResolve(
   const all = await listTensions(vaultRoot);
   if (!all.ok) return all;
   const target = all.value.find((t) => t.id === id.trim());
+  // #212: an invisible tension must be indistinguishable from a nonexistent
+  // one — checked BEFORE the ratify rule, whose error would otherwise
+  // confirm existence to a caller who cannot see the entry.
+  if (target && access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      if (!canSeeTension(db, access, target.sourceA, target.sourceB)) {
+        return err(new Error(`tension not found: ${id.trim()}`));
+      }
+    } finally {
+      db?.close();
+    }
+  }
   if (target && target.loggedBy === CONSOLIDATE_AGENT && access && !canRatify(access.role)) {
     return err(
       new Error(`access denied: role '${access.roleName}' cannot resolve a loop-authored tension`),

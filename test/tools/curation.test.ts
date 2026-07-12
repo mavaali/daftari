@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { CONSOLIDATE_AGENT } from "../../src/consolidate/constants.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension, listTensions, resolveTension } from "../../src/curation/tension.js";
 import {
@@ -12,6 +13,7 @@ import {
   vaultTensionBlast,
   vaultTensionClusters,
   vaultTensionLog,
+  vaultTensionResolve,
 } from "../../src/tools/curation.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
@@ -400,6 +402,92 @@ describe("curation tools", () => {
       expect(res.ok).toBe(true);
       if (!res.ok) return;
       expect(res.value.cluster_documents).not.toContain("intel/c.md");
+    });
+
+    it("log: denied naming only the caller-supplied path; both-sides and no-RBAC log fine", async () => {
+      mkdirSync(join(vault, "pricing"), { recursive: true });
+      mkdirSync(join(vault, "intel"), { recursive: true });
+      const argsFor = (b: string) => ({
+        title: "t",
+        kind: "factual",
+        sourceA: "pricing/a.md",
+        claimA: "x",
+        sourceB: b,
+        claimB: "y",
+        agent: "test",
+      });
+      const denied = await vaultTensionLog(vault, argsFor("intel/c.md"), pricingOnly);
+      expect(denied.ok).toBe(false);
+      if (denied.ok) return;
+      expect(denied.error.message).toBe(
+        "access denied: role 'analyst' cannot log a tension naming 'intel/c.md'",
+      );
+      expect(await vaultTensionLog(vault, argsFor("intel/c.md"), both)).toMatchObject({ ok: true });
+      expect(await vaultTensionLog(vault, argsFor("intel/d.md"))).toMatchObject({ ok: true });
+    });
+
+    it("resolve: invisible tension is indistinguishable from nonexistent, even for loop-authored", async () => {
+      const { t2 } = await seedCrossTension(vault);
+      // Loop-authored invisible entry: the ordering pin. A non-ratify,
+      // one-sided caller must get NOT-FOUND, not the ratify error.
+      const loop = await addTension(vault, {
+        title: "loop cross",
+        kind: "factual",
+        sourceA: "pricing/a.md",
+        claimA: "x",
+        sourceB: "intel/c.md",
+        claimB: "z",
+        loggedBy: CONSOLIDATE_AGENT,
+      });
+      if (!loop.ok) throw loop.error;
+
+      const resolution = { kind: "accepted" } as const;
+      const invisible = await vaultTensionResolve(
+        vault,
+        { id: t2.id, kind: resolution.kind },
+        pricingOnly,
+      );
+      const nonexistent = await vaultTensionResolve(
+        vault,
+        { id: "tension-99999", kind: resolution.kind },
+        pricingOnly,
+      );
+      expect(invisible.ok).toBe(false);
+      expect(nonexistent.ok).toBe(false);
+      if (invisible.ok || nonexistent.ok) return;
+      // String equality with the id swapped: the denial carries zero extra info.
+      expect(invisible.error.message).toBe(`tension not found: ${t2.id}`);
+      expect(nonexistent.error.message).toBe("tension not found: tension-99999");
+
+      const loopInvisible = await vaultTensionResolve(
+        vault,
+        { id: loop.value.id, kind: resolution.kind },
+        pricingOnly,
+      );
+      expect(loopInvisible.ok).toBe(false);
+      if (loopInvisible.ok) return;
+      expect(loopInvisible.error.message).toBe(`tension not found: ${loop.value.id}`);
+      expect(loopInvisible.error.message).not.toContain("ratify");
+
+      // Visible + loop-authored still requires ratify (existing rule intact).
+      const loopVisible = await addTension(vault, {
+        title: "loop in-pricing",
+        kind: "factual",
+        sourceA: "pricing/a.md",
+        claimA: "x",
+        sourceB: "pricing/b.md",
+        claimB: "y",
+        loggedBy: CONSOLIDATE_AGENT,
+      });
+      if (!loopVisible.ok) throw loopVisible.error;
+      const ratifyDenied = await vaultTensionResolve(
+        vault,
+        { id: loopVisible.value.id, kind: resolution.kind },
+        pricingOnly,
+      );
+      expect(ratifyDenied.ok).toBe(false);
+      if (ratifyDenied.ok) return;
+      expect(ratifyDenied.error.message).toContain("cannot resolve a loop-authored tension");
     });
   });
 });
