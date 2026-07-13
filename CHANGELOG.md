@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`daftari okf export|import` — Open Knowledge Format bridge.** OKF is Google
+  Cloud's vendor-neutral spec (v0.1) for the LLM-wiki pattern — a directory of
+  markdown files with YAML frontmatter — which is exactly Daftari's storage
+  model. `okf export` renders a vault as a portable OKF bundle: each doc becomes
+  an OKF concept doc carrying the core `type` / `title` / `description` /
+  `resource` / `tags` / `timestamp` fields plus a verbatim `daftari` sidecar for
+  lossless round-trip, alongside generated `index.md` and `log.md` reserved
+  files; the source vault is never mutated. `okf import` adopts an OKF bundle
+  into a vault — a bundle from `okf export` round-trips exactly via its sidecar,
+  while a foreign bundle is mapped conservatively (docs land as `draft` in the
+  `accumulation` domain, the source OKF `type` preserved in `okf_type`); writes
+  auto-commit and the index is rebuilt. `--dry-run` previews the import plan.
+
 ## [1.30.0] - 2026-07-13
 
 ### Added
