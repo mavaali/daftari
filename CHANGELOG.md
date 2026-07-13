@@ -7,87 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **`vault_witness` — agent track records + the wager layer** (positioning
-  ideas 4 and 9, gate cleared by the CB7 result). A read-only MCP tool that
-  aggregates the vault's own ledgers — provenance log, tension log, staged
-  actions — into a per-principal track record, priced by a provisional,
-  exported wager schedule (`low` 0 / `medium` 1 / `high` 3; survival credit
-  1; gone-doc burn 1 — calibration constants, like the §11.5 impact table).
-  Per principal: write volume and span (the longitudinal series for idea 9's
-  kill condition), docs authored (first provenance entry wins; authenticated
-  `principal` outranks the free-text `agent` claim), live claims with open
-  exposure, contested claims with stake at risk, the settled book (claims
-  corrected by ruling, retired, or deleted burn their stake; claims
-  maintained through a full TTL cycle earn credit; `balance` is the
-  difference), proposal outcomes, and tensions logged. Includes the
-  flat-curve monitor (idea 4's kill condition): one principal at ≥95% of
-  writes flags the records as uninformative instead of reporting them as
-  signal. RBAC follows the `vault_status` precedent — everything is scoped
-  to readable collections. Advisory and deterministic; nothing is enforced,
-  no document is touched, edge-observer attribution is deferred (the edge
-  log's collapse keeps observers internal). Tool surface is now 27.
-
-- **`daftari sleep` — circadian memory** (positioning idea 6, gate cleared by
-  the CB7 result). A nightly metabolic pass composing machinery that already
-  exists — deterministic, LLM-free, and write-free with respect to documents:
-  sweeps expired staged actions, scores every document's decay, and builds
-  the **wake list** (canonical accumulation docs past TTL with downstream
-  dependents, ranked by blast radius via the `vault_tension_blast` reverse
-  maps), written to a gitignored `.daftari/wake-queue.jsonl` snapshot for an
-  external agent to re-verify against sources — the vault never re-verifies
-  on its own. The domain split is honored: generative docs going stale are
-  expected — counted, never woken; expired docs with no dependents are
-  reported as quiet decay, not woken. The **Morning Report** surfaces tension
-  aging and the court docket head, the ratification queue with
-  soon-to-expire proposals, and the rubber-stamp monitor (zero rejections
-  over ≥10 decisions prints a warning — the circadian design's kill-condition
-  instrumentation). Scheduling stays the OS's job (cron example in
-  `--help`); daftari ships the cycle, not a daemon. Markdown to stdout,
-  `--output` / `--output-json`, `--wake-limit` (report rows only — the queue
-  always carries the full list, no silent caps), `--no-queue`;
-  audit-convention exit codes. `.daftari/wake-queue.jsonl` added to the vault
-  gitignore template.
-
-### Internal
-
-- **CB7 decision-divergence bench** (`integrations/consensus-bench`,
-  benchmark tooling only). Implements the
-  2026-07-11 CB7 design: instance assembly from existing artifacts (CB6
-  tension pairs, CO2 stale-trap diffs, consensus-box supersession chains as
-  settled controls — CB6 tension items excluded from the control set),
-  condition renderer with locked validity invariants (task text
-  byte-identical across memory conditions; the collapsed block carries one
-  value and no epistemic language; settled controls give the foil the
-  governing value), deterministic enum scorer (divergence, calibration,
-  hedge tax — no LLM judge on primary metrics), and `cb7-runner.mjs` for the
-  live panel run (`--gate` mode runs the second-rater leakage check).
-  M-collapsed for tensions holds the challenger position (recency /
-  last-write-wins) rather than the spec's CB6-foil-verdict, a deterministic
-  deviation recorded in the module.
+## [1.30.0] - 2026-07-13
 
 ### Added
 
-- **`daftari court` — the Tension Court.** Common-law memory over the
-  tension log. `daftari court` compiles a **docket**: every open tension
-  briefed and ranked by priority (aging tier stale→fresh, then blast size,
-  then age) — both sides' claims verbatim with the present status and decay
-  of their documents ("gone" when a side was deleted), the union blast
-  radius a ruling would settle (reusing `computeBlast` and the
-  reverse-source/link maps from `vault_tension_blast`), tension-cluster
-  membership, and **precedents**: past rulings retrieved by a deterministic
-  three-tier match (shared-document > collection-pair > same-kind; newest
-  first within a tier, capped at 3, no LLM). `--tension <id>` renders a
-  single case's full brief including precedent rationales verbatim.
-  `daftari court rule <id> --kind superseded|corrected|accepted|invalid
-  [--rationale …] [--references …] [--by …]` records the ruling through the
-  same `resolveTension` write path as `vault_tension_resolve`; the rationale
-  is recorded verbatim and cited by future dockets — a ruling is precedent
-  the moment it lands, because a precedent IS a resolved tension. The court
-  retrieves and briefs; it never decides, and a ruling never edits the
-  disputed documents. Markdown to stdout, `--output` / `--output-json`;
-  audit-convention exit codes (0/2/3).
+- **`vault_receipt` — the epistemic receipt.** A new read-only MCP tool that
+  compiles, for the set of documents an answer cites, a single attachable
+  artifact: per-source status / confidence / provenance / freshness (decay),
+  the exact content-version hash, a filesystem-walked resolution of the
+  supersession chain (`resolved` / `restricted` / `dangling` / `cycle`), and
+  every unresolved tension touching the source — plus a deterministic summary
+  (`byStatus`, `openTensions`, oldest/newest `updated`, sorted
+  machine-readable flags such as `cites-stale`, `cites-contested`,
+  `cites-superseded`, `supersession-unresolved`; empty flags mean current,
+  grounded, and uncontested), the vault's git HEAD as an as-of anchor, and a
+  recomputable SHA-256 over the whole receipt. Discipline: the receipt only
+  reads (frontmatter, tension log, git); flags are deterministic derivations;
+  the optional caller-supplied `claim` rides verbatim and is never
+  interpolated into Daftari-authored text. RBAC mirrors the read path: a
+  receipt over an unreadable collection is denied, an unreadable supersession
+  hop degrades to `restricted`, and a tension is visible only when both
+  sources' collections are readable (the `vault_status` precedent). README
+  tool list updated to the full 26-tool surface (the "14 tools" count
+  predated the edge / staged-action / tension-graph tools).
 
 - **`daftari asof` — belief archaeology.** A read-only CLI report over the
   vault's git history: `daftari asof <ref-or-date>` resolves a git ref or a
@@ -112,25 +54,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `vault_receipt`: a receipt's `vaultHead` is the anchor to hand back to
   `asof`.
 
-- **`vault_receipt` — the epistemic receipt.** A new read-only MCP tool that
-  compiles, for the set of documents an answer cites, a single attachable
-  artifact: per-source status / confidence / provenance / freshness (decay),
-  the exact content-version hash, a filesystem-walked resolution of the
-  supersession chain (`resolved` / `restricted` / `dangling` / `cycle`), and
-  every unresolved tension touching the source — plus a deterministic summary
-  (`byStatus`, `openTensions`, oldest/newest `updated`, sorted
-  machine-readable flags such as `cites-stale`, `cites-contested`,
-  `cites-superseded`, `supersession-unresolved`; empty flags mean current,
-  grounded, and uncontested), the vault's git HEAD as an as-of anchor, and a
-  recomputable SHA-256 over the whole receipt. Discipline: the receipt only
-  reads (frontmatter, tension log, git); flags are deterministic derivations;
-  the optional caller-supplied `claim` rides verbatim and is never
-  interpolated into Daftari-authored text. RBAC mirrors the read path: a
-  receipt over an unreadable collection is denied, an unreadable supersession
-  hop degrades to `restricted`, and a tension is visible only when both
-  sources' collections are readable (the `vault_status` precedent). README
-  tool list updated to the full 26-tool surface (the "14 tools" count
-  predated the edge / staged-action / tension-graph tools).
+- **`daftari court` — the Tension Court.** Common-law memory over the
+  tension log. `daftari court` compiles a **docket**: every open tension
+  briefed and ranked by priority (aging tier stale→fresh, then blast size,
+  then age) — both sides' claims verbatim with the present status and decay
+  of their documents ("gone" when a side was deleted), the union blast
+  radius a ruling would settle (reusing `computeBlast` and the
+  reverse-source/link maps from `vault_tension_blast`), tension-cluster
+  membership, and **precedents**: past rulings retrieved by a deterministic
+  three-tier match (shared-document > collection-pair > same-kind; newest
+  first within a tier, capped at 3, no LLM). `--tension <id>` renders a
+  single case's full brief including precedent rationales verbatim.
+  `daftari court rule <id> --kind superseded|corrected|accepted|invalid
+  [--rationale …] [--references …] [--by …]` records the ruling through the
+  same `resolveTension` write path as `vault_tension_resolve`; the rationale
+  is recorded verbatim and cited by future dockets — a ruling is precedent
+  the moment it lands, because a precedent IS a resolved tension. The court
+  retrieves and briefs; it never decides, and a ruling never edits the
+  disputed documents. Markdown to stdout, `--output` / `--output-json`;
+  audit-convention exit codes (0/2/3).
+
+- **`daftari sleep` — circadian memory** (positioning idea 6, gate cleared by
+  the CB7 result). A nightly metabolic pass composing machinery that already
+  exists — deterministic, LLM-free, and write-free with respect to documents:
+  sweeps expired staged actions, scores every document's decay, and builds
+  the **wake list** (canonical accumulation docs past TTL with downstream
+  dependents, ranked by blast radius via the `vault_tension_blast` reverse
+  maps), written to a gitignored `.daftari/wake-queue.jsonl` snapshot for an
+  external agent to re-verify against sources — the vault never re-verifies
+  on its own. The domain split is honored: generative docs going stale are
+  expected — counted, never woken; expired docs with no dependents are
+  reported as quiet decay, not woken. The **Morning Report** surfaces tension
+  aging and the court docket head, the ratification queue with
+  soon-to-expire proposals, and the rubber-stamp monitor (zero rejections
+  over ≥10 decisions prints a warning — the circadian design's kill-condition
+  instrumentation). Scheduling stays the OS's job (cron example in
+  `--help`); daftari ships the cycle, not a daemon. Markdown to stdout,
+  `--output` / `--output-json`, `--wake-limit` (report rows only — the queue
+  always carries the full list, no silent caps), `--no-queue`;
+  audit-convention exit codes. `.daftari/wake-queue.jsonl` added to the vault
+  gitignore template.
+
+- **`vault_witness` — agent track records + the wager layer** (positioning
+  ideas 4 and 9, gate cleared by the CB7 result). A read-only MCP tool that
+  aggregates the vault's own ledgers — provenance log, tension log, staged
+  actions — into a per-principal track record, priced by a provisional,
+  exported wager schedule (`low` 0 / `medium` 1 / `high` 3; survival credit
+  1; gone-doc burn 1 — calibration constants, like the §11.5 impact table).
+  Per principal: write volume and span (the longitudinal series for idea 9's
+  kill condition), docs authored (first provenance entry wins; authenticated
+  `principal` outranks the free-text `agent` claim), live claims with open
+  exposure, contested claims with stake at risk, the settled book (claims
+  corrected by ruling, retired, or deleted burn their stake; claims
+  maintained through a full TTL cycle earn credit; `balance` is the
+  difference), proposal outcomes, and tensions logged. Includes the
+  flat-curve monitor (idea 4's kill condition): one principal at ≥95% of
+  writes flags the records as uninformative instead of reporting them as
+  signal. RBAC follows the `vault_status` precedent — everything is scoped
+  to readable collections. Advisory and deterministic; nothing is enforced,
+  no document is touched, edge-observer attribution is deferred (the edge
+  log's collapse keeps observers internal). Tool surface is now 27.
+
+- **`vault_search` hits carry unresolved tensions inline** (`contested` /
+  `contestedCount`). Each annotation is the full two-sided marker — both
+  claims, kind, counterpart, tension id — post-joined from
+  `.daftari/tensions.md` in the same enrichment pass as `currentSource`,
+  capped at 3 per hit with an honest total. RBAC-gated on the counterpart's
+  collection (unreadable ⇒ omitted entirely, and excluded from the count).
+  Measured motivation: the tension-graph feud benchmark (2026-07-04) — on
+  feuds where retrieval buries one side, agents surface the contradiction
+  ~8% baseline vs ~46% with the tension inline; the dedicated-tool shape
+  loses to inline across all panel models. Tensions remain advisory and
+  never affect ranking.
 
 - **OpenRouter LLM transport for `daftari consolidate`** (`--transport
   anthropic|openrouter`, env fallback `DAFTARI_LLM_TRANSPORT`). A second
@@ -144,18 +139,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so `k_survived` needs a second model family before any auto-write tier can
   graduate. `completeWithTools` is deliberately unsupported on this transport
   (only `daftari eval` drives tools; eval stays on anthropic).
-
-- **`vault_search` hits carry unresolved tensions inline** (`contested` /
-  `contestedCount`). Each annotation is the full two-sided marker — both
-  claims, kind, counterpart, tension id — post-joined from
-  `.daftari/tensions.md` in the same enrichment pass as `currentSource`,
-  capped at 3 per hit with an honest total. RBAC-gated on the counterpart's
-  collection (unreadable ⇒ omitted entirely, and excluded from the count).
-  Measured motivation: the tension-graph feud benchmark (2026-07-04) — on
-  feuds where retrieval buries one side, agents surface the contradiction
-  ~8% baseline vs ~46% with the tension inline; the dedicated-tool shape
-  loses to inline across all panel models. Tensions remain advisory and
-  never affect ranking.
 
 ### Security
 
@@ -181,6 +164,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vault_receipt` / court-precedent tension summaries still filter by
   uncanonicalized top-level segment, and `vault_lint`'s tension-health
   aggregates count all entries (counts only, no content).
+
+### Internal
+
+- **CB7 decision-divergence bench** (`integrations/consensus-bench`,
+  benchmark tooling only). Implements the
+  2026-07-11 CB7 design: instance assembly from existing artifacts (CB6
+  tension pairs, CO2 stale-trap diffs, consensus-box supersession chains as
+  settled controls — CB6 tension items excluded from the control set),
+  condition renderer with locked validity invariants (task text
+  byte-identical across memory conditions; the collapsed block carries one
+  value and no epistemic language; settled controls give the foil the
+  governing value), deterministic enum scorer (divergence, calibration,
+  hedge tax — no LLM judge on primary metrics), and `cb7-runner.mjs` for the
+  live panel run (`--gate` mode runs the second-rater leakage check).
+  M-collapsed for tensions holds the challenger position (recency /
+  last-write-wins) rather than the spec's CB6-foil-verdict, a deterministic
+  deviation recorded in the module.
 
 ## [1.29.0] - 2026-06-25
 

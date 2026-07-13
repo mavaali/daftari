@@ -100,7 +100,9 @@ open exposure, contested claims with stake at risk, the settled book
 deterministic; includes the flat-curve monitor so a single-author vault is
 reported as uninformative rather than as signal.
 
-**Search:** `vault_search` (hybrid BM25 + vector), `vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
+**Search:** `vault_search` (hybrid BM25 + vector; hits carry their unresolved
+tensions inline and foreground the current source of superseded documents),
+`vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
 
 **Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`
 
