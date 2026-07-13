@@ -416,6 +416,30 @@ fail_on:
   transitive_staleness: 100          # default: generous; teams tune
 ```
 
+## Circadian memory
+
+The vault sleeps. `daftari sleep` is the nightly metabolic pass — deterministic,
+LLM-free, write-free (documents are never touched):
+
+```bash
+# In cron (any scheduler works; daftari ships the cycle, not a daemon):
+0 3 * * * cd /path/to/vault && npx daftari sleep --output .daftari/morning-report.md
+```
+
+The cycle sweeps expired staged actions, scores every document's decay, and
+builds the **wake list**: canonical accumulation documents past their TTL
+with downstream dependents, ranked by blast radius. The list is written to
+`.daftari/wake-queue.jsonl` for an external agent to consume — re-verify each
+document against its sources, stage the diff — because the vault never
+re-verifies on its own. Generative documents going stale are expected, not a
+defect: counted, never woken.
+
+The **Morning Report** ends where the human begins: tension aging and the
+court docket head, the ratification queue with soon-to-expire proposals, and
+the rubber-stamp monitor — zero rejections over a long decision history is
+printed as a warning, not a compliment. The agent proposes overnight; you
+ratify over coffee.
+
 ## Tension Court
 
 Tensions wait in a log; the court turns them into decidable cases. `daftari

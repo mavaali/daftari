@@ -38,6 +38,7 @@ Usage:
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
   daftari import obsidian <v>        Adopt an Obsidian vault in place (see: daftari import --help)
+  daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
@@ -257,6 +258,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "consolidate") {
     const { runConsolidate } = await import("./consolidate/index.js");
     process.exitCode = await runConsolidate(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "sleep") {
+    const { runSleep } = await import("./sleep/index.js");
+    process.exitCode = await runSleep(argv.slice(1));
     return;
   }
 
