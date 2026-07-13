@@ -29,6 +29,8 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl
+# Nightly wake-queue snapshot (daftari sleep) — regenerated each cycle.
+.daftari/wake-queue.jsonl
 `;
 
 // A stable line guaranteed to appear in VAULT_GITIGNORE; used as the marker to

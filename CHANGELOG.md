@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`daftari sleep` — circadian memory** (positioning idea 6, gate cleared by
+  the CB7 result). A nightly metabolic pass composing machinery that already
+  exists — deterministic, LLM-free, and write-free with respect to documents:
+  sweeps expired staged actions, scores every document's decay, and builds
+  the **wake list** (canonical accumulation docs past TTL with downstream
+  dependents, ranked by blast radius via the `vault_tension_blast` reverse
+  maps), written to a gitignored `.daftari/wake-queue.jsonl` snapshot for an
+  external agent to re-verify against sources — the vault never re-verifies
+  on its own. The domain split is honored: generative docs going stale are
+  expected — counted, never woken; expired docs with no dependents are
+  reported as quiet decay, not woken. The **Morning Report** surfaces tension
+  aging and the court docket head, the ratification queue with
+  soon-to-expire proposals, and the rubber-stamp monitor (zero rejections
+  over ≥10 decisions prints a warning — the circadian design's kill-condition
+  instrumentation). Scheduling stays the OS's job (cron example in
+  `--help`); daftari ships the cycle, not a daemon. Markdown to stdout,
+  `--output` / `--output-json`, `--wake-limit` (report rows only — the queue
+  always carries the full list, no silent caps), `--no-queue`;
+  audit-convention exit codes. `.daftari/wake-queue.jsonl` added to the vault
+  gitignore template.
+
 ### Internal
 
 - **CB7 decision-divergence bench** (`integrations/consensus-bench`,
