@@ -16,6 +16,7 @@ import { receiptTools } from "./tools/receipt.js";
 import { searchTools } from "./tools/search.js";
 import { stagedActionTools } from "./tools/staged-actions.js";
 import { themesTools } from "./tools/themes.js";
+import { witnessTools } from "./tools/witness.js";
 import { writeTools } from "./tools/write.js";
 
 export const SERVER_NAME = "daftari";
@@ -40,6 +41,7 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
   const tools: ToolDefinition[] = [
     ...readTools,
     ...receiptTools,
+    ...witnessTools,
     ...searchTools,
     ...themesTools,
     ...writeTools,

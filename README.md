@@ -56,7 +56,7 @@ compiles; the vault preserves; *you* keep the judgment. See
 
 ## What it is
 
-A directory of markdown files with YAML frontmatter, exposed to agents as 26
+A directory of markdown files with YAML frontmatter, exposed to agents as 27
 MCP tools over stdio. The vault is plain text: you can read it in any editor,
 `git log` it, grep it. Daftari adds the machinery agents need to treat it as a
 shared workspace.
@@ -92,6 +92,13 @@ content-version hash, supersession-chain resolution, and open tensions, plus
 deterministic summary flags, the vault's git HEAD as an as-of anchor, and a
 recomputable hash over the whole receipt. Attach it to the answer so any
 consumer can see what the answer stands on.
+
+**Witness:** `vault_witness` — per-principal track records from the vault's
+own ledgers, priced by the wager schedule: write volume, live claims with
+open exposure, contested claims with stake at risk, the settled book
+(burned vs credited), proposal outcomes, tensions logged. Advisory and
+deterministic; includes the flat-curve monitor so a single-author vault is
+reported as uninformative rather than as signal.
 
 **Search:** `vault_search` (hybrid BM25 + vector), `vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
 
@@ -415,6 +422,22 @@ fail_on:
   broken_refs: 1                     # default: fail on any broken ref
   transitive_staleness: 100          # default: generous; teams tune
 ```
+
+## The vault as witness — and the wager layer
+
+Every write already carries an identity, every proposal an outcome, every
+tension a logger and a ruling. `vault_witness` aggregates that ledger into a
+**track record per principal** — and prices it. Confidence is free to claim,
+so the wager schedule makes it cost something: writing at `high` stakes 3
+points, `medium` 1, `low` 0 (hedged claims are the honest default and are
+never taxed). A claim later corrected by a ruling or retired by someone else
+burns the stake; a claim maintained through a full TTL cycle earns credit.
+The balance is arithmetic on recorded facts — advisory, provisional
+constants, nothing enforced: routing a high-stakes write to the agent with
+the earned balance is your policy, not the vault's. Both kill conditions
+from the design travel with the tool: the flat-curve monitor (one author ≥95%
+of writes → curves declared uninformative) and the longitudinal write-volume
+series (if stake-fear suppresses honest claims, it shows up here first).
 
 ## Circadian memory
 

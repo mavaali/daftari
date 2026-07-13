@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`vault_witness` — agent track records + the wager layer** (positioning
+  ideas 4 and 9, gate cleared by the CB7 result). A read-only MCP tool that
+  aggregates the vault's own ledgers — provenance log, tension log, staged
+  actions — into a per-principal track record, priced by a provisional,
+  exported wager schedule (`low` 0 / `medium` 1 / `high` 3; survival credit
+  1; gone-doc burn 1 — calibration constants, like the §11.5 impact table).
+  Per principal: write volume and span (the longitudinal series for idea 9's
+  kill condition), docs authored (first provenance entry wins; authenticated
+  `principal` outranks the free-text `agent` claim), live claims with open
+  exposure, contested claims with stake at risk, the settled book (claims
+  corrected by ruling, retired, or deleted burn their stake; claims
+  maintained through a full TTL cycle earn credit; `balance` is the
+  difference), proposal outcomes, and tensions logged. Includes the
+  flat-curve monitor (idea 4's kill condition): one principal at ≥95% of
+  writes flags the records as uninformative instead of reporting them as
+  signal. RBAC follows the `vault_status` precedent — everything is scoped
+  to readable collections. Advisory and deterministic; nothing is enforced,
+  no document is touched, edge-observer attribution is deferred (the edge
+  log's collapse keeps observers internal). Tool surface is now 27.
+
 - **`daftari sleep` — circadian memory** (positioning idea 6, gate cleared by
   the CB7 result). A nightly metabolic pass composing machinery that already
   exists — deterministic, LLM-free, and write-free with respect to documents:
