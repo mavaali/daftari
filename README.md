@@ -243,6 +243,35 @@ daftari backfill --plan
 daftari backfill --apply --scope specs
 ```
 
+## Open Knowledge Format (OKF)
+
+[OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
+is Google Cloud's vendor-neutral spec (v0.1) for the LLM-wiki pattern: a
+directory of markdown files with YAML frontmatter that any producer can emit and
+any consumer can read without translation. A Daftari vault *is* that pattern, so
+`daftari okf` bridges the two directions.
+
+**Export** renders the vault as a portable OKF bundle — every doc becomes an OKF
+concept doc (the core `type` / `title` / `description` / `resource` / `tags` /
+`timestamp` fields, plus a verbatim `daftari` sidecar for lossless round-trip),
+with generated `index.md` (progressive-disclosure listing) and `log.md`
+(chronological history). The source vault is never mutated.
+
+```bash
+daftari okf export ./my-vault --out ./okf-bundle
+daftari okf export ./my-vault --out ./okf-bundle --collection pricing
+```
+
+**Import** adopts an OKF bundle into a vault. A bundle produced by `okf export`
+round-trips exactly via its sidecar; a foreign bundle is mapped conservatively
+(docs land as `draft` in the `accumulation` domain, the original OKF `type` is
+preserved in an `okf_type` field). Writes auto-commit and the index is rebuilt.
+
+```bash
+daftari okf import ./okf-bundle --into ./my-vault --dry-run
+daftari okf import ./okf-bundle --into ./my-vault
+```
+
 ## How it compares
 
 |                    |AGENTS.md        |RAG                          |Daftari                              |
