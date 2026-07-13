@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.mavaali/daftari",
+  "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
+  "title": "Daftari",
+  "websiteUrl": "https://github.com/mavaali/daftari",
+  "repository": {
+    "url": "https://github.com/mavaali/daftari",
+    "source": "github"
+  },
+  "version": "1.30.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "daftari",
+      "version": "1.30.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
