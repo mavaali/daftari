@@ -55,7 +55,7 @@ That's the argument in one sentence: the intelligence isn't in the judge, it's i
 
 Nobody migrates memory stores. You don't have to. LangMem's store is a Postgres table; reading it is the whole integration. Daftari imported the memories without LangMem's runtime, without write access, without touching the producing system. One command, 49 claim notes, every note traceable to its source row. Any memory store with a readable substrate gets the same treatment: compile the claims, keep the provenance, grow the tension graph on top.
 
-Dedup makes stores smaller but epistemics makes them honest.
+Dedup makes stores smaller but epistemics makes them honest. Different products. The second one retrofits onto the first.
 
 If your memory vendor's consolidation "maintains internal consistency," ask them one question. When two memories conflict, where does the loser go? There are only three answers. It survives untouched (you have a search index, not memory). It disappears (you have evidence destruction). Or it's recorded as a conflict (you have epistemics). 
 
