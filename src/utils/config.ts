@@ -58,6 +58,26 @@ export interface SchemaExtension {
 export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
 
+// Budgets and attribution for the sleep tension-scan dream (`daftari sleep
+// --dream tension-scan`). All values are HARD requirements on the pass:
+// `maxLlmCalls` caps pairwise judgments per pass (the real spend bound),
+// `maxDocs` caps candidate documents per pass, `agent` is the loggedBy
+// identity stamped on every tension the scan records. Config-absent ⇒ the
+// defaults below; a malformed block fails loud like every other block.
+export interface TensionScanConfig {
+  maxLlmCalls: number;
+  maxDocs: number;
+  agent: string;
+}
+
+// Defaults sized from the langgraph-store demo: 49 notes ⇒ 194 pairwise
+// judgments (~$2 on a frontier judge), so 200 calls covers a ~50-doc pass.
+export const TENSION_SCAN_DEFAULTS: TensionScanConfig = {
+  maxLlmCalls: 200,
+  maxDocs: 50,
+  agent: "agent:sleep-tension-scan",
+};
+
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
@@ -112,6 +132,9 @@ export interface DaftariConfig {
   // static `.git` file while git's churn lives off-cloud. Always resolved
   // outside the vault.
   gitDir?: string;
+  // Sleep tension-scan budgets/attribution (`tension_scan` block). Always
+  // populated — defaults when the block is absent.
+  tensionScan: TensionScanConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -129,6 +152,7 @@ function emptyConfig(): DaftariConfig {
     shadowMode: false,
     shadowModeSet: false,
     gitDir: undefined,
+    tensionScan: { ...TENSION_SCAN_DEFAULTS },
   };
 }
 
@@ -427,6 +451,43 @@ function validateBackfillIdentityMap(raw: unknown): Result<Record<string, string
   return ok(out);
 }
 
+// Parses the optional `tension_scan` block. Missing block ⇒ defaults; a
+// declared key must hold the right shape (positive integers, non-empty
+// agent string) — the same loud-failure contract as every other block. An
+// unrecognised child key fails loud so a typo can't silently leave a budget
+// at its default.
+const RECOGNISED_TENSION_SCAN_KEYS = ["max_llm_calls", "max_docs", "agent"] as const;
+
+function validateTensionScan(raw: unknown): Result<TensionScanConfig, Error> {
+  if (raw === undefined) return ok({ ...TENSION_SCAN_DEFAULTS });
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'tension_scan' must be a mapping"));
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!(RECOGNISED_TENSION_SCAN_KEYS as readonly string[]).includes(key)) {
+      return err(new Error(`'tension_scan.${key}' is not a recognised setting`));
+    }
+  }
+  const out: TensionScanConfig = { ...TENSION_SCAN_DEFAULTS };
+  for (const key of ["max_llm_calls", "max_docs"] as const) {
+    const v = obj[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+      return err(new Error(`'tension_scan.${key}' must be a positive integer`));
+    }
+    if (key === "max_llm_calls") out.maxLlmCalls = v;
+    else out.maxDocs = v;
+  }
+  if (obj.agent !== undefined) {
+    if (typeof obj.agent !== "string" || obj.agent.trim().length === 0) {
+      return err(new Error("'tension_scan.agent' must be a non-empty string"));
+    }
+    out.agent = obj.agent.trim();
+  }
+  return ok(out);
+}
+
 function dataHome(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
@@ -587,6 +648,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const gitDir = resolveGitDir(root.git_dir, vaultRoot);
   if (!gitDir.ok) return gitDir;
 
+  const tensionScan = validateTensionScan(root.tension_scan);
+  if (!tensionScan.ok) return err(new Error(`malformed config: ${tensionScan.error.message}`));
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -663,5 +727,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode,
     shadowModeSet,
     gitDir: gitDir.value,
+    tensionScan: tensionScan.value,
   });
 }
