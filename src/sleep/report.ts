@@ -4,6 +4,7 @@
 // explicit "+n more" so truncation is visible, never silent.
 
 import type { SleepCycleResult, WakeTask } from "./cycle.js";
+import type { TensionScanOutcome } from "./tension-scan.js";
 
 export interface SleepReport {
   generatedAt: string;
@@ -115,4 +116,74 @@ export function renderMarkdown(report: SleepReport): string {
 
 export function renderJson(report: SleepReport): string {
   return `${JSON.stringify(report, null, 2)}\n`;
+}
+
+// --- tension-scan dream report --------------------------------------------
+//
+// Same posture as the Morning Report: the scan records, it never resolves.
+// Every count is machine-derived from the pass — the anti-theatre
+// instrumentation the demo established (searches, judgments, tensions all
+// counted; no eyeball verification).
+
+export function renderTensionScanMarkdown(
+  vault: string,
+  model: string,
+  s: TensionScanOutcome,
+): string {
+  const lines: string[] = [];
+  lines.push("# Dream Report — tension scan");
+  lines.push("");
+  lines.push(
+    `Contradiction pass of ${vault} (judge: ${model}) — conflicts recorded ` +
+      `on the tension ledger, nothing resolved. The vault proposes; you ratify.`,
+  );
+  lines.push("");
+  lines.push("## Spend");
+  lines.push(
+    `- ${s.candidates} candidate doc(s), ${s.docsScanned} fully scanned · ` +
+      `${s.searchCalls} related-doc searches`,
+  );
+  lines.push(
+    `- ${s.pairsJudged} pairwise LLM judgment(s)` +
+      (s.budgetExhausted ? " · **budget exhausted — pass short-circuited**" : ""),
+  );
+  lines.push(
+    `- skipped without spend: ${s.pairsSkippedJudged} already judged · ` +
+      `${s.pairsSkippedExistingTension} already on the ledger · ` +
+      `${s.pairsSkippedAccess} access-denied`,
+  );
+  if (s.parseFailures > 0) {
+    lines.push(`- unparseable verdicts (defaulted to no-conflict): ${s.parseFailures}`);
+  }
+  lines.push("");
+  lines.push(`## Tensions logged — ${s.tensionsLogged}`);
+  if (s.tensions.length === 0) {
+    lines.push("No conflicts found among the judged pairs.");
+  } else {
+    for (const t of s.tensions) {
+      lines.push(
+        `- [${t.kind}] ${t.sourceA} <-> ${t.sourceB}` +
+          `${t.id ? ` (${t.id})` : ""}${t.reason ? ` — ${t.reason}` : ""}`,
+      );
+    }
+    lines.push("");
+    lines.push("Review with `daftari court`; resolve with `vault_tension_resolve`.");
+  }
+  if (s.tensionLogFailures > 0) {
+    lines.push("");
+    lines.push(`⚠ ${s.tensionLogFailures} tension write(s) failed — see stderr.`);
+  }
+  if (s.budgetExhausted) {
+    lines.push("");
+    lines.push(
+      "Budget exhausted before every candidate was scanned — the remainder " +
+        "re-enters the next pass's queue (judged pairs are not re-billed).",
+    );
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderTensionScanJson(s: TensionScanOutcome): string {
+  return `${JSON.stringify(s, null, 2)}\n`;
 }

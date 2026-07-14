@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stageAction } from "../../src/curation/staged-actions.js";
 import { runSleepCycle } from "../../src/sleep/cycle.js";
 import { runSleep, wakeQueuePath } from "../../src/sleep/index.js";
@@ -197,5 +197,38 @@ describe("runSleep (CLI)", () => {
 
   it("prints help on --help", async () => {
     expect(await runSleep(["--help"])).toBe(0);
+  });
+});
+
+describe("runSleep (--dream selection)", () => {
+  it("rejects an unknown dream type", async () => {
+    expect(await runSleep(["--vault", vault, "--dream", "lucid"])).toBe(2);
+  });
+
+  it("--dream circadian is the default pass (no LLM, exit 0)", async () => {
+    const outMd = join(vault, "..", `sleep-dream-${Date.now()}.md`);
+    expect(
+      await runSleep(["--vault", vault, "--dream", "circadian", "--no-queue", "--output", outMd]),
+    ).toBe(0);
+    expect(readFileSync(outMd, "utf-8")).toContain("# Morning Report");
+    rmSync(outMd, { force: true });
+  });
+
+  it("--dream tension-scan fails fast (exit 2) without an API key — no free-path spend", async () => {
+    // The scan is the ONLY dream that can spend; a missing key must be a
+    // config error before any vault work happens.
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("DAFTARI_LLM_TRANSPORT", "");
+    try {
+      expect(await runSleep(["--vault", vault, "--dream", "tension-scan"])).toBe(2);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("--dream tension-scan rejects a bad --max-llm-calls", async () => {
+    expect(
+      await runSleep(["--vault", vault, "--dream", "tension-scan", "--max-llm-calls", "zero"]),
+    ).toBe(2);
   });
 });
