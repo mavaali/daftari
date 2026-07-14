@@ -2,34 +2,36 @@ flowchart LR
   subgraph pricing["session: pricing"]
     n1["Relay Pro tier is contractually sold with a …"]
     n3["Relay’s control plane runs on Postgres 13."]
-    n13["Relay standard terms commit to 90-day retent…"]
+    n5["EU data residency is on the product roadmap …"]
+    n14["Relay standard terms commit to 90-day retent…"]
   end
   subgraph ops["session: ops"]
-    n5["Relays primary deployment region is AWS us-e…"]
-    n6["Increasing the Relay gateway RPS cap require…"]
-    n7["Relay gateway capacity is hard-capped at 350…"]
-    n9["Relay on-call/pager responsibility is owned …"]
-    n11["Relay webhook signatures use HMAC-SHA1."]
+    n6["Relays primary deployment region is AWS us-e…"]
+    n7["Increasing the Relay gateway RPS cap require…"]
+    n8["Relay gateway capacity is hard-capped at 350…"]
+    n10["Relay on-call/pager responsibility is owned …"]
+    n12["Relay webhook signatures use HMAC-SHA1."]
   end
   subgraph support["session: support"]
-    n8["For enterprise escalations, Relay support ca…"]
-    n10["Relay incident response/on-call is owned by …"]
-    n12["Relay workspaces created after May use SHA-2…"]
-    n14["Relay application logs are purged after ~2 w…"]
+    n9["For enterprise escalations, Relay support ca…"]
+    n11["Relay incident response/on-call is owned by …"]
+    n13["Relay workspaces created after May use SHA-2…"]
+    n15["Relay application logs are purged after ~2 w…"]
   end
   subgraph docs["session: docs"]
     n0["Relay public docs state that every plan is t…"]
     n2["Relay’s EU control-plane cluster migrated to…"]
     n4["Relay’s public trust page states that all pr…"]
   end
-  n0 ===|factual| n1
+  n0 -.-|temporal| n1
   n2 -.-|temporal| n3
-  n4 ===|factual| n5
-  n6 ===|factual| n7
-  n7 ===|factual| n1
+  n4 -.-|temporal| n5
+  n4 ===|factual| n6
   n7 ===|factual| n8
-  n9 ---|interpretive| n10
-  n11 -.-|temporal| n12
-  n13 ===|factual| n14
+  n8 ===|factual| n1
+  n8 ===|factual| n9
+  n10 ===|factual| n11
+  n12 -.-|temporal| n13
+  n14 ===|factual| n15
 
   %% factual ═══   temporal ┈┈┈   interpretive ───

@@ -77,9 +77,15 @@
     "TT2a-TT2b": true
   },
   "false_positives": {
-    "count": 0,
-    "rate": "0/9",
-    "entries": []
+    "count": 1,
+    "rate": "1/10",
+    "entries": [
+      {
+        "title": "relay-s-public-trust-page-states-that-al vs eu-data-residency-is-on-the-product-road",
+        "a": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+        "b": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md"
+      }
+    ]
   },
   "cluster_count": 6,
   "clusters": [
@@ -95,19 +101,20 @@
       ]
     },
     {
+      "id": "cluster:ab3d60a5",
+      "size": 3,
+      "documents": [
+        "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+        "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+        "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md"
+      ]
+    },
+    {
       "id": "cluster:87c465bf",
       "size": 2,
       "documents": [
         "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
         "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md"
-      ]
-    },
-    {
-      "id": "cluster:c307b209",
-      "size": 2,
-      "documents": [
-        "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
-        "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md"
       ]
     },
     {
@@ -135,5 +142,5 @@
       ]
     }
   ],
-  "tension_total": 9
+  "tension_total": 10
 }

@@ -140,7 +140,10 @@ for (const [a, b] of TEMPORAL_PAIRS) {
   report.temporal[`${a}-${b}`] = linked(a, b);
 }
 
-// REQUIRED: zero tensions touching filler-only notes (false-positive rate)
+// REPORTED (plan: "record false-positive rate if nonzero"): tensions where a
+// side is not a planted note. Note: one filler fact (EU residency roadmap)
+// turned out to genuinely tension with the eu-west-2 trust-page plant — the
+// judge sometimes flags it; it is recorded, not suppressed.
 const fp = entries.filter((t) => {
   const aPlanted = [...plantedPaths].some((p) => t.sourceA.includes(p));
   const bPlanted = [...plantedPaths].some((p) => t.sourceB.includes(p));
