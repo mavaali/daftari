@@ -143,4 +143,46 @@ describe("runImport", () => {
     await runImport(["obsidian", v, "--plan", "--external-git-dir"]);
     expect(existsSync(join(v, ".daftari", "config.yaml"))).toBe(false);
   });
+
+  describe("post-apply tension-scan hint", () => {
+    it("prints the scan hint after a successful --apply (never auto-runs)", async () => {
+      const v = makeNonGitVault();
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        const code = await runImport(["obsidian", v, "--apply", "--scope", "x"]);
+        expect(code).toBe(0);
+        const out = stderr.mock.calls.map((c) => String(c[0])).join("");
+        expect(out).toContain("daftari sleep --dream tension-scan");
+        expect(out).toContain(v);
+      } finally {
+        stderr.mockRestore();
+      }
+    });
+
+    it("does not print the hint on --plan", async () => {
+      const v = makeNonGitVault();
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        await runImport(["obsidian", v, "--plan"]);
+        const out = stderr.mock.calls.map((c) => String(c[0])).join("");
+        expect(out).not.toContain("tension-scan");
+      } finally {
+        stderr.mockRestore();
+      }
+    });
+
+    it("does not print the hint when the apply fails", async () => {
+      const v = makeNonGitVault();
+      vi.mocked(runBackfill).mockResolvedValueOnce(2);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        const code = await runImport(["obsidian", v, "--apply", "--scope", "x"]);
+        expect(code).toBe(2);
+        const out = stderr.mock.calls.map((c) => String(c[0])).join("");
+        expect(out).not.toContain("tension-scan");
+      } finally {
+        stderr.mockRestore();
+      }
+    });
+  });
 });

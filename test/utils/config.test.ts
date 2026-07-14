@@ -543,4 +543,68 @@ describe("loadConfig — schema extensions", () => {
       expect(result.ok).toBe(false);
     });
   });
+
+  describe("tension_scan block", () => {
+    it("defaults when the block is absent", () => {
+      writeConfig("auto_commit: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tensionScan).toEqual({
+        maxLlmCalls: 200,
+        maxDocs: 50,
+        agent: "agent:sleep-tension-scan",
+      });
+    });
+
+    it("honours declared budgets and agent", () => {
+      writeConfig(
+        "tension_scan:\n  max_llm_calls: 25\n  max_docs: 5\n  agent: agent:night-shift\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tensionScan).toEqual({
+        maxLlmCalls: 25,
+        maxDocs: 5,
+        agent: "agent:night-shift",
+      });
+    });
+
+    it("keeps defaults for undeclared keys", () => {
+      writeConfig("tension_scan:\n  max_llm_calls: 10\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tensionScan.maxLlmCalls).toBe(10);
+      expect(result.value.tensionScan.maxDocs).toBe(50);
+      expect(result.value.tensionScan.agent).toBe("agent:sleep-tension-scan");
+    });
+
+    it("rejects a non-integer budget", () => {
+      writeConfig("tension_scan:\n  max_llm_calls: lots\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("tension_scan.max_llm_calls");
+    });
+
+    it("rejects a zero budget (the cap is a hard requirement, not an off switch)", () => {
+      writeConfig("tension_scan:\n  max_docs: 0\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+
+    it("rejects an unrecognised key so a typo cannot silently keep a default", () => {
+      writeConfig("tension_scan:\n  max_llm_cals: 10\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("max_llm_cals");
+    });
+
+    it("rejects an empty agent", () => {
+      writeConfig('tension_scan:\n  agent: ""\n');
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+  });
 });
