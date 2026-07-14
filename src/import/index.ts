@@ -164,10 +164,24 @@ export async function runImport(argv: string[]): Promise<number> {
   // langgraph-store has its own flag surface and derivation path (content
   // lives in Postgres, not files); it shares the adoption plumbing above
   // (vault check, gitignore scaffolding, git announcements) with obsidian.
+  let code: number;
   if (type === "langgraph-store") {
     const { runLanggraphImport } = await import("./langgraph-store.js");
-    return runLanggraphImport(resolvedVault, passthrough);
+    code = await runLanggraphImport(resolvedVault, passthrough);
+  } else {
+    code = await runBackfill(["--vault", vault, ...passthrough], { obsidian: true });
   }
 
-  return runBackfill(["--vault", vault, ...passthrough], { obsidian: true });
+  // Day-0 gap: a freshly imported foreign corpus has never been scanned for
+  // contradictions — the langgraph-store demo measured 9-10 real tensions
+  // hiding in a 49-note import. Hint only, never auto-run: the scan calls an
+  // LLM, and daftari's posture is explicit opt-in for anything that spends
+  // (the same reasoning as consolidate's shadow_mode gate).
+  if (code === 0 && isApply) {
+    process.stderr.write(
+      `daftari import: the imported corpus is unscanned for contradictions — ` +
+        `run: daftari sleep --dream tension-scan --vault ${resolvedVault} (calls an LLM; opt-in)\n`,
+    );
+  }
+  return code;
 }
