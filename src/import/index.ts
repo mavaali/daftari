@@ -13,7 +13,7 @@ import { directoryExists } from "../storage/local.js";
 import { isGitRepo } from "../utils/git.js";
 import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 
-const SUPPORTED = ["obsidian"] as const;
+const SUPPORTED = ["obsidian", "langgraph-store"] as const;
 
 // Writes git_dir (+ auto_commit:true) into the vault's config.yaml, merging into
 // any existing config. Idempotent: returns "present" with no rewrite when already
@@ -35,23 +35,38 @@ function writeGitDirConfig(vaultRoot: string, gitDirValue: string): "written" | 
   return "written";
 }
 
-const HELP = `daftari import — adopt an existing vault into Daftari, in place.
+const HELP = `daftari import — adopt foreign content into a Daftari vault.
 
 Usage:
   daftari import obsidian <vault> --plan [--scope <folder>]
   daftari import obsidian <vault> --apply --scope <folder> [--yes]
+  daftari import langgraph-store <vault> --dsn <postgres-url> --plan [--namespace <prefix>]
+  daftari import langgraph-store <vault> --dsn <postgres-url> --apply --yes [--namespace <prefix>]
 
-Adopts an Obsidian vault *in place*: Daftari indexes and curates the same files
-Obsidian authors. Mirrors 'daftari backfill' (two-step plan/apply, per-folder
-ratification) and additionally harvests inline #tags and maps a Web Clipper
-'source' into Daftari 'sources'. Wikilinks are left untouched — Daftari already
-resolves them.
+obsidian: adopts an Obsidian vault *in place* — Daftari indexes and curates the
+same files Obsidian authors. Mirrors 'daftari backfill' (two-step plan/apply,
+per-folder ratification), harvests inline #tags, and maps a Web Clipper
+'source' into Daftari 'sources'. Wikilinks are left untouched.
 
-Flags (passed through to backfill):
+langgraph-store: reads a LangGraph BaseStore (Postgres 'store' table, e.g.
+LangMem memories) READ-ONLY and derives one claim note per semantic memory,
+with full store provenance in frontmatter. Semantic memories become claims;
+episodic/procedural are counted and skipped in v1.
+
+Flags (obsidian — passed through to backfill):
   --scope <folder>   Folder to act on. Optional on --plan, required on --apply.
   --apply / --plan   Apply a ratified folder, or stage a dry-run plan.
   --yes              Skip the apply confirmation prompt.
   --agent <id>       Acting identity for the apply commit (default human:<user>).
+
+Flags (langgraph-store):
+  --dsn <url>        Postgres DSN. Use a read-only role; the session is forced
+                     read-only either way.
+  --namespace <ns>   Dot-joined namespace prefix filter (e.g. 'v1' or 'v1.ops').
+  --collection <c>   Target vault collection/folder (default: langgraph).
+  --apply / --plan   Write notes + one commit, or preview counts.
+  --yes              Required with --apply.
+  --agent <id>       Acting identity for the apply commit.
   --help, -h         Show this help.
 `;
 
@@ -144,6 +159,14 @@ export async function runImport(argv: string[]): Promise<number> {
         "daftari import: --external-git-dir will be written to config on --apply (dry-run writes nothing)\n",
       );
     }
+  }
+
+  // langgraph-store has its own flag surface and derivation path (content
+  // lives in Postgres, not files); it shares the adoption plumbing above
+  // (vault check, gitignore scaffolding, git announcements) with obsidian.
+  if (type === "langgraph-store") {
+    const { runLanggraphImport } = await import("./langgraph-store.js");
+    return runLanggraphImport(resolvedVault, passthrough);
   }
 
   return runBackfill(["--vault", vault, ...passthrough], { obsidian: true });
