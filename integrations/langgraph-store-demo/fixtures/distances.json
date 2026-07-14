@@ -1,0 +1,72 @@
+[
+  {
+    "pair": "ND1",
+    "kind": "near-dup",
+    "cosine": 0.9252
+  },
+  {
+    "pair": "ND2",
+    "kind": "near-dup",
+    "cosine": 0.8431
+  },
+  {
+    "pair": "ND3",
+    "kind": "near-dup",
+    "cosine": 0.8069
+  },
+  {
+    "pair": "ND4",
+    "kind": "near-dup",
+    "cosine": 0.8391
+  },
+  {
+    "pair": "ND5",
+    "kind": "near-dup",
+    "cosine": 0.883
+  },
+  {
+    "pair": "PC1",
+    "kind": "contradiction",
+    "cosine": 0.6859
+  },
+  {
+    "pair": "PC2",
+    "kind": "contradiction",
+    "cosine": 0.7051
+  },
+  {
+    "pair": "PC3",
+    "kind": "contradiction",
+    "cosine": 0.6489
+  },
+  {
+    "pair": "NW-AB",
+    "kind": "contradiction",
+    "cosine": 0.6565
+  },
+  {
+    "pair": "NW-BC",
+    "kind": "contradiction",
+    "cosine": 0.5272
+  },
+  {
+    "pair": "NW-CD",
+    "kind": "contradiction",
+    "cosine": 0.511
+  },
+  {
+    "pair": "NW-AD",
+    "kind": "contradiction",
+    "cosine": 0.4789
+  },
+  {
+    "pair": "TT1",
+    "kind": "temporal",
+    "cosine": 0.6889
+  },
+  {
+    "pair": "TT2",
+    "kind": "temporal",
+    "cosine": 0.6016
+  }
+]

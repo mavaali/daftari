@@ -1,0 +1,28 @@
+# Postgres 16 + pgvector for the LangGraph BaseStore the demo reads.
+# LangMem writes semantic memories with embeddings, so the store needs the
+# `vector` extension — plain postgres:16 will not do. `docker compose up` is
+# the only infra step; the store's own tables are created at runtime by
+# langgraph PostgresStore.setup() when fixtures/populate.py runs.
+name: daftari-langgraph-demo
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: memories
+    # Host port 5433 to avoid clashing with a local postgres on 5432.
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d memories"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

@@ -1,0 +1,1367 @@
+{
+  "notes": 49,
+  "search_calls": 49,
+  "judge_calls": 194,
+  "pairs_judged": 194,
+  "tensions_logged": 10,
+  "verdicts": [
+    {
+      "a": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "b": "langgraph/docs/priya-shen-acme-corp-cto-typically-personally-reviews-joint---55b6d4ee.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Acme being Relay\u2019s largest customer and the other is about Acme\u2019s CTO reviewing joint case studies, which can both be true without inconsistency."
+    },
+    {
+      "a": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A claim about Relay\u2019s largest customer and a claim about Relay not offering on-premises deployment can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "b": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Acme Corp being Relay\u2019s largest customer, while the other is about Meridian Labs\u2019 documentation site technology stack, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Acme Corp\u2019s customer size ranking and the other is about Relay\u2019s Slack community membership and support triage, which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-subprocessor-list-is-out-of-date--401af44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay\u2019s largest customer while the other concerns the accuracy of its published subprocessor list, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay\u2019s largest customer and the other is about what its public trust page publishes, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the technology used to build the documentation site (Docusaurus) and the other is about content published on a trust page (SOC 2 Type II status), which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "b": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the technology stack of a documentation site and the other is about the company's founding year, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the technology used to build a documentation site (Docusaurus) and the other is about planning a conference in October, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A is about the technology used for Relay\u2019s public documentation site, while Claim B is about Relay\u2019s pricing tier structure since 2019, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A is about the technology stack of the public documentation site, while Claim B is about Relay\u2019s product deployment offerings, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-subprocessor-list-is-out-of-date--401af44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns the technology stack of the documentation site (Docusaurus) while the other concerns the freshness of a trust page subprocessor list, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "b": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim states the founding year (2019) and the other states the headquarters location (Portland), which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Both claims state Meridian Labs was founded in 2019, and Claim B\u2019s reference to the company\u2019s 2019 founding is consistent with Claim A."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "b": "langgraph/pricing/meridian-labs-has-120-employees--8552b11f.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A founding year and an approximate current employee count are compatible and can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "b": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the company\u2019s founding year and the other is about the primary programming languages used in its services, which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A company can be founded in 2019 and also have its SOC 2 Type II status published on Relay\u2019s public trust page, so the claims are compatible."
+    },
+    {
+      "a": "langgraph/docs/priya-shen-acme-corp-cto-typically-personally-reviews-joint---55b6d4ee.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Priya Shen\u2019s review process for joint Relay/Acme case studies, while Claim B concerns content published on Relay\u2019s trust page about Meridian Labs\u2019 SOC 2 Type II status, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/docs/priya-shen-acme-corp-cto-typically-personally-reviews-joint---55b6d4ee.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "The claims concern different topics (Priya Shen reviewing joint case studies vs. Relay\u2019s Slack community handling free-tier support triage) and can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/docs/priya-shen-acme-corp-cto-typically-personally-reviews-joint---55b6d4ee.md",
+      "b": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Acme Corp\u2019s internal review process for joint case studies, while Claim B concerns Meridian Labs\u2019 technology choice for its public documentation site, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/docs/priya-shen-acme-corp-cto-typically-personally-reviews-joint---55b6d4ee.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Acme\u2019s CTO reviewing joint case studies, while Claim B concerns Relay\u2019s lack of an on\u2011prem offering, so they address different topics and can both be true."
+    },
+    {
+      "a": "langgraph/docs/priya-shen-acme-corp-cto-typically-personally-reviews-joint---55b6d4ee.md",
+      "b": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Priya Shen's review practice for case studies, while Claim B concerns Relay's NPS score and contributing factors, so they are compatible and unrelated."
+    },
+    {
+      "a": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-subprocessor-list-is-out-of-date--401af44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay having no on-premises offering, while the other concerns an out-of-date subprocessor list on a trust page, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "b": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Relay having no on-premises offering, while Claim B concerns Relay log retention practices, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay not offering an on-premises deployment option, while the other is about the default timeout behavior of Relay API requests, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A addresses Relay\u2019s product deployment options (no on-prem offering), while Claim B addresses operational ownership for incident response, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "b": "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A states there is a default 200 requests/second throttle for every plan, while Claim B adds that this default can be overridden via a custom contract, which is compatible rather than contradictory."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "b": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A describes a default per-plan throttle of 200 rps, while B describes an absolute per-workspace hard cap of 350 rps, which can both be true if defaults are lower than the maximum capacity."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A is about default rate limiting (200 requests/second) while Claim B is about default request timeout (30 seconds), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "b": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about default request throttling (200 RPS) and the other is about default API timeout (30 seconds), which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": true,
+      "kind": "temporal",
+      "reason": "Claim A asserts a default 200 RPS throttle for every plan, while Claim B states the current-year Pro tier is sold with a guaranteed 500 RPS capacity, suggesting the published default limit is outdated or superseded for Pro."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes the default throttle of 200 rps for all plans, while Claim B describes an exceptional temporary burst capability up to 800 rps for enterprise escalations, which can coexist."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md",
+      "b": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the default request-rate throttle and its overrideability, while Claim B concerns the default API timeout duration, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes overriding the default 200 rps limit via a custom contract, while Claim B describes a separate mechanism for temporary burst increases up to 800 rps, which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the default rate limit (requests per second) and its override via contract, while Claim B concerns a default per-request timeout duration, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A allows the default 200 RPS throttle to be overridden by contract, and Claim B describes such a contractual override (500 RPS for Pro), so both can be true."
+    },
+    {
+      "a": "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md",
+      "b": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A says the default 200 rps throttle can be overridden via custom contract, which can still be consistent with B\u2019s separate claim that there is an absolute hard cap of 350 rps per workspace."
+    },
+    {
+      "a": "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+      "b": "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md",
+      "conflict": true,
+      "kind": "temporal",
+      "reason": "Claim A states the EU control-plane cluster migrated to Postgres 16 (implying a newer version after Q3), while Claim B states the control plane runs on Postgres 13, which could reflect an older version or a different time/version state."
+    },
+    {
+      "a": "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+      "b": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the EU control-plane database running on Postgres 16, while Claim B concerns telemetry/metrics storage in ClickHouse, which can coexist as separate systems."
+    },
+    {
+      "a": "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about a database version migration (Postgres 16) and the other is about AWS region residency (eu-west-2), which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+      "b": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A Postgres 16 migration for the EU control-plane cluster can be true while EU data residency remains a separate product capability still on the roadmap."
+    },
+    {
+      "a": "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes an internal EU control-plane database version migration, while Claim B is about the absence of an on-premises product offering, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+      "b": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns a database migration timeline for Relay\u2019s EU control-plane cluster, while Claim B concerns Relay\u2019s customer size ranking, and they can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "b": "langgraph/pricing/meridian-labs-has-completed-soc-2-type-ii-compliance-soc--cf7857cc.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A says Relay\u2019s trust page publishes Meridian Labs\u2019 SOC 2 Type II status, while Claim B says Meridian Labs has completed SOC 2 Type II; both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-subprocessor-list-is-out-of-date--401af44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Publishing Meridian Labs\u2019 SOC 2 Type II status on Relay\u2019s trust page is compatible with the subprocessor list on that same page being out of date."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A trust page can simultaneously publish Meridian Labs\u2019 SOC 2 Type II status and state that all production workloads run in AWS eu-west-2, so the claims are compatible."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay publishing Meridian Labs\u2019 SOC 2 Type II status, while the other concerns Meridian Labs planning a conference in October, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay\u2019s trust page publishing Meridian Labs\u2019 SOC 2 Type II status, while the other concerns Relay\u2019s pricing tiers since 2019, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+      "b": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md",
+      "conflict": true,
+      "kind": "temporal",
+      "reason": "Claim A asserts EU data residency is already implemented (all production workloads in eu-west-2), while Claim B says EU data residency is still only planned on the roadmap, implying it is not yet in place."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+      "b": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "conflict": true,
+      "kind": "factual",
+      "reason": "Claim A says all production workloads run in AWS eu-west-2, while Claim B says the primary deployment region is AWS us-east-1, which cannot both be true for production as stated."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-subprocessor-list-is-out-of-date--401af44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes what the trust page states about AWS region residency, while Claim B says the trust page\u2019s subprocessor list is outdated; these can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A is about production workload region for data residency, while Claim B is about staging data refresh behavior, and both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/docs/relay-s-public-trust-page-subprocessor-list-is-out-of-date--401af44c.md",
+      "b": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A concerns the currency of a public subprocessor list, while Claim B concerns team ownership of on-call/pager duties, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "b": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "conflict": true,
+      "kind": "factual",
+      "reason": "Claim A says the Relay gateway RPS cap can be increased via a planned re-shard, while Claim B says capacity is hard-capped at 350 requests/second per workspace, implying it cannot be increased."
+    },
+    {
+      "a": "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes the process required to increase a workspace\u2019s Relay gateway RPS cap, while Claim B states the Pro tier includes a guaranteed 500 RPS capacity, which can coexist (500 may be the standard cap and increases beyond it still require a planned re-shard)."
+    },
+    {
+      "a": "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the operational process for increasing Relay gateway RPS caps (requiring a planned re-shard), while Claim B describes a nightly staging data refresh schedule, and both can be true without overlapping or contradicting."
+    },
+    {
+      "a": "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "b": "langgraph/ops/relay-event-traffic-is-transported-via-kafka--6f975a06.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about operational procedure for increasing Relay gateway RPS caps, while the other describes the transport mechanism (Kafka) for Relay event traffic; both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "b": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the operational requirement for increasing the Relay gateway RPS cap, while Claim B describes the process/tooling for incident escalation, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "b": "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A describes the process required to raise the Relay gateway RPS cap, while B states the default throttling level (200 RPS), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "b": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Relay core backend services being implemented in Go is compatible with Meridian Labs\u2019 services being primarily implemented in Go and TypeScript, since they can refer to different scopes or subsets."
+    },
+    {
+      "a": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "b": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Backend services being implemented in Go is compatible with having a TypeScript-based control panel, since they refer to different components of the system."
+    },
+    {
+      "a": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "b": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Core backend services being implemented in Go is compatible with deployments being managed through Argo CD, as they describe different aspects (implementation language vs deployment tooling)."
+    },
+    {
+      "a": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "b": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "One claim is about implementation language (Go) while the other is about operational ownership (platform team), which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the implementation language of Relay backend services while the other is about the size and role of Relay\u2019s Slack community, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns the backend implementation language (Go) while the other concerns product deployment/availability (no on-prem offering), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "b": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the deployment management tool (Argo CD) while the other is about the primary deployment region (AWS us-east-1), and both can simultaneously be true."
+    },
+    {
+      "a": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "b": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Managing Relay deployments through Argo CD is compatible with Relay also having a TypeScript-based control panel, as they concern different aspects of the system."
+    },
+    {
+      "a": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Managing Relay deployments through Argo CD does not imply an on-premises offering, so both statements can be true (e.g., Argo CD managing cloud-hosted deployments)."
+    },
+    {
+      "a": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the deployment management tool (Argo CD) while the other is about a nightly staging data refresh schedule, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "b": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "One claim is about the deployment management tool (Argo CD) and the other is about organizational on-call ownership (platform team), which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-event-traffic-is-transported-via-kafka--6f975a06.md",
+      "b": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about how relay event traffic is transported (Kafka) while the other is about how relay incident escalation is handled (Linear sev1 tickets), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-event-traffic-is-transported-via-kafka--6f975a06.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim describes the transport mechanism for relay event traffic (Kafka) while the other describes a nightly staging data refresh schedule, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-event-traffic-is-transported-via-kafka--6f975a06.md",
+      "b": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay event traffic transport (Kafka) while the other concerns deployment management tooling (Argo CD), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-event-traffic-is-transported-via-kafka--6f975a06.md",
+      "b": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay's event transport mechanism (Kafka) and the other is about its UI/control panel implementation (TypeScript), which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-event-traffic-is-transported-via-kafka--6f975a06.md",
+      "b": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns how relay event traffic is transported (Kafka) while the other concerns where relay telemetry/metrics are stored (ClickHouse vs Postgres), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": true,
+      "kind": "factual",
+      "reason": "Claim A states a hard cap of 350 RPS per workspace, while Claim B guarantees 500 RPS per workspace, which cannot both be true simultaneously as stated."
+    },
+    {
+      "a": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A states a per-workspace throughput cap while B states a per-request timeout default, and both can simultaneously be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": true,
+      "kind": "factual",
+      "reason": "Claim A states a hard cap of 350 requests/second per workspace, while Claim B says support can temporarily raise the rate limit to 800 requests/second, which cannot both be true as stated."
+    },
+    {
+      "a": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "b": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A states a throughput cap (requests/second per workspace) while Claim B states a default API timeout (seconds per request), which address different dimensions and can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "b": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay having a TypeScript-based control panel, while the other is about where telemetry/metrics are stored (ClickHouse vs Postgres), and these can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "b": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A is about Relay\u2019s control panel implementation technology, while Claim B is about organizational on-call ownership, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A TypeScript-based control panel and a Slack community handling free-tier support triage describe different aspects of Relay and can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay having a TypeScript-based control panel and the other is about lacking an on-premises offering, which are compatible statements about different aspects of the product."
+    },
+    {
+      "a": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A describes the general escalation workflow (using sev1 Linear tickets) while Claim B describes a specific support action that can be taken without ops involvement, which can still occur within or alongside the ticket-based process."
+    },
+    {
+      "a": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Incident escalation via sev1-tagged Linear tickets and informal free-tier support triage via a Slack community describe different scopes/processes that can both be true."
+    },
+    {
+      "a": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "b": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim describes the process for incident escalation (Linear sev1 tickets) while the other reports an NPS score and a contributing factor, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "b": "langgraph/ops/relay-quarterly-planning-typically-includes-about-one-securi--4048a428.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim describes how Relay incident escalations are tracked (Linear sev1 tickets) while the other describes typical content of quarterly planning, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-incident-escalation-is-handled-via-linear-tickets-tagg--ca1eb239.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "One claim describes the escalation mechanism (Linear sev1 tickets) while the other describes ownership and who to page (application team), which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": true,
+      "kind": "factual",
+      "reason": "Claim A states the platform team owns Relay on-call/pager duty, while Claim B states the application team owns Relay incident response/on-call and should be paged instead of infrastructure, which cannot both be true as stated."
+    },
+    {
+      "a": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A assigns operational responsibility for Relay on-call/pager to the platform team, while Claim B describes product deployment availability (no on-prem offering), and these statements can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim assigns on-call/pager ownership to the platform team while the other describes a nightly staging data refresh schedule, which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about which team owns Relay on-call/pager responsibility, while the other is about Relay\u2019s pricing tiers since 2019, so they can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/ops/relay-quarterly-planning-typically-includes-about-one-securi--4048a428.md",
+      "b": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns the content of quarterly planning (security-focused items) while the other concerns the deployment management tool (Argo CD), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-quarterly-planning-typically-includes-about-one-securi--4048a428.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A discusses quarterly planning content while Claim B concerns contractual capacity guarantees, and they address different topics and scopes that can both be true."
+    },
+    {
+      "a": "langgraph/ops/relay-quarterly-planning-typically-includes-about-one-securi--4048a428.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the typical number of security-focused items in quarterly planning, while Claim B concerns Slack community size and its role in Free-tier support triage, so both can be true simultaneously without incompatibility."
+    },
+    {
+      "a": "langgraph/ops/relay-quarterly-planning-typically-includes-about-one-securi--4048a428.md",
+      "b": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns the typical number of security-focused planning items per quarter, while the other describes Relay\u2019s control panel technology, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-quarterly-planning-typically-includes-about-one-securi--4048a428.md",
+      "b": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns planning cadence and security-focused work items, while Claim B concerns log retention commitments, and both can be true simultaneously without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A states Relay\u2019s primary AWS deployment region, while Claim B describes a nightly data refresh schedule for the staging environment; these can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "b": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A states a deployment region while Claim B states team ownership of on-call responsibility, which are compatible and not mutually exclusive."
+    },
+    {
+      "a": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "b": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A specifies Relay\u2019s primary AWS region, while Claim B specifies a per-workspace request/second capacity cap, and these statements can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A states Relay\u2019s primary cloud deployment region (AWS us-east-1) while B states Relay has no on-premises offering; both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "b": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A discusses nightly reloading of staging environment data, while Claim B discusses application log retention for about two weeks, and both can be true simultaneously since they refer to different resources."
+    },
+    {
+      "a": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns staging data refresh timing, while Claim B concerns product deployment options (no on-prem), so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "b": "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A is about where relay telemetry/metrics are stored (ClickHouse, not Postgres), while Claim B is about the control plane\u2019s database (Postgres 13), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "b": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Storing relay telemetry/metrics in ClickHouse and managing relay deployments via Argo CD describe different aspects of the system and can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "b": "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "One claim concerns where Relay telemetry/metrics are stored (ClickHouse vs Postgres) and the other concerns which team owns Relay on-call responsibility, so they address different aspects and can both be true."
+    },
+    {
+      "a": "langgraph/ops/relay-telemetry-metrics-are-stored-in-a-clickhouse-cluster-n--8ba83c4c.md",
+      "b": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns where Relay telemetry/metrics are stored (ClickHouse vs Postgres), while Claim B concerns the implementation language of Relay core backend services (Go), which can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+      "b": "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md",
+      "conflict": true,
+      "kind": "temporal",
+      "reason": "Claim A states Relay webhook signatures use HMAC-SHA1 generally, while Claim B states that for workspaces created after May the signing algorithm is SHA-256, implying a time/version-dependent change."
+    },
+    {
+      "a": "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+      "b": "langgraph/support/webhook-signature-mismatch-tickets-from-new-relay-customers---1dc53c04.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "One claim specifies the signature algorithm (HMAC-SHA1) while the other attributes most signature mismatches to customer integration bugs, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+      "b": "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the cryptographic method used for webhook signatures and the other is about the service\u2019s deployment region, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+      "b": "langgraph/ops/relay-deployments-are-managed-through-argo-cd--8265e2f4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the cryptographic algorithm used for webhook signatures and the other is about the deployment management tool, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+      "b": "langgraph/ops/relay-core-backend-services-are-implemented-in-go--826c2749.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim describes the webhook signature algorithm (HMAC-SHA1) and the other describes the implementation language of Relay core backend services (Go), which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+      "b": "langgraph/docs/meridian-labs-public-relay-documentation-site-is-built-on-do--bd82693b.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the cryptographic algorithm used for webhook signatures and the other is about the documentation site's build platform, so they can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/ceo-dana-okafor-personally-signs-off-on-enterprise-pricing-e--bd3a63b8.md",
+      "b": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns approval authority for enterprise pricing exceptions, while Claim B describes the existence of three pricing tiers, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/ceo-dana-okafor-personally-signs-off-on-enterprise-pricing-e--bd3a63b8.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns who approves enterprise pricing exceptions, while the other concerns the absence of an on-premises offering, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/ceo-dana-okafor-personally-signs-off-on-enterprise-pricing-e--bd3a63b8.md",
+      "b": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns approval responsibility for enterprise pricing exceptions, while Claim B concerns a product roadmap feature, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/ceo-dana-okafor-personally-signs-off-on-enterprise-pricing-e--bd3a63b8.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns who approves enterprise pricing exceptions, while the other concerns the longstanding existence of a three-tier pricing structure; both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/ceo-dana-okafor-personally-signs-off-on-enterprise-pricing-e--bd3a63b8.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns internal approval for enterprise pricing exceptions, while Claim B states a technical default API timeout, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/ceo-dana-okafor-personally-signs-off-on-enterprise-pricing-e--bd3a63b8.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns internal approval of enterprise pricing exceptions, while Claim B concerns plans for an October conference, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md",
+      "b": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns a future product roadmap item (EU data residency), while Claim B describes current pricing tiers, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md",
+      "b": "langgraph/ops/relay-staging-environment-data-is-reloaded-refreshed-nightly--a61dd764.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about a future product roadmap item (EU data residency) and the other is about current staging data refresh behavior, which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/pricing/eu-data-residency-is-on-the-product-roadmap-for-relay--714e01b4.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns a planned product feature (EU data residency) while the other concerns Relay\u2019s long-standing pricing tier structure, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-go-to-market-for-relay-remains-a-combined-sale--ddb3089e.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Relay\u2019s go-to-market motion (sales-led + PLG) while Claim B concerns its pricing tier structure, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-go-to-market-for-relay-remains-a-combined-sale--ddb3089e.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A combined sales-led + PLG go-to-market can remain unchanged while the company also plans to hold a conference in October, so both claims can be true."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-go-to-market-for-relay-remains-a-combined-sale--ddb3089e.md",
+      "b": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns go-to-market strategy while Claim B concerns implementation languages, so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-go-to-market-for-relay-remains-a-combined-sale--ddb3089e.md",
+      "b": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes the go-to-market motion (combined sales-led + PLG) while Claim B describes pricing tiers (Free/Pro/Enterprise), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-go-to-market-for-relay-remains-a-combined-sale--ddb3089e.md",
+      "b": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Meridian Labs\u2019 go-to-market strategy for Relay, while Claim B states the company\u2019s headquarters location, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-go-to-market-for-relay-remains-a-combined-sale--ddb3089e.md",
+      "b": "langgraph/docs/relay-s-public-trust-page-publishes-meridian-labs-soc-2-type--d805bd73.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay\u2019s go-to-market motion and the other is about SOC 2 Type II status being published on a trust page, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-120-employees--8552b11f.md",
+      "b": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Employee count and headquarters location are independent attributes that can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-120-employees--8552b11f.md",
+      "b": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Meridian Labs' employee count and the other is about the primary programming languages used in its services, so they can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-120-employees--8552b11f.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Meridian Labs\u2019 employee count (~120) and the other is about Relay\u2019s pricing tiers since 2019, which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-120-employees--8552b11f.md",
+      "b": "langgraph/pricing/meridian-labs-has-completed-soc-2-type-ii-compliance-soc--cf7857cc.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Employee count (~120) and completion of SOC 2 Type II compliance are independent claims that can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-120-employees--8552b11f.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Meridian Labs' approximate employee count and the other is about a planned October event, which are compatible."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-completed-soc-2-type-ii-compliance-soc--cf7857cc.md",
+      "b": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "SOC 2 Type II compliance status and the primary implementation languages of services are independent claims that can both be true."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-completed-soc-2-type-ii-compliance-soc--cf7857cc.md",
+      "b": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about SOC 2 Type II compliance status and the other is about headquarters location, so they can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-completed-soc-2-type-ii-compliance-soc--cf7857cc.md",
+      "b": "langgraph/docs/meridian-labs-was-founded-in-2019--b1200ef9.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Meridian Labs completing SOC 2 Type II compliance and the other is about the company being founded in 2019, which are compatible and not mutually exclusive."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-completed-soc-2-type-ii-compliance-soc--cf7857cc.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about SOC 2 Type II compliance status and the other is about plans to hold a conference in October, which can both be true without contradiction."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "b": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Both claims agree that Relay has three pricing tiers (Free, Pro, Enterprise), with Claim A adding historical continuity since 2019 but not contradicting Claim B."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Relay\u2019s pricing tier structure since 2019, while Claim B concerns a planned conference event in October, and both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "b": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Meridian Labs\u2019 product pricing tiers since 2019, while Claim B concerns the company\u2019s headquarters location, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay\u2019s unchanged three-tier pricing structure since 2019, while the other concerns a Slack community handling Free-tier support triage, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "b": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Meridian Labs' headquarters location and the other is about the primary implementation languages of its services, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-headquarters-is-in-portland--67e5bba6.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A claim about Meridian Labs' headquarters location and a claim about plans to hold a conference in October can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/meridian-labs-services-are-primarily-implemented-in-go-and-t--1a40d568.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Meridian Labs\u2019 implementation languages (Go and TypeScript) while Claim B concerns Relay\u2019s pricing-tier structure since 2019, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "b": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Both claims state the same fact that Relay API requests have a default timeout of 30 seconds, with Claim B merely citing its source as contract language."
+    },
+    {
+      "a": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay API request timeout defaults while the other is about support-granted temporary rate-limit bursts, and these can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A states the available Relay pricing tiers, while Claim B adds a contractual detail about the Pro tier\u2019s guaranteed capacity, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A defines Relay\u2019s tier structure (Free/Pro/Enterprise), while Claim B describes how Free-tier support is informally triaged via a Slack community, which is compatible with that tiering."
+    },
+    {
+      "a": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "b": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay pricing tiers (Free/Pro/Enterprise) and the other is about log retention terms (90 days), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A states the contractual guaranteed capacity is 500 RPS per workspace, while B describes optional temporary burst increases up to 800 RPS, which can coexist without contradiction."
+    },
+    {
+      "a": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim specifies guaranteed throughput capacity (500 RPS per workspace) while the other specifies a default request timeout (30 seconds), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md",
+      "b": "langgraph/pricing/relay-pricing-packaging-ships-three-tiers-free-pro-and-enter--b75aa44c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay\u2019s control plane database version (Postgres 13) while the other concerns pricing tiers (Free/Pro/Enterprise), so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md",
+      "b": "langgraph/ops/relay-has-a-typescript-based-control-panel--0796651d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "A database version used by Relay\u2019s control plane (Postgres 13) is compatible with Relay also having a TypeScript-based control panel, as they refer to different components."
+    },
+    {
+      "a": "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay\u2019s control plane database version and the other is about an event planned by Meridian Labs, so they can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md",
+      "b": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about the database version used by Relay\u2019s control plane and the other is about the default API timeout, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "b": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the default API timeout duration while Claim B concerns log retention duration, and both can simultaneously be true without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/relay-s-default-api-timeout-is-30-seconds-as-stated-in--93d27f94.md",
+      "b": "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns the default API timeout duration, while Claim B concerns guaranteed throughput capacity in a Pro tier contract, so both can be true simultaneously without incompatibility."
+    },
+    {
+      "a": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "b": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "conflict": true,
+      "kind": "factual",
+      "reason": "Claim A states Relay logs are retained for 90 days, while Claim B says Relay application logs are purged after about 2 weeks, which cannot both be true for the same class of logs as stated."
+    },
+    {
+      "a": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "b": "langgraph/pricing/meridian-labs-plans-to-hold-relayconf-in-october--794a025c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns log retention terms (90 days) while Claim B concerns an event planned for October, and both can be true without affecting each other."
+    },
+    {
+      "a": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about Relay log retention (90 days) and the other is about Free-tier support triage via a Slack community, and both can be true simultaneously without contradiction."
+    },
+    {
+      "a": "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+      "b": "langgraph/pricing/meridian-labs-has-kept-relay-s-three-tier-free-pro-enterpris--3f3beb8e.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns Relay log retention terms (90 days) while the other concerns Relay\u2019s pricing tier structure since 2019, which can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/enterprise-burst-rate-toggles-in-relay-support-console-are-l--da6708c4.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim states the support-console burst-rate toggles are logged per customer workspace, while the other states support can use such toggles to grant temporary bursts up to 800 r/s without ops involvement; these can both be true."
+    },
+    {
+      "a": "langgraph/support/enterprise-burst-rate-toggles-in-relay-support-console-are-l--da6708c4.md",
+      "b": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Logging burst-rate toggles per workspace is compatible with application logs being purged after ~2 weeks (retention limit does not negate that they are logged)."
+    },
+    {
+      "a": "langgraph/support/enterprise-burst-rate-toggles-in-relay-support-console-are-l--da6708c4.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim concerns how enterprise burst-rate toggles are logged in the Relay support console, while the other describes a Slack community\u2019s role in free-tier support triage, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/enterprise-burst-rate-toggles-in-relay-support-console-are-l--da6708c4.md",
+      "b": "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes how burst-rate toggle changes are logged per customer workspace, while Claim B states a capacity cap per workspace; these address different properties and can both be true."
+    },
+    {
+      "a": "langgraph/support/enterprise-burst-rate-toggles-in-relay-support-console-are-l--da6708c4.md",
+      "b": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns how burst-rate toggles are logged per customer workspace, while Claim B concerns an SLA first-response time guarantee, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/enterprise-burst-rate-toggles-in-relay-support-console-are-l--da6708c4.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A describes how support console toggle actions are logged, while Claim B describes incident response ownership and paging procedure, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "b": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Relay support granting temporary rate-limit bursts, while Claim B concerns an SLA first-response time guarantee, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A concerns log retention timing, while Claim B concerns incident-response ownership, and both can be true without implying incompatible facts."
+    },
+    {
+      "a": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "b": "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns Relay application log retention (~2 weeks), while Claim B concerns webhook signing algorithm (SHA-256) for workspaces created after May; they address different topics and can both be true."
+    },
+    {
+      "a": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "b": "langgraph/pricing/relay-api-requests-have-a-default-timeout-of-30-seconds--b89d5149.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns log retention duration while Claim B concerns request timeout behavior, and these statements can both be true without incompatibility."
+    },
+    {
+      "a": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "b": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A adds that design-partner accounts get a named CSM alongside the enterprise SLA, while Claim B specifies a term of the enterprise SLA (4-hour first response), and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes support for Relay design-partner program accounts (named CSM plus enterprise SLA) while Claim B describes informal Free-tier support triage via a Slack community, and both can simultaneously be true for different customer tiers."
+    },
+    {
+      "a": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A discusses customer success/support assignment (named CSM plus SLA) while Claim B defines internal incident response ownership (application team vs infrastructure), so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "b": "langgraph/docs/relay-has-no-on-premises-offering-on-prem-requests-should-be--3f1c497c.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about support/account management (named CSM for design partners) while the other is about product deployment options (no on-prem offering), so both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "b": "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns support staffing for Relay design-partner accounts, while Claim B concerns webhook signing behavior for workspaces created after May, so both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "b": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes support entitlements for Relay design-partner program accounts, while Claim B states a fact about Acme Corp\u2019s customer size, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns a guaranteed first-response time for enterprise SLA customers, while Claim B describes informal Slack-based triage for free-tier users, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "A sets an SLA response-time guarantee while B assigns operational on-call ownership, and both can be true simultaneously without contradiction."
+    },
+    {
+      "a": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "b": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim is about SLA response time while the other is about log retention duration, and both can be true simultaneously without incompatibility."
+    },
+    {
+      "a": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "b": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "The claims address different aspects of Relay (community-based free-tier support triage vs. NPS drivers) and can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A describes the size/role of Relay\u2019s Slack community in free-tier support triage, while Claim B describes an enterprise escalation capability to grant temporary rate-limit bursts; these are compatible and address different scopes."
+    },
+    {
+      "a": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "b": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A assigns incident response ownership for Relay to the application team, while Claim B reports an NPS score and a contributing factor, and these statements are compatible."
+    },
+    {
+      "a": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A assigns formal incident response/on-call ownership for Relay outages to the application team, while Claim B describes an informal Slack community handling much of Free-tier support triage, which can coexist without contradiction."
+    },
+    {
+      "a": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "b": "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A discusses Relay's NPS and factors affecting it, while Claim B describes a support capability for temporary rate-limit bursts; they address different topics and can both be true."
+    },
+    {
+      "a": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "b": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Relay\u2019s NPS score and the factors contributing to it do not contradict a claim about which customer is largest, so both statements can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-nps-is-44-fast-incident-communications-are-cited-as--f03ae13d.md",
+      "b": "langgraph/support/relay-enterprise-sla-guarantees-first-response-within-4-hour--6133d267.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "An NPS of ~44 attributed to fast incident communications does not contradict an enterprise SLA guaranteeing first response within 4 hours; both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md",
+      "b": "langgraph/support/webhook-signature-mismatch-tickets-from-new-relay-customers---1dc53c04.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim describes the webhook signing algorithm used by newer Relay workspaces, while the other attributes most signature-mismatch tickets to customer integration bugs, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md",
+      "b": "langgraph/support/relay-has-a-slack-community-of-4-000-members-that-informally--be4b2598.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "The claims address unrelated topics (webhook signing for newly created workspaces vs. the size/role of a Slack community for support triage) and can both be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A concerns webhook signing for newly created Relay workspaces, while Claim B concerns operational ownership for incident response, so both can be true without incompatibility."
+    },
+    {
+      "a": "langgraph/support/webhook-signature-mismatch-tickets-from-new-relay-customers---1dc53c04.md",
+      "b": "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md",
+      "conflict": false,
+      "kind": "interpretive",
+      "reason": "Claim A attributes most webhook signature-mismatch tickets to customer integration bugs, while Claim B assigns on-call ownership for actual Relay downtime to the application team; these address different issue types and can both be true."
+    },
+    {
+      "a": "langgraph/support/webhook-signature-mismatch-tickets-from-new-relay-customers---1dc53c04.md",
+      "b": "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim attributes most webhook signature-mismatch tickets to customer-side bugs, while the other describes Relay log retention practices for support debugging; both can be true without contradiction."
+    },
+    {
+      "a": "langgraph/support/webhook-signature-mismatch-tickets-from-new-relay-customers---1dc53c04.md",
+      "b": "langgraph/support/relay-design-partner-program-accounts-receive-a-named-csm-in--e2bc3621.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "Claim A addresses the typical cause of webhook signature-mismatch tickets, while Claim B describes support coverage (named CSM and SLA) for design-partner accounts, and both can be true simultaneously."
+    },
+    {
+      "a": "langgraph/support/webhook-signature-mismatch-tickets-from-new-relay-customers---1dc53c04.md",
+      "b": "langgraph/docs/acme-corp-is-relay-s-largest-customer--8e5cb4e6.md",
+      "conflict": false,
+      "kind": "factual",
+      "reason": "One claim attributes common causes of webhook signature-mismatch tickets, while the other states which customer is largest; these statements address different facts and can both be true."
+    }
+  ]
+}

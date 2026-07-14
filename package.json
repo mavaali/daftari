@@ -70,8 +70,10 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.8.0",
+    "@types/pg": "^8.20.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
+    "pg": "^8.22.0",
     "tsx": "^4.22.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
@@ -79,5 +81,13 @@
   "overrides": {
     "protobufjs": "^7.6.1",
     "hono": "^4.12.25"
+  },
+  "peerDependencies": {
+    "pg": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
   }
 }
