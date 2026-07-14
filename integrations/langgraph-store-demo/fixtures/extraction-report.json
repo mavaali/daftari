@@ -1,0 +1,244 @@
+{
+  "plants": {
+    "ND1": {
+      "category": "near-dup",
+      "raw_hits": {
+        "pricing": 2
+      },
+      "landed_raw": true
+    },
+    "ND2": {
+      "category": "near-dup",
+      "raw_hits": {
+        "ops": 2
+      },
+      "landed_raw": true
+    },
+    "ND3": {
+      "category": "near-dup",
+      "raw_hits": {
+        "ops": 2
+      },
+      "landed_raw": true
+    },
+    "ND4": {
+      "category": "near-dup",
+      "raw_hits": {
+        "support": 2
+      },
+      "landed_raw": true
+    },
+    "ND5": {
+      "category": "near-dup",
+      "raw_hits": {
+        "docs": 2
+      },
+      "landed_raw": true
+    },
+    "PC1a": {
+      "category": "pairwise",
+      "raw_hits": {
+        "ops": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "ops": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "PC1b": {
+      "category": "pairwise",
+      "raw_hits": {
+        "docs": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "docs": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "PC2a": {
+      "category": "pairwise",
+      "raw_hits": {
+        "pricing": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "pricing": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "PC2b": {
+      "category": "pairwise",
+      "raw_hits": {
+        "support": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "support": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "PC3a": {
+      "category": "pairwise",
+      "raw_hits": {
+        "ops": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "ops": 1
+      },
+      "v2_hits": 0,
+      "v3_hits": 0
+    },
+    "PC3b": {
+      "category": "pairwise",
+      "raw_hits": {
+        "support": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "support": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "NW-A": {
+      "category": "n-way",
+      "raw_hits": {
+        "pricing": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "pricing": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "NW-B": {
+      "category": "n-way",
+      "raw_hits": {
+        "ops": 2
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "ops": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 0
+    },
+    "NW-C": {
+      "category": "n-way",
+      "raw_hits": {
+        "support": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "support": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "NW-D": {
+      "category": "n-way",
+      "raw_hits": {
+        "docs": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "docs": 2
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "TT1a": {
+      "category": "temporal",
+      "raw_hits": {
+        "pricing": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "pricing": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "TT1b": {
+      "category": "temporal",
+      "raw_hits": {
+        "docs": 2
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "docs": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "TT2a": {
+      "category": "temporal",
+      "raw_hits": {
+        "ops": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "ops": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 1
+    },
+    "TT2b": {
+      "category": "temporal",
+      "raw_hits": {
+        "support": 1
+      },
+      "landed_raw": true,
+      "v1_hits": {
+        "support": 1
+      },
+      "v2_hits": 1,
+      "v3_hits": 2
+    }
+  },
+  "near_dup_merge": {
+    "ND1": {
+      "raw": 2,
+      "v1": 2,
+      "merged": false
+    },
+    "ND2": {
+      "raw": 2,
+      "v1": 1,
+      "merged": true
+    },
+    "ND3": {
+      "raw": 2,
+      "v1": 1,
+      "merged": true
+    },
+    "ND4": {
+      "raw": 2,
+      "v1": 1,
+      "merged": true
+    },
+    "ND5": {
+      "raw": 2,
+      "v1": 1,
+      "merged": true
+    },
+    "rate": "4/5"
+  },
+  "counts": {
+    "raw": 52,
+    "v1": 49,
+    "v2": 44,
+    "v3": 44
+  },
+  "v2_destroyed": [
+    "PC3a"
+  ]
+}
