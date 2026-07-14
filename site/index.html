@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daftari — the long-term memory cortex for your LLM agents</title>
+<meta name="description" content="Daftari is a persistent, structured markdown vault your agents read, write, and curate over time — portable across any model. Rent the brain, own the memory.">
+<meta property="og:title" content="Daftari — rent the brain, own the memory">
+<meta property="og:description" content="A long-term memory cortex for LLM agents: plain markdown on your disk, under git, exposed as 27 MCP tools.">
+<meta property="og:url" content="https://daftari.dev">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&%23128212;</text></svg>">
+<style>
+  :root {
+    --paper: #faf6ef;
+    --ink: #1f1a14;
+    --muted: #6b6257;
+    --rule: #d9d0c1;
+    --accent: #8a4b2d;
+    --accent-soft: #f0e4d8;
+    --code-bg: #221c15;
+    --code-ink: #ece4d6;
+    --max: 46rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #16130f;
+      --ink: #ece4d6;
+      --muted: #a0968a;
+      --rule: #373027;
+      --accent: #d98a5f;
+      --accent-soft: #2b2119;
+      --code-bg: #0d0b08;
+      --code-ink: #ece4d6;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font: 17px/1.65 Georgia, 'Times New Roman', serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main, footer { max-width: var(--max); margin: 0 auto; padding: 0 1.25rem; }
+  a { color: var(--accent); }
+  h1, h2 { font-weight: normal; letter-spacing: -0.01em; }
+  h1 { font-size: clamp(2.2rem, 6vw, 3.4rem); line-height: 1.1; }
+  h2 {
+    font-size: 1.5rem;
+    margin: 3.5rem 0 1rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+  }
+  p { margin: 0 0 1rem; }
+  .hero { padding: 5rem 0 2.5rem; }
+  .arabic { color: var(--muted); font-size: 0.55em; vertical-align: middle; margin-left: .4em; }
+  .tagline {
+    font-size: 1.35rem;
+    color: var(--muted);
+    font-style: italic;
+    margin: 1rem 0 0;
+  }
+  .etym {
+    margin-top: 1.75rem;
+    padding-left: 1rem;
+    border-left: 3px solid var(--rule);
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  .snippet {
+    position: relative;
+    margin: 2rem 0 0.5rem;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 8px;
+    padding: 1.1rem 1.25rem;
+    overflow-x: auto;
+  }
+  .snippet code {
+    font: 0.88rem/1.7 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    white-space: pre;
+    display: block;
+  }
+  .snippet .c { opacity: .45; }
+  .copy {
+    position: absolute; top: .6rem; right: .6rem;
+    font: 0.75rem ui-monospace, Menlo, monospace;
+    background: transparent; color: var(--code-ink);
+    border: 1px solid rgba(255,255,255,.25);
+    border-radius: 5px; padding: .25rem .6rem; cursor: pointer;
+    opacity: .7;
+  }
+  .copy:hover { opacity: 1; }
+  .mcp-note { color: var(--muted); font-size: .9rem; }
+  .law {
+    margin: 2rem 0;
+    padding: 1.25rem 1.5rem;
+    background: var(--accent-soft);
+    border-radius: 8px;
+    font-size: 1.15rem;
+    font-style: italic;
+    text-align: center;
+  }
+  ul.triple { list-style: none; padding: 0; }
+  ul.triple li { margin: 0 0 .75rem; padding-left: 1.4rem; position: relative; }
+  ul.triple li::before {
+    content: '—'; position: absolute; left: 0; color: var(--accent);
+  }
+  .layers { width: 100%; border-collapse: collapse; font-size: .92rem; margin: 1.25rem 0; }
+  .layers th, .layers td {
+    text-align: left; vertical-align: top;
+    padding: .6rem .75rem .6rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .layers th { font-weight: normal; color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
+  .layers td:first-child { white-space: nowrap; font-style: italic; }
+  .links { margin: 1.5rem 0 0; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  footer {
+    margin-top: 4rem; padding: 2rem 1.25rem 3rem;
+    border-top: 1px solid var(--rule);
+    color: var(--muted); font-size: .9rem;
+    display: flex; gap: 1.5rem; flex-wrap: wrap;
+  }
+  @media (max-width: 600px) {
+    .layers td:first-child { white-space: normal; }
+    .layers th:last-child, .layers td:last-child { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <h1>Daftari<span class="arabic">دفتری</span></h1>
+    <p class="tagline">Rent the brain. Own the memory.</p>
+    <p class="etym"><em>Daftari</em> is the Urdu word for a ledger-keeper: the person in a
+    trading house who maintained the <em>daftar</em>, the bound register where every
+    transaction was recorded, cross-referenced, and preserved. Corrections were
+    noted, not erased. The ledger got more valuable the longer it was kept.</p>
+    <p style="margin-top:1.75rem">Daftari is the <strong>long-term memory cortex for your
+    LLM agents</strong> — a persistent, structured vault they read, write, and curate
+    over time, portable across any model. A cortex, not a clipboard.</p>
+
+    <div class="snippet">
+      <button class="copy" onclick="copySnippet(this)">copy</button>
+      <code><span class="c"># create a vault, then serve it over MCP</span>
+npx daftari --init ./my-vault
+npx daftari --vault ./my-vault --user me --role admin</code>
+    </div>
+    <p class="mcp-note">Point any MCP client at it — Claude Desktop, Claude Code, an agent SDK.</p>
+    <div class="links">
+      <a href="https://github.com/mavaali/daftari">GitHub</a>
+      <a href="https://www.npmjs.com/package/daftari">npm</a>
+      <a href="https://github.com/mavaali/daftari/blob/main/docs/getting-started.md">Getting started</a>
+      <a href="https://github.com/mavaali/daftari/blob/main/docs/manifesto.md">Manifesto</a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Rent the brain, own the memory</h2>
+    <p>LLMs are stateless; they forget. So memory is being bolted on everywhere —
+    but <em>inside the model</em>: ChatGPT memory, Claude projects, Copilot, Gemini.
+    Memory is becoming a feature of the provider, and whoever holds your memory
+    holds you.</p>
+    <p>Daftari takes the other path. The model is the rented part — swappable,
+    obsolete in six months. Your memory is the durable asset, so it should belong
+    to you and travel with you: plain markdown on your disk, under git, readable
+    in any editor, queryable by any agent. <strong>Compilation over retrieval</strong> —
+    the agent compiles an answer once and writes it back, so every later read
+    starts from the compiled result instead of re-stitching chunks from zero.</p>
+  </section>
+
+  <section>
+    <h2>Not a second brain</h2>
+    <p>Second brains are memory for a <em>human</em> to think with — you catch the
+    stale fact, you notice the contradiction. Daftari is memory for an <em>agent</em>
+    to reason with: the persistence layer for a consumer that acts on what it is
+    handed and cannot sanity-check it first. Same substrate (markdown, links);
+    reversed purpose — and a higher bar, because the reliability has to live in
+    the memory, not the reader.</p>
+  </section>
+
+  <section>
+    <h2>It remembers — it doesn't resolve for you</h2>
+    <p>Because the agent can't infer them, the vault carries three things and
+    collapses none:</p>
+    <ul class="triple">
+      <li><strong>what's current</strong> — supersession follows a real edge to the latest source</li>
+      <li><strong>what's grounded</strong> — provenance on every entry; the vault never mints a value</li>
+      <li><strong>what's contested</strong> — contradictions surface as <em>tensions</em>, held open, not flattened into a false answer</li>
+    </ul>
+    <p>The daftar noted corrections rather than erasing them. Daftari keeps that as a law:</p>
+    <div class="law">A tension may never masquerade as a supersession.</div>
+    <p>It resolves only by discovery — a real edge — never by invention. The agent
+    compiles; the vault preserves; <em>you</em> keep the judgment.</p>
+  </section>
+
+  <section>
+    <h2>The four layers</h2>
+    <p>A directory of markdown files with YAML frontmatter, exposed to agents as
+    27 MCP tools over stdio. All four layers implement one idea — <em>resolve only
+    by discovery, never by invention.</em></p>
+    <table class="layers">
+      <tr><th>Layer</th><th>What it does</th><th>Why it matters</th></tr>
+      <tr><td>Storage</td><td>Markdown + frontmatter on disk, git history, rebuildable SQLite index for hybrid BM25 + vector search.</td><td>Plain text is the source of truth. Delete every .db file and rebuild.</td></tr>
+      <tr><td>Access control</td><td>Config-driven RBAC: roles and per-collection permissions in one YAML file.</td><td>Multiple agents, scoped access, no user-management system.</td></tr>
+      <tr><td>Write arbitration</td><td>File-level locks, auto-commit to git, structured provenance log.</td><td>Concurrent agents write safely. Every mutation is attributable.</td></tr>
+      <tr><td>Curation</td><td>Draft-to-canonical lifecycle, TTL staleness, tension logging, advisory linter.</td><td>Knowledge that stops being true gets surfaced, not silently trusted.</td></tr>
+    </table>
+    <p>The curation engine is advisory: it reports problems and records
+    contradictions. It never auto-fixes. Every change is a deliberate,
+    attributable act.</p>
+  </section>
+</main>
+
+<footer>
+  <span>MIT licensed</span>
+  <a href="https://github.com/mavaali/daftari">github.com/mavaali/daftari</a>
+  <a href="https://www.npmjs.com/package/daftari">npmjs.com/package/daftari</a>
+  <a href="https://github.com/mavaali/daftari/blob/main/PRIVACY.md">Privacy</a>
+</footer>
+
+<script>
+function copySnippet(btn) {
+  const lines = btn.parentElement.querySelector('code').innerText
+    .split('\n').filter(l => l && !l.startsWith('#')).join('\n');
+  navigator.clipboard.writeText(lines).then(() => {
+    btn.textContent = 'copied';
+    setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+  });
+}
+</script>
+</body>
+</html>
