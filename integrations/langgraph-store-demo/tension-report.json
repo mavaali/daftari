@@ -1,0 +1,139 @@
+{
+  "plants": {
+    "NW-A": [
+      "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md"
+    ],
+    "NW-B": [
+      "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+      "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md"
+    ],
+    "NW-C": [
+      "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md"
+    ],
+    "NW-D": [
+      "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+      "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md"
+    ],
+    "PC1a": [
+      "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md"
+    ],
+    "PC1b": [
+      "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md"
+    ],
+    "PC2a": [
+      "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md"
+    ],
+    "PC2b": [
+      "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md"
+    ],
+    "PC3a": [
+      "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md"
+    ],
+    "PC3b": [
+      "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md"
+    ],
+    "TT1a": [
+      "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md"
+    ],
+    "TT1b": [
+      "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md"
+    ],
+    "TT2a": [
+      "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md"
+    ],
+    "TT2b": [
+      "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md"
+    ]
+  },
+  "pairwise": {
+    "PC1a-PC1b": true,
+    "PC2a-PC2b": true,
+    "PC3a-PC3b": true
+  },
+  "nway": {
+    "paths": {
+      "NW-A": [
+        "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md"
+      ],
+      "NW-B": [
+        "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+        "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md"
+      ],
+      "NW-C": [
+        "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md"
+      ],
+      "NW-D": [
+        "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+        "langgraph/docs/relay-public-docs-state-that-the-default-200-requests-second--ebb96271.md"
+      ]
+    },
+    "clusters_touching": [
+      "cluster:09a64cd7"
+    ],
+    "one_component_with_all_4": true
+  },
+  "temporal": {
+    "TT1a-TT1b": true,
+    "TT2a-TT2b": true
+  },
+  "false_positives": {
+    "count": 0,
+    "rate": "0/9",
+    "entries": []
+  },
+  "cluster_count": 6,
+  "clusters": [
+    {
+      "id": "cluster:09a64cd7",
+      "size": 5,
+      "documents": [
+        "langgraph/docs/relay-public-docs-state-that-every-plan-is-throttled-to--a0cbe815.md",
+        "langgraph/ops/increasing-the-relay-gateway-rps-cap-requires-a-re-shard-per--46287aab.md",
+        "langgraph/ops/relay-gateway-capacity-is-hard-capped-at-350-requests-second--eb2e7e10.md",
+        "langgraph/pricing/relay-pro-tier-is-contractually-sold-with-a-guaranteed-capac--882c9cc1.md",
+        "langgraph/support/for-enterprise-escalations-relay-support-can-grant-temporary--bf84bcce.md"
+      ]
+    },
+    {
+      "id": "cluster:87c465bf",
+      "size": 2,
+      "documents": [
+        "langgraph/ops/relay-webhook-signatures-use-hmac-sha1--ed2ae930.md",
+        "langgraph/support/relay-workspaces-created-after-may-use-sha-256-webhook-signi--4823d7d7.md"
+      ]
+    },
+    {
+      "id": "cluster:c307b209",
+      "size": 2,
+      "documents": [
+        "langgraph/docs/relay-s-public-trust-page-states-that-all-production-workloa--40f24a99.md",
+        "langgraph/ops/relay-s-primary-deployment-region-is-aws-us-east-1--a02bb287.md"
+      ]
+    },
+    {
+      "id": "cluster:f44ca2e6",
+      "size": 2,
+      "documents": [
+        "langgraph/docs/relay-s-eu-control-plane-cluster-migrated-to-postgres-16-in---1976a0a7.md",
+        "langgraph/pricing/relay-s-control-plane-runs-on-postgres-13--002e4291.md"
+      ]
+    },
+    {
+      "id": "cluster:f8a4b58b",
+      "size": 2,
+      "documents": [
+        "langgraph/ops/relay-on-call-pager-responsibility-is-owned-by-the-platform---f2e316cc.md",
+        "langgraph/support/relay-incident-response-on-call-is-owned-by-the-application---9fe23989.md"
+      ]
+    },
+    {
+      "id": "cluster:fe818940",
+      "size": 2,
+      "documents": [
+        "langgraph/pricing/relay-standard-terms-commit-to-90-day-retention-for-relay-lo--7139b87c.md",
+        "langgraph/support/relay-application-logs-are-purged-after-2-weeks-support-shou--9969b877.md"
+      ]
+    }
+  ],
+  "tension_total": 9
+}
