@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeEdge } from "../../src/curation/edges.js";
 import { runLint } from "../../src/curation/lint.js";
@@ -160,6 +160,74 @@ Body.
       expect(report.ok).toBe(true);
       if (!report.ok) return;
       expect(report.value.checks.unansweredQuestions).toEqual([]);
+    });
+  });
+
+  describe("pathVisible predicate (#217)", () => {
+    let dir: string;
+
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const doc = (relPath: string, status: string, body: string): void => {
+      mkdirSync(dirname(join(dir, relPath)), { recursive: true });
+      writeFileSync(
+        join(dir, relPath),
+        `---
+title: "${relPath}"
+domain: accumulation
+collection: ${relPath.split("/")[0]}
+status: ${status}
+confidence: medium
+created: 2026-07-01
+updated: 2026-07-01
+updated_by: agent:test
+provenance: direct
+sources: []
+superseded_by: null
+ttl_days: null
+tags: []
+---
+
+${body}
+`,
+        "utf-8",
+      );
+    };
+
+    it("computes findings from the caller's vantage — hidden docs neither named nor counted as linkers", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-vis-"));
+      // dep is deprecated, linked from a visible AND a hidden canonical doc.
+      doc("pricing/dep.md", "deprecated", "Deprecated body.");
+      doc("pricing/can.md", "canonical", "Links [dep](pricing/dep.md).");
+      // island is linked ONLY from a hidden doc — from the caller's vantage
+      // it is an orphan; saying otherwise would leak the hidden linker.
+      doc("pricing/island.md", "canonical", "Island body.");
+      doc(
+        "moonshot/mcan.md",
+        "canonical",
+        "Links [dep](pricing/dep.md) and [island](pricing/island.md).",
+      );
+      doc("moonshot/orphan.md", "canonical", "Hidden orphan body.");
+
+      const report = await runLint(dir, { pathVisible: (p) => p.startsWith("pricing/") });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+
+      expect(report.value.checks.orphanFiles.map((f) => f.path).sort()).toEqual([
+        "pricing/can.md",
+        "pricing/island.md",
+      ]);
+      const dep = report.value.checks.deprecatedStillLinked;
+      expect(dep.map((f) => f.path)).toEqual(["pricing/dep.md"]);
+      expect(dep[0]?.detail).toContain("pricing/can.md");
+      expect(dep[0]?.detail).not.toContain("moonshot/mcan.md");
+
+      const allPaths = Object.values(report.value.checks)
+        .flat()
+        .map((f) => f.path);
+      for (const p of allPaths) expect(p.startsWith("pricing/")).toBe(true);
     });
   });
 

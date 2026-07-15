@@ -490,4 +490,100 @@ describe("curation tools", () => {
       expect(ratifyDenied.error.message).toContain("cannot resolve a loop-authored tension");
     });
   });
+
+  describe("edge-graph existence disclosure (#217)", () => {
+    const pricingOnly: AccessContext = {
+      user: "t",
+      roleName: "analyst",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const both: AccessContext = {
+      user: "t",
+      roleName: "lead",
+      role: { read: ["pricing", "intel"], write: [], promote: false, ratify: false },
+    };
+
+    // pricing/a.md is cited by one readable doc and one hidden doc.
+    function seedBlastGraph(v: string) {
+      mkdirSync(join(v, "pricing"), { recursive: true });
+      mkdirSync(join(v, "intel"), { recursive: true });
+      writeFileSync(join(v, "pricing/a.md"), "---\ntitle: A\n---\nbody a");
+      writeFileSync(
+        join(v, "pricing/c.md"),
+        "---\ntitle: C\nsources:\n  - pricing/a.md\n---\nbody c",
+      );
+      writeFileSync(
+        join(v, "intel/h.md"),
+        "---\ntitle: H\nsources:\n  - pricing/a.md\n---\nbody h",
+      );
+    }
+
+    it("blast: downstream list omits unreadable docs; counts and depth follow", async () => {
+      seedBlastGraph(vault);
+      const res = await vaultTensionBlast(vault, { document: "pricing/a.md" }, pricingOnly);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.downstream.map((d) => d.path)).toEqual(["pricing/c.md"]);
+      expect(res.value.primary_blast).toBe(1);
+      expect(res.value.advisory_blast).toBe(0);
+      expect(res.value.hidden_downstream).toBe("some");
+    });
+
+    it("blast: full-read and no-RBAC callers see everything, hidden_downstream 'none'", async () => {
+      seedBlastGraph(vault);
+      for (const access of [both, undefined]) {
+        const res = await vaultTensionBlast(vault, { document: "pricing/a.md" }, access);
+        expect(res.ok).toBe(true);
+        if (!res.ok) return;
+        expect(res.value.downstream.map((d) => d.path).sort()).toEqual([
+          "intel/h.md",
+          "pricing/c.md",
+        ]);
+        expect(res.value.primary_blast).toBe(2);
+        expect(res.value.hidden_downstream).toBe("none");
+      }
+    });
+
+    it("lint: findings compute from the caller's vantage — hidden docs absent", async () => {
+      mkdirSync(join(vault, "pricing"), { recursive: true });
+      mkdirSync(join(vault, "intel"), { recursive: true });
+      writeFileSync(join(vault, "pricing/a.md"), "---\ntitle: A\n---\nbody a");
+      writeFileSync(join(vault, "intel/c.md"), "---\ntitle: C\n---\nbody c");
+
+      const res = await vaultLint(vault, {}, pricingOnly);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.checks.orphanFiles?.map((f) => f.path)).toEqual(["pricing/a.md"]);
+      const allPaths = Object.values(res.value.checks)
+        .flat()
+        .map((f) => f.path);
+      expect(allPaths).not.toContain("intel/c.md");
+      expect(res.value.totalFindings).toBe(allPaths.length);
+    });
+
+    it("lint: tensionHealth stays vault-global under RBAC (documented acceptance)", async () => {
+      await (async () => {
+        mkdirSync(join(vault, "pricing"), { recursive: true });
+        mkdirSync(join(vault, "intel"), { recursive: true });
+        writeFileSync(join(vault, "pricing/a.md"), "---\ntitle: A\n---\nbody a");
+        writeFileSync(join(vault, "intel/c.md"), "---\ntitle: C\n---\nbody c");
+        const t = await addTension(vault, {
+          title: "cross",
+          kind: "factual",
+          sourceA: "pricing/a.md",
+          claimA: "x",
+          sourceB: "intel/c.md",
+          claimB: "z",
+          loggedBy: "test",
+        });
+        if (!t.ok) throw t.error;
+      })();
+
+      const res = await vaultLint(vault, {}, pricingOnly);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      // Counts only, no paths — the accepted global aggregate (decision C).
+      expect(res.value.tensionHealth.total).toBe(1);
+    });
+  });
 });
