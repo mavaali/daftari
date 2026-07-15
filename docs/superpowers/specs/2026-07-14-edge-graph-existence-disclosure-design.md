@@ -1,7 +1,7 @@
-# Edge-graph existence disclosure — design options
+# Edge-graph existence disclosure — design
 
-2026-07-14. Status: **blast surface decided by Mihir (coarsened totals, option
-B′ below); edges/lint/court posture still open. Nothing implemented.**
+2026-07-14. Status: **approved by Mihir (session dialogue) — all surfaces
+decided, implementation not started.**
 Issue: #217 (deferred non-goal from #212/#215), plus the vault_lint aggregate
 rider from #216. Predecessor spec: 2026-07-12-tension-rbac-alignment-design.md.
 
@@ -92,14 +92,15 @@ docs you cannot read").
 - Con: contradicts the #212 principle for any surface reachable by a
   narrow agent role; "documented" leaks are still leaks.
 
-## Per-surface disposition
+## Per-surface disposition (all decided, Mihir, 2026-07-14)
 
 | Surface | Disposition | Rationale |
 |---|---|---|
-| `vault_tension_blast` downstream list | **B′ — decided** | Lists omit unreadable paths; hidden remainder reported as none/some/many, never an exact count (small-cell disclosure). |
-| `vault_edges` listing | **A — proposed** | It's a navigation surface, not a curation aggregate — nothing decision-relevant is lost by omission, so the simpler rule wins. |
-| `vault_lint` findings naming docs | **A — proposed** | Same as edges: a finding you can't act on (can't read the doc) has no value to the caller. |
-| `computeTensionHealth` aggregates (#216 rider) | **C — proposed** | Vault-global counts, not sliced along an access boundary and not attached to a readable neighborhood — genuinely the id-residual class, unlike B's per-doc delta. Lint is the operator's vault-global health view; filtering would make "vault health" role-relative. Document it. |
+| `vault_tension_blast` downstream list | **B′** | Lists omit unreadable paths; hidden remainder reported as none/some/many, never an exact count (small-cell disclosure). |
+| `vault_edges` listing | **A** | It's a navigation surface, not a curation aggregate — nothing decision-relevant is lost by omission, so the simpler rule wins. |
+| `vault_lint` findings naming docs | **A** | Same as edges: a finding you can't act on (can't read the doc) has no value to the caller. |
+| `computeTensionHealth` aggregates (#216 rider) | **C** | Vault-global counts, not sliced along an access boundary and not attached to a readable neighborhood — genuinely the id-residual class, unlike B's per-doc delta. Lint is the operator's vault-global health view; filtering would make "vault health" role-relative. Documented in the tool description and RBAC docs. |
+| Court / docket | **Operator-only invariant** | Court surfaces never take an access context, by written rule (CLAUDE.md + here). Exposing any court surface via MCP requires revisiting this spec first — the tripwire against the #212→#216 retrofit pattern repeating. |
 
 [HYPOTHESIS] B′ retains enough signal for curation decisions. Kill
 condition: if an agent-facing consumer emerges that genuinely needs to *rank*
@@ -113,19 +114,15 @@ model on the table.
 - No per-surface role configuration ("who may see totals") — RBAC stays
   config-driven roles over collections, nothing finer.
 
-## Decided
+## Decision record
 
-- **Blast = B′ (coarsened split).** Mihir, 2026-07-14, via the
+All decided by Mihir in session dialogue, 2026-07-14:
+
+- **Blast = B′ (coarsened split), exact hidden counts rejected.** Via the
   regional-revenue probe: an aggregate over a hidden set is reasonable only
   when the cell is large and the slice is not along the access boundary;
-  blast satisfies neither, so exact hidden counts are out.
-
-## Still open for Mihir
-
-1. Confirm A for `vault_edges` and lint findings, and C (documented
-   acceptance) for the tension-health aggregates — or force a stricter rule.
-2. Court posture: `daftari court` / docket run operator-side with no access
-   context today. Declare the court an operator-only surface as a written
-   invariant ("court surfaces never take an access context; exposing them via
-   MCP requires this spec's review first"), or plumb an access context now?
-   B′'s shape change touches only the MCP blast tool either way.
+  blast satisfies neither.
+- **Edges and lint findings = A; tension-health aggregates = C.** Confirmed
+  as recommended.
+- **Court = operator-only, as a written invariant** (CLAUDE.md), not plumbed
+  access. B′'s shape change therefore touches only the MCP blast tool.

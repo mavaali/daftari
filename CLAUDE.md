@@ -15,6 +15,8 @@ Daftari is an MCP server that exposes a curated markdown vault to AI agents. Typ
 - Write locks are file-level, SQLite-backed, with a 60-second TTL. If a lock expires, it's released automatically.
 - The curation engine is advisory. vault_lint reports problems. It does not auto-fix. vault_tension_log records tensions. It does not resolve them.
 - RBAC is config-driven (.daftari/config.yaml). Do not build a user management system. Users/roles are declared in config.
+- Tension/edge visibility: omission over redaction, no existence leak. Doc lists never name docs in unreadable collections; hidden-blast remainders are reported coarsened (none/some/many), never as exact counts — small cells disclose linked existence. Vault-global lint aggregates stay unfiltered by design. See docs/superpowers/specs/2026-07-14-edge-graph-existence-disclosure-design.md.
+- The Tension Court is an operator-only surface. Court/docket code never takes an access context. Exposing any court surface via MCP requires revisiting the 2026-07-14 edge-graph spec first.
 - Only one daftari process may hold a vault at a time. `.daftari/process.lock` is the per-vault process lock. On startup, the server sends SIGTERM to any live daftari already holding the lock and waits up to 3 seconds before taking over; stale locks (dead PID, or PID recycled) are overwritten silently. The lockfile is ephemeral — never check it in.
 
 ## Labeling
