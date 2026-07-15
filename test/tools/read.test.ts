@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AccessContext } from "../../src/access/rbac.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension } from "../../src/curation/tension.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
@@ -18,6 +19,12 @@ import { sha256Hex } from "../../src/utils/hash.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
+
+const PRICING_ANALYST: AccessContext = {
+  user: "human:test",
+  roleName: "analyst",
+  role: { read: ["pricing"], write: [], promote: false, ratify: false },
+};
 
 describe("vaultRead", () => {
   it("reads a document and returns body + parsed frontmatter", async () => {
@@ -425,6 +432,45 @@ describe("vaultStatus", () => {
       if (!result.ok) return;
       expect(result.value.recentWrites.count).toBe(2);
       expect(result.value.recentWrites.entries.map((e) => e.action)).toEqual(["create", "promote"]);
+    });
+
+    it("hides a tension whose alias side canonicalizes into an unreadable collection", async () => {
+      vault = makeTempVault();
+      // Stored verbatim: only the tool-level log gate canonicalizes (#215), so
+      // an alias like this needs a privileged logger to plant — but once
+      // planted it must not read back as a pricing tension.
+      await addTension(vault, {
+        title: "Alias-planted tension",
+        sourceA: "pricing/../moonshot/hidden.md",
+        claimA: "says X",
+        sourceB: "pricing/cirrus-capacity-tiers.md",
+        claimB: "says Y",
+        loggedBy: "agent:test",
+        kind: "factual",
+      });
+
+      const result = await vaultStatus(vault, PRICING_ANALYST);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.unresolvedTensions.count).toBe(0);
+      expect(result.value.unresolvedTensions.recent).toEqual([]);
+    });
+
+    it("hides a provenance entry whose alias path canonicalizes into an unreadable collection", async () => {
+      vault = makeTempVault();
+      await recordProvenance(vault, {
+        timestamp: "2026-05-10T00:00:00.000Z",
+        tool: "vault_write",
+        file: "pricing/../moonshot/hidden.md",
+        agent: "agent:test",
+        action: "create",
+      });
+
+      const result = await vaultStatus(vault, PRICING_ANALYST);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.recentWrites.count).toBe(0);
+      expect(result.value.recentWrites.entries).toEqual([]);
     });
   });
 

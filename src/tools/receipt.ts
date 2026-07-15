@@ -24,12 +24,14 @@ import {
   type TensionEntry,
   type TensionKind,
 } from "../curation/tension.js";
+import { visibleTensions } from "../curation/tension-access.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { log as gitLog, isGitRepo } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForAccessOrNull } from "./search.js";
 
 export const MAX_RECEIPT_PATHS = 50;
 export const MAX_CLAIM_LENGTH = 2000;
@@ -176,17 +178,20 @@ export async function vaultReceipt(
 
   // Unresolved tensions, read once. With an access context a tension is
   // visible only when the role can read BOTH sources' collections (the
-  // vault_status precedent) — the receipt never leaks the existence of a
-  // document in a denied collection.
+  // vault_status precedent), judged on the canonicalized paths via the shared
+  // predicate — the receipt never leaks the existence of a document in a
+  // denied collection, and an alias must not widen visibility.
   const tensionScan = await listTensions(vaultRoot, DEFAULT_TENSION_STATUS);
   if (!tensionScan.ok) return tensionScan;
-  const visibleTensions = access
-    ? tensionScan.value.filter(
-        (t) =>
-          canRead(access.role, topCollection(t.sourceA)) &&
-          canRead(access.role, topCollection(t.sourceB)),
-      )
-    : tensionScan.value;
+  let tensionEntries = tensionScan.value;
+  if (access) {
+    const accessDb = openIndexForAccessOrNull(vaultRoot);
+    try {
+      tensionEntries = visibleTensions(accessDb, tensionScan.value, access);
+    } finally {
+      accessDb?.close();
+    }
+  }
 
   // Dedupe cited paths, preserving first-seen order.
   const citedPaths: string[] = [];
@@ -228,7 +233,7 @@ export async function vaultReceipt(
       ? await resolveChain(vaultRoot, rel, fm.superseded_by, access)
       : null;
 
-    const matched = visibleTensions.filter((t) => t.sourceA === rel || t.sourceB === rel);
+    const matched = tensionEntries.filter((t) => t.sourceA === rel || t.sourceB === rel);
     for (const t of matched) matchedTensionIds.add(tensionIdentity(t));
 
     if (fm.status === "deprecated") flagSet.add("cites-deprecated");

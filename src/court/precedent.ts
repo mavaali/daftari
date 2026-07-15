@@ -18,6 +18,7 @@
 // never decides. Whether a precedent applies is the human's judgment.
 
 import type { TensionEntry } from "../curation/tension.js";
+import { canonicalRel } from "../utils/paths.js";
 
 export type PrecedentMatchTier = "shared-document" | "collection-pair" | "same-kind";
 
@@ -41,8 +42,12 @@ const TIER_ORDER: Record<PrecedentMatchTier, number> = {
   "same-kind": 3,
 };
 
+// Canonicalized before taking the top segment — an alias like
+// `pricing/../secret/x.md` is a secret doc and must key as one (#127/#128
+// class). Escaping paths key as `..`, blank as "": neither can collide with
+// a real collection.
 function topCollection(relPath: string): string {
-  return relPath.split("/")[0] ?? "";
+  return canonicalRel(relPath).split("/")[0] ?? "";
 }
 
 // The unordered collection pair of a tension's two sides, as a canonical key.

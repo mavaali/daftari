@@ -336,6 +336,28 @@ describe("vaultReceipt — RBAC", () => {
     expect(result.value.summary.openTensions).toBe(0);
     expect(result.value.summary.flags).not.toContain("cites-contested");
   });
+
+  it("hides a tension whose alias side canonicalizes into an unreadable collection", async () => {
+    writeDoc(vault, "pricing/visible.md");
+    // pricing/../moonshot/hidden.md IS a moonshot doc; the raw top segment
+    // says pricing. The read gate must judge the canonical path.
+    await addTension(vault, {
+      title: "Alias vs visible",
+      kind: "factual",
+      sourceA: "pricing/../moonshot/hidden.md",
+      claimA: "says X",
+      sourceB: "pricing/visible.md",
+      claimB: "says Y",
+      loggedBy: "agent:test",
+    });
+
+    const result = await vaultReceipt(vault, { paths: ["pricing/visible.md"] }, analyst);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sources[0]?.tensions).toEqual([]);
+    expect(result.value.summary.openTensions).toBe(0);
+    expect(result.value.summary.flags).not.toContain("cites-contested");
+  });
 });
 
 describe("receipt tool definition", () => {

@@ -9,6 +9,7 @@ import { computeDecay, type DecayState } from "../curation/decay.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { listStaleFiles } from "../curation/staleness.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
+import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
   DOMAINS,
@@ -23,6 +24,7 @@ import { getProvider } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
+import { openIndexForAccessOrNull } from "./search.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
 // *hints* — clients must not gate behavior on them — but directory reviewers
@@ -247,13 +249,6 @@ export interface VaultStatusResult {
   embeddingDimMismatches: number;
 }
 
-// The collection a bare vault-relative path belongs to: its top-level
-// directory. tension/provenance records carry only a path (no frontmatter),
-// so RBAC on those falls back to this path-based collection.
-function topCollection(relPath: string): string {
-  return relPath.split("/")[0] ?? "";
-}
-
 export async function vaultStatus(
   vaultRoot: string,
   access?: AccessContext,
@@ -295,30 +290,32 @@ export async function vaultStatus(
     else stalenessDistribution.fresh += 1;
   }
 
-  // Unresolved tensions. A tension links two files; with an access context we
-  // show it only when the role can read the collections of BOTH sources, so
-  // the dashboard never leaks the existence of a doc in a denied collection.
+  // Unresolved tensions and provenance entries carry only a path (no
+  // frontmatter), so RBAC on them goes through the shared source predicates
+  // (canonicalized — an alias must not widen visibility). A tension shows
+  // only when the role can read BOTH sources; a write entry when it can read
+  // the written file. Neither leaks the existence of a doc in a denied
+  // collection.
   const tensions = await listTensions(vaultRoot, DEFAULT_TENSION_STATUS);
   if (!tensions.ok) return tensions;
-  const visibleTensions = access
-    ? tensions.value.filter(
-        (t) =>
-          canRead(access.role, topCollection(t.sourceA)) &&
-          canRead(access.role, topCollection(t.sourceB)),
-      )
-    : tensions.value;
-  const recentTensions = [...visibleTensions]
+  const log = await readProvenanceLog(vaultRoot);
+  if (!log.ok) return log;
+
+  let tensionEntries = tensions.value;
+  let visibleWrites = log.value;
+  if (access) {
+    const accessDb = openIndexForAccessOrNull(vaultRoot);
+    try {
+      tensionEntries = visibleTensions(accessDb, tensions.value, access);
+      visibleWrites = log.value.filter((e) => sourceReadable(accessDb, access, e.file));
+    } finally {
+      accessDb?.close();
+    }
+  }
+  const recentTensions = [...tensionEntries]
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 5)
     .map((t) => ({ title: t.title, date: t.date }));
-
-  // Recent writes from the provenance log (oldest first in the file). Each
-  // entry is gated by the role's read access to the written file's collection.
-  const log = await readProvenanceLog(vaultRoot);
-  if (!log.ok) return log;
-  const visibleWrites = access
-    ? log.value.filter((e) => canRead(access.role, topCollection(e.file)))
-    : log.value;
 
   // Dim-mismatch counter. A non-zero value means some embedding cache rows
   // for the active model have the wrong dim and are being silently skipped
@@ -343,7 +340,7 @@ export async function vaultStatus(
     generatedAt: new Date().toISOString(),
     stalenessDistribution,
     unresolvedTensions: {
-      count: visibleTensions.length,
+      count: tensionEntries.length,
       recent: recentTensions,
     },
     recentWrites: {

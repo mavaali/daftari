@@ -38,10 +38,9 @@ import { computeTensionBlast, type TensionBlastResult } from "../curation/tensio
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import type { IndexDb } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
-import { openIndexForActiveProvider } from "./search.js";
+import { openIndexForAccessOrNull } from "./search.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
 // (or any role with no read access) is denied.
@@ -53,16 +52,6 @@ function requireReadAccess(tool: string, access?: AccessContext): Result<void, E
     };
   }
   return ok(undefined);
-}
-
-// Read-only index handle for collection lookups. openIndexForActiveProvider
-// ONLY — never ensureIndexReady, which reindexes on an empty index; these
-// tools must never reindex. Open failure degrades to null: visibility then
-// gates on the pure first-segment rule (fail-closed), and the tool call
-// itself never fails for RBAC-lookup reasons.
-function openIndexForAccessOrNull(vaultRoot: string): IndexDb | null {
-  const opened = openIndexForActiveProvider(vaultRoot);
-  return opened.ok ? opened.value : null;
 }
 
 // ---------------------------------------------------------------------------
