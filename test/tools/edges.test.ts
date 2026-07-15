@@ -371,3 +371,57 @@ describe("vault_edges", () => {
     expect(edge?.directionVerdict).toBe("symmetric");
   }, 60_000);
 });
+
+describe("vault_edges — existence disclosure (#217)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  const pricingOnly: AccessContext = {
+    user: "t",
+    roleName: "analyst",
+    role: { read: ["pricing"], write: [], promote: false, ratify: false },
+  };
+
+  async function seedIn(v: string, path: string, collection: string): Promise<void> {
+    const written = await vaultWrite(v, {
+      path,
+      body: `# A Note\n\nBody of ${path}.\n`,
+      frontmatter: frontmatter({ collection }),
+      agent: "agent:seed",
+    });
+    if (!written.ok) throw written.error;
+  }
+
+  it("omits edges with an endpoint in an unreadable collection", async () => {
+    await seedIn(vault, "pricing/a.md", "pricing");
+    await seedIn(vault, "pricing/b.md", "pricing");
+    await seedIn(vault, "intel/c.md", "intel");
+    for (const toPath of ["pricing/b.md", "intel/c.md"]) {
+      const obs = await vaultEdgeObserve(vault, {
+        from_path: "pricing/a.md",
+        to_path: toPath,
+        observed_by: AGENT,
+        blind: true,
+        varied_axis: "prompt",
+      });
+      expect(obs.ok).toBe(true);
+    }
+
+    const restricted = await vaultEdges(vault, {}, pricingOnly);
+    expect(restricted.ok).toBe(true);
+    if (!restricted.ok) return;
+    expect(restricted.value.total).toBe(1);
+    expect(restricted.value.edges.map((e) => e.toPath)).toEqual(["pricing/b.md"]);
+
+    // No access context ⇒ the full listing, as before.
+    const full = await vaultEdges(vault, {});
+    expect(full.ok).toBe(true);
+    if (!full.ok) return;
+    expect(full.value.total).toBe(2);
+  }, 60_000);
+});

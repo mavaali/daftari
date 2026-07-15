@@ -31,6 +31,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addTension } from "../../src/curation/tension.js";
 import {
+  bucketHiddenDownstream,
   buildReverseLinkMap,
   buildReverseSourceMap,
   computeBlast,
@@ -115,6 +116,16 @@ async function writeDoc(vault: string, spec: DocSpec): Promise<void> {
   mkdirSync(dirname(abs), { recursive: true });
   await writeFile(abs, content);
 }
+
+describe("bucketHiddenDownstream (#217)", () => {
+  it("coarsens hidden counts to none/some/many — never an exact number", () => {
+    expect(bucketHiddenDownstream(0)).toBe("none");
+    expect(bucketHiddenDownstream(1)).toBe("some");
+    expect(bucketHiddenDownstream(4)).toBe("some");
+    expect(bucketHiddenDownstream(5)).toBe("many");
+    expect(bucketHiddenDownstream(40)).toBe("many");
+  });
+});
 
 describe("computeBlast (pure)", () => {
   it("terminates on a cycle (A↔B mutual sources)", () => {
