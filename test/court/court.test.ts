@@ -233,6 +233,27 @@ describe("findPrecedents", () => {
     expect(findPrecedents(open, [unrelated])).toEqual([]);
   });
 
+  it("canonicalizes alias paths in the collection-pair key", () => {
+    // pricing/../moonshot/x.md is a moonshot doc — its raw top segment says
+    // pricing, but it must NOT match the open pricing ↔ competitive-intel pair.
+    const aliasOut = ruling({
+      id: "r-alias-out",
+      sourceA: "pricing/../moonshot/x.md",
+      sourceB: "competitive-intel/thing.md",
+    });
+    expect(findPrecedents(open, [aliasOut])).toEqual([]);
+
+    // moonshot/../pricing/x.md IS a pricing doc — it must match.
+    const aliasIn = ruling({
+      id: "r-alias-in",
+      sourceA: "moonshot/../pricing/x.md",
+      sourceB: "competitive-intel/thing.md",
+    });
+    const found = findPrecedents(open, [aliasIn]);
+    expect(found.map((p) => p.id)).toEqual(["r-alias-in"]);
+    expect(found[0]?.matchTier).toBe("collection-pair");
+  });
+
   it("caps at three and prefers newer rulings within a tier", () => {
     const rulings = [1, 2, 3, 4].map((i) =>
       ruling({

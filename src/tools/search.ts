@@ -47,6 +47,16 @@ export function openIndexForActiveProvider(vaultRoot: string): Result<IndexDb, E
   return openIndexDb(vaultRoot, getProvider().dim);
 }
 
+// Read-only index handle for RBAC collection lookups. openIndexForActiveProvider
+// ONLY — never ensureIndexReady, which reindexes on an empty index; visibility
+// gates must never reindex. Open failure degrades to null: visibility then
+// gates on the pure first-segment rule (fail-closed), and the tool call
+// itself never fails for RBAC-lookup reasons.
+export function openIndexForAccessOrNull(vaultRoot: string): IndexDb | null {
+  const opened = openIndexForActiveProvider(vaultRoot);
+  return opened.ok ? opened.value : null;
+}
+
 // Gate every index-backed tool on the current indexing state.
 //
 // - "indexing": refuse with a progress-bearing message. The server is still
