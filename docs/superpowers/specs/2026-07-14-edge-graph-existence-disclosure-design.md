@@ -1,6 +1,7 @@
 # Edge-graph existence disclosure — design options
 
-2026-07-14. Status: **draft — options for Mihir to decide, nothing implemented.**
+2026-07-14. Status: **blast surface decided by Mihir (coarsened totals, option
+B′ below); edges/lint/court posture still open. Nothing implemented.**
 Issue: #217 (deferred non-goal from #212/#215), plus the vault_lint aggregate
 rider from #216. Predecessor spec: 2026-07-12-tension-rbac-alignment-design.md.
 
@@ -42,19 +43,43 @@ the tension surfaces.
   matching between operators with different roles — "is the vault healthy"
   gets role-dependent answers.
 
-### B. Counts-visible + counts-total split (recommended for blast)
+### B. Counts-visible + counts-total split — REJECTED (small-cell disclosure)
 
 Doc **lists** contain only readable paths (omission — no name ever leaks).
 **Counts** carry two numbers: `visible` (readable subset) and `total` (true
 magnitude). Blast returns e.g. `primary_blast: {visible: 3, total: 40}`.
 
 - Pro: no path leaks, and curation stays honest — the caller learns "this
-  ruling settles 40 docs, 3 of which you can see," which is exactly the
-  decision-relevant fact. Docket priority stays role-independent.
-- Con: `total − visible` reveals the *count* of hidden downstream docs. This
-  is the same accepted class as the sequential tension-id residual (#215):
-  magnitude, not identity. New response shape = breaking change for blast
-  consumers (docket, court report).
+  ruling settles 40 docs, 3 of which you can see." Docket priority stays
+  role-independent.
+- Con — and the reason this was rejected: an earlier draft claimed
+  `total − visible` is "the same accepted class as the sequential tension-id
+  residual (#215)." That comparison is wrong on two axes (surfaced by Mihir's
+  regional-revenue probe, 2026-07-14):
+  1. **Localization.** Ids leak a *global* count ("the vault has ~140
+     tensions"). The blast residual is sliced along the access boundary and
+     attached to a specific readable neighborhood: "there are exactly N
+     hidden docs downstream of this doc you can read." That is existence
+     disclosure of *linked* documents — the #212 class, not the id class.
+  2. **Small cells.** Revenue-style aggregates are safe because thousands of
+     contributors hide any individual. Blast deltas are small integers;
+     `total − visible = 1` means "precisely one hidden document is linked
+     downstream of X," with certainty. The small-cell failure is the common
+     case here, not the edge case (cf. statistical cell suppression).
+
+### B′. Coarsened split — **DECIDED (Mihir, 2026-07-14)**
+
+Lists omit unreadable paths, as in B. The hidden remainder is reported
+**qualitatively, never as an exact count**: `hiddenDownstream: "none" |
+"some" | "many"` (boundary between some/many to be fixed at implementation;
+strawman: many ≥ 5).
+
+- Pro: keeps the decision-relevant fact — "the real blast is much bigger than
+  what you can see" — while making the small cell unrecoverable. An agent
+  does not need the integer 40 to know it is not making a low-stakes edit.
+- Con: bucket boundaries are a judgment call; a narrow role cannot sort on
+  exact totals (irrelevant today — the docket, which sorts on blast.total,
+  runs operator-side with no access context).
 
 ### C. Documented acceptance (status quo, made deliberate)
 
@@ -67,20 +92,20 @@ docs you cannot read").
 - Con: contradicts the #212 principle for any surface reachable by a
   narrow agent role; "documented" leaks are still leaks.
 
-## Recommendation (per surface)
+## Per-surface disposition
 
-| Surface | Proposal | Rationale |
+| Surface | Disposition | Rationale |
 |---|---|---|
-| `vault_tension_blast` downstream list | **B** | Lists omit unreadable paths; counts split visible/total. Curation needs true magnitude; names are never needed by a role that can't read them. |
-| `vault_edges` listing | **A** | It's a navigation surface, not a curation aggregate — nothing decision-relevant is lost by omission, so the simpler rule wins. |
-| `vault_lint` findings naming docs | **A** | Same as edges: a finding you can't act on (can't read the doc) has no value to the caller. |
-| `computeTensionHealth` aggregates (#216 rider) | **C** | Counts only, no paths — same accepted class as sequential ids. Lint is the operator's vault-global health view; filtering would make "vault health" role-relative. Document it. |
+| `vault_tension_blast` downstream list | **B′ — decided** | Lists omit unreadable paths; hidden remainder reported as none/some/many, never an exact count (small-cell disclosure). |
+| `vault_edges` listing | **A — proposed** | It's a navigation surface, not a curation aggregate — nothing decision-relevant is lost by omission, so the simpler rule wins. |
+| `vault_lint` findings naming docs | **A — proposed** | Same as edges: a finding you can't act on (can't read the doc) has no value to the caller. |
+| `computeTensionHealth` aggregates (#216 rider) | **C — proposed** | Vault-global counts, not sliced along an access boundary and not attached to a readable neighborhood — genuinely the id-residual class, unlike B's per-doc delta. Lint is the operator's vault-global health view; filtering would make "vault health" role-relative. Document it. |
 
-[HYPOTHESIS] B is right for blast because docket/court consumers use
-`blast.total` for prioritization. Kill condition: if no consumer of blast
-radii actually keys decisions on the total (check `priorityCompare` in
-`src/court/docket.ts` and the lint/status surfaces), plain omission (A) is
-simpler and wins everywhere.
+[HYPOTHESIS] B′ retains enough signal for curation decisions. Kill
+condition: if an agent-facing consumer emerges that genuinely needs to *rank*
+by hidden-blast magnitude (not just detect it), the bucketing loses ordering
+information and this decision gets revisited with that consumer's threat
+model on the table.
 
 ## Non-goals
 
@@ -88,12 +113,19 @@ simpler and wins everywhere.
 - No per-surface role configuration ("who may see totals") — RBAC stays
   config-driven roles over collections, nothing finer.
 
-## Open for Mihir
+## Decided
 
-1. Accept the per-surface split above, or force one rule (A or B) everywhere?
-2. Is the `total − visible` residual acceptable for blast, given the
-   sequential-id precedent?
-3. `court docket` / `daftari court` run operator-side with no access context
-   today — should the docket ever take one, or is the court explicitly an
-   operator surface? (If the latter, B's shape change touches only the MCP
-   blast tool.)
+- **Blast = B′ (coarsened split).** Mihir, 2026-07-14, via the
+  regional-revenue probe: an aggregate over a hidden set is reasonable only
+  when the cell is large and the slice is not along the access boundary;
+  blast satisfies neither, so exact hidden counts are out.
+
+## Still open for Mihir
+
+1. Confirm A for `vault_edges` and lint findings, and C (documented
+   acceptance) for the tension-health aggregates — or force a stricter rule.
+2. Court posture: `daftari court` / docket run operator-side with no access
+   context today. Declare the court an operator-only surface as a written
+   invariant ("court surfaces never take an access context; exposing them via
+   MCP requires this spec's review first"), or plumb an access context now?
+   B′'s shape change touches only the MCP blast tool either way.
