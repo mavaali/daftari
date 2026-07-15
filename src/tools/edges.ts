@@ -32,9 +32,11 @@ import {
   observeEdge,
 } from "../curation/edges.js";
 import { addTension, listTensions } from "../curation/tension.js";
+import { sourceReadable } from "../curation/tension-access.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForAccessOrNull } from "./search.js";
 
 // Canonical vault-relative form of a caller-supplied path: trimmed, resolved
 // against the vault root (rejecting traversal out of it), re-relativized. The
@@ -293,7 +295,25 @@ export async function vaultEdges(
 
   const edges = await listEdges(vaultRoot, filter);
   if (!edges.ok) return edges;
-  return ok({ edges: edges.value, total: edges.value.length });
+
+  // #217: an edge names two documents; seeing it reveals both. With an
+  // access context an edge is listed only when the role can read BOTH
+  // endpoints' collections — invisible edges are omitted entirely (also from
+  // `total`), never redacted, matching the tension both-sides rule. A filter
+  // on an unreadable from_path/to_path simply returns an empty listing, the
+  // same as a nonexistent path — no existence confirmation either way.
+  let listed = edges.value;
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      listed = edges.value.filter(
+        (e) => sourceReadable(db, access, e.fromPath) && sourceReadable(db, access, e.toPath),
+      );
+    } finally {
+      db?.close();
+    }
+  }
+  return ok({ edges: listed, total: listed.length });
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +413,8 @@ export const edgeTools: ToolDefinition[] = [
       "first. Strength = independent-vote count decayed by time since the " +
       "last qualifying re-derivation; an edge is trigger-bearing while its " +
       "aged strength stays above the floor. Filter by endpoint or status " +
-      "(candidate | trigger-bearing | revoked).",
+      "(candidate | trigger-bearing | revoked). Under RBAC only edges whose " +
+      "BOTH endpoints are in readable collections are listed and counted.",
     inputSchema: {
       type: "object",
       properties: {

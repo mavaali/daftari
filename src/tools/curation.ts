@@ -34,7 +34,11 @@ import {
   type TensionResolution,
 } from "../curation/tension.js";
 import { canSeeTension, sourceReadable, visibleTensions } from "../curation/tension-access.js";
-import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
+import {
+  bucketHiddenDownstream,
+  computeTensionBlast,
+  type TensionBlastResult,
+} from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -302,9 +306,33 @@ export async function vaultTensionBlast(
         new Error(`access denied: role '${access.roleName}' cannot blast from '${document}'`),
       );
     }
-    return await computeTensionBlast(vaultRoot, { document, cluster_id }, (entries) =>
+    const result = await computeTensionBlast(vaultRoot, { document, cluster_id }, (entries) =>
       visibleTensions(db, entries, access),
     );
+    if (!result.ok || !access) return result;
+
+    // #217 (B′): the downstream list omits docs the role cannot read; the
+    // visible counts and depth are recomputed over what remains, and the
+    // hidden remainder surfaces only as a coarsened bucket — an exact delta
+    // would disclose linked existence (small-cell class).
+    const kept = result.value.downstream.filter((e) => sourceReadable(db, access, e.path));
+    const hidden = result.value.downstream.length - kept.length;
+    let primary_blast = 0;
+    let advisory_blast = 0;
+    let max_depth = 0;
+    for (const e of kept) {
+      if (e.dependency_type === "source") primary_blast += 1;
+      else advisory_blast += 1;
+      if (e.distance > max_depth) max_depth = e.distance;
+    }
+    return ok({
+      ...result.value,
+      downstream: kept,
+      primary_blast,
+      advisory_blast,
+      max_depth,
+      hidden_downstream: bucketHiddenDownstream(hidden),
+    });
   } finally {
     db?.close();
   }
@@ -355,7 +383,19 @@ export async function vaultLint(
   const swept = await sweepExpiredActions(vaultRoot);
   if (!swept.ok) return swept;
 
-  const report = await runLint(vaultRoot);
+  // #217: findings compute from the caller's vantage — runLint drops
+  // invisible docs before any check runs (see LintOptions.pathVisible).
+  // tensionHealth stays vault-global by design.
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  let report: Awaited<ReturnType<typeof runLint>>;
+  try {
+    report = await runLint(
+      vaultRoot,
+      access ? { pathVisible: (p) => sourceReadable(db, access, p) } : {},
+    );
+  } finally {
+    db?.close();
+  }
   if (!report.ok) return report;
 
   if (filter) {
@@ -582,7 +622,11 @@ export const curationTools: ToolDefinition[] = [
       "counts as primary. 'superseded_by' is not a blast edge: the doc that " +
       "supersedes a contested doc is the replacement, not an inheritor. The " +
       "response identifies the containing cluster (if any) so the agent sees " +
-      "the broader region without a second call. Read-only.",
+      "the broader region without a second call. Under RBAC the downstream " +
+      "list and counts cover only documents the role can read; " +
+      "'hidden_downstream' (none | some | many) coarsely signals unreadable " +
+      "downstream docs — treat 'some' or 'many' as 'the real blast exceeds " +
+      "what you can see' when weighing a resolution. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -612,9 +656,13 @@ export const curationTools: ToolDefinition[] = [
       "TTL, orphan files with no inbound links, old drafts, stagnant " +
       "low-confidence files, deprecated files still linked from canonical " +
       "ones, and questions raised but unanswered anywhere in the vault. " +
+      "Under RBAC, findings compute from the caller's vantage: documents in " +
+      "unreadable collections are neither named nor counted as linkers. " +
       "Also reports tension health (counts by kind and resolution kind, " +
       "stable acknowledged persistent disagreements, and legacy unspecified " +
-      "entries), lists pending staged actions awaiting ratification, and — " +
+      "entries) — tension-health counts are deliberately VAULT-GLOBAL, not " +
+      "RBAC-filtered: counts only, no paths, so vault health reads the same " +
+      "for every role. Lists pending staged actions awaiting ratification, and — " +
       "when the vault has run shadow_mode — summarizes shadow-logged writes " +
       "with the ones the trust budget would have gated. " +
       "Never auto-fixes vault content; it does, as housekeeping, expire " +
