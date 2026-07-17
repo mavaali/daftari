@@ -38,3 +38,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run test/regression
+
+  # End-to-end gate: spawns the built dist/cli.js as a real subprocess and
+  # drives it over MCP stdio — handshake, tool catalog, read/write with git
+  # auto-commit, search, RBAC. Also runs inside `npm test` above; this named
+  # job is the required PR check that proves the shipped artifact boots.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx vitest run test/e2e
