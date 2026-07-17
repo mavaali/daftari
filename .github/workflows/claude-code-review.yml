@@ -2,8 +2,8 @@
 #
 # Runs Claude Code against the diff and posts findings as PR comments, so
 # human review starts from a machine pass and concentrates on judgment
-# calls. Requires the ANTHROPIC_API_KEY repo secret (Settings → Secrets and
-# variables → Actions).
+# calls. Billed to the Claude subscription via the CLAUDE_CODE_OAUTH_TOKEN
+# repo secret (generate with `claude setup-token`; valid ~1 year).
 
 name: Claude Code Review
 
@@ -29,7 +29,7 @@ jobs:
       - name: Review PR
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Review this pull request for correctness bugs first, then for
             simplification and efficiency. Read CLAUDE.md before judging:
