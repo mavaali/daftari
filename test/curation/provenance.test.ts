@@ -88,6 +88,30 @@ describe("provenance", () => {
       expect(log.value[1]?.frontmatter_diff?.status?.after).toBe("canonical");
     });
 
+    it("round-trips run_id and omits it when absent (#235)", async () => {
+      await recordProvenance(vault, {
+        tool: "vault_write",
+        file: "pricing/traced.md",
+        agent: "agent:claude-code",
+        action: "create",
+        run_id: "run-042",
+      });
+      await recordProvenance(vault, {
+        tool: "vault_write",
+        file: "pricing/untraced.md",
+        agent: "agent:claude-code",
+        action: "create",
+      });
+
+      const log = await readProvenanceLog(vault);
+      expect(log.ok).toBe(true);
+      if (!log.ok) return;
+      const traced = log.value.find((e) => e.file === "pricing/traced.md");
+      const untraced = log.value.find((e) => e.file === "pricing/untraced.md");
+      expect(traced?.run_id).toBe("run-042");
+      expect(untraced?.run_id).toBeUndefined();
+    });
+
     it("omits an empty frontmatter_diff from the recorded entry", async () => {
       const entry = await recordProvenance(vault, {
         tool: "vault_append",

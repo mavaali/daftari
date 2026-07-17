@@ -32,6 +32,13 @@ export interface RoleConfig {
   write: string[];
   promote: boolean;
   ratify: boolean;
+  // #235: a propose-only role cannot mutate the vault directly — vault_write
+  // coerces into a staged `write` proposal awaiting ratification, and every
+  // other write tool is denied with a pointer to vault_stage_action. This is
+  // the structural "agents cannot write any other state" enforcement: the
+  // permission layer, not convention. YAML key: propose_only. Optional so
+  // existing configs (and role literals) are unchanged; absent means false.
+  proposeOnly?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -200,7 +207,41 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ratify = obj.ratify;
   }
 
-  return ok({ read: read.value, write: write.value, promote, ratify });
+  let proposeOnly = false;
+  if (obj.propose_only !== undefined) {
+    if (typeof obj.propose_only !== "boolean") {
+      return err(new Error(`role '${name}' propose_only must be true or false`));
+    }
+    proposeOnly = obj.propose_only;
+  }
+
+  // Contradictory grants fail loud at load: a propose-only role proposes, it
+  // does not decide. Allowing both would let vault_ratify's write dispatch be
+  // coerced back into a NEW proposal while marking the original ratified.
+  if (proposeOnly && ratify) {
+    return err(
+      new Error(
+        `role '${name}' cannot set both ratify and propose_only — a ` +
+          `propose-only role proposes, it does not decide`,
+      ),
+    );
+  }
+  if (proposeOnly && promote) {
+    return err(
+      new Error(
+        `role '${name}' cannot set both promote and propose_only — promotion ` +
+          `is a direct write, which propose-only forbids`,
+      ),
+    );
+  }
+
+  return ok({
+    read: read.value,
+    write: write.value,
+    promote,
+    ratify,
+    ...(proposeOnly ? { proposeOnly } : {}),
+  });
 }
 
 // Checks a declared `default` value against its extension type. A default

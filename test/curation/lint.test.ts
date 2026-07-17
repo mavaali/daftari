@@ -287,6 +287,7 @@ ${body}
         temporal: 0,
         factual: 0,
         interpretive: 0,
+        "inter-proposal": 0,
         unspecified: 0,
       });
       expect(h.resolvedLifetime).toBe(0);
@@ -352,6 +353,7 @@ ${body}
         temporal: 1,
         factual: 2,
         interpretive: 2,
+        "inter-proposal": 0,
         unspecified: 1,
       });
       expect(h.resolvedLifetime).toBe(3);
@@ -661,6 +663,7 @@ ${body}
         temporal: 3,
         factual: 3,
         interpretive: 3,
+        "inter-proposal": 0,
         unspecified: 1,
       });
       expect(h.aging.fresh).toBe(3);
@@ -670,6 +673,7 @@ ${body}
         temporal: 1,
         factual: 1,
         interpretive: 1,
+        "inter-proposal": 0,
         unspecified: 0,
       });
       // All three stale-tier messages render.

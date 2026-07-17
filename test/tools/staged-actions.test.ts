@@ -1,5 +1,9 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
+import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultRatify, vaultStageAction } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
@@ -61,7 +65,7 @@ describe("vault_stage_action", () => {
     if (!result.ok) return;
     expect(result.value.id).toBe("stage-001");
     expect(result.value.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  });
+  }, 60_000);
 
   it("denies a role that lacks write access to the target collection", async () => {
     await seedDraft(vault, "pricing/foo.md");
@@ -84,7 +88,7 @@ describe("vault_stage_action", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("access denied");
-  });
+  }, 60_000);
 
   it("allows a role with write access to the target collection", async () => {
     await seedDraft(vault, "pricing/foo.md");
@@ -105,7 +109,7 @@ describe("vault_stage_action", () => {
       writer,
     );
     expect(result.ok).toBe(true);
-  });
+  }, 60_000);
 
   it("denies a write-less role for an absent target without leaking existence", async () => {
     // The target does not exist. A role lacking write must get 'access denied'
@@ -607,6 +611,389 @@ describe("vault_ratify", () => {
     expect(result.error.message).toContain("hidden canonical dependents: some");
     expect(result.error.message).not.toContain("intel/user.md");
   }, 60_000);
+
+  it("approves a write: dispatches vault_write, creates a NEW document (#235)", async () => {
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/fresh-analysis.md",
+      proposed_by: AGENT,
+      rationale: "New synthesis from run traces.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({ title: "Fresh Analysis" }),
+        body: "# Fresh Analysis\n\nProposed content.\n",
+      },
+      run_id: "run-042",
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+    expect(staged.value.conflicts_with).toEqual([]);
+    expect(staged.value.tension_id).toBeNull();
+
+    // The run id is stamped on the proposal record.
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.runId).toBe("run-042");
+
+    // Nothing is written until ratification.
+    const before = await vaultRead(vault, "pricing/fresh-analysis.md");
+    expect(before.ok).toBe(false);
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/fresh-analysis.md");
+    expect(read.ok && read.value.content).toContain("Proposed content.");
+
+    // The proposer's run id rode through the dispatch into provenance.
+    const log = await readProvenanceLog(vault);
+    expect(log.ok).toBe(true);
+    if (!log.ok) throw log.error;
+    const entry = log.value.find(
+      (e) => e.file === "pricing/fresh-analysis.md" && e.tool === "vault_write",
+    );
+    expect(entry?.run_id).toBe("run-042");
+  }, 60_000);
+
+  it("two contradictory write proposals: both pending, inter-proposal tension, served value unchanged (#235 acceptance)", async () => {
+    await seedDraft(vault, "pricing/contested.md", {
+      status: "canonical",
+    });
+
+    const first = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/contested.md",
+      proposed_by: "agent:alpha",
+      rationale: "The limit is 40 units.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({ title: "Contested" }),
+        body: "# Contested\n\nThe limit is 40 units.\n",
+      },
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw first.error;
+    expect(first.value.conflicts_with).toEqual([]);
+
+    const second = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/contested.md",
+      proposed_by: "agent:beta",
+      rationale: "The limit is 60 units.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({ title: "Contested" }),
+        body: "# Contested\n\nThe limit is 60 units.\n",
+      },
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw second.error;
+
+    // Deterministic outcome: the conflict is surfaced, never silent.
+    expect(second.value.conflicts_with).toEqual([first.value.id]);
+    expect(second.value.tension_id).toMatch(/^tension-/);
+
+    // Both proposals are pending — neither promoted, no last-write-wins.
+    const a = await getStagedActionById(vault, first.value.id);
+    const b = await getStagedActionById(vault, second.value.id);
+    expect(a.ok && a.value?.status).toBe("pending");
+    expect(b.ok && b.value?.status).toBe("pending");
+
+    // The tension is typed inter-proposal, a self-tension on the target.
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) throw tensions.error;
+    const t = tensions.value.find((x) => x.id === second.value.tension_id);
+    expect(t?.kind).toBe("inter-proposal");
+    expect(t?.sourceA).toBe("pricing/contested.md");
+    expect(t?.sourceB).toBe("pricing/contested.md");
+    expect(t?.claimA).toContain(first.value.id);
+    expect(t?.claimB).toContain(second.value.id);
+
+    // The vault's served value is unchanged.
+    const read = await vaultRead(vault, "pricing/contested.md");
+    expect(read.ok && read.value.content).toContain("Body.");
+    expect(read.ok && read.value.content).not.toContain("40 units");
+  }, 60_000);
+
+  it("tier-0 gate blocks ratifying a canonical write proposal citing a draft source", async () => {
+    await seedDraft(vault, "pricing/wip-source.md");
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/bold-claim.md",
+      proposed_by: AGENT,
+      rationale: "Lands directly as canonical.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({
+          title: "Bold Claim",
+          status: "canonical",
+          sources: ["pricing/wip-source.md"],
+        }),
+        body: "# Bold Claim\n",
+      },
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+    expect(result.error.message).toContain("pricing/wip-source.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate judges the MERGED post-state: omitted sources are inherited from disk", async () => {
+    // The proposal promotes to canonical but does not re-declare sources.
+    // vault_write's update path merges the payload UNDER the existing
+    // frontmatter, so the old draft-citing sources array survives the write —
+    // the gate must see it (review finding on #249).
+    await seedDraft(vault, "pricing/wip-source.md");
+    await seedDraft(vault, "pricing/promotable.md", { sources: ["pricing/wip-source.md"] });
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/promotable.md",
+      proposed_by: AGENT,
+      rationale: "Promote via full write, sources omitted.",
+      proposed_diff: {
+        // No `sources` key: inherited from the on-disk doc on merge.
+        frontmatter: { status: "canonical" },
+        body: "# Federation Spec\n\nRevised body.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+    expect(result.error.message).toContain("pricing/wip-source.md");
+  }, 60_000);
+
+  it("tier-0 gate judges the MERGED post-state: omitted status keeps the doc canonical", async () => {
+    // The target is already canonical; the proposal adds a draft source
+    // without declaring status. The merged doc is still canonical, so the
+    // gate must run even though the payload never says "canonical".
+    await seedDraft(vault, "pricing/wip-source.md");
+    await seedDraft(vault, "pricing/settled.md", { status: "canonical" });
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/settled.md",
+      proposed_by: AGENT,
+      rationale: "Cite the WIP doc, status untouched.",
+      proposed_diff: {
+        frontmatter: { sources: ["pricing/wip-source.md"] },
+        body: "# Federation Spec\n\nNow citing WIP.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+    expect(result.error.message).toContain("pricing/wip-source.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate validates the merged post-state against config schema extensions", async () => {
+    // Config declares a required extension AFTER seeding (seeding first —
+    // otherwise the seed write itself would be blocked by the missing field).
+    // A canonical write proposal omitting the required extension must be
+    // caught by the gate with the tier-0 message, not fail later with the
+    // generic invalid-frontmatter dispatch error (review finding on #249).
+    await seedDraft(vault, "pricing/ext.md");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "schema_extensions:\n  adr_id:\n    type: string\n    required: true\n",
+    );
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/ext.md",
+      proposed_by: AGENT,
+      rationale: "Promote via write, required extension missing.",
+      proposed_diff: {
+        frontmatter: { status: "canonical" },
+        body: "# Federation Spec\n\nRevised.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+    expect(result.error.message).toContain("adr_id");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate blocks a write that demotes a canonical doc with canonical dependents", async () => {
+    // The mirror of the promote-in-one-step case: a write proposal flipping
+    // status off canonical is a deprecate in one step, and without a
+    // superseded_by forward it strands dependents exactly like an unforwarded
+    // staged deprecate (review finding on #249).
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/user.md", {
+      status: "canonical",
+      sources: ["pricing/lib.md"],
+    });
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/lib.md",
+      proposed_by: AGENT,
+      rationale: "Retire it via full write.",
+      proposed_diff: {
+        frontmatter: { status: "deprecated" },
+        body: "# Federation Spec\n\nRetired.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked demoting write");
+    expect(result.error.message).toContain("canonical → deprecated");
+    expect(result.error.message).toContain("pricing/user.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate passes a demoting write that forwards dependents via superseded_by", async () => {
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/lib2.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/user.md", {
+      status: "canonical",
+      sources: ["pricing/lib.md"],
+    });
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/lib.md",
+      proposed_by: AGENT,
+      rationale: "Replaced via full write.",
+      proposed_diff: {
+        frontmatter: { status: "superseded", superseded_by: "pricing/lib2.md" },
+        body: "# Federation Spec\n\nReplaced.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/lib.md");
+    expect(read.ok && read.value.frontmatter.status).toBe("superseded");
+    expect(read.ok && read.value.frontmatter.superseded_by).toBe("pricing/lib2.md");
+  }, 60_000);
+
+  it("gates the fallback collection on the NORMALIZED path, not the raw string", async () => {
+    // pricing/../competitive-intel/ghost.md splits to "pricing" raw but
+    // resolves to competitive-intel — a pricing-only role must not be able
+    // to queue write proposals into a collection it cannot write (review
+    // finding on #249).
+    const pricingOnly = {
+      user: "agent:writer",
+      roleName: "pricing-writer",
+      role: { read: ["*"], write: ["pricing"], promote: false, ratify: false },
+    };
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "write",
+        target_path: "pricing/../competitive-intel/ghost.md",
+        proposed_by: AGENT,
+        rationale: "Traversal attempt.",
+        proposed_diff: { frontmatter: draftFrontmatter(), body: "# Ghost\n" },
+      },
+      pricingOnly,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+    expect(result.error.message).toContain("competitive-intel");
+  });
+
+  it("stages the canonical relPath so aliased spellings contend in conflict detection", async () => {
+    await seedDraft(vault, "pricing/aliased.md");
+    const first = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/aliased.md",
+      proposed_by: AGENT,
+      rationale: "First proposal.",
+      proposed_diff: { frontmatter: draftFrontmatter(), body: "# A\n" },
+    });
+    if (!first.ok) throw first.error;
+
+    // Same target through a dotted spelling — must conflict with the first.
+    const second = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/../pricing/aliased.md",
+      proposed_by: AGENT,
+      rationale: "Second proposal, aliased path.",
+      proposed_diff: { frontmatter: draftFrontmatter(), body: "# B\n" },
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.conflicts_with).toEqual([first.value.id]);
+
+    const action = await getStagedActionById(vault, second.value.id);
+    expect(action.ok && action.value?.targetPath).toBe("pricing/aliased.md");
+  }, 60_000);
+
+  it("leaves a malformed write pending (no body in diff)", async () => {
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/malformed.md",
+      proposed_by: AGENT,
+      rationale: "Missing body.",
+      proposed_diff: { frontmatter: draftFrontmatter() },
+    });
+    // Stage-time validation catches the malformed payload up front.
+    expect(staged.ok).toBe(false);
+    if (staged.ok) return;
+    expect(staged.error.message).toContain("proposed_diff.body");
+  });
 
   it("errors when ratifying an unknown id", async () => {
     const result = await vaultRatify(vault, {

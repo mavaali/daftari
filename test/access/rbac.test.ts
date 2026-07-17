@@ -10,6 +10,7 @@ import {
   filterByReadPermission,
   guestAccess,
   hasAnyRead,
+  isProposeOnly,
   resolveAccess,
 } from "../../src/access/rbac.js";
 import { vaultIndex } from "../../src/tools/read.js";
@@ -108,6 +109,20 @@ describe("rbac", () => {
       expect(canRatify(analyst.role)).toBe(false);
       expect(canRatify(researcher.role)).toBe(false);
       expect(canRatify(null)).toBe(false);
+    });
+
+    it("reports propose-only from the flag, defaulting false (#235)", () => {
+      expect(
+        isProposeOnly({
+          read: ["*"],
+          write: ["*"],
+          promote: false,
+          ratify: false,
+          proposeOnly: true,
+        }),
+      ).toBe(true);
+      expect(isProposeOnly(admin.role)).toBe(false); // flag absent
+      expect(isProposeOnly(null)).toBe(false); // guest
     });
 
     it("resolves an unknown role to a deny-all guest", () => {

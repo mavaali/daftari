@@ -32,3 +32,11 @@ roles:
     write: ["*"]
     promote: true
     ratify: true
+  # A propose-only role (#235): its vault_write calls land as staged 'write'
+  # proposals awaiting vault_ratify, and every other direct write tool is
+  # denied. The write list still scopes which collections it may propose into.
+  # This is the recommended role shape for autonomous agents.
+  agent-proposer:
+    read: ["*"]
+    write: ["*"]
+    propose_only: true

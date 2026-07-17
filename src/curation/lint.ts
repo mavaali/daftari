@@ -437,7 +437,7 @@ async function computeTensionHealth(
   // `unspecified` never produces a message even if the count somehow appears
   // (it can't, since unspecified entries get tier null — defense in depth).
   const staleMessages: Partial<Record<Exclude<TensionKind, "unspecified">, string>> = {};
-  for (const kind of ["temporal", "factual", "interpretive"] as const) {
+  for (const kind of ["temporal", "factual", "interpretive", "inter-proposal"] as const) {
     if (staleByKind[kind] > 0) {
       staleMessages[kind] = STALE_TIER_LINT_COPY[kind];
     }

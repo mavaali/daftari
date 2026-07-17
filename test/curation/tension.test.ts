@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addTension,
   agingTier,
+  LOGGABLE_TENSION_KINDS,
   listTensions,
   resolveTension,
   STALE_TIER_LINT_COPY,
@@ -36,6 +37,44 @@ describe("tension", () => {
   it("returns an empty list when nothing has been logged", async () => {
     const result = await listTensions(vault);
     expect(result.ok && result.value).toEqual([]);
+  });
+
+  it("allocates unique ids under concurrent logging (#235 contention path)", async () => {
+    // Id allocation + append run in one synchronous critical section
+    // (mirroring stageAction), so concurrent addTension calls — the
+    // inter-proposal conflict check firing from contending stagings — never
+    // mint the same tension-NNN id. Before the fix, the async
+    // read-then-append gap let every concurrent call read the same log
+    // state and collide on one id.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        addTension(vault, { ...sampleInput, title: `Concurrent ${i}` }),
+      ),
+    );
+    const ids = results.map((r) => (r.ok ? r.value.id : "ERR"));
+    expect(new Set(ids).size).toBe(5);
+    expect(ids).not.toContain("ERR");
+
+    const logged = await listTensions(vault);
+    expect(logged.ok && logged.value).toHaveLength(5);
+  });
+
+  it("accepts an inter-proposal tension only as a self-tension (#235)", async () => {
+    const arbitrary = await addTension(vault, {
+      ...sampleInput,
+      kind: "inter-proposal" as const,
+    });
+    expect(arbitrary.ok).toBe(false);
+    if (arbitrary.ok) return;
+    expect(arbitrary.error.message).toContain("self-tension");
+
+    const self = await addTension(vault, {
+      ...sampleInput,
+      kind: "inter-proposal" as const,
+      sourceA: "pricing/contested.md",
+      sourceB: "pricing/contested.md",
+    });
+    expect(self.ok).toBe(true);
   });
 
   it("appends a tension with default date and unresolved status", async () => {
@@ -413,9 +452,14 @@ describe("decided_by_principal", () => {
 });
 
 describe("STALE_TIER_LINT_COPY", () => {
-  it("exposes the three loggable kinds and omits unspecified", () => {
+  it("keeps inter-proposal off the caller-loggable set but addable as a self-tension (#235)", () => {
+    expect([...LOGGABLE_TENSION_KINDS]).toEqual(["temporal", "factual", "interpretive"]);
+  });
+
+  it("exposes every loggable kind and omits unspecified", () => {
     expect(Object.keys(STALE_TIER_LINT_COPY).sort()).toEqual([
       "factual",
+      "inter-proposal",
       "interpretive",
       "temporal",
     ]);

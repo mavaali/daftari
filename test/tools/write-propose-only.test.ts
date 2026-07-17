@@ -1,0 +1,350 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { getStagedActionById, listStagedActions } from "../../src/curation/staged-actions.js";
+import { vaultRead } from "../../src/tools/read.js";
+import { vaultRatify } from "../../src/tools/staged-actions.js";
+import { vaultAppend, vaultDeprecate, vaultWrite } from "../../src/tools/write.js";
+import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
+
+// #235 delta 4: the propose-only role. Structural enforcement — the
+// permission layer coerces/denies; nothing depends on agent convention.
+
+const PROPOSER = {
+  user: "agent:proposer",
+  roleName: "agent-proposer",
+  role: { read: ["*"], write: ["*"], promote: false, ratify: false, proposeOnly: true },
+};
+
+const ADMIN = {
+  user: "human:mihir",
+  roleName: "admin",
+  role: { read: ["*"], write: ["*"], promote: true, ratify: true },
+};
+
+function frontmatter(overrides: Record<string, unknown> = {}) {
+  return {
+    title: "Proposed Doc",
+    domain: "accumulation",
+    collection: "pricing",
+    status: "draft",
+    confidence: "medium",
+    created: "2026-07-01",
+    provenance: "direct",
+    sources: [],
+    superseded_by: null,
+    ttl_days: null,
+    tags: [],
+    ...overrides,
+  };
+}
+
+describe("propose-only role (#235)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("coerces vault_write into a staged write proposal — nothing written", async () => {
+    const result = await vaultWrite(
+      vault,
+      {
+        path: "pricing/proposed.md",
+        body: "# Proposed\n\nContent.\n",
+        frontmatter: frontmatter(),
+        agent: "agent:proposer",
+        run_id: "run-007",
+      },
+      PROPOSER,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.value.action).toBe("staged");
+    expect(result.value.committed).toBe(false);
+    expect(result.value.staged_id).toMatch(/^stage-/);
+    expect(result.value.conflicts_with).toEqual([]);
+
+    // No file landed.
+    const read = await vaultRead(vault, "pricing/proposed.md");
+    expect(read.ok).toBe(false);
+
+    // The proposal is pending, typed write, and carries the run id.
+    const action = await getStagedActionById(vault, result.value.staged_id as string);
+    expect(action.ok).toBe(true);
+    if (!action.ok) throw action.error;
+    expect(action.value?.status).toBe("pending");
+    expect(action.value?.actionType).toBe("write");
+    expect(action.value?.runId).toBe("run-007");
+  });
+
+  it("a ratified coerced proposal lands with the proposer's run id in provenance", async () => {
+    const staged = await vaultWrite(
+      vault,
+      {
+        path: "pricing/proposed.md",
+        body: "# Proposed\n\nContent.\n",
+        frontmatter: frontmatter(),
+        agent: "agent:proposer",
+        run_id: "run-007",
+      },
+      PROPOSER,
+    );
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const ratified = await vaultRatify(
+      vault,
+      { id: staged.value.staged_id, decision: "approve", principal: "human:mihir" },
+      ADMIN,
+    );
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/proposed.md");
+    expect(read.ok && read.value.content).toContain("Content.");
+
+    const log = await readProvenanceLog(vault);
+    expect(log.ok).toBe(true);
+    if (!log.ok) throw log.error;
+    const entry = log.value.find((e) => e.file === "pricing/proposed.md");
+    expect(entry?.run_id).toBe("run-007");
+  }, 60_000);
+
+  it("two propose-only agents contesting one target both land as pending + tension", async () => {
+    const first = await vaultWrite(
+      vault,
+      {
+        path: "pricing/contested.md",
+        body: "# Contested\n\nLimit is 40.\n",
+        frontmatter: frontmatter({ title: "Contested" }),
+        agent: "agent:alpha",
+      },
+      PROPOSER,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw first.error;
+
+    const second = await vaultWrite(
+      vault,
+      {
+        path: "pricing/contested.md",
+        body: "# Contested\n\nLimit is 60.\n",
+        frontmatter: frontmatter({ title: "Contested" }),
+        agent: "agent:beta",
+      },
+      PROPOSER,
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw second.error;
+    expect(second.value.conflicts_with).toEqual([first.value.staged_id]);
+    expect(second.value.tension_id).toMatch(/^tension-/);
+
+    const pending = await listStagedActions(vault, "pending");
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) throw pending.error;
+    expect(pending.value.map((a) => a.id).sort()).toEqual(
+      [first.value.staged_id, second.value.staged_id].sort(),
+    );
+  });
+
+  it("surfaces the REAL validation report on a coerced staging (review finding on #249)", async () => {
+    // Bad enum + missing required field: the agent must learn now, not at
+    // ratify time up to 14 days later. Advisory — the proposal still stages.
+    const bad = await vaultWrite(
+      vault,
+      {
+        path: "pricing/sloppy.md",
+        body: "# Sloppy\n",
+        frontmatter: frontmatter({ confidence: "extreme", title: null }),
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(bad.ok).toBe(true);
+    if (!bad.ok) throw bad.error;
+    expect(bad.value.action).toBe("staged");
+    expect(bad.value.validation.valid).toBe(false);
+    const fields = bad.value.validation.issues.map((i) => i.field);
+    expect(fields).toContain("confidence");
+    expect(fields).toContain("title");
+
+    // A clean payload reports valid — and an UPDATE proposal is validated
+    // against the merge, so omitted fields inherited from disk are not
+    // false-flagged as missing.
+    const seeded = await vaultWrite(
+      vault,
+      {
+        path: "pricing/settled.md",
+        body: "# Settled\n",
+        frontmatter: frontmatter({ status: "canonical", title: "Settled" }),
+        agent: "human:mihir",
+      },
+      ADMIN,
+    );
+    if (!seeded.ok) throw seeded.error;
+    const update = await vaultWrite(
+      vault,
+      {
+        path: "pricing/settled.md",
+        body: "# Updated\n",
+        frontmatter: { tags: ["revised"] },
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(update.ok).toBe(true);
+    if (!update.ok) throw update.error;
+    expect(update.value.action).toBe("staged");
+    expect(update.value.validation.valid).toBe(true);
+  }, 60_000);
+
+  it("stages the canonical relPath: aliased spellings contend, escapes are rejected", async () => {
+    // Regression for the review finding on #249: the coercion must resolve
+    // the path BEFORE staging, or `pricing/./x.md`-style aliases dodge the
+    // exact-string conflict match and the ratify gate's existing-doc lookup.
+    const first = await vaultWrite(
+      vault,
+      {
+        path: "pricing/aliased.md",
+        body: "# A\n",
+        frontmatter: frontmatter({ title: "Aliased" }),
+        agent: "agent:alpha",
+      },
+      PROPOSER,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw first.error;
+
+    const second = await vaultWrite(
+      vault,
+      {
+        path: "pricing/../pricing/aliased.md",
+        body: "# B\n",
+        frontmatter: frontmatter({ title: "Aliased" }),
+        agent: "agent:beta",
+      },
+      PROPOSER,
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw second.error;
+    expect(second.value.path).toBe("pricing/aliased.md");
+    expect(second.value.conflicts_with).toEqual([first.value.staged_id]);
+
+    const action = await getStagedActionById(vault, second.value.staged_id as string);
+    expect(action.ok && action.value?.targetPath).toBe("pricing/aliased.md");
+
+    // A root-escaping path errors at stage time, not after sitting queued.
+    const escaped = await vaultWrite(
+      vault,
+      {
+        path: "../outside.md",
+        body: "# Nope\n",
+        frontmatter: frontmatter(),
+        agent: "agent:alpha",
+      },
+      PROPOSER,
+    );
+    expect(escaped.ok).toBe(false);
+    if (escaped.ok) return;
+    expect(escaped.error.message).toContain("escapes vault root");
+  });
+
+  it("denies vault_append and vault_deprecate with a pointer to staging", async () => {
+    const append = await vaultAppend(
+      vault,
+      {
+        path: "pricing/helios-consumption-pricing.md",
+        section: "## Note\n",
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(append.ok).toBe(false);
+    if (append.ok) return;
+    expect(append.error.message).toContain("propose-only");
+    expect(append.error.message).toContain("vault_stage_action");
+
+    const deprecate = await vaultDeprecate(
+      vault,
+      {
+        path: "pricing/helios-consumption-pricing.md",
+        reason: "trying a direct deprecate",
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(deprecate.ok).toBe(false);
+    if (deprecate.ok) return;
+    expect(deprecate.error.message).toContain("propose-only");
+  });
+
+  it("a propose-only role cannot ratify — the write dispatch is never coerced into a re-stage", async () => {
+    // Regression for the review finding on #249: a hand-built context with
+    // both ratify and proposeOnly (config load rejects the combo, code can
+    // still construct it) must be denied up front. Otherwise approving a
+    // write action would re-stage a NEW proposal via vaultWrite's coercion
+    // while marking the ORIGINAL ratified/applied with nothing written.
+    const staged = await vaultWrite(
+      vault,
+      {
+        path: "pricing/proposed.md",
+        body: "# Proposed\n\nContent.\n",
+        frontmatter: frontmatter(),
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const confused = {
+      user: "agent:proposer",
+      roleName: "confused",
+      role: { read: ["*"], write: ["*"], promote: false, ratify: true, proposeOnly: true },
+    };
+    const ratified = await vaultRatify(
+      vault,
+      { id: staged.value.staged_id, decision: "approve", principal: "agent:proposer" },
+      confused,
+    );
+    expect(ratified.ok).toBe(false);
+    if (ratified.ok) return;
+    expect(ratified.error.message).toContain("propose-only");
+
+    // The original action is untouched, no phantom second proposal exists.
+    const action = await getStagedActionById(vault, staged.value.staged_id as string);
+    expect(action.ok && action.value?.status).toBe("pending");
+    const all = await listStagedActions(vault);
+    expect(all.ok && all.value).toHaveLength(1);
+  });
+
+  it("still respects the write grant: cannot propose into an unwritable collection", async () => {
+    const scoped = {
+      user: "agent:proposer",
+      roleName: "scoped-proposer",
+      role: {
+        read: ["*"],
+        write: ["competitive-intel"],
+        promote: false,
+        ratify: false,
+        proposeOnly: true,
+      },
+    };
+    const result = await vaultWrite(
+      vault,
+      {
+        path: "pricing/out-of-scope.md",
+        body: "# Nope\n",
+        frontmatter: frontmatter(),
+        agent: "agent:proposer",
+      },
+      scoped,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+  });
+});

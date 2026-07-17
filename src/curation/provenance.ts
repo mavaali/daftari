@@ -27,6 +27,11 @@ export interface ProvenanceEntry {
   // caller's free-text claim: `principal` is ground truth for attributing
   // loop actions to the agent principal. Absent on servers run without --role.
   principal?: string;
+  // Caller-supplied trace/run identifier (#235): correlates the writes of one
+  // agent run with each other (and, in #233, with that run's reads — the
+  // run-correlation edge producer keys on this). Free-text, optional; absent
+  // when the caller does not pass `run_id`.
+  run_id?: string;
   frontmatter_diff?: FrontmatterDiff;
   // Free-text explanation, set on rejected writes (e.g. the stale-version
   // mismatch). Absent on writes that landed.
@@ -66,6 +71,7 @@ export async function recordProvenance(
     agent: entry.agent,
     action: entry.action,
     ...(entry.principal ? { principal: entry.principal } : {}),
+    ...(entry.run_id ? { run_id: entry.run_id } : {}),
     ...(entry.frontmatter_diff && Object.keys(entry.frontmatter_diff).length > 0
       ? { frontmatter_diff: entry.frontmatter_diff }
       : {}),
