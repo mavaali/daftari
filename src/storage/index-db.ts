@@ -48,7 +48,10 @@ export type IndexDb = Database.Database;
 // Bumped 4 → 5 to add FTS5 (`documents_fts`) and sqlite-vec (`embeddings_vec`)
 // virtual tables for SQL-native search. The index is a derived cache so the
 // bump triggers a clean rebuild (see openIndexDb); no in-place migration.
-const SCHEMA_VERSION = "7";
+// Bumped 7 → 8 to add the trail-extra columns (observations, contested_at,
+// contest_reason) to derives_from_edges, which became the authoritative edge
+// READ path (#236) and so must carry the full public edge shape.
+const SCHEMA_VERSION = "8";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -154,6 +157,9 @@ CREATE TABLE IF NOT EXISTS derives_from_edges (
   last_age_decay TEXT NOT NULL,
   status         TEXT NOT NULL,
   direction_verdict TEXT NOT NULL DEFAULT 'directed',
+  observations   INTEGER NOT NULL DEFAULT 0,
+  contested_at   TEXT,
+  contest_reason TEXT,
   PRIMARY KEY (from_path, to_path)
 );
 CREATE INDEX IF NOT EXISTS idx_edges_from ON derives_from_edges(from_path);
@@ -933,12 +939,14 @@ export function getStagedActionsByStatus(db: IndexDb, status: string): StagedAct
 // --- derives_from edges ------------------------------------------------------
 //
 // The derives_from_edges table is a derived index of the append-only canonical
-// log .daftari/edges.jsonl (see src/curation/edges.ts). A reindex collapses
-// the jsonl and repopulates the table; `strength` and `status` are materialized
-// as of `last_age_decay` and age from there (the curation layer recomputes the
-// live value via agedStrength). The table exists for the future consolidation
-// loop's traversal engine, which wants concurrent SQL reads (spec §11.3); v1
-// read paths use the jsonl directly. Column set is exactly §11.3's schema.
+// log .daftari/edges.jsonl (see src/curation/edges.ts) and, since #236, the
+// AUTHORITATIVE read path: listEdges/getEdge query these rows. `strength` and
+// `status` are materialized as of `last_age_decay` and age from there — the
+// curation layer always recomputes the live value via agedStrength; the stored
+// status is at most a conservative prefilter, never the answer. Coherence with
+// the jsonl is kept by write-through on edge writes plus a jsonl stat marker
+// checked on read (see ensureFreshEdgesIndex). Column set is §11.3's schema
+// plus the trail extras the public edge shape carries.
 
 export interface DerivesFromEdgeRow {
   from_path: string;
@@ -950,6 +958,9 @@ export interface DerivesFromEdgeRow {
   last_age_decay: string;
   status: string; // candidate | trigger-bearing | revoked
   direction_verdict: string; // directed | symmetric
+  observations: number;
+  contested_at: string | null;
+  contest_reason: string | null;
 }
 
 // Inserts or replaces an edge row by (from_path, to_path). Used by the
@@ -958,8 +969,9 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
   db.prepare(
     `INSERT INTO derives_from_edges
        (from_path, to_path, strength, k_survived, first_observed, last_rederived,
-        last_age_decay, status, direction_verdict)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        last_age_decay, status, direction_verdict, observations, contested_at,
+        contest_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(from_path, to_path) DO UPDATE SET
        strength       = excluded.strength,
        k_survived     = excluded.k_survived,
@@ -967,7 +979,10 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
        last_rederived = excluded.last_rederived,
        last_age_decay = excluded.last_age_decay,
        status         = excluded.status,
-       direction_verdict = excluded.direction_verdict`,
+       direction_verdict = excluded.direction_verdict,
+       observations   = excluded.observations,
+       contested_at   = excluded.contested_at,
+       contest_reason = excluded.contest_reason`,
   ).run(
     row.from_path,
     row.to_path,
@@ -978,7 +993,52 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
     row.last_age_decay,
     row.status,
     row.direction_verdict,
+    row.observations,
+    row.contested_at,
+    row.contest_reason,
   );
+}
+
+// One edge row matched in EITHER orientation: the stored (from_path, to_path)
+// is the derived OUTPUT orientation, which premise votes can flip, so a lookup
+// by pair must not assume the caller's order matches the stored order.
+export function getDerivesFromEdgePair(
+  db: IndexDb,
+  a: string,
+  b: string,
+): DerivesFromEdgeRow | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM derives_from_edges
+       WHERE (from_path = ? AND to_path = ?) OR (from_path = ? AND to_path = ?)`,
+    )
+    .get(a, b, b, a) as DerivesFromEdgeRow | undefined;
+  return row ?? null;
+}
+
+// Edge rows matching the given endpoint / status prefilters. `statusIn` is a
+// PREFILTER on the materialized status — the caller must recompute the live
+// aged status and re-filter; passing a conservative superset here is its job.
+export function listDerivesFromEdgeRows(
+  db: IndexDb,
+  filter: { fromPath?: string; toPath?: string; statusIn?: string[] } = {},
+): DerivesFromEdgeRow[] {
+  const where: string[] = [];
+  const params: string[] = [];
+  if (filter.fromPath) {
+    where.push("from_path = ?");
+    params.push(filter.fromPath);
+  }
+  if (filter.toPath) {
+    where.push("to_path = ?");
+    params.push(filter.toPath);
+  }
+  if (filter.statusIn && filter.statusIn.length > 0) {
+    where.push(`status IN (${filter.statusIn.map(() => "?").join(", ")})`);
+    params.push(...filter.statusIn);
+  }
+  const sql = `SELECT * FROM derives_from_edges${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
+  return db.prepare(sql).all(...params) as DerivesFromEdgeRow[];
 }
 
 // Drops every edge row. Called at the start of a rebuild so a reindex never

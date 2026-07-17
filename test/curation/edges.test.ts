@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -12,7 +12,7 @@ import {
   rebuildEdgesIndex,
 } from "../../src/curation/edges.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
-import { getAllDerivesFromEdges, openIndexDb } from "../../src/storage/index-db.js";
+import { getAllDerivesFromEdges, type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const BY = "agent:curation-loop";
@@ -585,5 +585,160 @@ describe("derives_from direction verdict", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+// #236 quick win 3: the sqlite mirror becomes the authoritative READ path.
+// edges.jsonl stays the canonical store and only writer input; the table is a
+// rebuildable cache kept coherent by write-through and a jsonl stat check.
+describe("sql-authoritative edge reads", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  function withDb<T>(fn: (db: IndexDb) => T): T {
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    const db = opened.value;
+    try {
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  }
+
+  it("observeEdge writes through to the sqlite index", async () => {
+    await seedAndVote(vault);
+    const rows = withDb((db) => getAllDerivesFromEdges(db));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.from_path).toBe("a.md");
+    expect(rows[0]?.to_path).toBe("b.md");
+    expect(rows[0]?.k_survived).toBe(1);
+  });
+
+  it("contestEdge writes through: row revoked, contest trail in columns", async () => {
+    await seedAndVote(vault);
+    const contested = await contestEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      contestedBy: BY,
+      reason: "re-derivation failed, premise unchanged",
+      at: T2,
+    });
+    expect(contested.ok).toBe(true);
+    const rows = withDb((db) => getAllDerivesFromEdges(db));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("revoked");
+    expect(rows[0]?.observations).toBe(2);
+    expect(rows[0]?.contested_at).toBe(T2);
+    expect(rows[0]?.contest_reason).toBe("re-derivation failed, premise unchanged");
+  });
+
+  it("reads are served from the sqlite index, not the jsonl", async () => {
+    await seedAndVote(vault);
+    // Empty the materialized table while leaving edges.jsonl and its freshness
+    // marker untouched. An authoritative SQL read sees no edge; a jsonl read
+    // would still see one.
+    withDb((db) => db.exec("DELETE FROM derives_from_edges;"));
+    const got = await getEdge(vault, "a.md", "b.md");
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.value).toBeNull();
+    const listed = await listEdges(vault);
+    expect(listed.ok).toBe(true);
+    if (listed.ok) expect(listed.value).toHaveLength(0);
+  });
+
+  it("rebuildEdgesIndex records the jsonl freshness marker (next read trusts the table)", async () => {
+    await seedAndVote(vault);
+    withDb((db) => {
+      const rebuilt = rebuildEdgesIndex(db, vault, new Date(T1));
+      expect(rebuilt.ok).toBe(true);
+      db.exec("DELETE FROM derives_from_edges;");
+    });
+    const listed = await listEdges(vault, {}, new Date(T2));
+    expect(listed.ok).toBe(true);
+    if (listed.ok) expect(listed.value).toHaveLength(0);
+  });
+
+  it("an external append to edges.jsonl is picked up on the next read (self-heal)", async () => {
+    await seedAndVote(vault);
+    const line = JSON.stringify({
+      kind: "observe",
+      from: "c.md",
+      to: "d.md",
+      at: T2,
+      by: BY,
+      blind: false,
+      axis: null,
+    });
+    appendFileSync(edgesPath(vault), `${line}\n`);
+    const listed = await listEdges(vault, {}, new Date(T2));
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.value).toHaveLength(2);
+    expect(listed.value.some((e) => e.fromPath === "c.md" && e.toPath === "d.md")).toBe(true);
+  });
+
+  it("status filter recomputes aged status: stored trigger-bearing decayed past the floor reads as candidate", async () => {
+    await seedAndVote(vault); // k=1, aging clock at T1
+    withDb((db) => {
+      // Materialize at T1: strength 1.0 → stored status "trigger-bearing".
+      const rebuilt = rebuildEdgesIndex(db, vault, new Date(T1));
+      expect(rebuilt.ok).toBe(true);
+    });
+    // 100 days later the aged strength is ~0.46 < 0.5: the edge is a candidate
+    // now, whatever the stored column says. A naive WHERE status = ? gets both
+    // of these wrong.
+    const candidates = await listEdges(vault, { status: "candidate" }, DAYS_100);
+    expect(candidates.ok).toBe(true);
+    if (candidates.ok) expect(candidates.value.map((e) => e.fromPath)).toContain("a.md");
+    const bearing = await listEdges(vault, { status: "trigger-bearing" }, DAYS_100);
+    expect(bearing.ok).toBe(true);
+    if (bearing.ok) expect(bearing.value).toHaveLength(0);
+  });
+
+  it("falls back to the jsonl when the index db cannot be opened (read-only vault)", async () => {
+    await seedAndVote(vault);
+    const daftariDir = join(vault, ".daftari");
+    for (const f of ["index.db", "index.db-wal", "index.db-shm"]) {
+      rmSync(join(daftariDir, f), { force: true });
+    }
+    chmodSync(daftariDir, 0o555);
+    try {
+      const listed = await listEdges(vault, {}, new Date(T2));
+      expect(listed.ok).toBe(true);
+      if (listed.ok) {
+        expect(listed.value).toHaveLength(1);
+        expect(listed.value[0]?.fromPath).toBe("a.md");
+      }
+      const got = await getEdge(vault, "a.md", "b.md", new Date(T2));
+      expect(got.ok).toBe(true);
+      if (got.ok) expect(got.value?.kSurvived).toBe(1);
+    } finally {
+      chmodSync(daftariDir, 0o755);
+    }
+  });
+
+  it("trail extras survive the sql read path", async () => {
+    await seedAndVote(vault);
+    await contestEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      contestedBy: BY,
+      reason: "case-2 contradiction",
+      at: T2,
+    });
+    const got = await getEdge(vault, "a.md", "b.md", new Date(T2));
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    expect(got.value?.status).toBe("revoked");
+    expect(got.value?.strength).toBe(0);
+    expect(got.value?.observations).toBe(2);
+    expect(got.value?.contestedAt).toBe(T2);
+    expect(got.value?.contestReason).toBe("case-2 contradiction");
   });
 });
