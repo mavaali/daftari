@@ -497,3 +497,116 @@ describe("vault_ratify", () => {
     expect(again.ok).toBe(false);
   });
 });
+
+// Tier 0 ratify gate (#232 via #236 QW1): an approval that would introduce a
+// certain structural defect is refused, and the action stays pending — same
+// retryable posture as a dispatch failure. Direct writes stay unblocked;
+// curation stays advisory. Only the ratification control point gates.
+describe("tier 0 ratify gate", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  async function seedDoc(
+    path: string,
+    over: { status?: string; sources?: string[]; collection?: string } = {},
+  ): Promise<void> {
+    const written = await vaultWrite(vault, {
+      path,
+      body: `# Doc\n\nBody of ${path}.\n`,
+      frontmatter: draftFrontmatter({
+        status: over.status ?? "draft",
+        sources: over.sources ?? [],
+        collection: over.collection ?? "pricing",
+      }),
+      agent: "agent:seed",
+    });
+    if (!written.ok) throw written.error;
+  }
+
+  async function stageAndApprove(
+    actionType: string,
+    targetPath: string,
+    access?: Parameters<typeof vaultRatify>[2],
+  ) {
+    const staged = await stageAction(vault, {
+      actionType: actionType as never,
+      targetPath,
+      proposedBy: AGENT,
+      rationale: "Tier 0 gate test.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) throw staged.error;
+    const result = await vaultRatify(
+      vault,
+      { id: staged.value.id, decision: "approve", principal: HUMAN },
+      access,
+    );
+    return { id: staged.value.id, result };
+  }
+
+  it("refuses to promote a doc whose source is still draft, leaving the action pending", async () => {
+    await seedDoc("pricing/dep.md", { status: "draft" });
+    await seedDoc("pricing/target.md", { status: "draft", sources: ["pricing/dep.md"] });
+    const { id, result } = await stageAndApprove("promote", "pricing/target.md");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("pricing/dep.md");
+    const after = await getStagedActionById(vault, id);
+    expect(after.ok && after.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("refuses to promote a doc with a broken vault-path source ref", async () => {
+    await seedDoc("pricing/target2.md", { status: "draft", sources: ["pricing/vanished.md"] });
+    const { result } = await stageAndApprove("promote", "pricing/target2.md");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("pricing/vanished.md");
+  }, 60_000);
+
+  it("promotes cleanly when sources are canonical or external provenance", async () => {
+    await seedDoc("pricing/base.md", { status: "canonical" });
+    await seedDoc("pricing/t3.md", {
+      status: "draft",
+      sources: ["pricing/base.md", "interview with the platform team"],
+    });
+    const { result } = await stageAndApprove("promote", "pricing/t3.md");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.applied).toBe(true);
+  }, 60_000);
+
+  it("refuses to deprecate a doc canonical dependents rely on, naming visible ones", async () => {
+    await seedDoc("pricing/base2.md", { status: "canonical" });
+    await seedDoc("pricing/cert.md", { status: "canonical", sources: ["pricing/base2.md"] });
+    const { id, result } = await stageAndApprove("deprecate", "pricing/base2.md");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("pricing/cert.md");
+    const after = await getStagedActionById(vault, id);
+    expect(after.ok && after.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("coarsens dependents in unreadable collections instead of naming them (#217)", async () => {
+    await seedDoc("pricing/base3.md", { status: "canonical" });
+    await seedDoc("intel/hidden-cert.md", {
+      status: "canonical",
+      sources: ["pricing/base3.md"],
+      collection: "intel",
+    });
+    const restricted = {
+      user: "human:reviewer",
+      roleName: "pricing-ratifier",
+      role: { read: ["pricing"], write: [], promote: false, ratify: true },
+    };
+    const { result } = await stageAndApprove("deprecate", "pricing/base3.md", restricted);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).not.toContain("intel/hidden-cert.md");
+    expect(result.error.message).toContain("some");
+  }, 60_000);
+});

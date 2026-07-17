@@ -48,8 +48,32 @@ export const LINT_CHECKS = [
   "deprecatedStillLinked",
   "unansweredQuestions",
   "tierDemotions",
+  "brokenSourceRefs",
+  "lifecycleViolations",
+  "invalidFrontmatter",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
+
+// The Tier 0 subset (#232 via #236 QW1): structural checks whose findings are
+// CERTAIN, not judgment calls — referential integrity, lifecycle consistency,
+// schema conformance. Split out because the `daftari lint` CI gate and the
+// ratify-time gate key off these counts; the other checks stay advisory-only.
+export const TIER0_CHECKS = [
+  "brokenSourceRefs",
+  "lifecycleViolations",
+  "invalidFrontmatter",
+] as const satisfies readonly LintCheckName[];
+export type Tier0CheckName = (typeof TIER0_CHECKS)[number];
+
+// A frontmatter `sources` entry may legitimately cite non-vault material
+// (books, interviews, URLs) — buildReverseSourceMap drops those silently by
+// design. Referential integrity therefore only judges entries that LOOK like
+// vault paths: a slash or a .md suffix signals intent to reference a vault
+// doc, and such a ref that resolves to nothing is a certain defect.
+export function isVaultPathLike(raw: string): boolean {
+  if (/^(https?:|mailto:)/i.test(raw)) return false;
+  return raw.includes("/") || raw.endsWith(".md");
+}
 
 export interface LintFinding {
   path: string;
@@ -185,7 +209,12 @@ export async function runLint(
   vaultRoot: string,
   opts: LintOptions = {},
 ): Promise<Result<LintReport, Error>> {
-  const loaded = await loadDocuments(vaultRoot);
+  // Files the loader had to skip (unreadable / unparseable frontmatter) are
+  // Tier 0 schema-conformance findings — collect them instead of losing them.
+  const skipped: LintFinding[] = [];
+  const loaded = await loadDocuments(vaultRoot, (path, reason) =>
+    skipped.push({ path, detail: reason }),
+  );
   if (!loaded.ok) return loaded;
   const allDocs = loaded.value;
   const pathVisible = opts.pathVisible;
@@ -216,7 +245,15 @@ export async function runLint(
     deprecatedStillLinked: [],
     unansweredQuestions: [],
     tierDemotions: [],
+    brokenSourceRefs: [],
+    lifecycleViolations: [],
+    invalidFrontmatter: [],
   };
+
+  // Tier 0 resolution indexes over the VISIBLE doc set: refs judge from the
+  // caller's vantage (#217) — a hidden target reads as nonexistent, which is
+  // consistent with nonexistence and therefore leak-free.
+  const { byPath: pathIndex, byBasename: basenameIndex } = buildPathIndexes(docs);
 
   for (const doc of docs) {
     const fm = doc.frontmatter;
@@ -291,6 +328,63 @@ export async function runLint(
           `any document: ${orphanQuestions.join("; ")}`,
       });
     }
+
+    // 7. Tier 0 referential integrity: path-shaped sources and superseded_by
+    // that resolve to nothing. Bare provenance names are exempt (they cite
+    // non-vault material by design — see isVaultPathLike).
+    const brokenRefs: string[] = [];
+    const resolvedSources: string[] = [];
+    for (const raw of fm.sources) {
+      const target = resolveLink(raw, doc.path, pathIndex, basenameIndex);
+      if (target && target !== doc.path) {
+        resolvedSources.push(target);
+      } else if (isVaultPathLike(raw)) {
+        brokenRefs.push(raw);
+      }
+    }
+    if (fm.superseded_by) {
+      const target = resolveLink(fm.superseded_by, doc.path, pathIndex, basenameIndex);
+      if (!target || target === doc.path) brokenRefs.push(fm.superseded_by);
+    }
+    if (brokenRefs.length > 0) {
+      checks.brokenSourceRefs.push({
+        path: doc.path,
+        detail: `vault-path ref(s) resolve to nothing: ${brokenRefs.join(", ")}`,
+      });
+    }
+
+    // 8. Tier 0 lifecycle consistency: a canonical doc depending (sources
+    // channel) on a doc that is not itself canonical — the #232 "certified
+    // artifact depending on a draft/deprecated unit" rule.
+    if (fm.status === "canonical") {
+      const offending = resolvedSources
+        .map((target) => ({ target, status: byPath.get(target)?.frontmatter.status }))
+        .filter((s) => s.status !== undefined && s.status !== "canonical");
+      if (offending.length > 0) {
+        checks.lifecycleViolations.push({
+          path: doc.path,
+          detail:
+            "canonical doc depends on non-canonical source(s): " +
+            offending.map((s) => `${s.target} (${s.status})`).join(", "),
+        });
+      }
+    }
+
+    // 9. Tier 0 schema conformance (parse-level failures join below): the doc
+    // parsed but its frontmatter failed schema validation.
+    if (!doc.validation.valid) {
+      checks.invalidFrontmatter.push({
+        path: doc.path,
+        detail: doc.validation.issues.map((i) => `${i.field}: ${i.message}`).join("; "),
+      });
+    }
+  }
+
+  // Unreadable / unparseable files, filtered to the caller's vantage like
+  // every other finding (#217).
+  for (const s of skipped) {
+    if (pathVisible && !pathVisible(s.path)) continue;
+    checks.invalidFrontmatter.push(s);
   }
 
   // 7. Tier demotions (#141): every provenance entry that moved `tier` off

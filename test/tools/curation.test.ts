@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../../src/consolidate/constants.js";
+import { LINT_CHECKS } from "../../src/curation/lint.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension, listTensions, resolveTension } from "../../src/curation/tension.js";
 import {
@@ -36,7 +37,7 @@ describe("curation tools", () => {
       if (!result.ok) return;
       expect(result.value.filter).toBeNull();
       expect(result.value.totalFindings).toBe(5);
-      expect(Object.keys(result.value.checks)).toHaveLength(7);
+      expect(Object.keys(result.value.checks)).toHaveLength(LINT_CHECKS.length);
     });
 
     it("narrows the report to a single check when filtered", async () => {

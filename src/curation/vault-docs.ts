@@ -25,9 +25,15 @@ export interface LoadedDoc {
 }
 
 // Loads every markdown file under the vault root, returning frontmatter +
-// body for each. Files that fail to parse or to read are silently skipped —
-// the curation surface should never crash because a single file is malformed.
-export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
+// body for each. Files that fail to parse or to read are skipped — the
+// curation surface should never crash because a single file is malformed —
+// but a skip is reported through `onSkip` when the caller passes one, so a
+// surface that must SEE malformed files (Tier 0 schema conformance, #232)
+// isn't blind to them.
+export async function loadDocuments(
+  vaultRoot: string,
+  onSkip?: (path: string, reason: string) => void,
+): Promise<Result<LoadedDoc[], Error>> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return list;
 
@@ -36,9 +42,15 @@ export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc
     const resolved = resolveVaultPath(vaultRoot, relPath);
     if (!resolved.ok) continue;
     const file = await readFile(resolved.value.absPath);
-    if (!file.ok) continue;
+    if (!file.ok) {
+      onSkip?.(relPath, `unreadable: ${file.error.message}`);
+      continue;
+    }
     const parsed = parseDocument(file.value);
-    if (!parsed.ok) continue;
+    if (!parsed.ok) {
+      onSkip?.(relPath, `unparseable frontmatter: ${parsed.error.message}`);
+      continue;
+    }
     docs.push({
       path: relPath,
       frontmatter: parsed.value.frontmatter,
