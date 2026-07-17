@@ -13,7 +13,7 @@
 // (the §11.4 write tools). A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
 
-import { type AccessContext, canRatify, canWrite } from "../access/rbac.js";
+import { type AccessContext, canRatify, canRead, canWrite } from "../access/rbac.js";
 import {
   getStagedActionById,
   nowISO,
@@ -22,6 +22,9 @@ import {
   type StagedActionType,
   stageAction,
 } from "../curation/staged-actions.js";
+import { bucketHiddenDownstream } from "../curation/tension-blast.js";
+import { tier0DeprecateGate, tier0PromoteGate } from "../curation/tier0.js";
+import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
@@ -219,6 +222,63 @@ export async function vaultRatify(
       ? (action.proposedDiff as Record<string, unknown>)
       : {};
 
+  // Tier 0 ratify gate (#232; quick win 1 of #236). Ratification is already a
+  // gate, so blocking here does not violate the advisory-curation rule — the
+  // direct write tools stay unblocked. A blocked approval is an error, which
+  // leaves the action pending (same contract as a dispatch failure): fix the
+  // underlying state and re-approve, or reject. Under RBAC the error names
+  // only docs the ratifier can read; a hidden remainder is coarsened
+  // (#217 B′), never reported as an exact count.
+  if (action.actionType === "promote" || action.actionType === "deprecate") {
+    const loaded = await loadDocuments(vaultRoot);
+    // Fail closed: without the doc set there is no gate, so no dispatch.
+    if (!loaded.ok) return loaded;
+    const visible = access
+      ? (d: LoadedDoc) => canRead(access.role, d.frontmatter.collection)
+      : undefined;
+
+    if (action.actionType === "promote") {
+      const gate = tier0PromoteGate(loaded.value, action.targetPath, visible);
+      const problems = [...gate.violations];
+      if (gate.hiddenConflicts > 0) {
+        problems.push(
+          `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
+        );
+      }
+      if (problems.length > 0) {
+        return err(
+          new Error(
+            `vault_ratify: tier-0 gate blocked promote of ${action.targetPath}: ` +
+              `${problems.join("; ")} — the action stays pending`,
+          ),
+        );
+      }
+    } else if (typeof diff.superseded_by !== "string") {
+      // A deprecate carrying a superseded_by hint forwards dependents to a
+      // successor (same as supersede) — only an unforwarded deprecate can
+      // strand canonical dependents on a retired source.
+      const gate = tier0DeprecateGate(loaded.value, action.targetPath, visible);
+      const problems: string[] = [];
+      if (gate.dependents.length > 0) {
+        problems.push(`cited as a source by canonical: ${gate.dependents.join(", ")}`);
+      }
+      if (gate.hiddenDependents > 0) {
+        problems.push(
+          `hidden canonical dependents: ${bucketHiddenDownstream(gate.hiddenDependents)}`,
+        );
+      }
+      if (problems.length > 0) {
+        return err(
+          new Error(
+            `vault_ratify: tier-0 gate blocked deprecate of ${action.targetPath}: ` +
+              `${problems.join("; ")} — supersede with a successor or update the ` +
+              `dependents first; the action stays pending`,
+          ),
+        );
+      }
+    }
+  }
+
   let dispatched: Result<WriteResult, Error>;
   switch (action.actionType as StagedActionType) {
     case "promote":
@@ -409,7 +469,12 @@ export const stagedActionTools: ToolDefinition[] = [
       "vault_deprecate, supersede → vault_supersede, confidence-up → " +
       "vault_set_confidence, merge → vault_merge) and auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
-      "action pending. Errors if the id is unknown or the action is not pending " +
+      "action pending. Approving a promote or an unforwarded deprecate runs the " +
+      "tier-0 gate first (#232): if applying would create a certain structural " +
+      "violation (broken source refs, canonical citing draft/deprecated/archived, " +
+      "schema-invalid frontmatter, stranded canonical dependents), the approval " +
+      "errors and the action stays pending — fix the state and re-approve, or " +
+      "reject. Errors if the id is unknown or the action is not pending " +
       "(already decided or expired). Requires the role's 'ratify' grant. If " +
       "the vault runs shadow_mode, an approved dispatch is computed and " +
       "shadow-logged but NOT applied — the result carries shadow: true and " +

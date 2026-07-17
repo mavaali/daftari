@@ -470,6 +470,144 @@ describe("vault_ratify", () => {
     expect(action.value.decidedByPrincipal).toBe("agent:curation-loop");
   });
 
+  it("tier-0 gate blocks promoting a doc that cites a draft source", async () => {
+    await seedDraft(vault, "pricing/base.md");
+    await seedDraft(vault, "pricing/dep.md", { sources: ["pricing/base.md"] });
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/dep.md",
+      proposedBy: AGENT,
+      rationale: "Matured — but its source has not.",
+      proposedDiff: { status: { from: "draft", to: "canonical" } },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked promote");
+    expect(result.error.message).toContain("source pricing/base.md is draft");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate passes a promote whose source is canonical", async () => {
+    await seedDraft(vault, "pricing/base.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/dep.md", { sources: ["pricing/base.md"] });
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/dep.md",
+      proposedBy: AGENT,
+      rationale: "Matured, source certified.",
+      proposedDiff: { status: { from: "draft", to: "canonical" } },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.applied).toBe(true);
+  }, 60_000);
+
+  it("tier-0 gate blocks an unforwarded deprecate with canonical dependents", async () => {
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/user.md", {
+      status: "canonical",
+      sources: ["pricing/lib.md"],
+    });
+    const staged = await stageAction(vault, {
+      actionType: "deprecate",
+      targetPath: "pricing/lib.md",
+      proposedBy: AGENT,
+      rationale: "Retire it.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked deprecate");
+    expect(result.error.message).toContain("pricing/user.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate passes a deprecate that forwards dependents via superseded_by", async () => {
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/lib2.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/user.md", {
+      status: "canonical",
+      sources: ["pricing/lib.md"],
+    });
+    const staged = await stageAction(vault, {
+      actionType: "deprecate",
+      targetPath: "pricing/lib.md",
+      proposedBy: AGENT,
+      rationale: "Replaced.",
+      proposedDiff: { superseded_by: "pricing/lib2.md" },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/lib.md");
+    expect(read.ok && read.value.frontmatter.status).toBe("deprecated");
+  }, 60_000);
+
+  it("tier-0 gate coarsens dependents hidden from the ratifier's role (#217 B′)", async () => {
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "intel/user.md", {
+      status: "canonical",
+      collection: "intel",
+      sources: ["pricing/lib.md"],
+    });
+    const staged = await stageAction(vault, {
+      actionType: "deprecate",
+      targetPath: "pricing/lib.md",
+      proposedBy: AGENT,
+      rationale: "Retire it.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) throw staged.error;
+
+    const pricingRatifier = {
+      user: "human:mihir",
+      roleName: "pricing-ratifier",
+      role: { read: ["pricing"], write: ["*"], promote: true, ratify: true },
+    };
+    const result = await vaultRatify(
+      vault,
+      { id: staged.value.id, decision: "approve", principal: HUMAN },
+      pricingRatifier,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("hidden canonical dependents: some");
+    expect(result.error.message).not.toContain("intel/user.md");
+  }, 60_000);
+
   it("errors when ratifying an unknown id", async () => {
     const result = await vaultRatify(vault, {
       id: "stage-999",

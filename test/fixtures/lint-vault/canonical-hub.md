@@ -20,4 +20,6 @@ tags: [lint, hub]
 This canonical document links out to several others so they are not orphans:
 [[stale-doc]], [[old-draft]], and [[stagnant-low-conf]]. It also still links to
 a deprecated note — [old SKUs](deprecated-linked.md) — which the lint engine
-should flag as a deprecated-still-linked tension.
+should flag as a deprecated-still-linked tension. The tier-0 fixtures are
+linked here too so they stay non-orphans: [[schema-invalid]],
+[[cites-missing]], and [[cites-draft]].

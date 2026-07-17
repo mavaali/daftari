@@ -64,7 +64,7 @@ describe("staleness", () => {
       const result = await listStaleFiles(LINT_VAULT, 0);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value).toHaveLength(6);
+      expect(result.value).toHaveLength(9);
       expect(result.value[0]?.path).toBe("stale-doc.md");
     });
   });
