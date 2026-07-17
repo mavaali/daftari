@@ -13,7 +13,7 @@
 // (the §11.4 write tools). A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
 
-import { type AccessContext, canRatify, canRead, canWrite } from "../access/rbac.js";
+import { type AccessContext, canRatify, canRead, canWrite, isProposeOnly } from "../access/rbac.js";
 import {
   getStagedActionById,
   nowISO,
@@ -200,6 +200,19 @@ export async function vaultRatify(
   // re-check their own canWrite/canPromote on dispatch.
   if (access && !canRatify(access.role)) {
     return err(new Error(`access denied: role '${access.roleName}' cannot ratify staged actions`));
+  }
+  // A propose-only role must never ratify, even if a hand-built role grants
+  // both (config load rejects the combination, but AccessContexts constructed
+  // in code bypass that). Without this, approving a `write` action would be
+  // coerced by vaultWrite's propose-only path into staging a NEW proposal
+  // while the original got marked ratified/applied — a silent no-op.
+  if (access && isProposeOnly(access.role)) {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' is propose-only — it cannot ` +
+          `ratify staged actions`,
+      ),
+    );
   }
 
   const id = requireString(args, "id", "vault_ratify");

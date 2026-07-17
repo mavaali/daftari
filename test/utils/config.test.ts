@@ -634,5 +634,25 @@ describe("loadConfig — schema extensions", () => {
       if (result.ok) return;
       expect(result.error.message).toContain("propose_only");
     });
+
+    it("rejects propose_only combined with ratify (a proposer does not decide)", () => {
+      writeConfig(
+        "roles:\n  confused:\n    read: ['*']\n    ratify: true\n    propose_only: true\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("ratify and propose_only");
+    });
+
+    it("rejects propose_only combined with promote (promotion is a direct write)", () => {
+      writeConfig(
+        "roles:\n  confused:\n    read: ['*']\n    promote: true\n    propose_only: true\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("promote and propose_only");
+    });
   });
 });

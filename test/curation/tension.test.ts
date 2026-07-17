@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addTension,
   agingTier,
+  LOGGABLE_TENSION_KINDS,
   listTensions,
   resolveTension,
   STALE_TIER_LINT_COPY,
@@ -36,6 +37,24 @@ describe("tension", () => {
   it("returns an empty list when nothing has been logged", async () => {
     const result = await listTensions(vault);
     expect(result.ok && result.value).toEqual([]);
+  });
+
+  it("accepts an inter-proposal tension only as a self-tension (#235)", async () => {
+    const arbitrary = await addTension(vault, {
+      ...sampleInput,
+      kind: "inter-proposal" as const,
+    });
+    expect(arbitrary.ok).toBe(false);
+    if (arbitrary.ok) return;
+    expect(arbitrary.error.message).toContain("self-tension");
+
+    const self = await addTension(vault, {
+      ...sampleInput,
+      kind: "inter-proposal" as const,
+      sourceA: "pricing/contested.md",
+      sourceB: "pricing/contested.md",
+    });
+    expect(self.ok).toBe(true);
   });
 
   it("appends a tension with default date and unresolved status", async () => {
@@ -413,6 +432,10 @@ describe("decided_by_principal", () => {
 });
 
 describe("STALE_TIER_LINT_COPY", () => {
+  it("keeps inter-proposal off the caller-loggable set but addable as a self-tension (#235)", () => {
+    expect([...LOGGABLE_TENSION_KINDS]).toEqual(["temporal", "factual", "interpretive"]);
+  });
+
   it("exposes every loggable kind and omits unspecified", () => {
     expect(Object.keys(STALE_TIER_LINT_COPY).sort()).toEqual([
       "factual",

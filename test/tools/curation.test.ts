@@ -111,6 +111,23 @@ describe("curation tools", () => {
       });
       expect(result.ok).toBe(false);
     });
+
+    it("rejects the system-generated inter-proposal kind (#235)", async () => {
+      // inter-proposal tensions are minted only by the staged-actions
+      // conflict check; the public logging tool must not accept the kind.
+      const result = await vaultTensionLog(vault, {
+        title: "Manually minted",
+        sourceA: "pricing/a.md",
+        claimA: "x",
+        sourceB: "pricing/b.md",
+        claimB: "y",
+        agent: "agent:claude-code",
+        kind: "inter-proposal",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("must be one of");
+    });
   });
 
   describe("vault_tension_clusters", () => {

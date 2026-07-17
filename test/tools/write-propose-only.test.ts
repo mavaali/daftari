@@ -179,6 +179,46 @@ describe("propose-only role (#235)", () => {
     expect(deprecate.error.message).toContain("propose-only");
   });
 
+  it("a propose-only role cannot ratify — the write dispatch is never coerced into a re-stage", async () => {
+    // Regression for the review finding on #249: a hand-built context with
+    // both ratify and proposeOnly (config load rejects the combo, code can
+    // still construct it) must be denied up front. Otherwise approving a
+    // write action would re-stage a NEW proposal via vaultWrite's coercion
+    // while marking the ORIGINAL ratified/applied with nothing written.
+    const staged = await vaultWrite(
+      vault,
+      {
+        path: "pricing/proposed.md",
+        body: "# Proposed\n\nContent.\n",
+        frontmatter: frontmatter(),
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const confused = {
+      user: "agent:proposer",
+      roleName: "confused",
+      role: { read: ["*"], write: ["*"], promote: false, ratify: true, proposeOnly: true },
+    };
+    const ratified = await vaultRatify(
+      vault,
+      { id: staged.value.staged_id, decision: "approve", principal: "agent:proposer" },
+      confused,
+    );
+    expect(ratified.ok).toBe(false);
+    if (ratified.ok) return;
+    expect(ratified.error.message).toContain("propose-only");
+
+    // The original action is untouched, no phantom second proposal exists.
+    const action = await getStagedActionById(vault, staged.value.staged_id as string);
+    expect(action.ok && action.value?.status).toBe("pending");
+    const all = await listStagedActions(vault);
+    expect(all.ok && all.value).toHaveLength(1);
+  });
+
   it("still respects the write grant: cannot propose into an unwritable collection", async () => {
     const scoped = {
       user: "agent:proposer",

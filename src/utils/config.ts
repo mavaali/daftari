@@ -215,6 +215,26 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     proposeOnly = obj.propose_only;
   }
 
+  // Contradictory grants fail loud at load: a propose-only role proposes, it
+  // does not decide. Allowing both would let vault_ratify's write dispatch be
+  // coerced back into a NEW proposal while marking the original ratified.
+  if (proposeOnly && ratify) {
+    return err(
+      new Error(
+        `role '${name}' cannot set both ratify and propose_only — a ` +
+          `propose-only role proposes, it does not decide`,
+      ),
+    );
+  }
+  if (proposeOnly && promote) {
+    return err(
+      new Error(
+        `role '${name}' cannot set both promote and propose_only — promotion ` +
+          `is a direct write, which propose-only forbids`,
+      ),
+    );
+  }
+
   return ok({
     read: read.value,
     write: write.value,
