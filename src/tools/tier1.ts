@@ -65,83 +65,110 @@ export async function vaultTier1(
   const unit = canonicalRelPath(vaultRoot, args.unit);
   if (!unit.ok) return unit;
 
-  // The changed-field set: explicit override, else the unit's latest logged
-  // write. Explicit lets a caller ask "what WOULD touching these fields
-  // affect" before writing anything.
-  let changedFields: string[];
-  let changeSource: "provenance" | "explicit";
-  if (args.changed_fields !== undefined && args.changed_fields !== null) {
-    if (
-      !Array.isArray(args.changed_fields) ||
-      !args.changed_fields.every((f) => typeof f === "string")
-    ) {
-      return err(new Error("vault_tier1 'changed_fields' must be an array of strings"));
-    }
-    changedFields = contentChangedFields(args.changed_fields);
-    changeSource = "explicit";
-  } else {
-    const log = await readProvenanceLog(vaultRoot);
-    if (!log.ok) return log;
-    const writes = log.value.filter((e) => e.file === unit.value && e.action !== "rejected_stale");
-    const latest = writes[writes.length - 1];
-    if (!latest) {
-      return err(
+  // One index handle serves both readability checks below; every return path
+  // runs through the finally.
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    // Anchor readability is decided BEFORE anything is derived from the unit.
+    // changed_fields comes from the unit's provenance — metadata about a doc
+    // the caller may not read — and the no-provenance error would otherwise
+    // confirm whether an unreadable path has write history. An unreadable
+    // anchor must behave byte-identically to a nonexistent one on every path.
+    const anchorReadable = access ? sourceReadable(db, access, unit.value) : true;
+    const noProvenanceError = () =>
+      err(
         new Error(
           `vault_tier1: no provenance entry for ${unit.value} — pass 'changed_fields' ` +
             `explicitly to describe the change`,
         ),
       );
+
+    // The changed-field set: explicit override, else the unit's latest logged
+    // write. Explicit lets a caller ask "what WOULD touching these fields
+    // affect" before writing anything.
+    let changedFields: string[];
+    let changeSource: "provenance" | "explicit";
+    if (args.changed_fields !== undefined && args.changed_fields !== null) {
+      if (
+        !Array.isArray(args.changed_fields) ||
+        !args.changed_fields.every((f) => typeof f === "string")
+      ) {
+        return err(new Error("vault_tier1 'changed_fields' must be an array of strings"));
+      }
+      changedFields = contentChangedFields(args.changed_fields);
+      changeSource = "explicit";
+    } else {
+      // Unreadable anchor: the exact error a provenance-less path produces —
+      // the log is never read, so the response cannot depend on whether the
+      // hidden path has history.
+      if (!anchorReadable) return noProvenanceError();
+      const log = await readProvenanceLog(vaultRoot);
+      if (!log.ok) return log;
+      const writes = log.value.filter(
+        (e) => e.file === unit.value && e.action !== "rejected_stale",
+      );
+      const latest = writes[writes.length - 1];
+      if (!latest) return noProvenanceError();
+      changedFields = changedFieldsFromProvenance(latest);
+      changeSource = "provenance";
     }
-    changedFields = changedFieldsFromProvenance(latest);
-    changeSource = "provenance";
-  }
 
-  // Dependents per edge class.
-  const allConsumes = await listConsumesEdges(vaultRoot);
-  if (!allConsumes.ok) return allConsumes;
-  const compiled = reverseConsumes(allConsumes.value, unit.value);
-
-  const loaded = await loadDocuments(vaultRoot);
-  if (!loaded.ok) return loaded;
-  const declaredDependents = [...(buildReverseSourceMap(loaded.value).get(unit.value) ?? [])];
-
-  // derives_from: `to` is the premise, so the unit's dependents are the
-  // from-paths of live (non-revoked) edges pointing at it.
-  const earned = await listEdges(vaultRoot, { toPath: unit.value });
-  if (!earned.ok) return earned;
-  const earnedDependents = earned.value
-    .filter((e) => e.status !== "revoked")
-    .map((e) => e.fromPath);
-
-  let verdicts = tier1Dispatch({
-    unit: unit.value,
-    changedFields,
-    compiled,
-    declaredDependents,
-    earnedDependents,
-  });
-
-  // #217 decision A: both endpoints readable or the verdict is omitted —
-  // from the list AND the summary counts.
-  if (access) {
-    const db = openIndexForAccessOrNull(vaultRoot);
-    try {
-      const anchorReadable = sourceReadable(db, access, unit.value);
-      verdicts = anchorReadable
-        ? verdicts.filter((v) => sourceReadable(db, access, v.artifact))
-        : [];
-    } finally {
-      db?.close();
+    // Unreadable anchor with caller-supplied changed_fields: the verdict
+    // filter below would empty the list regardless, so skip the vault-wide
+    // scans and return the same dependent-less result a nonexistent anchor
+    // produces.
+    if (!anchorReadable) {
+      return ok({
+        unit: unit.value,
+        changed_fields: changedFields,
+        change_source: changeSource,
+        verdicts: [],
+        summary: tier1Summary([]),
+      });
     }
-  }
 
-  return ok({
-    unit: unit.value,
-    changed_fields: changedFields,
-    change_source: changeSource,
-    verdicts,
-    summary: tier1Summary(verdicts),
-  });
+    // Dependents per edge class.
+    const allConsumes = await listConsumesEdges(vaultRoot);
+    if (!allConsumes.ok) return allConsumes;
+    const compiled = reverseConsumes(allConsumes.value, unit.value);
+
+    const loaded = await loadDocuments(vaultRoot);
+    if (!loaded.ok) return loaded;
+    const declaredDependents = [...(buildReverseSourceMap(loaded.value).get(unit.value) ?? [])];
+
+    // derives_from: `to` is the premise, so the unit's dependents are the
+    // from-paths of live (non-revoked) edges pointing at it.
+    const earned = await listEdges(vaultRoot, { toPath: unit.value });
+    if (!earned.ok) return earned;
+    const earnedDependents = earned.value
+      .filter((e) => e.status !== "revoked")
+      .map((e) => e.fromPath);
+
+    let verdicts = tier1Dispatch({
+      unit: unit.value,
+      changedFields,
+      compiled,
+      declaredDependents,
+      earnedDependents,
+    });
+
+    // #217 decision A: both endpoints readable or the verdict is omitted —
+    // from the list AND the summary counts. (Only readable anchors reach
+    // here — the unreadable case returned above.)
+    if (access) {
+      verdicts = verdicts.filter((v) => sourceReadable(db, access, v.artifact));
+    }
+
+    return ok({
+      unit: unit.value,
+      changed_fields: changedFields,
+      change_source: changeSource,
+      verdicts,
+      summary: tier1Summary(verdicts),
+    });
+  } finally {
+    db?.close();
+  }
 }
 
 export const tier1Tools: ToolDefinition[] = [
