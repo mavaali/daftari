@@ -1,0 +1,35 @@
+# Automatic security review on every PR.
+#
+# Claude analyzes the diff for injection, auth/ACL, path-traversal, and
+# data-exposure issues and comments findings on the PR. Particularly
+# relevant here: RBAC enforcement and the existence-disclosure invariants
+# (omission over redaction, no existence leak) are security surfaces.
+# Requires the same ANTHROPIC_API_KEY repo secret as claude-code-review.
+
+name: Security Review
+
+# Runs once when the PR is opened or leaves draft — not on every push.
+# Findings can go stale on a heavily-reworked PR; re-run manually from the
+# Actions tab if the diff changes substantially after review.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  security-review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Run security review
+        uses: anthropics/claude-code-security-review@main
+        with:
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          comment-pr: true
+          claude-model: claude-sonnet-5

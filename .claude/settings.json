@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build)",
+      "Bash(npm run lint)",
+      "Bash(npm test)",
+      "Bash(npx vitest run *)",
+      "mcp__github__pull_request_read"
+    ]
+  }
+}
