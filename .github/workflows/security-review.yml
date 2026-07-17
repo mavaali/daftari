@@ -8,9 +8,12 @@
 
 name: Security Review
 
+# Runs once when the PR is opened or leaves draft — not on every push.
+# Findings can go stale on a heavily-reworked PR; re-run manually from the
+# Actions tab if the diff changes substantially after review.
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review]
+    types: [opened, ready_for_review]
 
 jobs:
   security-review:
@@ -29,3 +32,4 @@ jobs:
         with:
           claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           comment-pr: true
+          claude-model: claude-sonnet-5
