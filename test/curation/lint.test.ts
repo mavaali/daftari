@@ -72,7 +72,36 @@ describe("lint", () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      expect(report.value.totalFindings).toBe(5);
+      expect(report.value.totalFindings).toBe(8);
+    });
+
+    it("flags the path-like unresolvable source, skipping opaque and external citations", async () => {
+      const report = await runLint(LINT_VAULT);
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const finding = report.value.checks.brokenSourceRefs;
+      expect(finding.map((f) => f.path)).toEqual(["cites-missing.md"]);
+      expect(finding[0]?.detail).toContain("lint/nonexistent-target.md");
+      expect(finding[0]?.detail).not.toContain("opaque-citation-string");
+      expect(finding[0]?.detail).not.toContain("example.com");
+    });
+
+    it("flags the canonical doc citing a draft source", async () => {
+      const report = await runLint(LINT_VAULT);
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const finding = report.value.checks.lifecycleConflicts;
+      expect(finding.map((f) => f.path)).toEqual(["cites-draft.md"]);
+      expect(finding[0]?.detail).toContain("old-draft.md (draft)");
+    });
+
+    it("flags the doc with schema-invalid frontmatter", async () => {
+      const report = await runLint(LINT_VAULT);
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const finding = report.value.checks.schemaInvalid;
+      expect(finding.map((f) => f.path)).toEqual(["schema-invalid.md"]);
+      expect(finding[0]?.detail).toContain("ttl_days");
     });
 
     it("respects a custom draft age limit", async () => {

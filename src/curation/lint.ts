@@ -1,9 +1,11 @@
 // vault_lint's engine — advisory cross-vault curation checks.
 //
 // Lint loads every document once, builds the inter-document link graph, then
-// runs six checks. It only ever *reports*: no file is edited, no status is
-// changed, nothing is auto-fixed. The output is a structured report grouped by
-// check, for a human (or an agent acting on a human's behalf) to triage.
+// runs its battery of checks. It only ever *reports*: no file is edited, no
+// status is changed, nothing is auto-fixed. The output is a structured report
+// grouped by check, for a human (or an agent acting on a human's behalf) to
+// triage. The three tier-0 checks (#232, tier0.ts) are certain rather than
+// advisory judgments, but the posture is the same: report only.
 
 import { ok, type Result } from "../frontmatter/types.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
@@ -32,6 +34,7 @@ import {
 } from "./tension.js";
 import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tension-blast.js";
 import { computeTensionClusters } from "./tension-clusters.js";
+import { tier0Findings } from "./tier0.js";
 import {
   buildPathIndexes,
   extractLinks,
@@ -48,6 +51,9 @@ export const LINT_CHECKS = [
   "deprecatedStillLinked",
   "unansweredQuestions",
   "tierDemotions",
+  "brokenSourceRefs",
+  "lifecycleConflicts",
+  "schemaInvalid",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -216,7 +222,23 @@ export async function runLint(
     deprecatedStillLinked: [],
     unansweredQuestions: [],
     tierDemotions: [],
+    brokenSourceRefs: [],
+    lifecycleConflicts: [],
+    schemaInvalid: [],
   };
+
+  // 8-10. Tier 0 (#232; quick win 1 of #236): referential integrity over the
+  // typed dependency channels (sources / superseded_by), lifecycle
+  // consistency (canonical citing draft/deprecated/archived), and schema
+  // conformance. Certain failures, not judgments — but reported like every
+  // other check, never enforced here (enforcement lives in the ratify gate).
+  // Computed over the caller-visible doc set like the rest of lint (#217):
+  // a source the caller cannot read is indistinguishable from one that does
+  // not exist.
+  const t0 = tier0Findings(docs);
+  checks.brokenSourceRefs = t0.brokenSourceRefs;
+  checks.lifecycleConflicts = t0.lifecycleConflicts;
+  checks.schemaInvalid = t0.schemaInvalid;
 
   for (const doc of docs) {
     const fm = doc.frontmatter;
