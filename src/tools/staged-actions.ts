@@ -131,13 +131,18 @@ export async function vaultStageAction(
   // to the queue. The gate runs BEFORE the not-found branch so a role lacking
   // write cannot probe document existence (not-found vs access-denied). The
   // collection is authoritative from the document's own frontmatter when it is
-  // readable; for a not-yet-existing target it falls back to the path's leading
-  // segment (the same convention the write tools use).
+  // readable; for a not-yet-existing target it falls back to the leading
+  // segment of the NORMALIZED path (resolved.relPath), never the raw caller
+  // string — `pricing/../competitive-intel/x.md` splits to "pricing" raw but
+  // resolves to competitive-intel, and with `write` targets allowed to not
+  // exist, gating on the raw string would let a pricing-only role queue
+  // proposals into collections it cannot write (same S1 rule as write.ts's
+  // targetCollection).
   if (access) {
     const parsed = exists.ok ? parseDocument(exists.value) : null;
     const collection =
       (parsed?.ok ? parsed.value.frontmatter.collection : "") ||
-      (targetPath.value.split("/")[0] ?? "");
+      (resolved.value.relPath.split("/")[0] ?? "");
     if (!canWrite(access.role, collection)) {
       return err(
         new Error(
@@ -165,9 +170,12 @@ export async function vaultStageAction(
     ttlDays = args.ttl_days;
   }
 
+  // Stage the CANONICAL relPath, not the raw caller string, so aliased
+  // spellings of one target contend in conflict detection and the queued
+  // target matches what dispatch will actually write (#127/#128 rule).
   return stageActionWithConflictCheck(vaultRoot, {
     actionType: actionType.value as StagedActionType,
-    targetPath: targetPath.value,
+    targetPath: resolved.value.relPath,
     proposedBy: proposedBy.value,
     rationale: rationale.value,
     proposedDiff: args.proposed_diff,
@@ -296,12 +304,10 @@ export async function vaultRatify(
     writePayload = { frontmatter: diff.frontmatter as Record<string, unknown>, body: diff.body };
   }
 
-  const proposedCanonical = writePayload?.frontmatter.status === "canonical";
-
   if (
     action.actionType === "promote" ||
     action.actionType === "deprecate" ||
-    (action.actionType === "write" && proposedCanonical)
+    action.actionType === "write"
   ) {
     const loaded = await loadDocuments(vaultRoot);
     // Fail closed: without the doc set there is no gate, so no dispatch.
@@ -311,32 +317,48 @@ export async function vaultRatify(
       : undefined;
 
     if (action.actionType === "write" && writePayload) {
-      // A write proposal declaring `status: canonical` is a promote in one
-      // step — hold it to the same tier-0 bar. Splice the PROPOSED content in
-      // as a synthetic doc (replacing any existing doc at the target) so the
-      // gate judges the post-state, then reuse the promote gate wholesale.
-      const { frontmatter, report } = validateFrontmatter(writePayload.frontmatter);
-      const synthetic: LoadedDoc = {
-        path: action.targetPath,
-        frontmatter,
-        content: writePayload.body,
-        validation: report,
-      };
-      const docs = [...loaded.value.filter((d) => d.path !== action.targetPath), synthetic];
-      const gate = tier0PromoteGate(docs, action.targetPath, visible);
-      const problems = [...gate.violations];
-      if (gate.hiddenConflicts > 0) {
-        problems.push(
-          `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
-        );
+      // A write proposal whose POST-state is canonical is a promote in one
+      // step — hold it to the same tier-0 bar. The post-state is NOT the
+      // payload as submitted: vaultWrite's update path merges the payload
+      // UNDER the existing frontmatter (#113 — omitted keys are inherited,
+      // explicit nulls delete), so gate the same merge. Judging the payload
+      // alone has two bypasses: omitted `sources` inherit the on-disk value
+      // unseen, and an omitted `status` on an already-canonical doc keeps it
+      // canonical while dodging a payload-declared-status check.
+      const existing = loaded.value.find((d) => d.path === action.targetPath);
+      const mergedRaw: Record<string, unknown> = existing
+        ? { ...(existing.frontmatter as Record<string, unknown>) }
+        : {};
+      for (const [key, value] of Object.entries(writePayload.frontmatter)) {
+        if (value === null) delete mergedRaw[key];
+        else mergedRaw[key] = value;
       }
-      if (problems.length > 0) {
-        return err(
-          new Error(
-            `vault_ratify: tier-0 gate blocked canonical write of ${action.targetPath}: ` +
-              `${problems.join("; ")} — the action stays pending`,
-          ),
-        );
+      const { frontmatter, report } = validateFrontmatter(mergedRaw);
+      if (frontmatter.status === "canonical") {
+        // Splice the merged post-state in as a synthetic doc (replacing any
+        // existing doc at the target) and reuse the promote gate wholesale.
+        const synthetic: LoadedDoc = {
+          path: action.targetPath,
+          frontmatter,
+          content: writePayload.body,
+          validation: report,
+        };
+        const docs = [...loaded.value.filter((d) => d.path !== action.targetPath), synthetic];
+        const gate = tier0PromoteGate(docs, action.targetPath, visible);
+        const problems = [...gate.violations];
+        if (gate.hiddenConflicts > 0) {
+          problems.push(
+            `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
+          );
+        }
+        if (problems.length > 0) {
+          return err(
+            new Error(
+              `vault_ratify: tier-0 gate blocked canonical write of ${action.targetPath}: ` +
+                `${problems.join("; ")} — the action stays pending`,
+            ),
+          );
+        }
       }
     } else if (action.actionType === "promote") {
       const gate = tier0PromoteGate(loaded.value, action.targetPath, visible);

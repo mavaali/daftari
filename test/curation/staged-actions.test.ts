@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,9 +11,11 @@ import {
   recordDecision,
   type StageActionInput,
   stageAction,
+  stageActionWithConflictCheck,
   stagedActionsPath,
   sweepExpiredActions,
 } from "../../src/curation/staged-actions.js";
+import { listTensions, tensionsPath } from "../../src/curation/tension.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import {
   getAllStagedActions,
@@ -251,5 +253,86 @@ describe("staged-actions", () => {
     expect(fetched.ok).toBe(true);
     if (!fetched.ok || !fetched.value) return;
     expect(fetched.value.decidedByPrincipal).toBeNull();
+  });
+
+  describe("stageActionWithConflictCheck (#235)", () => {
+    it("stages with no conflict surface when the target is uncontested", async () => {
+      const result = await stageActionWithConflictCheck(vault, sampleInput);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw result.error;
+      expect(result.value.conflicts_with).toEqual([]);
+      expect(result.value.tension_id).toBeNull();
+
+      const tensions = await listTensions(vault);
+      expect(tensions.ok && tensions.value).toEqual([]);
+    });
+
+    it("logs one inter-proposal self-tension naming all pending contenders", async () => {
+      const a = await stageActionWithConflictCheck(vault, sampleInput);
+      const b = await stageActionWithConflictCheck(vault, {
+        ...sampleInput,
+        actionType: "deprecate",
+        rationale: "Retire it instead.",
+      });
+      const c = await stageActionWithConflictCheck(vault, {
+        ...sampleInput,
+        actionType: "confidence-up",
+        rationale: "Third opinion.",
+        proposedDiff: { confidence: "high" },
+      });
+      if (!a.ok || !b.ok || !c.ok) throw new Error("staging failed");
+
+      expect(b.value.conflicts_with).toEqual([a.value.id]);
+      // The third arrival contests BOTH earlier pending proposals.
+      expect(c.value.conflicts_with.sort()).toEqual([a.value.id, b.value.id].sort());
+
+      const tensions = await listTensions(vault);
+      expect(tensions.ok).toBe(true);
+      if (!tensions.ok) throw tensions.error;
+      expect(tensions.value).toHaveLength(2);
+      const last = tensions.value.find((t) => t.id === c.value.tension_id);
+      expect(last?.kind).toBe("inter-proposal");
+      expect(last?.sourceA).toBe(sampleInput.targetPath);
+      expect(last?.sourceB).toBe(sampleInput.targetPath);
+      expect(last?.claimA).toContain(a.value.id);
+      expect(last?.claimA).toContain(b.value.id);
+      expect(last?.claimB).toContain(c.value.id);
+    });
+
+    it("decided proposals are not contenders", async () => {
+      const a = await stageActionWithConflictCheck(vault, sampleInput);
+      if (!a.ok) throw a.error;
+      const decided = await recordDecision(vault, a.value.id, {
+        status: "rejected",
+        ratifiedAt: nowISO(),
+        ratifiedBy: "human:mihir",
+      });
+      if (!decided.ok) throw decided.error;
+
+      const b = await stageActionWithConflictCheck(vault, sampleInput);
+      expect(b.ok).toBe(true);
+      if (!b.ok) throw b.error;
+      expect(b.value.conflicts_with).toEqual([]);
+      expect(b.value.tension_id).toBeNull();
+    });
+
+    it("fails loud, naming the staged id, when the tension log cannot be written", async () => {
+      const a = await stageActionWithConflictCheck(vault, sampleInput);
+      if (!a.ok) throw a.error;
+      // Make tensions.md unwritable by occupying its path with a directory —
+      // the conflict on the SECOND staging then cannot log its tension.
+      mkdirSync(tensionsPath(vault), { recursive: true });
+
+      const b = await stageActionWithConflictCheck(vault, sampleInput);
+      expect(b.ok).toBe(false);
+      if (b.ok) return;
+      // Loud, not silent: the error names the action that DID get staged.
+      expect(b.error.message).toContain("staged as stage-002");
+      expect(b.error.message).toContain("inter-proposal");
+
+      // The proposal itself landed — only the tension write failed.
+      const staged = await getStagedActionById(vault, "stage-002");
+      expect(staged.ok && staged.value?.status).toBe("pending");
+    });
   });
 });
