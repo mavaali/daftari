@@ -1,0 +1,57 @@
+# Tag-driven npm release via OIDC trusted publishing.
+#
+# No NPM_TOKEN secret and no OTP: npm trusts this workflow's GitHub Actions
+# identity directly (id-token: write), so account MFA stays fully enforced
+# for humans while CI publishes unattended. Provenance attestation is
+# automatic with trusted publishing.
+#
+# One-time setup on npmjs.com (package settings → Publishing access):
+#   Trusted Publisher = GitHub Actions, repository mavaali/daftari,
+#   workflow release.yml. Then select "Require two-factor authentication
+#   and disallow tokens" so OIDC is the only non-interactive publish path.
+#
+# To release: bump `version` in package.json (release PR), merge, then
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC token for npm trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing requires npm >= 11.5.1; Node 22 bundles npm 10.
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # A release runs every gate CI runs — a tag is not a bypass.
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag v$TAG does not match package.json version $PKG" >&2
+            exit 1
+          fi
+
+      - run: npm publish

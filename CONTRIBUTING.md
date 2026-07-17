@@ -60,6 +60,30 @@ focused on one change.
 For a larger feature, a short design note in `docs/plans/` is welcome — it makes
 review faster and records the reasoning behind the change.
 
+## Releasing (maintainers)
+
+Releases are tag-driven and publish to npm via
+[trusted publishing](https://docs.npmjs.com/trusted-publishers) (GitHub
+Actions OIDC) — no npm token exists anywhere, and account MFA stays enforced
+for humans. `.github/workflows/release.yml` runs lint, build, and the full
+test suite, verifies the tag matches `package.json`, then publishes with
+provenance.
+
+1. Open a release PR that bumps `version` in `package.json` and updates
+   `CHANGELOG.md`. (`src/index.ts` reads its version from `package.json` via
+   `server.ts` — nothing else to bump.)
+2. Merge it, then tag the merge commit and push the tag:
+
+   ```bash
+   git tag v1.31.0
+   git push origin v1.31.0
+   ```
+
+One-time npmjs.com setup: package settings → Publishing access → add a
+Trusted Publisher (GitHub Actions, repository `mavaali/daftari`, workflow
+`release.yml`), then choose "Require two-factor authentication and disallow
+tokens" so OIDC is the only non-interactive publish path.
+
 ## Reporting issues
 
 Bugs and feature ideas go to
