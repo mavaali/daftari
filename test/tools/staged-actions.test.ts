@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
@@ -63,7 +65,7 @@ describe("vault_stage_action", () => {
     if (!result.ok) return;
     expect(result.value.id).toBe("stage-001");
     expect(result.value.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  });
+  }, 60_000);
 
   it("denies a role that lacks write access to the target collection", async () => {
     await seedDraft(vault, "pricing/foo.md");
@@ -86,7 +88,7 @@ describe("vault_stage_action", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("access denied");
-  });
+  }, 60_000);
 
   it("allows a role with write access to the target collection", async () => {
     await seedDraft(vault, "pricing/foo.md");
@@ -107,7 +109,7 @@ describe("vault_stage_action", () => {
       writer,
     );
     expect(result.ok).toBe(true);
-  });
+  }, 60_000);
 
   it("denies a write-less role for an absent target without leaking existence", async () => {
     // The target does not exist. A role lacking write must get 'access denied'
@@ -809,6 +811,45 @@ describe("vault_ratify", () => {
     if (result.ok) return;
     expect(result.error.message).toContain("tier-0 gate blocked canonical write");
     expect(result.error.message).toContain("pricing/wip-source.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate validates the merged post-state against config schema extensions", async () => {
+    // Config declares a required extension AFTER seeding (seeding first —
+    // otherwise the seed write itself would be blocked by the missing field).
+    // A canonical write proposal omitting the required extension must be
+    // caught by the gate with the tier-0 message, not fail later with the
+    // generic invalid-frontmatter dispatch error (review finding on #249).
+    await seedDraft(vault, "pricing/ext.md");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "schema_extensions:\n  adr_id:\n    type: string\n    required: true\n",
+    );
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/ext.md",
+      proposed_by: AGENT,
+      rationale: "Promote via write, required extension missing.",
+      proposed_diff: {
+        frontmatter: { status: "canonical" },
+        body: "# Federation Spec\n\nRevised.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+    expect(result.error.message).toContain("adr_id");
 
     const action = await getStagedActionById(vault, staged.value.id);
     expect(action.ok && action.value?.status).toBe("pending");

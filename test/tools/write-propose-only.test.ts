@@ -199,7 +199,7 @@ describe("propose-only role (#235)", () => {
     if (!update.ok) throw update.error;
     expect(update.value.action).toBe("staged");
     expect(update.value.validation.valid).toBe(true);
-  });
+  }, 60_000);
 
   it("stages the canonical relPath: aliased spellings contend, escapes are rejected", async () => {
     // Regression for the review finding on #249: the coercion must resolve

@@ -29,6 +29,7 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import type { ToolDefinition } from "./read.js";
 import {
   readRunId,
@@ -329,7 +330,16 @@ export async function vaultRatify(
         if (value === null) delete mergedRaw[key];
         else mergedRaw[key] = value;
       }
-      const { frontmatter, report } = validateFrontmatter(mergedRaw);
+      // Validate with the vault's schema extensions, same as the dispatch —
+      // without them a required extension field missing from a canonical
+      // write proposal would slip past the tier-0 schema check and only fail
+      // later with the generic invalid-frontmatter error.
+      const gateConfig = loadConfig(vaultRoot);
+      if (!gateConfig.ok) return gateConfig;
+      const { frontmatter, report } = validateFrontmatter(
+        mergedRaw,
+        gateConfig.value.schemaExtensions,
+      );
       if (frontmatter.status === "canonical") {
         // Splice the merged post-state in as a synthetic doc (replacing any
         // existing doc at the target) and reuse the promote gate wholesale.
