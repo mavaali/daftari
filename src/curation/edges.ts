@@ -17,9 +17,16 @@
 //
 //   - Index: the `derives_from_edges` table in .daftari/index.db — a derived
 //     cache rebuilt from the jsonl on reindex (rebuildEdgesIndex /
-//     materializeEdges). It exists for the future loop's traversal engine,
-//     which wants concurrent SQL reads; v1 read paths read the jsonl
-//     directly, the same posture staged actions take.
+//     materializeEdges) and, since #236, the AUTHORITATIVE read path:
+//     listEdges/getEdge query the table, never the jsonl. Coherence is kept
+//     two ways: every edge write re-materializes the table (write-through),
+//     and every read first compares a stat marker of the jsonl against the
+//     one recorded at the last materialization, rebuilding on mismatch — so
+//     an external append (or a lost write-through) self-heals on the next
+//     read. Live strength/status are ALWAYS recomputed from the row's
+//     (k_survived, last_rederived) at read time; the stored status is at most
+//     a conservative prefilter (see listEdges), because it is frozen at
+//     `last_age_decay` while real strength keeps aging.
 //
 // Collapse rules (the strength model, locked Q1–Q4 + §5.3.1):
 //   - The first observe in a cycle SEEDS the edge: k_survived = 0. Birth is
@@ -39,15 +46,19 @@
 // one critical section with no intervening await. The guarantee is
 // per-process, which suffices under the one-daftari-per-vault process lock.
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { getProvider } from "../search/vector.js";
 import {
   clearDerivesFromEdges,
   type DerivesFromEdgeRow,
+  getDerivesFromEdgePair,
+  getMeta,
   type IndexDb,
+  listDerivesFromEdgeRows,
   openIndexDb,
+  setMeta,
   upsertDerivesFromEdge,
 } from "../storage/index-db.js";
 
@@ -145,6 +156,24 @@ export interface ContestEdgeInput {
 
 export function edgesPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "edges.jsonl");
+}
+
+// --- jsonl freshness marker ---------------------------------------------------
+
+// Meta key recording the stat of edges.jsonl at the last materialization. A
+// read whose current stat differs knows the table is stale and rebuilds first.
+const EDGES_LOG_STAT_META_KEY = "edges_log_stat";
+
+// Size + mtime identify the jsonl version cheaply. The log is append-only, so
+// size alone almost suffices; mtime guards a same-size replacement.
+function edgesLogStatMarker(vaultRoot: string): string {
+  try {
+    const st = statSync(edgesPath(vaultRoot));
+    return `${st.size}:${st.mtimeMs}`;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    throw e;
+  }
 }
 
 // --- time helpers ------------------------------------------------------------
@@ -432,6 +461,27 @@ function deriveEdge(state: EdgeState, now: Date): DerivesFromEdge {
 
 // --- producer / consumer -----------------------------------------------------
 
+// Write-through: re-materialize the table after a jsonl append. A full rebuild
+// rather than a row upsert because a new observation can FLIP the stored
+// output orientation (premise votes), which a keyed upsert would leave as a
+// stale twin. Best-effort by design: the append above is the canonical write,
+// and a failure here leaves the marker stale, so the next read self-heals via
+// ensureFreshEdgesIndex — the cache can be behind, never wrong.
+function writeThroughEdgesIndex(vaultRoot: string): void {
+  try {
+    const opened = openIndexDb(vaultRoot, getProvider().dim);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      rebuildEdgesIndex(db, vaultRoot);
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Self-heal on the next read.
+  }
+}
+
 // Records a (re-)derivation observation. Validation is defensive — the tool
 // layer validates too — but this is the durable boundary, so it re-checks.
 export async function observeEdge(
@@ -482,6 +532,8 @@ export async function observeEdge(
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot record edge observation: ${reason}`));
   }
+
+  writeThroughEdgesIndex(vaultRoot);
 
   const after = collapse(readRawRecords(vaultRoot)).get(
     edgeKey(...canonPair(record.from, record.to)),
@@ -535,6 +587,8 @@ export async function contestEdge(
     return err(new Error(`cannot record edge contest: ${reason}`));
   }
 
+  writeThroughEdgesIndex(vaultRoot);
+
   const after = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(from, to)));
   if (!after) return err(new Error("edge not found after write"));
   return ok(deriveEdge(after, new Date()));
@@ -546,13 +600,52 @@ export interface ListEdgesFilter {
   status?: EdgeStatus;
 }
 
-// Collapsed edges with live aged strength, strongest first (ties by key for a
-// stable order). A missing log is not an error — nothing has been observed.
-export async function listEdges(
+// Rehydrates the public edge shape from a materialized row, recomputing live
+// strength/status at `now`. The stored strength/status are frozen at
+// `last_age_decay`; only (k_survived, last_rederived) — which no amount of
+// aging changes — plus the revoked flag are trusted from the row.
+function deriveEdgeFromRow(row: DerivesFromEdgeRow, now: Date): DerivesFromEdge {
+  const revoked = row.status === "revoked";
+  const strength = revoked ? 0 : agedStrength(row.k_survived, row.last_rederived, now);
+  const status: EdgeStatus = revoked
+    ? "revoked"
+    : strength >= EDGE_TRIGGER_STRENGTH
+      ? "trigger-bearing"
+      : "candidate";
+  return {
+    fromPath: row.from_path,
+    toPath: row.to_path,
+    strength,
+    kSurvived: row.k_survived,
+    firstObserved: row.first_observed,
+    lastRederived: row.last_rederived,
+    status,
+    directionVerdict: row.direction_verdict as DirectionVerdict,
+    observations: row.observations,
+    contestedAt: row.contested_at,
+    contestReason: row.contest_reason,
+  };
+}
+
+// Rebuilds the table iff the jsonl's stat no longer matches the marker stored
+// at the last materialization. This is what lets reads trust the table: an
+// external append, a manual log edit, or a lost write-through all surface as
+// a marker mismatch and heal here before the query runs.
+function ensureFreshEdgesIndex(db: IndexDb, vaultRoot: string): Result<void, Error> {
+  if (getMeta(db, EDGES_LOG_STAT_META_KEY) === edgesLogStatMarker(vaultRoot)) return ok(undefined);
+  const rebuilt = rebuildEdgesIndex(db, vaultRoot);
+  return rebuilt.ok ? ok(undefined) : rebuilt;
+}
+
+// Degraded read path: collapse the canonical jsonl directly. Used only when
+// the index db cannot be OPENED (e.g. a read-only .daftari, where sqlite
+// cannot create WAL sidecars) — the jsonl is the canonical store, so falling
+// back costs performance, never correctness.
+function listEdgesFromLog(
   vaultRoot: string,
-  filter: ListEdgesFilter = {},
-  now: Date = new Date(),
-): Promise<Result<DerivesFromEdge[], Error>> {
+  filter: ListEdgesFilter,
+  now: Date,
+): Result<DerivesFromEdge[], Error> {
   try {
     let edges = [...collapse(readRawRecords(vaultRoot)).values()].map((s) => deriveEdge(s, now));
     if (filter.fromPath) edges = edges.filter((e) => e.fromPath === filter.fromPath);
@@ -571,18 +664,80 @@ export async function listEdges(
   }
 }
 
+// Materialized edges with live aged strength, strongest first (ties by key for
+// a stable order). An empty/missing log is not an error — nothing observed.
+export async function listEdges(
+  vaultRoot: string,
+  filter: ListEdgesFilter = {},
+  now: Date = new Date(),
+): Promise<Result<DerivesFromEdge[], Error>> {
+  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  if (!opened.ok) return listEdgesFromLog(vaultRoot, filter, now);
+  const db = opened.value;
+  try {
+    const fresh = ensureFreshEdgesIndex(db, vaultRoot);
+    if (!fresh.ok) return err(new Error(`cannot read edges: ${fresh.error.message}`));
+    // Status PREFILTER on the stored column. "revoked" is exact (a write-only
+    // flag, and writes re-materialize). The two live statuses are a function
+    // of aging strength, so either may have drifted since materialization —
+    // fetch both and let the recomputed status decide.
+    const statusIn =
+      filter.status === undefined
+        ? undefined
+        : filter.status === "revoked"
+          ? ["revoked"]
+          : ["candidate", "trigger-bearing"];
+    let edges = listDerivesFromEdgeRows(db, {
+      fromPath: filter.fromPath,
+      toPath: filter.toPath,
+      statusIn,
+    }).map((row) => deriveEdgeFromRow(row, now));
+    if (filter.status) edges = edges.filter((e) => e.status === filter.status);
+    edges.sort(
+      (a, b) =>
+        b.strength - a.strength ||
+        a.fromPath.localeCompare(b.fromPath) ||
+        a.toPath.localeCompare(b.toPath),
+    );
+    return ok(edges);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot read edges: ${reason}`));
+  } finally {
+    db.close();
+  }
+}
+
 export async function getEdge(
   vaultRoot: string,
   fromPath: string,
   toPath: string,
   now: Date = new Date(),
 ): Promise<Result<DerivesFromEdge | null, Error>> {
+  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  if (!opened.ok) {
+    // Same degraded posture as listEdgesFromLog: canonical store, no cache.
+    try {
+      const state = collapse(readRawRecords(vaultRoot)).get(
+        edgeKey(...canonPair(fromPath, toPath)),
+      );
+      return ok(state ? deriveEdge(state, now) : null);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return err(new Error(`cannot read edge: ${reason}`));
+    }
+  }
+  const db = opened.value;
   try {
-    const state = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(fromPath, toPath)));
-    return ok(state ? deriveEdge(state, now) : null);
+    const fresh = ensureFreshEdgesIndex(db, vaultRoot);
+    if (!fresh.ok) return err(new Error(`cannot read edge: ${fresh.error.message}`));
+    const row = getDerivesFromEdgePair(db, fromPath, toPath);
+    return ok(row ? deriveEdgeFromRow(row, now) : null);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot read edge: ${reason}`));
+  } finally {
+    db.close();
   }
 }
 
@@ -599,6 +754,10 @@ export function rebuildEdgesIndex(
   now: Date = new Date(),
 ): Result<{ count: number }, Error> {
   try {
+    // Stat BEFORE reading: if the log grows between the stat and the read, the
+    // marker undercounts and the next read harmlessly rebuilds again. Statting
+    // after would risk marking content the collapse never saw as fresh.
+    const marker = edgesLogStatMarker(vaultRoot);
     const edges = [...collapse(readRawRecords(vaultRoot)).values()].map((s) => deriveEdge(s, now));
     const at = toSecondISO(now);
     const rows: DerivesFromEdgeRow[] = edges.map((e) => ({
@@ -611,10 +770,14 @@ export function rebuildEdgesIndex(
       last_age_decay: at,
       status: e.status,
       direction_verdict: e.directionVerdict,
+      observations: e.observations,
+      contested_at: e.contestedAt,
+      contest_reason: e.contestReason,
     }));
     const write = db.transaction(() => {
       clearDerivesFromEdges(db);
       for (const row of rows) upsertDerivesFromEdge(db, row);
+      setMeta(db, EDGES_LOG_STAT_META_KEY, marker);
     });
     write();
     return ok({ count: rows.length });
