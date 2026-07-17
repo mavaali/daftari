@@ -34,6 +34,7 @@ Usage:
   daftari asof <ref-or-date>          Belief archaeology — the vault at a past commit (see: daftari asof --help)
   daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
+  daftari lint [options]              Vault structural checks + Tier 0 CI gate (see: daftari lint --help)
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
@@ -247,6 +248,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "eval") {
     const { runEval } = await import("./eval/index.js");
     process.exitCode = await runEval(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "lint") {
+    const { runLintCli } = await import("./curation/lint-cli.js");
+    process.exitCode = await runLintCli(argv.slice(1));
     return;
   }
 
