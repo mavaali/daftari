@@ -413,9 +413,10 @@ describe("decided_by_principal", () => {
 });
 
 describe("STALE_TIER_LINT_COPY", () => {
-  it("exposes the three loggable kinds and omits unspecified", () => {
+  it("exposes every loggable kind and omits unspecified", () => {
     expect(Object.keys(STALE_TIER_LINT_COPY).sort()).toEqual([
       "factual",
+      "inter-proposal",
       "interpretive",
       "temporal",
     ]);

@@ -65,6 +65,14 @@ export function canRatify(role: RoleConfig | null): boolean {
   return role?.ratify ?? false;
 }
 
+// True if the role is propose-only (#235): its writes must land as staged
+// `write` proposals, never as direct mutations. vault_write coerces; every
+// other write tool denies. The write grant still scopes WHICH collections the
+// role may propose into.
+export function isProposeOnly(role: RoleConfig | null): boolean {
+  return role?.proposeOnly ?? false;
+}
+
 // True if the role has read access to at least one collection. Curation tools
 // (lint, tension log, provenance) are open to anyone with any read grant.
 export function hasAnyRead(role: RoleConfig | null): boolean {

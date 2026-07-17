@@ -20,12 +20,13 @@ import {
   recordDecision,
   STAGED_ACTION_TYPES,
   type StagedActionType,
-  stageAction,
+  stageActionWithConflictCheck,
 } from "../curation/staged-actions.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { tier0DeprecateGate, tier0PromoteGate } from "../curation/tier0.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
+import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
@@ -35,6 +36,7 @@ import {
   vaultPromote,
   vaultSetConfidence,
   vaultSupersede,
+  vaultWrite,
   type WriteResult,
 } from "./write.js";
 
@@ -57,6 +59,11 @@ function requireString(
 export interface StageActionResult {
   id: string;
   expires_at: string;
+  // Inter-proposal conflict surface (#235): ids of other pending proposals
+  // already targeting the same document, and the tension logged for them.
+  // Empty / null when the proposal is uncontested.
+  conflicts_with: string[];
+  tension_id: string | null;
 }
 
 export async function vaultStageAction(
@@ -82,6 +89,34 @@ export async function vaultStageAction(
 
   if (args.proposed_diff === undefined || args.proposed_diff === null) {
     return err(new Error("vault_stage_action requires a 'proposed_diff' object argument"));
+  }
+
+  let runId: string | undefined;
+  if (args.run_id !== undefined && args.run_id !== null) {
+    if (typeof args.run_id !== "string") {
+      return err(new Error("vault_stage_action 'run_id' must be a string"));
+    }
+    if (args.run_id.trim().length > 0) runId = args.run_id.trim();
+  }
+
+  // A `write` proposal carries full content; validate the payload shape at
+  // stage time so a malformed one never sits in the queue until ratify.
+  const isWrite = actionType.value === "write";
+  if (isWrite) {
+    const diff = args.proposed_diff as Record<string, unknown>;
+    if (
+      typeof args.proposed_diff !== "object" ||
+      diff.frontmatter === null ||
+      typeof diff.frontmatter !== "object" ||
+      typeof diff.body !== "string"
+    ) {
+      return err(
+        new Error(
+          "vault_stage_action: a 'write' action needs proposed_diff.frontmatter " +
+            "(object) and proposed_diff.body (string)",
+        ),
+      );
+    }
   }
 
   const resolved = resolveVaultPath(vaultRoot, targetPath.value);
@@ -112,11 +147,13 @@ export async function vaultStageAction(
     }
   }
 
-  // Fail fast: an action that targets a non-existent document can never be
-  // ratified (the write-tool dispatch would reject "document not found"). Catch
-  // it at stage time so a bad target never sits in the queue for 14 days. This
-  // is reached only by callers that already hold write access (checked above).
-  if (!exists.ok) {
+  // Fail fast: a lifecycle action that targets a non-existent document can
+  // never be ratified (the write-tool dispatch would reject "document not
+  // found"). Catch it at stage time so a bad target never sits in the queue
+  // for 14 days. This is reached only by callers that already hold write
+  // access (checked above). `write` proposals are exempt — creating a new
+  // document is their point.
+  if (!exists.ok && !isWrite) {
     return err(new Error(`vault_stage_action: target document not found: ${targetPath.value}`));
   }
 
@@ -128,12 +165,13 @@ export async function vaultStageAction(
     ttlDays = args.ttl_days;
   }
 
-  return stageAction(vaultRoot, {
+  return stageActionWithConflictCheck(vaultRoot, {
     actionType: actionType.value as StagedActionType,
     targetPath: targetPath.value,
     proposedBy: proposedBy.value,
     rationale: rationale.value,
     proposedDiff: args.proposed_diff,
+    ...(runId !== undefined ? { runId } : {}),
     ...(ttlDays !== undefined ? { ttlDays } : {}),
   });
 }
@@ -229,7 +267,29 @@ export async function vaultRatify(
   // underlying state and re-approve, or reject. Under RBAC the error names
   // only docs the ratifier can read; a hidden remainder is coarsened
   // (#217 B′), never reported as an exact count.
-  if (action.actionType === "promote" || action.actionType === "deprecate") {
+  // A `write` proposal's payload shape is needed by both the gate and the
+  // dispatch — validate it once, up front. A malformed payload errors and
+  // leaves the action pending, same contract as a malformed supersede diff.
+  let writePayload: { frontmatter: Record<string, unknown>; body: string } | null = null;
+  if (action.actionType === "write") {
+    if (diff.frontmatter === null || typeof diff.frontmatter !== "object") {
+      return err(
+        new Error(`vault_ratify: write action ${id.value} needs proposed_diff.frontmatter`),
+      );
+    }
+    if (typeof diff.body !== "string") {
+      return err(new Error(`vault_ratify: write action ${id.value} needs proposed_diff.body`));
+    }
+    writePayload = { frontmatter: diff.frontmatter as Record<string, unknown>, body: diff.body };
+  }
+
+  const proposedCanonical = writePayload?.frontmatter.status === "canonical";
+
+  if (
+    action.actionType === "promote" ||
+    action.actionType === "deprecate" ||
+    (action.actionType === "write" && proposedCanonical)
+  ) {
     const loaded = await loadDocuments(vaultRoot);
     // Fail closed: without the doc set there is no gate, so no dispatch.
     if (!loaded.ok) return loaded;
@@ -237,7 +297,35 @@ export async function vaultRatify(
       ? (d: LoadedDoc) => canRead(access.role, d.frontmatter.collection)
       : undefined;
 
-    if (action.actionType === "promote") {
+    if (action.actionType === "write" && writePayload) {
+      // A write proposal declaring `status: canonical` is a promote in one
+      // step — hold it to the same tier-0 bar. Splice the PROPOSED content in
+      // as a synthetic doc (replacing any existing doc at the target) so the
+      // gate judges the post-state, then reuse the promote gate wholesale.
+      const { frontmatter, report } = validateFrontmatter(writePayload.frontmatter);
+      const synthetic: LoadedDoc = {
+        path: action.targetPath,
+        frontmatter,
+        content: writePayload.body,
+        validation: report,
+      };
+      const docs = [...loaded.value.filter((d) => d.path !== action.targetPath), synthetic];
+      const gate = tier0PromoteGate(docs, action.targetPath, visible);
+      const problems = [...gate.violations];
+      if (gate.hiddenConflicts > 0) {
+        problems.push(
+          `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
+        );
+      }
+      if (problems.length > 0) {
+        return err(
+          new Error(
+            `vault_ratify: tier-0 gate blocked canonical write of ${action.targetPath}: ` +
+              `${problems.join("; ")} — the action stays pending`,
+          ),
+        );
+      }
+    } else if (action.actionType === "promote") {
       const gate = tier0PromoteGate(loaded.value, action.targetPath, visible);
       const problems = [...gate.violations];
       if (gate.hiddenConflicts > 0) {
@@ -281,6 +369,27 @@ export async function vaultRatify(
 
   let dispatched: Result<WriteResult, Error>;
   switch (action.actionType as StagedActionType) {
+    case "write": {
+      // Payload validated above (writePayload is always set for this type).
+      // The proposer's run_id (stamped at stage time) is carried into the
+      // write so provenance correlates the landed content with the run that
+      // proposed it (#235 → #233).
+      if (!writePayload) {
+        return err(new Error(`vault_ratify: write action ${id.value} lost its payload`));
+      }
+      dispatched = await vaultWrite(
+        vaultRoot,
+        {
+          path: action.targetPath,
+          frontmatter: writePayload.frontmatter,
+          body: writePayload.body,
+          agent: principal.value,
+          ...(action.runId ? { run_id: action.runId } : {}),
+        },
+        access,
+      );
+      break;
+    }
     case "promote":
       dispatched = await vaultPromote(
         vaultRoot,
@@ -417,11 +526,15 @@ export const stagedActionTools: ToolDefinition[] = [
       "Record a proposed change to the vault for later human ratification via " +
       "vault_ratify. The action waits in a pending queue and auto-expires after " +
       "ttl_days (default 14). This is the producer side of the staged-action " +
-      "queue — normally called by the curation loop, not by a human directly. " +
-      "Action types: promote, deprecate, supersede, merge, confidence-up. " +
-      "proposed_diff carries the per-action payload replayed on ratification: " +
-      "supersede → {superseded_by}, confidence-up → {confidence}, " +
-      "merge → {merge_from: [path_a, path_b], body, frontmatter?}.",
+      "queue — normally called by the curation loop or an agent, not by a human " +
+      "directly. Action types: promote, deprecate, supersede, merge, " +
+      "confidence-up, write. proposed_diff carries the per-action payload " +
+      "replayed on ratification: supersede → {superseded_by}, confidence-up → " +
+      "{confidence}, merge → {merge_from: [path_a, path_b], body, frontmatter?}, " +
+      "write → {frontmatter, body} (full content; the target may be a new " +
+      "document). If other pending proposals already target the same document, " +
+      "the new one still lands — both stay pending — and an inter-proposal " +
+      "tension is logged; the result carries conflicts_with and tension_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -453,6 +566,13 @@ export const stagedActionTools: ToolDefinition[] = [
           type: "number",
           description: "Days until the action auto-expires if not ratified (default 14)",
         },
+        run_id: {
+          type: "string",
+          description:
+            "Optional trace/run identifier of the proposing run. Recorded on " +
+            "the proposal and carried into provenance when a write action is " +
+            "ratified.",
+        },
       },
       required: ["action_type", "target_path", "proposed_by", "rationale", "proposed_diff"],
       additionalProperties: false,
@@ -467,9 +587,11 @@ export const stagedActionTools: ToolDefinition[] = [
       "Approve or reject a single pending staged action. On approve, dispatches " +
       "to the matching write tool (promote → vault_promote, deprecate → " +
       "vault_deprecate, supersede → vault_supersede, confidence-up → " +
-      "vault_set_confidence, merge → vault_merge) and auto-commits. On reject, " +
+      "vault_set_confidence, merge → vault_merge, write → vault_write) and " +
+      "auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
-      "action pending. Approving a promote or an unforwarded deprecate runs the " +
+      "action pending. Approving a promote, an unforwarded deprecate, or a " +
+      "write that declares status canonical runs the " +
       "tier-0 gate first (#232): if applying would create a certain structural " +
       "violation (broken source refs, canonical citing draft/deprecated/archived, " +
       "schema-invalid frontmatter, stranded canonical dependents), the approval " +

@@ -32,6 +32,13 @@ export interface RoleConfig {
   write: string[];
   promote: boolean;
   ratify: boolean;
+  // #235: a propose-only role cannot mutate the vault directly — vault_write
+  // coerces into a staged `write` proposal awaiting ratification, and every
+  // other write tool is denied with a pointer to vault_stage_action. This is
+  // the structural "agents cannot write any other state" enforcement: the
+  // permission layer, not convention. YAML key: propose_only. Optional so
+  // existing configs (and role literals) are unchanged; absent means false.
+  proposeOnly?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -200,7 +207,21 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ratify = obj.ratify;
   }
 
-  return ok({ read: read.value, write: write.value, promote, ratify });
+  let proposeOnly = false;
+  if (obj.propose_only !== undefined) {
+    if (typeof obj.propose_only !== "boolean") {
+      return err(new Error(`role '${name}' propose_only must be true or false`));
+    }
+    proposeOnly = obj.propose_only;
+  }
+
+  return ok({
+    read: read.value,
+    write: write.value,
+    promote,
+    ratify,
+    ...(proposeOnly ? { proposeOnly } : {}),
+  });
 }
 
 // Checks a declared `default` value against its extension type. A default

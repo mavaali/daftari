@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
+import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultRatify, vaultStageAction } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
@@ -607,6 +609,159 @@ describe("vault_ratify", () => {
     expect(result.error.message).toContain("hidden canonical dependents: some");
     expect(result.error.message).not.toContain("intel/user.md");
   }, 60_000);
+
+  it("approves a write: dispatches vault_write, creates a NEW document (#235)", async () => {
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/fresh-analysis.md",
+      proposed_by: AGENT,
+      rationale: "New synthesis from run traces.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({ title: "Fresh Analysis" }),
+        body: "# Fresh Analysis\n\nProposed content.\n",
+      },
+      run_id: "run-042",
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+    expect(staged.value.conflicts_with).toEqual([]);
+    expect(staged.value.tension_id).toBeNull();
+
+    // The run id is stamped on the proposal record.
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.runId).toBe("run-042");
+
+    // Nothing is written until ratification.
+    const before = await vaultRead(vault, "pricing/fresh-analysis.md");
+    expect(before.ok).toBe(false);
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/fresh-analysis.md");
+    expect(read.ok && read.value.content).toContain("Proposed content.");
+
+    // The proposer's run id rode through the dispatch into provenance.
+    const log = await readProvenanceLog(vault);
+    expect(log.ok).toBe(true);
+    if (!log.ok) throw log.error;
+    const entry = log.value.find(
+      (e) => e.file === "pricing/fresh-analysis.md" && e.tool === "vault_write",
+    );
+    expect(entry?.run_id).toBe("run-042");
+  }, 60_000);
+
+  it("two contradictory write proposals: both pending, inter-proposal tension, served value unchanged (#235 acceptance)", async () => {
+    await seedDraft(vault, "pricing/contested.md", {
+      status: "canonical",
+    });
+
+    const first = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/contested.md",
+      proposed_by: "agent:alpha",
+      rationale: "The limit is 40 units.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({ title: "Contested" }),
+        body: "# Contested\n\nThe limit is 40 units.\n",
+      },
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw first.error;
+    expect(first.value.conflicts_with).toEqual([]);
+
+    const second = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/contested.md",
+      proposed_by: "agent:beta",
+      rationale: "The limit is 60 units.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({ title: "Contested" }),
+        body: "# Contested\n\nThe limit is 60 units.\n",
+      },
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw second.error;
+
+    // Deterministic outcome: the conflict is surfaced, never silent.
+    expect(second.value.conflicts_with).toEqual([first.value.id]);
+    expect(second.value.tension_id).toMatch(/^tension-/);
+
+    // Both proposals are pending — neither promoted, no last-write-wins.
+    const a = await getStagedActionById(vault, first.value.id);
+    const b = await getStagedActionById(vault, second.value.id);
+    expect(a.ok && a.value?.status).toBe("pending");
+    expect(b.ok && b.value?.status).toBe("pending");
+
+    // The tension is typed inter-proposal, a self-tension on the target.
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) throw tensions.error;
+    const t = tensions.value.find((x) => x.id === second.value.tension_id);
+    expect(t?.kind).toBe("inter-proposal");
+    expect(t?.sourceA).toBe("pricing/contested.md");
+    expect(t?.sourceB).toBe("pricing/contested.md");
+    expect(t?.claimA).toContain(first.value.id);
+    expect(t?.claimB).toContain(second.value.id);
+
+    // The vault's served value is unchanged.
+    const read = await vaultRead(vault, "pricing/contested.md");
+    expect(read.ok && read.value.content).toContain("Body.");
+    expect(read.ok && read.value.content).not.toContain("40 units");
+  }, 60_000);
+
+  it("tier-0 gate blocks ratifying a canonical write proposal citing a draft source", async () => {
+    await seedDraft(vault, "pricing/wip-source.md");
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/bold-claim.md",
+      proposed_by: AGENT,
+      rationale: "Lands directly as canonical.",
+      proposed_diff: {
+        frontmatter: draftFrontmatter({
+          title: "Bold Claim",
+          status: "canonical",
+          sources: ["pricing/wip-source.md"],
+        }),
+        body: "# Bold Claim\n",
+      },
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+    expect(result.error.message).toContain("pricing/wip-source.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("leaves a malformed write pending (no body in diff)", async () => {
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/malformed.md",
+      proposed_by: AGENT,
+      rationale: "Missing body.",
+      proposed_diff: { frontmatter: draftFrontmatter() },
+    });
+    // Stage-time validation catches the malformed payload up front.
+    expect(staged.ok).toBe(false);
+    if (staged.ok) return;
+    expect(staged.error.message).toContain("proposed_diff.body");
+  });
 
   it("errors when ratifying an unknown id", async () => {
     const result = await vaultRatify(vault, {

@@ -12,9 +12,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
-import { type AccessContext, canPromote, canWrite } from "../access/rbac.js";
+import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
+import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
@@ -198,7 +199,8 @@ export interface WriteResult {
     | "supersede"
     | "merge"
     | "confidence-set"
-    | "tier-set";
+    | "tier-set"
+    | "staged";
   // Short commit hash when the write was auto-committed; null when the vault
   // is configured with `auto_commit: false` and the caller owns git.
   commit: string | null;
@@ -211,6 +213,14 @@ export interface WriteResult {
   // and logged to .daftari/shadow-actions.jsonl but NOTHING was written —
   // no file, no commit, no index update, no provenance entry.
   shadow?: boolean;
+  // Set when a propose-only role's vault_write was coerced into a staged
+  // `write` proposal (#235): the staged action's id/expiry, plus any pending
+  // proposals already contesting the same target and the inter-proposal
+  // tension logged for them. action is "staged" and nothing was written.
+  staged_id?: string;
+  expires_at?: string;
+  conflicts_with?: string[];
+  tension_id?: string | null;
 }
 
 // First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
@@ -257,6 +267,9 @@ async function performWrite(params: {
   // AccessContext is present (§11.6). Recorded on provenance and shadow
   // entries as ground truth alongside the caller-claimed `agent`.
   principal?: string;
+  // Caller-supplied trace/run identifier (#235), recorded on provenance
+  // entries so one run's writes correlate (the #233 producer keys on this).
+  runId?: string;
 }): Promise<Result<WriteResult, Error>> {
   // Shadow mode (spec §11.5): everything up to here ran exactly as live —
   // validation, RBAC, frontmatter assembly, diff — so the logged do() is one
@@ -308,6 +321,7 @@ async function performWrite(params: {
             file: params.relPath,
             agent: params.agent,
             ...(params.principal ? { principal: params.principal } : {}),
+            ...(params.runId ? { run_id: params.runId } : {}),
             action: "rejected_stale",
             reason:
               `stale: base_version ${shortHash(params.baseVersion)} != ` +
@@ -348,6 +362,7 @@ async function performWrite(params: {
         file: params.relPath,
         agent: params.agent,
         ...(params.principal ? { principal: params.principal } : {}),
+        ...(params.runId ? { run_id: params.runId } : {}),
         action: params.action,
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
       });
@@ -399,6 +414,36 @@ function readBaseVersion(
     return err(new Error(`${tool}: 'base_version' must be a string`));
   }
   return ok(v.length === 0 ? undefined : v);
+}
+
+// Reads the optional `run_id` trace identifier (#235). Absent, null, or blank
+// all resolve to `undefined`; a non-string value is a hard error.
+function readRunId(args: Record<string, unknown>, tool: string): Result<string | undefined, Error> {
+  const v = args.run_id;
+  if (v === undefined || v === null) return ok(undefined);
+  if (typeof v !== "string") {
+    return err(new Error(`${tool}: 'run_id' must be a string`));
+  }
+  const trimmed = v.trim();
+  return ok(trimmed.length === 0 ? undefined : trimmed);
+}
+
+// #235: a propose-only role cannot mutate the vault directly. vault_write
+// coerces into a staged proposal (see vaultWrite); every OTHER write tool is
+// denied with a pointer to the staging surface. Structural enforcement — the
+// permission layer decides, not convention.
+function denyIfProposeOnly(access: AccessContext | undefined, tool: string): Result<void, Error> {
+  if (access && isProposeOnly(access.role)) {
+    return err(
+      new Error(
+        `${tool}: role '${access.roleName}' is propose-only — direct writes are ` +
+          `disabled. Propose the change instead: vault_write stages a 'write' ` +
+          `proposal, and vault_stage_action stages lifecycle actions ` +
+          `(promote, deprecate, supersede, merge, confidence-up) for ratification.`,
+      ),
+    );
+  }
+  return ok(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +518,8 @@ export async function vaultWrite(
   if (!agent.ok) return agent;
   const baseVersion = readBaseVersion(args, "vault_write");
   if (!baseVersion.ok) return baseVersion;
+  const runId = readRunId(args, "vault_write");
+  if (!runId.ok) return runId;
   const body = args.body;
   if (typeof body !== "string") {
     return err(new Error("vault_write requires a string 'body' argument"));
@@ -501,6 +548,43 @@ export async function vaultWrite(
         ),
       );
     }
+  }
+
+  // #235: a propose-only role's write lands as a staged `write` proposal, not
+  // a mutation. Coerced EARLY — before file I/O, tier guards, hooks, or
+  // validation — because all of that runs for real at ratify time when
+  // vault_ratify dispatches the payload back through this tool with the
+  // ratifier's access. The write grant above still scopes which collections
+  // the role may propose into. Inter-proposal conflicts are checked the same
+  // way vault_stage_action checks them: both proposals stay pending, a
+  // tension is logged, the result names the contenders.
+  if (access && isProposeOnly(access.role)) {
+    const staged = await stageActionWithConflictCheck(vaultRoot, {
+      actionType: "write",
+      targetPath: path.value,
+      proposedBy: agent.value,
+      rationale:
+        typeof args.reason === "string" && args.reason.trim().length > 0
+          ? args.reason.trim()
+          : `propose-only role '${access.roleName}': write staged for ratification`,
+      proposedDiff: { frontmatter: rawFrontmatter, body },
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
+    });
+    if (!staged.ok) return staged;
+    return ok({
+      path: path.value,
+      action: "staged",
+      commit: null,
+      committed: false,
+      status: "pending",
+      updated: todayISO(),
+      validation: { valid: true, issues: [] },
+      indexUpdated: false,
+      staged_id: staged.value.id,
+      expires_at: staged.value.expires_at,
+      conflicts_with: staged.value.conflicts_with,
+      tension_id: staged.value.tension_id,
+    });
   }
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
@@ -683,6 +767,7 @@ export async function vaultWrite(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    ...(runId.value !== undefined ? { runId: runId.value } : {}),
   });
 }
 
@@ -707,6 +792,10 @@ export async function vaultAppend(
   if (!section.ok) return section;
   const baseVersion = readBaseVersion(args, "vault_append");
   if (!baseVersion.ok) return baseVersion;
+  const runId = readRunId(args, "vault_append");
+  if (!runId.ok) return runId;
+  const proposeGate = denyIfProposeOnly(access, "vault_append");
+  if (!proposeGate.ok) return proposeGate;
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
@@ -793,6 +882,7 @@ export async function vaultAppend(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    ...(runId.value !== undefined ? { runId: runId.value } : {}),
   });
 }
 
@@ -810,6 +900,8 @@ export async function vaultPromote(
 ): Promise<Result<WriteResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_promote");
+  if (!proposeGate.ok) return proposeGate;
   const path = requireString(args, "path", "vault_promote");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_promote");
@@ -904,6 +996,8 @@ export async function vaultDeprecate(
 ): Promise<Result<WriteResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_deprecate");
+  if (!proposeGate.ok) return proposeGate;
   const path = requireString(args, "path", "vault_deprecate");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_deprecate");
@@ -995,6 +1089,8 @@ export async function vaultSetConfidence(
 ): Promise<Result<WriteResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_set_confidence");
+  if (!proposeGate.ok) return proposeGate;
   const path = requireString(args, "path", "vault_set_confidence");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_set_confidence");
@@ -1107,6 +1203,8 @@ export async function vaultSetTier(
 ): Promise<Result<WriteResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_set_tier");
+  if (!proposeGate.ok) return proposeGate;
   const path = requireString(args, "path", "vault_set_tier");
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_set_tier");
@@ -1222,6 +1320,8 @@ export async function vaultSupersede(
 ): Promise<Result<WriteResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_supersede");
+  if (!proposeGate.ok) return proposeGate;
   const oldPath = requireString(args, "old_path", "vault_supersede");
   if (!oldPath.ok) return oldPath;
   const newPath = requireString(args, "new_path", "vault_supersede");
@@ -1341,6 +1441,8 @@ export async function vaultMerge(
 ): Promise<Result<WriteResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_merge");
+  if (!proposeGate.ok) return proposeGate;
   const pathA = requireString(args, "path_a", "vault_merge");
   if (!pathA.ok) return pathA;
   const pathB = requireString(args, "path_b", "vault_merge");
@@ -1671,6 +1773,13 @@ const baseVersionProperty = {
     "last-write-wins behavior.",
 };
 
+const runIdProperty = {
+  type: "string",
+  description:
+    "Optional trace/run identifier of the calling run. Recorded in the " +
+    "provenance log so one run's writes correlate.",
+};
+
 // Built-in frontmatter properties, projected from the canonical TS constants
 // in src/frontmatter/types.ts so the MCP input schema, the runtime validator,
 // and the source-of-truth enums never drift. `additionalProperties: true`
@@ -1768,7 +1877,10 @@ export const writeTools: ToolDefinition[] = [
       "full frontmatter and markdown body; the server stamps 'updated' and " +
       "'updated_by' (omit them — anything supplied is overwritten), preserves " +
       "'created' on updates, refreshes the search index, and auto-commits the " +
-      "change to git." +
+      "change to git. If the caller's role is propose-only, nothing is " +
+      "written: the payload lands as a staged 'write' proposal awaiting " +
+      "vault_ratify, and the result carries action: 'staged' with the " +
+      "proposal id (plus any competing pending proposals on the same target)." +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -1781,6 +1893,13 @@ export const writeTools: ToolDefinition[] = [
         frontmatter: frontmatterProperty,
         agent: agentProperty,
         base_version: baseVersionProperty,
+        run_id: runIdProperty,
+        reason: {
+          type: "string",
+          description:
+            "Optional rationale. Used as the proposal rationale when a " +
+            "propose-only role's write is staged for ratification.",
+        },
       },
       required: ["path", "body", "frontmatter", "agent"],
       additionalProperties: false,
@@ -1808,6 +1927,7 @@ export const writeTools: ToolDefinition[] = [
         },
         agent: agentProperty,
         base_version: baseVersionProperty,
+        run_id: runIdProperty,
       },
       required: ["path", "section", "agent"],
       additionalProperties: false,

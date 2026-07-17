@@ -873,6 +873,9 @@ export interface StagedActionRow {
   // Carried on the in-memory row and in the JSONL decision record; NOT stored
   // in the staged_actions sqlite table (no DDL/upsert change needed).
   decided_by_principal?: string | null;
+  // Trace/run id from the proposal record (#235). JSONL-only, like
+  // decided_by_principal — no sqlite column.
+  run_id?: string | null;
 }
 
 // Inserts or replaces a staged-action row by id. Used by the jsonl→sqlite

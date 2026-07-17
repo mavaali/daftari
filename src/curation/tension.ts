@@ -27,11 +27,28 @@ import { ageInDays } from "./staleness.js";
 export const DEFAULT_TENSION_STATUS = "unresolved";
 export const RESOLVED_TENSION_STATUS = "resolved";
 
-export const TENSION_KINDS = ["temporal", "factual", "interpretive", "unspecified"] as const;
+// `inter-proposal` (#235): two pending staged actions contest the same
+// document. Logged automatically at stage time as a self-tension on the
+// target path (sourceA === sourceB === target), claims naming the competing
+// proposal ids. Deterministic outcome: both proposals stay pending, neither
+// is promoted, the conflict is surfaced here — never last-write-wins, never
+// silent.
+export const TENSION_KINDS = [
+  "temporal",
+  "factual",
+  "interpretive",
+  "inter-proposal",
+  "unspecified",
+] as const;
 export type TensionKind = (typeof TENSION_KINDS)[number];
 
 // `unspecified` is for legacy entries only — never accepted on a new log.
-export const LOGGABLE_TENSION_KINDS = ["temporal", "factual", "interpretive"] as const;
+export const LOGGABLE_TENSION_KINDS = [
+  "temporal",
+  "factual",
+  "interpretive",
+  "inter-proposal",
+] as const;
 export type LoggableTensionKind = (typeof LOGGABLE_TENSION_KINDS)[number];
 
 export const RESOLUTION_KINDS = ["superseded", "corrected", "accepted", "invalid"] as const;
@@ -430,6 +447,10 @@ export const STALE_TIER_LINT_COPY: Record<Exclude<TensionKind, "unspecified">, s
     "Unresolved interpretive tension — decide explicitly: `accepted` if both views stand, " +
     "`invalid` if it was mis-logged. Long-running unacknowledged disagreement is the smell, " +
     "not the disagreement itself.",
+  "inter-proposal":
+    "Unresolved inter-proposal tension — competing proposals have contested the same " +
+    "document for months. Ratify one and reject the rest, or reject them all; the " +
+    "review queue is not a resolution.",
 };
 
 // Boundary inclusivity: a tension exactly 30 days old is fresh, 31 days is

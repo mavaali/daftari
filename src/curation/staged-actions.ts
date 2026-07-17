@@ -37,17 +37,21 @@ import {
   type StagedActionRow,
   upsertStagedAction,
 } from "../storage/index-db.js";
+import { addTension } from "./tension.js";
 
 // The action verbs the queue understands. Each dispatches to a write tool on
 // ratify (§11.4 completed the set): promote → vault_promote, deprecate →
 // vault_deprecate, supersede → vault_supersede, confidence-up →
-// vault_set_confidence, merge → vault_merge.
+// vault_set_confidence, merge → vault_merge. `write` (#235) carries full
+// content — proposed_diff = { frontmatter, body } — and dispatches to
+// vault_write; unlike the lifecycle verbs its target may be a new document.
 export const STAGED_ACTION_TYPES = [
   "promote",
   "deprecate",
   "supersede",
   "merge",
   "confidence-up",
+  "write",
 ] as const;
 export type StagedActionType = (typeof STAGED_ACTION_TYPES)[number];
 
@@ -90,6 +94,9 @@ export interface StagedAction {
   // decision. Recorded in the JSONL decision record and carried on the in-memory
   // row. NOT stored in the sqlite staged_actions table (no schema bump needed).
   decidedByPrincipal: string | null;
+  // Caller-supplied trace/run identifier stamped at stage time (#235). Like
+  // decidedByPrincipal, JSONL-only — not in the sqlite staged_actions table.
+  runId: string | null;
 }
 
 export interface StageActionInput {
@@ -99,6 +106,9 @@ export interface StageActionInput {
   rationale: string;
   proposedDiff: unknown;
   ttlDays?: number;
+  // Trace/run identifier of the proposing run (#235). Optional free text,
+  // recorded on the proposal record and echoed into provenance on ratify.
+  runId?: string;
   // Override the proposal timestamp — only used by tests for deterministic
   // expiry math; production callers omit it and get the current clock.
   proposedAt?: string;
@@ -167,6 +177,7 @@ interface RawRecord {
   ratified_by?: string | null;
   ratification_reason?: string | null;
   decided_by_principal?: string | null;
+  run_id?: string | null;
 }
 
 function readRawRecords(vaultRoot: string): RawRecord[] {
@@ -214,6 +225,7 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
         ratified_by: null,
         ratification_reason: null,
         decided_by_principal: null,
+        run_id: rec.run_id ?? null,
       });
     } else {
       // Decision record — only meaningful if the proposal was already seen.
@@ -249,9 +261,11 @@ function rowToStagedAction(row: StagedActionRow): StagedAction {
     ratifiedAt: row.ratified_at,
     ratifiedBy: row.ratified_by,
     ratificationReason: row.ratification_reason,
-    // NOTE: decided_by_principal is JSONL-only — no DDL column in staged_actions;
-    // SQLite-backed reads (rebuildStagedActionsIndex) always yield null here.
+    // NOTE: decided_by_principal and run_id are JSONL-only — no DDL column in
+    // staged_actions; SQLite-backed reads (rebuildStagedActionsIndex) always
+    // yield null here.
     decidedByPrincipal: row.decided_by_principal ?? null,
+    runId: row.run_id ?? null,
   };
 }
 
@@ -326,6 +340,7 @@ export async function stageAction(
       status: "pending",
       rationale: input.rationale.trim(),
       proposed_diff: JSON.stringify(input.proposedDiff),
+      ...(input.runId && input.runId.trim().length > 0 ? { run_id: input.runId.trim() } : {}),
     };
     appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
     return ok({ id, expires_at: expiresAt });
@@ -333,6 +348,75 @@ export async function stageAction(
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot stage action: ${reason}`));
   }
+}
+
+// The stage outcome when conflict detection runs: the staged id/expiry plus
+// any pending proposals already contesting the same target and the id of the
+// inter-proposal tension logged for them.
+export interface StageOutcome {
+  id: string;
+  expires_at: string;
+  conflicts_with: string[];
+  tension_id: string | null;
+}
+
+// Stages a proposal AND runs the inter-proposal check (#235): if other
+// pending proposals already target the same path, the new one still lands —
+// both stay pending, neither is promoted — and a tension of kind
+// `inter-proposal` is logged as a self-tension on the target, its claims
+// naming the competing proposal ids. Deterministic and loud: never
+// last-write-wins, never silent. This is the producer every staging surface
+// should use (vault_stage_action, and vault_write's propose-only coercion).
+export async function stageActionWithConflictCheck(
+  vaultRoot: string,
+  input: StageActionInput,
+): Promise<Result<StageOutcome, Error>> {
+  // Snapshot the pending contenders BEFORE staging so the new proposal is not
+  // its own conflict. Same-process synchronous I/O makes this race-free (see
+  // module header).
+  let contenders: StagedActionRow[];
+  try {
+    contenders = currentRows(vaultRoot).filter(
+      (r) => r.status === "pending" && r.target_path === input.targetPath.trim(),
+    );
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot stage action: ${reason}`));
+  }
+
+  const staged = await stageAction(vaultRoot, input);
+  if (!staged.ok) return staged;
+  if (contenders.length === 0) {
+    return ok({ ...staged.value, conflicts_with: [], tension_id: null });
+  }
+
+  const target = input.targetPath.trim();
+  const tension = await addTension(vaultRoot, {
+    title: `Competing proposals on ${target}`,
+    kind: "inter-proposal",
+    sourceA: target,
+    claimA: contenders
+      .map((r) => `pending ${r.id} (${r.action_type}): ${firstSentence(r.rationale)}`)
+      .join(" | "),
+    sourceB: target,
+    claimB: `new ${staged.value.id} (${input.actionType}): ${firstSentence(input.rationale)}`,
+    loggedBy: input.proposedBy.trim(),
+  });
+  if (!tension.ok) {
+    // The proposal IS staged at this point; failing silently would hide the
+    // conflict, so fail loud and name the staged id for the caller.
+    return err(
+      new Error(
+        `staged as ${staged.value.id}, but failed to log the inter-proposal ` +
+          `tension: ${tension.error.message}`,
+      ),
+    );
+  }
+  return ok({
+    ...staged.value,
+    conflicts_with: contenders.map((r) => r.id),
+    tension_id: tension.value.id ?? null,
+  });
 }
 
 // Appends a decision record (ratify / reject / expire) for an existing action
