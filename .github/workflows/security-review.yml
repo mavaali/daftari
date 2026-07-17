@@ -4,7 +4,9 @@
 # data-exposure issues and comments findings on the PR. Particularly
 # relevant here: RBAC enforcement and the existence-disclosure invariants
 # (omission over redaction, no existence leak) are security surfaces.
-# Requires the same ANTHROPIC_API_KEY repo secret as claude-code-review.
+# Requires the ANTHROPIC_API_KEY repo secret — this action does not yet
+# support subscription OAuth tokens, so it stays on metered API billing
+# (one Sonnet 5 run per PR).
 
 name: Security Review
 
