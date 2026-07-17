@@ -137,6 +137,13 @@ export interface LintOptions {
   now?: Date;
   draftMaxDays?: number; // a draft older than this is flagged
   lowConfidenceMaxDays?: number; // a low-confidence doc unchanged this long is flagged
+  // #217: when set, findings compute from the caller's vantage — invisible
+  // docs are excluded from the doc set BEFORE any check runs, so they are
+  // neither named in findings nor counted as linkers. Filtering the output
+  // instead would leak through absence (an unflagged "orphan" implies a
+  // hidden linker exists). tensionHealth is exempt: vault-global counts by
+  // design (see the 2026-07-14 edge-graph spec, decision C).
+  pathVisible?: (path: string) => boolean;
 }
 
 // --- question matching ----------------------------------------------------
@@ -173,7 +180,9 @@ export async function runLint(
 ): Promise<Result<LintReport, Error>> {
   const loaded = await loadDocuments(vaultRoot);
   if (!loaded.ok) return loaded;
-  const docs = loaded.value;
+  const allDocs = loaded.value;
+  const pathVisible = opts.pathVisible;
+  const docs = pathVisible ? allDocs.filter((d) => pathVisible(d.path)) : allDocs;
 
   const now = opts.now ?? new Date();
   const draftMaxDays = opts.draftMaxDays ?? DRAFT_MAX_DAYS;
@@ -278,7 +287,10 @@ export async function runLint(
 
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
-  const tensionHealth = await computeTensionHealth(vaultRoot, docs, now);
+  // Vault-global by design (#216 rider / #217 decision C): tension health is
+  // the operator's whole-vault view, so it aggregates over ALL docs and
+  // tensions regardless of pathVisible. Counts only — no paths cross here.
+  const tensionHealth = await computeTensionHealth(vaultRoot, allDocs, now);
   if (!tensionHealth.ok) return tensionHealth;
 
   const stagedActions = await listPendingForLint(vaultRoot, now);

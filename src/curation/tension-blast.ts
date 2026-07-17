@@ -50,6 +50,21 @@ import {
 
 export type BlastDependencyType = "source" | "link";
 
+// #217 (B′): under RBAC the downstream list omits unreadable docs, and the
+// hidden remainder is reported coarsened — never as an exact count. The
+// exact delta is routinely a small cell (1–3 docs), and a small cell
+// attached to a readable neighborhood discloses linked existence with
+// certainty (see the 2026-07-14 edge-graph spec). "none" also covers the
+// no-RBAC case: nothing was hidden.
+export type HiddenDownstream = "none" | "some" | "many";
+
+export const HIDDEN_MANY_THRESHOLD = 5;
+
+export function bucketHiddenDownstream(hiddenCount: number): HiddenDownstream {
+  if (hiddenCount <= 0) return "none";
+  return hiddenCount >= HIDDEN_MANY_THRESHOLD ? "many" : "some";
+}
+
 export interface BlastDownstreamEntry {
   path: string;
   dependency_type: BlastDependencyType;
@@ -70,6 +85,7 @@ export interface TensionBlastResult {
   primary_blast: number;
   advisory_blast: number;
   max_depth: number;
+  hidden_downstream: HiddenDownstream;
 }
 
 export interface TensionBlastInput {
@@ -276,5 +292,8 @@ export async function computeTensionBlast(
     primary_blast,
     advisory_blast,
     max_depth,
+    // The computation itself is RBAC-blind (policy is injected by the tool
+    // layer); the handler overwrites this after filtering the downstream set.
+    hidden_downstream: "none",
   });
 }
