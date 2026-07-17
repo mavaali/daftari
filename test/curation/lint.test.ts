@@ -1020,3 +1020,124 @@ ${body}
     });
   });
 });
+
+// Tier 0 structural checks (#232 via #236 QW1): referential integrity,
+// lifecycle consistency, schema conformance. Advisory findings like every
+// other lint check — the CI gate and the ratify gate consume the counts.
+describe("tier 0 checks", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-lint-tier0-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeVaultDoc(
+    relPath: string,
+    over: { status?: string; sources?: string[]; superseded_by?: string | null } = {},
+    rawFrontmatter?: string,
+  ): void {
+    const abs = join(dir, relPath);
+    mkdirSync(dirname(abs), { recursive: true });
+    const fm =
+      rawFrontmatter ??
+      [
+        `title: "${relPath}"`,
+        "domain: accumulation",
+        "collection: tier0",
+        `status: ${over.status ?? "canonical"}`,
+        "confidence: high",
+        "created: 2026-01-01",
+        "updated: 2026-06-01",
+        "updated_by: human:mihir",
+        "provenance: direct",
+        `sources: [${(over.sources ?? []).map((s) => JSON.stringify(s)).join(", ")}]`,
+        `superseded_by: ${over.superseded_by ? JSON.stringify(over.superseded_by) : "null"}`,
+        "ttl_days: null",
+        "tags: []",
+      ].join("\n");
+    writeFileSync(abs, `---\n${fm}\n---\n\nBody of ${relPath}. See [[real]].\n`);
+  }
+
+  it("flags path-shaped sources that resolve to nothing, exempting bare provenance names", async () => {
+    writeVaultDoc("real.md");
+    writeVaultDoc("citer.md", {
+      sources: ["missing/gone.md", "interview with the platform team", "real.md"],
+    });
+    const report = await runLint(dir);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const findings = report.value.checks.brokenSourceRefs;
+    expect(findings.map((f) => f.path)).toEqual(["citer.md"]);
+    expect(findings[0]?.detail).toContain("missing/gone.md");
+    expect(findings[0]?.detail).not.toContain("interview");
+    expect(findings[0]?.detail).not.toContain("real.md");
+  });
+
+  it("flags a superseded_by that resolves to nothing (always a vault path)", async () => {
+    writeVaultDoc("stump.md", { status: "superseded", superseded_by: "vanished.md" });
+    const report = await runLint(dir);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.brokenSourceRefs.map((f) => f.path)).toEqual(["stump.md"]);
+    expect(report.value.checks.brokenSourceRefs[0]?.detail).toContain("vanished.md");
+  });
+
+  it("flags a canonical doc whose resolved source is not canonical", async () => {
+    writeVaultDoc("real.md"); // canonical: fine as a source
+    writeVaultDoc("still-draft.md", { status: "draft" });
+    writeVaultDoc("cert.md", { status: "canonical", sources: ["real.md", "still-draft.md"] });
+    const report = await runLint(dir);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const findings = report.value.checks.lifecycleViolations;
+    expect(findings.map((f) => f.path)).toEqual(["cert.md"]);
+    expect(findings[0]?.detail).toContain("still-draft.md");
+    expect(findings[0]?.detail).toContain("draft");
+    expect(findings[0]?.detail).not.toContain("real.md,");
+  });
+
+  it("does not apply the lifecycle rule to non-canonical dependents", async () => {
+    writeVaultDoc("still-draft.md", { status: "draft" });
+    writeVaultDoc("sketch.md", { status: "draft", sources: ["still-draft.md"] });
+    const report = await runLint(dir);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.lifecycleViolations).toEqual([]);
+  });
+
+  it("flags schema-invalid frontmatter and unparseable files", async () => {
+    writeVaultDoc("real.md");
+    // Schema-invalid: bogus status survives parsing but fails validation.
+    writeVaultDoc("bad-status.md", {}, 'title: "x"\nstatus: bogus-state');
+    // Unparseable: broken YAML in the frontmatter block.
+    writeFileSync(join(dir, "broken.md"), "---\ntitle: [unclosed\n---\n\nbody\n");
+    const report = await runLint(dir);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const paths = report.value.checks.invalidFrontmatter.map((f) => f.path).sort();
+    expect(paths).toEqual(["bad-status.md", "broken.md"]);
+  });
+
+  it("computes from the caller's vantage: a hidden source target reads as broken (#217)", async () => {
+    writeVaultDoc("secret/hidden.md");
+    writeVaultDoc("citer.md", { sources: ["secret/hidden.md"] });
+    const report = await runLint(dir, {
+      pathVisible: (p) => !p.startsWith("secret/"),
+    });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    // From this vantage secret/hidden.md does not exist, so the ref is broken
+    // — consistent with nonexistence, which is exactly what no-leak requires.
+    expect(report.value.checks.brokenSourceRefs.map((f) => f.path)).toEqual(["citer.md"]);
+  });
+
+  it("counts tier 0 findings in totalFindings", async () => {
+    writeVaultDoc("citer.md", { sources: ["missing/gone.md"] });
+    const report = await runLint(dir);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.totalFindings).toBeGreaterThanOrEqual(1);
+  });
+});

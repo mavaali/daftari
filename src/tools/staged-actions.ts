@@ -22,10 +22,13 @@ import {
   type StagedActionType,
   stageAction,
 } from "../curation/staged-actions.js";
+import { sourceReadable } from "../curation/tension-access.js";
+import { tier0GateForAction } from "../curation/tier0-gate.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForAccessOrNull } from "./search.js";
 import {
   vaultDeprecate,
   vaultMerge,
@@ -210,7 +213,44 @@ export async function vaultRatify(
     return ok({ action_id: id.value, decision, applied: false });
   }
 
-  // --- approve: dispatch by action type to the matching write tool ---
+  // --- approve: Tier 0 gate, then dispatch ---
+  // The gate (#232 via #236 QW1) refuses an approval that would introduce a
+  // certain structural defect: certifying onto broken or non-canonical
+  // sources, or pulling a source out from under canonical dependents. A
+  // refusal leaves the action pending — the same retryable posture as a
+  // dispatch failure. Visibility: violating dependents the caller cannot read
+  // are coarsened (none|some|many), never named (2026-07-14 spec).
+  {
+    const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+    let gate: Awaited<ReturnType<typeof tier0GateForAction>>;
+    try {
+      gate = await tier0GateForAction(
+        vaultRoot,
+        { actionType: action.actionType, targetPath: action.targetPath },
+        access ? (p) => sourceReadable(db, access, p) : undefined,
+      );
+    } finally {
+      db?.close();
+    }
+    if (!gate.ok) return gate;
+    if (!gate.value.ok) {
+      const parts = [...gate.value.violations];
+      if (gate.value.hiddenDependents !== "none") {
+        parts.push(
+          `${gate.value.hiddenDependents} canonical dependent(s) in collections ` +
+            "you cannot read would be left on a dead source",
+        );
+      }
+      return err(
+        new Error(
+          `vault_ratify: tier 0 gate refused ${action.actionType} of ` +
+            `${action.targetPath} — ${parts.join("; ")}. The action stays pending; ` +
+            "fix the vault (or reject the action) and re-approve.",
+        ),
+      );
+    }
+  }
+
   // A dispatch failure — including a malformed proposed_diff — leaves the action
   // pending so it can be retried; no decision record is written until a write
   // lands. The proposed_diff carries the per-action payload set at stage time.
