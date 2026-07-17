@@ -993,6 +993,7 @@ describe("write tools", () => {
         "updated",
         "updated_by",
         "provenance",
+        "tier",
         "sources",
         "superseded_by",
         "ttl_days",

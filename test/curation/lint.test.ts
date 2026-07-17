@@ -1020,3 +1020,79 @@ ${body}
     });
   });
 });
+
+// #141 — tierDemotions: the tripwire for the tier escape hatch. Every
+// provenance entry whose frontmatter_diff moved `tier` OFF `source` is
+// surfaced for review; if this fills with routine demotions, the guard is
+// theater and demotions should escalate to staged-action + ratify.
+describe("tierDemotions (#141)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  async function record(file: string, before: unknown, after: unknown, tool = "vault_set_tier") {
+    const { recordProvenance } = await import("../../src/curation/provenance.js");
+    const r = await recordProvenance(vault, {
+      tool,
+      file,
+      agent: "agent:claude-code",
+      action: "tier-set",
+      frontmatter_diff: { tier: { before, after } },
+    });
+    if (!r.ok) throw r.error;
+  }
+
+  it("flags a demotion off tier: source, naming agent and new tier", async () => {
+    await record("pricing/ingested.md", "source", "compiled");
+    const r = await runLint(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const findings = r.value.checks.tierDemotions;
+    expect(findings.map((f) => f.path)).toEqual(["pricing/ingested.md"]);
+    expect(findings[0]?.detail).toContain("source");
+    expect(findings[0]?.detail).toContain("compiled");
+    expect(findings[0]?.detail).toContain("agent:claude-code");
+  });
+
+  it("does not flag promotions to source or changes off manual", async () => {
+    await record("pricing/a.md", null, "source");
+    await record("pricing/b.md", "manual", "compiled");
+    const r = await runLint(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.checks.tierDemotions).toEqual([]);
+  });
+
+  it("flags a source demotion done via vault_write, not just set_tier", async () => {
+    await record("pricing/c.md", "source", null, "vault_write");
+    const r = await runLint(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.checks.tierDemotions.map((f) => f.path)).toEqual(["pricing/c.md"]);
+  });
+
+  it("omits demotions on paths the caller cannot see (#217)", async () => {
+    await record("pricing/ingested.md", "source", "compiled");
+    const r = await runLint(vault, { pathVisible: (p) => !p.startsWith("pricing/") });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.checks.tierDemotions).toEqual([]);
+  });
+
+  it("counts demotions in totalFindings", async () => {
+    await record("pricing/ingested.md", "source", "compiled");
+    const r = await runLint(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const others = Object.entries(r.value.checks)
+      .filter(([name]) => name !== "tierDemotions")
+      .reduce((n, [, f]) => n + f.length, 0);
+    expect(r.value.totalFindings).toBe(others + 1);
+  });
+});

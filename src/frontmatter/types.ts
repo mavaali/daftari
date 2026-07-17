@@ -19,6 +19,15 @@ export type Confidence = (typeof CONFIDENCES)[number];
 export const PROVENANCES = ["direct", "synthesized", "inferred"] as const;
 export type Provenance = (typeof PROVENANCES)[number];
 
+// #141: opt-in write-protection tier. `source` — raw ingested material, body
+// is immutable to every writer (escape hatch: vault_set_tier demotes it first,
+// loudly). `manual` — human-authored canon, body rewrites require a `human:*`
+// identity. `compiled` — agent-maintained synthesis, no enforcement; named so
+// a compilation pass can assert what it is allowed to regenerate. Unset (null)
+// means no enforcement — the pre-#141 behavior for every existing doc.
+export const TIERS = ["source", "compiled", "manual"] as const;
+export type Tier = (typeof TIERS)[number];
+
 // The runtime value of a config-declared schema-extension field. `date` and
 // `enum` fields are carried as strings; `array` fields as string[]. A core
 // type so config.ts and the frontmatter layer agree on the shape.
@@ -37,6 +46,7 @@ export interface BuiltinFrontmatter {
   updated: string; // YYYY-MM-DD
   updated_by: string; // agent:<id> | human:<username>
   provenance: Provenance;
+  tier: Tier | null;
   sources: string[];
   superseded_by: string | null;
   ttl_days: number | null;
@@ -65,6 +75,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "updated",
   "updated_by",
   "provenance",
+  "tier",
   "sources",
   "superseded_by",
   "ttl_days",

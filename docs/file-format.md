@@ -56,6 +56,7 @@ always valid even though you never typed those two fields.
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
+| `tier` | enum or `null` | `null` | Write-protection tier: `source`, `compiled`, or `manual`. Unset means no enforcement. See [below](#tier--write-protection). |
 | `sources` | list of strings | `[]` | Source identifiers the document was built from. |
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
@@ -81,6 +82,33 @@ always valid even though you never typed those two fields.
 | `direct` | Taken directly from a primary source. |
 | `synthesized` | Combined and compiled from multiple sources by an agent. |
 | `inferred` | Reasoned or guessed, not directly sourced. The weakest provenance. |
+
+### `tier` — write-protection
+
+Opt-in, per document. Unset (`null`) means no enforcement — the behavior every
+document had before the field existed.
+
+| Value | Meaning |
+|-------|---------|
+| `source` | Raw ingested material. The body is immutable to **every** writer; `vault_write` and `vault_merge` refuse body changes. `vault_append` still works. |
+| `compiled` | Agent-maintained synthesis. No enforcement — named so a compilation pass can assert what it is allowed to regenerate. |
+| `manual` | Human-authored canon. Body rewrites require a `human:*` identity; agents can still `vault_append`. |
+
+The escape hatch is **demote-then-write**, not a force flag: change the tier
+first with `vault_set_tier` (a reason is required; the change lands in the
+provenance log and `vault_lint` surfaces every demotion off `source` under
+`tierDemotions`), then write. Two asymmetries are deliberate:
+
+- Moving a document **away from `manual`** requires a `human:*` identity —
+  `manual` is a consent boundary only a human may lift. Moving away from
+  `source` is open to any identity, loudly.
+- On a document currently tiered `source` or `manual`, the tier can only be
+  changed via `vault_set_tier` — `vault_write` refuses frontmatter payloads
+  that touch it, so the reason requirement cannot be dodged.
+
+`tier` is orthogonal to `provenance`: provenance describes how content was
+obtained (self-reported, advisory); tier controls who may rewrite it
+(enforced at the write path).
 
 ### `domain` — accumulation vs. generative
 

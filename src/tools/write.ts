@@ -27,6 +27,8 @@ import {
   PROVENANCES,
   type Result,
   STATUSES,
+  TIERS,
+  type Tier,
   type ValidationIssue,
   type ValidationReport,
 } from "../frontmatter/types.js";
@@ -145,6 +147,10 @@ export function serializeDocument(
     updated: fm.updated,
     updated_by: fm.updated_by,
     provenance: fm.provenance,
+    // `?? null` — a hand-built Frontmatter that predates tier may carry
+    // undefined here, which js-yaml refuses to dump (null it serializes fine,
+    // matching the superseded_by convention).
+    tier: fm.tier ?? null,
     sources: fm.sources,
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
@@ -191,7 +197,8 @@ export interface WriteResult {
     | "deprecate"
     | "supersede"
     | "merge"
-    | "confidence-set";
+    | "confidence-set"
+    | "tier-set";
   // Short commit hash when the write was auto-committed; null when the vault
   // is configured with `auto_commit: false` and the caller owns git.
   commit: string | null;
@@ -401,6 +408,58 @@ function readBaseVersion(
 // Creates a new document or overwrites an existing one. The caller supplies
 // the full frontmatter; `updated` and `updated_by` are always stamped by the
 // server, and `created` is preserved from the existing document on an update.
+// --- tier write-protection (#141) ------------------------------------------
+//
+// `tier: source` bodies are immutable to EVERY writer; `tier: manual` bodies
+// only accept rewrites from a human:* identity. The escape hatch is
+// deliberately NOT an inline force flag — a refusal that names a bypass
+// parameter teaches the calling model to pass it reflexively. Instead the
+// caller must demote the tier first (vault_set_tier, reason required, change
+// provenance-logged), then write. Frontmatter-only writes pass unchanged, so
+// curation tools (promote, deprecate, supersede, set_confidence) and tag
+// edits keep working on tiered docs.
+
+// Body equality up to a leading-newline / trailing-whitespace difference:
+// gray-matter's parsed content starts with the newline after the frontmatter
+// fence and serializeDocument re-adds one, so a byte comparison would flag
+// every round-tripped body as changed.
+function sameBody(a: string, b: string): boolean {
+  const norm = (s: string) => s.replace(/^\n+/, "").replace(/\s+$/, "");
+  return norm(a) === norm(b);
+}
+
+function checkTierGuard(args: {
+  tool: string;
+  path: string;
+  tier: Tier | null;
+  oldBody: string;
+  newBody: string;
+  agent: string;
+}): Result<void, Error> {
+  const { tool, path, tier, oldBody, newBody, agent } = args;
+  if (tier !== "source" && tier !== "manual") return ok(undefined);
+  if (sameBody(oldBody, newBody)) return ok(undefined);
+  if (tier === "source") {
+    return err(
+      new Error(
+        `${tool}: ${path} is tier 'source' — its body is immutable. If this ` +
+          `rewrite is deliberate, demote the tier first with vault_set_tier ` +
+          `(a reason is required and the change is logged), then write. ` +
+          `vault_append can add to it without a tier change.`,
+      ),
+    );
+  }
+  if (!agent.startsWith("human:")) {
+    return err(
+      new Error(
+        `${tool}: ${path} is tier 'manual' — body rewrites require a ` +
+          `human:* identity (got '${agent}'). vault_append can add to it.`,
+      ),
+    );
+  }
+  return ok(undefined);
+}
+
 export async function vaultWrite(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -450,6 +509,7 @@ export async function vaultWrite(
   const existing = await readFile(resolved.value.absPath);
   let oldFrontmatter: Frontmatter | null = null;
   let oldRaw: Record<string, unknown> | null = null;
+  let oldContent = "";
   if (existing.ok) {
     const parsed = parseDocument(existing.value);
     if (!parsed.ok) {
@@ -468,9 +528,22 @@ export async function vaultWrite(
     }
     oldFrontmatter = parsed.value.frontmatter;
     oldRaw = parsed.value.raw;
+    oldContent = parsed.value.content;
   }
   const isUpdate = oldFrontmatter !== null;
   const hookOperation: HookOperation = isUpdate ? "update" : "create";
+
+  if (isUpdate && oldFrontmatter) {
+    const guard = checkTierGuard({
+      tool: "vault_write",
+      path: path.value,
+      tier: oldFrontmatter.tier,
+      oldBody: oldContent,
+      newBody: body,
+      agent: agent.value,
+    });
+    if (!guard.ok) return guard;
+  }
 
   // On update, merge the document's existing frontmatter under the payload, so
   // a tool-mediated write never silently drops a field the author put there
@@ -490,6 +563,26 @@ export async function vaultWrite(
     }
     for (const key of Object.keys(rawFrontmatter)) delete rawFrontmatter[key];
     Object.assign(rawFrontmatter, merged);
+  }
+
+  // #141: a protected doc's tier only changes via vault_set_tier. Allowing it
+  // here would let a frontmatter-only write (which sameBody waves through)
+  // demote the tier — dodging set_tier's reason requirement and manual's
+  // human gate — and then rewrite the body in a second call.
+  if (
+    isUpdate &&
+    oldFrontmatter &&
+    (oldFrontmatter.tier === "source" || oldFrontmatter.tier === "manual")
+  ) {
+    if (rawFrontmatter.tier !== oldFrontmatter.tier) {
+      return err(
+        new Error(
+          `vault_write: ${path.value} is tier '${oldFrontmatter.tier}' — changing ` +
+            `its tier requires vault_set_tier (a reason is required` +
+            `${oldFrontmatter.tier === "manual" ? ", and a human:* identity" : ""}).`,
+        ),
+      );
+    }
   }
 
   // Config-declared schema extensions participate in validation and
@@ -997,6 +1090,124 @@ export async function vaultSetConfidence(
 }
 
 // ---------------------------------------------------------------------------
+// vault_set_tier (#141)
+// ---------------------------------------------------------------------------
+
+// Changes only a document's write-protection tier, leaving body and status
+// untouched. This is the escape hatch for the tier guards — a separate,
+// reason-carrying, provenance-logged act rather than an inline force flag on
+// the destructive call. Moving a doc AWAY from `manual` requires a human:*
+// identity (otherwise demote-then-write would bypass the consent boundary);
+// moving away from `source` is open to any identity — deliberate demotions
+// are allowed, and vault_lint surfaces them for review.
+export async function vaultSetTier(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const path = requireString(args, "path", "vault_set_tier");
+  if (!path.ok) return path;
+  const agent = requireString(args, "agent", "vault_set_tier");
+  if (!agent.ok) return agent;
+  const reason = requireString(args, "reason", "vault_set_tier");
+  if (!reason.ok) return reason;
+  const tier = requireString(args, "tier", "vault_set_tier");
+  if (!tier.ok) return tier;
+  if (!(TIERS as readonly string[]).includes(tier.value)) {
+    return err(new Error(`vault_set_tier: 'tier' must be one of: ${TIERS.join(", ")}`));
+  }
+  const newTier = tier.value as Tier;
+  const baseVersion = readBaseVersion(args, "vault_set_tier");
+  if (!baseVersion.ok) return baseVersion;
+
+  const resolved = resolveVaultPath(vaultRoot, path.value);
+  if (!resolved.ok) return resolved;
+
+  const existing = await readFile(resolved.value.absPath);
+  if (!existing.ok) {
+    return err(new Error(`vault_set_tier: document not found: ${path.value}`));
+  }
+  const parsed = parseDocument(existing.value);
+  if (!parsed.ok) return parsed;
+
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const extensions = config.value.schemaExtensions;
+
+  const oldFrontmatter = parsed.value.frontmatter;
+  if (access) {
+    const collection = collectionOf(path.value, oldFrontmatter);
+    if (!canWrite(access.role, collection)) {
+      return err(
+        new Error(
+          `access denied: role '${access.roleName}' cannot write to ` +
+            `collection '${collection}'`,
+        ),
+      );
+    }
+  }
+
+  // The manual consent boundary: only a human identity may lift `manual`.
+  if (
+    oldFrontmatter.tier === "manual" &&
+    newTier !== "manual" &&
+    !agent.value.startsWith("human:")
+  ) {
+    return err(
+      new Error(
+        `vault_set_tier: ${path.value} is tier 'manual' — moving it away from ` +
+          `'manual' requires a human:* identity (got '${agent.value}').`,
+      ),
+    );
+  }
+
+  // No-op guard, same shape as vault_set_confidence: compare against the raw
+  // on-disk value so an invalid raw tier (validated down to null) can still be
+  // set to any member.
+  const rawTier = parsed.value.raw.tier;
+  const currentTier =
+    typeof rawTier === "string" && (TIERS as readonly string[]).includes(rawTier)
+      ? rawTier
+      : undefined;
+  if (currentTier === newTier) {
+    return err(new Error(`vault_set_tier: ${path.value} tier is already '${newTier}'`));
+  }
+
+  const newFrontmatter: Frontmatter = {
+    ...oldFrontmatter,
+    tier: newTier,
+    updated: todayISO(),
+    updated_by: agent.value,
+  };
+
+  return performWrite({
+    vaultRoot,
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath (resolved.value.relPath), never the raw caller string: aliased
+    // spellings of one file must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
+    agent: agent.value,
+    tool: "vault_set_tier",
+    action: "tier-set",
+    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
+    newFrontmatter,
+    oldFrontmatter,
+    validation: parsed.value.validation,
+    commitMessage:
+      `vault_set_tier: ${path.value} ${oldFrontmatter.tier ?? "unset"}→${newTier} ` +
+      `by ${agent.value} — ${reason.value}`,
+    autoCommit: config.value.autoCommit,
+    gitDir: config.value.gitDir,
+    baseVersion: baseVersion.value,
+    shadowMode: config.value.shadowMode,
+    principal: access?.user,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // vault_supersede (§11.4)
 // ---------------------------------------------------------------------------
 
@@ -1215,13 +1426,30 @@ export async function vaultMerge(
   // inherit path_a's. The supplied body replaces whatever was there.
   const existingTarget = await readFile(resolvedTarget.value.absPath);
   let targetOldFrontmatter: Frontmatter | null = null;
+  let targetOldContent = "";
   let targetCreated = parsedA.value.frontmatter.created;
   if (existingTarget.ok) {
     const parsedTarget = parseDocument(existingTarget.value);
     if (parsedTarget.ok) {
       targetOldFrontmatter = parsedTarget.value.frontmatter;
+      targetOldContent = parsedTarget.value.content;
       targetCreated = parsedTarget.value.frontmatter.created;
     }
+  }
+
+  // Tier guard (#141): the merged body wholly replaces the target's. path_a
+  // and path_b only receive a frontmatter-level supersede, so their tiers
+  // don't gate the merge.
+  if (targetOldFrontmatter) {
+    const guard = checkTierGuard({
+      tool: "vault_merge",
+      path: targetPath.value,
+      tier: targetOldFrontmatter.tier,
+      oldBody: targetOldContent,
+      newBody: body,
+      agent: agent.value,
+    });
+    if (!guard.ok) return guard;
   }
   const targetRaw: Record<string, unknown> = {
     ...parsedA.value.raw,
@@ -1673,6 +1901,44 @@ export const writeTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     handler: (vaultRoot, args, access) => vaultSetConfidence(vaultRoot, args, access),
+  },
+  {
+    name: "vault_set_tier",
+    title: "Set a document's write-protection tier",
+    annotations: { destructiveHint: true },
+    description:
+      "Change only a document's write-protection tier (source | compiled | " +
+      "manual), leaving its body untouched. `source` bodies are immutable; " +
+      "`manual` bodies only accept rewrites from a human:* identity; " +
+      "`compiled` and unset are unenforced. This is the escape hatch for the " +
+      "tier guards: demote first (a reason is required and the change is " +
+      "logged for lint review), then write. Moving a doc away from 'manual' " +
+      "requires a human:* identity. Rejects if the tier is already at the " +
+      "target. Auto-commits." +
+      shadowNote,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Vault-relative path of the document",
+        },
+        tier: {
+          type: "string",
+          enum: [...TIERS],
+          description: "The new tier",
+        },
+        reason: {
+          type: "string",
+          description: "Why the tier is changing (recorded in the commit and provenance)",
+        },
+        agent: agentProperty,
+        base_version: baseVersionProperty,
+      },
+      required: ["path", "tier", "reason", "agent"],
+      additionalProperties: false,
+    },
+    handler: (vaultRoot, args, access) => vaultSetTier(vaultRoot, args, access),
   },
   {
     name: "vault_supersede",

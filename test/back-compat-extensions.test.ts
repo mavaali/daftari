@@ -21,6 +21,7 @@ const BUILTIN_KEYS = [
   "updated",
   "updated_by",
   "provenance",
+  "tier",
   "sources",
   "superseded_by",
   "ttl_days",

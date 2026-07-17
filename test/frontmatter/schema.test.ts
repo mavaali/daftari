@@ -85,3 +85,34 @@ describe("requireDate validation (preserves raw, flags malformed)", () => {
     expect(issuesFor("updated", { updated: "2026-7-9" })).toHaveLength(1);
   });
 });
+
+// The tier field (#141): optional, opt-in per document. Unlike the required
+// enums (domain/status/...), a missing tier must stay null — never coerced to
+// a default — because null means "no enforcement" in the write-path guards.
+describe("tier validation (optional enum, defaults to null)", () => {
+  it("accepts each valid tier", () => {
+    for (const tier of ["source", "compiled", "manual"]) {
+      const r = validateFrontmatter(data({ tier }));
+      expect(r.frontmatter.tier).toBe(tier);
+      expect(r.report.issues.filter((i) => i.field === "tier")).toEqual([]);
+    }
+  });
+
+  it("defaults a missing tier to null with no issue", () => {
+    const r = validateFrontmatter(data({}));
+    expect(r.frontmatter.tier).toBeNull();
+    expect(r.report.issues.filter((i) => i.field === "tier")).toEqual([]);
+  });
+
+  it("treats an explicit null tier as unset with no issue", () => {
+    const r = validateFrontmatter(data({ tier: null }));
+    expect(r.frontmatter.tier).toBeNull();
+    expect(r.report.issues.filter((i) => i.field === "tier")).toEqual([]);
+  });
+
+  it("flags an invalid tier value and falls back to null", () => {
+    const r = validateFrontmatter(data({ tier: "raw" }));
+    expect(r.frontmatter.tier).toBeNull();
+    expect(issuesFor("tier", { tier: "raw" })).toHaveLength(1);
+  });
+});
