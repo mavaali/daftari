@@ -39,6 +39,26 @@ describe("tension", () => {
     expect(result.ok && result.value).toEqual([]);
   });
 
+  it("allocates unique ids under concurrent logging (#235 contention path)", async () => {
+    // Id allocation + append run in one synchronous critical section
+    // (mirroring stageAction), so concurrent addTension calls — the
+    // inter-proposal conflict check firing from contending stagings — never
+    // mint the same tension-NNN id. Before the fix, the async
+    // read-then-append gap let every concurrent call read the same log
+    // state and collide on one id.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        addTension(vault, { ...sampleInput, title: `Concurrent ${i}` }),
+      ),
+    );
+    const ids = results.map((r) => (r.ok ? r.value.id : "ERR"));
+    expect(new Set(ids).size).toBe(5);
+    expect(ids).not.toContain("ERR");
+
+    const logged = await listTensions(vault);
+    expect(logged.ok && logged.value).toHaveLength(5);
+  });
+
   it("accepts an inter-proposal tension only as a self-tension (#235)", async () => {
     const arbitrary = await addTension(vault, {
       ...sampleInput,

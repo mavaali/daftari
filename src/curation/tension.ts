@@ -18,8 +18,8 @@
 // and have no id — they cannot be resolved through the tool. They can still
 // be edited or re-logged.
 
-import { mkdirSync } from "node:fs";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { ageInDays } from "./staleness.js";
@@ -180,30 +180,39 @@ export async function addTension(
     );
   }
 
-  const existing = await listTensions(vaultRoot);
-  if (!existing.ok) return existing;
-
-  const entry: TensionEntry = {
-    id: nextTensionId(existing.value),
-    date: input.date ?? new Date().toISOString().slice(0, 10),
-    title: input.title.trim(),
-    kind: input.kind,
-    sourceA: input.sourceA.trim(),
-    claimA: input.claimA.trim(),
-    sourceB: input.sourceB.trim(),
-    claimB: input.claimB.trim(),
-    status: input.status ?? DEFAULT_TENSION_STATUS,
-    loggedBy: input.loggedBy.trim(),
-    ...(input.decidedByPrincipal != null && input.decidedByPrincipal.trim().length > 0
-      ? { decidedByPrincipal: input.decidedByPrincipal.trim() }
-      : {}),
-    resolved: false,
-  };
-
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    // Critical section (mirrors stageAction's id allocation in
+    // staged-actions.ts): read the log, allocate the next id, and append in
+    // one synchronous breath with no intervening await, so two concurrent
+    // addTension calls — e.g. the inter-proposal conflict check firing from
+    // two contending stagings, the exact scenario #235 targets — can never
+    // mint the same tension-NNN id. Per-process, which is sufficient under
+    // the one-process-per-vault rule (.daftari/process.lock).
+    let raw = "";
+    try {
+      raw = readFileSync(tensionsPath(vaultRoot), "utf-8");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    const entry: TensionEntry = {
+      id: nextTensionId(parseTensionLog(raw)),
+      date: input.date ?? new Date().toISOString().slice(0, 10),
+      title: input.title.trim(),
+      kind: input.kind,
+      sourceA: input.sourceA.trim(),
+      claimA: input.claimA.trim(),
+      sourceB: input.sourceB.trim(),
+      claimB: input.claimB.trim(),
+      status: input.status ?? DEFAULT_TENSION_STATUS,
+      loggedBy: input.loggedBy.trim(),
+      ...(input.decidedByPrincipal != null && input.decidedByPrincipal.trim().length > 0
+        ? { decidedByPrincipal: input.decidedByPrincipal.trim() }
+        : {}),
+      resolved: false,
+    };
     // A leading blank line keeps this block separated from the previous one.
-    await appendFile(tensionsPath(vaultRoot), `\n${renderEntry(entry)}`);
+    appendFileSync(tensionsPath(vaultRoot), `\n${renderEntry(entry)}`);
     return ok(entry);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
