@@ -6,6 +6,7 @@ import { observeEdge } from "../../src/curation/edges.js";
 import { runLint } from "../../src/curation/lint.js";
 import {
   listStagedActions,
+  recordDecision,
   type StageActionInput,
   stageAction,
 } from "../../src/curation/staged-actions.js";
@@ -933,6 +934,34 @@ ${body}
       expect(soonest?.expiresInDays).toBe(4); // 06-02 → 06-06
       expect(soonest?.ageDays).toBe(1); // 06-01 → 06-02
       expect(soonest?.rationale).toBe("First sentence."); // first sentence only
+    });
+
+    it("reports the review-throughput aggregate over the staged-actions log (#236 QW2)", async () => {
+      dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+      await stageAction(dir, { ...base, proposedAt: "2026-06-01T00:00:00Z", ttlDays: 30 });
+      await stageAction(dir, { ...base, proposedAt: "2026-06-08T00:00:00Z", ttlDays: 30 });
+      const decided = await recordDecision(dir, "stage-001", {
+        status: "ratified",
+        ratifiedAt: "2026-06-05T00:00:00Z",
+        ratifiedBy: "human:mihir",
+      });
+      expect(decided.ok).toBe(true);
+
+      const report = await runLint(dir, { now: new Date("2026-06-10T00:00:00Z") });
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      const rt = report.value.reviewThroughput;
+      expect(rt.lifetime).toEqual({
+        proposals: 2,
+        ratified: 1,
+        rejected: 0,
+        expired: 0,
+        pending: 1,
+      });
+      expect(rt.last7d).toEqual({ arrivals: 1, decisions: 1, expiries: 0 });
+      expect(rt.last30d).toEqual({ arrivals: 2, decisions: 1, expiries: 0 });
+      expect(rt.timeToDecisionDays.p50).toBeCloseTo(4, 5);
+      expect(rt.oldestPendingDays).toBeCloseTo(2, 5);
     });
 
     it("vault_lint sweeps actions past their TTL into expired, dropping them from the section", async () => {

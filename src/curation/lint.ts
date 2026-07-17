@@ -9,6 +9,7 @@ import { ok, type Result } from "../frontmatter/types.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
+import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummary } from "./shadow.js";
 import {
   listPendingForLint,
@@ -131,6 +132,10 @@ export interface LintReport {
   // Coverage/equity summary (Stage 4 — spec §6.2): four budget-drift ratchets
   // over the cortex loop. Read-only monitor; never a target.
   coverageEquity: CoverageEquitySummary;
+  // #235's headline measurement (quick win 2 of #236): proposal arrival rate
+  // vs. review throughput over the staged-actions log. Vault-global counts by
+  // design, like tensionHealth — no paths or principals cross here.
+  reviewThroughput: ReviewThroughputSummary;
 }
 
 export interface LintOptions {
@@ -322,6 +327,7 @@ export async function runLint(
     stagedActions: stagedActions.value,
     shadowActions: shadowActions.value,
     coverageEquity: coverageEquityRes.value,
+    reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
   });
 }
 

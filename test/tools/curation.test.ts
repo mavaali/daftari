@@ -68,6 +68,17 @@ describe("curation tools", () => {
       expect(result.value.coverageEquity).toBeDefined();
       expect(result.value.coverageEquity.actionMix).toBeDefined();
     });
+
+    it("tool result carries reviewThroughput, unfiltered and filtered (#236 QW2)", async () => {
+      const unfiltered = await vaultLint(LINT_VAULT, {});
+      expect(unfiltered.ok).toBe(true);
+      if (!unfiltered.ok) return;
+      expect(unfiltered.value.reviewThroughput.lifetime).toBeDefined();
+      const filtered = await vaultLint(LINT_VAULT, { filter: "orphanFiles" });
+      expect(filtered.ok).toBe(true);
+      if (!filtered.ok) return;
+      expect(filtered.value.reviewThroughput.lifetime).toBeDefined();
+    });
   });
 
   describe("vault_tension_log", () => {
