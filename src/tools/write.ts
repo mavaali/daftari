@@ -13,6 +13,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
+import { mintConsumesEdges } from "../curation/consumes.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -43,6 +44,7 @@ import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
+import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 
 // ---------------------------------------------------------------------------
@@ -370,6 +372,17 @@ async function performWrite(params: {
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
       });
 
+      // #233: a run-correlated write compiles its input set — every path the
+      // run read beforehand becomes a consumes edge. Best-effort like the
+      // provenance/index steps: the write is already durable, and the graph
+      // is advisory substrate, so a mint failure never fails the write.
+      if (params.runId) {
+        await mintConsumesEdges(params.vaultRoot, {
+          artifact: params.relPath,
+          runId: params.runId,
+        });
+      }
+
       return ok({
         path: params.relPath,
         action: params.action,
@@ -417,22 +430,6 @@ function readBaseVersion(
     return err(new Error(`${tool}: 'base_version' must be a string`));
   }
   return ok(v.length === 0 ? undefined : v);
-}
-
-// Reads the optional `run_id` trace identifier (#235). Absent, null, or blank
-// all resolve to `undefined`; a non-string value is a hard error. Exported for
-// vault_stage_action, which reads the same argument the same way.
-export function readRunId(
-  args: Record<string, unknown>,
-  tool: string,
-): Result<string | undefined, Error> {
-  const v = args.run_id;
-  if (v === undefined || v === null) return ok(undefined);
-  if (typeof v !== "string") {
-    return err(new Error(`${tool}: 'run_id' must be a string`));
-  }
-  const trimmed = v.trim();
-  return ok(trimmed.length === 0 ? undefined : trimmed);
 }
 
 // #235: a propose-only role cannot mutate the vault directly. vault_write

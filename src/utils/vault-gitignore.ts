@@ -24,6 +24,8 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/curation-log.jsonl
 .daftari/staged-actions.jsonl
 .daftari/edges.jsonl
+.daftari/read-log.jsonl
+.daftari/consumes.jsonl
 .daftari/shadow-actions.jsonl
 .daftari/consolidate-state.json
 # Transient backfill staging surface (daftari backfill --plan). The apply
