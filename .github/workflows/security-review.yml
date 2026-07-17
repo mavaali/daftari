@@ -10,9 +10,11 @@ name: Security Review
 
 on:
   pull_request:
+    types: [opened, synchronize, ready_for_review]
 
 jobs:
   security-review:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
