@@ -7,6 +7,7 @@
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+import { recordRead } from "../curation/read-log.js";
 import { listStaleFiles } from "../curation/staleness.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
@@ -24,6 +25,7 @@ import { getProvider } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
+import { readRunId } from "../utils/run-id.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
@@ -75,6 +77,7 @@ export async function vaultRead(
   vaultRoot: string,
   path: string,
   access?: AccessContext,
+  runId?: string,
 ): Promise<Result<VaultReadResult, Error>> {
   if (typeof path !== "string" || path.length === 0) {
     return err(new Error("vault_read requires a non-empty 'path' argument"));
@@ -97,6 +100,20 @@ export async function vaultRead(
         ),
       );
     }
+  }
+
+  // #233: a run-correlated read joins the run's input set — a later write by
+  // the same run mints consumes edges from it. Recorded only AFTER the RBAC
+  // gate (a denied read is never an input), under the CANONICAL relPath so
+  // the write-time join matches performWrite's keying. Best-effort: the read
+  // itself never fails on a logging failure.
+  if (runId) {
+    await recordRead(vaultRoot, {
+      tool: "vault_read",
+      file: resolved.value.relPath,
+      run_id: runId,
+      ...(access?.user != null ? { principal: access.user } : {}),
+    });
   }
 
   return ok({
@@ -384,11 +401,22 @@ export const readTools: ToolDefinition[] = [
           type: "string",
           description: "Vault-relative path to the markdown file, e.g. competitive-intel/foo.md",
         },
+        run_id: {
+          type: "string",
+          description:
+            "Optional trace/run identifier of the calling run. Recorded in " +
+            "the read log so a later write by the same run compiles this " +
+            "document into its consumes edges (#233).",
+        },
       },
       required: ["path"],
       additionalProperties: false,
     },
-    handler: (vaultRoot, args, access) => vaultRead(vaultRoot, String(args.path ?? ""), access),
+    handler: (vaultRoot, args, access) => {
+      const runId = readRunId(args, "vault_read");
+      if (!runId.ok) return Promise.resolve(runId);
+      return vaultRead(vaultRoot, String(args.path ?? ""), access, runId.value);
+    },
   },
   {
     name: "vault_index",

@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
+import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
 import { edgeTools } from "./tools/edges.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
@@ -48,6 +49,7 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
     ...curationTools,
     ...stagedActionTools,
     ...edgeTools,
+    ...consumesTools,
   ];
   const byName = new Map(tools.map((t) => [t.name, t]));
 

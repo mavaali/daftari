@@ -30,9 +30,9 @@ import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
+import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 import {
-  readRunId,
   vaultDeprecate,
   vaultMerge,
   vaultPromote,
