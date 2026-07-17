@@ -21,6 +21,7 @@ import {
   type TensionHealth,
 } from "../curation/lint.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+import type { ReviewThroughputSummary } from "../curation/review-throughput.js";
 import type { ShadowLintSummary } from "../curation/shadow.js";
 import { sweepExpiredActions } from "../curation/staged-actions.js";
 import {
@@ -351,6 +352,7 @@ export interface VaultLintResult {
   stagedActions: StagedActionLintItem[];
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
+  reviewThroughput: ReviewThroughputSummary;
 }
 
 export async function vaultLint(
@@ -409,6 +411,7 @@ export async function vaultLint(
       stagedActions: report.value.stagedActions,
       shadowActions: report.value.shadowActions,
       coverageEquity: report.value.coverageEquity,
+      reviewThroughput: report.value.reviewThroughput,
     });
   }
 
@@ -421,6 +424,7 @@ export async function vaultLint(
     stagedActions: report.value.stagedActions,
     shadowActions: report.value.shadowActions,
     coverageEquity: report.value.coverageEquity,
+    reviewThroughput: report.value.reviewThroughput,
   });
 }
 
