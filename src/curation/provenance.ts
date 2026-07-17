@@ -32,6 +32,12 @@ export interface ProvenanceEntry {
   // run-correlation edge producer keys on this). Free-text, optional; absent
   // when the caller does not pass `run_id`.
   run_id?: string;
+  // Whether the write changed the markdown BODY, not just frontmatter (#232
+  // Tier 1: frontmatter_diff covers the metadata half of a change; this flag
+  // is the body half, so "what fields did this change touch" is fully
+  // decidable from one entry). Absent on entries logged before the flag
+  // existed — consumers treat absent as unknown, not as unchanged.
+  body_changed?: boolean;
   frontmatter_diff?: FrontmatterDiff;
   // Free-text explanation, set on rejected writes (e.g. the stale-version
   // mismatch). Absent on writes that landed.
@@ -72,6 +78,7 @@ export async function recordProvenance(
     action: entry.action,
     ...(entry.principal ? { principal: entry.principal } : {}),
     ...(entry.run_id ? { run_id: entry.run_id } : {}),
+    ...(entry.body_changed !== undefined ? { body_changed: entry.body_changed } : {}),
     ...(entry.frontmatter_diff && Object.keys(entry.frontmatter_diff).length > 0
       ? { frontmatter_diff: entry.frontmatter_diff }
       : {}),
