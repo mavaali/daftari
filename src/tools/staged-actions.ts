@@ -359,6 +359,35 @@ export async function vaultRatify(
             ),
           );
         }
+      } else if (
+        existing?.frontmatter.status === "canonical" &&
+        !(typeof frontmatter.superseded_by === "string" && frontmatter.superseded_by.length > 0)
+      ) {
+        // The mirror case: a write whose merged post-state moves an
+        // already-canonical doc AWAY from canonical is a deprecate in one
+        // step — without a superseded_by forward it strands canonical
+        // dependents exactly like an unforwarded staged deprecate, so it
+        // gets the same gate. A merged superseded_by provides the
+        // resolution path and passes, same as a forwarded deprecate.
+        const gate = tier0DeprecateGate(loaded.value, action.targetPath, visible);
+        const problems: string[] = [];
+        if (gate.dependents.length > 0) {
+          problems.push(`cited as a source by canonical: ${gate.dependents.join(", ")}`);
+        }
+        if (gate.hiddenDependents > 0) {
+          problems.push(
+            `hidden canonical dependents: ${bucketHiddenDownstream(gate.hiddenDependents)}`,
+          );
+        }
+        if (problems.length > 0) {
+          return err(
+            new Error(
+              `vault_ratify: tier-0 gate blocked demoting write of ${action.targetPath} ` +
+                `(canonical → ${frontmatter.status}): ${problems.join("; ")} — supersede ` +
+                `with a successor or update the dependents first; the action stays pending`,
+            ),
+          );
+        }
       }
     } else if (action.actionType === "promote") {
       const gate = tier0PromoteGate(loaded.value, action.targetPath, visible);

@@ -814,6 +814,78 @@ describe("vault_ratify", () => {
     expect(action.ok && action.value?.status).toBe("pending");
   }, 60_000);
 
+  it("tier-0 gate blocks a write that demotes a canonical doc with canonical dependents", async () => {
+    // The mirror of the promote-in-one-step case: a write proposal flipping
+    // status off canonical is a deprecate in one step, and without a
+    // superseded_by forward it strands dependents exactly like an unforwarded
+    // staged deprecate (review finding on #249).
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/user.md", {
+      status: "canonical",
+      sources: ["pricing/lib.md"],
+    });
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/lib.md",
+      proposed_by: AGENT,
+      rationale: "Retire it via full write.",
+      proposed_diff: {
+        frontmatter: { status: "deprecated" },
+        body: "# Federation Spec\n\nRetired.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("tier-0 gate blocked demoting write");
+    expect(result.error.message).toContain("canonical → deprecated");
+    expect(result.error.message).toContain("pricing/user.md");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  it("tier-0 gate passes a demoting write that forwards dependents via superseded_by", async () => {
+    await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/lib2.md", { status: "canonical" });
+    await seedDraft(vault, "pricing/user.md", {
+      status: "canonical",
+      sources: ["pricing/lib.md"],
+    });
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "write",
+      target_path: "pricing/lib.md",
+      proposed_by: AGENT,
+      rationale: "Replaced via full write.",
+      proposed_diff: {
+        frontmatter: { status: "superseded", superseded_by: "pricing/lib2.md" },
+        body: "# Federation Spec\n\nReplaced.\n",
+      },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.value.applied).toBe(true);
+
+    const read = await vaultRead(vault, "pricing/lib.md");
+    expect(read.ok && read.value.frontmatter.status).toBe("superseded");
+    expect(read.ok && read.value.frontmatter.superseded_by).toBe("pricing/lib2.md");
+  }, 60_000);
+
   it("gates the fallback collection on the NORMALIZED path, not the raw string", async () => {
     // pricing/../competitive-intel/ghost.md splits to "pricing" raw but
     // resolves to competitive-intel — a pricing-only role must not be able
