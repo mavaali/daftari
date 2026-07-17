@@ -165,6 +165,37 @@ describe("vault_tier1 (#232)", () => {
     expect(result.error.message).toContain("changed_fields");
   });
 
+  it("an unreadable anchor leaks neither provenance metadata nor write-history existence", async () => {
+    // Security-review finding on #251: changed_fields is provenance-derived
+    // metadata about the anchor, and the no-provenance error confirmed
+    // whether a hidden path had write history. An unreadable anchor must
+    // behave byte-identically to a nonexistent one on every path.
+    await seedNeighborhood(vault);
+
+    const intelOnly = {
+      user: "human:narrow",
+      roleName: "intel-only",
+      role: { read: ["competitive-intel"], write: [], promote: false, ratify: false },
+    };
+
+    // The unit HAS provenance, but the caller cannot read it: the response is
+    // the same error a provenance-less path produces — never the derived
+    // changed_fields.
+    const hidden = await vaultTier1(vault, { unit: "pricing/metric.md" }, intelOnly);
+    expect(hidden.ok).toBe(false);
+    if (hidden.ok) return;
+    expect(hidden.error.message).toContain("no provenance entry");
+
+    // A genuinely nonexistent path in the SAME unreadable collection yields
+    // an error of the same shape — no existence signal either way.
+    const ghost = await vaultTier1(vault, { unit: "pricing/ghost.md" }, intelOnly);
+    expect(ghost.ok).toBe(false);
+    if (ghost.ok) return;
+    expect(ghost.error.message.replace("pricing/ghost.md", "pricing/metric.md")).toBe(
+      hidden.error.message,
+    );
+  }, 60_000);
+
   it("omits verdicts the caller cannot see, summary included (#217)", async () => {
     await seedNeighborhood(vault);
     // A compiled dependent in another collection.

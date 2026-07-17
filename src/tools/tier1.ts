@@ -65,6 +65,28 @@ export async function vaultTier1(
   const unit = canonicalRelPath(vaultRoot, args.unit);
   if (!unit.ok) return unit;
 
+  // Anchor readability is decided BEFORE anything is derived from the unit.
+  // changed_fields comes from the unit's provenance — metadata about a doc
+  // the caller may not read — and the no-provenance error would otherwise
+  // confirm whether an unreadable path has write history. An unreadable
+  // anchor must behave byte-identically to a nonexistent one on every path.
+  let anchorReadable = true;
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      anchorReadable = sourceReadable(db, access, unit.value);
+    } finally {
+      db?.close();
+    }
+  }
+  const noProvenanceError = () =>
+    err(
+      new Error(
+        `vault_tier1: no provenance entry for ${unit.value} — pass 'changed_fields' ` +
+          `explicitly to describe the change`,
+      ),
+    );
+
   // The changed-field set: explicit override, else the unit's latest logged
   // write. Explicit lets a caller ask "what WOULD touching these fields
   // affect" before writing anything.
@@ -80,18 +102,15 @@ export async function vaultTier1(
     changedFields = contentChangedFields(args.changed_fields);
     changeSource = "explicit";
   } else {
+    // Unreadable anchor: the exact error a provenance-less path produces —
+    // the log is never read, so the response cannot depend on whether the
+    // hidden path has history.
+    if (!anchorReadable) return noProvenanceError();
     const log = await readProvenanceLog(vaultRoot);
     if (!log.ok) return log;
     const writes = log.value.filter((e) => e.file === unit.value && e.action !== "rejected_stale");
     const latest = writes[writes.length - 1];
-    if (!latest) {
-      return err(
-        new Error(
-          `vault_tier1: no provenance entry for ${unit.value} — pass 'changed_fields' ` +
-            `explicitly to describe the change`,
-        ),
-      );
-    }
+    if (!latest) return noProvenanceError();
     changedFields = changedFieldsFromProvenance(latest);
     changeSource = "provenance";
   }
@@ -122,16 +141,19 @@ export async function vaultTier1(
   });
 
   // #217 decision A: both endpoints readable or the verdict is omitted —
-  // from the list AND the summary counts.
+  // from the list AND the summary counts. (The unreadable-anchor case only
+  // reaches here with caller-supplied changed_fields; its verdicts empty out
+  // entirely, matching a nonexistent anchor's dependent-less result.)
   if (access) {
-    const db = openIndexForAccessOrNull(vaultRoot);
-    try {
-      const anchorReadable = sourceReadable(db, access, unit.value);
-      verdicts = anchorReadable
-        ? verdicts.filter((v) => sourceReadable(db, access, v.artifact))
-        : [];
-    } finally {
-      db?.close();
+    if (!anchorReadable) {
+      verdicts = [];
+    } else {
+      const db = openIndexForAccessOrNull(vaultRoot);
+      try {
+        verdicts = verdicts.filter((v) => sourceReadable(db, access, v.artifact));
+      } finally {
+        db?.close();
+      }
     }
   }
 
