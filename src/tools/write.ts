@@ -275,6 +275,10 @@ async function performWrite(params: {
   // Caller-supplied trace/run identifier (#235), recorded on provenance
   // entries so one run's writes correlate (the #233 producer keys on this).
   runId?: string;
+  // Whether this write changed the markdown body (#232 Tier 1). Each caller
+  // knows its own semantics: content writes compute it, frontmatter-only
+  // lifecycle tools pass false.
+  bodyChanged?: boolean;
 }): Promise<Result<WriteResult, Error>> {
   // Shadow mode (spec §11.5): everything up to here ran exactly as live —
   // validation, RBAC, frontmatter assembly, diff — so the logged do() is one
@@ -368,6 +372,7 @@ async function performWrite(params: {
         agent: params.agent,
         ...(params.principal ? { principal: params.principal } : {}),
         ...(params.runId ? { run_id: params.runId } : {}),
+        ...(params.bodyChanged !== undefined ? { body_changed: params.bodyChanged } : {}),
         action: params.action,
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
       });
@@ -805,6 +810,7 @@ export async function vaultWrite(
     shadowMode: config.value.shadowMode,
     principal: access?.user,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
+    bodyChanged: !isUpdate || !sameBody(oldContent, body),
   });
 }
 
@@ -920,6 +926,7 @@ export async function vaultAppend(
     shadowMode: config.value.shadowMode,
     principal: access?.user,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
+    bodyChanged: true,
   });
 }
 
@@ -1016,6 +1023,7 @@ export async function vaultPromote(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    bodyChanged: false,
   });
 }
 
@@ -1108,6 +1116,7 @@ export async function vaultDeprecate(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    bodyChanged: false,
   });
 }
 
@@ -1219,6 +1228,7 @@ export async function vaultSetConfidence(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    bodyChanged: false,
   });
 }
 
@@ -1339,6 +1349,7 @@ export async function vaultSetTier(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    bodyChanged: false,
   });
 }
 
@@ -1443,6 +1454,7 @@ export async function vaultSupersede(
     baseVersion: baseVersion.value,
     shadowMode: config.value.shadowMode,
     principal: access?.user,
+    bodyChanged: false,
   });
 }
 
@@ -1759,6 +1771,9 @@ export async function vaultMerge(
         agent: agent.value,
         ...(access?.user ? { principal: access.user } : {}),
         action: w.action,
+        // The merge target gets a new body; the superseded sources only get
+        // frontmatter stamps.
+        body_changed: w.action === "merge",
         frontmatter_diff: frontmatterDiff(w.oldFrontmatter, w.newFrontmatter),
       });
     }
