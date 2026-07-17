@@ -295,14 +295,9 @@ function nextStagedId(records: RawRecord[]): string {
 
 // --- producer / consumer / sweep -------------------------------------------
 
-// Stages a proposed action. Validation is defensive — the tool layer validates
-// too — but this is the durable boundary, so it re-checks. The id-allocation +
-// append run synchronously with no intervening await, so concurrent calls get
-// distinct, monotonic ids.
-export async function stageAction(
-  vaultRoot: string,
-  input: StageActionInput,
-): Promise<Result<{ id: string; expires_at: string }, Error>> {
+// Shared stage-input validation — the durable boundary re-checks what the
+// tool layer already validated. Returns the resolved ttlDays.
+function validateStageInput(input: StageActionInput): Result<number, Error> {
   if (!(STAGED_ACTION_TYPES as readonly string[]).includes(input.actionType)) {
     return err(
       new Error(`stageAction: action_type must be one of: ${STAGED_ACTION_TYPES.join(", ")}`),
@@ -321,29 +316,50 @@ export async function stageAction(
   if (!Number.isFinite(ttlDays) || ttlDays <= 0) {
     return err(new Error("stageAction 'ttlDays' must be a positive number"));
   }
+  return ok(ttlDays);
+}
 
+// Allocates the next id from the already-read records and appends the
+// proposal — synchronous, so a caller that read the records in the same
+// breath gets the critical-section guarantee. Throws on I/O failure (callers
+// wrap in try/catch and convert to err).
+function appendProposalRecord(
+  vaultRoot: string,
+  input: StageActionInput,
+  records: RawRecord[],
+  ttlDays: number,
+): { id: string; expires_at: string } {
   const proposedAt = input.proposedAt ?? nowISO();
   const expiresAt = addDaysISO(proposedAt, ttlDays);
+  const id = nextStagedId(records);
+  const record = {
+    id,
+    action_type: input.actionType,
+    target_path: input.targetPath.trim(),
+    proposed_by: input.proposedBy.trim(),
+    proposed_at: proposedAt,
+    expires_at: expiresAt,
+    status: "pending",
+    rationale: input.rationale.trim(),
+    proposed_diff: JSON.stringify(input.proposedDiff),
+    ...(input.runId && input.runId.trim().length > 0 ? { run_id: input.runId.trim() } : {}),
+  };
+  appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
+  return { id, expires_at: expiresAt };
+}
 
+// Stages a proposed action. The read + id-allocation + append run
+// synchronously with no intervening await, so concurrent calls get distinct,
+// monotonic ids.
+export async function stageAction(
+  vaultRoot: string,
+  input: StageActionInput,
+): Promise<Result<{ id: string; expires_at: string }, Error>> {
+  const ttlDays = validateStageInput(input);
+  if (!ttlDays.ok) return ttlDays;
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
-    // Critical section: read max id and append in one synchronous breath so no
-    // concurrent stageAction can observe the same max.
-    const id = nextStagedId(readRawRecords(vaultRoot));
-    const record = {
-      id,
-      action_type: input.actionType,
-      target_path: input.targetPath.trim(),
-      proposed_by: input.proposedBy.trim(),
-      proposed_at: proposedAt,
-      expires_at: expiresAt,
-      status: "pending",
-      rationale: input.rationale.trim(),
-      proposed_diff: JSON.stringify(input.proposedDiff),
-      ...(input.runId && input.runId.trim().length > 0 ? { run_id: input.runId.trim() } : {}),
-    };
-    appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
-    return ok({ id, expires_at: expiresAt });
+    return ok(appendProposalRecord(vaultRoot, input, readRawRecords(vaultRoot), ttlDays.value));
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot stage action: ${reason}`));
@@ -358,6 +374,13 @@ export interface StageOutcome {
   expires_at: string;
   conflicts_with: string[];
   tension_id: string | null;
+  // Set when the proposal staged durably but the inter-proposal tension could
+  // not be written. This is deliberately an `ok` field, not an err: the
+  // append already happened, so an error Result would invite a retry that
+  // duplicates the proposal, and the staged id would only be recoverable by
+  // parsing message text. The conflict itself is still surfaced via
+  // conflicts_with — nothing is silent.
+  tension_error?: string;
 }
 
 // Stages a proposal AND runs the inter-proposal check (#235): if other
@@ -371,23 +394,29 @@ export async function stageActionWithConflictCheck(
   vaultRoot: string,
   input: StageActionInput,
 ): Promise<Result<StageOutcome, Error>> {
-  // Snapshot the pending contenders BEFORE staging so the new proposal is not
-  // its own conflict. Same-process synchronous I/O makes this race-free (see
-  // module header).
+  const ttlDays = validateStageInput(input);
+  if (!ttlDays.ok) return ttlDays;
+
+  // One read serves both the contender snapshot and id allocation, and the
+  // whole read → snapshot → append sequence is synchronous — no yield point
+  // between the snapshot and the append, so the new proposal is never its
+  // own conflict and concurrent stagings see each other (module header).
   let contenders: StagedActionRow[];
+  let staged: { id: string; expires_at: string };
   try {
-    contenders = currentRows(vaultRoot).filter(
+    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    const records = readRawRecords(vaultRoot);
+    contenders = [...collapse(records).values()].filter(
       (r) => r.status === "pending" && r.target_path === input.targetPath.trim(),
     );
+    staged = appendProposalRecord(vaultRoot, input, records, ttlDays.value);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot stage action: ${reason}`));
   }
 
-  const staged = await stageAction(vaultRoot, input);
-  if (!staged.ok) return staged;
   if (contenders.length === 0) {
-    return ok({ ...staged.value, conflicts_with: [], tension_id: null });
+    return ok({ ...staged, conflicts_with: [], tension_id: null });
   }
 
   const target = input.targetPath.trim();
@@ -399,21 +428,21 @@ export async function stageActionWithConflictCheck(
       .map((r) => `pending ${r.id} (${r.action_type}): ${firstSentence(r.rationale)}`)
       .join(" | "),
     sourceB: target,
-    claimB: `new ${staged.value.id} (${input.actionType}): ${firstSentence(input.rationale)}`,
+    claimB: `new ${staged.id} (${input.actionType}): ${firstSentence(input.rationale)}`,
     loggedBy: input.proposedBy.trim(),
   });
   if (!tension.ok) {
-    // The proposal IS staged at this point; failing silently would hide the
-    // conflict, so fail loud and name the staged id for the caller.
-    return err(
-      new Error(
-        `staged as ${staged.value.id}, but failed to log the inter-proposal ` +
-          `tension: ${tension.error.message}`,
-      ),
-    );
+    // The proposal IS durably staged at this point — see the tension_error
+    // doc comment for why this is a structured ok, not an err.
+    return ok({
+      ...staged,
+      conflicts_with: contenders.map((r) => r.id),
+      tension_id: null,
+      tension_error: tension.error.message,
+    });
   }
   return ok({
-    ...staged.value,
+    ...staged,
     conflicts_with: contenders.map((r) => r.id),
     tension_id: tension.value.id ?? null,
   });

@@ -316,19 +316,23 @@ describe("staged-actions", () => {
       expect(b.value.tension_id).toBeNull();
     });
 
-    it("fails loud, naming the staged id, when the tension log cannot be written", async () => {
+    it("surfaces a structured tension_error when the tension log cannot be written", async () => {
       const a = await stageActionWithConflictCheck(vault, sampleInput);
       if (!a.ok) throw a.error;
       // Make tensions.md unwritable by occupying its path with a directory —
       // the conflict on the SECOND staging then cannot log its tension.
       mkdirSync(tensionsPath(vault), { recursive: true });
 
+      // The append is durable, so this is an ok with a structured error field
+      // — an err would invite a retry that duplicates the proposal, with the
+      // staged id recoverable only by parsing message text.
       const b = await stageActionWithConflictCheck(vault, sampleInput);
-      expect(b.ok).toBe(false);
-      if (b.ok) return;
-      // Loud, not silent: the error names the action that DID get staged.
-      expect(b.error.message).toContain("staged as stage-002");
-      expect(b.error.message).toContain("inter-proposal");
+      expect(b.ok).toBe(true);
+      if (!b.ok) return;
+      expect(b.value.id).toBe("stage-002");
+      expect(b.value.conflicts_with).toEqual([a.value.id]);
+      expect(b.value.tension_id).toBeNull();
+      expect(b.value.tension_error).toContain("tension log");
 
       // The proposal itself landed — only the tension write failed.
       const staged = await getStagedActionById(vault, "stage-002");

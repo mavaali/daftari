@@ -217,10 +217,13 @@ export interface WriteResult {
   // `write` proposal (#235): the staged action's id/expiry, plus any pending
   // proposals already contesting the same target and the inter-proposal
   // tension logged for them. action is "staged" and nothing was written.
+  // tension_error is present when the conflict tension could not be written
+  // (the proposal still staged; conflicts_with still names the contenders).
   staged_id?: string;
   expires_at?: string;
   conflicts_with?: string[];
   tension_id?: string | null;
+  tension_error?: string;
 }
 
 // First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
@@ -623,6 +626,7 @@ export async function vaultWrite(
       expires_at: staged.value.expires_at,
       conflicts_with: staged.value.conflicts_with,
       tension_id: staged.value.tension_id,
+      ...(staged.value.tension_error ? { tension_error: staged.value.tension_error } : {}),
     });
   }
 

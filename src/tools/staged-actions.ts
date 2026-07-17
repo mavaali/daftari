@@ -66,6 +66,10 @@ export interface StageActionResult {
   // Empty / null when the proposal is uncontested.
   conflicts_with: string[];
   tension_id: string | null;
+  // Present when the proposal staged but the inter-proposal tension could not
+  // be written (see StageOutcome.tension_error) — the conflict is still in
+  // conflicts_with; this names why the tension log entry is missing.
+  tension_error?: string;
 }
 
 export async function vaultStageAction(
