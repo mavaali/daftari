@@ -31,6 +31,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import {
+  readRunId,
   vaultDeprecate,
   vaultMerge,
   vaultPromote,
@@ -91,13 +92,8 @@ export async function vaultStageAction(
     return err(new Error("vault_stage_action requires a 'proposed_diff' object argument"));
   }
 
-  let runId: string | undefined;
-  if (args.run_id !== undefined && args.run_id !== null) {
-    if (typeof args.run_id !== "string") {
-      return err(new Error("vault_stage_action 'run_id' must be a string"));
-    }
-    if (args.run_id.trim().length > 0) runId = args.run_id.trim();
-  }
+  const runId = readRunId(args, "vault_stage_action");
+  if (!runId.ok) return runId;
 
   // A `write` proposal carries full content; validate the payload shape at
   // stage time so a malformed one never sits in the queue until ratify.
@@ -179,7 +175,7 @@ export async function vaultStageAction(
     proposedBy: proposedBy.value,
     rationale: rationale.value,
     proposedDiff: args.proposed_diff,
-    ...(runId !== undefined ? { runId } : {}),
+    ...(runId.value !== undefined ? { runId: runId.value } : {}),
     ...(ttlDays !== undefined ? { ttlDays } : {}),
   });
 }

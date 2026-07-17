@@ -417,8 +417,12 @@ function readBaseVersion(
 }
 
 // Reads the optional `run_id` trace identifier (#235). Absent, null, or blank
-// all resolve to `undefined`; a non-string value is a hard error.
-function readRunId(args: Record<string, unknown>, tool: string): Result<string | undefined, Error> {
+// all resolve to `undefined`; a non-string value is a hard error. Exported for
+// vault_stage_action, which reads the same argument the same way.
+export function readRunId(
+  args: Record<string, unknown>,
+  tool: string,
+): Result<string | undefined, Error> {
   const v = args.run_id;
   if (v === undefined || v === null) return ok(undefined);
   if (typeof v !== "string") {
@@ -565,6 +569,35 @@ export async function vaultWrite(
   // (`pricing/./x.md`) would dodge the exact-string conflict match and the
   // ratify gate's existing-doc lookup (#127/#128 rule).
   if (access && isProposeOnly(access.role)) {
+    // The validation report is REAL, not fabricated: run the payload through
+    // the same merge-then-validate the eventual dispatch will apply (merged
+    // under any existing frontmatter, server-stamped fields defaulted), so a
+    // propose-only agent gets its schema feedback NOW instead of at ratify
+    // time up to ttl_days later. Advisory here — staging proceeds regardless;
+    // the blocking check runs for real when vault_ratify dispatches.
+    const proposeConfig = loadConfig(vaultRoot);
+    if (!proposeConfig.ok) return proposeConfig;
+    let previewRaw: Record<string, unknown> = { ...rawFrontmatter };
+    const onDisk = await readFile(resolved.value.absPath);
+    if (onDisk.ok) {
+      const parsedExisting = parseDocument(onDisk.value);
+      if (parsedExisting.ok) {
+        const merged: Record<string, unknown> = { ...parsedExisting.value.raw };
+        for (const [key, value] of Object.entries(rawFrontmatter)) {
+          if (value === null) delete merged[key];
+          else merged[key] = value;
+        }
+        previewRaw = merged;
+      }
+    }
+    if (previewRaw.updated === undefined || previewRaw.updated === null) {
+      previewRaw.updated = todayISO();
+    }
+    if (previewRaw.updated_by === undefined || previewRaw.updated_by === null) {
+      previewRaw.updated_by = agent.value;
+    }
+    const preview = validateFrontmatter(previewRaw, proposeConfig.value.schemaExtensions);
+
     const staged = await stageActionWithConflictCheck(vaultRoot, {
       actionType: "write",
       targetPath: resolved.value.relPath,
@@ -584,7 +617,7 @@ export async function vaultWrite(
       committed: false,
       status: "pending",
       updated: todayISO(),
-      validation: { valid: true, issues: [] },
+      validation: preview.report,
       indexUpdated: false,
       staged_id: staged.value.id,
       expires_at: staged.value.expires_at,

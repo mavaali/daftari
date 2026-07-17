@@ -150,6 +150,57 @@ describe("propose-only role (#235)", () => {
     );
   });
 
+  it("surfaces the REAL validation report on a coerced staging (review finding on #249)", async () => {
+    // Bad enum + missing required field: the agent must learn now, not at
+    // ratify time up to 14 days later. Advisory — the proposal still stages.
+    const bad = await vaultWrite(
+      vault,
+      {
+        path: "pricing/sloppy.md",
+        body: "# Sloppy\n",
+        frontmatter: frontmatter({ confidence: "extreme", title: null }),
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(bad.ok).toBe(true);
+    if (!bad.ok) throw bad.error;
+    expect(bad.value.action).toBe("staged");
+    expect(bad.value.validation.valid).toBe(false);
+    const fields = bad.value.validation.issues.map((i) => i.field);
+    expect(fields).toContain("confidence");
+    expect(fields).toContain("title");
+
+    // A clean payload reports valid — and an UPDATE proposal is validated
+    // against the merge, so omitted fields inherited from disk are not
+    // false-flagged as missing.
+    const seeded = await vaultWrite(
+      vault,
+      {
+        path: "pricing/settled.md",
+        body: "# Settled\n",
+        frontmatter: frontmatter({ status: "canonical", title: "Settled" }),
+        agent: "human:mihir",
+      },
+      ADMIN,
+    );
+    if (!seeded.ok) throw seeded.error;
+    const update = await vaultWrite(
+      vault,
+      {
+        path: "pricing/settled.md",
+        body: "# Updated\n",
+        frontmatter: { tags: ["revised"] },
+        agent: "agent:proposer",
+      },
+      PROPOSER,
+    );
+    expect(update.ok).toBe(true);
+    if (!update.ok) throw update.error;
+    expect(update.value.action).toBe("staged");
+    expect(update.value.validation.valid).toBe(true);
+  });
+
   it("stages the canonical relPath: aliased spellings contend, escapes are rejected", async () => {
     // Regression for the review finding on #249: the coercion must resolve
     // the path BEFORE staging, or `pricing/./x.md`-style aliases dodge the
