@@ -113,6 +113,20 @@ export async function vaultTier1(
       changeSource = "provenance";
     }
 
+    // Unreadable anchor with caller-supplied changed_fields: the verdict
+    // filter below would empty the list regardless, so skip the vault-wide
+    // scans and return the same dependent-less result a nonexistent anchor
+    // produces.
+    if (!anchorReadable) {
+      return ok({
+        unit: unit.value,
+        changed_fields: changedFields,
+        change_source: changeSource,
+        verdicts: [],
+        summary: tier1Summary([]),
+      });
+    }
+
     // Dependents per edge class.
     const allConsumes = await listConsumesEdges(vaultRoot);
     if (!allConsumes.ok) return allConsumes;
@@ -139,13 +153,10 @@ export async function vaultTier1(
     });
 
     // #217 decision A: both endpoints readable or the verdict is omitted —
-    // from the list AND the summary counts. (The unreadable-anchor case only
-    // reaches here with caller-supplied changed_fields; its verdicts empty out
-    // entirely, matching a nonexistent anchor's dependent-less result.)
+    // from the list AND the summary counts. (Only readable anchors reach
+    // here — the unreadable case returned above.)
     if (access) {
-      verdicts = anchorReadable
-        ? verdicts.filter((v) => sourceReadable(db, access, v.artifact))
-        : [];
+      verdicts = verdicts.filter((v) => sourceReadable(db, access, v.artifact));
     }
 
     return ok({
