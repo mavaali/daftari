@@ -150,6 +150,57 @@ describe("propose-only role (#235)", () => {
     );
   });
 
+  it("stages the canonical relPath: aliased spellings contend, escapes are rejected", async () => {
+    // Regression for the review finding on #249: the coercion must resolve
+    // the path BEFORE staging, or `pricing/./x.md`-style aliases dodge the
+    // exact-string conflict match and the ratify gate's existing-doc lookup.
+    const first = await vaultWrite(
+      vault,
+      {
+        path: "pricing/aliased.md",
+        body: "# A\n",
+        frontmatter: frontmatter({ title: "Aliased" }),
+        agent: "agent:alpha",
+      },
+      PROPOSER,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw first.error;
+
+    const second = await vaultWrite(
+      vault,
+      {
+        path: "pricing/../pricing/aliased.md",
+        body: "# B\n",
+        frontmatter: frontmatter({ title: "Aliased" }),
+        agent: "agent:beta",
+      },
+      PROPOSER,
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw second.error;
+    expect(second.value.path).toBe("pricing/aliased.md");
+    expect(second.value.conflicts_with).toEqual([first.value.staged_id]);
+
+    const action = await getStagedActionById(vault, second.value.staged_id as string);
+    expect(action.ok && action.value?.targetPath).toBe("pricing/aliased.md");
+
+    // A root-escaping path errors at stage time, not after sitting queued.
+    const escaped = await vaultWrite(
+      vault,
+      {
+        path: "../outside.md",
+        body: "# Nope\n",
+        frontmatter: frontmatter(),
+        agent: "agent:alpha",
+      },
+      PROPOSER,
+    );
+    expect(escaped.ok).toBe(false);
+    if (escaped.ok) return;
+    expect(escaped.error.message).toContain("escapes vault root");
+  });
+
   it("denies vault_append and vault_deprecate with a pointer to staging", async () => {
     const append = await vaultAppend(
       vault,

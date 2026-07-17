@@ -550,6 +550,9 @@ export async function vaultWrite(
     }
   }
 
+  const resolved = resolveVaultPath(vaultRoot, path.value);
+  if (!resolved.ok) return resolved;
+
   // #235: a propose-only role's write lands as a staged `write` proposal, not
   // a mutation. Coerced EARLY — before file I/O, tier guards, hooks, or
   // validation — because all of that runs for real at ratify time when
@@ -557,11 +560,14 @@ export async function vaultWrite(
   // ratifier's access. The write grant above still scopes which collections
   // the role may propose into. Inter-proposal conflicts are checked the same
   // way vault_stage_action checks them: both proposals stay pending, a
-  // tension is logged, the result names the contenders.
+  // tension is logged, the result names the contenders. Staged under the
+  // CANONICAL relPath, matching vault_stage_action — a raw caller spelling
+  // (`pricing/./x.md`) would dodge the exact-string conflict match and the
+  // ratify gate's existing-doc lookup (#127/#128 rule).
   if (access && isProposeOnly(access.role)) {
     const staged = await stageActionWithConflictCheck(vaultRoot, {
       actionType: "write",
-      targetPath: path.value,
+      targetPath: resolved.value.relPath,
       proposedBy: agent.value,
       rationale:
         typeof args.reason === "string" && args.reason.trim().length > 0
@@ -572,7 +578,7 @@ export async function vaultWrite(
     });
     if (!staged.ok) return staged;
     return ok({
-      path: path.value,
+      path: resolved.value.relPath,
       action: "staged",
       commit: null,
       committed: false,
@@ -586,9 +592,6 @@ export async function vaultWrite(
       tension_id: staged.value.tension_id,
     });
   }
-
-  const resolved = resolveVaultPath(vaultRoot, path.value);
-  if (!resolved.ok) return resolved;
 
   const existing = await readFile(resolved.value.absPath);
   let oldFrontmatter: Frontmatter | null = null;
