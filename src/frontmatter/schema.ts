@@ -18,6 +18,8 @@ import {
   type Provenance,
   STATUSES,
   type Status,
+  TIERS,
+  type Tier,
   type ValidationIssue,
   type ValidationReport,
 } from "./types.js";
@@ -192,6 +194,23 @@ export function validateFrontmatter(
     return [];
   };
 
+  // Optional enums default to null, NOT to a member value — unlike
+  // requireEnum's fallback. tier depends on this: null means "no write-path
+  // enforcement", so coercing a missing tier to any member would silently
+  // opt every untagged doc into (or out of) protection.
+  const optionalEnum = <T extends string>(field: string, allowed: readonly T[]): T | null => {
+    const v = data[field];
+    if (v === undefined || v === null) return null;
+    if (typeof v === "string" && (allowed as readonly string[]).includes(v)) {
+      return v as T;
+    }
+    issues.push({
+      field,
+      message: `expected one of [${allowed.join(", ")}] or null, got ${JSON.stringify(v)}`,
+    });
+    return null;
+  };
+
   const optionalString = (field: string): string | null => {
     const v = data[field];
     if (v === undefined || v === null) return null;
@@ -218,6 +237,7 @@ export function validateFrontmatter(
     updated: requireDate("updated"),
     updated_by: requireString("updated_by"),
     provenance: requireEnum<Provenance>("provenance", PROVENANCES, "inferred"),
+    tier: optionalEnum<Tier>("tier", TIERS),
     sources: optionalStringArray("sources"),
     superseded_by: optionalString("superseded_by"),
     ttl_days: optionalNumber("ttl_days"),

@@ -9,6 +9,7 @@ import { ok, type Result } from "../frontmatter/types.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
+import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummary } from "./shadow.js";
 import {
@@ -46,6 +47,7 @@ export const LINT_CHECKS = [
   "stagnantLowConfidence",
   "deprecatedStillLinked",
   "unansweredQuestions",
+  "tierDemotions",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -213,6 +215,7 @@ export async function runLint(
     stagnantLowConfidence: [],
     deprecatedStillLinked: [],
     unansweredQuestions: [],
+    tierDemotions: [],
   };
 
   for (const doc of docs) {
@@ -288,6 +291,26 @@ export async function runLint(
           `any document: ${orphanQuestions.join("; ")}`,
       });
     }
+  }
+
+  // 7. Tier demotions (#141): every provenance entry that moved `tier` off
+  // `source`, whatever tool did it — this is the tripwire that keeps the
+  // demote-then-write escape hatch honest. Advisory, like everything here:
+  // a demotion may be entirely legitimate (corrected re-ingest); whether it
+  // was is a judgment call for review. Respects pathVisible (#217) — a
+  // demotion names a doc path, so invisible paths are omitted, not coarsened.
+  const provenance = await readProvenanceLog(vaultRoot);
+  if (!provenance.ok) return provenance;
+  for (const entry of provenance.value) {
+    const tierChange = entry.frontmatter_diff?.tier;
+    if (!tierChange || tierChange.before !== "source" || tierChange.after === "source") continue;
+    if (pathVisible && !pathVisible(entry.file)) continue;
+    checks.tierDemotions.push({
+      path: entry.file,
+      detail:
+        `tier demoted source→${String(tierChange.after ?? "unset")} by ${entry.agent} ` +
+        `(${entry.tool}, ${entry.timestamp.slice(0, 10)})`,
+    });
   }
 
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);

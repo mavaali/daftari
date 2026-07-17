@@ -233,6 +233,7 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     updated_by: updatedBy,
     provenance: resolve("provenance", "direct", "default"),
     sources: sourcesValue,
+    tier: resolve("tier", null, "null"),
     superseded_by: resolve("superseded_by", null, "null"),
     ttl_days: resolve("ttl_days", null, "null"),
     tags: tagsValue,
