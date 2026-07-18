@@ -15,6 +15,7 @@ import {
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
 import { listStaleFiles } from "../curation/staleness.js";
+import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
@@ -28,6 +29,7 @@ import {
   STATUSES,
   type ValidationReport,
 } from "../frontmatter/types.js";
+import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
@@ -92,6 +94,15 @@ export interface VaultReadResult {
   hasFrontmatter: boolean;
   decay: DecayState | null;
   upstream_staleness: UpstreamReadStaleness | null;
+  // #8: graph-shaped decay — orphanhood and deprecated-still-linked, from
+  // the materialized inbound-link graph, computed from the caller's vantage.
+  // Null when there is nothing to say (same contract as `decay`).
+  structural: StructuralDecay | null;
+  // #8: unresolved tensions involving this document, the same shape (and
+  // RBAC omission rules) as search hits' contested annotations. Absent when
+  // none are visible.
+  contested?: ContestedTension[];
+  contestedCount?: number;
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -162,44 +173,60 @@ export async function vaultRead(
       : {}),
   });
 
-  // Reader-facing surface: visible edges by omission, hidden pending edges
-  // coarsened (#217 — an exact count over unreadable units is a small-cell
-  // existence leak). Collapses to null when there is nothing to report,
-  // which is byte-identical to a document with no compiled edges at all.
+  // One index handle serves every graph-backed enrichment below: the #234
+  // visible/hidden split, structural decay (#8), and the contested join.
+  // Open failure degrades every one of them to silence — all advisory.
+  const db = openIndexForAccessOrNull(vaultRoot);
   let upstream: UpstreamReadStaleness | null = null;
-  if (rows && rows.length > 0) {
-    let split: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = {
-      visible: rows,
-      hiddenPending: "none",
-    };
-    if (access) {
-      const db = openIndexForAccessOrNull(vaultRoot);
-      try {
-        split = splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit));
-      } finally {
-        db?.close();
+  let structural: StructuralDecay | null = null;
+  let contestedResult: { contested: ContestedTension[]; contestedCount: number } | null = null;
+  try {
+    // Reader-facing surface: visible edges by omission, hidden pending edges
+    // coarsened (#217 — an exact count over unreadable units is a small-cell
+    // existence leak). Collapses to null when there is nothing to report,
+    // which is byte-identical to a document with no compiled edges at all.
+    if (rows && rows.length > 0) {
+      const {
+        visible,
+        hiddenPending,
+      }: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = access
+        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+        : { visible: rows, hiddenPending: "none" };
+      if (visible.length > 0 || hiddenPending !== "none") {
+        const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
+        const notes: string[] = [];
+        if (pendingBroken > 0) {
+          notes.push(
+            `${pendingBroken} compiled upstream input${pendingBroken === 1 ? " has" : "s have"} ` +
+              `changed incompatibly since this document was compiled`,
+          );
+        }
+        if (hiddenPending !== "none") {
+          notes.push(
+            `${hiddenPending} upstream inputs outside your read scope have pending changes`,
+          );
+        }
+        upstream = {
+          edges: visible,
+          hidden_pending: hiddenPending,
+          pending_broken: pendingBroken,
+          banner: notes.length > 0 ? `${notes.join("; ")} — this content may predate them.` : null,
+        };
       }
     }
-    const { visible, hiddenPending } = split;
-    if (visible.length > 0 || hiddenPending !== "none") {
-      const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
-      const notes: string[] = [];
-      if (pendingBroken > 0) {
-        notes.push(
-          `${pendingBroken} compiled upstream input${pendingBroken === 1 ? " has" : "s have"} ` +
-            `changed incompatibly since this document was compiled`,
-        );
-      }
-      if (hiddenPending !== "none") {
-        notes.push(`${hiddenPending} upstream inputs outside your read scope have pending changes`);
-      }
-      upstream = {
-        edges: visible,
-        hidden_pending: hiddenPending,
-        pending_broken: pendingBroken,
-        banner: notes.length > 0 ? `${notes.join("; ")} — this content may predate them.` : null,
-      };
-    }
+
+    // #8: structural decay from the materialized inbound-link graph (one
+    // indexed query, lint's vantage rule), plus unresolved-tension parity
+    // with search's contested channel.
+    structural = structuralDecay({
+      db,
+      path: resolved.value.relPath,
+      status: parsed.value.frontmatter.status,
+      access,
+    });
+    if (db) contestedResult = contestedFor(vaultRoot, db, resolved.value.relPath, access);
+  } finally {
+    db?.close();
   }
 
   return ok({
@@ -211,6 +238,10 @@ export async function vaultRead(
     hasFrontmatter: parsed.value.hasFrontmatter,
     decay: computeDecay(parsed.value.frontmatter),
     upstream_staleness: upstream,
+    structural,
+    ...(contestedResult
+      ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
+      : {}),
     version: sha256Hex(file.value),
   });
 }
@@ -481,10 +512,13 @@ export const readTools: ToolDefinition[] = [
       "upstream_staleness report (#234 — per compiled input, whether it " +
       "changed since this document was compiled and what tier 1 says about " +
       "the pending change: current / pending-compatible / pending-broken; " +
-      "null when there is nothing to report), and a 'version' token " +
-      "(SHA-256 of the file) that can be passed back to a write tool as " +
-      "'base_version' for optimistic-concurrency checking. Path is relative " +
-      "to the vault root.",
+      "null when there is nothing to report), a structural report (#8 — " +
+      "orphan: nothing you can read links here; deprecated_still_linked: " +
+      "canonical docs still lean on this deprecated one; null when healthy), " +
+      "any unresolved tensions involving the document (contested, same " +
+      "shape as search hits), and a 'version' token (SHA-256 of the file) " +
+      "that can be passed back to a write tool as 'base_version' for " +
+      "optimistic-concurrency checking. Path is relative to the vault root.",
     inputSchema: {
       type: "object",
       properties: {

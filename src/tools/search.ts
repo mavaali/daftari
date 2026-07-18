@@ -14,6 +14,7 @@ import {
   splitUpstreamVisibility,
 } from "../curation/edge-staleness.js";
 import { recordReads } from "../curation/read-log.js";
+import { structuralDecay } from "../curation/structural.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -263,6 +264,11 @@ export async function vaultSearch(
         hit.contested = ct.contested;
         hit.contestedCount = ct.contestedCount;
       }
+      // #8: structural decay flags from the materialized inbound-link graph —
+      // one indexed query per hit on the same open handle, vantage-filtered.
+      const sd = structuralDecay({ db, path: hit.path, status: hit.status, access });
+      if (sd?.orphan) hit.orphan = true;
+      if (sd?.deprecated_still_linked) hit.deprecatedStillLinked = true;
     }
 
     // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if

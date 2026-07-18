@@ -20,9 +20,11 @@
 import { stat } from "node:fs/promises";
 import { rebuildEdgesIndex } from "../curation/edges.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
+import { buildPathIndexes, outgoingLinkTargets } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
+  allDocumentPaths,
   type ChunkRowInput,
   clearEmbeddingsVec,
   clearIndex,
@@ -38,6 +40,7 @@ import {
   insertEmbedding,
   insertEmbeddingVec,
   openIndexDb,
+  replaceDocLinks,
   setMeta,
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
@@ -329,10 +332,14 @@ async function stageDocuments(vaultRoot: string): Promise<
 // which model produced the vectors.
 function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
   let chunkCount = 0;
+  // Link resolution runs against the FULL staged path set, built up front —
+  // insertion order can never drop an edge whose target lands later (#8).
+  const linkIndexes = buildPathIndexes(staged.map(({ doc }) => ({ path: doc.path })));
   const write = db.transaction(() => {
     clearIndex(db);
     for (const { doc, chunks, hashes } of staged) {
       insertDocument(db, doc);
+      replaceDocLinks(db, doc.path, outgoingLinkTargets(doc.content, doc.path, linkIndexes));
       chunks.forEach((text, chunkIndex) => {
         const row: ChunkRowInput = {
           path: doc.path,
@@ -563,6 +570,20 @@ export async function indexDocument(
     const write = db.transaction(() => {
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
+      // Refresh this doc's OUTGOING links against the indexed path universe.
+      // Inbound edges to it update as their sources are re-indexed — a doc
+      // created after a bare-name link to it was indexed stays unlinked until
+      // the linker's next write or a full reindex (accepted
+      // reindex-granularity staleness, #8).
+      replaceDocLinks(
+        db,
+        doc.path,
+        outgoingLinkTargets(
+          doc.content,
+          doc.path,
+          buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p }))),
+        ),
+      );
       chunks.forEach((text, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,

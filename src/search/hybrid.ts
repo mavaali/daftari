@@ -60,6 +60,12 @@ export interface HybridHit {
   // #234: pending changes (any class, severity withheld) on compiled
   // upstream edges to units the caller cannot read. Absent = none.
   hiddenPendingUpstream?: "some" | "many";
+  // #8 structural decay, coarse per-hit booleans (linker names live on
+  // vault_read's structural field, not here). Computed from the caller's
+  // vantage — hidden linkers neither count nor leak. Absent = healthy.
+  // Tool handler, not ranker.
+  orphan?: boolean;
+  deprecatedStillLinked?: boolean;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }
