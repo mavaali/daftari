@@ -5,10 +5,10 @@
 // definitions; tests call the logic functions directly.
 
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
-import { listConsumesEdges } from "../curation/consumes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   compiledUpstreamStaleness,
+  loadCompiledStaleContext,
   splitUpstreamVisibility,
   type UpstreamStaleness,
 } from "../curation/edge-staleness.js";
@@ -139,16 +139,10 @@ export async function vaultRead(
   // history ever makes the scans hurt, the escalation is an index.db mirror
   // of the logs (ephemeral, rebuildable — the edges.jsonl materialization
   // precedent), not caching bolted on here.
-  let rows: UpstreamStaleness[] | null = null;
-  const consumes = await listConsumesEdges(vaultRoot);
-  if (consumes.ok && consumes.value.length === 0) {
-    rows = [];
-  } else if (consumes.ok) {
-    const provLog = await readProvenanceLog(vaultRoot);
-    if (provLog.ok) {
-      rows = compiledUpstreamStaleness(resolved.value.relPath, consumes.value, provLog.value);
-    }
-  }
+  const staleCtx = await loadCompiledStaleContext(vaultRoot);
+  const rows: UpstreamStaleness[] | null = staleCtx
+    ? compiledUpstreamStaleness(resolved.value.relPath, staleCtx.consumes, staleCtx.provenance)
+    : null;
 
   // Every served read is logged — the broken-read rate needs its denominator
   // (#234) — and a run_id additionally joins the run's input set (#233).

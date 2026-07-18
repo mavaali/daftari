@@ -7,13 +7,12 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
+import { currentConsumesEdges } from "../curation/consumes.js";
 import {
-  type ConsumesEdge,
-  currentConsumesEdges,
-  listConsumesEdges,
-} from "../curation/consumes.js";
-import { compiledUpstreamStaleness, splitUpstreamVisibility } from "../curation/edge-staleness.js";
-import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+  compiledUpstreamStaleness,
+  loadCompiledStaleContext,
+  splitUpstreamVisibility,
+} from "../curation/edge-staleness.js";
 import { recordReads } from "../curation/read-log.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
@@ -160,16 +159,10 @@ async function annotateAndLogServedHits(
   // because currentConsumesEdges is idempotent. An empty consumes log
   // short-circuits before the provenance log is read at all — with zero
   // compiled edges every broken count is zero (same posture as vault_read).
-  const consumesLog = await listConsumesEdges(vaultRoot);
-  let staleCtx: { consumes: ConsumesEdge[]; provenance: ProvenanceEntry[] } | null = null;
-  if (consumesLog.ok && consumesLog.value.length === 0) {
-    staleCtx = { consumes: [], provenance: [] };
-  } else if (consumesLog.ok) {
-    const provLog = await readProvenanceLog(vaultRoot);
-    if (provLog.ok) {
-      staleCtx = { consumes: currentConsumesEdges(consumesLog.value), provenance: provLog.value };
-    }
-  }
+  const loaded = await loadCompiledStaleContext(vaultRoot);
+  const staleCtx = loaded
+    ? { consumes: currentConsumesEdges(loaded.consumes), provenance: loaded.provenance }
+    : null;
   const entries: Parameters<typeof recordReads>[1] = [];
   for (const hit of hits) {
     let broken: number | undefined;

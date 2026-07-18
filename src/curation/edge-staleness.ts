@@ -44,8 +44,8 @@
 //   earned   — the edge's lastRederived: the last time the derivation
 //              survived a re-test.
 
-import { type ConsumesEdge, forwardConsumes } from "./consumes.js";
-import type { ProvenanceEntry } from "./provenance.js";
+import { type ConsumesEdge, forwardConsumes, listConsumesEdges } from "./consumes.js";
+import { type ProvenanceEntry, readProvenanceLog } from "./provenance.js";
 import { bucketHiddenDownstream, type HiddenDownstream } from "./tension-blast.js";
 import {
   changedFieldsFromProvenance,
@@ -150,6 +150,29 @@ function classifyEdge(input: {
         ? "pending-broken"
         : "pending-unchecked";
   return { ...base, staleness, changed_fields: changed, reason: verdict.reason };
+}
+
+export interface CompiledStaleContext {
+  consumes: ConsumesEdge[];
+  provenance: ProvenanceEntry[];
+}
+
+// Loads the two logs that back compiled-edge classification, with the
+// uninstrumented fast path: an absent or empty consumes log resolves to an
+// empty context WITHOUT touching the provenance log — zero compiled edges
+// means every broken count is provably zero, so the hottest tools pay ~one
+// ENOENT check on vaults that never opted into run correlation. Returns
+// null on a log-read error; serve-path callers treat that as
+// "uninstrumented" (telemetry is best-effort), never as a failed request.
+export async function loadCompiledStaleContext(
+  vaultRoot: string,
+): Promise<CompiledStaleContext | null> {
+  const consumes = await listConsumesEdges(vaultRoot);
+  if (!consumes.ok) return null;
+  if (consumes.value.length === 0) return { consumes: [], provenance: [] };
+  const provenance = await readProvenanceLog(vaultRoot);
+  if (!provenance.ok) return null;
+  return { consumes: consumes.value, provenance: provenance.value };
 }
 
 // Compiled-edge staleness for one artifact — the read/search hot path. Only
