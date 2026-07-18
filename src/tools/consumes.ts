@@ -10,7 +10,6 @@
 // an unreadable path returns an empty listing, identical to a nonexistent
 // one — no existence confirmation either way.
 
-import { relative, resolve } from "node:path";
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
 import {
   type ConsumesEdge,
@@ -31,10 +30,14 @@ export interface ConsumesResult {
   include_history: boolean;
 }
 
+// resolveVaultPath's relPath is realpath-canonical — the same key provenance,
+// consumes, and the read log store — so it is returned as-is. Recomputing a
+// lexical relative here would diverge from the log keys under a symlinked
+// vault root and silently miss every edge (#127/#128).
 function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
   const resolved = resolveVaultPath(vaultRoot, relPath.trim());
   if (!resolved.ok) return resolved;
-  return ok(relative(resolve(vaultRoot), resolved.value.absPath));
+  return ok(resolved.value.relPath);
 }
 
 export async function vaultConsumes(

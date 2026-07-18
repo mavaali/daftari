@@ -212,6 +212,17 @@ describe("vault_staleness (#234)", () => {
     expect(gated.value.edges).toEqual([]);
     expect(gated.value.hidden_pending).toBe("some");
     expect(gated.value.summary.pending_broken).toBe(0);
+
+    // The same split on vault_read directly — the broken (incident) class
+    // must not be derivable from the hidden upstream through the read
+    // surface either: no edges, no broken count, only the coarse bucket.
+    const gatedRead = await vaultRead(vault, "pricing/consumer2.md", pricingOnly);
+    expect(gatedRead.ok).toBe(true);
+    if (!gatedRead.ok) throw gatedRead.error;
+    expect(gatedRead.value.upstream_staleness?.edges).toEqual([]);
+    expect(gatedRead.value.upstream_staleness?.hidden_pending).toBe("some");
+    expect(gatedRead.value.upstream_staleness?.pending_broken).toBe(0);
+    expect(gatedRead.value.upstream_staleness?.banner).toContain("outside your read scope");
   }, 60_000);
 
   it("an unreadable anchor reports exactly like a nonexistent one", async () => {

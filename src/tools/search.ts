@@ -7,7 +7,7 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
-import { listConsumesEdges } from "../curation/consumes.js";
+import { currentConsumesEdges, listConsumesEdges } from "../curation/consumes.js";
 import { compiledUpstreamStaleness, splitUpstreamVisibility } from "../curation/edge-staleness.js";
 import { readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
@@ -225,9 +225,13 @@ export async function vaultSearch(
     // fails the search.
     const consumesLog = await listConsumesEdges(vaultRoot);
     const provLog = await readProvenanceLog(vaultRoot);
+    // The newest-compile-group collapse is O(total edges); do it ONCE per
+    // search, not per hit. Passing the pre-collapsed set through is sound
+    // because currentConsumesEdges is idempotent — collapsing a current set
+    // returns it unchanged.
     const staleCtx =
       consumesLog.ok && provLog.ok
-        ? { consumes: consumesLog.value, provenance: provLog.value }
+        ? { consumes: currentConsumesEdges(consumesLog.value), provenance: provLog.value }
         : null;
     for (const hit of capped) {
       let broken: number | undefined;

@@ -13,7 +13,6 @@
 // counts, and the summary, never redacted. An unreadable anchor yields an
 // empty result, indistinguishable from a nonexistent one.
 
-import { relative, resolve } from "node:path";
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
 import { listConsumesEdges, reverseConsumes } from "../curation/consumes.js";
 import { listEdges } from "../curation/edges.js";
@@ -44,10 +43,14 @@ export interface Tier1Result {
   summary: Tier1Summary;
 }
 
+// resolveVaultPath's relPath is realpath-canonical — the same key provenance,
+// consumes, and the read log store — so it is returned as-is. Recomputing a
+// lexical relative here would diverge from the log keys under a symlinked
+// vault root and silently miss every edge (#127/#128).
 function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
   const resolved = resolveVaultPath(vaultRoot, relPath.trim());
   if (!resolved.ok) return resolved;
-  return ok(relative(resolve(vaultRoot), resolved.value.absPath));
+  return ok(resolved.value.relPath);
 }
 
 export async function vaultTier1(

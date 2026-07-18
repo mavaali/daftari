@@ -154,6 +154,9 @@ function classifyEdge(input: {
 
 // Compiled-edge staleness for one artifact — the read/search hot path. Only
 // compiled edges can be pending-broken, so this is the complete broken set.
+// `consumes` may be the full log or an already-collapsed current set: the
+// newest-compile-group collapse is idempotent, so batch callers (search)
+// collapse once and pass the result through per hit.
 export function compiledUpstreamStaleness(
   artifact: string,
   consumes: ConsumesEdge[],
