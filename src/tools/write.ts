@@ -575,6 +575,11 @@ function generativeDomainRefs(
     return generative.map(
       (p) => `${p} is generative-domain — speculative material referenced from accumulation canon`,
     );
+  } catch {
+    // This runs after performWrite returned ok — the write is durable. A
+    // query failure here (index rebuilt mid-query, locked db) must degrade
+    // to "no warnings", never surface as a failed write to the caller.
+    return null;
   } finally {
     db.close();
   }
