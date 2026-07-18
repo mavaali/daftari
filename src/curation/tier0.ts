@@ -51,7 +51,9 @@ export const CONFLICTING_SOURCE_STATUSES: ReadonlySet<Status> = new Set([
   "archived",
 ]);
 
-const EXTERNAL_REF = /^(https?:|mailto:)/i;
+// Exported so write-time advisories (domain_warnings) share the same
+// definition of "external reference" and the two can't drift.
+export const EXTERNAL_REF = /^(https?:|mailto:)/i;
 
 // A sources entry is checked for referential integrity only when it plausibly
 // names a vault document. Everything else is an opaque citation.

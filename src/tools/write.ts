@@ -18,6 +18,7 @@ import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { sourceReadable } from "../curation/tension-access.js";
+import { EXTERNAL_REF } from "../curation/tier0.js";
 import {
   buildPathIndexes,
   extractLinks,
@@ -547,7 +548,7 @@ function generativeDomainRefs(
   if (doc.domain !== "accumulation") return null;
   // Most accumulation writes reference nothing; skip the index entirely
   // rather than loading every vault path to resolve an empty candidate set.
-  const localSources = doc.sources.filter((s) => !/^(https?:|mailto:)/i.test(s));
+  const localSources = doc.sources.filter((s) => !EXTERNAL_REF.test(s));
   if (localSources.length === 0 && extractLinks(doc.body).length === 0) return null;
   const db = openIndexForAccessOrNull(vaultRoot);
   if (!db) return null;
