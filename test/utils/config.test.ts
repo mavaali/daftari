@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { configPath, loadConfig } from "../../src/utils/config.js";
+import { configPath, loadConfig, malformedCommentHint } from "../../src/utils/config.js";
 
 // Writes a .daftari/config.yaml into a throwaway directory and loads it.
 // Returns the loadConfig Result so a test can assert on either branch.
@@ -654,5 +654,64 @@ describe("loadConfig — schema extensions", () => {
       if (result.ok) return;
       expect(result.error.message).toContain("promote and propose_only");
     });
+  });
+});
+
+describe("malformed-comment hint on YAML parse errors (#26)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-config-hint-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  it("points at a comment line that lost its '#' (the issue's repro)", () => {
+    writeConfig(
+      [
+        "schema_extensions:",
+        "  dec_id:",
+        "    type: string",
+        '    pattern: "^DEC-[0-9]{3}$"',
+        "",
+        "  # decision_date is kept as string because wiki uses free-form values like",
+        " 2026-05 (revisited)\" that don't fit YYYY-MM-DD.",
+        "  decision_date:",
+        "    type: string",
+        "",
+      ].join("\n"),
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("malformed config: invalid YAML");
+    expect(result.error.message).toContain(
+      "hint: line 7 may be a malformed comment that lost its '#' prefix",
+    );
+  });
+
+  it("stays silent when the parse error has no prose-shaped neighbor", () => {
+    writeConfig("roles:\n  admin:\n    read: [unclosed\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("malformed config: invalid YAML");
+    expect(result.error.message).not.toContain("hint:");
+  });
+
+  it("malformedCommentHint ignores comments, list items, and mapping entries", () => {
+    const text = [
+      "# a real comment with words and punctuation.",
+      "- a list item with several words.",
+      "key: a mapping value with several words.",
+      "broken [",
+    ].join("\n");
+    expect(malformedCommentHint(text, 3)).toBeNull();
+    expect(malformedCommentHint(text, null)).toBeNull();
   });
 });
