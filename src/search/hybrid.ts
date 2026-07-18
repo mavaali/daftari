@@ -212,24 +212,43 @@ function vecRanking(
   return result;
 }
 
+// snippet() excerpt budget, in tokens. ~48 stemmed tokens lands near the
+// ~280 chars the JS fallback (SNIPPET_RADIUS * 2) produces, so lexical and
+// fallback snippets read at comparable length.
+const FTS_SNIPPET_TOKENS = 48;
+
 // Chunk-level lexical ranking. Runs an FTS5 MATCH over `chunks_fts` (one row
 // per chunk), reads the inverse bm25 (flip to larger=better), joins back to
 // `chunks` on rowid to map onto document paths, and collapses to each
 // document's BEST chunk score (max) — mirroring vecRanking's best-per-doc.
 // A relevant topic's own chunk scores high even when its whole document is
-// long and multi-topic. Null query (no usable tokens) returns an empty map.
-function chunkFtsRanking(db: IndexDb, query: string | null): Map<string, number> {
-  if (query === null) return new Map();
+// long and multi-topic. Null query (no usable tokens) returns empty maps.
+//
+// The same pass captures each document's excerpt via FTS5 snippet() from its
+// best-scoring chunk (#108): the inverted index centres the excerpt on the
+// actual match — stemmed variants included, which the JS fallback's literal
+// indexOf cannot see — and no full body is scanned in JS. snippet() is
+// legal here because chunks_fts is EXTERNAL-CONTENT (content='chunks') with
+// a matching column name; documents_fts declares content_body over a base
+// column named content, so the document-granularity path deliberately keeps
+// the JS fallback instead of a schema migration.
+function chunkFtsRanking(
+  db: IndexDb,
+  query: string | null,
+): { scores: Map<string, number>; snippets: Map<string, string> } {
+  if (query === null) return { scores: new Map(), snippets: new Map() };
   const rows = db
     .prepare(
-      `SELECT c.path AS path, -bm25(chunks_fts) AS score
+      `SELECT c.path AS path, -bm25(chunks_fts) AS score,
+              snippet(chunks_fts, 0, '', '', '…', ${FTS_SNIPPET_TOKENS}) AS snip
          FROM chunks_fts
          JOIN chunks AS c ON c.rowid = chunks_fts.rowid
         WHERE chunks_fts MATCH ?
         ORDER BY bm25(chunks_fts)`,
     )
-    .all(query) as { path: string; score: number }[];
-  const result = new Map<string, number>();
+    .all(query) as { path: string; score: number; snip: string }[];
+  const scores = new Map<string, number>();
+  const snippets = new Map<string, string>();
   for (const r of rows) {
     // Some rows may produce a non-positive flipped score if FTS5 returned a
     // positive bm25 (rare with prefix matches); drop them so the normalize
@@ -240,10 +259,17 @@ function chunkFtsRanking(db: IndexDb, query: string | null): Map<string, number>
     // rankDocuments routes to exactly one based on lexicalGranularity — so
     // their raw scores are never directly compared.
     if (r.score <= 0) continue;
-    const prev = result.get(r.path) ?? -Infinity;
-    if (r.score > prev) result.set(r.path, r.score);
+    const prev = scores.get(r.path) ?? -Infinity;
+    if (r.score > prev) {
+      scores.set(r.path, r.score);
+      // Rows arrive best-first per bm25, but keying on the max KEPT score is
+      // what guarantees the snippet always comes from the same chunk the
+      // document's score does.
+      const collapsed = r.snip.replace(/\s+/g, " ").trim();
+      if (collapsed.length > 0) snippets.set(r.path, collapsed);
+    }
   }
-  return result;
+  return { scores, snippets };
 }
 
 interface RankOptions {
@@ -267,13 +293,18 @@ function rankDocuments(
   opts: RankOptions,
 ): { hits: HybridHit[]; vectorUsed: boolean } {
   let bm25Norm: Map<string, number>;
+  // Best-chunk excerpts from the lexical pass (#108); empty for the
+  // document-granularity path, whose hits fall back to the JS scan.
+  let lexicalSnippets = new Map<string, string>();
   if (opts.lexicalGranularity === "chunk") {
     // Body granularity (the dilution fix) TIERED with a clean title/tag signal
     // (the native-shape fix). Each is normalized to its own max to reconcile the
     // two FTS score scales; tieredLexical then ranks every body match above every
     // title-only match. The title/tag signal reuses ftsRanking with a column-
     // restricted query so it scores title+tags only (no body dilution).
-    const chunkNorm = normalize(chunkFtsRanking(db, matchQuery));
+    const chunkRanked = chunkFtsRanking(db, matchQuery);
+    lexicalSnippets = chunkRanked.snippets;
+    const chunkNorm = normalize(chunkRanked.scores);
     const titleTagNorm = normalize(ftsRanking(db, columnRestrict(matchQuery, "{title tags}")));
     bm25Norm = tieredLexical(chunkNorm, titleTagNorm);
   } else {
@@ -320,7 +351,10 @@ function rankDocuments(
       score,
       bm25Score,
       vectorScore,
-      snippet: makeSnippet(doc.content, queryTokensForSnippet),
+      // FTS5's excerpt for lexical hits (#108); the JS body scan remains the
+      // fallback for vector-only and title/tag-only hits, which have no
+      // matched body chunk to centre on.
+      snippet: lexicalSnippets.get(path) ?? makeSnippet(doc.content, queryTokensForSnippet),
       decay: computeDecay({
         status: doc.status,
         confidence: doc.confidence,
