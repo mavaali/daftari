@@ -38,6 +38,21 @@ describe("read log (#233)", () => {
     expect(log.value[1]?.principal).toBeUndefined();
   });
 
+  it("serve entries without a run_id are kept, with broken_upstream intact (#234)", async () => {
+    await recordRead(vault, { tool: "vault_read", file: "pricing/a.md", broken_upstream: 2 });
+    await recordRead(vault, { tool: "vault_search", file: "pricing/b.md", broken_upstream: 0 });
+
+    const log = await readReadLog(vault);
+    expect(log.ok).toBe(true);
+    if (!log.ok) return;
+    expect(log.value).toHaveLength(2);
+    expect(log.value[0]?.run_id).toBeUndefined();
+    expect(log.value[0]?.broken_upstream).toBe(2);
+    expect(log.value[1]?.tool).toBe("vault_search");
+    // A run-scoped join never picks up run-less serves.
+    expect(readsForRun(log.value, "run-1")).toEqual([]);
+  });
+
   it("readsForRun returns unique paths for one run, first-read order", async () => {
     await recordRead(vault, { tool: "vault_read", file: "pricing/a.md", run_id: "run-1" });
     await recordRead(vault, { tool: "vault_read", file: "pricing/b.md", run_id: "run-1" });

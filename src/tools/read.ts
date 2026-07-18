@@ -5,12 +5,15 @@
 // definitions; tests call the logic functions directly.
 
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import { listConsumesEdges } from "../curation/consumes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
+import { compiledUpstreamStaleness, type UpstreamStaleness } from "../curation/edge-staleness.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
 import { listStaleFiles } from "../curation/staleness.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
+import { bucketHiddenDownstream, type HiddenDownstream } from "../curation/tension-blast.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
   DOMAINS,
@@ -60,6 +63,22 @@ export interface ToolDefinition {
 // vault_read
 // ---------------------------------------------------------------------------
 
+// Reader-facing edge-staleness surface (#234), the decay banner's sibling:
+// advisory, never blocking. `edges` lists only upstream units the caller can
+// read (omission, #217); pending edges to unreadable units are coarsened
+// into `hidden_pending` — never an exact count. Null when there is nothing
+// to say (no compiled upstream edges visible AND no hidden pending signal),
+// which is also what a document with no edges at all reports — no
+// existence signal either way.
+export interface UpstreamReadStaleness {
+  edges: UpstreamStaleness[];
+  hidden_pending: HiddenDownstream;
+  // Pending-broken count among the VISIBLE edges (hidden ones only ever
+  // surface through the coarse bucket above).
+  pending_broken: number;
+  banner: string | null;
+}
+
 export interface VaultReadResult {
   path: string;
   content: string;
@@ -68,6 +87,7 @@ export interface VaultReadResult {
   validation: ValidationReport;
   hasFrontmatter: boolean;
   decay: DecayState | null;
+  upstream_staleness: UpstreamReadStaleness | null;
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -102,18 +122,73 @@ export async function vaultRead(
     }
   }
 
-  // #233: a run-correlated read joins the run's input set — a later write by
-  // the same run mints consumes edges from it. Recorded only AFTER the RBAC
-  // gate (a denied read is never an input), under the CANONICAL relPath so
-  // the write-time join matches performWrite's keying. Best-effort: the read
-  // itself never fails on a logging failure.
-  if (runId) {
-    await recordRead(vaultRoot, {
-      tool: "vault_read",
-      file: resolved.value.relPath,
-      run_id: runId,
-      ...(access?.user != null ? { principal: access.user } : {}),
-    });
+  // #234: classify this document's compiled upstream edges as of the serve.
+  // Best-effort — the read never fails on telemetry; on a log-read error the
+  // serve is still recorded, just uninstrumented (broken_upstream absent).
+  let rows: UpstreamStaleness[] | null = null;
+  const consumes = await listConsumesEdges(vaultRoot);
+  const provLog = await readProvenanceLog(vaultRoot);
+  if (consumes.ok && provLog.ok) {
+    rows = compiledUpstreamStaleness(resolved.value.relPath, consumes.value, provLog.value);
+  }
+
+  // Every served read is logged — the broken-read rate needs its denominator
+  // (#234) — and a run_id additionally joins the run's input set (#233).
+  // Recorded only AFTER the RBAC gate (a denied read is never an input and
+  // never a serve), under the CANONICAL relPath so the write-time join
+  // matches performWrite's keying. broken_upstream is the TRUE count,
+  // unfiltered by the caller's role: the log is local operator telemetry,
+  // not a caller-facing surface. Best-effort: the read itself never fails
+  // on a logging failure.
+  await recordRead(vaultRoot, {
+    tool: "vault_read",
+    file: resolved.value.relPath,
+    ...(runId ? { run_id: runId } : {}),
+    ...(access?.user != null ? { principal: access.user } : {}),
+    ...(rows
+      ? { broken_upstream: rows.filter((r) => r.staleness === "pending-broken").length }
+      : {}),
+  });
+
+  // Reader-facing surface: visible edges by omission, hidden pending edges
+  // coarsened (#217 — an exact count over unreadable units is a small-cell
+  // existence leak). Collapses to null when there is nothing to report,
+  // which is byte-identical to a document with no compiled edges at all.
+  let upstream: UpstreamReadStaleness | null = null;
+  if (rows && rows.length > 0) {
+    let visible = rows;
+    let hiddenPending: HiddenDownstream = "none";
+    if (access) {
+      const db = openIndexForAccessOrNull(vaultRoot);
+      try {
+        visible = rows.filter((r) => sourceReadable(db, access, r.unit));
+      } finally {
+        db?.close();
+      }
+      const hiddenPendingCount = rows.filter(
+        (r) => !visible.includes(r) && r.staleness !== "current",
+      ).length;
+      hiddenPending = bucketHiddenDownstream(hiddenPendingCount);
+    }
+    if (visible.length > 0 || hiddenPending !== "none") {
+      const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
+      const notes: string[] = [];
+      if (pendingBroken > 0) {
+        notes.push(
+          `${pendingBroken} compiled upstream input${pendingBroken === 1 ? " has" : "s have"} ` +
+            `changed incompatibly since this document was compiled`,
+        );
+      }
+      if (hiddenPending !== "none") {
+        notes.push(`${hiddenPending} upstream inputs outside your read scope have pending changes`);
+      }
+      upstream = {
+        edges: visible,
+        hidden_pending: hiddenPending,
+        pending_broken: pendingBroken,
+        banner: notes.length > 0 ? `${notes.join("; ")} — this content may predate them.` : null,
+      };
+    }
   }
 
   return ok({
@@ -124,6 +199,7 @@ export async function vaultRead(
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
     decay: computeDecay(parsed.value.frontmatter),
+    upstream_staleness: upstream,
     version: sha256Hex(file.value),
   });
 }
@@ -390,10 +466,14 @@ export const readTools: ToolDefinition[] = [
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
       "frontmatter, a validation report, a decay assessment (null when " +
-      "healthy; otherwise level, reasons, and an optional banner), and a " +
-      "'version' token (SHA-256 of the file) that can be passed back to a " +
-      "write tool as 'base_version' for optimistic-concurrency checking. " +
-      "Path is relative to the vault root.",
+      "healthy; otherwise level, reasons, and an optional banner), an " +
+      "upstream_staleness report (#234 — per compiled input, whether it " +
+      "changed since this document was compiled and what tier 1 says about " +
+      "the pending change: current / pending-compatible / pending-broken; " +
+      "null when there is nothing to report), and a 'version' token " +
+      "(SHA-256 of the file) that can be passed back to a write tool as " +
+      "'base_version' for optimistic-concurrency checking. Path is relative " +
+      "to the vault root.",
     inputSchema: {
       type: "object",
       properties: {

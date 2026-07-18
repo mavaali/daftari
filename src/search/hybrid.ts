@@ -50,6 +50,10 @@ export interface HybridHit {
   currentSource?: CurrentSource; // populated by the tool handler, not the ranker
   contested?: ContestedTension[]; // unresolved tensions, capped at 3 — tool handler, not ranker
   contestedCount?: number; // TOTAL visible tensions (may exceed the cap)
+  // #234: set when the doc has pending-broken compiled upstream edges at
+  // serve time. Coarse by design (never an exact count — the upstream may be
+  // outside the caller's read scope); absent = none. Tool handler, not ranker.
+  pendingBrokenUpstream?: "some" | "many";
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }

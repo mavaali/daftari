@@ -11,6 +11,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
+import { edgeStalenessTools } from "./tools/edge-staleness.js";
 import { edgeTools } from "./tools/edges.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { receiptTools } from "./tools/receipt.js";
@@ -52,6 +53,7 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
     ...edgeTools,
     ...consumesTools,
     ...tier1Tools,
+    ...edgeStalenessTools,
   ];
   const byName = new Map(tools.map((t) => [t.name, t]));
 

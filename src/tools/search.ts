@@ -7,6 +7,11 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
+import { listConsumesEdges } from "../curation/consumes.js";
+import { compiledUpstreamStaleness } from "../curation/edge-staleness.js";
+import { readProvenanceLog } from "../curation/provenance.js";
+import { recordRead } from "../curation/read-log.js";
+import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { contestedFor } from "../search/contested.js";
 import {
@@ -199,6 +204,37 @@ export async function vaultSearch(
     // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if
     // their combined snippets exceed the budget. Never drops ranked hits.
     const capped = enforceTokenCap(permitted, DEFAULT_COVERAGE_OPTIONS);
+
+    // #234: most content is served as search snippets, so the search path is
+    // instrumented like vault_read — each SERVED hit is one read-log entry
+    // carrying its pending-broken upstream count (the broken-read rate's
+    // denominator counts serves, whatever tool served them). The hit itself
+    // gets a coarse pendingBrokenUpstream bucket, never an exact count — the
+    // broken upstream may be outside the caller's read scope, and a small
+    // exact number would leak linked existence (#217). Best-effort: a
+    // telemetry failure never fails the search.
+    const consumesLog = await listConsumesEdges(vaultRoot);
+    const provLog = await readProvenanceLog(vaultRoot);
+    const staleCtx =
+      consumesLog.ok && provLog.ok
+        ? { consumes: consumesLog.value, provenance: provLog.value }
+        : null;
+    for (const hit of capped) {
+      let broken: number | undefined;
+      if (staleCtx) {
+        broken = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance).filter(
+          (r) => r.staleness === "pending-broken",
+        ).length;
+        const bucket = bucketHiddenDownstream(broken);
+        if (bucket !== "none") hit.pendingBrokenUpstream = bucket;
+      }
+      await recordRead(vaultRoot, {
+        tool: "vault_search",
+        file: hit.path,
+        ...(access?.user != null ? { principal: access.user } : {}),
+        ...(broken !== undefined ? { broken_upstream: broken } : {}),
+      });
+    }
 
     return ok({ ...result.value, count: capped.length, hits: capped });
   } finally {
