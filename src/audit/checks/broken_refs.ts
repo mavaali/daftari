@@ -55,8 +55,14 @@ export function checkBrokenRefs(
   // #133's actual case is UNAUDITED SIBLINGS, so out-of-scope probes are
   // allowed only under the parent directories of the configured repo roots;
   // anything further out is reported missing_file without ever touching
-  // disk — exactly the pre-oracle behavior.
-  const siblingScopes = snapshots.map((s) => nodeResolve(s.config.path, ".."));
+  // disk — exactly the pre-oracle behavior. A repo mounted directly under
+  // the filesystem root gets NO sibling scope: its "parent" would be the
+  // entire filesystem and the confinement would collapse to none, so
+  // out-of-scope refs from such a repo stay unprobed.
+  const siblingScopes = snapshots.flatMap((s) => {
+    const parent = nodeResolve(s.config.path, "..");
+    return nodeResolve(parent, "..") === parent ? [] : [parent];
+  });
 
   const findings: BrokenRefFinding[] = [];
 
