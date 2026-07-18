@@ -193,7 +193,19 @@ export interface ReindexOptions {
   // chunks actually being embedded (cache misses), not the whole vault — a
   // fully-cached reindex calls this zero times.
   onProgress?: (done: number, total: number) => void;
+  // Test seam (#54): how many cache-miss chunks are embedded and COMMITTED
+  // per batch. Production uses EMBED_COMMIT_BATCH; tests shrink it to drive
+  // the interrupted-build resume path without a large fixture.
+  embedCommitBatch?: number;
 }
+
+// #54: embeddings land in the durable content-addressed cache PER BATCH, not
+// in one end-of-build transaction. The cache thereby doubles as the resume
+// checkpoint: a process-lock takeover SIGTERM mid-build loses at most one
+// batch, and the next build's existingEmbeddingHashes() pass sees every
+// committed batch as a cache hit and embeds only the remainder — no cursor,
+// no new state, the table the build already consults IS the watermark.
+const EMBED_COMMIT_BATCH = 64;
 
 // Human-readable warning lines for a reindex result's `skipped` and
 // `invalidFrontmatter` buckets, or [] when both are empty. Callers write these
@@ -407,22 +419,36 @@ export async function reindexVault(
     const cacheHits = totalChunks - allHashes.filter((h) => !cached.has(h)).length;
 
     let vectorEnabled = true;
+    let committedEmbeds = 0;
     if (missTexts.length > 0) {
-      const embedResult = await embed(missTexts, opts.onProgress);
-      if (embedResult.ok) {
+      const batchSize = opts.embedCommitBatch ?? EMBED_COMMIT_BATCH;
+      for (let start = 0; start < missHashes.length; start += batchSize) {
+        const sliceHashes = missHashes.slice(start, start + batchSize);
+        const sliceTexts = missTexts.slice(start, start + batchSize);
+        const embedResult = await embed(
+          sliceTexts,
+          opts.onProgress
+            ? (done, _total) => opts.onProgress?.(committedEmbeds + done, missHashes.length)
+            : undefined,
+        );
+        if (!embedResult.ok) {
+          // Model unavailable (or died mid-build). Batches already committed
+          // stay in the cache — the next build resumes past them. Documents
+          // + chunk rows still land below so BM25 works; vector ranking
+          // degrades to nothing for this reindex.
+          vectorEnabled = false;
+          break;
+        }
         const writeEmbeds = db.transaction(() => {
-          for (let i = 0; i < missHashes.length; i++) {
-            const h = missHashes[i] ?? "";
+          for (let i = 0; i < sliceHashes.length; i++) {
+            const h = sliceHashes[i] ?? "";
             const vec = embedResult.value[i];
             if (!vec) continue;
             insertEmbedding(db, h, provider.id, vec, indexedAt, provider.dim);
           }
         });
         writeEmbeds();
-      } else {
-        // Model unavailable. We still want documents + chunk rows so BM25
-        // works; vector ranking simply degrades to nothing for this reindex.
-        vectorEnabled = false;
+        committedEmbeds += sliceHashes.length;
       }
     } else if (totalChunks === 0) {
       // No chunks at all (empty vault). Treat as vectorEnabled=true by
@@ -470,7 +496,9 @@ export async function reindexVault(
       skipped,
       invalidFrontmatter,
       indexedAt,
-      embeddedCount: missHashes.length,
+      // COMMITTED count, not attempted: an interrupted build reports what it
+      // actually banked (#54).
+      embeddedCount: committedEmbeds,
       cacheHits,
       orphansRemoved,
     });
