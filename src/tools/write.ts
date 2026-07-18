@@ -215,6 +215,12 @@ export interface WriteResult {
   // and logged to .daftari/shadow-actions.jsonl but NOTHING was written —
   // no file, no commit, no index update, no provenance entry.
   shadow?: boolean;
+  // Advisory nudge (#169), vault_write overwrites only: replacing a document
+  // in place destroys the prior version's lineage; when the write records a
+  // changed fact, vault_supersede preserves the old doc and mints the
+  // superseded_by edge instead. Purely additive — the write has already
+  // landed, nothing blocks, no edge is auto-created.
+  supersede_hint?: string;
   // Set when a propose-only role's vault_write was coerced into a staged
   // `write` proposal (#235): the staged action's id/expiry, plus any pending
   // proposals already contesting the same target and the inter-proposal
@@ -514,6 +520,15 @@ function checkTierGuard(args: {
   return ok(undefined);
 }
 
+// The #169 nudge, verbatim on every vault_write overwrite. One fixed string:
+// the signal is the field's presence, and a stable text is grep-able in
+// agent traces.
+const SUPERSEDE_HINT =
+  "This write replaced an existing document in place. If it records a changed " +
+  "fact, prefer vault_supersede: it preserves the prior version and mints the " +
+  "superseded_by edge instead of erasing lineage. Advisory only — this write " +
+  "has already landed.";
+
 export async function vaultWrite(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -783,7 +798,7 @@ export async function vaultWrite(
     updated_by: agent.value,
   };
 
-  return performWrite({
+  const written = await performWrite({
     vaultRoot,
     // Lock key, provenance, and commit path are all keyed on the CANONICAL
     // relPath (resolved.value.relPath), never the raw caller string: aliased
@@ -812,6 +827,14 @@ export async function vaultWrite(
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     bodyChanged: !isUpdate || !sameBody(oldContent, body),
   });
+  if (!written.ok || !isUpdate) return written;
+  // #169: an in-place overwrite destroys the prior version's lineage, and
+  // daftari HAS the preserve-not-overwrite primitive — steer toward it at
+  // the moment of overwrite, the decay banner's channel: additive, advisory,
+  // never blocking, never auto-minting an edge. The agent still chooses.
+  // Attached here (not in performWrite) so vault_supersede and the other
+  // lifecycle tools never nudge about themselves.
+  return ok({ ...written.value, supersede_hint: SUPERSEDE_HINT });
 }
 
 // ---------------------------------------------------------------------------
@@ -1932,7 +1955,10 @@ export const writeTools: ToolDefinition[] = [
       "change to git. If the caller's role is propose-only, nothing is " +
       "written: the payload lands as a staged 'write' proposal awaiting " +
       "vault_ratify, and the result carries action: 'staged' with the " +
-      "proposal id (plus any competing pending proposals on the same target)." +
+      "proposal id (plus any competing pending proposals on the same target). " +
+      "Overwriting an existing document returns an advisory supersede_hint — " +
+      "when the write records a changed fact, vault_supersede preserves the " +
+      "prior version and its lineage instead." +
       shadowNote,
     inputSchema: {
       type: "object",
