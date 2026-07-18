@@ -26,6 +26,7 @@ import { relative, resolve } from "node:path";
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
 import { listConsumesEdges } from "../curation/consumes.js";
 import {
+  splitUpstreamVisibility,
   summarizeUpstream,
   type UpstreamStaleness,
   type UpstreamStalenessSummary,
@@ -35,7 +36,7 @@ import { listEdges } from "../curation/edges.js";
 import { readProvenanceLog } from "../curation/provenance.js";
 import { readReadLog } from "../curation/read-log.js";
 import { sourceReadable } from "../curation/tension-access.js";
-import { bucketHiddenDownstream, type HiddenDownstream } from "../curation/tension-blast.js";
+import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
@@ -134,15 +135,9 @@ async function artifactReport(
       earned,
     });
 
-    let visible = rows;
-    let hiddenPending: HiddenDownstream = "none";
-    if (access) {
-      visible = rows.filter((r) => sourceReadable(db, access, r.unit));
-      const hiddenPendingCount = rows.filter(
-        (r) => !visible.includes(r) && r.staleness !== "current",
-      ).length;
-      hiddenPending = bucketHiddenDownstream(hiddenPendingCount);
-    }
+    const { visible, hiddenPending } = access
+      ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+      : { visible: rows, hiddenPending: "none" as const };
 
     return ok({
       mode: "artifact",

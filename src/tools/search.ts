@@ -8,7 +8,7 @@
 
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { listConsumesEdges } from "../curation/consumes.js";
-import { compiledUpstreamStaleness } from "../curation/edge-staleness.js";
+import { compiledUpstreamStaleness, splitUpstreamVisibility } from "../curation/edge-staleness.js";
 import { readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
 import { sourceReadable } from "../curation/tension-access.js";
@@ -212,14 +212,17 @@ export async function vaultSearch(
     // denominator counts serves, whatever tool served them; the logged count
     // is the TRUE one, unfiltered — the log is local operator telemetry).
     //
-    // The caller-facing hit follows vault_read's split exactly (#217): the
-    // "broken" (incident) classification is disclosed only for upstream
+    // The caller-facing hit uses the shared #217 split (splitUpstreamVisibility):
+    // the "broken" (incident) classification is disclosed only for upstream
     // units the caller can read — pendingBrokenUpstream buckets the VISIBLE
-    // broken count. Edges to unreadable units contribute only a generic
-    // hiddenPendingUpstream bucket that never carries severity: an incident
+    // broken count. Edges to unreadable units contribute only the generic
+    // hiddenPendingUpstream bucket, which never carries severity: an incident
     // verdict derived from a hidden unit would leak that unit's change
-    // activity across the ACL boundary. Buckets, never exact counts.
-    // Best-effort: a telemetry failure never fails the search.
+    // activity across the ACL boundary. The visible count is bucketed for
+    // hit-payload compactness, not disclosure — deliberately coarser than
+    // vault_read's exact pending_broken for the same document, which is
+    // where a caller drills down. Best-effort: a telemetry failure never
+    // fails the search.
     const consumesLog = await listConsumesEdges(vaultRoot);
     const provLog = await readProvenanceLog(vaultRoot);
     const staleCtx =
@@ -233,17 +236,13 @@ export async function vaultSearch(
         broken = rows.filter((r) => r.staleness === "pending-broken").length;
         // `db` is the already-open index handle — the same one the RBAC
         // enrichment above (resolveCurrentSource, contestedFor) reads from.
-        const visible = access ? rows.filter((r) => sourceReadable(db, access, r.unit)) : rows;
+        const { visible, hiddenPending } = access
+          ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+          : { visible: rows, hiddenPending: "none" as const };
         const visibleBroken = visible.filter((r) => r.staleness === "pending-broken").length;
         const brokenBucket = bucketHiddenDownstream(visibleBroken);
         if (brokenBucket !== "none") hit.pendingBrokenUpstream = brokenBucket;
-        if (access) {
-          const hiddenPending = rows.filter(
-            (r) => !visible.includes(r) && r.staleness !== "current",
-          ).length;
-          const hiddenBucket = bucketHiddenDownstream(hiddenPending);
-          if (hiddenBucket !== "none") hit.hiddenPendingUpstream = hiddenBucket;
-        }
+        if (hiddenPending !== "none") hit.hiddenPendingUpstream = hiddenPending;
       }
       await recordRead(vaultRoot, {
         tool: "vault_search",

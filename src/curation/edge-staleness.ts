@@ -46,6 +46,7 @@
 
 import { type ConsumesEdge, forwardConsumes } from "./consumes.js";
 import type { ProvenanceEntry } from "./provenance.js";
+import { bucketHiddenDownstream, type HiddenDownstream } from "./tension-blast.js";
 import {
   changedFieldsFromProvenance,
   contentChangedFields,
@@ -218,6 +219,25 @@ export function upstreamStaleness(input: {
   return rows.sort(
     (a, b) => a.unit.localeCompare(b.unit) || a.edge_class.localeCompare(b.edge_class),
   );
+}
+
+// THE disclosure split for every reader-facing staleness surface (#217):
+// edges whose upstream unit the caller can read are disclosed in full (by
+// omission of the rest); unreadable units surface ONLY as a coarse
+// none/some/many bucket over their pending edges — never an exact count,
+// never a severity class. vault_read, vault_search, and vault_staleness all
+// call this one helper so the invariant cannot drift between surfaces.
+export function splitUpstreamVisibility(
+  rows: UpstreamStaleness[],
+  isReadable: (unit: string) => boolean,
+): { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } {
+  const visible: UpstreamStaleness[] = [];
+  let hiddenPendingCount = 0;
+  for (const r of rows) {
+    if (isReadable(r.unit)) visible.push(r);
+    else if (r.staleness !== "current") hiddenPendingCount += 1;
+  }
+  return { visible, hiddenPending: bucketHiddenDownstream(hiddenPendingCount) };
 }
 
 export function summarizeUpstream(rows: UpstreamStaleness[]): UpstreamStalenessSummary {

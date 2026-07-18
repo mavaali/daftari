@@ -7,13 +7,17 @@
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
 import { listConsumesEdges } from "../curation/consumes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
-import { compiledUpstreamStaleness, type UpstreamStaleness } from "../curation/edge-staleness.js";
+import {
+  compiledUpstreamStaleness,
+  splitUpstreamVisibility,
+  type UpstreamStaleness,
+} from "../curation/edge-staleness.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
 import { listStaleFiles } from "../curation/staleness.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
-import { bucketHiddenDownstream, type HiddenDownstream } from "../curation/tension-blast.js";
+import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
   DOMAINS,
@@ -156,20 +160,19 @@ export async function vaultRead(
   // which is byte-identical to a document with no compiled edges at all.
   let upstream: UpstreamReadStaleness | null = null;
   if (rows && rows.length > 0) {
-    let visible = rows;
-    let hiddenPending: HiddenDownstream = "none";
+    let split: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = {
+      visible: rows,
+      hiddenPending: "none",
+    };
     if (access) {
       const db = openIndexForAccessOrNull(vaultRoot);
       try {
-        visible = rows.filter((r) => sourceReadable(db, access, r.unit));
+        split = splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit));
       } finally {
         db?.close();
       }
-      const hiddenPendingCount = rows.filter(
-        (r) => !visible.includes(r) && r.staleness !== "current",
-      ).length;
-      hiddenPending = bucketHiddenDownstream(hiddenPendingCount);
     }
+    const { visible, hiddenPending } = split;
     if (visible.length > 0 || hiddenPending !== "none") {
       const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
       const notes: string[] = [];

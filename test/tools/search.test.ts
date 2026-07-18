@@ -553,9 +553,13 @@ describe("upstream staleness annotations (#234)", () => {
       run_id: "run-stale",
     });
     if (!read.ok) throw read.error;
+    // Explicit past compile_ts: the breaking provenance entry below is
+    // stamped "now", which must be STRICTLY later than the baseline — a
+    // same-millisecond pair would classify the edge as current.
     const minted = await mintConsumesEdges(vault, {
       artifact: "pricing/helios-consumption-pricing.md",
       runId: "run-stale",
+      timestamp: "2026-01-01T00:00:00.000Z",
     });
     if (!minted.ok) throw minted.error;
     const changed = await recordProvenance(vault, {
