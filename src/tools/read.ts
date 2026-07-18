@@ -129,11 +129,25 @@ export async function vaultRead(
   // #234: classify this document's compiled upstream edges as of the serve.
   // Best-effort — the read never fails on telemetry; on a log-read error the
   // serve is still recorded, just uninstrumented (broken_upstream absent).
+  //
+  // Cost posture (accepted for v1): classification is derived at query time
+  // from the two append-only logs, so an instrumented vault pays two log
+  // scans per read — the price of having no verdict store that could itself
+  // go stale. An UNinstrumented vault pays almost nothing: no consumes log
+  // (or an empty one) short-circuits before the provenance log is touched,
+  // since with zero compiled edges every broken count is zero. If vault
+  // history ever makes the scans hurt, the escalation is an index.db mirror
+  // of the logs (ephemeral, rebuildable — the edges.jsonl materialization
+  // precedent), not caching bolted on here.
   let rows: UpstreamStaleness[] | null = null;
   const consumes = await listConsumesEdges(vaultRoot);
-  const provLog = await readProvenanceLog(vaultRoot);
-  if (consumes.ok && provLog.ok) {
-    rows = compiledUpstreamStaleness(resolved.value.relPath, consumes.value, provLog.value);
+  if (consumes.ok && consumes.value.length === 0) {
+    rows = [];
+  } else if (consumes.ok) {
+    const provLog = await readProvenanceLog(vaultRoot);
+    if (provLog.ok) {
+      rows = compiledUpstreamStaleness(resolved.value.relPath, consumes.value, provLog.value);
+    }
   }
 
   // Every served read is logged — the broken-read rate needs its denominator
