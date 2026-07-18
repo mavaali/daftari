@@ -38,7 +38,7 @@ import { sourceReadable } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { readFile, resolveVaultPath } from "../storage/local.js";
+import { canonicalVaultRelPath, readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -73,22 +73,12 @@ export interface BrokenReadReport {
   uninstrumented: number;
 }
 
-// resolveVaultPath's relPath is realpath-canonical — the same key provenance,
-// consumes, and the read log store — so it is returned as-is. Recomputing a
-// lexical relative here would diverge from the log keys under a symlinked
-// vault root and silently miss every edge (#127/#128).
-function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
-  const resolved = resolveVaultPath(vaultRoot, relPath.trim());
-  if (!resolved.ok) return resolved;
-  return ok(resolved.value.relPath);
-}
-
 async function artifactReport(
   vaultRoot: string,
   artifactRaw: string,
   access?: AccessContext,
 ): Promise<Result<ArtifactStalenessResult, Error>> {
-  const artifact = canonicalRelPath(vaultRoot, artifactRaw);
+  const artifact = canonicalVaultRelPath(vaultRoot, artifactRaw);
   if (!artifact.ok) return artifact;
 
   const empty = (): ArtifactStalenessResult => ({
@@ -209,7 +199,7 @@ export async function vaultStaleness(
     if (typeof args.artifact !== "string" || args.artifact.trim().length === 0) {
       return err(new Error("vault_staleness 'artifact' must be a non-empty string"));
     }
-    if (args.days !== undefined) {
+    if (args.days !== undefined && args.days !== null) {
       return err(new Error("vault_staleness takes 'days' only without 'artifact'"));
     }
     return artifactReport(vaultRoot, args.artifact, access);

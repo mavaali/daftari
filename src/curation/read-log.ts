@@ -72,6 +72,35 @@ export async function recordRead(
   }
 }
 
+// Batch variant: many serve records in ONE append (and one timestamp). The
+// search tools log every served hit; paying a separate fs append per hit
+// would serialize N small writes into the request's latency path.
+export async function recordReads(
+  vaultRoot: string,
+  entries: Array<Omit<ReadLogEntry, "timestamp"> & { timestamp?: string }>,
+): Promise<Result<ReadLogEntry[], Error>> {
+  if (entries.length === 0) return ok([]);
+  const now = new Date().toISOString();
+  const full = entries.map(
+    (entry): ReadLogEntry => ({
+      timestamp: entry.timestamp ?? now,
+      tool: entry.tool,
+      file: entry.file,
+      ...(entry.run_id ? { run_id: entry.run_id } : {}),
+      ...(entry.principal ? { principal: entry.principal } : {}),
+      ...(entry.broken_upstream !== undefined ? { broken_upstream: entry.broken_upstream } : {}),
+    }),
+  );
+  try {
+    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    await appendFile(readLogPath(vaultRoot), `${full.map((e) => JSON.stringify(e)).join("\n")}\n`);
+    return ok(full);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot append to read log: ${reason}`));
+  }
+}
+
 // Reads the log back, oldest first. A missing log is not an error; malformed
 // lines are skipped.
 export async function readReadLog(vaultRoot: string): Promise<Result<ReadLogEntry[], Error>> {

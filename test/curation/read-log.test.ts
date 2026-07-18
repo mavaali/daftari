@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readReadLog, readsForRun, recordRead } from "../../src/curation/read-log.js";
+import { readReadLog, readsForRun, recordRead, recordReads } from "../../src/curation/read-log.js";
 
 describe("read log (#233)", () => {
   let vault: string;
@@ -51,6 +51,24 @@ describe("read log (#233)", () => {
     expect(log.value[1]?.tool).toBe("vault_search");
     // A run-scoped join never picks up run-less serves.
     expect(readsForRun(log.value, "run-1")).toEqual([]);
+  });
+
+  it("recordReads appends a whole batch in one call (#234 search serves)", async () => {
+    const batch = await recordReads(vault, [
+      { tool: "vault_search", file: "pricing/a.md", broken_upstream: 1 },
+      { tool: "vault_search", file: "pricing/b.md", broken_upstream: 0, principal: "h:x" },
+    ]);
+    expect(batch.ok).toBe(true);
+    const emptyBatch = await recordReads(vault, []);
+    expect(emptyBatch.ok && emptyBatch.value).toEqual([]);
+
+    const log = await readReadLog(vault);
+    if (!log.ok) throw log.error;
+    expect(log.value.map((e) => [e.file, e.broken_upstream])).toEqual([
+      ["pricing/a.md", 1],
+      ["pricing/b.md", 0],
+    ]);
+    expect(log.value[1]?.principal).toBe("h:x");
   });
 
   it("readsForRun returns unique paths for one run, first-read order", async () => {

@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { mintConsumesEdges } from "../../src/curation/consumes.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
-import { recordRead } from "../../src/curation/read-log.js";
+import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
@@ -582,6 +582,30 @@ describe("upstream staleness annotations (#234)", () => {
     const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
     expect(hit?.pendingBrokenUpstream).toBe("some");
     expect(hit?.hiddenPendingUpstream).toBeUndefined();
+  });
+
+  it("vault_search_related serves are instrumented too — same helper, own tool tag", async () => {
+    const related = await vaultSearchRelated(vault, {
+      path: "pricing/serverless-cost-predictability.md",
+    });
+    expect(related.ok).toBe(true);
+    if (!related.ok) return;
+    expect(related.value.hits.length).toBeGreaterThan(0);
+
+    const log = await readReadLog(vault);
+    if (!log.ok) throw log.error;
+    const served = log.value.filter((e) => e.tool === "vault_search_related");
+    // Every served related hit is one instrumented read-log entry.
+    for (const hit of related.value.hits) {
+      const entry = served.find((e) => e.file === hit.path);
+      expect(entry).toBeDefined();
+      expect(entry?.broken_upstream).toBeTypeOf("number");
+    }
+    // The broken doc carries its annotation through the related surface when served.
+    const heliosHit = related.value.hits.find(
+      (h) => h.path === "pricing/helios-consumption-pricing.md",
+    );
+    if (heliosHit) expect(heliosHit.pendingBrokenUpstream).toBe("some");
   });
 
   it("never derives the broken (incident) bucket from units outside the caller's scope", async () => {

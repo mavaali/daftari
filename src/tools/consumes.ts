@@ -18,7 +18,7 @@ import {
 } from "../curation/consumes.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { resolveVaultPath } from "../storage/local.js";
+import { canonicalVaultRelPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -28,16 +28,6 @@ export interface ConsumesResult {
   edges: ConsumesEdge[];
   total: number;
   include_history: boolean;
-}
-
-// resolveVaultPath's relPath is realpath-canonical — the same key provenance,
-// consumes, and the read log store — so it is returned as-is. Recomputing a
-// lexical relative here would diverge from the log keys under a symlinked
-// vault root and silently miss every edge (#127/#128).
-function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
-  const resolved = resolveVaultPath(vaultRoot, relPath.trim());
-  if (!resolved.ok) return resolved;
-  return ok(resolved.value.relPath);
 }
 
 export async function vaultConsumes(
@@ -62,7 +52,7 @@ export async function vaultConsumes(
   }
   const direction = typeof artifact === "string" ? "forward" : "reverse";
 
-  const anchor = canonicalRelPath(vaultRoot, anchorRaw);
+  const anchor = canonicalVaultRelPath(vaultRoot, anchorRaw);
   if (!anchor.ok) return anchor;
 
   let includeHistory = false;
