@@ -367,6 +367,19 @@ describe("write tools", () => {
       expect(appended.ok).toBe(true);
       if (!appended.ok) return;
       expect(appended.value.domain_warnings?.[0]).toContain("sketches/wild-idea.md");
+
+      // Append warnings are scoped to what THIS append added: the doc now
+      // permanently links a generative sketch, but an unrelated follow-up
+      // append must not re-emit the warning — re-warning on every later
+      // append would drown the "did this append introduce a problem" signal.
+      const unrelated = await vaultAppend(vault, {
+        path: "pricing/ledger.md",
+        section: "## Later\n\nNothing speculative here.",
+        agent: AGENT,
+      });
+      expect(unrelated.ok).toBe(true);
+      if (!unrelated.ok) return;
+      expect(unrelated.value.domain_warnings).toBeUndefined();
     }, 60_000);
 
     // Vantage rule (#217). The warning names the RESOLVED target path and

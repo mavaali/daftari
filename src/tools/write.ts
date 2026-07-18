@@ -1034,14 +1034,18 @@ export async function vaultAppend(
     bodyChanged: true,
   });
   // #4: an appended section can introduce body links into generative-domain
-  // docs — same advisory channel as vault_write.
+  // docs — same advisory channel as vault_write, scoped to what THIS append
+  // added: only the new section is scanned (a doc that already leaned on
+  // generative material warned at write time; re-warning on every later,
+  // unrelated append would drown the signal), and sources are skipped
+  // entirely because an append cannot change frontmatter.
   if (!appended.ok || appended.value.shadow) return appended;
   const appendWarnings = generativeDomainRefs(
     vaultRoot,
     {
       domain: newFrontmatter.domain,
-      sources: newFrontmatter.sources ?? [],
-      body: newBody,
+      sources: [],
+      body: section.value,
       relPath: resolved.value.relPath,
     },
     access,
