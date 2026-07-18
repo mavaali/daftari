@@ -2049,7 +2049,9 @@ export const writeTools: ToolDefinition[] = [
       "proposal id (plus any competing pending proposals on the same target). " +
       "Overwriting an existing document returns an advisory supersede_hint — " +
       "when the write records a changed fact, vault_supersede preserves the " +
-      "prior version and its lineage instead." +
+      "prior version and its lineage instead. An accumulation-domain write " +
+      "that cites or links generative-domain docs returns advisory " +
+      "domain_warnings naming them; the write still lands." +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -2081,7 +2083,10 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Append a markdown section to an existing vault document. Frontmatter " +
-      "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits." +
+      "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits. " +
+      "Appending links to generative-domain docs onto an accumulation-domain " +
+      "doc returns advisory domain_warnings naming them; the append still " +
+      "lands." +
       shadowNote,
     inputSchema: {
       type: "object",
