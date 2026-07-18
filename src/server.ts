@@ -19,6 +19,7 @@ import { searchTools } from "./tools/search.js";
 import { stagedActionTools } from "./tools/staged-actions.js";
 import { themesTools } from "./tools/themes.js";
 import { tier1Tools } from "./tools/tier1.js";
+import { tier2Tools } from "./tools/tier2.js";
 import { witnessTools } from "./tools/witness.js";
 import { writeTools } from "./tools/write.js";
 
@@ -53,6 +54,7 @@ export function createServer(vaultRoot: string, access: AccessContext = guestAcc
     ...edgeTools,
     ...consumesTools,
     ...tier1Tools,
+    ...tier2Tools,
     ...edgeStalenessTools,
   ];
   const byName = new Map(tools.map((t) => [t.name, t]));

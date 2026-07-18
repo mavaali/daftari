@@ -16,6 +16,7 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/curation-log.jsonl
 **/.daftari/read-log.jsonl
 **/.daftari/consumes.jsonl
+**/.daftari/tier2-verdicts.jsonl
 **/.daftari/staged-actions.jsonl
 **/.daftari/edges.jsonl
 **/.daftari/shadow-actions.jsonl
