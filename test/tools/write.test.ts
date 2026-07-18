@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
+import type { AccessContext } from "../../src/access/rbac.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import type { Frontmatter } from "../../src/frontmatter/types.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
@@ -293,6 +294,160 @@ describe("write tools", () => {
       expect(shadowed.value.shadow).toBe(true);
       expect(shadowed.value.committed).toBe(false);
       expect(shadowed.value.supersede_hint).toBeUndefined();
+    }, 60_000);
+  });
+
+  describe("advisory domain warnings (#4)", () => {
+    it("an accumulation write citing/linking generative docs warns; clean writes stay silent", async () => {
+      const sketch = await vaultWrite(vault, {
+        path: "sketches/moonshot.md",
+        frontmatter: newFrontmatter({
+          title: "Moonshot",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Moonshot\n\nSpeculative.\n",
+        agent: AGENT,
+      });
+      expect(sketch.ok).toBe(true);
+      if (!sketch.ok) return;
+      // The generative doc itself carries no warning.
+      expect(sketch.value.domain_warnings).toBeUndefined();
+
+      const canon = await vaultWrite(vault, {
+        path: "pricing/settled.md",
+        frontmatter: newFrontmatter({
+          title: "Settled",
+          sources: ["sketches/moonshot.md"],
+        }),
+        body: "# Settled\n\nLeans on [the moonshot](../sketches/moonshot.md).\n",
+        agent: AGENT,
+      });
+      expect(canon.ok).toBe(true);
+      if (!canon.ok) return;
+      expect(canon.value.action).toBe("create");
+      expect(canon.value.committed).toBe(true); // advisory: the write landed
+      expect(canon.value.domain_warnings).toHaveLength(1);
+      expect(canon.value.domain_warnings?.[0]).toContain("sketches/moonshot.md");
+      expect(canon.value.domain_warnings?.[0]).toContain("generative-domain");
+
+      const clean = await vaultWrite(vault, {
+        path: "pricing/independent.md",
+        frontmatter: newFrontmatter({ title: "Independent" }),
+        body: "# Independent\n\nNo speculative inputs.\n",
+        agent: AGENT,
+      });
+      expect(clean.ok).toBe(true);
+      if (!clean.ok) return;
+      expect(clean.value.domain_warnings).toBeUndefined();
+    }, 60_000);
+
+    it("an append that links a generative doc warns too", async () => {
+      await vaultWrite(vault, {
+        path: "sketches/wild-idea.md",
+        frontmatter: newFrontmatter({
+          title: "Wild idea",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Wild idea\n",
+        agent: AGENT,
+      });
+      await vaultWrite(vault, {
+        path: "pricing/ledger.md",
+        frontmatter: newFrontmatter({ title: "Ledger" }),
+        body: "# Ledger\n",
+        agent: AGENT,
+      });
+      const appended = await vaultAppend(vault, {
+        path: "pricing/ledger.md",
+        section: "## Note\n\nSee [wild idea](../sketches/wild-idea.md).",
+        agent: AGENT,
+      });
+      expect(appended.ok).toBe(true);
+      if (!appended.ok) return;
+      expect(appended.value.domain_warnings?.[0]).toContain("sketches/wild-idea.md");
+
+      // Append warnings are scoped to what THIS append added: the doc now
+      // permanently links a generative sketch, but an unrelated follow-up
+      // append must not re-emit the warning — re-warning on every later
+      // append would drown the "did this append introduce a problem" signal.
+      const unrelated = await vaultAppend(vault, {
+        path: "pricing/ledger.md",
+        section: "## Later\n\nNothing speculative here.",
+        agent: AGENT,
+      });
+      expect(unrelated.ok).toBe(true);
+      if (!unrelated.ok) return;
+      expect(unrelated.value.domain_warnings).toBeUndefined();
+    }, 60_000);
+
+    // Vantage rule (#217). The warning names the RESOLVED target path and
+    // discloses its domain — metadata about a doc the caller may not read.
+    // A writer scoped away from the generative collection must get NO warning
+    // naming it (existence leak); a writer who can read it still does.
+    it("omits warnings for generative targets outside the caller's read scope", async () => {
+      await vaultWrite(vault, {
+        path: "sketches/hidden-sketch.md",
+        frontmatter: newFrontmatter({
+          title: "Hidden sketch",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Hidden sketch\n",
+        agent: AGENT,
+      });
+
+      const blinkered: AccessContext = {
+        user: "scoped-writer",
+        roleName: "pricing-only",
+        role: { read: ["pricing"], write: ["pricing"], promote: false, ratify: false },
+      };
+      const blind = await vaultWrite(
+        vault,
+        {
+          path: "pricing/from-blinkered.md",
+          frontmatter: newFrontmatter({
+            title: "From blinkered",
+            sources: ["sketches/hidden-sketch.md"],
+          }),
+          body: "# From blinkered\n\nSee [it](../sketches/hidden-sketch.md).\n",
+          agent: AGENT,
+        },
+        blinkered,
+      );
+      expect(blind.ok).toBe(true);
+      if (!blind.ok) return;
+      expect(blind.value.committed).toBe(true);
+      expect(blind.value.domain_warnings).toBeUndefined();
+
+      const sighted: AccessContext = {
+        user: "wide-writer",
+        roleName: "pricing-and-sketches",
+        role: {
+          read: ["pricing", "sketches"],
+          write: ["pricing"],
+          promote: false,
+          ratify: false,
+        },
+      };
+      const seen = await vaultWrite(
+        vault,
+        {
+          path: "pricing/from-sighted.md",
+          frontmatter: newFrontmatter({
+            title: "From sighted",
+            sources: ["sketches/hidden-sketch.md"],
+          }),
+          body: "# From sighted\n\nSee [it](../sketches/hidden-sketch.md).\n",
+          agent: AGENT,
+        },
+        sighted,
+      );
+      expect(seen.ok).toBe(true);
+      if (!seen.ok) return;
+      expect(seen.value.domain_warnings).toHaveLength(1);
+      expect(seen.value.domain_warnings?.[0]).toContain("sketches/hidden-sketch.md");
     }, 60_000);
   });
 

@@ -35,8 +35,8 @@ describe("curation tools", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.filter).toBeNull();
-      expect(result.value.totalFindings).toBe(8);
-      expect(Object.keys(result.value.checks)).toHaveLength(10);
+      expect(result.value.totalFindings).toBe(9);
+      expect(Object.keys(result.value.checks)).toHaveLength(11);
     });
 
     it("narrows the report to a single check when filtered", async () => {

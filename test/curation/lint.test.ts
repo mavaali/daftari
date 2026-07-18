@@ -72,7 +72,15 @@ describe("lint", () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      expect(report.value.totalFindings).toBe(8);
+      expect(report.value.totalFindings).toBe(9);
+    });
+
+    it("flags the accumulation doc citing a generative source (#4)", async () => {
+      const report = await runLint(LINT_VAULT);
+      expect(report.ok).toBe(true);
+      if (!report.ok) return;
+      expect(report.value.checks.domainLeaks.map((f) => f.path)).toEqual(["cites-draft.md"]);
+      expect(report.value.checks.domainLeaks[0]?.detail).toContain("old-draft.md");
     });
 
     it("flags the path-like unresolvable source, skipping opaque and external citations", async () => {

@@ -54,6 +54,7 @@ export const LINT_CHECKS = [
   "brokenSourceRefs",
   "lifecycleConflicts",
   "schemaInvalid",
+  "domainLeaks",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -225,6 +226,7 @@ export async function runLint(
     brokenSourceRefs: [],
     lifecycleConflicts: [],
     schemaInvalid: [],
+    domainLeaks: [],
   };
 
   // 8-10. Tier 0 (#232; quick win 1 of #236): referential integrity over the
@@ -239,6 +241,7 @@ export async function runLint(
   checks.brokenSourceRefs = t0.brokenSourceRefs;
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;
+  checks.domainLeaks = t0.domainLeaks;
 
   for (const doc of docs) {
     const fm = doc.frontmatter;

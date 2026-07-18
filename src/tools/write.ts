@@ -17,6 +17,14 @@ import { mintConsumesEdges } from "../curation/consumes.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
+import { sourceReadable } from "../curation/tension-access.js";
+import { EXTERNAL_REF } from "../curation/tier0.js";
+import {
+  buildPathIndexes,
+  extractLinks,
+  outgoingLinkTargets,
+  resolveLink,
+} from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
@@ -40,12 +48,14 @@ import type { HookOperation } from "../hooks/types.js";
 import { getIndexStatus, indexingBusyMessage } from "../search/index-state.js";
 import { indexDocument } from "../search/reindex.js";
 import { noteSelfWrite } from "../search/self-write.js";
+import { allDocumentPaths, getDocumentsByPaths } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForAccessOrNull } from "./search.js";
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -221,6 +231,12 @@ export interface WriteResult {
   // superseded_by edge instead. Purely additive — the write has already
   // landed, nothing blocks, no edge is auto-created.
   supersede_hint?: string;
+  // #4: advisory epistemic-boundary warnings — this accumulation-domain
+  // write references generative-domain docs (via `sources` or body links).
+  // Speculative sketches must not read as settled canon. The write has
+  // landed; nothing blocks, nothing is auto-fixed. The typed-channel half
+  // (`sources`) is also a tier-0 lint finding (domainLeaks).
+  domain_warnings?: string[];
   // Set when a propose-only role's vault_write was coerced into a staged
   // `write` proposal (#235): the staged action's id/expiry, plus any pending
   // proposals already contesting the same target and the inter-proposal
@@ -518,6 +534,55 @@ function checkTierGuard(args: {
     );
   }
   return ok(undefined);
+}
+
+// #4: the generative-domain documents an accumulation-domain doc references
+// (typed `sources` entries plus body links), resolved against the indexed
+// path universe. Advisory only — callers attach the result as
+// domain_warnings; index unavailability degrades to silence.
+function generativeDomainRefs(
+  vaultRoot: string,
+  doc: { domain: string; sources: string[]; body: string; relPath: string },
+  access?: AccessContext,
+): string[] | null {
+  if (doc.domain !== "accumulation") return null;
+  // Most accumulation writes reference nothing; skip the index entirely
+  // rather than loading every vault path to resolve an empty candidate set.
+  const localSources = doc.sources.filter((s) => !EXTERNAL_REF.test(s));
+  if (localSources.length === 0 && extractLinks(doc.body).length === 0) return null;
+  const db = openIndexForAccessOrNull(vaultRoot);
+  if (!db) return null;
+  try {
+    const indexes = buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p })));
+    const candidates = new Set<string>(outgoingLinkTargets(doc.body, doc.relPath, indexes));
+    for (const raw of localSources) {
+      const target = resolveLink(raw, doc.relPath, indexes.byPath, indexes.byBasename);
+      if (target && target !== doc.relPath) candidates.add(target);
+    }
+    if (candidates.size === 0) return null;
+    const generative = getDocumentsByPaths(db, [...candidates])
+      .filter((d) => d.domain === "generative")
+      .map((d) => d.path)
+      // Vantage rule (#217, security review on #261): a warning names the
+      // RESOLVED path and discloses the target's domain — metadata about a
+      // doc the caller may not read, and resolveLink's basename fallback can
+      // reveal a location the caller never typed. Targets outside the
+      // caller's read scope are omitted entirely, the same rule lint's
+      // domainLeaks inherits from runLint's pre-filtered doc set.
+      .filter((p) => !access || sourceReadable(db, access, p))
+      .sort();
+    if (generative.length === 0) return null;
+    return generative.map(
+      (p) => `${p} is generative-domain — speculative material referenced from accumulation canon`,
+    );
+  } catch {
+    // This runs after performWrite returned ok — the write is durable. A
+    // query failure here (index rebuilt mid-query, locked db) must degrade
+    // to "no warnings", never surface as a failed write to the caller.
+    return null;
+  } finally {
+    db.close();
+  }
 }
 
 // The #169 nudge, verbatim on every vault_write overwrite. One fixed string:
@@ -833,10 +898,25 @@ export async function vaultWrite(
   // never blocking, never auto-minting an edge. The agent still chooses.
   // Attached here (not in performWrite) so vault_supersede and the other
   // lifecycle tools never nudge about themselves. A shadow-mode result is
-  // excluded: nothing landed and nothing was replaced, so the hint's text
-  // would be false.
-  if (!written.ok || !isUpdate || written.value.shadow) return written;
-  return ok({ ...written.value, supersede_hint: SUPERSEDE_HINT });
+  // excluded: nothing landed and nothing was replaced, so the hints' text
+  // would be false. #4's domain warnings ride the same channel.
+  if (!written.ok || written.value.shadow) return written;
+  const warnings = generativeDomainRefs(
+    vaultRoot,
+    {
+      domain: stamped.domain,
+      sources: stamped.sources ?? [],
+      body,
+      relPath: resolved.value.relPath,
+    },
+    access,
+  );
+  if (!isUpdate && warnings === null) return written;
+  return ok({
+    ...written.value,
+    ...(isUpdate ? { supersede_hint: SUPERSEDE_HINT } : {}),
+    ...(warnings ? { domain_warnings: warnings } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -930,7 +1010,7 @@ export async function vaultAppend(
     return err(new Error(`invalid frontmatter: ${summary}`));
   }
 
-  return performWrite({
+  const appended = await performWrite({
     vaultRoot,
     // Lock key, provenance, and commit path are all keyed on the CANONICAL
     // relPath (resolved.value.relPath), never the raw caller string: aliased
@@ -953,6 +1033,25 @@ export async function vaultAppend(
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     bodyChanged: true,
   });
+  // #4: an appended section can introduce body links into generative-domain
+  // docs — same advisory channel as vault_write, scoped to what THIS append
+  // added: only the new section is scanned (a doc that already leaned on
+  // generative material warned at write time; re-warning on every later,
+  // unrelated append would drown the signal), and sources are skipped
+  // entirely because an append cannot change frontmatter.
+  if (!appended.ok || appended.value.shadow) return appended;
+  const appendWarnings = generativeDomainRefs(
+    vaultRoot,
+    {
+      domain: newFrontmatter.domain,
+      sources: [],
+      body: section.value,
+      relPath: resolved.value.relPath,
+    },
+    access,
+  );
+  if (appendWarnings === null) return appended;
+  return ok({ ...appended.value, domain_warnings: appendWarnings });
 }
 
 // ---------------------------------------------------------------------------
@@ -1960,7 +2059,9 @@ export const writeTools: ToolDefinition[] = [
       "proposal id (plus any competing pending proposals on the same target). " +
       "Overwriting an existing document returns an advisory supersede_hint — " +
       "when the write records a changed fact, vault_supersede preserves the " +
-      "prior version and its lineage instead." +
+      "prior version and its lineage instead. An accumulation-domain write " +
+      "that cites or links generative-domain docs returns advisory " +
+      "domain_warnings naming them; the write still lands." +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -1992,7 +2093,10 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Append a markdown section to an existing vault document. Frontmatter " +
-      "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits." +
+      "is preserved; 'updated' and 'updated_by' are re-stamped. Auto-commits. " +
+      "Appending links to generative-domain docs onto an accumulation-domain " +
+      "doc returns advisory domain_warnings naming them; the append still " +
+      "lands." +
       shadowNote,
     inputSchema: {
       type: "object",
