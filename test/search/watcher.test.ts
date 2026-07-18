@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { err, ok, type Result } from "../../src/frontmatter/types.js";
 import { getInflightPaths, resetIndexState } from "../../src/search/index-state.js";
 import { noteSelfWrite, resetSelfWriteState } from "../../src/search/self-write.js";
-import { startWatcher } from "../../src/search/watcher.js";
+import { startWatcher, watchIgnored } from "../../src/search/watcher.js";
 
 // Sleep helper: tests use a tiny debounce window (20ms) so a single waitFor
 // covers both the debounce timer and the indexFn microtask resolution.
@@ -428,3 +428,34 @@ async function mkdtemp(): Promise<string> {
   await mkdir(dir, { recursive: true });
   return dir;
 }
+
+describe("watchIgnored — watch-time extension filter (#107)", () => {
+  const root = "/vault";
+  const fileStats = { isFile: () => true, isDirectory: () => false } as import("node:fs").Stats;
+  const dirStats = { isFile: () => false, isDirectory: () => true } as import("node:fs").Stats;
+
+  it("skips non-markdown FILES so assets never consume watch handles", () => {
+    expect(watchIgnored(root, "/vault/assets/dag.png", fileStats)).toBe(true);
+    expect(watchIgnored(root, "/vault/report.pdf", fileStats)).toBe(true);
+    expect(watchIgnored(root, "/vault/notes/a.md", fileStats)).toBe(false);
+    expect(watchIgnored(root, "/vault/notes/A.MD", fileStats)).toBe(false);
+  });
+
+  it("keeps directories watchable — a dotted dir name is not a file", () => {
+    expect(watchIgnored(root, "/vault/my.notes", dirStats)).toBe(false);
+    expect(watchIgnored(root, "/vault/sub", dirStats)).toBe(false);
+  });
+
+  it("without stats it stays conservative and watches", () => {
+    // Cannot tell file from dotted directory — dispatch-time isMarkdown
+    // still discards the event, so under-filtering is safe.
+    expect(watchIgnored(root, "/vault/my.notes")).toBe(false);
+    expect(watchIgnored(root, "/vault/pic.png")).toBe(false);
+  });
+
+  it("control dirs stay ignored and the root stays watched, stats or not", () => {
+    expect(watchIgnored(root, "/vault/.daftari/index.db", fileStats)).toBe(true);
+    expect(watchIgnored(root, "/vault/.git/HEAD")).toBe(true);
+    expect(watchIgnored(root, root)).toBe(false);
+  });
+});

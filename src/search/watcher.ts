@@ -28,6 +28,7 @@
 // stderr is used throughout so the MCP stdio JSON-RPC stream on stdout
 // stays clean.
 
+import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { default as chokidar, type FSWatcher } from "chokidar";
@@ -184,6 +185,24 @@ function isMarkdown(relPath: string): boolean {
   return relPath.toLowerCase().endsWith(".md");
 }
 
+// The chokidar `ignored` predicate (#107): control dirs are always skipped,
+// and non-markdown FILES are skipped at WATCH time so colocated assets
+// (images, PDFs, data files) never consume inotify/FSEvents handles. Only a
+// path chokidar has STATTED as a file is extension-checked — a directory
+// must stay watchable for nested .md discovery, and any extension heuristic
+// misreads a dotted directory like `my.notes`. A stats-less call therefore
+// falls through to watching; the dispatch-time isMarkdown check still
+// discards those events. Exported for tests — the predicate only runs
+// inside a real chokidar instance otherwise.
+export function watchIgnored(root: string, p: string, stats?: Stats): boolean {
+  // The root itself must NOT be ignored.
+  if (p === root) return false;
+  const rel = toVaultRelative(root, p);
+  if (rel === null) return false;
+  if (isIgnoredPath(rel)) return true;
+  return stats?.isFile() === true && !isMarkdown(rel);
+}
+
 // Starts watching `vaultRoot`. Returns a handle whose close() shuts the
 // watcher down. The caller is responsible for honouring the `watch` config
 // flag — startWatcher itself does not consult config, so tests can drive it
@@ -220,14 +239,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
     watcher = resolved.watcherFactory(root);
   } else {
     watcher = chokidar.watch(root, {
-      ignored: (p: string) => {
-        // chokidar v4: ignored is called for every path. Return true to skip.
-        // The root itself must NOT be ignored.
-        if (p === root) return false;
-        const rel = toVaultRelative(root, p);
-        if (rel === null) return false;
-        return isIgnoredPath(rel);
-      },
+      ignored: (p: string, stats?: Stats) => watchIgnored(root, p, stats),
       ignoreInitial: true, // startup freshness check already covers the initial state
       persistent: true,
       followSymlinks: false,
