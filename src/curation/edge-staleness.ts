@@ -25,6 +25,15 @@
 //                        residual), or the edge has no baseline to measure
 //                        from. Awaiting a judgment no cheap tier can give.
 //
+// Tier-2 verdicts refine the residual (#232 tier 2): when a recorded
+// semantic verdict covers the pair's CURRENT change (judged_change_ts not
+// older than the unit's latest landed write), pending-unchecked resolves to
+// pending-compatible (still-valid) or pending-broken (broken, with the
+// logged tension named in the reason). A stale verdict — the unit changed
+// again after the judgment — covers nothing and the pair re-queues.
+// Compiled edges never consult verdicts: mechanical certainty is not
+// overridable by a semantic opinion.
+//
 // Because tier 1 is deterministic and free, classification RUNS AT QUERY
 // TIME — there is no verdict store that can itself go stale. "Reading tier
 // verdicts" (the issue's phrasing) means running the SAME dispatch the
@@ -53,6 +62,7 @@ import {
   type Tier1EdgeClass,
   tier1Dispatch,
 } from "./tier1.js";
+import { coveringVerdict, latestUnitChangeTs, NO_CHANGE_TS, type Tier2Verdict } from "./tier2.js";
 
 export type EdgeStalenessClass =
   | "current"
@@ -109,19 +119,49 @@ function classifyEdge(input: {
   baseline: string | null;
   provenance: ProvenanceEntry[];
   compiledEdge?: ConsumesEdge;
+  verdicts?: Tier2Verdict[];
 }): UpstreamStaleness {
   const base = {
     unit: input.unit,
     edge_class: input.edgeClass,
     baseline: input.baseline,
   };
+  // The tier-2 residual: a covering semantic verdict decides what structure
+  // could not. Consulted on BOTH pending-unchecked paths (no-baseline and
+  // structurally-undecidable) — only the unit's CURRENT change counts; a
+  // verdict from before the latest landed write covers nothing.
+  const tier2Resolved = (changedFields: string[]): UpstreamStaleness | null => {
+    if (!input.verdicts || input.verdicts.length === 0) return null;
+    const covering = coveringVerdict(input.verdicts, {
+      artifact: input.artifact,
+      unit: input.unit,
+      edgeClass: input.edgeClass,
+      latestChangeTs: latestUnitChangeTs(input.provenance, input.unit) ?? NO_CHANGE_TS,
+    });
+    if (!covering) return null;
+    return covering.verdict === "still-valid"
+      ? {
+          ...base,
+          staleness: "pending-compatible",
+          changed_fields: changedFields,
+          reason: `tier-2 semantic verdict: still valid as of ${covering.judged_change_ts}`,
+        }
+      : {
+          ...base,
+          staleness: "pending-broken",
+          changed_fields: changedFields,
+          reason: `tier-2 semantic verdict: broken${covering.tension_id ? ` — tension ${covering.tension_id}` : ""}`,
+        };
+  };
   if (input.baseline === null) {
-    return {
-      ...base,
-      staleness: "pending-unchecked",
-      changed_fields: [],
-      reason: "no baseline — the dependency predates provenance instrumentation, never checked",
-    };
+    return (
+      tier2Resolved([]) ?? {
+        ...base,
+        staleness: "pending-unchecked",
+        changed_fields: [],
+        reason: "no baseline — the dependency predates provenance instrumentation, never checked",
+      }
+    );
   }
   const { changed, writes } = changedFieldsSince(input.provenance, input.unit, input.baseline);
   if (writes === 0) {
@@ -149,6 +189,10 @@ function classifyEdge(input: {
       : verdict.verdict === "affected"
         ? "pending-broken"
         : "pending-unchecked";
+  if (staleness === "pending-unchecked") {
+    const resolved = tier2Resolved(changed);
+    if (resolved) return resolved;
+  }
   return { ...base, staleness, changed_fields: changed, reason: verdict.reason };
 }
 
@@ -208,6 +252,10 @@ export function upstreamStaleness(input: {
   provenance: ProvenanceEntry[];
   declaredUnits: string[];
   earned: { unit: string; lastRederived: string }[];
+  // Recorded tier-2 semantic verdicts (#232). Optional: the compiled-only
+  // hot path never loads them; the vault_staleness / tier-2 queue surfaces
+  // do, so the residual reflects judgments already paid for.
+  verdicts?: Tier2Verdict[];
 }): UpstreamStaleness[] {
   const rows = compiledUpstreamStaleness(input.artifact, input.consumes, input.provenance);
 
@@ -225,6 +273,7 @@ export function upstreamStaleness(input: {
         edgeClass: "declared",
         baseline: declaredBaseline,
         provenance: input.provenance,
+        verdicts: input.verdicts,
       }),
     );
   }
@@ -238,6 +287,7 @@ export function upstreamStaleness(input: {
         edgeClass: "earned",
         baseline: e.lastRederived,
         provenance: input.provenance,
+        verdicts: input.verdicts,
       }),
     );
   }

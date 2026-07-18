@@ -146,6 +146,48 @@ describe("edge staleness (#234)", () => {
     expect(rows[0]?.reason).toContain("no baseline");
   });
 
+  it("a covering tier-2 verdict resolves the residual; a stale one does not", () => {
+    const prov = [
+      entry({ timestamp: "2026-07-05T00:00:00.000Z", file: "a/artifact.md", body_changed: true }),
+      entry({ timestamp: "2026-07-06T00:00:00.000Z", body_changed: true }),
+    ];
+    const base = {
+      artifact: "a/artifact.md",
+      consumes: [],
+      provenance: prov,
+      declaredUnits: ["a/unit.md"],
+      earned: [],
+    };
+    const verdict = {
+      timestamp: "2026-07-07T00:00:00.000Z",
+      artifact: "a/artifact.md",
+      unit: "a/unit.md",
+      edge_class: "declared" as const,
+      judged_change_ts: "2026-07-06T00:00:00.000Z",
+      verdict: "still-valid" as const,
+      reasoning: "holds",
+      agent: "agent:judge",
+    };
+
+    const covered = upstreamStaleness({ ...base, verdicts: [verdict] });
+    expect(covered[0]?.staleness).toBe("pending-compatible");
+    expect(covered[0]?.reason).toContain("tier-2");
+
+    const broken = upstreamStaleness({
+      ...base,
+      verdicts: [{ ...verdict, verdict: "broken" as const, tension_id: "t-007" }],
+    });
+    expect(broken[0]?.staleness).toBe("pending-broken");
+    expect(broken[0]?.reason).toContain("t-007");
+
+    // Judged before the unit's latest write: covers nothing, still queued.
+    const stale = upstreamStaleness({
+      ...base,
+      verdicts: [{ ...verdict, judged_change_ts: "2026-07-05T12:00:00.000Z" }],
+    });
+    expect(stale[0]?.staleness).toBe("pending-unchecked");
+  });
+
   it("summarizeUpstream counts by class", () => {
     const prov = [entry({ timestamp: "2026-07-06T00:00:00.000Z", body_changed: true })];
     const rows = upstreamStaleness({

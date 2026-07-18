@@ -5,9 +5,11 @@
 //   { artifact } — the full three-class upstream report for one document:
 //     every compiled / declared / earned edge classified against its own
 //     baseline (current / pending-compatible / pending-broken /
-//     pending-unchecked), by running tier-1 dispatch at query time. There is
-//     no verdict store — the classes are derived, so they can never go stale
-//     themselves.
+//     pending-unchecked), by running tier-1 dispatch at query time — the
+//     tier-1 layer stores no verdicts, so it can never go stale. Recorded
+//     tier-2 SEMANTIC verdicts (#232, the one judgment that must be stored
+//     because it cannot be recomputed) refine the pending-unchecked
+//     residual, and only while they cover the unit's current change.
 //
 //   { days? } — the vault-global broken-read report over the read log: what
 //     fraction of served reads (vault_read and vault_search hits) carried at
@@ -36,6 +38,7 @@ import { readProvenanceLog } from "../curation/provenance.js";
 import { readReadLog } from "../curation/read-log.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
+import { readTier2Verdicts } from "../curation/tier2.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { canonicalVaultRelPath, readFile, resolveVaultPath } from "../storage/local.js";
@@ -120,12 +123,18 @@ async function artifactReport(
       .filter((e) => e.status !== "revoked")
       .map((e) => ({ unit: e.toPath, lastRederived: e.lastRederived }));
 
+    // Tier-2 verdicts refine the pending-unchecked residual (#232): a
+    // covered pair reports the judged class instead of re-queueing.
+    const verdicts = await readTier2Verdicts(vaultRoot);
+    if (!verdicts.ok) return verdicts;
+
     const rows = upstreamStaleness({
       artifact: artifact.value,
       consumes: consumes.value,
       provenance: provenance.value,
       declaredUnits,
       earned,
+      verdicts: verdicts.value,
     });
 
     const { visible, hiddenPending } = access
