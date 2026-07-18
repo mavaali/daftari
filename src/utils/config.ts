@@ -624,6 +624,35 @@ export function loadConfig(vaultRoot: string): Result<DaftariConfig, Error> {
   return result;
 }
 
+// A line that reads like prose rather than YAML: not a comment, not a list
+// item, not a plausible `key: value`, at least three words, and carrying
+// natural-language punctuation. The classic producer is a multi-line comment
+// block where one line lost its leading '#' in a copy-paste (#26).
+function looksLikeLostComment(line: string): boolean {
+  const t = line.trim();
+  if (t.length === 0 || t.startsWith("#") || t.startsWith("- ")) return false;
+  if (/^[^:\s]+:(\s|$)/.test(t)) return false; // plausible mapping entry
+  if (t.split(/\s+/).length < 3) return false;
+  return /[()'"]|\.\s|\.$/.test(t);
+}
+
+// Scans ±3 lines around a YAML parse failure for a comment-shaped line that
+// lost its '#'. `errorLine0` is js-yaml's 0-based mark line; the returned
+// hint uses 1-based numbering to match the parser's own excerpt. Exported
+// for tests.
+export function malformedCommentHint(text: string, errorLine0: number | null): string | null {
+  if (errorLine0 === null) return null;
+  const lines = text.split(/\r?\n/);
+  const from = Math.max(0, errorLine0 - 3);
+  const to = Math.min(lines.length - 1, errorLine0 + 3);
+  for (let i = from; i <= to; i++) {
+    if (looksLikeLostComment(lines[i] ?? "")) {
+      return `hint: line ${i + 1} may be a malformed comment that lost its '#' prefix`;
+    }
+  }
+  return null;
+}
+
 // The full read + parse + validate. Kept as a separate function so loadConfig
 // can wrap it with the mtime cache without changing any validation logic.
 function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
@@ -643,7 +672,13 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     parsed = parseYaml(text);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`malformed config: invalid YAML: ${reason}`));
+    // js-yaml's position points at where parsing BROKE, which for a comment
+    // line that lost its '#' is the symptom, not the cause (#26). When a
+    // line near the failure reads like prose rather than YAML, say so —
+    // that one hint is usually the whole diagnosis.
+    const mark = (e as { mark?: { line?: number } }).mark;
+    const hint = malformedCommentHint(text, typeof mark?.line === "number" ? mark.line : null);
+    return err(new Error(`malformed config: invalid YAML: ${reason}${hint ? `\n${hint}` : ""}`));
   }
 
   if (parsed === null || parsed === undefined) {
