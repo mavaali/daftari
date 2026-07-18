@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
+import type { AccessContext } from "../../src/access/rbac.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import type { Frontmatter } from "../../src/frontmatter/types.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
@@ -366,6 +367,74 @@ describe("write tools", () => {
       expect(appended.ok).toBe(true);
       if (!appended.ok) return;
       expect(appended.value.domain_warnings?.[0]).toContain("sketches/wild-idea.md");
+    }, 60_000);
+
+    // Vantage rule (#217). The warning names the RESOLVED target path and
+    // discloses its domain — metadata about a doc the caller may not read.
+    // A writer scoped away from the generative collection must get NO warning
+    // naming it (existence leak); a writer who can read it still does.
+    it("omits warnings for generative targets outside the caller's read scope", async () => {
+      await vaultWrite(vault, {
+        path: "sketches/hidden-sketch.md",
+        frontmatter: newFrontmatter({
+          title: "Hidden sketch",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Hidden sketch\n",
+        agent: AGENT,
+      });
+
+      const blinkered: AccessContext = {
+        user: "scoped-writer",
+        roleName: "pricing-only",
+        role: { read: ["pricing"], write: ["pricing"], promote: false, ratify: false },
+      };
+      const blind = await vaultWrite(
+        vault,
+        {
+          path: "pricing/from-blinkered.md",
+          frontmatter: newFrontmatter({
+            title: "From blinkered",
+            sources: ["sketches/hidden-sketch.md"],
+          }),
+          body: "# From blinkered\n\nSee [it](../sketches/hidden-sketch.md).\n",
+          agent: AGENT,
+        },
+        blinkered,
+      );
+      expect(blind.ok).toBe(true);
+      if (!blind.ok) return;
+      expect(blind.value.committed).toBe(true);
+      expect(blind.value.domain_warnings).toBeUndefined();
+
+      const sighted: AccessContext = {
+        user: "wide-writer",
+        roleName: "pricing-and-sketches",
+        role: {
+          read: ["pricing", "sketches"],
+          write: ["pricing"],
+          promote: false,
+          ratify: false,
+        },
+      };
+      const seen = await vaultWrite(
+        vault,
+        {
+          path: "pricing/from-sighted.md",
+          frontmatter: newFrontmatter({
+            title: "From sighted",
+            sources: ["sketches/hidden-sketch.md"],
+          }),
+          body: "# From sighted\n\nSee [it](../sketches/hidden-sketch.md).\n",
+          agent: AGENT,
+        },
+        sighted,
+      );
+      expect(seen.ok).toBe(true);
+      if (!seen.ok) return;
+      expect(seen.value.domain_warnings).toHaveLength(1);
+      expect(seen.value.domain_warnings?.[0]).toContain("sketches/hidden-sketch.md");
     }, 60_000);
   });
 

@@ -17,7 +17,13 @@ import { mintConsumesEdges } from "../curation/consumes.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
-import { buildPathIndexes, outgoingLinkTargets, resolveLink } from "../curation/vault-docs.js";
+import { sourceReadable } from "../curation/tension-access.js";
+import {
+  buildPathIndexes,
+  extractLinks,
+  outgoingLinkTargets,
+  resolveLink,
+} from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
@@ -536,15 +542,19 @@ function checkTierGuard(args: {
 function generativeDomainRefs(
   vaultRoot: string,
   doc: { domain: string; sources: string[]; body: string; relPath: string },
+  access?: AccessContext,
 ): string[] | null {
   if (doc.domain !== "accumulation") return null;
+  // Most accumulation writes reference nothing; skip the index entirely
+  // rather than loading every vault path to resolve an empty candidate set.
+  const localSources = doc.sources.filter((s) => !/^(https?:|mailto:)/i.test(s));
+  if (localSources.length === 0 && extractLinks(doc.body).length === 0) return null;
   const db = openIndexForAccessOrNull(vaultRoot);
   if (!db) return null;
   try {
     const indexes = buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p })));
     const candidates = new Set<string>(outgoingLinkTargets(doc.body, doc.relPath, indexes));
-    for (const raw of doc.sources) {
-      if (/^(https?:|mailto:)/i.test(raw)) continue;
+    for (const raw of localSources) {
       const target = resolveLink(raw, doc.relPath, indexes.byPath, indexes.byBasename);
       if (target && target !== doc.relPath) candidates.add(target);
     }
@@ -552,6 +562,13 @@ function generativeDomainRefs(
     const generative = getDocumentsByPaths(db, [...candidates])
       .filter((d) => d.domain === "generative")
       .map((d) => d.path)
+      // Vantage rule (#217, security review on #261): a warning names the
+      // RESOLVED path and discloses the target's domain — metadata about a
+      // doc the caller may not read, and resolveLink's basename fallback can
+      // reveal a location the caller never typed. Targets outside the
+      // caller's read scope are omitted entirely, the same rule lint's
+      // domainLeaks inherits from runLint's pre-filtered doc set.
+      .filter((p) => !access || sourceReadable(db, access, p))
       .sort();
     if (generative.length === 0) return null;
     return generative.map(
@@ -878,12 +895,16 @@ export async function vaultWrite(
   // excluded: nothing landed and nothing was replaced, so the hints' text
   // would be false. #4's domain warnings ride the same channel.
   if (!written.ok || written.value.shadow) return written;
-  const warnings = generativeDomainRefs(vaultRoot, {
-    domain: stamped.domain,
-    sources: stamped.sources ?? [],
-    body,
-    relPath: resolved.value.relPath,
-  });
+  const warnings = generativeDomainRefs(
+    vaultRoot,
+    {
+      domain: stamped.domain,
+      sources: stamped.sources ?? [],
+      body,
+      relPath: resolved.value.relPath,
+    },
+    access,
+  );
   if (!isUpdate && warnings === null) return written;
   return ok({
     ...written.value,
@@ -1009,12 +1030,16 @@ export async function vaultAppend(
   // #4: an appended section can introduce body links into generative-domain
   // docs — same advisory channel as vault_write.
   if (!appended.ok || appended.value.shadow) return appended;
-  const appendWarnings = generativeDomainRefs(vaultRoot, {
-    domain: newFrontmatter.domain,
-    sources: newFrontmatter.sources ?? [],
-    body: newBody,
-    relPath: resolved.value.relPath,
-  });
+  const appendWarnings = generativeDomainRefs(
+    vaultRoot,
+    {
+      domain: newFrontmatter.domain,
+      sources: newFrontmatter.sources ?? [],
+      body: newBody,
+      relPath: resolved.value.relPath,
+    },
+    access,
+  );
   if (appendWarnings === null) return appended;
   return ok({ ...appended.value, domain_warnings: appendWarnings });
 }
