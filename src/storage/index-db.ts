@@ -51,7 +51,10 @@ export type IndexDb = Database.Database;
 // Bumped 7 → 8 to add the trail-extra columns (observations, contested_at,
 // contest_reason) to derives_from_edges, which became the authoritative edge
 // READ path (#236) and so must carry the full public edge shape.
-const SCHEMA_VERSION = "8";
+// Bumped 8 → 9 to add doc_links, the materialized inbound-link graph that
+// backs inline structural decay (#8) — orphan and deprecated-still-linked
+// answered with one indexed query at read/search time.
+const SCHEMA_VERSION = "9";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -130,6 +133,12 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS doc_links (
+  source_path TEXT NOT NULL,
+  target_path TEXT NOT NULL,
+  PRIMARY KEY (source_path, target_path)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links(target_path);
 CREATE TABLE IF NOT EXISTS staged_actions (
   id                  TEXT PRIMARY KEY,
   action_type         TEXT NOT NULL,
@@ -443,7 +452,7 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
 // cleared here — they are content-addressed and a subsequent gc pass deletes
 // only the orphaned ones, preserving the cache across reindexes.
 export function clearIndex(db: IndexDb): void {
-  db.exec("DELETE FROM documents; DELETE FROM chunks;");
+  db.exec("DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links;");
 }
 
 // Drops one document and all its chunks. Used by the write path to evict a
@@ -452,6 +461,57 @@ export function clearIndex(db: IndexDb): void {
 export function deleteDocument(db: IndexDb, path: string): void {
   db.prepare("DELETE FROM documents WHERE path = ?").run(path);
   db.prepare("DELETE FROM chunks WHERE path = ?").run(path);
+  // Outgoing links die with the doc. Inbound rows pointing AT it may remain
+  // (their sources still link here on disk); inboundLinkers joins documents
+  // on source_path, so a deleted source can never surface as a linker.
+  db.prepare("DELETE FROM doc_links WHERE source_path = ?").run(path);
+}
+
+// --- inbound-link graph (#8) ------------------------------------------------
+//
+// doc_links materializes the body-link graph at (re)index time so the read
+// and search paths can answer "who links here?" with one indexed query
+// instead of loading the whole vault (the exact cost #8 designs out). Rows
+// are derived and rebuildable — same ephemerality contract as everything
+// else in this file.
+
+// Replaces the outgoing link rows for one source document.
+export function replaceDocLinks(db: IndexDb, sourcePath: string, targets: string[]): void {
+  db.prepare("DELETE FROM doc_links WHERE source_path = ?").run(sourcePath);
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO doc_links (source_path, target_path) VALUES (?, ?)",
+  );
+  for (const t of targets) {
+    if (t === sourcePath) continue; // a self-link is not an inbound edge
+    insert.run(sourcePath, t);
+  }
+}
+
+// The documents whose bodies link to `targetPath`, with each linker's
+// lifecycle status (the deprecated-still-linked check needs it). Joined to
+// `documents` so a source deleted after its links were written can never
+// surface as a phantom linker.
+export function inboundLinkers(
+  db: IndexDb,
+  targetPath: string,
+): { path: string; status: string }[] {
+  return db
+    .prepare(
+      `SELECT d.path AS path, d.status AS status
+         FROM doc_links AS l
+         JOIN documents AS d ON d.path = l.source_path
+        WHERE l.target_path = ?
+        ORDER BY d.path`,
+    )
+    .all(targetPath) as { path: string; status: string }[];
+}
+
+// Every indexed document path — the known-path universe outgoing-link
+// resolution runs against for a single-document incremental index.
+export function allDocumentPaths(db: IndexDb): string[] {
+  return (db.prepare("SELECT path FROM documents ORDER BY path").all() as { path: string }[]).map(
+    (r) => r.path,
+  );
 }
 
 // --- Float32 <-> BLOB ------------------------------------------------------

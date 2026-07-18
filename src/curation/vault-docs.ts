@@ -97,7 +97,7 @@ export function resolveLink(
 // vault-relative path, and the basename → path map used for bare-name
 // wikilinks. First write wins on basename collisions so the mapping is
 // deterministic across runs.
-export function buildPathIndexes(docs: LoadedDoc[]): {
+export function buildPathIndexes(docs: Pick<LoadedDoc, "path">[]): {
   byPath: Set<string>;
   byBasename: Map<string, string>;
 } {
@@ -108,4 +108,22 @@ export function buildPathIndexes(docs: LoadedDoc[]): {
     if (!byBasename.has(base)) byBasename.set(base, d.path);
   }
   return { byPath, byBasename };
+}
+
+// The distinct resolved in-vault link targets of one document body, given the
+// known-path universe — the producer side of the materialized inbound-link
+// graph (#8, index-db.ts doc_links). Uses the SAME extraction and resolution
+// as lint's buildInboundMap, so the inline orphan / deprecated-still-linked
+// surfaces can never drift from the vault-global lint findings.
+export function outgoingLinkTargets(
+  content: string,
+  fromPath: string,
+  indexes: { byPath: Set<string>; byBasename: Map<string, string> },
+): string[] {
+  const out = new Set<string>();
+  for (const raw of extractLinks(content)) {
+    const target = resolveLink(raw, fromPath, indexes.byPath, indexes.byBasename);
+    if (target && target !== fromPath) out.add(target);
+  }
+  return [...out];
 }
