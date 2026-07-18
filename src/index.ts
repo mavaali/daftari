@@ -277,8 +277,12 @@ async function runBackgroundReindex(
       // If the reindex was fully cache-hit (no chunks needed embedding) the
       // model was never loaded — warm it now so the first user search isn't
       // a cold start. A reindex that did embed already loaded the model; no
-      // extra warm is necessary in that path.
-      if (warmEmbeddings && r.embeddedCount === 0) {
+      // extra warm is necessary in that path. embeddedCount is the COMMITTED
+      // count (#54), so 0 alone no longer proves the model was never invoked:
+      // a first-batch embed failure also banks nothing. That failure path
+      // drops vectorEnabled, so gate on it — warming a provider that just
+      // failed would fail the same way.
+      if (warmEmbeddings && r.vectorEnabled && r.embeddedCount === 0) {
         void runBackgroundWarm();
       }
     } else {
