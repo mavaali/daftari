@@ -85,7 +85,7 @@ function resolveRelative(
   fromRelPath: string,
   href: string,
   repos: RepoSnapshot[],
-): { repo: string; relPath: string } | null {
+): { repo: string; relPath: string } | { outOfScopeAbs: string } {
   const fromAbs = nodeResolve(fromRepoPath, fromRelPath);
   const fromDir = nodeResolve(fromAbs, "..");
   const resolvedAbs = nodeResolve(fromDir, href);
@@ -97,7 +97,9 @@ function resolveRelative(
       return { repo: repo.config.name, relPath: posixRel };
     }
   }
-  return null;
+  // Escaped every configured repo. Where it points on disk is still known —
+  // carried so the broken-ref check can tell "absent" from "unaudited" (#133).
+  return { outOfScopeAbs: resolvedAbs };
 }
 
 export function classifyEdges(snapshots: RepoSnapshot[]): LinkEdge[] {
@@ -135,9 +137,11 @@ export function classifyEdges(snapshots: RepoSnapshot[]): LinkEdge[] {
         if (!link.isRelative) continue; // anchors-only, mailto:, etc.
 
         const resolved = resolveRelative(snap.config.path, doc.relPath, link.href, snapshots);
-        if (!resolved) {
+        if ("outOfScopeAbs" in resolved) {
           // Escaped to an unconfigured location; record as edge into sourceRepo
-          // with an unresolvable path so broken_refs flags it.
+          // with an unresolvable path so broken_refs flags it — as
+          // out_of_scope_target when the file exists on disk, missing_file
+          // when it does not (#133).
           edges.push({
             sourceRepo,
             sourcePath: doc.relPath,
@@ -145,6 +149,8 @@ export function classifyEdges(snapshots: RepoSnapshot[]): LinkEdge[] {
             targetPath: link.href, // unresolved sentinel
             targetAnchor: link.anchor,
             rawHref: link.rawHref,
+            outOfScope: true,
+            resolvedAbs: resolved.outOfScopeAbs,
           });
           continue;
         }

@@ -15,6 +15,7 @@ const REPORT: AuditReport = {
     reposScanned: 1,
     docsScanned: 3,
     brokenRefs: 1,
+    outOfScopeTargets: 0,
     directlyStale: 1,
     transitivelyStale: 1,
     brokenDescribes: 1,
@@ -71,6 +72,7 @@ describe("renderMarkdown", () => {
       totals: {
         ...REPORT.totals,
         brokenRefs: 0,
+        outOfScopeTargets: 0,
         directlyStale: 0,
         transitivelyStale: 0,
         brokenDescribes: 0,

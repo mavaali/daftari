@@ -66,6 +66,7 @@ export function renderMarkdown(report: AuditReport): string {
   const t = report.totals;
   const empty =
     t.brokenRefs === 0 &&
+    t.outOfScopeTargets === 0 &&
     t.directlyStale === 0 &&
     t.transitivelyStale === 0 &&
     t.brokenDescribes === 0 &&
@@ -80,6 +81,7 @@ export function renderMarkdown(report: AuditReport): string {
     `- repos scanned: **${t.reposScanned}**`,
     `- docs scanned: **${t.docsScanned}**`,
     `- broken cross-repo refs: **${t.brokenRefs}**`,
+    `- out-of-scope targets (exist on disk, outside audited repos): **${t.outOfScopeTargets}**`,
     `- directly stale docs: **${t.directlyStale}**`,
     `- transitively stale docs: **${t.transitivelyStale}**`,
     `- broken doc-to-code bindings: **${t.brokenDescribes}**`,

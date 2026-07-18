@@ -76,3 +76,53 @@ describe("checkBrokenRefs", () => {
     expect(findings).toEqual([]); // resolved via .md fallback → no finding
   });
 });
+
+describe("checkBrokenRefs with a disk oracle (#132/#133)", () => {
+  const snapshots = [makeSnapshot("a", [{ relPath: "docs/api.md" }])];
+
+  it("a reference to an on-disk asset outside the doc index is not a finding (#132)", () => {
+    const edges = [edge("a", "docs/api.md", "a", "assets/dag.png")];
+    const exists = (abs: string) => abs === "/a/assets/dag.png";
+    expect(checkBrokenRefs(snapshots, edges, exists)).toEqual([]);
+    // Absent asset stays a real miss.
+    expect(checkBrokenRefs(snapshots, edges, () => false)).toHaveLength(1);
+    // No oracle: index-only behavior, as before.
+    expect(checkBrokenRefs(snapshots, edges)).toHaveLength(1);
+  });
+
+  it("an out-of-scope ref that exists on disk is out_of_scope_target, absent is missing_file (#133)", () => {
+    const outEdge: LinkEdge = {
+      sourceRepo: "a",
+      sourcePath: "docs/api.md",
+      targetRepo: "a",
+      targetPath: "../../guides/foo.md",
+      targetAnchor: null,
+      rawHref: "../../guides/foo.md",
+      outOfScope: true,
+      resolvedAbs: "/guides/foo.md",
+    };
+    const present = checkBrokenRefs(snapshots, [outEdge], (abs) => abs === "/guides/foo.md");
+    expect(present).toHaveLength(1);
+    expect(present[0]?.kind).toBe("out_of_scope_target");
+
+    const absent = checkBrokenRefs(snapshots, [outEdge], () => false);
+    expect(absent[0]?.kind).toBe("missing_file");
+    // No oracle: conservative missing_file, never a silent pass.
+    expect(checkBrokenRefs(snapshots, [outEdge])[0]?.kind).toBe("missing_file");
+  });
+
+  it("an out-of-scope existing target never silently passes even when it would resolve as an asset", () => {
+    const outEdge: LinkEdge = {
+      sourceRepo: "a",
+      sourcePath: "docs/api.md",
+      targetRepo: "a",
+      targetPath: "../elsewhere/pic.png",
+      targetAnchor: null,
+      rawHref: "../elsewhere/pic.png",
+      outOfScope: true,
+      resolvedAbs: "/elsewhere/pic.png",
+    };
+    const findings = checkBrokenRefs(snapshots, [outEdge], () => true);
+    expect(findings.map((f) => f.kind)).toEqual(["out_of_scope_target"]);
+  });
+});

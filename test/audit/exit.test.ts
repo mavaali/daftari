@@ -9,6 +9,7 @@ const base: AuditReport = {
     reposScanned: 1,
     docsScanned: 1,
     brokenRefs: 0,
+    outOfScopeTargets: 0,
     directlyStale: 0,
     transitivelyStale: 0,
   },
