@@ -4,15 +4,35 @@
 // git log to populate mtimes; on any git failure, fall back to fs mtime.
 
 import { type ExecFileSyncOptions, execFileSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve as nodeResolve } from "node:path";
+import { isAbsolute, relative as nodeRelative, resolve as nodeResolve } from "node:path";
 import { glob } from "glob";
 import matter from "gray-matter";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { extractLinksFromBody } from "./links.js";
 import type { AuditConfig, AuditError, DocSnapshot, RepoConfig, RepoSnapshot } from "./types.js";
 import { runtimeError } from "./types.js";
+
+// The disk oracle for checkBrokenRefs (#132/#133): true iff targetAbs
+// exists AND its REAL location sits under rootAbs. realpathSync resolves
+// every component, so a symlink committed inside an audited repo
+// (escape -> /) cannot route the probe outside the containment root — a
+// lexical check plus a bare existsSync would (security review on #255).
+// rootAbs is expected to be already-real: repo roots are realpathSync'd at
+// config load, and the parent prefix of a real path is itself real.
+// A nonexistent target makes realpathSync throw ENOENT → false, which is
+// exactly the "missing" answer.
+export function symlinkSafeExistsWithin(rootAbs: string, targetAbs: string): boolean {
+  let real: string;
+  try {
+    real = realpathSync(targetAbs);
+  } catch {
+    return false;
+  }
+  const rel = nodeRelative(rootAbs, real);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
 
 function slugify(heading: string): string {
   // GitHub slug: lowercase, strip non-alphanumeric (keep `-_`), whitespace -> `-`.

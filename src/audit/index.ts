@@ -6,14 +6,13 @@
 //   2 — config error
 //   3 — runtime error
 
-import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
 import { checkBrokenRefs } from "./checks/broken_refs.js";
 import { checkDescribesRefs } from "./checks/describes_refs.js";
 import { checkStaleness } from "./checks/staleness.js";
-import { collectRepos } from "./collect.js";
+import { collectRepos, symlinkSafeExistsWithin } from "./collect.js";
 import { parseAuditConfig } from "./config.js";
 import { classifyDescribesEdges } from "./describes.js";
 import { computeExitCode } from "./exit.js";
@@ -158,8 +157,9 @@ export async function runAudit(argv: string[], overrides: AuditOverrides = {}): 
 
   const edges = classifyEdges(snapshots);
   // The disk oracle lets the pure check distinguish real breaks from
-  // references to on-disk assets (#132) and unaudited siblings (#133).
-  const brokenRefs = checkBrokenRefs(snapshots, edges, (abs) => existsSync(abs));
+  // references to on-disk assets (#132) and unaudited siblings (#133) —
+  // symlink-safe, so a committed link cannot route the probe off-scope.
+  const brokenRefs = checkBrokenRefs(snapshots, edges, symlinkSafeExistsWithin);
   const staleness = checkStaleness(snapshots, edges, config.staleness.thresholdDays, new Date());
   const describesEdges = classifyDescribesEdges(snapshots);
   const describesRefs = checkDescribesRefs(snapshots, describesEdges);

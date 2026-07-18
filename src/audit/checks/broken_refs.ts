@@ -1,9 +1,12 @@
 // src/audit/checks/broken_refs.ts
 // Pure function: given snapshots and classified edges, return every broken
 // reference as a BrokenRefFinding. No throws. No classes. Disk access enters
-// ONLY through the injected `existsOnDisk` oracle — the orchestrator passes
-// fs.existsSync; tests pass a fake; omitting it reproduces the index-only
-// behavior.
+// ONLY through the injected `existsWithin` oracle — the orchestrator passes
+// collect.ts's symlink-safe implementation; tests pass a fake; omitting it
+// reproduces the index-only behavior. The oracle receives the CONTAINMENT
+// ROOT alongside the target because existence and confinement must be
+// decided together: a lexical check here plus a bare exists() there would
+// let a committed symlink (repo/escape -> /) walk the probe back out.
 //
 // Resolution logic:
 //   1. Look up target repo by name; if not found → missing_file.
@@ -34,7 +37,10 @@ function within(root: string, abs: string): boolean {
 export function checkBrokenRefs(
   snapshots: RepoSnapshot[],
   edges: LinkEdge[],
-  existsOnDisk?: (absPath: string) => boolean,
+  // Must return true only when targetAbs exists on disk AND its REAL
+  // (symlink-resolved) location sits under rootAbs. See
+  // collect.ts#symlinkSafeExistsWithin for the production implementation.
+  existsWithin?: (rootAbs: string, targetAbs: string) => boolean,
 ): BrokenRefFinding[] {
   // Index snapshots by repo name for O(1) lookup.
   const byRepo = new Map<string, RepoSnapshot>();
@@ -87,12 +93,14 @@ export function checkBrokenRefs(
         // kind, never silently passed: the audit cannot vouch for a target
         // it does not scan. The probe runs only inside the sibling scopes
         // (see above); a target beyond them is missing_file, unprobed.
-        const probeable =
-          edge.resolvedAbs !== undefined &&
-          siblingScopes.some((scope) => within(scope, edge.resolvedAbs as string));
+        const resolvedAbs = edge.resolvedAbs;
+        // Lexical pre-filter picks the candidate scope without touching
+        // disk; the oracle then re-verifies containment on REAL paths.
+        const scope =
+          resolvedAbs !== undefined ? siblingScopes.find((s) => within(s, resolvedAbs)) : undefined;
         findings.push(
           finding(
-            probeable && existsOnDisk?.(edge.resolvedAbs as string)
+            resolvedAbs !== undefined && scope !== undefined && existsWithin?.(scope, resolvedAbs)
               ? "out_of_scope_target"
               : "missing_file",
             edge.targetPath,
@@ -107,7 +115,9 @@ export function checkBrokenRefs(
       // targetPath can carry ../ segments, and escaping paths must not be
       // probed (same oracle concern as above).
       const abs = nodeResolve(targetSnap.config.path, edge.targetPath);
-      if (within(targetSnap.config.path, abs) && existsOnDisk?.(abs)) continue;
+      if (within(targetSnap.config.path, abs) && existsWithin?.(targetSnap.config.path, abs)) {
+        continue;
+      }
       findings.push(finding("missing_file", edge.targetPath));
       continue;
     }

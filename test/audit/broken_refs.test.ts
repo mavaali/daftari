@@ -82,7 +82,7 @@ describe("checkBrokenRefs with a disk oracle (#132/#133)", () => {
 
   it("a reference to an on-disk asset outside the doc index is not a finding (#132)", () => {
     const edges = [edge("a", "docs/api.md", "a", "assets/dag.png")];
-    const exists = (abs: string) => abs === "/a/assets/dag.png";
+    const exists = (root: string, abs: string) => root === "/a" && abs === "/a/assets/dag.png";
     expect(checkBrokenRefs(snapshots, edges, exists)).toEqual([]);
     // Absent asset stays a real miss.
     expect(checkBrokenRefs(snapshots, edges, () => false)).toHaveLength(1);
@@ -101,7 +101,7 @@ describe("checkBrokenRefs with a disk oracle (#132/#133)", () => {
       outOfScope: true,
       resolvedAbs: "/guides/foo.md",
     };
-    const present = checkBrokenRefs(snapshots, [outEdge], (abs) => abs === "/guides/foo.md");
+    const present = checkBrokenRefs(snapshots, [outEdge], (_root, abs) => abs === "/guides/foo.md");
     expect(present).toHaveLength(1);
     expect(present[0]?.kind).toBe("out_of_scope_target");
 
@@ -134,8 +134,8 @@ describe("the disk oracle is confined (#255 security review)", () => {
       docs: new Map(),
     };
     const probes: string[] = [];
-    const oracle = (abs: string) => {
-      probes.push(abs);
+    const oracle = (root: string, abs: string) => {
+      probes.push(`${root}|${abs}`);
       return true; // every probed path "exists" — containment must gate first
     };
     const outEdge = (href: string, resolvedAbs: string): LinkEdge => ({
@@ -165,7 +165,7 @@ describe("the disk oracle is confined (#255 security review)", () => {
       oracle,
     );
     expect(traversal[0]?.kind).toBe("missing_file");
-    expect(probes).toEqual(["/work/guides/foo.md"]);
+    expect(probes).toEqual(["/work|/work/guides/foo.md"]);
   });
 
   it("never probes an in-scope targetPath that escapes the repo root", () => {
@@ -177,7 +177,7 @@ describe("the disk oracle is confined (#255 security review)", () => {
     const findings = checkBrokenRefs(
       [wiki],
       [edge("wiki", "a.md", "wiki", "../../etc/passwd")],
-      (abs) => {
+      (_root, abs) => {
         probes.push(abs);
         return true;
       },
