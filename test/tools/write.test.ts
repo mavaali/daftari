@@ -215,6 +215,87 @@ describe("write tools", () => {
     }, 60_000);
   });
 
+  describe("advisory supersede hint on overwrite (#169)", () => {
+    it("a net-new write carries no hint; an overwrite carries one", async () => {
+      const created = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 40\n",
+        agent: AGENT,
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      expect(created.value.action).toBe("create");
+      expect(created.value.supersede_hint).toBeUndefined();
+
+      const overwritten = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 60\n",
+        agent: AGENT,
+      });
+      expect(overwritten.ok).toBe(true);
+      if (!overwritten.ok) return;
+      expect(overwritten.value.action).toBe("update");
+      expect(overwritten.value.supersede_hint).toContain("vault_supersede");
+      expect(overwritten.value.supersede_hint).toContain("Advisory only");
+    }, 60_000);
+
+    it("the hint alters nothing about the written content or result semantics", async () => {
+      await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 40\n",
+        agent: AGENT,
+      });
+      const overwritten = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter({ tags: ["revised"] }),
+        body: "# Fact\n\nvalue: 60\n",
+        agent: AGENT,
+      });
+      expect(overwritten.ok).toBe(true);
+      if (!overwritten.ok) return;
+      // The write itself landed exactly as an un-hinted overwrite would.
+      expect(overwritten.value.committed).toBe(true);
+      const back = await vaultRead(vault, "pricing/fact.md");
+      expect(back.ok).toBe(true);
+      if (!back.ok) return;
+      expect(back.value.content.trim()).toBe("# Fact\n\nvalue: 60".trim());
+      expect(back.value.content).not.toContain("value: 40");
+      expect(back.value.frontmatter.tags).toEqual(["revised"]);
+      // The hint text never leaks into the document.
+      expect(back.value.content).not.toContain("vault_supersede");
+    }, 60_000);
+  });
+
+  describe("advisory supersede hint — shadow mode (#169 review)", () => {
+    it("a shadow-mode overwrite carries no hint — nothing landed", async () => {
+      const created = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 40\n",
+        agent: AGENT,
+      });
+      expect(created.ok).toBe(true);
+
+      mkdirSync(dirname(configPath(vault)), { recursive: true });
+      writeFileSync(configPath(vault), "version: 1\nshadow_mode: true\n");
+
+      const shadowed = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 60\n",
+        agent: AGENT,
+      });
+      expect(shadowed.ok).toBe(true);
+      if (!shadowed.ok) return;
+      expect(shadowed.value.shadow).toBe(true);
+      expect(shadowed.value.committed).toBe(false);
+      expect(shadowed.value.supersede_hint).toBeUndefined();
+    }, 60_000);
+  });
+
   describe("vault_append", () => {
     it("appends a section and re-stamps updated metadata", async () => {
       const result = await vaultAppend(vault, {
