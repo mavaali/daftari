@@ -17,6 +17,7 @@ import { mintConsumesEdges } from "../curation/consumes.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
+import { buildPathIndexes, outgoingLinkTargets, resolveLink } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
@@ -40,12 +41,14 @@ import type { HookOperation } from "../hooks/types.js";
 import { getIndexStatus, indexingBusyMessage } from "../search/index-state.js";
 import { indexDocument } from "../search/reindex.js";
 import { noteSelfWrite } from "../search/self-write.js";
+import { allDocumentPaths, getDocumentsByPaths } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
+import { openIndexForAccessOrNull } from "./search.js";
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -221,6 +224,12 @@ export interface WriteResult {
   // superseded_by edge instead. Purely additive — the write has already
   // landed, nothing blocks, no edge is auto-created.
   supersede_hint?: string;
+  // #4: advisory epistemic-boundary warnings — this accumulation-domain
+  // write references generative-domain docs (via `sources` or body links).
+  // Speculative sketches must not read as settled canon. The write has
+  // landed; nothing blocks, nothing is auto-fixed. The typed-channel half
+  // (`sources`) is also a tier-0 lint finding (domainLeaks).
+  domain_warnings?: string[];
   // Set when a propose-only role's vault_write was coerced into a staged
   // `write` proposal (#235): the staged action's id/expiry, plus any pending
   // proposals already contesting the same target and the inter-proposal
@@ -518,6 +527,39 @@ function checkTierGuard(args: {
     );
   }
   return ok(undefined);
+}
+
+// #4: the generative-domain documents an accumulation-domain doc references
+// (typed `sources` entries plus body links), resolved against the indexed
+// path universe. Advisory only — callers attach the result as
+// domain_warnings; index unavailability degrades to silence.
+function generativeDomainRefs(
+  vaultRoot: string,
+  doc: { domain: string; sources: string[]; body: string; relPath: string },
+): string[] | null {
+  if (doc.domain !== "accumulation") return null;
+  const db = openIndexForAccessOrNull(vaultRoot);
+  if (!db) return null;
+  try {
+    const indexes = buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p })));
+    const candidates = new Set<string>(outgoingLinkTargets(doc.body, doc.relPath, indexes));
+    for (const raw of doc.sources) {
+      if (/^(https?:|mailto:)/i.test(raw)) continue;
+      const target = resolveLink(raw, doc.relPath, indexes.byPath, indexes.byBasename);
+      if (target && target !== doc.relPath) candidates.add(target);
+    }
+    if (candidates.size === 0) return null;
+    const generative = getDocumentsByPaths(db, [...candidates])
+      .filter((d) => d.domain === "generative")
+      .map((d) => d.path)
+      .sort();
+    if (generative.length === 0) return null;
+    return generative.map(
+      (p) => `${p} is generative-domain — speculative material referenced from accumulation canon`,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 // The #169 nudge, verbatim on every vault_write overwrite. One fixed string:
@@ -833,10 +875,21 @@ export async function vaultWrite(
   // never blocking, never auto-minting an edge. The agent still chooses.
   // Attached here (not in performWrite) so vault_supersede and the other
   // lifecycle tools never nudge about themselves. A shadow-mode result is
-  // excluded: nothing landed and nothing was replaced, so the hint's text
-  // would be false.
-  if (!written.ok || !isUpdate || written.value.shadow) return written;
-  return ok({ ...written.value, supersede_hint: SUPERSEDE_HINT });
+  // excluded: nothing landed and nothing was replaced, so the hints' text
+  // would be false. #4's domain warnings ride the same channel.
+  if (!written.ok || written.value.shadow) return written;
+  const warnings = generativeDomainRefs(vaultRoot, {
+    domain: stamped.domain,
+    sources: stamped.sources ?? [],
+    body,
+    relPath: resolved.value.relPath,
+  });
+  if (!isUpdate && warnings === null) return written;
+  return ok({
+    ...written.value,
+    ...(isUpdate ? { supersede_hint: SUPERSEDE_HINT } : {}),
+    ...(warnings ? { domain_warnings: warnings } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -930,7 +983,7 @@ export async function vaultAppend(
     return err(new Error(`invalid frontmatter: ${summary}`));
   }
 
-  return performWrite({
+  const appended = await performWrite({
     vaultRoot,
     // Lock key, provenance, and commit path are all keyed on the CANONICAL
     // relPath (resolved.value.relPath), never the raw caller string: aliased
@@ -953,6 +1006,17 @@ export async function vaultAppend(
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     bodyChanged: true,
   });
+  // #4: an appended section can introduce body links into generative-domain
+  // docs — same advisory channel as vault_write.
+  if (!appended.ok || appended.value.shadow) return appended;
+  const appendWarnings = generativeDomainRefs(vaultRoot, {
+    domain: newFrontmatter.domain,
+    sources: newFrontmatter.sources ?? [],
+    body: newBody,
+    relPath: resolved.value.relPath,
+  });
+  if (appendWarnings === null) return appended;
+  return ok({ ...appended.value, domain_warnings: appendWarnings });
 }
 
 // ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ export const TIER0_LINT_CHECKS = [
   "brokenSourceRefs",
   "lifecycleConflicts",
   "schemaInvalid",
+  "domainLeaks",
 ] as const;
 
 // A canonical doc citing a source in one of these states is a lifecycle
@@ -67,6 +68,12 @@ export interface Tier0Findings {
   brokenSourceRefs: Tier0Finding[];
   lifecycleConflicts: Tier0Finding[];
   schemaInvalid: Tier0Finding[];
+  // #4: an accumulation-domain doc citing a generative-domain doc in
+  // `sources` — speculative material referenced as if it were settled canon.
+  // Certain (both domains are frontmatter facts), and scoped to the TYPED
+  // channel per this module's discipline; body-link leaks are the write-time
+  // advisory's territory (tools/write.ts domain_warnings).
+  domainLeaks: Tier0Finding[];
 }
 
 // Runs the three tier-0 checks over a loaded doc set. The doc set is also the
@@ -82,11 +89,13 @@ export function tier0Findings(docs: LoadedDoc[]): Tier0Findings {
     brokenSourceRefs: [],
     lifecycleConflicts: [],
     schemaInvalid: [],
+    domainLeaks: [],
   };
 
   for (const doc of docs) {
     const broken: string[] = [];
     const conflicts: string[] = [];
+    const leaks: string[] = [];
 
     for (const raw of doc.frontmatter.sources ?? []) {
       if (EXTERNAL_REF.test(raw)) continue;
@@ -101,6 +110,13 @@ export function tier0Findings(docs: LoadedDoc[]): Tier0Findings {
         if (status && CONFLICTING_SOURCE_STATUSES.has(status)) {
           conflicts.push(`${target} (${status})`);
         }
+      }
+      // #4: the epistemic boundary — durable canon must not cite sketches.
+      if (
+        doc.frontmatter.domain === "accumulation" &&
+        docByPath.get(target)?.frontmatter.domain === "generative"
+      ) {
+        leaks.push(target);
       }
     }
 
@@ -121,6 +137,12 @@ export function tier0Findings(docs: LoadedDoc[]): Tier0Findings {
       out.lifecycleConflicts.push({
         path: doc.path,
         detail: `canonical doc cites non-canonical source(s): ${conflicts.join(", ")}`,
+      });
+    }
+    if (leaks.length > 0) {
+      out.domainLeaks.push({
+        path: doc.path,
+        detail: `accumulation-domain doc cites generative-domain source(s): ${leaks.join(", ")}`,
       });
     }
     if (!doc.validation.valid) {

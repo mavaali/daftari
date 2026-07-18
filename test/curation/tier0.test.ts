@@ -86,6 +86,38 @@ describe("tier0Findings", () => {
   });
 });
 
+describe("domainLeaks (#4)", () => {
+  it("flags an accumulation doc citing a generative source", () => {
+    const findings = tier0Findings([
+      doc("canon/settled.md", { sources: ["sketches/idea.md"] }),
+      doc("sketches/idea.md", { domain: "generative", status: "draft" }),
+    ]);
+    expect(findings.domainLeaks.map((f) => f.path)).toEqual(["canon/settled.md"]);
+    expect(findings.domainLeaks[0]?.detail).toContain("sketches/idea.md");
+  });
+
+  it("does not flag generative-to-generative or accumulation-to-accumulation citations", () => {
+    const findings = tier0Findings([
+      doc("sketches/a.md", { domain: "generative", status: "draft", sources: ["sketches/b.md"] }),
+      doc("sketches/b.md", { domain: "generative", status: "draft" }),
+      doc("canon/x.md", { sources: ["canon/y.md"] }),
+      doc("canon/y.md"),
+    ]);
+    expect(findings.domainLeaks).toEqual([]);
+  });
+
+  it("holds non-canonical accumulation docs to the boundary too", () => {
+    // Unlike lifecycleConflicts (canonical-only), the epistemic boundary
+    // applies to the whole accumulation domain — a draft in canon must not
+    // cite sketches either.
+    const findings = tier0Findings([
+      doc("canon/wip.md", { status: "draft", sources: ["sketches/idea.md"] }),
+      doc("sketches/idea.md", { domain: "generative", status: "draft" }),
+    ]);
+    expect(findings.domainLeaks.map((f) => f.path)).toEqual(["canon/wip.md"]);
+  });
+});
+
 describe("tier0PromoteGate", () => {
   it("passes a clean target", () => {
     const docs = [

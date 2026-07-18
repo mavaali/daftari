@@ -296,6 +296,79 @@ describe("write tools", () => {
     }, 60_000);
   });
 
+  describe("advisory domain warnings (#4)", () => {
+    it("an accumulation write citing/linking generative docs warns; clean writes stay silent", async () => {
+      const sketch = await vaultWrite(vault, {
+        path: "sketches/moonshot.md",
+        frontmatter: newFrontmatter({
+          title: "Moonshot",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Moonshot\n\nSpeculative.\n",
+        agent: AGENT,
+      });
+      expect(sketch.ok).toBe(true);
+      if (!sketch.ok) return;
+      // The generative doc itself carries no warning.
+      expect(sketch.value.domain_warnings).toBeUndefined();
+
+      const canon = await vaultWrite(vault, {
+        path: "pricing/settled.md",
+        frontmatter: newFrontmatter({
+          title: "Settled",
+          sources: ["sketches/moonshot.md"],
+        }),
+        body: "# Settled\n\nLeans on [the moonshot](../sketches/moonshot.md).\n",
+        agent: AGENT,
+      });
+      expect(canon.ok).toBe(true);
+      if (!canon.ok) return;
+      expect(canon.value.action).toBe("create");
+      expect(canon.value.committed).toBe(true); // advisory: the write landed
+      expect(canon.value.domain_warnings).toHaveLength(1);
+      expect(canon.value.domain_warnings?.[0]).toContain("sketches/moonshot.md");
+      expect(canon.value.domain_warnings?.[0]).toContain("generative-domain");
+
+      const clean = await vaultWrite(vault, {
+        path: "pricing/independent.md",
+        frontmatter: newFrontmatter({ title: "Independent" }),
+        body: "# Independent\n\nNo speculative inputs.\n",
+        agent: AGENT,
+      });
+      expect(clean.ok).toBe(true);
+      if (!clean.ok) return;
+      expect(clean.value.domain_warnings).toBeUndefined();
+    }, 60_000);
+
+    it("an append that links a generative doc warns too", async () => {
+      await vaultWrite(vault, {
+        path: "sketches/wild-idea.md",
+        frontmatter: newFrontmatter({
+          title: "Wild idea",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Wild idea\n",
+        agent: AGENT,
+      });
+      await vaultWrite(vault, {
+        path: "pricing/ledger.md",
+        frontmatter: newFrontmatter({ title: "Ledger" }),
+        body: "# Ledger\n",
+        agent: AGENT,
+      });
+      const appended = await vaultAppend(vault, {
+        path: "pricing/ledger.md",
+        section: "## Note\n\nSee [wild idea](../sketches/wild-idea.md).",
+        agent: AGENT,
+      });
+      expect(appended.ok).toBe(true);
+      if (!appended.ok) return;
+      expect(appended.value.domain_warnings?.[0]).toContain("sketches/wild-idea.md");
+    }, 60_000);
+  });
+
   describe("vault_append", () => {
     it("appends a section and re-stamps updated metadata", async () => {
       const result = await vaultAppend(vault, {
