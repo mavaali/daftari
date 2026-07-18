@@ -9,6 +9,7 @@ import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
+import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const INSIGHT_DOC = "competitive-intel/vega-insight-positioning.md";
@@ -628,5 +629,55 @@ describe("upstream staleness annotations (#234)", () => {
     expect(hit).toBeDefined();
     expect(hit?.pendingBrokenUpstream).toBeUndefined();
     expect(hit?.hiddenPendingUpstream).toBe("some");
+  });
+});
+
+describe("FTS5 lexical snippets (#108)", () => {
+  let vault: string;
+  beforeAll(async () => {
+    vault = makeTempVault();
+    const filler = Array.from(
+      { length: 40 },
+      (_, i) => `Filler paragraph ${i} about unrelated matters entirely.`,
+    ).join("\n\n");
+    const written = await vaultWrite(vault, {
+      path: "pricing/deep-topic.md",
+      frontmatter: {
+        title: "Deep Topic",
+        domain: "accumulation",
+        collection: "pricing",
+        status: "draft",
+        confidence: "medium",
+        created: "2026-07-01",
+        provenance: "direct",
+        sources: [],
+        superseded_by: null,
+        ttl_days: null,
+        tags: [],
+      },
+      body: `# Deep Topic\n\n${filler}\n\nThe throttled escalation of consumption budgets happens quarterly.\n`,
+      agent: "agent:test",
+    });
+    if (!written.ok) throw written.error;
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+  }, 60_000);
+  afterAll(() => cleanupVault(vault));
+
+  it("centres the excerpt on a stemmed match the JS fallback cannot see", async () => {
+    // Query terms "throttling"/"escalates" only match the body's
+    // "throttled"/"escalation" through porter stemming — a literal indexOf
+    // (the old full-body scan) finds nothing and would fall back to the
+    // document head. The FTS5 snippet centres on the real match.
+    const result = await vaultSearch(vault, {
+      query: "throttling escalates",
+      weights: { bm25: 1, vector: 0 },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.value.hits.find((h) => h.path === "pricing/deep-topic.md");
+    expect(hit).toBeDefined();
+    expect(hit?.snippet).toContain("throttled escalation");
+    expect(hit?.snippet).not.toContain("Filler paragraph 0");
   });
 });
