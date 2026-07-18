@@ -1,10 +1,18 @@
 // test/audit/collect.test.ts
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { collectRepos } from "../../src/audit/collect.js";
+import { collectRepos, symlinkSafeExistsWithin } from "../../src/audit/collect.js";
 
 const git = (cwd: string, args: string[]) =>
   execFileSync("git", args, {
@@ -184,5 +192,39 @@ describe("collectRepos", () => {
       expect(stub?.headings).toEqual(new Set());
       expect(stub?.links).toEqual([]);
     });
+  });
+});
+
+describe("symlinkSafeExistsWithin (#255 security review)", () => {
+  let tmp: string;
+  beforeEach(() => {
+    // realpath'd up front, matching how config.ts stores repo roots.
+    tmp = realpathSync(mkdtempSync(join(tmpdir(), "daftari-audit-oracle-")));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("true for a real file under the root, false for a missing one", () => {
+    mkdirSync(join(tmp, "repo", "assets"), { recursive: true });
+    writeFileSync(join(tmp, "repo", "assets", "dag.png"), "png");
+    expect(symlinkSafeExistsWithin(join(tmp, "repo"), join(tmp, "repo", "assets", "dag.png"))).toBe(
+      true,
+    );
+    expect(
+      symlinkSafeExistsWithin(join(tmp, "repo"), join(tmp, "repo", "assets", "ghost.png")),
+    ).toBe(false);
+  });
+
+  it("a symlink escaping the root cannot smuggle the probe out", () => {
+    mkdirSync(join(tmp, "repo"), { recursive: true });
+    mkdirSync(join(tmp, "outside"), { recursive: true });
+    writeFileSync(join(tmp, "outside", "secret.txt"), "s");
+    // repo/escape -> ../outside: lexically inside, really outside.
+    symlinkSync(join(tmp, "outside"), join(tmp, "repo", "escape"));
+    const probe = join(tmp, "repo", "escape", "secret.txt");
+    expect(symlinkSafeExistsWithin(join(tmp, "repo"), probe)).toBe(false);
+    // The same real file IS within a root that contains it.
+    expect(symlinkSafeExistsWithin(tmp, probe)).toBe(true);
   });
 });

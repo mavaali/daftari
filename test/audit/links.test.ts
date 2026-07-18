@@ -127,3 +127,66 @@ describe("classifyEdges — relative-path escape", () => {
     expect(edges[0]?.targetPath).toBe("docs/y.md");
   });
 });
+
+describe("classifyEdges — hrefs escaping every configured repo (#133)", () => {
+  it("marks the sentinel edge outOfScope with the resolved absolute target", () => {
+    // Doc at /work/wiki/causal/dag.md linking ../../guides/telemetry/foo.md
+    // resolves to /work/guides/telemetry/foo.md — outside the only repo.
+    const wiki: RepoSnapshot = {
+      config: { name: "wiki", path: "/work/wiki", docsGlob: "**/*.md", urls: [] },
+      docs: new Map([
+        [
+          "causal/dag.md",
+          {
+            relPath: "causal/dag.md",
+            absPath: "/work/wiki/causal/dag.md",
+            mtime: "2026-01-01T00:00:00.000Z",
+            mtimeSource: "git" as const,
+            headings: new Set<string>(),
+            links: extractLinksFromBody("[t](../../guides/telemetry/foo.md#setup)"),
+          },
+        ],
+      ]),
+    };
+    const edges = classifyEdges([wiki]);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      sourceRepo: "wiki",
+      targetRepo: "wiki",
+      targetPath: "../../guides/telemetry/foo.md",
+      targetAnchor: "setup",
+      outOfScope: true,
+      resolvedAbs: "/work/guides/telemetry/foo.md",
+    });
+  });
+
+  it("still resolves into a configured sibling repo without the sentinel", () => {
+    const wiki: RepoSnapshot = {
+      config: { name: "wiki", path: "/work/wiki", docsGlob: "**/*.md", urls: [] },
+      docs: new Map([
+        [
+          "causal/dag.md",
+          {
+            relPath: "causal/dag.md",
+            absPath: "/work/wiki/causal/dag.md",
+            mtime: "2026-01-01T00:00:00.000Z",
+            mtimeSource: "git" as const,
+            headings: new Set<string>(),
+            links: extractLinksFromBody("[t](../../guides/telemetry/foo.md)"),
+          },
+        ],
+      ]),
+    };
+    const guides: RepoSnapshot = {
+      config: { name: "guides", path: "/work/guides", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const edges = classifyEdges([wiki, guides]);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      targetRepo: "guides",
+      targetPath: "telemetry/foo.md",
+    });
+    expect(edges[0]?.outOfScope).toBeUndefined();
+  });
+});

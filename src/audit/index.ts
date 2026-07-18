@@ -12,7 +12,7 @@ import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
 import { checkBrokenRefs } from "./checks/broken_refs.js";
 import { checkDescribesRefs } from "./checks/describes_refs.js";
 import { checkStaleness } from "./checks/staleness.js";
-import { collectRepos } from "./collect.js";
+import { collectRepos, symlinkSafeExistsWithin } from "./collect.js";
 import { parseAuditConfig } from "./config.js";
 import { classifyDescribesEdges } from "./describes.js";
 import { computeExitCode } from "./exit.js";
@@ -156,7 +156,10 @@ export async function runAudit(argv: string[], overrides: AuditOverrides = {}): 
   const snapshots = collected.value;
 
   const edges = classifyEdges(snapshots);
-  const brokenRefs = checkBrokenRefs(snapshots, edges);
+  // The disk oracle lets the pure check distinguish real breaks from
+  // references to on-disk assets (#132) and unaudited siblings (#133) —
+  // symlink-safe, so a committed link cannot route the probe off-scope.
+  const brokenRefs = checkBrokenRefs(snapshots, edges, symlinkSafeExistsWithin);
   const staleness = checkStaleness(snapshots, edges, config.staleness.thresholdDays, new Date());
   const describesEdges = classifyDescribesEdges(snapshots);
   const describesRefs = checkDescribesRefs(snapshots, describesEdges);
@@ -190,7 +193,10 @@ export async function runAudit(argv: string[], overrides: AuditOverrides = {}): 
     docsScanned: snapshots
       .filter((s) => s.config.type !== "code")
       .reduce((n, s) => n + s.docs.size, 0),
-    brokenRefs: brokenRefs.length,
+    // Out-of-scope targets are visibility, not breakage (#133): their own
+    // total, excluded from brokenRefs so the failOn gate never trips on them.
+    brokenRefs: brokenRefs.filter((f) => f.kind !== "out_of_scope_target").length,
+    outOfScopeTargets: brokenRefs.filter((f) => f.kind === "out_of_scope_target").length,
     directlyStale: staleness.filter((f) => f.kind === "direct").length,
     transitivelyStale: staleness.filter((f) => f.kind === "transitive").length,
     brokenDescribes: describesRefs.length,

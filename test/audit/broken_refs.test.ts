@@ -76,3 +76,157 @@ describe("checkBrokenRefs", () => {
     expect(findings).toEqual([]); // resolved via .md fallback → no finding
   });
 });
+
+describe("checkBrokenRefs with a disk oracle (#132/#133)", () => {
+  const snapshots = [makeSnapshot("a", [{ relPath: "docs/api.md" }])];
+
+  it("a reference to an on-disk asset outside the doc index is not a finding (#132)", () => {
+    const edges = [edge("a", "docs/api.md", "a", "assets/dag.png")];
+    const exists = (root: string, abs: string) => root === "/a" && abs === "/a/assets/dag.png";
+    expect(checkBrokenRefs(snapshots, edges, exists)).toEqual([]);
+    // Absent asset stays a real miss.
+    expect(checkBrokenRefs(snapshots, edges, () => false)).toHaveLength(1);
+    // No oracle: index-only behavior, as before.
+    expect(checkBrokenRefs(snapshots, edges)).toHaveLength(1);
+  });
+
+  it("an out-of-scope ref that exists on disk is out_of_scope_target, absent is missing_file (#133)", () => {
+    // Deep root: a repo mounted directly under / gets no sibling scope.
+    const deep: RepoSnapshot = {
+      config: { name: "a", path: "/work/a", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const outEdge: LinkEdge = {
+      sourceRepo: "a",
+      sourcePath: "docs/api.md",
+      targetRepo: "a",
+      targetPath: "../../guides/foo.md",
+      targetAnchor: null,
+      rawHref: "../../guides/foo.md",
+      outOfScope: true,
+      resolvedAbs: "/work/guides/foo.md",
+    };
+    const present = checkBrokenRefs(
+      [deep],
+      [outEdge],
+      (_root, abs) => abs === "/work/guides/foo.md",
+    );
+    expect(present).toHaveLength(1);
+    expect(present[0]?.kind).toBe("out_of_scope_target");
+
+    const absent = checkBrokenRefs([deep], [outEdge], () => false);
+    expect(absent[0]?.kind).toBe("missing_file");
+    // No oracle: conservative missing_file, never a silent pass.
+    expect(checkBrokenRefs([deep], [outEdge])[0]?.kind).toBe("missing_file");
+  });
+
+  it("an out-of-scope existing target never silently passes even when it would resolve as an asset", () => {
+    const deep: RepoSnapshot = {
+      config: { name: "a", path: "/work/a", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const outEdge: LinkEdge = {
+      sourceRepo: "a",
+      sourcePath: "docs/api.md",
+      targetRepo: "a",
+      targetPath: "../elsewhere/pic.png",
+      targetAnchor: null,
+      rawHref: "../elsewhere/pic.png",
+      outOfScope: true,
+      resolvedAbs: "/work/elsewhere/pic.png",
+    };
+    const findings = checkBrokenRefs([deep], [outEdge], () => true);
+    expect(findings.map((f) => f.kind)).toEqual(["out_of_scope_target"]);
+  });
+});
+
+describe("the disk oracle is confined (#255 security review)", () => {
+  it("never probes an out-of-scope target beyond the repos' parent directories", () => {
+    const wiki: RepoSnapshot = {
+      config: { name: "wiki", path: "/work/wiki", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const probes: string[] = [];
+    const oracle = (root: string, abs: string) => {
+      probes.push(`${root}|${abs}`);
+      return true; // every probed path "exists" — containment must gate first
+    };
+    const outEdge = (href: string, resolvedAbs: string): LinkEdge => ({
+      sourceRepo: "wiki",
+      sourcePath: "a.md",
+      targetRepo: "wiki",
+      targetPath: href,
+      targetAnchor: null,
+      rawHref: href,
+      outOfScope: true,
+      resolvedAbs,
+    });
+
+    // A sibling under the repo's parent is probed and classified.
+    const sibling = checkBrokenRefs(
+      [wiki],
+      [outEdge("../guides/foo.md", "/work/guides/foo.md")],
+      oracle,
+    );
+    expect(sibling[0]?.kind).toBe("out_of_scope_target");
+
+    // A system path is never probed: conservative missing_file even though
+    // the oracle would say it exists.
+    const traversal = checkBrokenRefs(
+      [wiki],
+      [outEdge("../../../../etc/shadow", "/etc/shadow")],
+      oracle,
+    );
+    expect(traversal[0]?.kind).toBe("missing_file");
+    expect(probes).toEqual(["/work|/work/guides/foo.md"]);
+  });
+
+  it("never probes an in-scope targetPath that escapes the repo root", () => {
+    const wiki: RepoSnapshot = {
+      config: { name: "wiki", path: "/work/wiki", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const probes: string[] = [];
+    const findings = checkBrokenRefs(
+      [wiki],
+      [edge("wiki", "a.md", "wiki", "../../etc/passwd")],
+      (_root, abs) => {
+        probes.push(abs);
+        return true;
+      },
+    );
+    expect(findings[0]?.kind).toBe("missing_file");
+    expect(probes).toEqual([]);
+  });
+});
+
+describe("root-mounted repos contribute no sibling scope (#255 review)", () => {
+  it("out-of-scope refs from a repo mounted directly under / are never probed", () => {
+    const vault: RepoSnapshot = {
+      config: { name: "vault", path: "/vault", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const probes: string[] = [];
+    const findings = checkBrokenRefs(
+      [vault],
+      [
+        {
+          sourceRepo: "vault",
+          sourcePath: "a.md",
+          targetRepo: "vault",
+          targetPath: "../../../../etc/shadow",
+          targetAnchor: null,
+          rawHref: "../../../../etc/shadow",
+          outOfScope: true,
+          resolvedAbs: "/etc/shadow",
+        },
+      ],
+      (root, abs) => {
+        probes.push(`${root}|${abs}`);
+        return true;
+      },
+    );
+    expect(findings[0]?.kind).toBe("missing_file");
+    expect(probes).toEqual([]);
+  });
+});

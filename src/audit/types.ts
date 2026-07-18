@@ -54,6 +54,12 @@ export type LinkEdge = {
   targetPath: string; // resolved relPath in target repo
   targetAnchor: string | null;
   rawHref: string;
+  // Set when the relative href resolved OUTSIDE every configured repo (#133):
+  // targetPath is then the raw href (unresolvable in any docs map) and
+  // resolvedAbs is where it actually points on disk, so the broken-ref check
+  // can distinguish "genuinely absent" from "exists, but not audited".
+  outOfScope?: boolean;
+  resolvedAbs?: string;
 };
 
 // A doc-to-code binding edge, extracted from a docs-repo doc's `describes`
@@ -74,8 +80,12 @@ export type DescribesRefFinding = {
   raw: string;
 };
 
+// `out_of_scope_target` (#133): the referenced file EXISTS on disk but sits
+// outside every audited repo — the audit cannot vouch for it, but it is not a
+// broken link. Distinct kind, distinct total, and it never counts toward the
+// failOn.brokenRefs gate.
 export type BrokenRefFinding = {
-  kind: "missing_file" | "missing_anchor";
+  kind: "missing_file" | "missing_anchor" | "out_of_scope_target";
   source: { repo: string; path: string };
   target: { repo: string; path: string; anchor: string | null };
   rawHref: string;
@@ -96,6 +106,9 @@ export type AuditReport = {
     reposScanned: number;
     docsScanned: number;
     brokenRefs: number;
+    // Refs whose target exists on disk outside the audited scope (#133) —
+    // reported for visibility, excluded from brokenRefs and the fail gate.
+    outOfScopeTargets: number;
     directlyStale: number;
     transitivelyStale: number;
     brokenDescribes: number;
