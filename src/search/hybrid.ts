@@ -240,13 +240,13 @@ function chunkFtsRanking(
   const rows = db
     .prepare(
       `SELECT c.path AS path, -bm25(chunks_fts) AS score,
-              snippet(chunks_fts, 0, '', '', '…', ${FTS_SNIPPET_TOKENS}) AS snip
+              snippet(chunks_fts, 0, '', '', '…', ?) AS snip
          FROM chunks_fts
          JOIN chunks AS c ON c.rowid = chunks_fts.rowid
         WHERE chunks_fts MATCH ?
         ORDER BY bm25(chunks_fts)`,
     )
-    .all(query) as { path: string; score: number; snip: string }[];
+    .all(FTS_SNIPPET_TOKENS, query) as { path: string; score: number; snip: string }[];
   const scores = new Map<string, number>();
   const snippets = new Map<string, string>();
   for (const r of rows) {
