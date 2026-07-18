@@ -482,6 +482,35 @@ The zephyr system was briefly mentioned in a prior report and has no further det
     if (!res.ok) return;
     expect(res.value.hits[0]?.path).toBe("multi.md");
   });
+
+  it("lexical excerpts come from the winning chunk via FTS5 snippet(), not a body scan (#108)", async () => {
+    // Discriminating assertion: multi.md's winning chunk is the tiny
+    // "zephyr"-only paragraph, so the FTS5 excerpt is exactly that chunk.
+    // The old full-body scan centred a ±140-char window on the literal
+    // match, which on this fixture necessarily dragged in the filler
+    // prose before it — so an exact-match snippet proves the FTS5 path.
+    const res = await hybridSearch(chunkDb, "zephyr", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const hit = res.value.hits.find((h) => h.path === "multi.md");
+    expect(hit?.snippet).toBe("zephyr");
+
+    // Document granularity keeps the JS fallback (documents_fts cannot run
+    // snippet() — its content_body column does not exist on the base table),
+    // so its excerpt still carries the surrounding filler window.
+    const docArm = await hybridSearch(chunkDb, "zephyr", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "document",
+    });
+    expect(docArm.ok).toBe(true);
+    if (!docArm.ok) return;
+    const docHit = docArm.value.hits.find((h) => h.path === "multi.md");
+    expect(docHit?.snippet).toContain("zephyr");
+    expect(docHit?.snippet.length ?? 0).toBeGreaterThan("zephyr".length);
+  });
 });
 
 // ---------------------------------------------------------------------------

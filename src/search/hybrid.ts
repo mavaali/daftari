@@ -239,16 +239,21 @@ function chunkFtsRanking(
   if (query === null) return { scores: new Map(), snippets: new Map() };
   const rows = db
     .prepare(
-      `SELECT c.path AS path, -bm25(chunks_fts) AS score,
-              snippet(chunks_fts, 0, '', '', '…', ?) AS snip
+      `SELECT c.path AS path, chunks_fts.rowid AS crowid, -bm25(chunks_fts) AS score
          FROM chunks_fts
          JOIN chunks AS c ON c.rowid = chunks_fts.rowid
         WHERE chunks_fts MATCH ?
         ORDER BY bm25(chunks_fts)`,
     )
-    .all(FTS_SNIPPET_TOKENS, query) as { path: string; score: number; snip: string }[];
+    .all(query) as { path: string; crowid: number; score: number }[];
   const scores = new Map<string, number>();
-  const snippets = new Map<string, string>();
+  // The winning chunk's FTS rowid per path — the snippet pass below is
+  // restricted to exactly these rows, so snippet()'s tokenize/format cost is
+  // paid once per DOCUMENT, not once per matched chunk. (A ROW_NUMBER()
+  // window subquery would not help here: the projected snippet() is still
+  // evaluated per inner row before the window filter, and FTS5 auxiliary
+  // functions cannot move outside the MATCH cursor.)
+  const winners = new Map<string, number>();
   for (const r of rows) {
     // Some rows may produce a non-positive flipped score if FTS5 returned a
     // positive bm25 (rare with prefix matches); drop them so the normalize
@@ -262,11 +267,27 @@ function chunkFtsRanking(
     const prev = scores.get(r.path) ?? -Infinity;
     if (r.score > prev) {
       scores.set(r.path, r.score);
-      // Rows arrive best-first per bm25, but keying on the max KEPT score is
-      // what guarantees the snippet always comes from the same chunk the
-      // document's score does.
-      const collapsed = r.snip.replace(/\s+/g, " ").trim();
-      if (collapsed.length > 0) snippets.set(r.path, collapsed);
+      // Keying on the max KEPT score guarantees the snippet always comes
+      // from the same chunk the document's score does.
+      winners.set(r.path, r.crowid);
+    }
+  }
+
+  const snippets = new Map<string, string>();
+  if (winners.size > 0) {
+    const ids = [...winners.values()];
+    const placeholders = ids.map(() => "?").join(",");
+    const snips = db
+      .prepare(
+        `SELECT c.path AS path, snippet(chunks_fts, 0, '', '', '…', ?) AS snip
+           FROM chunks_fts
+           JOIN chunks AS c ON c.rowid = chunks_fts.rowid
+          WHERE chunks_fts MATCH ? AND chunks_fts.rowid IN (${placeholders})`,
+      )
+      .all(FTS_SNIPPET_TOKENS, query, ...ids) as { path: string; snip: string }[];
+    for (const s of snips) {
+      const collapsed = s.snip.replace(/\s+/g, " ").trim();
+      if (collapsed.length > 0) snippets.set(s.path, collapsed);
     }
   }
   return { scores, snippets };
