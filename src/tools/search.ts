@@ -7,6 +7,15 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
+import { currentConsumesEdges } from "../curation/consumes.js";
+import {
+  compiledUpstreamStaleness,
+  loadCompiledStaleContext,
+  splitUpstreamVisibility,
+} from "../curation/edge-staleness.js";
+import { recordReads } from "../curation/read-log.js";
+import { sourceReadable } from "../curation/tension-access.js";
+import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { contestedFor } from "../search/contested.js";
 import {
@@ -17,6 +26,7 @@ import {
 import { resolveCurrentSource } from "../search/current-source.js";
 import {
   DEFAULT_WEIGHTS,
+  type HybridHit,
   type HybridSearchResult,
   type HybridWeights,
   hybridSearch,
@@ -120,6 +130,65 @@ function parseLimit(raw: unknown): number {
   return 10;
 }
 
+// #234 serve instrumentation, shared by every snippet-serving tool
+// (vault_search AND vault_search_related — the broken-read rate's
+// denominator counts serves, whichever tool served them). Each SERVED hit
+// becomes one read-log entry carrying its pending-broken upstream count —
+// the TRUE count, unfiltered, because the log is local operator telemetry —
+// batched into a single append so N hits do not pay N fs writes.
+//
+// The caller-facing hit uses the shared #217 split (splitUpstreamVisibility):
+// the "broken" (incident) classification is disclosed only for upstream
+// units the caller can read — pendingBrokenUpstream buckets the VISIBLE
+// broken count. Edges to unreadable units contribute only the generic
+// hiddenPendingUpstream bucket, which never carries severity: an incident
+// verdict derived from a hidden unit would leak that unit's change activity
+// across the ACL boundary. The visible count is bucketed for hit-payload
+// compactness, not disclosure — vault_read's exact pending_broken is the
+// drill-down. Best-effort: a telemetry failure never fails the search.
+async function annotateAndLogServedHits(
+  vaultRoot: string,
+  db: IndexDb,
+  tool: string,
+  hits: HybridHit[],
+  access?: AccessContext,
+): Promise<void> {
+  if (hits.length === 0) return;
+  // The newest-compile-group collapse is O(total edges); do it ONCE per
+  // call, not per hit. Passing the pre-collapsed set through is sound
+  // because currentConsumesEdges is idempotent. An empty consumes log
+  // short-circuits before the provenance log is read at all — with zero
+  // compiled edges every broken count is zero (same posture as vault_read).
+  const loaded = await loadCompiledStaleContext(vaultRoot);
+  const staleCtx = loaded
+    ? { consumes: currentConsumesEdges(loaded.consumes), provenance: loaded.provenance }
+    : null;
+  const entries: Parameters<typeof recordReads>[1] = [];
+  for (const hit of hits) {
+    let broken: number | undefined;
+    if (staleCtx) {
+      const rows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
+      broken = rows.filter((r) => r.staleness === "pending-broken").length;
+      // `db` is the caller's already-open index handle — the same one the
+      // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
+      const { visible, hiddenPending } = access
+        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+        : { visible: rows, hiddenPending: "none" as const };
+      const visibleBroken = visible.filter((r) => r.staleness === "pending-broken").length;
+      const brokenBucket = bucketHiddenDownstream(visibleBroken);
+      if (brokenBucket !== "none") hit.pendingBrokenUpstream = brokenBucket;
+      if (hiddenPending !== "none") hit.hiddenPendingUpstream = hiddenPending;
+    }
+    entries.push({
+      tool,
+      file: hit.path,
+      ...(access?.user != null ? { principal: access.user } : {}),
+      ...(broken !== undefined ? { broken_upstream: broken } : {}),
+    });
+  }
+  await recordReads(vaultRoot, entries);
+}
+
 // ---------------------------------------------------------------------------
 // vault_search
 // ---------------------------------------------------------------------------
@@ -200,6 +269,8 @@ export async function vaultSearch(
     // their combined snippets exceed the budget. Never drops ranked hits.
     const capped = enforceTokenCap(permitted, DEFAULT_COVERAGE_OPTIONS);
 
+    await annotateAndLogServedHits(vaultRoot, db, "vault_search", capped, access);
+
     return ok({ ...result.value, count: capped.length, hits: capped });
   } finally {
     db.close();
@@ -246,6 +317,9 @@ export async function vaultSearchRelated(
       ? result.value.hits.filter((h) => canRead(access.role, h.collection))
       : result.value.hits;
     const hits = permitted.slice(0, limit);
+
+    await annotateAndLogServedHits(vaultRoot, db, "vault_search_related", hits, access);
+
     return ok({ ...result.value, count: hits.length, hits });
   } finally {
     db.close();

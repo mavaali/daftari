@@ -109,6 +109,21 @@ export function resolveVaultPath(
   return ok({ absPath: target, relPath: realRel });
 }
 
+// The realpath-canonical vault-relative form of a caller-supplied path
+// (trimmed), i.e. resolveVaultPath's relPath — the ONLY safe key for
+// looking up provenance, consumes, and read-log entries. Tools that anchor
+// a query on a caller string use this one helper; recomputing the relative
+// lexically diverges from the stored keys under a symlinked vault root
+// (#127/#128).
+export function canonicalVaultRelPath(
+  vaultRoot: string,
+  relativePath: string,
+): Result<string, Error> {
+  const resolved = resolveVaultPath(vaultRoot, relativePath.trim());
+  if (!resolved.ok) return resolved;
+  return ok(resolved.value.relPath);
+}
+
 export async function directoryExists(path: string): Promise<boolean> {
   try {
     const s = await stat(path);

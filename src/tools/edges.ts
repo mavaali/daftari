@@ -34,21 +34,9 @@ import {
 import { addTension, listTensions } from "../curation/tension.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { readFile, resolveVaultPath } from "../storage/local.js";
+import { canonicalVaultRelPath, readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
-
-// Canonical vault-relative form of a caller-supplied path: trimmed, resolved
-// against the vault root (rejecting traversal out of it), re-relativized. The
-// edge store keys edges by raw string, so `./a.md`, `b/../a.md`, and `a.md`
-// must all collapse to one key here — otherwise aliased inputs would split an
-// edge's votes across phantom twins and slip past the self-edge guard (the
-// same aliasing class vault_merge guards against).
-function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
-  const resolved = resolveVaultPath(vaultRoot, relPath.trim());
-  if (!resolved.ok) return resolved;
-  return ok(relative(resolve(vaultRoot), resolved.value.absPath));
-}
 
 function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
   if (access && !hasAnyRead(access.role)) {
@@ -129,9 +117,9 @@ export async function vaultEdgeObserve(
     if (trimmed.length > 0) note = trimmed;
   }
 
-  const canonFrom = canonicalRelPath(vaultRoot, fromPath.value);
+  const canonFrom = canonicalVaultRelPath(vaultRoot, fromPath.value);
   if (!canonFrom.ok) return canonFrom;
-  const canonTo = canonicalRelPath(vaultRoot, toPath.value);
+  const canonTo = canonicalVaultRelPath(vaultRoot, toPath.value);
   if (!canonTo.ok) return canonTo;
 
   // Self-edge check on the CANONICAL paths, so `a.md` vs `b/../a.md` cannot
@@ -189,9 +177,9 @@ export async function vaultEdgeContest(
   // Canonicalize like observe does, so a contest addresses the same key the
   // observation wrote. No doc-existence check here — an edge whose endpoint
   // doc was since deleted is still contestable.
-  const canonFrom = canonicalRelPath(vaultRoot, fromPath.value);
+  const canonFrom = canonicalVaultRelPath(vaultRoot, fromPath.value);
   if (!canonFrom.ok) return canonFrom;
-  const canonTo = canonicalRelPath(vaultRoot, toPath.value);
+  const canonTo = canonicalVaultRelPath(vaultRoot, toPath.value);
   if (!canonTo.ok) return canonTo;
 
   // Validate the edge is contestable BEFORE writing the tension, so a contest
@@ -279,7 +267,7 @@ export async function vaultEdges(
     if (typeof v !== "string" || v.trim().length === 0) {
       return err(new Error(`vault_edges '${argName}' must be a non-empty string`));
     }
-    const canon = canonicalRelPath(vaultRoot, v);
+    const canon = canonicalVaultRelPath(vaultRoot, v);
     if (!canon.ok) return canon;
     filter[key] = canon.value;
   }

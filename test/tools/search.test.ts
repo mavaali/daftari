@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { mintConsumesEdges } from "../../src/curation/consumes.js";
+import { recordProvenance } from "../../src/curation/provenance.js";
+import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
@@ -530,5 +533,100 @@ describe("vault_search_related RBAC over-fetch", () => {
     if (!res.ok) return;
     expect(res.value.hits.length).toBe(2);
     expect(res.value.hits.every((h) => h.collection === "public")).toBe(true);
+  });
+});
+
+describe("upstream staleness annotations (#234)", () => {
+  let vault: string;
+
+  // A compiled edge from a pricing doc to a competitive-intel unit, minted
+  // through the real producer (read-log join), then a breaking change to the
+  // unit — the pricing hit now has one pending-broken upstream outside a
+  // pricing-only caller's read scope.
+  beforeAll(async () => {
+    vault = makeTempVault();
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+    const read = await recordRead(vault, {
+      tool: "vault_read",
+      file: "competitive-intel/vega-insight-positioning.md",
+      run_id: "run-stale",
+    });
+    if (!read.ok) throw read.error;
+    // Explicit past compile_ts: the breaking provenance entry below is
+    // stamped "now", which must be STRICTLY later than the baseline — a
+    // same-millisecond pair would classify the edge as current.
+    const minted = await mintConsumesEdges(vault, {
+      artifact: "pricing/helios-consumption-pricing.md",
+      runId: "run-stale",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    if (!minted.ok) throw minted.error;
+    const changed = await recordProvenance(vault, {
+      tool: "vault_write",
+      file: "competitive-intel/vega-insight-positioning.md",
+      agent: "agent:test",
+      action: "update",
+      body_changed: true,
+    });
+    if (!changed.ok) throw changed.error;
+  }, 60_000);
+  afterAll(() => cleanupVault(vault));
+
+  it("an unrestricted caller sees the broken bucket on the hit", async () => {
+    const result = await vaultSearch(vault, {
+      query: "Helios compute credit consumption pricing",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+    expect(hit?.pendingBrokenUpstream).toBe("some");
+    expect(hit?.hiddenPendingUpstream).toBeUndefined();
+  });
+
+  it("vault_search_related serves are instrumented too — same helper, own tool tag", async () => {
+    const related = await vaultSearchRelated(vault, {
+      path: "pricing/serverless-cost-predictability.md",
+    });
+    expect(related.ok).toBe(true);
+    if (!related.ok) return;
+    expect(related.value.hits.length).toBeGreaterThan(0);
+
+    const log = await readReadLog(vault);
+    if (!log.ok) throw log.error;
+    const served = log.value.filter((e) => e.tool === "vault_search_related");
+    // Every served related hit is one instrumented read-log entry.
+    for (const hit of related.value.hits) {
+      const entry = served.find((e) => e.file === hit.path);
+      expect(entry).toBeDefined();
+      expect(entry?.broken_upstream).toBeTypeOf("number");
+    }
+    // The broken doc carries its annotation through the related surface when served.
+    const heliosHit = related.value.hits.find(
+      (h) => h.path === "pricing/helios-consumption-pricing.md",
+    );
+    if (heliosHit) expect(heliosHit.pendingBrokenUpstream).toBe("some");
+  });
+
+  it("never derives the broken (incident) bucket from units outside the caller's scope", async () => {
+    // Security review on #253: the incident classification must follow
+    // vault_read's visible/hidden split — a pricing-only caller learns only
+    // that SOME hidden upstream has pending changes, never that it broke.
+    const pricingOnly: AccessContext = {
+      user: "human:narrow",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const result = await vaultSearch(
+      vault,
+      { query: "Helios compute credit consumption pricing" },
+      pricingOnly,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+    expect(hit).toBeDefined();
+    expect(hit?.pendingBrokenUpstream).toBeUndefined();
+    expect(hit?.hiddenPendingUpstream).toBe("some");
   });
 });

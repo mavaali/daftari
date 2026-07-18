@@ -13,7 +13,6 @@
 // counts, and the summary, never redacted. An unreadable anchor yields an
 // empty result, indistinguishable from a nonexistent one.
 
-import { relative, resolve } from "node:path";
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
 import { listConsumesEdges, reverseConsumes } from "../curation/consumes.js";
 import { listEdges } from "../curation/edges.js";
@@ -30,7 +29,7 @@ import {
 } from "../curation/tier1.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { resolveVaultPath } from "../storage/local.js";
+import { canonicalVaultRelPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -42,12 +41,6 @@ export interface Tier1Result {
   change_source: "provenance" | "explicit";
   verdicts: Tier1Verdict[];
   summary: Tier1Summary;
-}
-
-function canonicalRelPath(vaultRoot: string, relPath: string): Result<string, Error> {
-  const resolved = resolveVaultPath(vaultRoot, relPath.trim());
-  if (!resolved.ok) return resolved;
-  return ok(relative(resolve(vaultRoot), resolved.value.absPath));
 }
 
 export async function vaultTier1(
@@ -62,7 +55,7 @@ export async function vaultTier1(
   if (typeof args.unit !== "string" || args.unit.trim().length === 0) {
     return err(new Error("vault_tier1 requires a non-empty 'unit' argument"));
   }
-  const unit = canonicalRelPath(vaultRoot, args.unit);
+  const unit = canonicalVaultRelPath(vaultRoot, args.unit);
   if (!unit.ok) return unit;
 
   // One index handle serves both readability checks below; every return path

@@ -50,6 +50,16 @@ export interface HybridHit {
   currentSource?: CurrentSource; // populated by the tool handler, not the ranker
   contested?: ContestedTension[]; // unresolved tensions, capped at 3 — tool handler, not ranker
   contestedCount?: number; // TOTAL visible tensions (may exceed the cap)
+  // #234: set when the doc has pending-broken compiled upstream edges the
+  // caller can READ at serve time. Coarse by design (a bucket, never an
+  // exact count); the incident classification is never derived from units
+  // outside the caller's read scope — those contribute only to the generic
+  // hiddenPendingUpstream bucket below, mirroring vault_read's visible /
+  // hidden_pending split (#217). Absent = none. Tool handler, not ranker.
+  pendingBrokenUpstream?: "some" | "many";
+  // #234: pending changes (any class, severity withheld) on compiled
+  // upstream edges to units the caller cannot read. Absent = none.
+  hiddenPendingUpstream?: "some" | "many";
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }
