@@ -126,3 +126,63 @@ describe("checkBrokenRefs with a disk oracle (#132/#133)", () => {
     expect(findings.map((f) => f.kind)).toEqual(["out_of_scope_target"]);
   });
 });
+
+describe("the disk oracle is confined (#255 security review)", () => {
+  it("never probes an out-of-scope target beyond the repos' parent directories", () => {
+    const wiki: RepoSnapshot = {
+      config: { name: "wiki", path: "/work/wiki", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const probes: string[] = [];
+    const oracle = (abs: string) => {
+      probes.push(abs);
+      return true; // every probed path "exists" — containment must gate first
+    };
+    const outEdge = (href: string, resolvedAbs: string): LinkEdge => ({
+      sourceRepo: "wiki",
+      sourcePath: "a.md",
+      targetRepo: "wiki",
+      targetPath: href,
+      targetAnchor: null,
+      rawHref: href,
+      outOfScope: true,
+      resolvedAbs,
+    });
+
+    // A sibling under the repo's parent is probed and classified.
+    const sibling = checkBrokenRefs(
+      [wiki],
+      [outEdge("../guides/foo.md", "/work/guides/foo.md")],
+      oracle,
+    );
+    expect(sibling[0]?.kind).toBe("out_of_scope_target");
+
+    // A system path is never probed: conservative missing_file even though
+    // the oracle would say it exists.
+    const traversal = checkBrokenRefs(
+      [wiki],
+      [outEdge("../../../../etc/shadow", "/etc/shadow")],
+      oracle,
+    );
+    expect(traversal[0]?.kind).toBe("missing_file");
+    expect(probes).toEqual(["/work/guides/foo.md"]);
+  });
+
+  it("never probes an in-scope targetPath that escapes the repo root", () => {
+    const wiki: RepoSnapshot = {
+      config: { name: "wiki", path: "/work/wiki", docsGlob: "**/*.md", urls: [] },
+      docs: new Map(),
+    };
+    const probes: string[] = [];
+    const findings = checkBrokenRefs(
+      [wiki],
+      [edge("wiki", "a.md", "wiki", "../../etc/passwd")],
+      (abs) => {
+        probes.push(abs);
+        return true;
+      },
+    );
+    expect(findings[0]?.kind).toBe("missing_file");
+    expect(probes).toEqual([]);
+  });
+});

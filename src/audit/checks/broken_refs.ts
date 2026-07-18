@@ -21,8 +21,15 @@
 //   7. If found and targetAnchor is set: check DocSnapshot.headings. If absent
 //      → missing_anchor.
 
-import { resolve as nodeResolve } from "node:path";
+import { isAbsolute, relative as nodeRelative, resolve as nodeResolve } from "node:path";
 import type { BrokenRefFinding, LinkEdge, RepoSnapshot } from "../types.js";
+
+// True iff `abs` sits at or under `root` (lexical containment; both sides are
+// already-resolved absolute paths).
+function within(root: string, abs: string): boolean {
+  const rel = nodeRelative(root, abs);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
 
 export function checkBrokenRefs(
   snapshots: RepoSnapshot[],
@@ -34,6 +41,16 @@ export function checkBrokenRefs(
   for (const snap of snapshots) {
     byRepo.set(snap.config.name, snap);
   }
+
+  // The existence oracle is CONFINED (security review on #255): probing an
+  // arbitrary resolvedAbs would let anyone who can author a doc turn the
+  // audit report into a host-filesystem existence probe
+  // ([x](../../../../etc/shadow) → out_of_scope_target vs missing_file).
+  // #133's actual case is UNAUDITED SIBLINGS, so out-of-scope probes are
+  // allowed only under the parent directories of the configured repo roots;
+  // anything further out is reported missing_file without ever touching
+  // disk — exactly the pre-oracle behavior.
+  const siblingScopes = snapshots.map((s) => nodeResolve(s.config.path, ".."));
 
   const findings: BrokenRefFinding[] = [];
 
@@ -68,10 +85,14 @@ export function checkBrokenRefs(
         // The href escaped every audited repo (#133). A file that exists out
         // there is not a broken link — but it stays VISIBLE with its own
         // kind, never silently passed: the audit cannot vouch for a target
-        // it does not scan.
+        // it does not scan. The probe runs only inside the sibling scopes
+        // (see above); a target beyond them is missing_file, unprobed.
+        const probeable =
+          edge.resolvedAbs !== undefined &&
+          siblingScopes.some((scope) => within(scope, edge.resolvedAbs as string));
         findings.push(
           finding(
-            edge.resolvedAbs && existsOnDisk?.(edge.resolvedAbs)
+            probeable && existsOnDisk?.(edge.resolvedAbs as string)
               ? "out_of_scope_target"
               : "missing_file",
             edge.targetPath,
@@ -82,8 +103,11 @@ export function checkBrokenRefs(
       // In-scope miss: the docs map only holds glob-matched markdown, but a
       // reference to a real on-disk asset is legitimate (#132) — one
       // existence probe, no finding. Anchors into assets are unverifiable.
+      // The probe is confined to the target repo root: a URL-derived
+      // targetPath can carry ../ segments, and escaping paths must not be
+      // probed (same oracle concern as above).
       const abs = nodeResolve(targetSnap.config.path, edge.targetPath);
-      if (existsOnDisk?.(abs)) continue;
+      if (within(targetSnap.config.path, abs) && existsOnDisk?.(abs)) continue;
       findings.push(finding("missing_file", edge.targetPath));
       continue;
     }
