@@ -827,13 +827,15 @@ export async function vaultWrite(
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     bodyChanged: !isUpdate || !sameBody(oldContent, body),
   });
-  if (!written.ok || !isUpdate) return written;
   // #169: an in-place overwrite destroys the prior version's lineage, and
   // daftari HAS the preserve-not-overwrite primitive — steer toward it at
   // the moment of overwrite, the decay banner's channel: additive, advisory,
   // never blocking, never auto-minting an edge. The agent still chooses.
   // Attached here (not in performWrite) so vault_supersede and the other
-  // lifecycle tools never nudge about themselves.
+  // lifecycle tools never nudge about themselves. A shadow-mode result is
+  // excluded: nothing landed and nothing was replaced, so the hint's text
+  // would be false.
+  if (!written.ok || !isUpdate || written.value.shadow) return written;
   return ok({ ...written.value, supersede_hint: SUPERSEDE_HINT });
 }
 

@@ -269,6 +269,33 @@ describe("write tools", () => {
     }, 60_000);
   });
 
+  describe("advisory supersede hint — shadow mode (#169 review)", () => {
+    it("a shadow-mode overwrite carries no hint — nothing landed", async () => {
+      const created = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 40\n",
+        agent: AGENT,
+      });
+      expect(created.ok).toBe(true);
+
+      mkdirSync(dirname(configPath(vault)), { recursive: true });
+      writeFileSync(configPath(vault), "version: 1\nshadow_mode: true\n");
+
+      const shadowed = await vaultWrite(vault, {
+        path: "pricing/fact.md",
+        frontmatter: newFrontmatter(),
+        body: "# Fact\n\nvalue: 60\n",
+        agent: AGENT,
+      });
+      expect(shadowed.ok).toBe(true);
+      if (!shadowed.ok) return;
+      expect(shadowed.value.shadow).toBe(true);
+      expect(shadowed.value.committed).toBe(false);
+      expect(shadowed.value.supersede_hint).toBeUndefined();
+    }, 60_000);
+  });
+
   describe("vault_append", () => {
     it("appends a section and re-stamps updated metadata", async () => {
       const result = await vaultAppend(vault, {
