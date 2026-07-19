@@ -124,11 +124,17 @@ function parseWeights(raw: unknown): HybridWeights {
   return DEFAULT_WEIGHTS;
 }
 
-function parseLimit(raw: unknown): number {
+// Shared numeric-arg posture: a positive finite number floors and clamps to
+// `max`; anything else silently takes `fallback`.
+function clampPositiveInt(raw: unknown, max: number, fallback: number): number {
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-    return Math.min(Math.floor(raw), 50);
+    return Math.min(Math.floor(raw), max);
   }
-  return 10;
+  return fallback;
+}
+
+function parseLimit(raw: unknown): number {
+  return clampPositiveInt(raw, 50, 10);
 }
 
 // #3: rerank pool size. 0 = feature off (the default — absent or invalid
@@ -137,10 +143,7 @@ function parseLimit(raw: unknown): number {
 // quality decays faster than recall improves.
 const RERANK_CANDIDATES_MAX = 30;
 function parseRerankCandidates(raw: unknown): number {
-  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-    return Math.min(Math.floor(raw), RERANK_CANDIDATES_MAX);
-  }
-  return 0;
+  return clampPositiveInt(raw, RERANK_CANDIDATES_MAX, 0);
 }
 
 // The agent-as-judge protocol text (#3), one fixed string like the #169
