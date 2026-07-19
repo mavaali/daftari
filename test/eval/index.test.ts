@@ -54,8 +54,8 @@ vi.mock("../../src/eval/subgraph.js", () => ({
 }));
 
 import { runEval } from "../../src/eval/index.js";
-import { writeQuestionSet } from "../../src/eval/storage.js";
-import type { QuestionSet } from "../../src/eval/types.js";
+import { writeQuestionSet, writeResults } from "../../src/eval/storage.js";
+import type { EvalRun, QuestionSet } from "../../src/eval/types.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 function minimalQuestionSet(id: string): QuestionSet {
@@ -144,6 +144,46 @@ describe("daftari eval CLI (#102)", () => {
     const code = await runEval(["generate", "--vault", ".", "--max-nodes", "0"]);
     expect(code).toBe(2);
     expect(stderrText()).toContain("--max-nodes must be a positive integer");
+  });
+
+  it("scores a truncated results file as PARTIAL — never-attempted runs count against the planned grid", async () => {
+    // A process killed between incremental persists leaves NO entry for the
+    // remaining (question, k) pairs — not even "incomplete". The coverage
+    // denominator must be the planned questions × k grid, or a sliver of a
+    // run scores as `graded N/N` with no warning.
+    const dir = mkdtempSync(join(tmpdir(), "daftari-eval-"));
+    try {
+      const qs = minimalQuestionSet("qs-1");
+      qs.questions = [
+        {
+          id: "q1",
+          tier: "retrieval",
+          question: "how many tiers?",
+          expected_answer: "3",
+          expected_sources: ["a.md"],
+          origin: "generated",
+        },
+      ];
+      await writeQuestionSet(dir, qs);
+      const run: EvalRun = {
+        id: "run-1",
+        questions_id: "qs-1",
+        answerer_model: "m",
+        prompt_version: 1,
+        timestamp: "2026-01-01T00:00:00Z",
+        k: 2,
+        runs: {}, // killed before any pair persisted
+      };
+      await writeResults(dir, run);
+      const code = await runEval(["score", "--vault", dir, "--results", "run-1"]);
+      expect(code).toBe(0);
+      const out = outSpy.mock.calls.map((c) => String(c[0])).join("");
+      expect(out).toContain("graded 0/2 runs");
+      expect(stderrText()).toContain("score is PARTIAL");
+      expect(stderrText()).toContain("2 never-attempted");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("surfaces an artifact write failure as runtime exit 3, not config 2", async () => {

@@ -224,7 +224,7 @@ async function runRun(argv: string[]): Promise<number> {
     resumeFrom,
     runId,
     timestamp,
-    persist: (r) => persistBestEffort(vault, r),
+    persist: makeBestEffortPersist(vault),
   });
   if (!run.ok) {
     process.stderr.write(`${run.error.message}\n`);
@@ -242,19 +242,22 @@ async function runRun(argv: string[]): Promise<number> {
 
 // Mid-run incremental persistence is best-effort: a transient write failure
 // must not abort a healthy run (the final write reports failures with the
-// runtime exit code). Warn once so a broken disk is visible during the run.
-let persistWarned = false;
-async function persistBestEffort(vault: string, r: EvalRun): Promise<void> {
-  try {
-    await writeResults(vault, r);
-  } catch (e) {
-    if (!persistWarned) {
-      persistWarned = true;
-      process.stderr.write(
-        `warning: incremental results write failed (will retry at end): ${e instanceof Error ? e.message : String(e)}\n`,
-      );
+// runtime exit code). Warns once PER RUN — the flag lives in the closure, not
+// at module scope, so an in-process re-invocation of runEval warns afresh.
+function makeBestEffortPersist(vault: string): (r: EvalRun) => Promise<void> {
+  let warned = false;
+  return async (r: EvalRun) => {
+    try {
+      await writeResults(vault, r);
+    } catch (e) {
+      if (!warned) {
+        warned = true;
+        process.stderr.write(
+          `warning: incremental results write failed (will retry at end): ${e instanceof Error ? e.message : String(e)}\n`,
+        );
+      }
     }
-  }
+  };
 }
 
 async function runScore(argv: string[]): Promise<number> {
@@ -287,13 +290,18 @@ async function runScore(argv: string[]): Promise<number> {
   const grades: Grade[] = [];
   const traces = new Map<string, Trace>();
   // Dropped-run accounting (#102): a run can fall out of the score because it
-  // never completed or because grading failed. Both are counted and reported
-  // below, so a thin score cannot be mistaken for a complete one.
+  // never completed, because grading failed, or because it was NEVER
+  // ATTEMPTED — a process killed between two incremental persists leaves no
+  // entry at all for the remaining (question, k) pairs, so the denominator
+  // must be the PLANNED grid, not whatever happens to be in the file. All
+  // three buckets are counted and reported, so a thin score cannot be
+  // mistaken for a complete one.
+  const plannedRuns = qs.questions.length * run.k;
   let skippedIncomplete = 0;
   let skippedGradeFailures = 0;
-  let totalRuns = 0;
+  let presentRuns = 0;
   for (const [, pr] of Object.entries(run.runs)) {
-    totalRuns += 1;
+    presentRuns += 1;
     if (pr.status !== "complete" || !pr.trace) {
       skippedIncomplete += 1;
       continue;
@@ -359,11 +367,13 @@ async function runScore(argv: string[]): Promise<number> {
       `  ${t.padEnd(16)}: ${ts.mean.toFixed(3)} (n=${ts.n}, efficiency=${ts.trace_efficiency.toFixed(1)} calls)\n`,
     );
   }
-  process.stdout.write(`graded ${grades.length}/${totalRuns} runs\n`);
-  if (skippedIncomplete > 0 || skippedGradeFailures > 0) {
+  const neverAttempted = Math.max(0, plannedRuns - presentRuns);
+  process.stdout.write(`graded ${grades.length}/${plannedRuns} runs\n`);
+  if (skippedIncomplete > 0 || skippedGradeFailures > 0 || neverAttempted > 0) {
     process.stderr.write(
-      `warning: score is PARTIAL — ${skippedIncomplete} incomplete run(s) and ` +
-        `${skippedGradeFailures} grading failure(s) were skipped\n`,
+      `warning: score is PARTIAL — ${skippedIncomplete} incomplete run(s), ` +
+        `${skippedGradeFailures} grading failure(s), and ${neverAttempted} ` +
+        `never-attempted run(s) were skipped; resume the run to complete it\n`,
     );
   }
   return 0;
@@ -418,7 +428,7 @@ async function runTopLevel(argv: string[]): Promise<number> {
     model,
     runId,
     timestamp: runTimestamp,
-    persist: (r) => persistBestEffort(vault, r),
+    persist: makeBestEffortPersist(vault),
   });
   if (!runRes.ok) {
     process.stderr.write(`${runRes.error.message}\n`);
