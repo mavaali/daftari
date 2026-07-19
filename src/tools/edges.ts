@@ -18,7 +18,6 @@
 // the `ratify` grant (§11.6) — it revokes trigger-bearing edges, the same
 // curation-verdict tier as vault_ratify.
 
-import { relative, resolve } from "node:path";
 import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
 import {
   contestEdge,

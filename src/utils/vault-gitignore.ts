@@ -65,6 +65,6 @@ export async function ensureVaultGitignore(
   // Separate the user's content from our block so it doesn't glue onto their
   // last line. A leading "\n" guarantees a clean break whether or not the file
   // ends in a newline.
-  await appendFile(path, "\n" + VAULT_GITIGNORE);
+  await appendFile(path, `\n${VAULT_GITIGNORE}`);
   return "appended";
 }

@@ -88,8 +88,7 @@ export function computeWindow(
   const dates: string[] = [];
   for (const h of hits.slice(0, opts.seedK)) {
     const d = getDocument(db, h.path);
-    if (d && d.tags.includes(entity) && d.created && isValidIsoDate(d.created))
-      dates.push(d.created);
+    if (d?.tags.includes(entity) && d.created && isValidIsoDate(d.created)) dates.push(d.created);
   }
   if (dates.length === 0) return null;
   dates.sort();

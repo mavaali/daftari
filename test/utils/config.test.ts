@@ -261,7 +261,7 @@ describe("loadConfig — schema extensions", () => {
       expect(cfg.ok).toBe(true);
       if (!cfg.ok) return;
       expect(cfg.value.gitDir).toMatch(/daftari\/git\//);
-      expect(cfg.value.gitDir!.startsWith(resolve(dir) + "/")).toBe(false);
+      expect(cfg.value.gitDir?.startsWith(`${resolve(dir)}/`)).toBe(false);
     });
 
     it("expands ~ and resolves an explicit git_dir path", () => {

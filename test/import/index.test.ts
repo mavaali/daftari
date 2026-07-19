@@ -107,8 +107,8 @@ describe("runImport", () => {
     >;
     expect(cfg.git_dir).toBe("external");
     expect(cfg.auto_commit).toBe(true);
-    const lastCall = (runBackfill as any).mock.calls.at(-1);
-    expect(lastCall[0]).not.toContain("--external-git-dir"); // stripped before delegation
+    const lastCall = vi.mocked(runBackfill).mock.calls.at(-1);
+    expect(lastCall?.[0]).not.toContain("--external-git-dir"); // stripped before delegation
   });
 
   it("--external-git-dir=/p writes the explicit path", async () => {

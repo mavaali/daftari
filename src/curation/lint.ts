@@ -328,7 +328,7 @@ export async function runLint(
   if (!provenance.ok) return provenance;
   for (const entry of provenance.value) {
     const tierChange = entry.frontmatter_diff?.tier;
-    if (!tierChange || tierChange.before !== "source" || tierChange.after === "source") continue;
+    if (tierChange?.before !== "source" || tierChange.after === "source") continue;
     if (pathVisible && !pathVisible(entry.file)) continue;
     checks.tierDemotions.push({
       path: entry.file,
