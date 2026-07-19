@@ -42,6 +42,10 @@ describe("vault_themes", () => {
     expect(typeof v.totalDocuments).toBe("number");
     expect(typeof v.skippedDocuments).toBe("number");
     expect(typeof v.selectedK).toBe("number");
+    expect(typeof v.droppedClusters).toBe("number");
+    // themes.length can undershoot selectedK only by clamp or by dropped
+    // (chunk-bearing, zero-membership) clusters — never silently.
+    expect(v.themes.length + v.droppedClusters).toBeLessThanOrEqual(v.selectedK);
     expect(typeof v.clusteredAt).toBe("string");
     expect(Array.isArray(v.themes)).toBe(true);
     expect(v.themes.length).toBeGreaterThan(0);

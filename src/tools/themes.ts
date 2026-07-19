@@ -127,6 +127,15 @@ export interface VaultThemesResult {
   totalChunks: number;
   skippedDocuments: number;
   selectedK: number;
+  // Clusters that received chunks but ended up with NO retained doc
+  // membership — every contributing doc had a larger share of its chunks
+  // elsewhere and this cluster's slice fell below MEMBERSHIP_MIN_FRACTION.
+  // That is the phantom-theme guard operating at theme level (a grab-bag of
+  // per-doc asides — boilerplate, footers — is not a theme anyone lives in),
+  // but it means themes.length can be less than selectedK for a reason other
+  // than the k-clamp; this count makes the omission visible instead of
+  // silent.
+  droppedClusters: number;
   clusteredAt: string;
 }
 
@@ -587,6 +596,7 @@ export async function vaultThemes(
         totalChunks: 0,
         skippedDocuments: skipped,
         selectedK: 0,
+        droppedClusters: 0,
         clusteredAt: new Date().toISOString(),
       });
     }
@@ -656,6 +666,16 @@ export async function vaultThemes(
       const list = chunksByCluster.get(c);
       if (list) list.push(chunkVectors[i] as Float32Array);
       else chunksByCluster.set(c, [chunkVectors[i] as Float32Array]);
+    }
+
+    // A chunk-bearing cluster no doc's retained membership points at is a
+    // grab-bag of sub-threshold asides — dropped from `themes` by the
+    // phantom-theme guard, but COUNTED so the omission is visible (empty
+    // k-means clusters from the k-clamp are not "dropped": they never had
+    // chunks).
+    let droppedClusters = 0;
+    for (const clusterId of chunksByCluster.keys()) {
+      if (!membersByCluster.has(clusterId)) droppedClusters += 1;
     }
 
     const globalDf = buildGlobalDf(scoped);
@@ -735,6 +755,7 @@ export async function vaultThemes(
       totalChunks: chunkVectors.length,
       skippedDocuments: skipped,
       selectedK,
+      droppedClusters,
       clusteredAt: new Date().toISOString(),
     });
   } finally {

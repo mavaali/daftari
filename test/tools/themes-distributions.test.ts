@@ -17,7 +17,8 @@ const DIM = 4;
 
 // Vectors are corners of the embedding space, chosen by marker token: every
 // chunk mentioning alphapricing goes to one corner, betamoonshot to another,
-// everything else to a third. Clustering is then exact and deterministic.
+// gammafooter (the shared-boilerplate stand-in) to a third, everything else
+// to a fourth. Clustering is then exact and deterministic.
 function markerProvider(): EmbeddingProvider {
   return {
     id: "fake-markers",
@@ -28,6 +29,7 @@ function markerProvider(): EmbeddingProvider {
         const vec = new Float32Array(DIM);
         if (t.includes("alphapricing")) vec[0] = 1;
         else if (t.includes("betamoonshot")) vec[1] = 1;
+        else if (t.includes("gammafooter")) vec[3] = 1;
         else vec[2] = 1;
         return vec;
       });
@@ -151,5 +153,51 @@ describe("vault_themes per-doc distributions (#58, fake provider)", () => {
     // Partition invariant across ALL themes: primaries sum to the doc count.
     const primarySum = v.themes.reduce((acc, t) => acc + t.primaryDocumentCount, 0);
     expect(primarySum).toBe(v.totalDocuments);
+
+    // Every doc holds a supra-threshold membership here, so nothing dropped.
+    expect(v.droppedClusters).toBe(0);
+  }, 60_000);
+
+  it("counts a chunk-bearing cluster with no retained membership as dropped, not silent", async () => {
+    // Two docs, five chunks each: four in their own region plus one shared
+    // "footer" chunk (0.2 of the doc — below the 25% threshold and never the
+    // argmax). The footer cluster receives real chunks from BOTH docs yet no
+    // doc's retained membership points at it: it must be omitted from
+    // `themes` (a grab-bag of asides is not a theme) but surfaced in
+    // droppedClusters so themes.length < selectedK is explainable.
+    const fourOwn = (marker: string) =>
+      `${longParagraph(marker)}\n\n${longParagraph(marker)}\n\n${longParagraph(
+        marker,
+      )}\n\n${longParagraph(marker)}`;
+    writeDoc(
+      vault,
+      "pricing/alpha-with-footer.md",
+      "Alpha with footer",
+      `${fourOwn("alphapricing")}\n\n${longParagraph("gammafooter")}`,
+    );
+    writeDoc(
+      vault,
+      "pricing/beta-with-footer.md",
+      "Beta with footer",
+      `${fourOwn("betamoonshot")}\n\n${longParagraph("gammafooter")}`,
+    );
+
+    const reindex = await vaultReindex(vault);
+    expect(reindex.ok).toBe(true);
+    if (!reindex.ok) return;
+
+    // k=4: alpha corner, beta corner, footer corner, everything-else corner.
+    const result = await vaultThemes(vault, { k: 4 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const v = result.value;
+
+    expect(v.selectedK).toBe(4);
+    expect(v.droppedClusters).toBe(1);
+    expect(v.themes).toHaveLength(3);
+    // The footer slice is sub-threshold for both docs: no membership names
+    // the dropped cluster, and each doc stays single-theme.
+    expect(v.docMemberships["pricing/alpha-with-footer.md"]).toBeUndefined();
+    expect(v.docMemberships["pricing/beta-with-footer.md"]).toBeUndefined();
   }, 60_000);
 });
