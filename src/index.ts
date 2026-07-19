@@ -35,9 +35,9 @@ import {
 } from "./search/reindex.js";
 import { setProvider, warmModel } from "./search/vector.js";
 import { startWatcher, type VaultWatcher } from "./search/watcher.js";
-import { createServer, SERVER_VERSION } from "./server.js";
+import { createServer, resolveToolExposure, SERVER_VERSION } from "./server.js";
 import { directoryExists } from "./storage/local.js";
-import { loadConfig } from "./utils/config.js";
+import { loadConfig, TOOL_TIERS, type ToolTier } from "./utils/config.js";
 
 // Read from package.json (via server.ts) so it can never drift from the
 // published version. Surfaced in the process lockfile for operator
@@ -122,6 +122,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
+  // Tool exposure (#103/#104): config `tools` block, with --tools overriding
+  // the TIER for this invocation only (include/exclude still apply). An
+  // unknown --tools value fails loud like any malformed config; unknown tool
+  // NAMES in include/exclude only warn — they may name a future tool.
+  const tierFlag = parseFlag(argv, "tools");
+  let toolsConfig = config.value.tools;
+  if (tierFlag !== null) {
+    if (!(TOOL_TIERS as readonly string[]).includes(tierFlag)) {
+      process.stderr.write(
+        `daftari: invalid --tools value '${tierFlag}' (expected one of ${TOOL_TIERS.join(", ")})\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    toolsConfig = { ...toolsConfig, tier: tierFlag as ToolTier };
+  }
+  for (const name of resolveToolExposure(toolsConfig).unknown) {
+    process.stderr.write(
+      `daftari: warning: tools.include/exclude names unknown tool '${name}' — ignored\n`,
+    );
+  }
+
   // The persisted index is a derived cache: if every file on disk matches the
   // manifest written by the last reindex, the on-disk index already reflects
   // the vault and we can skip the embedding pass entirely (~25 min on a
@@ -154,7 +176,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // `tools/list` immediately. Indexing — if needed — runs as a background
   // task; tools that depend on the index will respond "still indexing" until
   // it completes.
-  const server = createServer(vaultRoot, access);
+  const server = createServer(vaultRoot, access, toolsConfig);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write(

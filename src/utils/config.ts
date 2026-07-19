@@ -77,6 +77,32 @@ export interface TensionScanConfig {
   agent: string;
 }
 
+// Tool-exposure tiers (#103). The tier picks which tools the ListTools
+// response advertises — every tool the client sees costs the agent context
+// tokens and a decision branch, and most sessions need a fraction of the
+// registry. `include` / `exclude` (#104) fine-tune the tier's set: include
+// first, then exclude, so exclude always wins. Filtering is advertisement
+// only — CallTool accepts any registered tool name regardless of tier, so an
+// agent that cached a name from a prior session keeps working.
+export const TOOL_TIERS = ["core", "standard", "full"] as const;
+export type ToolTier = (typeof TOOL_TIERS)[number];
+
+export interface ToolsConfig {
+  tier: ToolTier;
+  include: string[];
+  exclude: string[];
+}
+
+// Full exposure by default: the registry is the server's public surface, and
+// hiding tools is an explicit operator choice, never an upgrade surprise.
+// (#103 sketched `standard` as the default, but the registry has doubled
+// since — a lean default would silently strip live deployments.)
+export const TOOLS_DEFAULTS: ToolsConfig = {
+  tier: "full",
+  include: [],
+  exclude: [],
+};
+
 // Defaults sized from the langgraph-store demo: 49 notes ⇒ 194 pairwise
 // judgments (~$2 on a frontier judge), so 200 calls covers a ~50-doc pass.
 export const TENSION_SCAN_DEFAULTS: TensionScanConfig = {
@@ -142,6 +168,11 @@ export interface DaftariConfig {
   // Sleep tension-scan budgets/attribution (`tension_scan` block). Always
   // populated — defaults when the block is absent.
   tensionScan: TensionScanConfig;
+  // Tool-exposure tier + include/exclude lists (`tools` block, #103/#104).
+  // Always populated — full exposure when the block is absent. Tool NAMES in
+  // include/exclude are validated at the server layer (config has no view of
+  // the registry); unknown names warn there, they never fail the load.
+  tools: ToolsConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -160,6 +191,7 @@ function emptyConfig(): DaftariConfig {
     shadowModeSet: false,
     gitDir: undefined,
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
+    tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
   };
 }
 
@@ -529,6 +561,42 @@ function validateTensionScan(raw: unknown): Result<TensionScanConfig, Error> {
   return ok(out);
 }
 
+const RECOGNISED_TOOLS_KEYS = ["tier", "include", "exclude"] as const;
+
+function validateTools(raw: unknown): Result<ToolsConfig, Error> {
+  if (raw === undefined) return ok({ ...TOOLS_DEFAULTS, include: [], exclude: [] });
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'tools' must be a mapping"));
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!(RECOGNISED_TOOLS_KEYS as readonly string[]).includes(key)) {
+      return err(new Error(`'tools.${key}' is not a recognised setting`));
+    }
+  }
+  // An unknown TIER fails loud (same posture as embeddings.provider — a typo
+  // must not quietly resolve to a different exposure). Unknown tool NAMES in
+  // include/exclude are the server layer's warning, deliberately not an
+  // error: a config naming a future tool must keep loading on today's build.
+  let tier: ToolTier = TOOLS_DEFAULTS.tier;
+  if (obj.tier !== undefined) {
+    if (typeof obj.tier !== "string" || !(TOOL_TIERS as readonly string[]).includes(obj.tier)) {
+      return err(
+        new Error(
+          `'tools.tier' must be one of ${TOOL_TIERS.join(", ")} ` +
+            `(got ${JSON.stringify(obj.tier)})`,
+        ),
+      );
+    }
+    tier = obj.tier as ToolTier;
+  }
+  const include = asStringArray(obj.include, "'tools.include'");
+  if (!include.ok) return include;
+  const exclude = asStringArray(obj.exclude, "'tools.exclude'");
+  if (!exclude.ok) return exclude;
+  return ok({ tier, include: include.value, exclude: exclude.value });
+}
+
 function dataHome(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
@@ -727,6 +795,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const tensionScan = validateTensionScan(root.tension_scan);
   if (!tensionScan.ok) return err(new Error(`malformed config: ${tensionScan.error.message}`));
 
+  const toolsConfig = validateTools(root.tools);
+  if (!toolsConfig.ok) return err(new Error(`malformed config: ${toolsConfig.error.message}`));
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -804,5 +875,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowModeSet,
     gitDir: gitDir.value,
     tensionScan: tensionScan.value,
+    tools: toolsConfig.value,
   });
 }
