@@ -31,7 +31,6 @@ import { blobToEmbedding, type IndexDb, type IndexedDocument } from "../storage/
 import {
   clusterCoherence,
   kmeans,
-  l2Normalize,
   membershipDistributions,
   pickK,
   seededRng,
@@ -349,13 +348,19 @@ function getChunkSet(
     // clustering); drop zero vectors — they carry no direction to cluster.
     const chunks: Float32Array[] = [];
     for (const vec of raw) {
+      // Single pass per chunk: this runs at chunk scale (~44k on the
+      // motivating vault), so the norm is computed once and reused for the
+      // scaling rather than recomputed inside a normalize helper.
       let norm = 0;
       for (let i = 0; i < vec.length; i++) {
         const x = vec[i] as number;
         norm += x * x;
       }
       if (norm === 0) continue;
-      chunks.push(l2Normalize(vec));
+      const inv = 1 / Math.sqrt(norm);
+      const out = new Float32Array(vec.length);
+      for (let i = 0; i < vec.length; i++) out[i] = (vec[i] as number) * inv;
+      chunks.push(out);
     }
     if (chunks.length === 0) {
       unembeddedPaths.add(path);
