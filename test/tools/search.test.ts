@@ -503,6 +503,71 @@ describe("vault_search RBAC over-fetch", () => {
     if (!res.ok) return;
     expect(res.value.hits.filter((h) => !h.viaCoverage).length).toBe(2);
   });
+
+  // #3: the agent-as-judge rerank pool rides the same fixture — it must be
+  // the SAME RBAC-filtered fused ranking the hits are sliced from.
+  describe("agent-as-judge rerank (#3)", () => {
+    it("is absent unless opted in (and for invalid opt-in values)", async () => {
+      for (const args of [
+        { query: "zephyr protocol calibration" },
+        { query: "zephyr protocol calibration", rerank_candidates: 0 },
+        { query: "zephyr protocol calibration", rerank_candidates: -3 },
+        { query: "zephyr protocol calibration", rerank_candidates: "many" },
+      ]) {
+        const res = await vaultSearch(vault, args as Record<string, unknown>);
+        expect(res.ok).toBe(true);
+        if (!res.ok) return;
+        expect(res.value.rerank).toBeUndefined();
+      }
+    });
+
+    it("returns a deeper pool than the hits, aligned with the fused ranking", async () => {
+      const res = await vaultSearch(vault, {
+        query: "zephyr protocol calibration",
+        limit: 1,
+        weights: { bm25: 1, vector: 0 },
+        rerank_candidates: 5,
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const rerank = res.value.rerank;
+      expect(rerank).toBeDefined();
+      if (!rerank) return;
+      expect(rerank.instructions).toContain("You are the reranker");
+      expect(rerank.candidates.length).toBeGreaterThan(res.value.hits.length);
+      // Candidate 1 IS the top hit; ranks are 1-based and consecutive.
+      expect(rerank.candidates[0]?.path).toBe(res.value.hits[0]?.path);
+      rerank.candidates.forEach((c, i) => {
+        expect(c.rank).toBe(i + 1);
+        expect(typeof c.snippet).toBe("string");
+        expect(typeof c.score).toBe("number");
+        expect(typeof c.bm25Score).toBe("number");
+        expect(typeof c.vectorScore).toBe("number");
+      });
+    });
+
+    it("never includes a candidate outside the caller's read scope", async () => {
+      // The secret docs occupy the TOP of the fused ranking (HEAVY match) —
+      // exactly the entries a pre-RBAC pool would leak.
+      const res = await vaultSearch(
+        vault,
+        {
+          query: "zephyr protocol calibration",
+          limit: 1,
+          weights: { bm25: 1, vector: 0 },
+          rerank_candidates: 5,
+        },
+        accessReading("public"),
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const rerank = res.value.rerank;
+      expect(rerank).toBeDefined();
+      if (!rerank) return;
+      expect(rerank.candidates.length).toBeGreaterThan(0);
+      expect(rerank.candidates.every((c) => c.collection === "public")).toBe(true);
+    });
+  });
 });
 
 describe("vault_search_related RBAC over-fetch", () => {

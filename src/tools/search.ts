@@ -124,12 +124,42 @@ function parseWeights(raw: unknown): HybridWeights {
   return DEFAULT_WEIGHTS;
 }
 
-function parseLimit(raw: unknown): number {
+// Shared numeric-arg posture: a positive finite number floors and clamps to
+// `max`; anything else silently takes `fallback`.
+function clampPositiveInt(raw: unknown, max: number, fallback: number): number {
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-    return Math.min(Math.floor(raw), 50);
+    return Math.min(Math.floor(raw), max);
   }
-  return 10;
+  return fallback;
 }
+
+function parseLimit(raw: unknown): number {
+  return clampPositiveInt(raw, 50, 10);
+}
+
+// #3: rerank pool size. 0 = feature off (the default — absent or invalid
+// mirrors parseLimit's silent-fallback posture). Capped: the pool is token
+// cost in the caller's context window, and past ~30 snippets judgment
+// quality decays faster than recall improves.
+const RERANK_CANDIDATES_MAX = 30;
+function parseRerankCandidates(raw: unknown): number {
+  return clampPositiveInt(raw, RERANK_CANDIDATES_MAX, 0);
+}
+
+// The agent-as-judge protocol text (#3), one fixed string like the #169
+// supersede hint: the signal is the field's presence and a stable text is
+// grep-able in agent traces. The server never calls a model — the same
+// division of labor the tier-2 protocol settled: it prepares constrained
+// judging context; the CALLING agent is the judge.
+const RERANK_INSTRUCTIONS =
+  "You are the reranker. The candidates below are the fused hybrid ranking " +
+  "(BM25 + vector); their scores measure retrieval proximity, NOT whether a " +
+  "candidate answers the query. Judge each candidate's snippet against the " +
+  "query and reorder by how well it answers. Candidates ranked past the " +
+  "returned hits may outrank them — promote them if they answer better. " +
+  "Read any candidate you promote with vault_read before relying on it: " +
+  "candidates carry no enrichment (tensions, staleness, structural flags); " +
+  "the served hits and vault_read do.";
 
 // #234 serve instrumentation, shared by every snippet-serving tool
 // (vault_search AND vault_search_related — the broken-read rate's
@@ -277,7 +307,35 @@ export async function vaultSearch(
 
     await annotateAndLogServedHits(vaultRoot, db, "vault_search", capped, access);
 
-    return ok({ ...result.value, count: capped.length, hits: capped });
+    // #3: opt-in agent-as-judge rerank pool — the top-K of the SAME
+    // RBAC-filtered fused ranking the hits were sliced from (never coverage
+    // additions; those are recall, not ranking). Compact judging records
+    // only: no enrichment joins, per the protocol text.
+    const rerankK = parseRerankCandidates(args.rerank_candidates);
+    const rerank =
+      rerankK > 0
+        ? {
+            instructions: RERANK_INSTRUCTIONS,
+            candidates: permittedRanked.slice(0, rerankK).map((h, i) => ({
+              rank: i + 1,
+              path: h.path,
+              title: h.title,
+              collection: h.collection,
+              status: h.status,
+              score: h.score,
+              bm25Score: h.bm25Score,
+              vectorScore: h.vectorScore,
+              snippet: h.snippet,
+            })),
+          }
+        : undefined;
+
+    return ok({
+      ...result.value,
+      count: capped.length,
+      hits: capped,
+      ...(rerank ? { rerank } : {}),
+    });
   } finally {
     db.close();
   }
@@ -384,7 +442,12 @@ export const searchTools: ToolDefinition[] = [
       "Falls back to lexical-only ranking if embeddings are unavailable. " +
       "Hits may carry `contested`: unresolved recorded tensions involving " +
       "the document, with both claims shown (`claimSelf`/`claimOther`), " +
-      "capped at 3 per hit; `contestedCount` reports the true total.",
+      "capped at 3 per hit; `contestedCount` reports the true total. " +
+      "Pass rerank_candidates to also receive a `rerank` block — the top-K " +
+      "of the fused ranking as compact judging records plus instructions — " +
+      "and act as the reranker yourself: fusion scores measure retrieval " +
+      "proximity, not answer quality, so judging the pool against the query " +
+      "can surface candidates ranked past the returned hits.",
     inputSchema: {
       type: "object",
       properties: {
@@ -394,6 +457,13 @@ export const searchTools: ToolDefinition[] = [
           description: "Maximum results to return (default 10, max 50)",
         },
         weights: weightsSchema,
+        rerank_candidates: {
+          type: "number",
+          description:
+            "Opt-in agent-as-judge rerank: return the top-K fused candidates " +
+            "(max 30) with judging context so YOU reorder by answer quality. " +
+            "Omit to skip.",
+        },
       },
       required: ["query"],
       additionalProperties: false,
