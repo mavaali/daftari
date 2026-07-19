@@ -31,8 +31,8 @@ import {
 const HELP = `daftari eval — cortex quality metric.
 
 Usage:
-  daftari eval [--vault <path>] [--n <count>] [--k <count>] [--seed <str>]
-  daftari eval generate [--vault <path>] [--n <count>] [--seed <str>]
+  daftari eval [--vault <path>] [--n <count>] [--k <count>] [--seed <str>] [--max-nodes <count>]
+  daftari eval generate [--vault <path>] [--n <count>] [--seed <str>] [--max-nodes <count>]
   daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>]
   daftari eval score    [--results <id>] [--vault <path>] [--grader-model <id>]
 
@@ -40,10 +40,11 @@ Usage:
    not a file path; artifacts live under .daftari/eval/.)
 
 Defaults:
-  --n 15      total questions across three tiers (5 each)
-  --k 2       runs per question for variance estimation
-  --model     claude-sonnet-4-6 (DEFAULT_MODEL in src/eval/index.ts)
-  --vault     current working directory
+  --n 15         total questions across three tiers (5 each)
+  --k 2          runs per question for variance estimation
+  --model        claude-sonnet-4-6 (DEFAULT_MODEL in src/eval/index.ts)
+  --vault        current working directory
+  --max-nodes 5  subgraph size cap for question generation
 
 Environment:
   ANTHROPIC_API_KEY   required for any LLM-mediated stage
@@ -97,6 +98,31 @@ function intFlag(argv: string[], name: string, def: number): number {
   return n;
 }
 
+// --max-nodes (#102): subgraph size cap, default 5 (the v1 hardcode). The
+// throw lands in runEval's catch → config exit 2, like any bad flag.
+function maxNodesFlag(argv: string[]): number {
+  const n = intFlag(argv, "max-nodes", 5);
+  if (n <= 0) throw new Error("--max-nodes must be a positive integer");
+  return n;
+}
+
+// Persists an artifact, translating a throw into the RUNTIME exit code.
+// Storage writes run after config validation succeeded: a failure here is
+// disk-full/permissions (#102), and letting it bubble to runEval's catch-all
+// would mislabel it as a config error (2). Returns 0 on success so callers
+// can `if (code) return code;`.
+async function persistOrRuntimeExit(what: string, op: () => Promise<void>): Promise<number> {
+  try {
+    await op();
+    return 0;
+  } catch (e) {
+    process.stderr.write(
+      `failed to write ${what}: ${e instanceof Error ? e.message : String(e)}\n`,
+    );
+    return 3;
+  }
+}
+
 function vaultHash(vault: string): string {
   return createHash("sha256").update(resolve(vault)).digest("hex").slice(0, 12);
 }
@@ -116,8 +142,9 @@ async function runGenerate(argv: string[]): Promise<number> {
   const vault = flag(argv, "vault") ?? process.cwd();
   const n = intFlag(argv, "n", 15);
   const seed = flag(argv, "seed") ?? defaultSeed(vault);
+  const maxNodes = maxNodesFlag(argv);
 
-  const sg = await sampleSubgraph(vault, seed, { maxNodes: 5 });
+  const sg = await sampleSubgraph(vault, seed, { maxNodes });
   if (!sg.ok) {
     process.stderr.write(`${sg.error.message}\n`);
     return 3;
@@ -135,7 +162,8 @@ async function runGenerate(argv: string[]): Promise<number> {
   }
   qs.value.timestamp = new Date().toISOString();
   qs.value.id = `${qs.value.vault_hash}-${qs.value.seed}-${qs.value.timestamp}`;
-  await writeQuestionSet(vault, qs.value);
+  const wrote = await persistOrRuntimeExit("question set", () => writeQuestionSet(vault, qs.value));
+  if (wrote) return wrote;
   process.stdout.write(
     `wrote question set ${qs.value.id} (${qs.value.questions.length} questions)\n`,
   );
@@ -166,7 +194,14 @@ async function runRun(argv: string[]): Promise<number> {
   const resumeId = flag(argv, "resume");
   if (resumeId) {
     const r = await readResults(vault, resumeId);
-    if (r.ok) resumeFrom = r.value;
+    // A bad --resume id is a config error (#102): silently starting a FRESH
+    // run with a new id would discard the partial work the caller was
+    // explicitly trying to continue.
+    if (!r.ok) {
+      process.stderr.write(`--resume ${resumeId}: ${r.error.message}\n`);
+      return 2;
+    }
+    resumeFrom = r.value;
   }
 
   // Mint the stable id + timestamp up front so the on-disk file path is stable
@@ -181,7 +216,7 @@ async function runRun(argv: string[]): Promise<number> {
     resumeFrom,
     runId,
     timestamp,
-    persist: (r) => writeResults(vault, r),
+    persist: (r) => persistBestEffort(vault, r),
   });
   if (!run.ok) {
     process.stderr.write(`${run.error.message}\n`);
@@ -190,9 +225,28 @@ async function runRun(argv: string[]): Promise<number> {
     );
     return 3;
   }
-  await writeResults(vault, run.value); // final write (covers the zero-question edge where persist never fired)
+  // Final write (covers the zero-question edge where persist never fired).
+  const wrote = await persistOrRuntimeExit("results", () => writeResults(vault, run.value));
+  if (wrote) return wrote;
   process.stdout.write(`wrote results ${run.value.id}\n`);
   return 0;
+}
+
+// Mid-run incremental persistence is best-effort: a transient write failure
+// must not abort a healthy run (the final write reports failures with the
+// runtime exit code). Warn once so a broken disk is visible during the run.
+let persistWarned = false;
+async function persistBestEffort(vault: string, r: EvalRun): Promise<void> {
+  try {
+    await writeResults(vault, r);
+  } catch (e) {
+    if (!persistWarned) {
+      persistWarned = true;
+      process.stderr.write(
+        `warning: incremental results write failed (will retry at end): ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    }
+  }
 }
 
 async function runScore(argv: string[]): Promise<number> {
@@ -224,16 +278,31 @@ async function runScore(argv: string[]): Promise<number> {
   const grader = createAnthropicClient();
   const grades: Grade[] = [];
   const traces = new Map<string, Trace>();
+  // Dropped-run accounting (#102): a run can fall out of the score because it
+  // never completed or because grading failed. Both are counted and reported
+  // below, so a thin score cannot be mistaken for a complete one.
+  let skippedIncomplete = 0;
+  let skippedGradeFailures = 0;
+  let totalRuns = 0;
   for (const [, pr] of Object.entries(run.runs)) {
-    if (pr.status !== "complete" || !pr.trace) continue;
+    totalRuns += 1;
+    if (pr.status !== "complete" || !pr.trace) {
+      skippedIncomplete += 1;
+      continue;
+    }
     const q = qs.questions[pr.question_index];
-    if (!q) continue;
+    if (!q) {
+      skippedIncomplete += 1;
+      continue;
+    }
     const g = await gradeAnswer(q, pr.question_index, pr.k_index, pr.trace, grader, {
       model: graderModel,
     });
     if (g.ok) {
       grades.push(g.value);
       traces.set(`${q.id}:${pr.k_index}`, pr.trace);
+    } else {
+      skippedGradeFailures += 1;
     }
   }
   const score = aggregateScore(grades, qs.questions, { traces });
@@ -250,7 +319,8 @@ async function runScore(argv: string[]): Promise<number> {
   score.k = run.k;
   score.n = qs.questions.length;
   score.timestamp = new Date().toISOString();
-  await writeScore(vault, score);
+  const wroteScore = await persistOrRuntimeExit("score", () => writeScore(vault, score));
+  if (wroteScore) return wroteScore;
 
   const histEntry: HistoryEntry = {
     score_id: score.results_id,
@@ -269,14 +339,23 @@ async function runScore(argv: string[]): Promise<number> {
     prompt_version: score.prompt_version,
     spec_version: score.spec_version,
   };
-  await appendHistory(vault, histEntry);
+  const wroteHistory = await persistOrRuntimeExit("history", () => appendHistory(vault, histEntry));
+  if (wroteHistory) return wroteHistory;
 
-  // Pretty-print headline + per-tier means.
+  // Pretty-print headline + per-tier means, and the coverage line (#102):
+  // how many answerer runs the score actually stands on.
   process.stdout.write(`score: ${score.score.toFixed(3)} ± ${score.score_std.toFixed(3)}\n`);
   for (const t of TIERS) {
     const ts = score.by_tier[t];
     process.stdout.write(
       `  ${t.padEnd(16)}: ${ts.mean.toFixed(3)} (n=${ts.n}, efficiency=${ts.trace_efficiency.toFixed(1)} calls)\n`,
+    );
+  }
+  process.stdout.write(`graded ${grades.length}/${totalRuns} runs\n`);
+  if (skippedIncomplete > 0 || skippedGradeFailures > 0) {
+    process.stderr.write(
+      `warning: score is PARTIAL — ${skippedIncomplete} incomplete run(s) and ` +
+        `${skippedGradeFailures} grading failure(s) were skipped\n`,
     );
   }
   return 0;
@@ -296,9 +375,10 @@ async function runTopLevel(argv: string[]): Promise<number> {
   const k = intFlag(argv, "k", 2);
   const seed = flag(argv, "seed") ?? defaultSeed(vault);
   const model = flag(argv, "model") ?? DEFAULT_MODEL;
+  const maxNodes = maxNodesFlag(argv);
 
   // 1. Generate
-  const sg = await sampleSubgraph(vault, seed, { maxNodes: 5 });
+  const sg = await sampleSubgraph(vault, seed, { maxNodes });
   if (!sg.ok) {
     process.stderr.write(`${sg.error.message}\n`);
     return 3;
@@ -317,7 +397,8 @@ async function runTopLevel(argv: string[]): Promise<number> {
   const qs = qsRes.value;
   qs.timestamp = new Date().toISOString();
   qs.id = `${qs.vault_hash}-${qs.seed}-${qs.timestamp}`;
-  await writeQuestionSet(vault, qs);
+  const wroteQs = await persistOrRuntimeExit("question set", () => writeQuestionSet(vault, qs));
+  if (wroteQs) return wroteQs;
   process.stdout.write(`generated ${qs.questions.length} questions (id=${qs.id})\n`);
 
   // 2. Run — mint the stable id + timestamp up front and persist incrementally
@@ -329,7 +410,7 @@ async function runTopLevel(argv: string[]): Promise<number> {
     model,
     runId,
     timestamp: runTimestamp,
-    persist: (r) => writeResults(vault, r),
+    persist: (r) => persistBestEffort(vault, r),
   });
   if (!runRes.ok) {
     process.stderr.write(`${runRes.error.message}\n`);
@@ -339,7 +420,9 @@ async function runTopLevel(argv: string[]): Promise<number> {
     return 3;
   }
   const run = runRes.value;
-  await writeResults(vault, run); // final write (covers the zero-question edge where persist never fired)
+  // Final write (covers the zero-question edge where persist never fired).
+  const wroteRun = await persistOrRuntimeExit("results", () => writeResults(vault, run));
+  if (wroteRun) return wroteRun;
   process.stdout.write(`ran ${Object.keys(run.runs).length} answerer invocations (id=${run.id})\n`);
 
   // 3. Score — invoke the same grading logic runScore uses, in-process.
