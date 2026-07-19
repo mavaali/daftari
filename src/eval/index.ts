@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { generateQuestions } from "./generate.js";
 import { createAnthropicClient } from "./llm.js";
 import { PROMPT_VERSION } from "./prompts.js";
+import { type DirPruneResult, type PruneRules, parseOlderThan, prune } from "./prune.js";
 import { runAnswerer } from "./run.js";
 import { aggregateScore, gradeAnswer } from "./score.js";
 import {
@@ -36,6 +37,7 @@ Usage:
   daftari eval generate [--vault <path>] [--n <count>] [--seed <str>] [--max-nodes <count>]
   daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>]
   daftari eval score    [--results <id>] [--vault <path>] [--grader-model <id>]
+  daftari eval prune    [--vault <path>] [--keep <count>] [--older-than <age>] [--dry-run]
 
   (--questions and --results take the artifact id printed by a prior stage,
    not a file path; artifacts live under .daftari/eval/.)
@@ -51,9 +53,13 @@ Environment:
   ANTHROPIC_API_KEY   required for any LLM-mediated stage
 
 Disk usage:
-  .daftari/eval/results/ and scores/ grow without bound across runs. v1
-  recovery is a manual rm -rf .daftari/eval/results/; rerunning regenerates
-  what's needed. A daftari eval prune command is the planned v2 follow-up.
+  .daftari/eval/results/ and scores/ grow without bound across runs. Use
+  daftari eval prune to reclaim space: --keep <count> retains the N most
+  recent artifacts per directory, --older-than <age> (30d, 12h) retains
+  anything younger, and a file survives if EITHER given rule retains it.
+  At least one rule is required; --dry-run lists deletions without acting.
+  history.json and questions/ are never touched. Selection is by file
+  mtime. Prune needs no API key.
 
 Exit codes:
   0 — eval completed
@@ -77,6 +83,8 @@ export async function runEval(argv: string[]): Promise<number> {
         return await runRun(rest);
       case "score":
         return await runScore(rest);
+      case "prune":
+        return runPrune(rest);
       default:
         return await runTopLevel(argv);
     }
@@ -375,6 +383,51 @@ async function runScore(argv: string[]): Promise<number> {
         `${skippedGradeFailures} grading failure(s), and ${neverAttempted} ` +
         `never-attempted run(s) were skipped; resume the run to complete it\n`,
     );
+  }
+  return 0;
+}
+
+// `daftari eval prune` (#100): explicit local housekeeping — no API key
+// gate, unlike every LLM-mediated stage. Synchronous by design (small
+// directory listings + unlinks).
+function runPrune(argv: string[]): number {
+  const vault = flag(argv, "vault") ?? process.cwd();
+  const keepRaw = flag(argv, "keep");
+  const olderRaw = flag(argv, "older-than");
+  const dryRun = argv.includes("--dry-run");
+  if (keepRaw === undefined && olderRaw === undefined) {
+    process.stderr.write(
+      "eval prune: at least one retention rule is required (--keep <count> and/or --older-than <age>)\n",
+    );
+    return 2;
+  }
+  const rules: PruneRules = {};
+  if (keepRaw !== undefined) {
+    const keep = intFlag(argv, "keep", 0);
+    if (keep < 0) throw new Error("--keep must be a non-negative integer");
+    rules.keep = keep;
+  }
+  if (olderRaw !== undefined) rules.maxAgeMs = parseOlderThan(olderRaw);
+
+  // Deletion failures are runtime errors (exit 3), same class as every other
+  // artifact-IO failure in this CLI.
+  let dirResults: DirPruneResult[];
+  try {
+    dirResults = prune(vault, rules, { dryRun, nowMs: Date.now() });
+  } catch (e) {
+    process.stderr.write(`prune failed: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 3;
+  }
+
+  const verb = dryRun ? "would delete" : "deleted";
+  for (const { dir, plan } of dirResults) {
+    const bytes = plan.deleted.reduce((acc, c) => acc + c.size, 0);
+    process.stdout.write(
+      `${dir}: ${verb} ${plan.deleted.length} file(s) (${bytes} bytes), kept ${plan.kept.length}\n`,
+    );
+    if (dryRun) {
+      for (const c of plan.deleted) process.stdout.write(`  ${c.name}\n`);
+    }
   }
   return 0;
 }

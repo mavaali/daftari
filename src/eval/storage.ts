@@ -22,6 +22,15 @@ const RES_DIR = (vault: string) => join(EVAL_DIR(vault), "results");
 const SCORE_DIR = (vault: string) => join(EVAL_DIR(vault), "scores");
 const HIST_FILE = (vault: string) => join(EVAL_DIR(vault), "history.json");
 
+// Directory locations for `daftari eval prune` (#100) — the two unbounded
+// artifact stores it is allowed to touch.
+export function resultsDir(vault: string): string {
+  return RES_DIR(vault);
+}
+export function scoresDir(vault: string): string {
+  return SCORE_DIR(vault);
+}
+
 async function ensureDir(p: string): Promise<void> {
   await mkdir(p, { recursive: true });
 }
