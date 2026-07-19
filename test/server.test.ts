@@ -55,11 +55,12 @@ describe("tool exposure tiers (#103/#104)", () => {
     expect(exposed.has("vault_search")).toBe(true); // untouched core member
   });
 
-  it("unknown names in include/exclude are reported, never fatal", () => {
+  it("unknown names in include/exclude are reported once each, never fatal", () => {
     const { exposed, unknown } = exposure({
       tier: "core",
+      // vault_future_tool appears in BOTH lists — one warning, not two.
       include: ["vault_future_tool"],
-      exclude: ["vault_also_future"],
+      exclude: ["vault_also_future", "vault_future_tool"],
     });
     expect(unknown.sort()).toEqual(["vault_also_future", "vault_future_tool"]);
     expect(exposed.size).toBe(CORE_TOOLS.length);

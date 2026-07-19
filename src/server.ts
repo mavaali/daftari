@@ -109,16 +109,18 @@ export function resolveToolExposure(tools: ToolsConfig): ToolExposure {
       : new Set(
           (tools.tier === "core" ? CORE_TOOLS : STANDARD_TOOLS).filter((n) => registered.has(n)),
         );
-  const unknown: string[] = [];
+  // A Set, not an array: the same unknown name in BOTH lists must warn once,
+  // not twice.
+  const unknown = new Set<string>();
   for (const name of tools.include) {
     if (registered.has(name)) exposed.add(name);
-    else unknown.push(name);
+    else unknown.add(name);
   }
   for (const name of tools.exclude) {
     if (registered.has(name)) exposed.delete(name);
-    else unknown.push(name);
+    else unknown.add(name);
   }
-  return { exposed, unknown };
+  return { exposed, unknown: [...unknown] };
 }
 
 // The server runs as one access identity for its whole lifetime — the
