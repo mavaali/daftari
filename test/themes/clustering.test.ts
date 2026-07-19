@@ -4,11 +4,11 @@ import {
   kmeans,
   kmeansPlusPlusInit,
   l2Normalize,
-  meanPoolL2,
+  membershipDistributions,
   pickK,
   seededRng,
-  selectSecondaryMemberships,
   silhouetteScore,
+  strideSample,
 } from "../../src/themes/clustering.js";
 
 // Helper: build a Float32Array from a number[]
@@ -40,40 +40,6 @@ describe("seededRng", () => {
       expect(x).toBeGreaterThanOrEqual(0);
       expect(x).toBeLessThan(1);
     }
-  });
-});
-
-describe("meanPoolL2", () => {
-  it("returns the mean of N chunk vectors, then L2-normalised", () => {
-    const a = v(1, 0, 0);
-    const b = v(0, 1, 0);
-    const pooled = meanPoolL2([a, b]);
-    expect(pooled).not.toBeNull();
-    if (!pooled) return;
-    // Raw mean is (0.5, 0.5, 0). After L2 normalisation, norm == 1.
-    const norm = Math.hypot(pooled[0] ?? 0, pooled[1] ?? 0, pooled[2] ?? 0);
-    expect(norm).toBeCloseTo(1, 6);
-    // The two non-zero components are equal.
-    expect(pooled[0]).toBeCloseTo(pooled[1] ?? 0, 6);
-    expect(pooled[2]).toBeCloseTo(0, 6);
-  });
-
-  it("returns the L2-normalised vector unchanged when N == 1", () => {
-    const pooled = meanPoolL2([v(3, 4, 0)]);
-    expect(pooled).not.toBeNull();
-    if (!pooled) return;
-    expect(pooled[0]).toBeCloseTo(0.6, 6);
-    expect(pooled[1]).toBeCloseTo(0.8, 6);
-    const norm = Math.hypot(pooled[0] ?? 0, pooled[1] ?? 0, pooled[2] ?? 0);
-    expect(norm).toBeCloseTo(1, 6);
-  });
-
-  it("returns null for an empty input", () => {
-    expect(meanPoolL2([])).toBeNull();
-  });
-
-  it("returns null when all input vectors are zero", () => {
-    expect(meanPoolL2([v(0, 0, 0), v(0, 0, 0)])).toBeNull();
   });
 });
 
@@ -266,120 +232,101 @@ describe("pickK", () => {
   });
 });
 
-describe("selectSecondaryMemberships", () => {
-  // Two centroids, well-separated. Three docs:
-  //   doc 0: clearly belongs to centroid 0 (sim 0 ≈ 1, sim 1 ≈ 0).
-  //   doc 1: clearly belongs to centroid 1.
-  //   doc 2: a "cross-cutting" doc midway between the two — its sim to
-  //          centroid 0 (its primary) is close to its sim to centroid 1.
-  function twoClusterFixture(): {
-    vectors: Float32Array[];
-    centroids: Float32Array[];
-    assignments: number[];
-  } {
-    const c0 = l2Normalize(v(1, 0));
-    const c1 = l2Normalize(v(-1, 0));
-    return {
-      vectors: [
-        l2Normalize(v(1, 0.01)), // doc 0: dead-on c0
-        l2Normalize(v(-1, 0.01)), // doc 1: dead-on c1
-        l2Normalize(v(0.5, 0.866)), // doc 2: 60deg from c0, 120deg from c1
-      ],
-      centroids: [c0, c1],
-      assignments: [0, 1, 0],
-    };
-  }
-
-  it("flags a cross-cutting doc as a secondary member of the other cluster", () => {
-    // Build a fixture where doc 2's similarity to its primary and to the
-    // other cluster are both meaningful (above the minimum) AND within
-    // delta of each other. Pick coordinates explicitly so the math is
-    // transparent.
-    const c0 = l2Normalize(v(1, 0));
-    const c1 = l2Normalize(v(0, 1));
-    const doc0 = l2Normalize(v(1, 0.05)); // ~1 with c0, ~0.05 with c1
-    const doc1 = l2Normalize(v(0.05, 1)); // ~0.05 with c0, ~1 with c1
-    const doc2 = l2Normalize(v(0.8, 0.7)); // ~0.75 with c0, ~0.65 with c1 (cross-cutting)
-    const result = selectSecondaryMemberships([doc0, doc1, doc2], [0, 1, 0], [c0, c1], {
-      delta: 0.2,
-      minSimilarity: 0.4,
-      maxPerDoc: 2,
-    });
-    // Doc 2 (primary 0) should appear as a secondary of cluster 1.
-    const secondsOfCluster1 = result.get(1) ?? [];
-    expect(secondsOfCluster1.map((s) => s.docIndex)).toContain(2);
+describe("strideSample", () => {
+  it("returns all indices when n <= cap", () => {
+    expect(strideSample(3, 5)).toEqual([0, 1, 2]);
+    expect(strideSample(5, 5)).toEqual([0, 1, 2, 3, 4]);
   });
 
-  it("does not flag a strongly-aligned doc as a secondary anywhere", () => {
-    const fx = twoClusterFixture();
-    const result = selectSecondaryMemberships(fx.vectors, fx.assignments, fx.centroids, {
-      delta: 0.05,
-      minSimilarity: 0.5,
-      maxPerDoc: 2,
-    });
-    // Doc 0 is essentially identical to its primary centroid and orthogonal
-    // to the other — should never be a secondary.
-    for (const [, list] of result) {
-      expect(list.map((s) => s.docIndex)).not.toContain(0);
+  it("returns exactly cap evenly-spaced indices when n > cap, deterministically", () => {
+    const a = strideSample(1000, 10);
+    const b = strideSample(1000, 10);
+    expect(a).toEqual(b);
+    expect(a).toHaveLength(10);
+    // Strictly increasing and in range.
+    for (let i = 0; i < a.length; i++) {
+      const idx = a[i] as number;
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(1000);
+      if (i > 0) expect(idx).toBeGreaterThan(a[i - 1] as number);
     }
   });
 
-  it("does not list a doc as a secondary of its own primary cluster", () => {
-    const fx = twoClusterFixture();
-    const result = selectSecondaryMemberships(fx.vectors, fx.assignments, fx.centroids, {
-      delta: 0.5,
-      minSimilarity: 0,
-      maxPerDoc: 5,
-    });
-    // Each entry in cluster C's secondaries must have its primary != C.
-    for (const [cluster, list] of result) {
-      for (const item of list) {
-        expect(fx.assignments[item.docIndex]).not.toBe(cluster);
-      }
-    }
+  it("returns empty for a zero cap or empty input", () => {
+    expect(strideSample(0, 5)).toEqual([]);
+    expect(strideSample(5, 0)).toEqual([]);
+  });
+});
+
+describe("pickK with a silhouette sample cap", () => {
+  it("stays deterministic and picks a valid k when the cap kicks in", () => {
+    const data: Float32Array[] = [];
+    for (let i = 0; i < 30; i++) data.push(l2Normalize(v(1, 0.01 * i)));
+    for (let i = 0; i < 30; i++) data.push(l2Normalize(v(-1, 0.01 * i)));
+    for (let i = 0; i < 30; i++) data.push(l2Normalize(v(0.01 * i, 1)));
+    const a = pickK(data, [2, 3, 4], seededRng(21), 50, 20);
+    const b = pickK(data, [2, 3, 4], seededRng(21), 50, 20);
+    expect(a.k).toBe(b.k);
+    expect(a.assignments).toEqual(b.assignments);
+    // The clustering itself still covers every point — only the k-score
+    // was sampled.
+    expect(a.assignments).toHaveLength(data.length);
+  });
+});
+
+describe("membershipDistributions (#58)", () => {
+  // The acceptance-criteria case: a synthetic "two-region" document. Doc 0
+  // has five chunks, three assigned to cluster 0 and two to cluster 1 — the
+  // long synthesis note whose halves live in different embedding regions.
+  it("gives a two-region doc membership in both themes with 0.6/0.4 weights", () => {
+    const chunkAssignments = [0, 0, 0, 1, 1];
+    const chunkDoc = [0, 0, 0, 0, 0];
+    const [doc0] = membershipDistributions(chunkAssignments, chunkDoc, 1, 0.25);
+    expect(doc0).toEqual([
+      { cluster: 0, weight: 0.6 },
+      { cluster: 1, weight: 0.4 },
+    ]);
   });
 
-  it("respects the maxPerDoc cap", () => {
-    // Build 4 centroids and one doc roughly equidistant from all of them.
-    // Without a cap, the doc would join 3 secondaries; with cap=1, only one.
-    const c0 = l2Normalize(v(1, 0, 0, 0));
-    const c1 = l2Normalize(v(0, 1, 0, 0));
-    const c2 = l2Normalize(v(0, 0, 1, 0));
-    const c3 = l2Normalize(v(0, 0, 0, 1));
-    const doc = l2Normalize(v(0.5, 0.5, 0.5, 0.5));
-    const result = selectSecondaryMemberships(
-      [doc],
-      [0], // primary = c0
-      [c0, c1, c2, c3],
-      { delta: 0.5, minSimilarity: 0, maxPerDoc: 1 },
-    );
-    let total = 0;
-    for (const [, list] of result) {
-      for (const item of list) if (item.docIndex === 0) total += 1;
-    }
-    expect(total).toBe(1);
+  it("drops a one-chunk aside below the threshold — no phantom membership", () => {
+    // Ten chunks: nine in cluster 2, one stray in cluster 5 (the aside).
+    const chunkAssignments = [2, 2, 2, 2, 2, 2, 2, 2, 2, 5];
+    const chunkDoc = new Array(10).fill(0);
+    const [doc0] = membershipDistributions(chunkAssignments, chunkDoc, 1, 0.25);
+    expect(doc0).toEqual([{ cluster: 2, weight: 0.9 }]);
   });
 
-  it("orders each cluster's secondaries by similarity desc", () => {
-    // Cluster 1 receives two secondaries with distinct similarities; the
-    // returned list must be sorted desc by sim.
-    const c0 = l2Normalize(v(1, 0));
-    const c1 = l2Normalize(v(0, 1));
-    const docA = l2Normalize(v(0.9, 0.4)); // primary 0; sim to c1 ≈ 0.4
-    const docB = l2Normalize(v(0.7, 0.7)); // primary 0; sim to c1 ≈ 0.7
-    const docC = l2Normalize(v(0.1, 1)); // primary 1
-    const result = selectSecondaryMemberships([docA, docB, docC], [0, 0, 1], [c0, c1], {
-      delta: 1,
-      minSimilarity: 0,
-      maxPerDoc: 5,
-    });
-    const seconds = result.get(1) ?? [];
-    expect(seconds.length).toBeGreaterThanOrEqual(2);
-    for (let i = 1; i < seconds.length; i++) {
-      const a = seconds[i - 1];
-      const b = seconds[i];
-      if (!a || !b) continue;
-      expect(a.sim).toBeGreaterThanOrEqual(b.sim);
-    }
+  it("always keeps the argmax cluster even when every weight is sub-threshold", () => {
+    // Five chunks across five clusters: every weight is 0.2 < 0.25, but the
+    // doc must still land somewhere. Ties break to the lower cluster index.
+    const chunkAssignments = [4, 3, 2, 1, 0];
+    const chunkDoc = new Array(5).fill(0);
+    const [doc0] = membershipDistributions(chunkAssignments, chunkDoc, 1, 0.25);
+    expect(doc0).toEqual([{ cluster: 0, weight: 0.2 }]);
+  });
+
+  it("orders memberships weight-desc with deterministic ties", () => {
+    // Doc 0: clusters 1 and 3 at equal weight — lower cluster index first.
+    const chunkAssignments = [3, 1, 3, 1];
+    const chunkDoc = [0, 0, 0, 0];
+    const [doc0] = membershipDistributions(chunkAssignments, chunkDoc, 1, 0.25);
+    expect(doc0).toEqual([
+      { cluster: 1, weight: 0.5 },
+      { cluster: 3, weight: 0.5 },
+    ]);
+  });
+
+  it("aggregates independently per doc and returns [] for a chunkless doc", () => {
+    // Doc 0: all chunks in cluster 0. Doc 1: split 1/1 across clusters 0,1.
+    // Doc 2: no chunks at all.
+    const chunkAssignments = [0, 0, 0, 1];
+    const chunkDoc = [0, 0, 1, 1];
+    const result = membershipDistributions(chunkAssignments, chunkDoc, 3, 0.25);
+    expect(result[0]).toEqual([{ cluster: 0, weight: 1 }]);
+    expect(result[1]).toEqual([
+      { cluster: 0, weight: 0.5 },
+      { cluster: 1, weight: 0.5 },
+    ]);
+    expect(result[2]).toEqual([]);
   });
 });

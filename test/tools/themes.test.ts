@@ -42,13 +42,22 @@ describe("vault_themes", () => {
     expect(typeof v.totalDocuments).toBe("number");
     expect(typeof v.skippedDocuments).toBe("number");
     expect(typeof v.selectedK).toBe("number");
+    expect(typeof v.droppedClusters).toBe("number");
+    // themes.length can undershoot selectedK only by clamp or by dropped
+    // (chunk-bearing, zero-membership) clusters — never silently.
+    expect(v.themes.length + v.droppedClusters).toBeLessThanOrEqual(v.selectedK);
     expect(typeof v.clusteredAt).toBe("string");
     expect(Array.isArray(v.themes)).toBe(true);
     expect(v.themes.length).toBeGreaterThan(0);
     for (const theme of v.themes) {
+      expect(typeof theme.id).toBe("number");
       expect(typeof theme.label).toBe("string");
       expect(typeof theme.documentCount).toBe("number");
-      // coherence is null for single-doc clusters (no pairs to average),
+      expect(typeof theme.primaryDocumentCount).toBe("number");
+      // Coverage can never be below the partition: every primary member is
+      // a member.
+      expect(theme.documentCount).toBeGreaterThanOrEqual(theme.primaryDocumentCount);
+      // coherence is null for single-chunk clusters (no pairs to average),
       // otherwise a number in [-1, 1].
       if (theme.coherence !== null) {
         expect(typeof theme.coherence).toBe("number");
@@ -70,9 +79,13 @@ describe("vault_themes", () => {
       if (!a || !b) continue;
       expect(a.documentCount).toBeGreaterThanOrEqual(b.documentCount);
     }
-    // Reported total matches the sum of theme sizes.
-    const summed = v.themes.reduce((acc, t) => acc + t.documentCount, 0);
-    expect(summed).toBe(v.totalDocuments);
+    // #58 semantics: primaryDocumentCount PARTITIONS the scoped docs (each
+    // doc counted once, at its argmax theme); documentCount is COVERAGE, so
+    // its sum meets or exceeds the total whenever cross-cutting docs exist.
+    const primarySum = v.themes.reduce((acc, t) => acc + t.primaryDocumentCount, 0);
+    expect(primarySum).toBe(v.totalDocuments);
+    const coverageSum = v.themes.reduce((acc, t) => acc + t.documentCount, 0);
+    expect(coverageSum).toBeGreaterThanOrEqual(v.totalDocuments);
   }, 60_000);
 
   it("is deterministic for the same vault and seed", async () => {
@@ -101,6 +114,8 @@ describe("vault_themes", () => {
         expect(ta.coherence).toBeCloseTo(tb.coherence, 8);
       }
     }
+    // The distributions are part of the deterministic surface too (#58).
+    expect(a.value.docMemberships).toEqual(b.value.docMemberships);
   }, 60_000);
 
   it("honours an explicit k and reports it in selectedK", async () => {
@@ -111,12 +126,14 @@ describe("vault_themes", () => {
     expect(result.value.themes.length).toBeLessThanOrEqual(3);
   }, 60_000);
 
-  it("clamps k to the number of clusterable documents (tiny vault)", async () => {
-    // The sample vault only has 10 docs, so passing k=99 must clamp.
-    const result = await vaultThemes(vault, { k: 99 });
+  it("clamps k to the number of clusterable chunks (tiny vault)", async () => {
+    // Clustering is chunk-level (#58), so an oversized k clamps to the
+    // chunk count, not the doc count.
+    const result = await vaultThemes(vault, { k: 9999 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.selectedK).toBeLessThanOrEqual(result.value.totalDocuments);
+    expect(result.value.totalChunks).toBeGreaterThanOrEqual(result.value.totalDocuments);
+    expect(result.value.selectedK).toBeLessThanOrEqual(result.value.totalChunks);
     expect(result.value.selectedK).toBeGreaterThan(0);
   }, 60_000);
 
@@ -161,11 +178,16 @@ describe("vault_themes", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     for (const theme of result.value.themes) {
-      for (const doc of theme.representativeDocs) {
+      for (const doc of [...theme.representativeDocs, ...theme.secondaryDocs]) {
         expect(doc.startsWith("_drafts/")).toBe(false);
         // Analyst cannot read moonshot collection (and _drafts).
         expect(doc.startsWith("moonshot/")).toBe(false);
       }
+    }
+    // The distributions surface is doc-path-keyed — same vantage rule.
+    for (const path of Object.keys(result.value.docMemberships)) {
+      expect(path.startsWith("_drafts/")).toBe(false);
+      expect(path.startsWith("moonshot/")).toBe(false);
     }
     // Admin sees more docs than analyst (or equal in the unlikely zero-mismatch case).
     const adminResult = await vaultThemes(vault, {}, admin);
@@ -303,17 +325,53 @@ describe("vault_themes", () => {
     }
   }, 60_000);
 
-  it("includes a secondaryDocs array on every theme", async () => {
+  it("derives secondaryDocs and docMemberships consistently from the distributions (#58)", async () => {
     const result = await vaultThemes(vault, {});
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    for (const theme of result.value.themes) {
+    const v = result.value;
+    const themeIds = new Set(v.themes.map((t) => t.id));
+
+    // Every docMemberships entry is a cross-cutting doc: ≥ 2 memberships,
+    // each referencing a real theme id, ordered weight-desc, weights in
+    // (0, 1] and summing to at most 1 (sub-threshold slices are dropped).
+    for (const [path, memberships] of Object.entries(v.docMemberships)) {
+      expect(path.length).toBeGreaterThan(0);
+      expect(memberships.length).toBeGreaterThanOrEqual(2);
+      let sum = 0;
+      for (let i = 0; i < memberships.length; i++) {
+        const m = memberships[i];
+        if (!m) continue;
+        expect(themeIds.has(m.theme)).toBe(true);
+        expect(m.weight).toBeGreaterThan(0);
+        expect(m.weight).toBeLessThanOrEqual(1);
+        sum += m.weight;
+        if (i > 0)
+          expect(m.weight).toBeLessThanOrEqual((memberships[i - 1] as { weight: number }).weight);
+      }
+      expect(sum).toBeLessThanOrEqual(1 + 1e-9);
+    }
+
+    for (const theme of v.themes) {
       expect(Array.isArray(theme.secondaryDocs)).toBe(true);
-      // A doc that is a primary member of theme T cannot also be a
-      // secondary member of T.
-      const primarySet = new Set(theme.representativeDocs);
+      // representativeDocs are the theme's RESIDENTS (primary members) —
+      // always disjoint from secondaryDocs, the invariant v1 also held.
+      const reps = new Set(theme.representativeDocs);
+      for (const doc of theme.secondaryDocs) expect(reps.has(doc)).toBe(false);
+      for (const doc of theme.representativeDocs) {
+        // A representative that is cross-cutting must still be PRIMARY here.
+        const m = v.docMemberships[doc];
+        if (m) expect((m[0] as { theme: number }).theme).toBe(theme.id);
+      }
       for (const doc of theme.secondaryDocs) {
-        expect(primarySet.has(doc)).toBe(false);
+        // A secondary is by construction a cross-cutting doc: it appears in
+        // docMemberships, holds a membership in THIS theme, and its
+        // top-weight (primary) theme is a different one.
+        const memberships = v.docMemberships[doc];
+        expect(memberships).toBeDefined();
+        if (!memberships) continue;
+        expect(memberships.some((m) => m.theme === theme.id)).toBe(true);
+        expect((memberships[0] as { theme: number }).theme).not.toBe(theme.id);
       }
     }
   }, 60_000);

@@ -52,33 +52,6 @@ export function l2Normalize(vec: Float32Array): Float32Array {
   return out;
 }
 
-// Mean-pool a document's chunk vectors into one vector, then L2-normalise so
-// the result lives on the unit sphere (cosine semantics).
-// Returns null when there is nothing to pool or the pooled vector is zero.
-export function meanPoolL2(vectors: Float32Array[]): Float32Array | null {
-  if (vectors.length === 0) return null;
-  const dim = vectors[0]?.length ?? 0;
-  if (dim === 0) return null;
-  const sum = new Float32Array(dim);
-  let kept = 0;
-  for (const v of vectors) {
-    if (v.length !== dim) continue;
-    kept += 1;
-    for (let i = 0; i < dim; i++) sum[i] = (sum[i] as number) + (v[i] as number);
-  }
-  if (kept === 0) return null;
-  for (let i = 0; i < dim; i++) sum[i] = (sum[i] as number) / kept;
-  // If the mean is the zero vector, l2Normalize returns zeros — surface that
-  // as null so downstream callers skip the document.
-  let norm = 0;
-  for (let i = 0; i < dim; i++) {
-    const x = sum[i] as number;
-    norm += x * x;
-  }
-  if (norm === 0) return null;
-  return l2Normalize(sum);
-}
-
 function squaredEuclidean(a: Float32Array, b: Float32Array): number {
   let acc = 0;
   const n = Math.min(a.length, b.length);
@@ -368,16 +341,36 @@ export interface PickKResult {
   centroids: Float32Array[];
 }
 
+// Deterministic stride sample of `cap` indices out of [0, n). Evenly spaced
+// rather than random so the same input always yields the same sample — the
+// silhouette k-picker must stay reproducible (#58 moves it from ~3.5k doc
+// vectors to ~44k chunk vectors, where the O(n²) full score is ~2B pairs).
+export function strideSample(n: number, cap: number): number[] {
+  if (cap <= 0 || n <= 0) return [];
+  if (n <= cap) return Array.from({ length: n }, (_, i) => i);
+  const out: number[] = [];
+  const step = n / cap;
+  for (let i = 0; i < cap; i++) out.push(Math.floor(i * step));
+  return out;
+}
+
 // Runs k-means for each k in `candidates`, computes silhouette, and returns
 // the run with the highest score. Candidates are clamped to data.length and
 // deduped; this is what handles the "tiny vault" edge case — if the user
 // requested k ∈ {10, 15, 20, 25} but only has 8 documents, we end up running
 // k-means at k=8 and stop.
+//
+// `silhouetteCap` bounds the silhouette computation (not the clustering) to a
+// stride sample of that many points; 0/undefined scores the full set. The
+// k-means itself always runs on all of `data` — only the k-quality metric is
+// sampled, because silhouette is O(n²) and the sweep would otherwise dominate
+// the tool's latency on chunk-scale inputs (#58).
 export function pickK(
   data: Float32Array[],
   candidates: number[],
   rng: () => number,
   maxIter: number,
+  silhouetteCap?: number,
 ): PickKResult {
   const n = data.length;
   const seen = new Set<number>();
@@ -391,10 +384,17 @@ export function pickK(
   }
   if (ks.length === 0) ks.push(Math.min(1, n));
 
+  const sampleIdx = silhouetteCap && n > silhouetteCap ? strideSample(n, silhouetteCap) : null;
+
   let best: PickKResult | null = null;
   for (const k of ks) {
     const { assignments, centroids } = kmeans(data, k, rng, maxIter);
-    const score = silhouetteScore(data, assignments);
+    const score = sampleIdx
+      ? silhouetteScore(
+          sampleIdx.map((i) => data[i] as Float32Array),
+          sampleIdx.map((i) => assignments[i] as number),
+        )
+      : silhouetteScore(data, assignments);
     if (!best || score > best.silhouette) {
       best = { k, silhouette: score, assignments, centroids };
     }
@@ -403,85 +403,76 @@ export function pickK(
   return best as PickKResult;
 }
 
-// --- Secondary memberships ------------------------------------------------
+// --- Per-doc theme distributions (#58) ------------------------------------
 
-// A doc's secondary membership in a cluster other than its primary. The
-// `docIndex` is into the original input vector array; `sim` is the cosine
-// similarity (dot product for L2-normalised vectors) between the doc and
-// the secondary cluster's centroid.
-export interface SecondaryMembership {
-  docIndex: number;
-  sim: number;
+// One document's membership in one cluster: the fraction of the doc's
+// chunks assigned there. Weights over a doc's memberships sum to 1 before
+// thresholding.
+export interface DocMembership {
+  cluster: number;
+  weight: number;
 }
 
-export interface SecondaryOptions {
-  // A doc's similarity to a secondary cluster must be within `delta` of
-  // its similarity to its primary. Tighter delta = fewer secondaries.
-  delta: number;
-  // Absolute floor on secondary similarity. Filters out "noise" docs whose
-  // primary alignment itself is weak — surfacing them as secondaries
-  // everywhere would just clutter the output.
-  minSimilarity: number;
-  // Hard cap on how many secondaries any one doc may join, preventing
-  // pathological cases (e.g., a centroid-of-mass doc landing in every
-  // cluster).
-  maxPerDoc: number;
-}
-
-// For each doc, finds the clusters (other than its primary) whose centroid
-// is close enough that the doc plausibly belongs there too. Returns a map
-// from cluster index → ordered (by sim desc) list of secondary docs.
+// Aggregates CHUNK-level cluster assignments into per-document theme
+// distributions. This is the representation fix #58 asks for: a long
+// synthesis doc whose halves live in two regions of the embedding space has
+// its chunks split across two clusters, so it gets weight in both — where
+// mean-pooling collapsed it to a single point that landed in neither.
 //
-// This implements the "soft reporting" path on top of the hard partition
-// produced by k-means: `documentCount` still partitions by primary, but
-// the secondary list surfaces the cross-cutting documents the partition
-// hides. See `docs/architecture.md` for the rationale.
-export function selectSecondaryMemberships(
-  vectors: Float32Array[],
-  assignments: number[],
-  centroids: Float32Array[],
-  options: SecondaryOptions,
-): Map<number, SecondaryMembership[]> {
-  const out = new Map<number, SecondaryMembership[]>();
-  const { delta, minSimilarity, maxPerDoc } = options;
-  if (vectors.length === 0 || centroids.length < 2 || maxPerDoc <= 0) return out;
-
-  for (let i = 0; i < vectors.length; i++) {
-    const vec = vectors[i] as Float32Array;
-    const primary = assignments[i] as number;
-    const primaryCentroid = centroids[primary];
-    if (!primaryCentroid) continue;
-    const primarySim = cosineSimilarityNormalized(vec, primaryCentroid);
-
-    // Score every non-primary cluster; collect those passing both bars.
-    const candidates: { cluster: number; sim: number }[] = [];
-    for (let c = 0; c < centroids.length; c++) {
-      if (c === primary) continue;
-      const cv = centroids[c];
-      if (!cv) continue;
-      const sim = cosineSimilarityNormalized(vec, cv);
-      if (sim < minSimilarity) continue;
-      if (sim < primarySim - delta) continue;
-      candidates.push({ cluster: c, sim });
+// `chunkDoc[i]` maps chunk i to its document index. A cluster keeps a doc's
+// membership when its weight is at least `minFraction` — the guard against
+// chunk-level granularity (#58's "phantom theme" concern: a one-chunk aside
+// about pricing inside a ten-chunk moonshot doc is 0.1 of the doc and is
+// dropped, not reported as membership). The argmax cluster is ALWAYS kept
+// (ties break to the lower cluster index), so every doc has at least one
+// membership regardless of how thinly its chunks spread. Each doc's
+// memberships are ordered weight-desc (ties: lower cluster index).
+export function membershipDistributions(
+  chunkAssignments: number[],
+  chunkDoc: number[],
+  docCount: number,
+  minFraction: number,
+): DocMembership[][] {
+  const chunkTotals = new Array<number>(docCount).fill(0);
+  const weights = new Map<number, Map<number, number>>(); // doc → cluster → chunks
+  for (let i = 0; i < chunkAssignments.length; i++) {
+    const doc = chunkDoc[i] as number;
+    if (doc < 0 || doc >= docCount) continue;
+    const cluster = chunkAssignments[i] as number;
+    chunkTotals[doc] = (chunkTotals[doc] as number) + 1;
+    let byCluster = weights.get(doc);
+    if (!byCluster) {
+      byCluster = new Map<number, number>();
+      weights.set(doc, byCluster);
     }
-    if (candidates.length === 0) continue;
-
-    // Take the doc's top `maxPerDoc` secondaries (highest-sim wins ties
-    // first; stable cluster index for a deterministic ordering otherwise).
-    candidates.sort((a, b) => b.sim - a.sim || a.cluster - b.cluster);
-    const top = candidates.slice(0, maxPerDoc);
-    for (const { cluster, sim } of top) {
-      const list = out.get(cluster);
-      const entry: SecondaryMembership = { docIndex: i, sim };
-      if (list) list.push(entry);
-      else out.set(cluster, [entry]);
-    }
+    byCluster.set(cluster, (byCluster.get(cluster) ?? 0) + 1);
   }
 
-  // Order each cluster's secondaries by sim desc; stable on docIndex so the
-  // map serialises deterministically across runs.
-  for (const list of out.values()) {
-    list.sort((a, b) => b.sim - a.sim || a.docIndex - b.docIndex);
+  const out: DocMembership[][] = [];
+  for (let doc = 0; doc < docCount; doc++) {
+    const total = chunkTotals[doc] as number;
+    const byCluster = weights.get(doc);
+    if (!byCluster || total === 0) {
+      out.push([]);
+      continue;
+    }
+    let primary = -1;
+    let primaryCount = -1;
+    for (const [cluster, count] of byCluster) {
+      if (count > primaryCount || (count === primaryCount && cluster < primary)) {
+        primary = cluster;
+        primaryCount = count;
+      }
+    }
+    const memberships: DocMembership[] = [];
+    for (const [cluster, count] of byCluster) {
+      const weight = count / total;
+      if (cluster === primary || weight >= minFraction) {
+        memberships.push({ cluster, weight });
+      }
+    }
+    memberships.sort((a, b) => b.weight - a.weight || a.cluster - b.cluster);
+    out.push(memberships);
   }
   return out;
 }
