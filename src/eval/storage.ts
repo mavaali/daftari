@@ -61,6 +61,13 @@ export function readResults(vault: string, id: string): Promise<Result<EvalRun, 
   return readJson<EvalRun>(join(RES_DIR(vault), `${id}.json`));
 }
 
+// Whether a results artifact exists at all — lets the CLI distinguish a
+// typo'd --resume id (config error) from a real read failure on an existing
+// file (runtime error), which readJson's flattened error cannot (#102).
+export function resultsExists(vault: string, id: string): boolean {
+  return existsSync(join(RES_DIR(vault), `${id}.json`));
+}
+
 export async function writeScore(vault: string, score: Score): Promise<void> {
   await ensureDir(SCORE_DIR(vault));
   await writeJson(join(SCORE_DIR(vault), `${score.results_id}.json`), score);

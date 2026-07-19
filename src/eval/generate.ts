@@ -122,9 +122,13 @@ function extractQuestions(parsed: unknown): unknown[] | null {
 // Validates each raw question and maps survivors to `Question` records with a
 // stable id and origin "generated". Reused for both the first call and the
 // top-up call. Rejects: bad tier, empty question/answer, empty or
-// out-of-subgraph expected_sources, and trivial yes/no answers.
+// out-of-subgraph expected_sources, trivial answers (see isTrivial), and
+// intra-call duplicates — two byte-identical questions from one generator
+// call hash to the same id, and both surviving would inflate
+// tier_counts_produced (#102).
 function validateAndMap(rawQuestions: unknown[], validNodes: Set<string>): Question[] {
   const out: Question[] = [];
+  const seen = new Set<string>();
   for (const raw of rawQuestions) {
     if (typeof raw !== "object" || raw === null) continue;
     // biome-ignore lint/suspicious/noExplicitAny: structural access to parsed JSON
@@ -138,10 +142,13 @@ function validateAndMap(rawQuestions: unknown[], validNodes: Set<string>): Quest
     const sources = q.expected_sources;
     if (!Array.isArray(sources) || sources.length === 0) continue;
     if (!sources.every((s) => typeof s === "string" && validNodes.has(s))) continue;
-    if (isTrivial(question, answer)) continue;
+    if (isTrivial(tier, answer)) continue;
     const expectedSources = sources as string[];
+    const id = questionId(tier, question, expectedSources);
+    if (seen.has(id)) continue;
+    seen.add(id);
     out.push({
-      id: questionId(tier, question, expectedSources),
+      id,
       tier,
       question,
       expected_answer: answer,
@@ -217,9 +224,16 @@ function renderTopUpPrompt(sg: Subgraph, shortfall: Record<Tier, number>): strin
   return `Subgraph docs:\n\n${docs}\n\nYou previously produced too few of some tiers. Produce exactly ${wanted} questions, same rules. Do not produce any other tiers.`;
 }
 
-function isTrivial(_question: string, answer: string): boolean {
+// Bare yes/no answers are trivial on every tier. The length floor is
+// tier-aware (#102): retrieval questions legitimately have short factual
+// answers ("3", "$5", "EU") that a flat < 3 cutoff silently discarded, while
+// cross_reference/contradiction answers that short cannot possibly relate two
+// documents and keep the stricter floor.
+function isTrivial(tier: Tier, answer: string): boolean {
   const a = answer.trim().toLowerCase();
-  return a === "yes" || a === "no" || a.length < 3;
+  if (a === "yes" || a === "no") return true;
+  if (tier === "retrieval") return false;
+  return a.length < 3;
 }
 
 function questionId(tier: string, question: string, sources: string[]): string {

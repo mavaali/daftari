@@ -255,4 +255,71 @@ describe("generateQuestions", () => {
     }
     expect(r.value.questions.some((q) => q.expected_sources.includes("a.md"))).toBe(true);
   });
+
+  // #102: the trivial-answer filter is tier-aware. Retrieval questions
+  // legitimately have short factual answers ("3", "$5", "EU"); only bare
+  // yes/no is trivial there. Other tiers keep the < 3 length floor.
+  it("keeps short factual retrieval answers but still drops yes/no everywhere", async () => {
+    const canned = {
+      questions: [
+        {
+          tier: "retrieval",
+          question: "how many tiers?",
+          expected_answer: "3",
+          expected_sources: ["a.md"],
+        },
+        {
+          tier: "retrieval",
+          question: "which region?",
+          expected_answer: "EU",
+          expected_sources: ["a.md"],
+        },
+        {
+          tier: "retrieval",
+          question: "is it pooled?",
+          expected_answer: "Yes",
+          expected_sources: ["a.md"],
+        },
+        {
+          tier: "cross_reference",
+          question: "relate a and b",
+          expected_answer: "ab",
+          expected_sources: ["a.md"],
+        },
+        {
+          tier: "cross_reference",
+          question: "relate a and b properly",
+          expected_answer: "a cites b's tiers",
+          expected_sources: ["a.md"],
+        },
+      ],
+    };
+    const r = await generateQuestions(fakeSubgraph, mockClient(canned), { n: 6, model: "m" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const answers = r.value.questions.map((q) => q.expected_answer);
+    expect(answers).toContain("3");
+    expect(answers).toContain("EU");
+    expect(answers).not.toContain("Yes"); // yes/no trivial on every tier
+    expect(answers).not.toContain("ab"); // sub-3-char non-retrieval stays dropped
+    expect(answers).toContain("a cites b's tiers");
+  });
+
+  // #102: two byte-identical questions from a SINGLE generator call share an
+  // id and must collapse to one — previously both survived and inflated
+  // tier_counts_produced.
+  it("collapses intra-call duplicate questions", async () => {
+    const dup = {
+      tier: "retrieval",
+      question: "what body does a.md have?",
+      expected_answer: "a body",
+      expected_sources: ["a.md"],
+    };
+    const canned = { questions: [dup, { ...dup }] };
+    const r = await generateQuestions(fakeSubgraph, mockClient(canned), { n: 3, model: "m" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.questions).toHaveLength(1);
+    expect(r.value.tier_counts_produced.retrieval).toBe(1);
+  });
 });
