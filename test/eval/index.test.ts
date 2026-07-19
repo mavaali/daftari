@@ -114,6 +114,32 @@ describe("daftari eval CLI (#102)", () => {
     }
   });
 
+  it("treats a corrupted --resume file as a runtime failure (exit 3), not config", async () => {
+    // The results file EXISTS but cannot be read back — e.g. truncated by a
+    // crash during a prior incremental persist. That is an I/O failure, not
+    // a typo'd id: exit 3, matching every sibling artifact-read failure.
+    const dir = mkdtempSync(join(tmpdir(), "daftari-eval-"));
+    try {
+      await writeQuestionSet(dir, minimalQuestionSet("qs-1"));
+      const resultsDir = join(dir, ".daftari", "eval", "results");
+      mkdirSync(resultsDir, { recursive: true });
+      writeFileSync(join(resultsDir, "truncated-run.json"), "{ not valid json");
+      const code = await runEval([
+        "run",
+        "--vault",
+        dir,
+        "--questions",
+        "qs-1",
+        "--resume",
+        "truncated-run",
+      ]);
+      expect(code).toBe(3);
+      expect(stderrText()).toContain("--resume truncated-run");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a non-positive --max-nodes with a config error", async () => {
     const code = await runEval(["generate", "--vault", ".", "--max-nodes", "0"]);
     expect(code).toBe(2);

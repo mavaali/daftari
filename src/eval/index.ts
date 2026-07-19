@@ -14,6 +14,7 @@ import {
   appendHistory,
   readQuestionSet,
   readResults,
+  resultsExists,
   writeQuestionSet,
   writeResults,
   writeScore,
@@ -193,13 +194,20 @@ async function runRun(argv: string[]): Promise<number> {
   let resumeFrom: EvalRun | undefined;
   const resumeId = flag(argv, "resume");
   if (resumeId) {
+    // A NONEXISTENT --resume id is a config error (#102): silently starting
+    // a FRESH run would discard the partial work the caller was explicitly
+    // trying to continue. A read failure on a file that EXISTS (corruption
+    // from a crashed write, permissions) is a runtime error like every other
+    // artifact-read failure here — readResults flattens both to one kind, so
+    // existence is checked separately.
+    if (!resultsExists(vault, resumeId)) {
+      process.stderr.write(`--resume ${resumeId}: no such results id\n`);
+      return 2;
+    }
     const r = await readResults(vault, resumeId);
-    // A bad --resume id is a config error (#102): silently starting a FRESH
-    // run with a new id would discard the partial work the caller was
-    // explicitly trying to continue.
     if (!r.ok) {
       process.stderr.write(`--resume ${resumeId}: ${r.error.message}\n`);
-      return 2;
+      return 3;
     }
     resumeFrom = r.value;
   }
