@@ -175,3 +175,63 @@ describe("daftari invoked through a symlink (npm/npx bin shim)", () => {
     }
   }, 60_000);
 });
+
+describe("--tools tier flag (#103/#104)", () => {
+  it("exits 1 with a diagnostic on an invalid --tools value", async () => {
+    // The invalid-tier check runs before the index build and before the
+    // stdio transport opens, so main() can be driven in-process like the
+    // import-subcommand error tests above.
+    const { vi } = await import("vitest");
+    const vault = makeTempVault();
+    const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const { main } = await import("../src/index.js");
+      process.exitCode = undefined;
+      await main(["--vault", vault, "--tools", "bogus"]);
+      expect(process.exitCode).toBe(1);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("invalid --tools value 'bogus'"));
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("core, standard, full"));
+    } finally {
+      errSpy.mockRestore();
+      process.exitCode = undefined;
+      cleanupVault(vault);
+    }
+  }, 60_000);
+
+  it("warns at startup about unknown tool names in the config's include/exclude", async () => {
+    // Full boot as a subprocess: the warning loop runs on the resolved
+    // config just before the server connects, so the "serving vault at"
+    // line proves the unknown name warned rather than failed the load.
+    const vault = makeTempVault();
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\ntools:\n  exclude:\n    - vault_definitely_not\n",
+    );
+    try {
+      const result = await new Promise<{ ok: boolean; stderr: string }>((resolveBoot) => {
+        const tsx = resolve("node_modules/.bin/tsx");
+        const proc = spawn(tsx, ["src/cli.ts", "--vault", vault, "--tools", "core"]);
+        let stderr = "";
+        const finish = () => {
+          clearTimeout(timer);
+          proc.kill();
+        };
+        const timer = setTimeout(finish, 50_000);
+        proc.stderr.on("data", (chunk) => {
+          stderr += chunk.toString();
+          if (stderr.includes("serving vault at")) finish();
+        });
+        proc.on("exit", () => {
+          clearTimeout(timer);
+          resolveBoot({ ok: stderr.includes("serving vault at"), stderr });
+        });
+      });
+      expect(result.ok).toBe(true);
+      expect(result.stderr).toContain("unknown tool 'vault_definitely_not'");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+});

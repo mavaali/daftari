@@ -116,6 +116,31 @@ The curation engine is advisory: `vault_lint` reports problems and
 `vault_tension_log` records contradictions. Neither auto-fixes anything. Every
 change is a deliberate, attributable act.
 
+### Tool tiers
+
+Every advertised tool costs the agent context tokens and a decision branch.
+The `tools` block in `.daftari/config.yaml` picks how much of the registry
+`tools/list` advertises:
+
+```yaml
+tools:
+  tier: standard   # core | standard | full (default: full)
+  include:         # add tools the tier omits
+    - vault_tension_log
+  exclude:         # remove tools the tier includes — exclude wins
+    - vault_status
+```
+
+`core` is the search-before-derive loop (`vault_search`, `vault_read`,
+`vault_write`, `vault_index`, `vault_lint`, `vault_status`); `standard` adds
+the full document lifecycle (append/promote/deprecate/supersede/merge,
+confidence and tier setters, propose/ratify) plus diagnostics; `full` is
+everything. `--tools <tier>` overrides the tier for one invocation. Filtering
+only changes what is *advertised* — calls to any registered tool still work,
+so an agent holding a cached tool name keeps working across a tier change.
+Unknown names in `include`/`exclude` warn at startup and are ignored, so a
+config written for a newer daftari still loads.
+
 **Evaluate (opt-in, requires an Anthropic API key):** `daftari eval` — scores how
 well an LLM can use the curation surface to answer multi-hop questions about the
 vault. See the [design spec](docs/superpowers/specs/2026-05-31-cortex-quality-metric-design.md)

@@ -144,6 +144,66 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("tools (#103/#104)", () => {
+    it("defaults to full exposure with empty include/exclude when the block is absent", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tools).toEqual({ tier: "full", include: [], exclude: [] });
+    });
+
+    it("parses tier plus include/exclude lists", () => {
+      writeConfig(
+        "version: 1\nvault_name: v\ntools:\n  tier: core\n" +
+          "  include:\n    - vault_tension_log\n  exclude:\n    - vault_status\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tools.tier).toBe("core");
+      expect(result.value.tools.include).toEqual(["vault_tension_log"]);
+      expect(result.value.tools.exclude).toEqual(["vault_status"]);
+    });
+
+    it("rejects an unknown tier — a typo must not silently change exposure", () => {
+      writeConfig("version: 1\nvault_name: v\ntools:\n  tier: minimal\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("tools.tier");
+      expect(result.error.message).toContain("core, standard, full");
+    });
+
+    // One config write per it(): loadConfig's cache is mtime-keyed, and a
+    // write→load→write→load round trip on one path can serve the first
+    // parse when the second write lands within the filesystem's mtime
+    // resolution.
+    it("rejects a non-list include", () => {
+      writeConfig("version: 1\nvault_name: v\ntools:\n  include: vault_read\n");
+      const badInclude = loadConfig(dir);
+      expect(badInclude.ok).toBe(false);
+      if (badInclude.ok) return;
+      expect(badInclude.error.message).toContain("tools.include");
+    });
+
+    it("rejects an unrecognised tools.* key", () => {
+      writeConfig("version: 1\nvault_name: v\ntools:\n  tiers: core\n");
+      const badKey = loadConfig(dir);
+      expect(badKey.ok).toBe(false);
+      if (badKey.ok) return;
+      expect(badKey.error.message).toContain("tools.tiers");
+    });
+
+    it("accepts unknown TOOL NAMES in include/exclude — future-tool forward compat", () => {
+      writeConfig("version: 1\nvault_name: v\ntools:\n  exclude:\n    - vault_future_tool\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tools.exclude).toEqual(["vault_future_tool"]);
+    });
+  });
+
   describe("warm_embeddings (issue #38 PR 2)", () => {
     it("defaults to true when no config file exists", () => {
       const result = loadConfig(dir);
