@@ -248,7 +248,7 @@ export function renderPlan(plan: ImportPlan, opts: LanggraphImportOptions): stri
       `    daftari import langgraph-store <vault> --dsn <dsn> --apply${opts.namespace ? ` --namespace ${opts.namespace}` : ""} --yes`,
     );
   }
-  return lines.join("\n") + "\n";
+  return `${lines.join("\n")}\n`;
 }
 
 // CLI entry: parses langgraph-store-specific flags and orchestrates

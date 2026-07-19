@@ -26,7 +26,7 @@ function edge(p: Partial<DerivesFromEdge> & { fromPath: string; toPath: string }
 // A doc with a wikilink body so the reverse maps have downstream structure.
 function doc(path: string, body = ""): LoadedDoc {
   // Minimal LoadedDoc — only path + content are read by the reverse-map builders.
-  return { path, content: body, frontmatter: {} as any } as LoadedDoc;
+  return { path, content: body, frontmatter: {} } as unknown as LoadedDoc;
 }
 
 // SHARED fixture doc set (also used by Task 6's alias test — keep them in sync,
@@ -219,7 +219,7 @@ describe("action-mix drift", () => {
     expect(r.ok && r.value.actionMix.total).toBe(4);
     expect(r.ok && r.value.actionMix.cheapLinkFraction).toBeCloseTo(0.5, 5);
     expect(r.ok && r.value.actionMix.counts["edge-observe"]).toBe(2);
-    expect(r.ok && r.value.actionMix.counts["merge"]).toBe(1);
+    expect(r.ok && r.value.actionMix.counts.merge).toBe(1);
   });
 
   it("excludes doc-write calibration rows from the denominator", () => {
@@ -237,7 +237,7 @@ describe("action-mix drift", () => {
     });
     expect(r.ok && r.value.actionMix.total).toBe(1); // only the edge-observe
     expect(r.ok && r.value.actionMix.cheapLinkFraction).toBe(1);
-    expect(r.ok && r.value.actionMix.counts["write"]).toBeUndefined();
+    expect(r.ok && r.value.actionMix.counts.write).toBeUndefined();
   });
 
   it("excludes expired/rejected staged actions (counts only pending+ratified)", () => {
@@ -257,9 +257,9 @@ describe("action-mix drift", () => {
     });
     // denominator = 1 edge-observe + 2 live staged (merge ratified, deprecate pending)
     expect(r.ok && r.value.actionMix.total).toBe(3);
-    expect(r.ok && r.value.actionMix.counts["merge"]).toBe(1); // expired merge not counted
-    expect(r.ok && r.value.actionMix.counts["deprecate"]).toBe(1);
-    expect(r.ok && r.value.actionMix.counts["supersede"]).toBeUndefined();
+    expect(r.ok && r.value.actionMix.counts.merge).toBe(1); // expired merge not counted
+    expect(r.ok && r.value.actionMix.counts.deprecate).toBe(1);
+    expect(r.ok && r.value.actionMix.counts.supersede).toBeUndefined();
     expect(r.ok && r.value.actionMix.cheapLinkFraction).toBeCloseTo(1 / 3, 5);
   });
 });

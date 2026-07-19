@@ -211,7 +211,7 @@ export async function retry<T>(
     try {
       const r = await fn();
       if (r.ok) return r;
-      if (!r.error || r.error.kind !== "llm" || !r.error.retryable) return r;
+      if (r.error?.kind !== "llm" || !r.error.retryable) return r;
       lastErr = r.error;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -530,8 +530,7 @@ export async function vaultRatify(
       // the staged target_path is the merge target.
       const mergeFrom = Array.isArray(diff.merge_from) ? diff.merge_from : null;
       if (
-        !mergeFrom ||
-        mergeFrom.length !== 2 ||
+        mergeFrom?.length !== 2 ||
         typeof mergeFrom[0] !== "string" ||
         typeof mergeFrom[1] !== "string" ||
         typeof diff.body !== "string"

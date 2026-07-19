@@ -758,7 +758,7 @@ describe("chunks_fts", () => {
       insertDocument(testDb, {
         ...sampleDoc,
         path: bigPath,
-        content: chunk0Text + "\n" + chunk1Text,
+        content: `${chunk0Text}\n${chunk1Text}`,
       });
       insertChunkRow(testDb, {
         path: bigPath,
