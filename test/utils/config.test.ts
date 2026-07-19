@@ -175,13 +175,19 @@ describe("loadConfig — schema extensions", () => {
       expect(result.error.message).toContain("core, standard, full");
     });
 
-    it("rejects a non-list include and an unrecognised key", () => {
+    // One config write per it(): loadConfig's cache is mtime-keyed, and a
+    // write→load→write→load round trip on one path can serve the first
+    // parse when the second write lands within the filesystem's mtime
+    // resolution.
+    it("rejects a non-list include", () => {
       writeConfig("version: 1\nvault_name: v\ntools:\n  include: vault_read\n");
       const badInclude = loadConfig(dir);
       expect(badInclude.ok).toBe(false);
       if (badInclude.ok) return;
       expect(badInclude.error.message).toContain("tools.include");
+    });
 
+    it("rejects an unrecognised tools.* key", () => {
       writeConfig("version: 1\nvault_name: v\ntools:\n  tiers: core\n");
       const badKey = loadConfig(dir);
       expect(badKey.ok).toBe(false);
