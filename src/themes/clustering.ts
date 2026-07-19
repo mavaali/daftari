@@ -52,33 +52,6 @@ export function l2Normalize(vec: Float32Array): Float32Array {
   return out;
 }
 
-// Mean-pool a document's chunk vectors into one vector, then L2-normalise so
-// the result lives on the unit sphere (cosine semantics).
-// Returns null when there is nothing to pool or the pooled vector is zero.
-export function meanPoolL2(vectors: Float32Array[]): Float32Array | null {
-  if (vectors.length === 0) return null;
-  const dim = vectors[0]?.length ?? 0;
-  if (dim === 0) return null;
-  const sum = new Float32Array(dim);
-  let kept = 0;
-  for (const v of vectors) {
-    if (v.length !== dim) continue;
-    kept += 1;
-    for (let i = 0; i < dim; i++) sum[i] = (sum[i] as number) + (v[i] as number);
-  }
-  if (kept === 0) return null;
-  for (let i = 0; i < dim; i++) sum[i] = (sum[i] as number) / kept;
-  // If the mean is the zero vector, l2Normalize returns zeros — surface that
-  // as null so downstream callers skip the document.
-  let norm = 0;
-  for (let i = 0; i < dim; i++) {
-    const x = sum[i] as number;
-    norm += x * x;
-  }
-  if (norm === 0) return null;
-  return l2Normalize(sum);
-}
-
 function squaredEuclidean(a: Float32Array, b: Float32Array): number {
   let acc = 0;
   const n = Math.min(a.length, b.length);

@@ -4,7 +4,6 @@ import {
   kmeans,
   kmeansPlusPlusInit,
   l2Normalize,
-  meanPoolL2,
   membershipDistributions,
   pickK,
   seededRng,
@@ -41,40 +40,6 @@ describe("seededRng", () => {
       expect(x).toBeGreaterThanOrEqual(0);
       expect(x).toBeLessThan(1);
     }
-  });
-});
-
-describe("meanPoolL2", () => {
-  it("returns the mean of N chunk vectors, then L2-normalised", () => {
-    const a = v(1, 0, 0);
-    const b = v(0, 1, 0);
-    const pooled = meanPoolL2([a, b]);
-    expect(pooled).not.toBeNull();
-    if (!pooled) return;
-    // Raw mean is (0.5, 0.5, 0). After L2 normalisation, norm == 1.
-    const norm = Math.hypot(pooled[0] ?? 0, pooled[1] ?? 0, pooled[2] ?? 0);
-    expect(norm).toBeCloseTo(1, 6);
-    // The two non-zero components are equal.
-    expect(pooled[0]).toBeCloseTo(pooled[1] ?? 0, 6);
-    expect(pooled[2]).toBeCloseTo(0, 6);
-  });
-
-  it("returns the L2-normalised vector unchanged when N == 1", () => {
-    const pooled = meanPoolL2([v(3, 4, 0)]);
-    expect(pooled).not.toBeNull();
-    if (!pooled) return;
-    expect(pooled[0]).toBeCloseTo(0.6, 6);
-    expect(pooled[1]).toBeCloseTo(0.8, 6);
-    const norm = Math.hypot(pooled[0] ?? 0, pooled[1] ?? 0, pooled[2] ?? 0);
-    expect(norm).toBeCloseTo(1, 6);
-  });
-
-  it("returns null for an empty input", () => {
-    expect(meanPoolL2([])).toBeNull();
-  });
-
-  it("returns null when all input vectors are zero", () => {
-    expect(meanPoolL2([v(0, 0, 0), v(0, 0, 0)])).toBeNull();
   });
 });
 

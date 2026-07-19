@@ -138,9 +138,15 @@ describe("vault_themes per-doc distributions (#58, fake provider)", () => {
     expect(beta.documentCount).toBe(2);
     expect(alpha.primaryDocumentCount + beta.primaryDocumentCount).toBe(3);
     // The two-region doc appears as a SECONDARY of whichever region theme
-    // it is not primary in.
+    // it is not primary in — and never as a representative of that theme
+    // (representatives are residents; disjoint from secondaries).
     const secondaries = [...alpha.secondaryDocs, ...beta.secondaryDocs];
     expect(secondaries).toContain("pricing/two-region.md");
+    for (const theme of [alpha, beta]) {
+      for (const doc of theme.secondaryDocs) {
+        expect(theme.representativeDocs).not.toContain(doc);
+      }
+    }
 
     // Partition invariant across ALL themes: primaries sum to the doc count.
     const primarySum = v.themes.reduce((acc, t) => acc + t.primaryDocumentCount, 0);

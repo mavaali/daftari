@@ -101,8 +101,10 @@ export interface VaultTheme {
   // rather than 1.0 — reporting 1.0 would imply tightness that does not
   // exist.
   coherence: number | null;
-  // Member documents ranked by membership weight (fraction of the doc's
-  // chunks in this theme).
+  // PRIMARY members ranked by membership weight (fraction of the doc's
+  // chunks in this theme) — the theme's residents. Always disjoint from
+  // secondaryDocs, the same invariant v1 held; empty for a theme whose
+  // members are all visitors (every member's argmax lies elsewhere).
   representativeDocs: string[];
   // Member documents whose PRIMARY theme is elsewhere — the cross-cutting
   // docs, now derived from real chunk distributions rather than v1's
@@ -691,7 +693,11 @@ export async function vaultThemes(
         documentCount: members.length,
         primaryDocumentCount: primaries.size,
         coherence,
+        // Residents only: a high-weight visitor ranks in `members` but must
+        // not appear as a representative AND a secondary of the same theme —
+        // the disjointness invariant v1 held and tests pin.
         representativeDocs: members
+          .filter((m) => primaries.has(m.docIndex))
           .slice(0, REPRESENTATIVE_DOCS_PER_THEME)
           .map((m) => (scoped[m.docIndex] as ScopedDoc).path),
         secondaryDocs: members

@@ -350,6 +350,15 @@ describe("vault_themes", () => {
 
     for (const theme of v.themes) {
       expect(Array.isArray(theme.secondaryDocs)).toBe(true);
+      // representativeDocs are the theme's RESIDENTS (primary members) —
+      // always disjoint from secondaryDocs, the invariant v1 also held.
+      const reps = new Set(theme.representativeDocs);
+      for (const doc of theme.secondaryDocs) expect(reps.has(doc)).toBe(false);
+      for (const doc of theme.representativeDocs) {
+        // A representative that is cross-cutting must still be PRIMARY here.
+        const m = v.docMemberships[doc];
+        if (m) expect((m[0] as { theme: number }).theme).toBe(theme.id);
+      }
       for (const doc of theme.secondaryDocs) {
         // A secondary is by construction a cross-cutting doc: it appears in
         // docMemberships, holds a membership in THIS theme, and its
