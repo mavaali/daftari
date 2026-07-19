@@ -315,8 +315,13 @@ Deliberately deferred to keep the surface tight:
 - **Remote MCP transport** for claude.ai web, mobile, and Cowork (v1 is a local desktop extension for Claude Desktop and Claude Code)
 - **Conflict resolution beyond file-level locks** (CRDTs, semantic merge)
 - **Background curation agent** running lint on a cadence
-- **LLM reranking** of search results
-- **Enforced domain separation** (v1 documents the convention; v2 enforces it)
+- **Enforced domain separation** (v1 documents the convention; v2 enforces it —
+  advisory boundary warnings shipped in the meantime: `vault_lint`'s
+  `domainLeaks` check and write-time `domain_warnings`)
+
+(LLM reranking, deferred here originally, has since shipped as the opt-in
+agent-as-judge `rerank_candidates` on `vault_search`: the server prepares the
+fused candidate pool and the protocol; the calling agent is the judge.)
 
 Each is a clean increment on a surface that already works.
 

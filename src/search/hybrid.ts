@@ -70,12 +70,34 @@ export interface HybridHit {
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }
 
+// #3: one entry of the agent-as-judge rerank pool. A compact judging record
+// — identity, the fused rank and its component scores, and the ranker's
+// snippet — deliberately WITHOUT the enrichment joins the served hits get
+// (contested/structural/staleness): the pool exists to be judged against the
+// query, and the agent reads any candidate it promotes via vault_read anyway.
+export interface RerankCandidate {
+  rank: number; // 1-based position in the fused ranking
+  path: string;
+  title: string;
+  collection: string;
+  status: string;
+  score: number;
+  bm25Score: number;
+  vectorScore: number;
+  snippet: string;
+}
+
 export interface HybridSearchResult {
   query: string;
   count: number;
   vectorUsed: boolean;
   weights: HybridWeights;
   hits: HybridHit[];
+  // #3: present only when the caller opted in via rerank_candidates. The
+  // CALLING AGENT is the reranker — the server prepares the pool and the
+  // protocol, it never calls a model (the same agent-as-judge division the
+  // tier-2 protocol settled). Tool handler, not ranker.
+  rerank?: { instructions: string; candidates: RerankCandidate[] };
 }
 
 const SNIPPET_RADIUS = 140;
