@@ -42,6 +42,29 @@ fail-loud posture as a malformed RBAC config, and for the same reason: a
 permission system that silently serves an open network socket is worse than
 one that refuses to start.
 
+### TLS: terminated upstream, acknowledged explicitly
+
+daftari never terminates TLS itself — no certificate management, no ACME, no
+key files in config. Every self-hosted deployment already has an idiomatic
+answer (Caddy, nginx, traefik, a cloud load balancer), and duplicating it
+badly would widen the surface this spec works to keep tight.
+
+But bearer tokens over plaintext HTTP off-loopback would silently undo the
+whole auth posture, so the fail-loud rule extends one step: a non-loopback
+bind additionally requires the operator to declare how transport security is
+provided —
+
+```yaml
+server:
+  transport_security: external   # "TLS terminates upstream / the network is trusted"
+```
+
+Absent that declaration, a non-loopback bind is a startup error even with
+auth configured. This is the `shadow_mode` precedent applied to transport: a
+consequential posture must be an explicit operator choice, never a default a
+deployment backed into. Loopback binds need no declaration — traffic never
+leaves the host.
+
 ## Decision 2 — identity is per MCP session, resolved at session open
 
 The mechanical insight that keeps this small: `createServer(vaultRoot,
@@ -169,5 +192,6 @@ tokens see different RBAC vantages over the same vault (the existence-
 disclosure fixtures from test/tools reused verbatim); with auth configured a
 bad/absent token is rejected at session open (401) on every bind; with no
 auth on loopback an unauthenticated session is the deny-all guest;
-non-loopback bind without auth refuses to start; stdio mode's behavior is
+non-loopback bind refuses to start without auth AND without the
+`transport_security: external` declaration; stdio mode's behavior is
 byte-identical before and after.
