@@ -75,9 +75,16 @@ server:
   env var is unset at startup fails loud.
 - This is RBAC staying config-driven (the house rule): users and roles are
   declared, not managed. No signup, no token minting endpoint, no state.
-- Comparison is constant-time (`crypto.timingSafeEqual`). An unmatched or
-  absent token resolves to the deny-all guest — the same fallback stdio mode
-  has — and unauthenticated sessions are only possible on loopback binds.
+- Comparison is constant-time (`crypto.timingSafeEqual`).
+- **Once auth is configured, a missing or unmatched token is REJECTED at
+  session open (401) — on every bind, loopback included.** It is never
+  downgraded to guest: a silent guest session over a network socket is a
+  probe surface (it confirms the server exists and advertises the tool
+  list), and the fail-loud posture applies per session exactly as it does at
+  startup. The deny-all guest exists in server mode only in the one
+  configuration where no auth is declared at all — which the startup rule
+  restricts to loopback binds (the dev-convenience case, matching stdio's
+  guest fallback).
 
 ### Phase 2 (#7): OAuth 2.1, layered on, not replacing the model
 
@@ -159,6 +166,8 @@ Server mode is testable without a network flake surface: bind to an
 ephemeral loopback port, drive it with the SDK's Streamable HTTP client
 transport in-process. The cases that matter: two sessions with different
 tokens see different RBAC vantages over the same vault (the existence-
-disclosure fixtures from test/tools reused verbatim); a bad/absent token is
-the deny-all guest; non-loopback bind without auth refuses to start; stdio
-mode's behavior is byte-identical before and after.
+disclosure fixtures from test/tools reused verbatim); with auth configured a
+bad/absent token is rejected at session open (401) on every bind; with no
+auth on loopback an unauthenticated session is the deny-all guest;
+non-loopback bind without auth refuses to start; stdio mode's behavior is
+byte-identical before and after.
