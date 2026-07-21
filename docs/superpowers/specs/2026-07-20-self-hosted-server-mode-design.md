@@ -130,8 +130,14 @@ server:
 
 JWKS validation (not introspection): it keeps the server stateless and
 offline-tolerant after key fetch, and matches the self-hosted posture — the
-org's IdP is the source of truth, daftari only verifies. A subject absent
-from the mapping is the deny-all guest, never an implicit default role.
+org's IdP is the source of truth, daftari only verifies. A valid token whose
+subject is absent from the mapping is **rejected at session open with 403**
+(authenticated, not authorized — distinct from 401's invalid/missing
+credential, so the operator can tell a mapping gap from a token problem).
+Never a guest session and never an implicit default role: the
+reject-never-guest rule above applies to every configured-auth path, OAuth
+included — a validly-authenticated-but-unmapped subject probing the tool
+list is no more acceptable than an unauthenticated one.
 
 Static tokens and OAuth can coexist (agents commonly get static tokens while
 humans come through the IdP); either block may be omitted. stdio mode is
