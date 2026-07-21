@@ -178,6 +178,39 @@ Consequences that fall out:
 
 Each lands as its own PR against this spec.
 
+## Decision 4 — the process lock learns modes; serve does not yield
+
+Today's `.daftari/process.lock` semantics are takeover-by-default: a new
+daftari SIGTERMs whatever holds the lock and waits 3 seconds. That is the
+right convenience for the single-user stdio world it was designed for — and
+exactly wrong once the lock holder is a team's always-on server. On a shared
+vault, *some* stray invocation against the same path (a teammate debugging
+locally, a cron job, a script) becomes likely rather than rare, and under
+today's rules any of them silently kills every open session. The one thing
+that can take the whole server down would be the only silent failure in this
+design.
+
+So the lock file gains a `mode` field (`stdio` | `serve`), and precedence
+inverts in favor of the durable tenant:
+
+- A **stdio/CLI invocation** finding a LIVE `serve` lock **refuses to
+  start**, with a message naming the server (pid, held-since, bind) and the
+  remedy: connect over HTTP, or stop the server deliberately. It never
+  SIGTERMs a serve holder.
+- A **new `daftari serve`** finding a live `serve` lock also refuses — an
+  accidental double-start must not bounce every session. Deliberate
+  replacement is explicit: `daftari serve --takeover` performs today's
+  SIGTERM-and-wait. (Supervised restarts are unaffected: the supervisor
+  stops the old process first, leaving a stale lock, which is overwritten
+  silently as always.)
+- **stdio finding stdio** keeps today's takeover semantics unchanged — the
+  single-user convenience this mechanism was built for.
+- Stale locks (dead or recycled PID) are overwritten silently in every mode,
+  as today.
+
+This changes CLAUDE.md's documented lock behavior for the serve case only;
+the stdio-vs-stdio path is byte-identical. It ships with #5.
+
 ## Out of scope
 
 - Managed/multi-tenant SaaS, billing, tenancy isolation.
@@ -199,5 +232,8 @@ disclosure fixtures from test/tools reused verbatim); with auth configured a
 bad/absent token is rejected at session open (401) on every bind; with no
 auth on loopback an unauthenticated session is the deny-all guest;
 non-loopback bind refuses to start without auth AND without the
-`transport_security: external` declaration; stdio mode's behavior is
-byte-identical before and after.
+`transport_security: external` declaration; a stdio invocation against a
+vault held by a live serve lock refuses with the naming message and the
+server keeps running; `serve --takeover` replaces a live server while a
+plain second `serve` refuses; stdio mode's behavior against stdio-held and
+stale locks is byte-identical before and after.
