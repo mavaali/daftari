@@ -197,14 +197,17 @@ inverts in favor of the durable tenant:
   start**, with a message naming the server (pid, held-since, bind) and the
   remedy: connect over HTTP, or stop the server deliberately. It never
   SIGTERMs a serve holder.
-- A **new `daftari serve`** finding a live `serve` lock also refuses — an
-  accidental double-start must not bounce every session. Deliberate
-  replacement is explicit: `daftari serve --takeover` performs today's
-  SIGTERM-and-wait. (Supervised restarts are unaffected: the supervisor
-  stops the old process first, leaving a stale lock, which is overwritten
-  silently as always.)
+- A **new `daftari serve`** finding ANY live lock — `serve` or `stdio` —
+  also refuses. A serve-vs-serve double-start must not bounce every session,
+  and a server deployment must not silently kill someone's live desktop
+  session either: the silent-takeover risk Decision 4 closes runs in both
+  directions. Deliberate replacement is explicit: `daftari serve --takeover`
+  performs today's SIGTERM-and-wait against either holder mode. (Supervised
+  restarts are unaffected: the supervisor stops the old process first,
+  leaving a stale lock, which is overwritten silently as always.)
 - **stdio finding stdio** keeps today's takeover semantics unchanged — the
-  single-user convenience this mechanism was built for.
+  single-user convenience this mechanism was built for, and after this
+  change the ONLY live-takeover pairing that remains implicit.
 - Stale locks (dead or recycled PID) are overwritten silently in every mode,
   as today.
 
@@ -234,6 +237,7 @@ auth on loopback an unauthenticated session is the deny-all guest;
 non-loopback bind refuses to start without auth AND without the
 `transport_security: external` declaration; a stdio invocation against a
 vault held by a live serve lock refuses with the naming message and the
-server keeps running; `serve --takeover` replaces a live server while a
-plain second `serve` refuses; stdio mode's behavior against stdio-held and
-stale locks is byte-identical before and after.
+server keeps running; a plain `serve` refuses against BOTH live holder modes
+(serve and stdio) while `serve --takeover` replaces either; stdio mode's
+behavior against stdio-held and stale locks is byte-identical before and
+after.
