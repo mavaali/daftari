@@ -27,11 +27,12 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
+import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
 import { setProvider } from "../search/vector.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
-import { createBackend } from "../storage/backend.js";
+import { createBackend, type StorageBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
@@ -453,6 +454,19 @@ export function startHttpServer(
   });
 }
 
+// Startup gate for periodic storage sync (#6): when the config declares a
+// sync cadence, the backend must be creatable BEFORE the server binds — a
+// missing SDK or bad endpoint refuses at startup instead of leaving a
+// healthy-looking server that silently never syncs. ok(null) when no
+// periodic sync is configured.
+export async function prepareStorageSync(
+  config: DaftariConfig,
+): Promise<Result<StorageBackend | null, Error>> {
+  const storage = config.storage;
+  if (storage?.syncIntervalMinutes === undefined) return ok(null);
+  return createBackend(storage);
+}
+
 export async function runServe(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP);
@@ -484,6 +498,16 @@ export async function runServe(argv: string[]): Promise<number> {
   const gate = validateServeStartup(config.value, bind, process.env);
   if (!gate.ok) {
     process.stderr.write(`daftari serve: ${gate.error}\n`);
+    return 2;
+  }
+
+  // Storage backing for periodic sync (#6): created and validated BEFORE the
+  // lock and the listener. A config-declared capability that cannot run must
+  // refuse at startup — returning an exit code after the listener is up
+  // would leave a healthy-looking server that silently never syncs.
+  const syncBackend = await prepareStorageSync(config.value);
+  if (!syncBackend.ok) {
+    process.stderr.write(`daftari serve: ${syncBackend.error.message}\n`);
     return 2;
   }
 
@@ -541,25 +565,20 @@ export async function runServe(argv: string[]): Promise<number> {
     watch: config.value.watch,
   });
 
-  // Periodic push to the storage backing (#6). Failures are logged, never
-  // fatal — the backing is a durability channel, not a serving dependency.
-  // Overlap-guarded: a slow push skips ticks rather than stacking.
-  const storage = config.value.storage;
-  if (storage?.syncIntervalMinutes !== undefined) {
-    const backend = await createBackend(storage);
-    if (!backend.ok) {
-      // Fail loud at startup, like every other config-declared capability:
-      // an operator who configured periodic sync must not discover at
-      // restore time that it never ran.
-      process.stderr.write(`daftari serve: ${backend.error.message}\n`);
-      return 2;
-    }
+  // Periodic push to the storage backing (#6). The backend was created and
+  // validated BEFORE the listener opened (prepareStorageSync); from here on
+  // sync failures are logged, never fatal — the backing is a durability
+  // channel, not a serving dependency. Overlap-guarded: a slow push skips
+  // ticks rather than stacking.
+  const intervalMinutes = config.value.storage?.syncIntervalMinutes;
+  if (syncBackend.value !== null && intervalMinutes !== undefined) {
+    const backend = syncBackend.value;
     let syncing = false;
     const timer = setInterval(
       () => {
         if (syncing) return;
         syncing = true;
-        void syncVault(vaultRoot, backend.value)
+        void syncVault(vaultRoot, backend)
           .then((r) => {
             if (!r.ok) {
               process.stderr.write(`daftari: warning: storage sync failed: ${r.error.message}\n`);
@@ -569,12 +588,10 @@ export async function runServe(argv: string[]): Promise<number> {
             syncing = false;
           });
       },
-      storage.syncIntervalMinutes * 60 * 1000,
+      intervalMinutes * 60 * 1000,
     );
     timer.unref();
-    process.stderr.write(
-      `daftari: syncing to ${backend.value.id} every ${storage.syncIntervalMinutes}m\n`,
-    );
+    process.stderr.write(`daftari: syncing to ${backend.id} every ${intervalMinutes}m\n`);
   }
   return 0;
 }

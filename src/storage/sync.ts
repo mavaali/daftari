@@ -86,6 +86,29 @@ interface LocalFile {
   size: number;
 }
 
+// Recursive file walk with explicit per-directory readdir rather than
+// readdir({recursive}) + Dirent.parentPath — parentPath only exists from
+// Node 20.12, and engines declares >=20. Symlinks are reported, not
+// followed.
+export async function walkFiles(dir: string): Promise<{ files: string[]; symlinks: number }> {
+  const files: string[] = [];
+  let symlinks = 0;
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const abs = join(dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      symlinks++;
+    } else if (entry.isDirectory()) {
+      const sub = await walkFiles(abs);
+      files.push(...sub.files);
+      symlinks += sub.symlinks;
+    } else if (entry.isFile()) {
+      files.push(abs);
+    }
+  }
+  return { files, symlinks };
+}
+
 // Walks the vault tree (dotfiles included — .git is the point), hashing every
 // non-excluded regular file. Symlinks are skipped and counted: an object
 // store has no symlink notion, and following one could escape the vault.
@@ -93,17 +116,10 @@ async function collectLocalState(
   vaultRoot: string,
 ): Promise<Result<{ files: LocalFile[]; skippedSymlinks: number }, Error>> {
   const root = resolve(vaultRoot);
-  let skippedSymlinks = 0;
   const files: LocalFile[] = [];
   try {
-    const entries = await readdir(root, { recursive: true, withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) {
-        skippedSymlinks++;
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const abs = join(entry.parentPath, entry.name);
+    const walked = await walkFiles(root);
+    for (const abs of walked.files) {
       const rel = relative(root, abs).split(sep).join("/");
       if (isExcluded(rel)) continue;
       const bytes = await readFile(abs);
@@ -114,7 +130,7 @@ async function collectLocalState(
         size: bytes.byteLength,
       });
     }
-    return ok({ files, skippedSymlinks });
+    return ok({ files, skippedSymlinks: walked.symlinks });
   } catch (e) {
     return err(new Error(`cannot walk vault: ${e instanceof Error ? e.message : String(e)}`));
   }

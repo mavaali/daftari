@@ -3,10 +3,11 @@
 // test double every sync test drives, so its semantics (null on missing get,
 // idempotent delete, atomic put) define the contract for the cloud backends.
 
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "../../frontmatter/types.js";
 import type { StorageBackend } from "../backend.js";
+import { walkFiles } from "../sync.js";
 
 // Backend keys are forward-slash relative paths; refuse anything that would
 // escape the target root when mapped onto the filesystem.
@@ -54,11 +55,11 @@ export function createFsBackend(path: string): Result<StorageBackend, Error> {
     },
     async list(prefix) {
       try {
-        const entries = await readdir(root, { recursive: true, withFileTypes: true });
+        // walkFiles rather than readdir({recursive}): Dirent.parentPath
+        // needs Node >=20.12, engines allows >=20.
+        const walked = await walkFiles(root);
         const keys: string[] = [];
-        for (const entry of entries) {
-          if (!entry.isFile()) continue;
-          const abs = join(entry.parentPath, entry.name);
+        for (const abs of walked.files) {
           const key = relative(root, abs).split(sep).join("/");
           if (key.startsWith(prefix)) keys.push(key);
         }

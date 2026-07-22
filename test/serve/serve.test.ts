@@ -12,6 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   matchToken,
+  prepareStorageSync,
   type ServeHandle,
   startHttpServer,
   validateServeStartup,
@@ -336,4 +337,37 @@ describe("serve with no auth declared (loopback guest mode)", () => {
       await guest.close();
     }
   }, 30_000);
+});
+
+describe("prepareStorageSync gates periodic sync before the listener (#6)", () => {
+  it("no configured cadence is ok(null); an uncreatable backend refuses", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "daftari-serve-sync-"));
+    try {
+      mkdirSync(join(dir, ".daftari"), { recursive: true });
+      writeFileSync(
+        join(dir, ".daftari", "config.yaml"),
+        "version: 1\nstorage:\n  backend: s3\n  bucket: b\n",
+      );
+      const noCadence = loadConfig(dir);
+      if (!noCadence.ok) throw noCadence.error;
+      const idle = await prepareStorageSync(noCadence.value);
+      expect(idle.ok).toBe(true);
+      if (idle.ok) expect(idle.value).toBeNull();
+
+      writeFileSync(
+        join(dir, ".daftari", "config.yaml"),
+        "version: 1\nstorage:\n  backend: s3\n  bucket: b\n  sync_interval_minutes: 5\n",
+      );
+      const withCadence = loadConfig(dir);
+      if (!withCadence.ok) throw withCadence.error;
+      // The optional SDK is never installed in the test environment, so the
+      // gate must refuse — this is the branch that must fire BEFORE the
+      // server binds, not after.
+      const refused = await prepareStorageSync(withCadence.value);
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.error.message).toContain("npm install @aws-sdk/client-s3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
