@@ -254,6 +254,52 @@ describe("loadConfig — schema extensions", () => {
       expect(bad.error.message).toContain("server.auth.oauth.audience");
     });
 
+    it("parses the storage block and rejects malformed shapes loud (#6)", () => {
+      writeConfig(
+        "version: 1\nstorage:\n  backend: s3\n  bucket: team-vault\n" +
+          "  prefix: prod\n  region: us-east-1\n  force_path_style: true\n" +
+          "  sync_interval_minutes: 15\n",
+      );
+      const good = loadConfig(dir);
+      expect(good.ok).toBe(true);
+      if (!good.ok) return;
+      expect(good.value.storage).toEqual({
+        backend: "s3",
+        bucket: "team-vault",
+        prefix: "prod",
+        region: "us-east-1",
+        endpoint: undefined,
+        forcePathStyle: true,
+        container: undefined,
+        path: undefined,
+        syncIntervalMinutes: 15,
+      });
+    });
+
+    it("rejects an unknown storage backend — a typo must not silently pick a target", () => {
+      writeConfig("version: 1\nstorage:\n  backend: dropbox\n");
+      const bad = loadConfig(dir);
+      expect(bad.ok).toBe(false);
+      if (bad.ok) return;
+      expect(bad.error.message).toContain("storage.backend");
+    });
+
+    it("rejects a storage block missing its backend's target key", () => {
+      writeConfig("version: 1\nstorage:\n  backend: azure\n");
+      const bad = loadConfig(dir);
+      expect(bad.ok).toBe(false);
+      if (bad.ok) return;
+      expect(bad.error.message).toContain("storage.container");
+    });
+
+    it("rejects a non-positive storage sync interval and unknown storage keys", () => {
+      writeConfig("version: 1\nstorage:\n  backend: fs\n  path: /b\n  sync_interval_minutes: 0\n");
+      const badInterval = loadConfig(dir);
+      expect(badInterval.ok).toBe(false);
+      if (badInterval.ok) return;
+      expect(badInterval.error.message).toContain("sync_interval_minutes");
+    });
+
     it("rejects an unknown transport_security value", () => {
       writeConfig("version: 1\nserver:\n  transport_security: yolo\n");
       const bad = loadConfig(dir);

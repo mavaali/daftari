@@ -31,7 +31,9 @@ import { installShutdownHandlers, parseFlag, startVaultServices } from "../index
 import { acquireLock } from "../lifecycle/lock.js";
 import { setProvider } from "../search/vector.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
+import { createBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
+import { syncVault } from "../storage/sync.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
 
 export const DEFAULT_PORT = 8787;
@@ -538,5 +540,41 @@ export async function runServe(argv: string[]): Promise<number> {
     warmEmbeddings: config.value.warmEmbeddings,
     watch: config.value.watch,
   });
+
+  // Periodic push to the storage backing (#6). Failures are logged, never
+  // fatal — the backing is a durability channel, not a serving dependency.
+  // Overlap-guarded: a slow push skips ticks rather than stacking.
+  const storage = config.value.storage;
+  if (storage?.syncIntervalMinutes !== undefined) {
+    const backend = await createBackend(storage);
+    if (!backend.ok) {
+      // Fail loud at startup, like every other config-declared capability:
+      // an operator who configured periodic sync must not discover at
+      // restore time that it never ran.
+      process.stderr.write(`daftari serve: ${backend.error.message}\n`);
+      return 2;
+    }
+    let syncing = false;
+    const timer = setInterval(
+      () => {
+        if (syncing) return;
+        syncing = true;
+        void syncVault(vaultRoot, backend.value)
+          .then((r) => {
+            if (!r.ok) {
+              process.stderr.write(`daftari: warning: storage sync failed: ${r.error.message}\n`);
+            }
+          })
+          .finally(() => {
+            syncing = false;
+          });
+      },
+      storage.syncIntervalMinutes * 60 * 1000,
+    );
+    timer.unref();
+    process.stderr.write(
+      `daftari: syncing to ${backend.value.id} every ${storage.syncIntervalMinutes}m\n`,
+    );
+  }
   return 0;
 }
