@@ -297,6 +297,47 @@ daftari okf import ./okf-bundle --into ./my-vault --dry-run
 daftari okf import ./okf-bundle --into ./my-vault
 ```
 
+## Server mode (self-hosted)
+
+By default daftari is a per-user stdio process. `daftari serve` starts the
+same vault as **one always-on instance over Streamable HTTP** — for a team, or
+for clients that can't spawn a local process (claude.ai web/mobile, Cowork):
+
+```bash
+daftari serve --vault ./my-vault              # http://127.0.0.1:8787/mcp
+daftari serve --vault ./my-vault --bind 0.0.0.0 --port 9000
+```
+
+Identity is **per MCP session**, resolved when the session opens, so every
+RBAC and existence-disclosure rule applies per connection with zero tool
+changes. Two composable auth schemes, both declared in config:
+
+```yaml
+server:
+  transport_security: external   # required off-loopback: TLS terminates upstream
+  auth:
+    tokens:                      # static bearer tokens (agents, ETL)
+      - env: DAFTARI_TOKEN_ETL   # the VALUE lives in this env var, never in config
+        user: agent:etl
+        role: admin
+    oauth:                       # OAuth 2.1 resource server (humans via your IdP)
+      issuer: https://idp.example.com
+      audience: daftari
+      jwks_uri: https://idp.example.com/.well-known/jwks.json
+      subjects:
+        "alice@example.com": { user: human:alice, role: analyst }
+```
+
+The posture is fail-loud, never silent-downgrade: a non-loopback bind refuses
+to start without auth **and** the explicit `transport_security: external`
+acknowledgment (daftari never terminates TLS itself — put Caddy/nginx/a load
+balancer in front); with any auth configured, a bad or missing credential is
+a 401 at session open and a valid JWT whose subject isn't mapped is a 403 —
+neither ever becomes the guest. Guest sessions exist only in the no-auth
+loopback configuration. A running server also refuses to be silently killed:
+stray stdio invocations against the same vault refuse to start, and replacing
+a live holder requires a deliberate `daftari serve --takeover`.
+
 ## Storage backing
 
 A self-hosted vault can push to durable object storage (#6). The local git
@@ -345,11 +386,9 @@ reindexes when done.
 
 Deliberately deferred to keep the surface tight:
 
-- **Cloud-hosted multi-tenant SaaS** (self-hosted server mode HAS shipped:
-  `daftari serve` speaks Streamable HTTP with config-declared bearer tokens,
-  so claude.ai web/mobile/Cowork and whole teams can reach a vault you host —
-  see `daftari serve --help` and the 2026-07-20 spec; the project itself
-  hosts nothing)
+- **Cloud-hosted multi-tenant SaaS** (self-hosted server mode HAS shipped —
+  see [Server mode](#server-mode-self-hosted) and
+  [Storage backing](#storage-backing); the project itself hosts nothing)
 - **Conflict resolution beyond file-level locks** (CRDTs, semantic merge)
 - **Background curation agent** running lint on a cadence
 - **Enforced domain separation** (v1 documents the convention; v2 enforces it —
