@@ -311,8 +311,11 @@ daftari okf import ./okf-bundle --into ./my-vault
 
 Deliberately deferred to keep the surface tight:
 
-- **Cloud-hosted multi-tenant server** with S3/GCS backend and token auth
-- **Remote MCP transport** for claude.ai web, mobile, and Cowork (v1 is a local desktop extension for Claude Desktop and Claude Code)
+- **Cloud-hosted multi-tenant SaaS** (self-hosted server mode HAS shipped:
+  `daftari serve` speaks Streamable HTTP with config-declared bearer tokens,
+  so claude.ai web/mobile/Cowork and whole teams can reach a vault you host —
+  see `daftari serve --help` and the 2026-07-20 spec; the project itself
+  hosts nothing)
 - **Conflict resolution beyond file-level locks** (CRDTs, semantic merge)
 - **Background curation agent** running lint on a cadence
 - **Enforced domain separation** (v1 documents the convention; v2 enforces it —

@@ -16,12 +16,20 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
+// #5 (spec 2026-07-20 Decision 4): the lock records HOW the holder serves.
+// Absent (pre-#5 lockfiles) means stdio.
+export type LockMode = "stdio" | "serve";
+
 export type LockData = {
   daftari: true;
   pid: number;
   vaultRoot: string;
   startedAt: string;
   version: string;
+  mode?: LockMode;
+  // serve holders record their bind so a refusal message can name the
+  // remedy ("connect to http://<bind>:<port>/mcp").
+  bind?: string;
 };
 
 function lockPath(vaultRoot: string): string {
@@ -131,26 +139,47 @@ function tryCreateExclusive(vaultRoot: string, data: LockData): Result<boolean, 
   }
 }
 
-// Acquire the per-vault process lock. Behavior:
+export interface AcquireLockOptions {
+  mode?: LockMode; // default "stdio"
+  bind?: string; // recorded for serve holders (refusal-message remedy)
+  // Explicit consent to SIGTERM a LIVE holder from `daftari serve`. Without
+  // it, serve refuses against any live holder (Decision 4).
+  takeover?: boolean;
+}
+
+// Acquire the per-vault process lock. Behavior (#52, amended by #5 spec
+// 2026-07-20 Decision 4):
 //   - No existing lock → atomic O_EXCL create, return ok.
-//   - Existing lock with dead PID → stale, overwrite.
+//   - Existing lock with dead PID → stale, overwrite (every mode).
 //   - Existing lock with live PID that does not look like a daftari for this
-//     vault (PID recycled) → stale, overwrite.
-//   - Existing lock with live daftari for this vault → SIGTERM it, wait up to
-//     3s for exit, then overwrite. If it does not exit, log a warning and
-//     overwrite anyway.
+//     vault (PID recycled) → stale, overwrite (every mode).
+//   - LIVE daftari holder — precedence favors the durable tenant:
+//       stdio finding stdio          → SIGTERM-and-wait takeover (the
+//                                      single-user convenience, unchanged).
+//       stdio finding serve          → REFUSE, naming the server and the
+//                                      remedy. Never SIGTERMs a serve holder.
+//       serve finding stdio or serve → REFUSE unless --takeover: a server
+//                                      deployment must not silently kill a
+//                                      live desktop session, and a
+//                                      double-start must not bounce every
+//                                      session. With takeover, SIGTERM-and-
+//                                      wait against either holder mode.
 //
 // Logs go to stderr (MCP convention; stdout is reserved for JSON-RPC).
 export async function acquireLock(
   vaultRoot: string,
   version: string,
+  options: AcquireLockOptions = {},
 ): Promise<Result<void, Error>> {
+  const mode: LockMode = options.mode ?? "stdio";
   const our: LockData = {
     daftari: true,
     pid: process.pid,
     vaultRoot,
     startedAt: new Date().toISOString(),
     version,
+    mode,
+    ...(options.bind ? { bind: options.bind } : {}),
   };
 
   const created = tryCreateExclusive(vaultRoot, our);
@@ -163,9 +192,33 @@ export async function acquireLock(
   if (existing.value !== null) {
     const prior = existing.value;
     if (isDaftariProcess(prior.pid, vaultRoot)) {
+      const priorMode: LockMode = prior.mode ?? "stdio";
+      const holder =
+        `pid=${prior.pid}, mode=${priorMode}, started=${prior.startedAt}` +
+        (prior.bind ? `, bind=${prior.bind}` : "");
+
+      if (mode === "stdio" && priorMode === "serve") {
+        return err(
+          new Error(
+            `this vault is held by a live daftari serve (${holder}). ` +
+              `Connect to it over HTTP instead, or stop the server ` +
+              `deliberately (or replace it with 'daftari serve --takeover').`,
+          ),
+        );
+      }
+      if (mode === "serve" && !options.takeover) {
+        return err(
+          new Error(
+            `this vault is held by a live daftari instance (${holder}). ` +
+              `A server start never silently replaces a live holder; ` +
+              `re-run with --takeover to replace it deliberately.`,
+          ),
+        );
+      }
+
       process.stderr.write(
-        `daftari: another instance is holding this vault (pid=${prior.pid}, ` +
-          `started=${prior.startedAt}); sending SIGTERM and taking over\n`,
+        `daftari: another instance is holding this vault (${holder}); ` +
+          `sending SIGTERM and taking over\n`,
       );
       try {
         process.kill(prior.pid, "SIGTERM");

@@ -103,6 +103,26 @@ export const TOOLS_DEFAULTS: ToolsConfig = {
   exclude: [],
 };
 
+// `server` block (#5, spec 2026-07-20): configuration for `daftari serve`.
+// Token VALUES never live here — .daftari/config.yaml sits inside the vault's
+// git repo, so each entry names the ENV VAR that carries the secret. An
+// unmapped/unset env var fails loud at serve startup, not here: config load
+// must stay pure of process.env so stdio mode is unaffected by serve's
+// requirements.
+export interface ServerTokenConfig {
+  env: string; // environment variable holding the secret token value
+  user: string; // identity a matching bearer token resolves to
+  role: string; // role name; must exist in `roles` (verified at serve startup)
+}
+
+export interface ServerConfig {
+  // "external" is the operator's explicit acknowledgment that TLS terminates
+  // upstream (or the network is trusted). Required for non-loopback binds —
+  // the shadow_mode precedent applied to transport.
+  transportSecurity?: "external";
+  tokens: ServerTokenConfig[];
+}
+
 // Defaults sized from the langgraph-store demo: 49 notes ⇒ 194 pairwise
 // judgments (~$2 on a frontier judge), so 200 calls covers a ~50-doc pass.
 export const TENSION_SCAN_DEFAULTS: TensionScanConfig = {
@@ -173,6 +193,10 @@ export interface DaftariConfig {
   // include/exclude are validated at the server layer (config has no view of
   // the registry); unknown names warn there, they never fail the load.
   tools: ToolsConfig;
+  // `daftari serve` settings (`server` block, #5). Always populated — empty
+  // token list and no transport-security declaration when absent. Ignored
+  // entirely by stdio mode.
+  server: ServerConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -192,6 +216,7 @@ function emptyConfig(): DaftariConfig {
     gitDir: undefined,
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
+    server: { tokens: [] },
   };
 }
 
@@ -561,6 +586,77 @@ function validateTensionScan(raw: unknown): Result<TensionScanConfig, Error> {
   return ok(out);
 }
 
+const RECOGNISED_SERVER_KEYS = ["transport_security", "auth"] as const;
+const RECOGNISED_SERVER_AUTH_KEYS = ["tokens"] as const;
+const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
+
+// `server` block (#5). Malformed shapes fail loud like every block; the
+// things only serve startup can know (env var set? role exists? bind rules?)
+// are validated there, not here.
+function validateServer(raw: unknown): Result<ServerConfig, Error> {
+  if (raw === undefined) return ok({ tokens: [] });
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'server' must be a mapping"));
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!(RECOGNISED_SERVER_KEYS as readonly string[]).includes(key)) {
+      return err(new Error(`'server.${key}' is not a recognised setting`));
+    }
+  }
+  const out: ServerConfig = { tokens: [] };
+  if (obj.transport_security !== undefined) {
+    if (obj.transport_security !== "external") {
+      return err(
+        new Error(
+          `'server.transport_security' must be "external" when present ` +
+            `(got ${JSON.stringify(obj.transport_security)})`,
+        ),
+      );
+    }
+    out.transportSecurity = "external";
+  }
+  if (obj.auth !== undefined) {
+    if (obj.auth === null || typeof obj.auth !== "object" || Array.isArray(obj.auth)) {
+      return err(new Error("'server.auth' must be a mapping"));
+    }
+    const auth = obj.auth as Record<string, unknown>;
+    for (const key of Object.keys(auth)) {
+      if (!(RECOGNISED_SERVER_AUTH_KEYS as readonly string[]).includes(key)) {
+        return err(new Error(`'server.auth.${key}' is not a recognised setting`));
+      }
+    }
+    if (auth.tokens !== undefined) {
+      if (!Array.isArray(auth.tokens)) {
+        return err(new Error("'server.auth.tokens' must be a list"));
+      }
+      for (let i = 0; i < auth.tokens.length; i++) {
+        const entry = auth.tokens[i];
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+          return err(new Error(`'server.auth.tokens[${i}]' must be a mapping`));
+        }
+        const t = entry as Record<string, unknown>;
+        for (const key of Object.keys(t)) {
+          if (!(RECOGNISED_SERVER_TOKEN_KEYS as readonly string[]).includes(key)) {
+            return err(new Error(`'server.auth.tokens[${i}].${key}' is not a recognised setting`));
+          }
+        }
+        for (const field of RECOGNISED_SERVER_TOKEN_KEYS) {
+          if (typeof t[field] !== "string" || (t[field] as string).trim().length === 0) {
+            return err(new Error(`'server.auth.tokens[${i}].${field}' must be a non-empty string`));
+          }
+        }
+        out.tokens.push({
+          env: (t.env as string).trim(),
+          user: (t.user as string).trim(),
+          role: (t.role as string).trim(),
+        });
+      }
+    }
+  }
+  return ok(out);
+}
+
 const RECOGNISED_TOOLS_KEYS = ["tier", "include", "exclude"] as const;
 
 function validateTools(raw: unknown): Result<ToolsConfig, Error> {
@@ -798,6 +894,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const toolsConfig = validateTools(root.tools);
   if (!toolsConfig.ok) return err(new Error(`malformed config: ${toolsConfig.error.message}`));
 
+  const serverConfig = validateServer(root.server);
+  if (!serverConfig.ok) return err(new Error(`malformed config: ${serverConfig.error.message}`));
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -876,5 +975,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     gitDir: gitDir.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,
+    server: serverConfig.value,
   });
 }
