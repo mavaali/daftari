@@ -1,0 +1,58 @@
+# Auto-merge for trusted classes of change — moves the human click from
+# "merge when green" to "decide at PR-open time". GitHub's native auto-merge
+# does the waiting: the PR merges only once every REQUIRED check passes
+# (build, regression, e2e), so this delegates the clicking, never the gate.
+#
+# Two trust classes:
+#   1. Dependabot patch/minor bumps — enabled automatically.
+#   2. Any human-authored PR labeled `automerge` — the label is the decision;
+#      only users with triage+ permission can apply labels, so the label
+#      itself is the authorization.
+#
+# Repo setting required once: Settings → General → "Allow auto-merge".
+#
+# Token note: prefer a fine-grained PAT in the AUTOMERGE_TOKEN secret
+# (contents: write, pull requests: write). With the fallback GITHUB_TOKEN the
+# merge is attributed to github-actions, and pushes by that identity do not
+# trigger other workflows — so main's post-merge CI run and the Pages deploy
+# would be skipped for auto-merged PRs. The PR's own checks still gate.
+
+name: Auto-merge
+
+on:
+  pull_request:
+    types: [opened, labeled, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge (patch/minor only)
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
+
+  labeled:
+    if: |
+      github.event.pull_request.user.type != 'Bot' &&
+      contains(github.event.pull_request.labels.*.name, 'automerge')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
