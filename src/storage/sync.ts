@@ -26,9 +26,10 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { StorageBackend } from "./backend.js";
+import { walkFiles } from "./fs-walk.js";
 
 export const MANIFEST_KEY = "meta/manifest.json";
 const TREE_PREFIX = "tree/";
@@ -88,29 +89,6 @@ interface LocalFile {
   absPath: string;
   hash: string;
   size: number;
-}
-
-// Recursive file walk with explicit per-directory readdir rather than
-// readdir({recursive}) + Dirent.parentPath — parentPath only exists from
-// Node 20.12, and engines declares >=20. Symlinks are reported, not
-// followed.
-export async function walkFiles(dir: string): Promise<{ files: string[]; symlinks: number }> {
-  const files: string[] = [];
-  let symlinks = 0;
-  const entries = await readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const abs = join(dir, entry.name);
-    if (entry.isSymbolicLink()) {
-      symlinks++;
-    } else if (entry.isDirectory()) {
-      const sub = await walkFiles(abs);
-      files.push(...sub.files);
-      symlinks += sub.symlinks;
-    } else if (entry.isFile()) {
-      files.push(abs);
-    }
-  }
-  return { files, symlinks };
 }
 
 // Streaming hash so the walk phase never buffers a whole file — .git is in
@@ -331,6 +309,21 @@ export async function restoreVault(
     if (!got.ok) return got;
     if (got.value === null) {
       return err(new Error(`backing is missing ${TREE_PREFIX}${relPath} listed in its manifest`));
+    }
+    // Verify the bytes against the manifest's hash — that is what the hash
+    // is FOR. This catches corruption, torn writes, and a push racing the
+    // restore; it is not a tamper defense (an attacker who can rewrite
+    // objects can rewrite the manifest too).
+    const gotHash = createHash("sha256").update(got.value).digest("hex");
+    const wantHash = manifest.value.files[relPath];
+    if (gotHash !== wantHash) {
+      return err(
+        new Error(
+          `backing object ${TREE_PREFIX}${relPath} does not match its manifest hash ` +
+            `(got ${gotHash.slice(0, 12)}…, manifest says ${wantHash?.slice(0, 12)}…) — ` +
+            "the backing is corrupt or a push is racing this restore",
+        ),
+      );
     }
     try {
       await mkdir(dirname(target), { recursive: true });

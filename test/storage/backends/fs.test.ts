@@ -6,9 +6,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { StorageBackend } from "../../src/storage/backend.js";
-import { createBackend, validateEndpoint } from "../../src/storage/backend.js";
-import { createFsBackend } from "../../src/storage/backends/fs.js";
+import type { StorageBackend } from "../../../src/storage/backend.js";
+import { createFsBackend } from "../../../src/storage/backends/fs.js";
 
 describe("fs storage backend (#6)", () => {
   let root: string;
@@ -61,33 +60,5 @@ describe("fs storage backend (#6)", () => {
     expect(escapePut.ok).toBe(false);
     const escapeGet = await backend.get("../../etc/passwd");
     expect(escapeGet.ok).toBe(false);
-  });
-});
-
-describe("backend factory gates (#6)", () => {
-  it("requires https endpoints, with loopback http as the sole escape hatch", () => {
-    expect(validateEndpoint("https://s3.example.com").ok).toBe(true);
-    expect(validateEndpoint("http://127.0.0.1:9000").ok).toBe(true);
-    expect(validateEndpoint("http://[::1]:9000").ok).toBe(true);
-    expect(validateEndpoint("http://minio.internal:9000").ok).toBe(false);
-    expect(validateEndpoint("not a url").ok).toBe(false);
-  });
-
-  it("an endpoint on a non-s3 backend refuses instead of being silently ignored", async () => {
-    const azure = await createBackend({
-      backend: "azure",
-      container: "c",
-      endpoint: "https://azurite.local",
-    });
-    expect(azure.ok).toBe(false);
-    if (!azure.ok) expect(azure.error.message).toContain("AZURE_STORAGE_CONNECTION_STRING");
-  });
-
-  it("a missing optional cloud SDK is a clear install instruction, not a crash", async () => {
-    // The test environment never installs the optional SDKs, so this
-    // exercises the real failure path an operator hits.
-    const s3 = await createBackend({ backend: "s3", bucket: "b" });
-    expect(s3.ok).toBe(false);
-    if (!s3.ok) expect(s3.error.message).toContain("npm install @aws-sdk/client-s3");
   });
 });

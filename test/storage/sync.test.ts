@@ -168,6 +168,18 @@ describe("storage sync engine (#6)", () => {
     rmSync(target, { recursive: true, force: true });
   });
 
+  it("restore fails loud when an object's bytes do not match the manifest hash", async () => {
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    // Corrupt one object in the backing without touching the manifest.
+    await backend.put("tree/notes/a.md", Buffer.from("# bitrot\n"));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-corrupt-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(false);
+    if (!restored.ok) expect(restored.error.message).toContain("does not match its manifest hash");
+    rmSync(target, { recursive: true, force: true });
+  });
+
   it("a manifest path that escapes the restore root is refused", async () => {
     await backend.put(
       MANIFEST_KEY,

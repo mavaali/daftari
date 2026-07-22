@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "../../frontmatter/types.js";
 import type { StorageBackend } from "../backend.js";
-import { walkFiles } from "../sync.js";
+import { walkFiles } from "../fs-walk.js";
 
 // Backend keys are forward-slash relative paths; refuse anything that would
 // escape the target root when mapped onto the filesystem.
