@@ -73,6 +73,16 @@ describe("backend factory gates (#6)", () => {
     expect(validateEndpoint("not a url").ok).toBe(false);
   });
 
+  it("an endpoint on a non-s3 backend refuses instead of being silently ignored", async () => {
+    const azure = await createBackend({
+      backend: "azure",
+      container: "c",
+      endpoint: "https://azurite.local",
+    });
+    expect(azure.ok).toBe(false);
+    if (!azure.ok) expect(azure.error.message).toContain("AZURE_STORAGE_CONNECTION_STRING");
+  });
+
   it("a missing optional cloud SDK is a clear install instruction, not a crash", async () => {
     // The test environment never installs the optional SDKs, so this
     // exercises the real failure path an operator hits.

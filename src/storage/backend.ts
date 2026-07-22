@@ -40,7 +40,8 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 // A plaintext-http endpoint off-loopback hands the vault bytes (and, with
 // some providers, signable credentials material) to any network-position
 // attacker — the same posture as serve's OAuth URL gate: https only, with
-// loopback http as the sole escape hatch (local MinIO/Azurite test stores).
+// loopback http as the sole escape hatch (a local MinIO test store; Azurite
+// is reached via its connection string, not this setting).
 export function validateEndpoint(endpoint: string): Result<void, Error> {
   let parsed: URL;
   try {
@@ -265,6 +266,20 @@ async function createAzureBackend(config: StorageConfig): Promise<Result<Storage
 
 export async function createBackend(config: StorageConfig): Promise<Result<StorageBackend, Error>> {
   if (config.endpoint !== undefined) {
+    // `endpoint` is an S3-family concept (MinIO, R2, GCS interop). The azure
+    // client's endpoint travels inside AZURE_STORAGE_CONNECTION_STRING, and
+    // fs has no endpoint at all — a setting that would be silently ignored
+    // refuses instead.
+    if (config.backend !== "s3") {
+      return err(
+        new Error(
+          `storage.endpoint is only used by the s3 backend — for ${config.backend}, ` +
+            (config.backend === "azure"
+              ? "the endpoint is part of AZURE_STORAGE_CONNECTION_STRING"
+              : "remove it"),
+        ),
+      );
+    }
     const gate = validateEndpoint(config.endpoint);
     if (!gate.ok) return gate;
   }
