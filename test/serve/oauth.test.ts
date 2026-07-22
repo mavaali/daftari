@@ -244,6 +244,23 @@ describe("serve OAuth resource-server auth (#7)", () => {
     expect(r3.ok).toBe(false);
     if (r3.ok) return;
     expect(r3.error).toContain("must use https");
+
+    // IPv6 loopback is written bracketed in URLs ("[::1]") — still loopback,
+    // still inside the plain-http escape hatch.
+    const v6Idp: DaftariConfig = {
+      ...base,
+      server: {
+        ...base.server,
+        tokens: [],
+        oauth: {
+          issuer: ISSUER,
+          audience: AUDIENCE,
+          jwksUri: "http://[::1]:1/jwks.json",
+          subjects: {},
+        },
+      },
+    };
+    expect(validateServeStartup(v6Idp, "127.0.0.1", process.env).ok).toBe(true);
   });
 
   it("oauth alone counts as auth configured: no token is 401, not guest", async () => {

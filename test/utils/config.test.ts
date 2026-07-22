@@ -225,6 +225,24 @@ describe("loadConfig — schema extensions", () => {
       });
     });
 
+    it("keeps an oauth subject literally named __proto__ as an own mapping", () => {
+      // Plain-object bracket assignment would invoke the inherited setter,
+      // silently dropping the mapping and its startup role check.
+      writeConfig(
+        "version: 1\nserver:\n  auth:\n    oauth:\n      issuer: https://idp.example\n" +
+          "      audience: daftari\n      jwks_uri: https://idp.example/jwks.json\n" +
+          '      subjects:\n        "__proto__":\n          user: human:p\n          role: analyst\n',
+      );
+      const good = loadConfig(dir);
+      expect(good.ok).toBe(true);
+      if (!good.ok) return;
+      const subjects = good.value.server.oauth?.subjects ?? {};
+      expect(Object.hasOwn(subjects, "__proto__")).toBe(true);
+      expect(Object.entries(subjects)).toEqual([
+        ["__proto__", { user: "human:p", role: "analyst" }],
+      ]);
+    });
+
     it("rejects an oauth block missing a required field", () => {
       writeConfig(
         "version: 1\nserver:\n  auth:\n    oauth:\n      issuer: https://idp.example\n" +

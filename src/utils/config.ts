@@ -628,7 +628,10 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
       return err(new Error(`'server.auth.oauth.${field}' must be a non-empty string`));
     }
   }
-  const subjects: Record<string, OAuthSubjectConfig> = {};
+  // Null prototype: bracket-assigning a subject literally named "__proto__"
+  // on a plain object would invoke the inherited setter and silently drop
+  // the mapping (and its startup role check) instead of storing it.
+  const subjects: Record<string, OAuthSubjectConfig> = Object.create(null);
   if (obj.subjects === null || typeof obj.subjects !== "object" || Array.isArray(obj.subjects)) {
     return err(new Error("'server.auth.oauth.subjects' must be a mapping"));
   }
