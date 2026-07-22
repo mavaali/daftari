@@ -76,9 +76,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // Acquire the per-vault process lock BEFORE any heavy work. If another
-  // daftari is holding this vault, SIGTERM it and wait briefly for it to
-  // exit. See docs/superpowers/plans/2026-05-20-process-lockfile.md (#52).
-  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION);
+  // stdio daftari is holding this vault, SIGTERM it and wait briefly for it
+  // to exit; a live `daftari serve` holder REFUSES the takeover (#5 spec
+  // Decision 4). See docs/superpowers/plans/2026-05-20-process-lockfile.md.
+  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION, { mode: "stdio" });
   if (!lockResult.ok) {
     process.stderr.write(`daftari: failed to acquire vault lock: ${lockResult.error.message}\n`);
     process.exitCode = 1;
@@ -184,6 +185,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `user=${access.user} role=${access.roleName}\n`,
   );
 
+  await startVaultServices(vaultRoot, {
+    warmEmbeddings: config.value.warmEmbeddings,
+    watch: config.value.watch,
+  });
+}
+
+// The index/watcher bootstrap shared by stdio main() and `daftari serve`
+// (#5): freshness check, cheap jsonl re-materialization on the fresh path,
+// background reindex otherwise, watcher start either way. Returns once the
+// FOREGROUND work is done — the reindex itself runs on unawaited in the
+// background, alongside the live transport.
+export async function startVaultServices(
+  vaultRoot: string,
+  opts: { warmEmbeddings: boolean; watch: boolean },
+): Promise<void> {
   const fresh = await isIndexFresh(vaultRoot);
   if (fresh) {
     process.stderr.write(`daftari: index is up to date — skipping reindex\n`);
@@ -211,20 +227,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // the model is still cold. Warm it in the background (if config allows)
     // so the first user search does not pay the ~500ms cold start. Then
     // start the watcher to catch out-of-band edits going forward.
-    if (config.value.warmEmbeddings) {
+    if (opts.warmEmbeddings) {
       void runBackgroundWarm();
     }
-    maybeStartWatcher(vaultRoot, config.value.watch);
+    maybeStartWatcher(vaultRoot, opts.watch);
     return;
   }
 
-  // Background reindex. The promise is intentionally not awaited — main()
-  // returns once the transport is up, and the indexing pass runs to
+  // Background reindex. The promise is intentionally not awaited — the
+  // caller returns once the transport is up, and the indexing pass runs to
   // completion alongside the live server.
   markIndexing();
   process.stderr.write(`daftari: starting background reindex…\n`);
-  void runBackgroundReindex(vaultRoot, config.value.warmEmbeddings, () => {
-    maybeStartWatcher(vaultRoot, config.value.watch);
+  void runBackgroundReindex(vaultRoot, opts.warmEmbeddings, () => {
+    maybeStartWatcher(vaultRoot, opts.watch);
   });
 }
 
@@ -240,13 +256,17 @@ let activeWatcher: VaultWatcher | null = null;
 //     drains, Node emits 'exit', the registered listener releases.
 // The 'exit' listener is sync-only (Node guarantees the loop is closed by
 // then), which is why releaseLock is sync.
-function installShutdownHandlers(vaultRoot: string): void {
+//
+// `extra` (#5): serve registers its own teardown (close the HTTP listener
+// and every live session) to run before the lock releases.
+export function installShutdownHandlers(vaultRoot: string, extra?: () => void): void {
   const onShutdown = () => {
     if (activeWatcher) {
       const w = activeWatcher;
       activeWatcher = null;
       void w.close();
     }
+    extra?.();
     releaseLock(vaultRoot);
   };
   process.once("SIGTERM", onShutdown);

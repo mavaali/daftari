@@ -187,6 +187,36 @@ describe("loadConfig — schema extensions", () => {
       expect(badInclude.error.message).toContain("tools.include");
     });
 
+    it("parses the server block and rejects malformed shapes loud (#5)", () => {
+      writeConfig(
+        "version: 1\nserver:\n  transport_security: external\n  auth:\n" +
+          "    tokens:\n      - env: T_A\n        user: human:a\n        role: analyst\n",
+      );
+      const good = loadConfig(dir);
+      expect(good.ok).toBe(true);
+      if (!good.ok) return;
+      expect(good.value.server.transportSecurity).toBe("external");
+      expect(good.value.server.tokens).toEqual([{ env: "T_A", user: "human:a", role: "analyst" }]);
+    });
+
+    it("rejects a server token entry missing a field", () => {
+      writeConfig(
+        "version: 1\nserver:\n  auth:\n    tokens:\n      - env: T_A\n        user: human:a\n",
+      );
+      const bad = loadConfig(dir);
+      expect(bad.ok).toBe(false);
+      if (bad.ok) return;
+      expect(bad.error.message).toContain("server.auth.tokens[0].role");
+    });
+
+    it("rejects an unknown transport_security value", () => {
+      writeConfig("version: 1\nserver:\n  transport_security: yolo\n");
+      const bad = loadConfig(dir);
+      expect(bad.ok).toBe(false);
+      if (bad.ok) return;
+      expect(bad.error.message).toContain("transport_security");
+    });
+
     it("rejects an unrecognised tools.* key", () => {
       writeConfig("version: 1\nvault_name: v\ntools:\n  tiers: core\n");
       const badKey = loadConfig(dir);

@@ -39,6 +39,7 @@ Usage:
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
   daftari import obsidian <v>        Adopt an Obsidian vault in place (see: daftari import --help)
   daftari okf <export|import> ...     Bridge a vault and the Open Knowledge Format (see: daftari okf --help)
+  daftari serve --vault <path>        Server mode over Streamable HTTP for multiple clients (see: daftari serve --help)
   daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
 
 Server options:
@@ -241,6 +242,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "audit") {
     const { runAudit } = await import("./audit/index.js");
     process.exitCode = await runAudit(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "serve") {
+    const { runServe } = await import("./serve/index.js");
+    process.exitCode = await runServe(argv.slice(1));
     return;
   }
 
