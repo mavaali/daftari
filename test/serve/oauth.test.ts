@@ -153,6 +153,14 @@ describe("serve OAuth resource-server auth (#7)", () => {
     await expect(connect(await signJwt("mallory@example.com"))).rejects.toThrow(/forbidden/);
   });
 
+  it("subjects colliding with Object.prototype members are still 403", async () => {
+    // A plain-object lookup would resolve these to inherited members and
+    // skip the unmapped-subject rejection.
+    for (const sub of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      await expect(connect(await signJwt(sub))).rejects.toThrow(/forbidden/);
+    }
+  }, 30_000);
+
   it("wrong audience, wrong issuer, and expired tokens are 401", async () => {
     await expect(
       connect(await signJwt("alice@example.com", { audience: "someone-else" })),

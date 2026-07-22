@@ -312,7 +312,13 @@ export function startHttpServer(
             audience: oauth.audience,
           });
           const subject = verified.payload.sub;
-          const mapped = subject === undefined ? undefined : oauth.subjects[subject];
+          // Own-property lookup only: `subjects` is a plain object, and a
+          // sub claim like "constructor" or "toString" would otherwise hit
+          // an inherited Object.prototype member and skip the 403.
+          const mapped =
+            subject !== undefined && Object.hasOwn(oauth.subjects, subject)
+              ? oauth.subjects[subject]
+              : undefined;
           if (mapped === undefined) {
             writeJson(res, 403, {
               error: "forbidden",
