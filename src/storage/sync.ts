@@ -24,6 +24,7 @@
 // for a backup channel, and the price of syncing while the server serves.
 
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -48,6 +49,9 @@ const SYNC_EXCLUDED = new Set([
   ".daftari/locks.db-shm",
   ".daftari/backfill-plan.jsonl",
   ".daftari/wake-queue.jsonl",
+  // Its own header calls it "ephemeral cross-session memory … rebuildable:
+  // absent OR corrupt ⇒ the empty default" — same class as the wake queue.
+  ".daftari/consolidate-state.json",
 ]);
 
 function isExcluded(relPath: string): boolean {
@@ -109,6 +113,22 @@ export async function walkFiles(dir: string): Promise<{ files: string[]; symlink
   return { files, symlinks };
 }
 
+// Streaming hash so the walk phase never buffers a whole file — .git is in
+// scope now, and packfiles can dwarf the markdown they version.
+function hashFile(abs: string): Promise<{ hash: string; size: number }> {
+  return new Promise((resolveHash, rejectHash) => {
+    const digest = createHash("sha256");
+    let size = 0;
+    const stream = createReadStream(abs);
+    stream.on("data", (chunk) => {
+      digest.update(chunk);
+      size += chunk.length;
+    });
+    stream.on("error", rejectHash);
+    stream.on("end", () => resolveHash({ hash: digest.digest("hex"), size }));
+  });
+}
+
 // Walks the vault tree (dotfiles included — .git is the point), hashing every
 // non-excluded regular file. Symlinks are skipped and counted: an object
 // store has no symlink notion, and following one could escape the vault.
@@ -122,13 +142,8 @@ async function collectLocalState(
     for (const abs of walked.files) {
       const rel = relative(root, abs).split(sep).join("/");
       if (isExcluded(rel)) continue;
-      const bytes = await readFile(abs);
-      files.push({
-        relPath: rel,
-        absPath: abs,
-        hash: createHash("sha256").update(bytes).digest("hex"),
-        size: bytes.byteLength,
-      });
+      const { hash, size } = await hashFile(abs);
+      files.push({ relPath: rel, absPath: abs, hash, size });
     }
     return ok({ files, skippedSymlinks: walked.symlinks });
   } catch (e) {
