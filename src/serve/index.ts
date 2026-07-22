@@ -142,7 +142,7 @@ export function validateServeStartup(
       // attacker serve a forged key set and mint arbitrary authorized
       // sessions — https only, with loopback http as the sole escape hatch
       // (local test IdPs; no network position exists on the host itself).
-      const loopbackHost = ["127.0.0.1", "::1", "localhost"].includes(parsed.hostname);
+      const loopbackHost = isLoopbackBind(parsed.hostname);
       if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopbackHost)) {
         return {
           ok: false,
