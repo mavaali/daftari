@@ -115,12 +115,32 @@ export interface ServerTokenConfig {
   role: string; // role name; must exist in `roles` (verified at serve startup)
 }
 
+// Phase 2 (#7): OAuth 2.1 resource-server validation. daftari never issues
+// or stores credentials — it verifies bearer JWTs against the IdP's JWKS and
+// maps the token's subject claim to a declared identity. A valid token whose
+// subject is absent from the mapping is REJECTED (403, authenticated-not-
+// authorized), never a guest and never an implicit default role.
+export interface OAuthSubjectConfig {
+  user: string;
+  role: string; // must exist in `roles` (verified at serve startup)
+}
+
+export interface OAuthConfig {
+  issuer: string;
+  audience: string;
+  jwksUri: string;
+  subjects: Record<string, OAuthSubjectConfig>;
+}
+
 export interface ServerConfig {
   // "external" is the operator's explicit acknowledgment that TLS terminates
   // upstream (or the network is trusted). Required for non-loopback binds —
   // the shadow_mode precedent applied to transport.
   transportSecurity?: "external";
   tokens: ServerTokenConfig[];
+  // Optional and composable with static tokens (#7): agents commonly hold
+  // static tokens while humans come through the IdP.
+  oauth?: OAuthConfig;
 }
 
 // Defaults sized from the langgraph-store demo: 49 notes ⇒ 194 pairwise
@@ -587,8 +607,65 @@ function validateTensionScan(raw: unknown): Result<TensionScanConfig, Error> {
 }
 
 const RECOGNISED_SERVER_KEYS = ["transport_security", "auth"] as const;
-const RECOGNISED_SERVER_AUTH_KEYS = ["tokens"] as const;
+const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
+const RECOGNISED_OAUTH_KEYS = ["issuer", "audience", "jwks_uri", "subjects"] as const;
+
+// `server.auth.oauth` (#7). Shape-only validation here; URL parseability and
+// role existence are serve-startup concerns.
+function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'server.auth.oauth' must be a mapping"));
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!(RECOGNISED_OAUTH_KEYS as readonly string[]).includes(key)) {
+      return err(new Error(`'server.auth.oauth.${key}' is not a recognised setting`));
+    }
+  }
+  for (const field of ["issuer", "audience", "jwks_uri"] as const) {
+    if (typeof obj[field] !== "string" || (obj[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.oauth.${field}' must be a non-empty string`));
+    }
+  }
+  // Null prototype: bracket-assigning a subject literally named "__proto__"
+  // on a plain object would invoke the inherited setter and silently drop
+  // the mapping (and its startup role check) instead of storing it.
+  const subjects: Record<string, OAuthSubjectConfig> = Object.create(null);
+  if (obj.subjects === null || typeof obj.subjects !== "object" || Array.isArray(obj.subjects)) {
+    return err(new Error("'server.auth.oauth.subjects' must be a mapping"));
+  }
+  for (const [subject, entryRaw] of Object.entries(obj.subjects as Record<string, unknown>)) {
+    if (entryRaw === null || typeof entryRaw !== "object" || Array.isArray(entryRaw)) {
+      return err(new Error(`'server.auth.oauth.subjects.${subject}' must be a mapping`));
+    }
+    const entry = entryRaw as Record<string, unknown>;
+    for (const key of Object.keys(entry)) {
+      if (key !== "user" && key !== "role") {
+        return err(
+          new Error(`'server.auth.oauth.subjects.${subject}.${key}' is not a recognised setting`),
+        );
+      }
+    }
+    for (const field of ["user", "role"] as const) {
+      if (typeof entry[field] !== "string" || (entry[field] as string).trim().length === 0) {
+        return err(
+          new Error(`'server.auth.oauth.subjects.${subject}.${field}' must be a non-empty string`),
+        );
+      }
+    }
+    subjects[subject] = {
+      user: (entry.user as string).trim(),
+      role: (entry.role as string).trim(),
+    };
+  }
+  return ok({
+    issuer: (obj.issuer as string).trim(),
+    audience: (obj.audience as string).trim(),
+    jwksUri: (obj.jwks_uri as string).trim(),
+    subjects,
+  });
+}
 
 // `server` block (#5). Malformed shapes fail loud like every block; the
 // things only serve startup can know (env var set? role exists? bind rules?)
@@ -625,6 +702,11 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
       if (!(RECOGNISED_SERVER_AUTH_KEYS as readonly string[]).includes(key)) {
         return err(new Error(`'server.auth.${key}' is not a recognised setting`));
       }
+    }
+    if (auth.oauth !== undefined) {
+      const oauth = validateOAuth(auth.oauth);
+      if (!oauth.ok) return oauth;
+      out.oauth = oauth.value;
     }
     if (auth.tokens !== undefined) {
       if (!Array.isArray(auth.tokens)) {
