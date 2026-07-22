@@ -34,16 +34,21 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
-      # Trusted publishing requires npm >= 11.5.1; Node 22 bundles npm 10.
-      - name: Update npm for OIDC support
-        run: npm install -g npm@latest
-
+      # Install and test with the BUNDLED npm (10), exactly like ci.yml's
+      # green jobs: installing with npm@latest first left better-sqlite3
+      # without its native binding and failed `npm test` on every attempt
+      # of v1.31.0 (missing-bindings, deterministic across re-runs).
       - run: npm ci
 
       # A release runs every gate CI runs — a tag is not a bypass.
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+      # Trusted publishing requires npm >= 11.5.1; Node 22 bundles npm 10.
+      # Upgraded only AFTER install+tests, purely for the publish step.
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
 
       - name: Verify tag matches package.json version
         run: |
