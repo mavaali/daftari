@@ -209,6 +209,33 @@ describe("loadConfig — schema extensions", () => {
       expect(bad.error.message).toContain("server.auth.tokens[0].role");
     });
 
+    it("parses the oauth block and rejects malformed subjects (#7)", () => {
+      writeConfig(
+        "version: 1\nserver:\n  auth:\n    oauth:\n      issuer: https://idp.example\n" +
+          "      audience: daftari\n      jwks_uri: https://idp.example/jwks.json\n" +
+          '      subjects:\n        "a@example.com":\n          user: human:a\n          role: analyst\n',
+      );
+      const good = loadConfig(dir);
+      expect(good.ok).toBe(true);
+      if (!good.ok) return;
+      expect(good.value.server.oauth?.issuer).toBe("https://idp.example");
+      expect(good.value.server.oauth?.subjects["a@example.com"]).toEqual({
+        user: "human:a",
+        role: "analyst",
+      });
+    });
+
+    it("rejects an oauth block missing a required field", () => {
+      writeConfig(
+        "version: 1\nserver:\n  auth:\n    oauth:\n      issuer: https://idp.example\n" +
+          "      subjects: {}\n",
+      );
+      const bad = loadConfig(dir);
+      expect(bad.ok).toBe(false);
+      if (bad.ok) return;
+      expect(bad.error.message).toContain("server.auth.oauth.audience");
+    });
+
     it("rejects an unknown transport_security value", () => {
       writeConfig("version: 1\nserver:\n  transport_security: yolo\n");
       const bad = loadConfig(dir);

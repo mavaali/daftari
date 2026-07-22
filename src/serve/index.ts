@@ -25,6 +25,7 @@ import {
 import { resolve } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
@@ -51,10 +52,16 @@ Defaults:
 
 Endpoint: http://<bind>:<port>/mcp   (MCP Streamable HTTP)
 
-Auth (config server.auth.tokens): clients send "Authorization: Bearer <token>".
-Token values come from the env vars named in config — never from config
-itself. With auth configured, a missing/unmatched token is a 401 at session
-open; with no auth (loopback only), sessions run as the deny-all guest.
+Auth: clients send "Authorization: Bearer <token>". Two composable schemes:
+  server.auth.tokens — static tokens; values come from the env vars named in
+    config, never from config itself.
+  server.auth.oauth  — OAuth 2.1 resource-server validation: bearer JWTs are
+    verified against the IdP's JWKS (issuer + audience + expiry) and the
+    subject claim maps through the declared subjects table. A valid token
+    with an unmapped subject is 403 (authenticated, not authorized).
+With any auth configured, a missing/invalid credential is a 401 at session
+open — never a guest downgrade; with no auth (loopback only), sessions run
+as the deny-all guest.
 
 Exit codes: 2 config/usage error, 3 runtime error.
 `;
@@ -80,14 +87,14 @@ export function validateServeStartup(
   bind: string,
   env: NodeJS.ProcessEnv,
 ): { ok: true; tokens: ResolvedToken[] } | { ok: false; error: string } {
-  const authConfigured = config.server.tokens.length > 0;
+  const authConfigured = config.server.tokens.length > 0 || config.server.oauth !== undefined;
   if (!isLoopbackBind(bind)) {
     if (!authConfigured) {
       return {
         ok: false,
         error:
           `refusing to bind ${bind} with no authentication configured — ` +
-          `declare server.auth.tokens in .daftari/config.yaml`,
+          `declare server.auth.tokens and/or server.auth.oauth in .daftari/config.yaml`,
       };
     }
     if (config.server.transportSecurity !== "external") {
@@ -118,6 +125,29 @@ export function validateServeStartup(
       };
     }
     tokens.push({ secret: Buffer.from(value, "utf-8"), user: t.user, roleName: t.role });
+  }
+  // OAuth (#7): the block's shape was validated at config load; startup
+  // verifies what only this process can — URL parseability and that every
+  // mapped role is declared, the same loud posture as the token entries.
+  const oauth = config.server.oauth;
+  if (oauth) {
+    for (const field of [oauth.issuer, oauth.jwksUri]) {
+      try {
+        new URL(field);
+      } catch {
+        return { ok: false, error: `server.auth.oauth: '${field}' is not a valid URL` };
+      }
+    }
+    for (const [subject, entry] of Object.entries(oauth.subjects)) {
+      if (!(entry.role in config.roles)) {
+        return {
+          ok: false,
+          error:
+            `server.auth.oauth.subjects entry for ${subject} names role ` +
+            `'${entry.role}', which is not declared in config roles`,
+        };
+      }
+    }
   }
   return { ok: true, tokens };
 }
@@ -228,30 +258,66 @@ export function startHttpServer(
   port: number,
 ): Promise<ServeHandle> {
   const sessions = new Map<string, LiveSession>();
-  const authConfigured = tokens.length > 0;
+  const oauth = config.server.oauth;
+  const authConfigured = tokens.length > 0 || oauth !== undefined;
+  // JWKS key set, created lazily on the first OAuth verification: jose
+  // caches fetched keys, so the server stays stateless and offline-tolerant
+  // after the first fetch (spec Decision 2, phase 2).
+  let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
   // Set once the listener is up (the ephemeral-port case needs the BOUND
   // port); no request can arrive before listen resolves.
   let loopbackGuard: LoopbackGuard | null = null;
 
   // Resolves the request's identity under the spec's session rules, or
-  // writes the rejection and returns null. With auth configured a
-  // missing/unmatched token is 401 on every bind — never guest. With no
-  // auth (startup gating guarantees loopback) every session is the
-  // deny-all guest.
-  const authenticate = (req: IncomingMessage, res: ServerResponse): AccessContext | null => {
+  // writes the rejection and returns null. With auth configured:
+  //   - a static-token match binds its declared identity;
+  //   - else, with oauth declared, a bearer that verifies against the IdP's
+  //     JWKS (issuer + audience + signature + expiry) maps its subject claim
+  //     through the declared table — a valid-but-unmapped subject is 403
+  //     (authenticated, not authorized), NEVER guest;
+  //   - anything else is 401. With no auth at all (startup gating
+  //     guarantees loopback) every session is the deny-all guest.
+  const authenticate = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<AccessContext | null> => {
     if (!authConfigured) {
       return resolveAccess(config, "guest", GUEST_ROLE);
     }
     const presented = bearerFrom(req);
-    const matched = presented === null ? null : matchToken(presented, tokens);
-    if (matched === null) {
-      writeJson(res, 401, {
-        error: "unauthorized",
-        message: "a valid bearer token is required",
-      });
-      return null;
+    if (presented !== null) {
+      const matched = matchToken(presented, tokens);
+      if (matched !== null) {
+        return resolveAccess(config, matched.user, matched.roleName);
+      }
+      if (oauth) {
+        try {
+          jwks ??= createRemoteJWKSet(new URL(oauth.jwksUri));
+          const verified = await jwtVerify(presented, jwks, {
+            issuer: oauth.issuer,
+            audience: oauth.audience,
+          });
+          const subject = verified.payload.sub;
+          const mapped = subject === undefined ? undefined : oauth.subjects[subject];
+          if (mapped === undefined) {
+            writeJson(res, 403, {
+              error: "forbidden",
+              message: "authenticated subject has no declared role mapping",
+            });
+            return null;
+          }
+          return resolveAccess(config, mapped.user, mapped.role);
+        } catch {
+          // Signature/issuer/audience/expiry failure — an invalid
+          // credential, not an unmapped one: 401 below.
+        }
+      }
     }
-    return resolveAccess(config, matched.user, matched.roleName);
+    writeJson(res, 401, {
+      error: "unauthorized",
+      message: "a valid bearer token is required",
+    });
+    return null;
   };
 
   const httpServer = createHttpServer((req, res) => {
@@ -287,7 +353,7 @@ export function startHttpServer(
       return;
     }
 
-    const access = authenticate(req, res);
+    const access = await authenticate(req, res);
     if (access === null) return;
 
     const sessionId = req.headers["mcp-session-id"];
