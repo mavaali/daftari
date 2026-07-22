@@ -136,15 +136,28 @@ async function collectLocalState(
   vaultRoot: string,
 ): Promise<Result<{ files: LocalFile[]; skippedSymlinks: number }, Error>> {
   const root = resolve(vaultRoot);
-  const files: LocalFile[] = [];
   try {
     const walked = await walkFiles(root);
-    for (const abs of walked.files) {
-      const rel = relative(root, abs).split(sep).join("/");
-      if (isExcluded(rel)) continue;
-      const { hash, size } = await hashFile(abs);
-      files.push({ relPath: rel, absPath: abs, hash, size });
-    }
+    const candidates = walked.files
+      .map((abs) => ({ abs, rel: relative(root, abs).split(sep).join("/") }))
+      .filter((c) => !isExcluded(c.rel));
+    // Hash with the same bounded pool the upload phase uses — the walk now
+    // covers .git, and serializing on disk I/O for packfiles wastes time.
+    const files: LocalFile[] = new Array(candidates.length);
+    const hashed = await runPool(
+      candidates.map((c, i) => async (): Promise<Result<void, Error>> => {
+        try {
+          const { hash, size } = await hashFile(c.abs);
+          files[i] = { relPath: c.rel, absPath: c.abs, hash, size };
+          return ok(undefined);
+        } catch (e) {
+          return err(
+            new Error(`cannot hash ${c.rel}: ${e instanceof Error ? e.message : String(e)}`),
+          );
+        }
+      }),
+    );
+    if (!hashed.ok) return hashed;
     return ok({ files, skippedSymlinks: walked.symlinks });
   } catch (e) {
     return err(new Error(`cannot walk vault: ${e instanceof Error ? e.message : String(e)}`));
