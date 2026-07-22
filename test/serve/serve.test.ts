@@ -9,14 +9,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   matchToken,
   prepareStorageSync,
   type ServeHandle,
   startHttpServer,
+  startPeriodicSync,
   validateServeStartup,
 } from "../../src/serve/index.js";
+import type { StorageBackend } from "../../src/storage/backend.js";
 import { vaultReindex } from "../../src/tools/search.js";
 import { type DaftariConfig, loadConfig } from "../../src/utils/config.js";
 
@@ -368,6 +370,58 @@ describe("prepareStorageSync gates periodic sync before the listener (#6)", () =
       if (!refused.ok) expect(refused.error.message).toContain("npm install @aws-sdk/client-s3");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("startPeriodicSync drives the interval push (#6)", () => {
+  it("ticks call the sync fn, overlapping ticks are skipped, failures never throw", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls: number[] = [];
+      let release: (() => void) | undefined;
+      const backend = { id: "fs:test" } as StorageBackend;
+
+      // First tick blocks until released; later ticks resolve immediately.
+      const syncFn = vi.fn(async () => {
+        calls.push(calls.length);
+        if (calls.length === 1) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
+        return { ok: true as const, value: {} as never };
+      });
+
+      const stop = startPeriodicSync("/vault", backend, 1, syncFn as never);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(syncFn).toHaveBeenCalledTimes(1);
+
+      // Two more intervals pass while the first push is still running — the
+      // overlap guard must skip both.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(syncFn).toHaveBeenCalledTimes(1);
+
+      release?.();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(syncFn).toHaveBeenCalledTimes(2);
+
+      // A failing push logs and keeps the loop alive.
+      syncFn.mockImplementationOnce(async () => ({
+        ok: false as const,
+        error: new Error("backing offline"),
+      }));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(syncFn).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(syncFn).toHaveBeenCalledTimes(4);
+
+      stop();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(syncFn).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

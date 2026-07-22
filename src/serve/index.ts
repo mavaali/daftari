@@ -467,6 +467,38 @@ export async function prepareStorageSync(
   return createBackend(storage);
 }
 
+// The periodic push itself (#6): overlap-guarded (a slow push skips ticks
+// rather than stacking), failures logged and never fatal — the backing is a
+// durability channel, not a serving dependency. The timer is unref'd so it
+// never keeps a dying process alive. Returns a stopper. `syncFn` is
+// injectable for tests.
+export function startPeriodicSync(
+  vaultRoot: string,
+  backend: StorageBackend,
+  intervalMinutes: number,
+  syncFn: typeof syncVault = syncVault,
+): () => void {
+  let syncing = false;
+  const timer = setInterval(
+    () => {
+      if (syncing) return;
+      syncing = true;
+      void syncFn(vaultRoot, backend)
+        .then((r) => {
+          if (!r.ok) {
+            process.stderr.write(`daftari: warning: storage sync failed: ${r.error.message}\n`);
+          }
+        })
+        .finally(() => {
+          syncing = false;
+        });
+    },
+    intervalMinutes * 60 * 1000,
+  );
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 export async function runServe(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP);
@@ -572,26 +604,8 @@ export async function runServe(argv: string[]): Promise<number> {
   // ticks rather than stacking.
   const intervalMinutes = config.value.storage?.syncIntervalMinutes;
   if (syncBackend.value !== null && intervalMinutes !== undefined) {
-    const backend = syncBackend.value;
-    let syncing = false;
-    const timer = setInterval(
-      () => {
-        if (syncing) return;
-        syncing = true;
-        void syncVault(vaultRoot, backend)
-          .then((r) => {
-            if (!r.ok) {
-              process.stderr.write(`daftari: warning: storage sync failed: ${r.error.message}\n`);
-            }
-          })
-          .finally(() => {
-            syncing = false;
-          });
-      },
-      intervalMinutes * 60 * 1000,
-    );
-    timer.unref();
-    process.stderr.write(`daftari: syncing to ${backend.id} every ${intervalMinutes}m\n`);
+    startPeriodicSync(vaultRoot, syncBackend.value, intervalMinutes);
+    process.stderr.write(`daftari: syncing to ${syncBackend.value.id} every ${intervalMinutes}m\n`);
   }
   return 0;
 }
