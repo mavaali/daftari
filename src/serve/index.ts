@@ -525,9 +525,13 @@ export async function runServe(argv: string[]): Promise<number> {
     return 3;
   }
 
+  const authParts = [
+    ...(gate.tokens.length > 0 ? [`${gate.tokens.length} token(s)`] : []),
+    ...(config.value.server.oauth !== undefined ? ["oauth"] : []),
+  ];
   process.stderr.write(
     `daftari: serving vault at ${vaultRoot} — http://${bind}:${handle.port}/mcp ` +
-      `(${gate.tokens.length > 0 ? `${gate.tokens.length} token(s)` : "no auth: guest-only"})\n`,
+      `(${authParts.length > 0 ? authParts.join(" + ") : "no auth: guest-only"})\n`,
   );
 
   await startVaultServices(vaultRoot, {
