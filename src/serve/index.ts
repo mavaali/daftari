@@ -26,7 +26,7 @@ import { resolve } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
-import { installShutdownHandlers, startVaultServices } from "../index.js";
+import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
 import { setProvider } from "../search/vector.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
@@ -185,6 +185,41 @@ export interface ServeHandle {
 // Starts the HTTP listener and session router. Exported separately from
 // runServe so tests can drive a live server in-process on an ephemeral port
 // without argv parsing, lock acquisition, or process-global side effects.
+// DNS-rebinding guard for LOOPBACK binds (MCP Streamable HTTP security
+// guidance): a malicious page can rebind its domain to 127.0.0.1 and make
+// same-origin fetches to a local server, so the Host header must be one of
+// the loopback spellings for the bound port, and a PRESENT Origin must be a
+// loopback origin too (absent Origin = non-browser MCP client, allowed).
+// Non-loopback binds don't get this guard: bearer auth is mandatory there
+// (a rebinded page holds no token), and the operator's reverse proxy owns
+// the Host header, which this process cannot allow-list.
+interface LoopbackGuard {
+  hosts: Set<string>;
+  origins: Set<string>;
+}
+
+export function makeLoopbackGuard(port: number): LoopbackGuard {
+  const spellings = ["127.0.0.1", "localhost", "[::1]"];
+  return {
+    hosts: new Set(spellings.map((h) => `${h}:${port}`)),
+    origins: new Set(spellings.map((h) => `http://${h}:${port}`)),
+  };
+}
+
+export function violatesLoopbackGuard(
+  guard: LoopbackGuard,
+  host: string | undefined,
+  origin: string | undefined,
+): string | null {
+  if (!host || !guard.hosts.has(host)) {
+    return `Host header '${host ?? "<missing>"}' is not a loopback address for this server`;
+  }
+  if (origin !== undefined && !guard.origins.has(origin)) {
+    return `Origin '${origin}' is not allowed on a loopback bind`;
+  }
+  return null;
+}
+
 export function startHttpServer(
   vaultRoot: string,
   config: DaftariConfig,
@@ -194,6 +229,9 @@ export function startHttpServer(
 ): Promise<ServeHandle> {
   const sessions = new Map<string, LiveSession>();
   const authConfigured = tokens.length > 0;
+  // Set once the listener is up (the ephemeral-port case needs the BOUND
+  // port); no request can arrive before listen resolves.
+  let loopbackGuard: LoopbackGuard | null = null;
 
   // Resolves the request's identity under the spec's session rules, or
   // writes the rejection and returns null. With auth configured a
@@ -228,6 +266,21 @@ export function startHttpServer(
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Rebinding guard runs FIRST — before routing, before auth — so no
+    // response (including 404s and 401 bodies) reaches a rebinded page.
+    if (loopbackGuard) {
+      const originHeader = req.headers.origin;
+      const violation = violatesLoopbackGuard(
+        loopbackGuard,
+        req.headers.host,
+        typeof originHeader === "string" ? originHeader : undefined,
+      );
+      if (violation !== null) {
+        writeJson(res, 403, { error: "forbidden", message: violation });
+        return;
+      }
+    }
+
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname !== "/mcp") {
       writeJson(res, 404, { error: "not_found" });
@@ -295,12 +348,13 @@ export function startHttpServer(
       httpServer.removeListener("error", rejectStart);
       const address = httpServer.address();
       const boundPort = typeof address === "object" && address !== null ? address.port : port;
+      if (isLoopbackBind(bind)) loopbackGuard = makeLoopbackGuard(boundPort);
       resolveStart({
         port: boundPort,
         close: async () => {
-          for (const [, s] of sessions) {
-            await s.transport.close().catch(() => {});
-          }
+          // Sessions close concurrently — shutdown latency must not scale
+          // with the number of live clients.
+          await Promise.all([...sessions.values()].map((s) => s.transport.close().catch(() => {})));
           sessions.clear();
           await new Promise<void>((r) => httpServer.close(() => r()));
         },
@@ -309,18 +363,12 @@ export function startHttpServer(
   });
 }
 
-function flag(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(`--${name}`);
-  if (i < 0 || i + 1 >= argv.length) return undefined;
-  return argv[i + 1];
-}
-
 export async function runServe(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP);
     return 0;
   }
-  const vaultArg = flag(argv, "vault");
+  const vaultArg = parseFlag(argv, "vault");
   if (!vaultArg) {
     process.stderr.write("daftari serve: missing required --vault <path> argument\n");
     return 2;
@@ -330,9 +378,9 @@ export async function runServe(argv: string[]): Promise<number> {
     process.stderr.write(`daftari serve: vault directory not found: ${vaultRoot}\n`);
     return 2;
   }
-  const bind = flag(argv, "bind") ?? DEFAULT_BIND;
-  const portRaw = flag(argv, "port");
-  const port = portRaw === undefined ? DEFAULT_PORT : Number.parseInt(portRaw, 10);
+  const bind = parseFlag(argv, "bind") ?? DEFAULT_BIND;
+  const portRaw = parseFlag(argv, "port");
+  const port = portRaw === null ? DEFAULT_PORT : Number.parseInt(portRaw, 10);
   if (Number.isNaN(port) || port < 0 || port > 65535) {
     process.stderr.write(`daftari serve: invalid --port '${portRaw}'\n`);
     return 2;
@@ -358,6 +406,13 @@ export async function runServe(argv: string[]): Promise<number> {
     process.stderr.write(`daftari serve: ${lock.error.message}\n`);
     return 2;
   }
+  // Install immediately after the lock lands (the stdio path's guarantee):
+  // a failure between here and the listener opening must still release the
+  // lock on exit. `handle` is assigned once the listener is up.
+  let handle: ServeHandle | null = null;
+  installShutdownHandlers(vaultRoot, () => {
+    if (handle) void handle.close();
+  });
 
   try {
     setProvider(config.value.embeddingProvider);
@@ -373,7 +428,6 @@ export async function runServe(argv: string[]): Promise<number> {
     );
   }
 
-  let handle: ServeHandle;
   try {
     handle = await startHttpServer(vaultRoot, config.value, gate.tokens, bind, port);
   } catch (e) {
@@ -382,9 +436,6 @@ export async function runServe(argv: string[]): Promise<number> {
     );
     return 3;
   }
-  installShutdownHandlers(vaultRoot, () => {
-    void handle.close();
-  });
 
   process.stderr.write(
     `daftari: serving vault at ${vaultRoot} — http://${bind}:${handle.port}/mcp ` +

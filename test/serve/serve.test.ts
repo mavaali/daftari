@@ -4,6 +4,7 @@
 // no network flake surface (spec 2026-07-20, test posture).
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -244,6 +245,66 @@ describe("serve over Streamable HTTP (in-process, loopback)", () => {
   it("non-/mcp paths are 404", async () => {
     const res = await fetch(`http://127.0.0.1:${handle.port}/other`, { method: "POST" });
     expect(res.status).toBe(404);
+  });
+
+  // DNS-rebinding guard (MCP Streamable HTTP security guidance): a rebinded
+  // page reaches 127.0.0.1 with the attacker's Host/Origin — both must be
+  // rejected before routing, auth, or any body is served.
+  it("rejects a non-loopback Host header on a loopback bind (403)", async () => {
+    // fetch forbids overriding Host, so drive a raw http request — which is
+    // exactly what a rebinded connection delivers.
+    const status = await new Promise<number>((resolveStatus, rejectStatus) => {
+      const req = httpRequest(
+        {
+          host: "127.0.0.1",
+          port: handle.port,
+          path: "/mcp",
+          method: "POST",
+          headers: {
+            host: "evil.example:80",
+            authorization: "Bearer admin-secret",
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+        },
+        (res) => {
+          res.resume();
+          resolveStatus(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", rejectStatus);
+      req.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    });
+    expect(status).toBe(403);
+  });
+
+  it("rejects a present non-loopback Origin (403) but allows a loopback one", async () => {
+    const evil = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+      method: "POST",
+      headers: {
+        origin: "http://evil.example",
+        authorization: "Bearer admin-secret",
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(evil.status).toBe(403);
+
+    // A loopback Origin for the bound port passes the guard (the request
+    // then fails further in as an unknown session, which is the point —
+    // it got past the rebinding gate, not the session gate).
+    const okOrigin = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+      method: "POST",
+      headers: {
+        origin: `http://127.0.0.1:${handle.port}`,
+        authorization: "Bearer admin-secret",
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(okOrigin.status).not.toBe(403);
   });
 });
 
