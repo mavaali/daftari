@@ -321,6 +321,10 @@ daftari sync --vault ./empty-dir --restore --backend s3 --bucket team-vault
 
 The push covers the markdown tree, the `.git` directory, and durable
 `.daftari` journals; the rebuildable SQLite index and lock files never sync.
+Neither do `.git/config` and `.git/hooks` — git *executes* what those
+declare, and a backup channel must not deliver code (`git clone` refuses to
+transmit them for the same reason), so re-add remotes and local git config
+by hand after a restore.
 Cloud backends load their SDKs (`@aws-sdk/client-s3`, `@azure/storage-blob`)
 as optional dependencies — install the one you use; credentials come from the
 SDK's standard environment chain, never from vault config. GCS is reached via

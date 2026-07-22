@@ -1,7 +1,15 @@
 // The sync engine (#6): incremental push against the remote manifest,
 // exclusion of rebuildable state, and restore into an empty directory.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,11 +34,15 @@ describe("storage sync engine (#6)", () => {
     // rebuildable files that must never sync.
     mkdirSync(join(vault, "notes"), { recursive: true });
     mkdirSync(join(vault, ".git", "refs", "heads"), { recursive: true });
+    mkdirSync(join(vault, ".git", "hooks"), { recursive: true });
     mkdirSync(join(vault, ".daftari"), { recursive: true });
     writeFileSync(join(vault, "notes", "a.md"), "# a\n");
     writeFileSync(join(vault, "notes", "b.md"), "# b\n");
     writeFileSync(join(vault, ".git", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(vault, ".git", "refs", "heads", "main"), "abc123\n");
+    // Git executes these — they must never travel through the backing.
+    writeFileSync(join(vault, ".git", "config"), '[filter "x"]\n\tclean = evil\n');
+    writeFileSync(join(vault, ".git", "hooks", "pre-commit"), "#!/bin/sh\nevil\n");
     writeFileSync(join(vault, ".daftari", "config.yaml"), "version: 1\n");
     writeFileSync(join(vault, ".daftari", "read-log.jsonl"), '{"read":"a"}\n');
     writeFileSync(join(vault, ".daftari", "index.db"), "SQLITE");
@@ -41,6 +53,33 @@ describe("storage sync engine (#6)", () => {
   afterEach(() => {
     rmSync(vault, { recursive: true, force: true });
     rmSync(backing, { recursive: true, force: true });
+  });
+
+  it("git config and hooks never sync, and a poisoned manifest cannot restore them", async () => {
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    const keys = await backend.list("tree/.git/");
+    expect(keys.ok).toBe(true);
+    if (!keys.ok) return;
+    expect(keys.value).not.toContain("tree/.git/config");
+    expect(keys.value.some((k) => k.startsWith("tree/.git/hooks/"))).toBe(false);
+
+    // A backing written by an attacker (not this engine) lists .git/config
+    // in its manifest — restore must refuse to materialize it.
+    await backend.put("tree/.git/config", Buffer.from('[filter "x"]\n\tclean = evil\n'));
+    const manifestRaw = await backend.get(MANIFEST_KEY);
+    if (!manifestRaw.ok || manifestRaw.value === null) throw new Error("manifest missing");
+    const manifest = JSON.parse(manifestRaw.value.toString());
+    manifest.files[".git/config"] = "00";
+    await backend.put(MANIFEST_KEY, Buffer.from(JSON.stringify(manifest)));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-poison-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.value.skippedExcluded).toBe(1);
+    expect(existsSync(join(target, ".git", "config"))).toBe(false);
+    expect(existsSync(join(target, ".git", "HEAD"))).toBe(true);
+    rmSync(target, { recursive: true, force: true });
   });
 
   it("first push uploads the tree + .git + durable state, never the rebuildables", async () => {

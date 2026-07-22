@@ -52,6 +52,15 @@ const SYNC_EXCLUDED = new Set([
 
 function isExcluded(relPath: string): boolean {
   if (SYNC_EXCLUDED.has(relPath)) return true;
+  // Git EXECUTES what these declare — filter/fsmonitor command lines in
+  // config, hook scripts in hooks/ — and a `git clone` deliberately never
+  // transmits them from a remote for exactly that reason. Carrying them
+  // through the backing would turn backend write access into code execution
+  // on the operator's next auto-commit, so they are excluded in BOTH
+  // directions; the restore side re-enforces this against a poisoned
+  // manifest. After a restore, remotes and local config are re-added by the
+  // operator.
+  if (relPath === ".git/config" || relPath.startsWith(".git/hooks/")) return true;
   // Defensive: a vault should never contain one, but never ship it if it does.
   return relPath.split("/").includes("node_modules");
 }
@@ -225,6 +234,10 @@ export async function syncVault(
 export interface RestoreSummary {
   restored: number;
   bytes: number;
+  // Manifest entries refused by the exclusion rules (git config/hooks, the
+  // rebuildable databases) — nonzero only for a backing written by something
+  // other than this sync engine, so surface it to the operator.
+  skippedExcluded: number;
 }
 
 // Restore a vault from the backing into `vaultRoot`, which must be empty or
@@ -250,8 +263,14 @@ export async function restoreVault(
 
   const manifest = await readManifest(backend);
   if (!manifest.ok) return manifest;
-  const paths = Object.keys(manifest.value.files);
-  if (paths.length === 0) {
+  // The manifest is data from the backing, not trusted input: re-apply the
+  // exclusion rules here so a poisoned manifest cannot smuggle in what push
+  // would never have uploaded (git config/hooks — code execution on the
+  // next auto-commit).
+  const allPaths = Object.keys(manifest.value.files);
+  const paths = allPaths.filter((p) => !isExcluded(p));
+  const skippedExcluded = allPaths.length - paths.length;
+  if (allPaths.length === 0) {
     return err(new Error(`backing at ${backend.id} holds no manifest — nothing to restore`));
   }
 
@@ -283,5 +302,5 @@ export async function restoreVault(
   const ran = await runPool(tasks);
   if (!ran.ok) return ran;
 
-  return ok({ restored: paths.length, bytes: bytesTotal });
+  return ok({ restored: paths.length, bytes: bytesTotal, skippedExcluded });
 }

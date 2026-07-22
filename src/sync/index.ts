@@ -134,6 +134,18 @@ async function runRestore(vault: string, argv: string[]): Promise<number> {
     `restored ${restored.value.restored} files (${restored.value.bytes} bytes) ` +
       `from ${backend.value.id} into ${vault}\n`,
   );
+  if (restored.value.skippedExcluded > 0) {
+    process.stderr.write(
+      `daftari sync: warning: ${restored.value.skippedExcluded} manifest entr(ies) refused by ` +
+        "the exclusion rules (git config/hooks or rebuildable state) — the backing was " +
+        "written by something other than daftari sync\n",
+    );
+  }
+  process.stderr.write(
+    "daftari sync: note: git config and hooks are never synced or restored " +
+      "(git executes them; a backup channel must not deliver code) — re-add " +
+      "remotes and local git config by hand\n",
+  );
 
   // The index was deliberately never synced — rebuild it so the restored
   // vault is immediately servable.
