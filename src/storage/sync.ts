@@ -138,6 +138,15 @@ async function collectLocalState(
     const candidates = walked.files
       .map((abs) => ({ abs, rel: relative(root, abs).split(sep).join("/") }))
       .filter((c) => !isExcluded(c.rel));
+    // Evict memo entries for files that no longer exist under THIS root —
+    // without it the memo grows with total churn (git gc repacks, deletes),
+    // not live tree size. Scoped to the root so one process syncing several
+    // vaults never evicts another vault's entries.
+    const live = new Set(candidates.map((c) => c.abs));
+    const rootPrefix = root + sep;
+    for (const key of hashMemo.keys()) {
+      if (key.startsWith(rootPrefix) && !live.has(key)) hashMemo.delete(key);
+    }
     // Hash with the same bounded pool the upload phase uses — the walk now
     // covers .git, and serializing on disk I/O for packfiles wastes time.
     const files: LocalFile[] = new Array(candidates.length);

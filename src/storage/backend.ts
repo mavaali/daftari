@@ -138,6 +138,7 @@ async function createS3Backend(config: StorageConfig): Promise<Result<StorageBac
     },
     async list(prefix) {
       const keys: string[] = [];
+      const strip = config.prefix ? `${config.prefix.replace(/\/+$/, "")}/` : "";
       let token: string | undefined;
       try {
         do {
@@ -148,7 +149,6 @@ async function createS3Backend(config: StorageConfig): Promise<Result<StorageBac
               ...(token ? { ContinuationToken: token } : {}),
             }),
           );
-          const strip = config.prefix ? `${config.prefix.replace(/\/+$/, "")}/` : "";
           for (const obj of res.Contents ?? []) {
             if (obj.Key)
               keys.push(strip && obj.Key.startsWith(strip) ? obj.Key.slice(strip.length) : obj.Key);
