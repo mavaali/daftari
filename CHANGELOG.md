@@ -7,8 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-07-22
+
+The self-hosted deployment release: one always-on `daftari serve` instance
+over Streamable HTTP with per-session identity (static tokens and/or OAuth
+2.1), plus durable object-storage backing (S3/Azure/GCS-interop) behind the
+canonical local git working copy. Design record:
+`docs/superpowers/specs/2026-07-20-self-hosted-server-mode-design.md`.
+
 ### Added
 
+- **`daftari serve` — server mode over Streamable HTTP (#5).** One always-on
+  instance, many MCP clients, per-session RBAC identity resolved at session
+  open (zero tool changes — every existence-disclosure invariant applies per
+  connection). Static bearer tokens declared in config with values in env
+  vars. Fail-loud posture throughout: a non-loopback bind refuses without
+  auth AND an explicit `server.transport_security: external` declaration
+  (daftari never terminates TLS); with auth configured a bad credential is a
+  401 at session open, never a guest downgrade; loopback binds carry a
+  DNS-rebinding guard (Host/Origin validated before routing). The process
+  lock learns modes: a stray stdio invocation refuses against a live server,
+  a new serve refuses against any live holder, and deliberate replacement is
+  `daftari serve --takeover` (stdio-vs-stdio keeps its classic takeover;
+  stale locks are still overwritten silently).
+- **OAuth 2.1 resource-server auth for serve (#7).** Bearer JWTs verified
+  against your IdP's JWKS (issuer + audience + signature + expiry via
+  `jose`), with the subject claim mapped through a config-declared subjects
+  table. A valid token with an unmapped subject is 403 — authenticated, not
+  authorized — never a guest, never a default role. Composes with static
+  tokens (agents on tokens, humans through the IdP). Hardened: https-only
+  issuer/JWKS URLs (loopback http for test IdPs only), constant-time static
+  token matching, `Object.prototype`-collision-proof subject lookup.
+- **Pluggable storage backends as sync targets (#6).** The local git working
+  copy stays canonical; a backend is a dumb `get/put/list/delete` target.
+  Backends: `fs` (local/mounted directory), `s3` (S3, MinIO, R2, GCS via its
+  S3-interop endpoint), `azure` (Blob/ADLS Gen2) — cloud SDKs are optional
+  peer dependencies loaded on demand, credentials come only from the SDKs'
+  environment chains, custom endpoints must be https. `daftari sync` pushes
+  incrementally against a remote hash manifest (tree + `.git` + durable
+  `.daftari` journals; the rebuildable index/locks never sync) and
+  `daftari sync --restore` rebuilds a vault into an empty directory with
+  per-object hash verification and a reindex. `daftari serve` can push on a
+  cadence (`storage.sync_interval_minutes`). Security posture: `.git/config`
+  and `.git/hooks` are never synced or restored (git executes what they
+  declare — a backup channel must not deliver code), and restore re-enforces
+  every exclusion against the untrusted manifest.
+- **Agent-as-judge rerank pool on `vault_search` (#3).** Opt-in
+  `rerank_candidates`: the server prepares the fused candidate pool and the
+  protocol; the calling agent is the judge.
+- **Per-document theme distributions (#58).** True multi-theme membership via
+  chunk-level clustering.
+- **Configurable tool-exposure tiers (#103, #104).** `tools.tier`
+  (`core`/`standard`/`full`) plus `include`/`exclude` lists in config.
+- **Resumable reindex (#54).** Per-batch embedding commits so an interrupted
+  reindex resumes instead of restarting.
+- **`daftari eval prune` (#100)** — `results/` and `scores/` housekeeping —
+  and eval v1 polish (#102): honest exit codes, skipped-run reporting, resume
+  validation, tier-aware triviality, intra-call dedupe, `--max-nodes`.
+- **Advisory domain-boundary enforcement (#4)** and inline structural decay
+  checks (orphans, deprecated-still-linked) in the curation engine.
+- **Advisory supersede nudge** when overwriting an existing doc, and a YAML
+  config error hint for comment lines that lost their `#`.
 - **`daftari okf export|import` — Open Knowledge Format bridge.** OKF is Google
   Cloud's vendor-neutral spec (v0.1) for the LLM-wiki pattern — a directory of
   markdown files with YAML frontmatter — which is exactly Daftari's storage
@@ -21,6 +80,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while a foreign bundle is mapped conservatively (docs land as `draft` in the
   `accumulation` domain, the source OKF `type` preserved in `okf_type`); writes
   auto-commit and the index is rebuilt. `--dry-run` previews the import plan.
+
+- **The compilation pipeline (#232–#236, #141, #217).** Edge provenance
+  classes with type-directed change dispatch (tier 1), structure-first tier-0
+  lint checks with a ratify gate, a semantic-review queue with typed verdicts
+  (tier 2), the compiled `consumes` dependency graph (run-correlated reads ×
+  writes, #233), edge staleness classes and the broken-read rate (#234),
+  proposal deltas (write action type, `run_id` provenance, inter-proposal
+  tension, a propose-only role, #235), write-protection tiers
+  (source/compiled/manual with a demote-then-write escape hatch, #141), a
+  review-throughput lint aggregate, and edge-graph existence disclosure
+  (blast B′, edges/lint omission) extending the 2026-07-14 RBAC spec (#217).
+- **`sleep` tension-scan dream-type (#228)** closing the day-0 detection gap,
+  a langgraph-store adapter with the dedup-is-not-epistemics demo (#227),
+  the daftari.dev landing page (#226), and MCP Registry metadata (#222).
+- **Dev maturity (#238–#242):** e2e gate on the built server, tag-driven npm
+  release via OIDC trusted publishing, automated code + security review on
+  PRs, an `@claude` mention responder, and a nightly maintenance loop.
+
+### Fixed
+
+- Canonical-path tension/provenance gates in `vault_status`, `vault_receipt`,
+  and precedent lookups (#216), and tier-1 anchors that are unreadable leak
+  neither provenance metadata nor existence (#252).
+- `daftari audit` no longer flags on-disk assets and unaudited siblings as
+  missing (#255); eval exit codes and resume validation honesty (#102).
+
+### Performance
+
+- SQL-authoritative edge reads with write-through and stat-marker self-heal
+  (#236), FTS5 `snippet()` for lexical excerpts on the chunk path, and the
+  file watcher filters non-markdown events at watch time (#107).
 
 ## [1.30.0] - 2026-07-13
 
@@ -1392,6 +1482,7 @@ vault to AI agents, exposing 13 tools over stdio.
   example documents, git history, search index); `daftari --vault` serves it.
 - 160 tests covering all 13 tools and their supporting modules.
 
+[1.31.0]: https://github.com/mavaali/daftari/releases/tag/v1.31.0
 [1.5.1]: https://github.com/mavaali/daftari/releases/tag/v1.5.1
 [1.4.0]: https://github.com/mavaali/daftari/releases/tag/v1.4.0
 [1.1.1]: https://github.com/mavaali/daftari/releases/tag/v1.1.1
