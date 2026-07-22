@@ -297,6 +297,40 @@ daftari okf import ./okf-bundle --into ./my-vault --dry-run
 daftari okf import ./okf-bundle --into ./my-vault
 ```
 
+## Storage backing
+
+A self-hosted vault can push to durable object storage (#6). The local git
+working copy stays canonical — reads, writes, auto-commits, locks, and the
+index all stay exactly as above — and the backing is a dumb sync target:
+
+```yaml
+# .daftari/config.yaml
+storage:
+  backend: s3            # fs | s3 | azure
+  bucket: team-vault
+  region: us-east-1
+  # endpoint: https://…  # MinIO / R2 / GCS S3-interop endpoints
+  # sync_interval_minutes: 15   # daftari serve pushes on this cadence
+```
+
+```bash
+daftari sync --vault ./my-vault              # incremental push
+daftari sync --vault ./my-vault --dry-run    # show the diff only
+daftari sync --vault ./empty-dir --restore --backend s3 --bucket team-vault
+```
+
+The push covers the markdown tree, the `.git` directory, and durable
+`.daftari` journals; the rebuildable SQLite index and lock files never sync.
+Neither do `.git/config` and `.git/hooks` — git *executes* what those
+declare, and a backup channel must not deliver code (`git clone` refuses to
+transmit them for the same reason), so re-add remotes and local git config
+by hand after a restore.
+Cloud backends load their SDKs (`@aws-sdk/client-s3`, `@azure/storage-blob`)
+as optional dependencies — install the one you use; credentials come from the
+SDK's standard environment chain, never from vault config. GCS is reached via
+its S3-interoperability endpoint. Restore refuses non-empty directories and
+reindexes when done.
+
 ## How it compares
 
 |                    |AGENTS.md        |RAG                          |Daftari                              |

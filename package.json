@@ -84,10 +84,18 @@
     "hono": "^4.12.25"
   },
   "peerDependencies": {
-    "pg": ">=8"
+    "pg": ">=8",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@azure/storage-blob": "^12.24.0"
   },
   "peerDependenciesMeta": {
     "pg": {
+      "optional": true
+    },
+    "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@azure/storage-blob": {
       "optional": true
     }
   }

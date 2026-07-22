@@ -143,6 +143,31 @@ export interface ServerConfig {
   oauth?: OAuthConfig;
 }
 
+// `storage` block (#6, spec 2026-07-20 Decision 3): a durable sync target
+// backing the canonical local working copy. Credentials never live here —
+// the cloud SDKs use their standard environment chains (AWS_*,
+// AZURE_STORAGE_CONNECTION_STRING). GCS is reached through its S3-interop
+// endpoint via the s3 backend.
+export type StorageBackendId = "fs" | "s3" | "azure";
+
+export interface StorageConfig {
+  backend: StorageBackendId;
+  // fs: target directory (required for fs)
+  path?: string;
+  // s3: bucket name (required for s3); endpoint/region/force_path_style for
+  // S3-compatibles (MinIO, R2, GCS interop)
+  bucket?: string;
+  region?: string;
+  endpoint?: string;
+  forcePathStyle?: boolean;
+  // azure: blob container name (required for azure)
+  container?: string;
+  // key prefix inside the target, for sharing a bucket/container
+  prefix?: string;
+  // when set, `daftari serve` pushes to the backing every N minutes
+  syncIntervalMinutes?: number;
+}
+
 // Defaults sized from the langgraph-store demo: 49 notes ⇒ 194 pairwise
 // judgments (~$2 on a frontier judge), so 200 calls covers a ~50-doc pass.
 export const TENSION_SCAN_DEFAULTS: TensionScanConfig = {
@@ -217,6 +242,10 @@ export interface DaftariConfig {
   // token list and no transport-security declaration when absent. Ignored
   // entirely by stdio mode.
   server: ServerConfig;
+  // Storage backing (`storage` block, #6). Undefined when absent — a vault
+  // with no backing configured; `daftari sync` then refuses with a pointer
+  // to the config block.
+  storage?: StorageConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -237,6 +266,7 @@ function emptyConfig(): DaftariConfig {
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
     server: { tokens: [] },
+    storage: undefined,
   };
 }
 
@@ -739,6 +769,83 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
   return ok(out);
 }
 
+const RECOGNISED_STORAGE_KEYS = [
+  "backend",
+  "path",
+  "bucket",
+  "region",
+  "endpoint",
+  "force_path_style",
+  "container",
+  "prefix",
+  "sync_interval_minutes",
+] as const;
+const STORAGE_BACKENDS = ["fs", "s3", "azure"] as const;
+
+// Per-backend required key — the one thing that names the target. Everything
+// only the backend SDK can know (reachability, credentials, permissions)
+// fails at sync time, not here.
+const STORAGE_REQUIRED: Record<StorageBackendId, "path" | "bucket" | "container"> = {
+  fs: "path",
+  s3: "bucket",
+  azure: "container",
+};
+
+// `storage` block (#6). Shape-only, like every block: endpoint URL rules are
+// enforced at backend creation, credentials come from the environment.
+function validateStorage(raw: unknown): Result<StorageConfig | undefined, Error> {
+  if (raw === undefined) return ok(undefined);
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'storage' must be a mapping"));
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!(RECOGNISED_STORAGE_KEYS as readonly string[]).includes(key)) {
+      return err(new Error(`'storage.${key}' is not a recognised setting`));
+    }
+  }
+  const backend = obj.backend;
+  if (typeof backend !== "string" || !(STORAGE_BACKENDS as readonly string[]).includes(backend)) {
+    return err(
+      new Error(
+        `'storage.backend' must be one of: ${STORAGE_BACKENDS.join(", ")} — a typo must not silently pick a target`,
+      ),
+    );
+  }
+  const backendId = backend as StorageBackendId;
+  const required = STORAGE_REQUIRED[backendId];
+  if (typeof obj[required] !== "string" || (obj[required] as string).trim().length === 0) {
+    return err(new Error(`'storage.${required}' is required for the ${backendId} backend`));
+  }
+  for (const field of ["path", "bucket", "region", "endpoint", "container", "prefix"] as const) {
+    if (obj[field] !== undefined && typeof obj[field] !== "string") {
+      return err(new Error(`'storage.${field}' must be a string`));
+    }
+  }
+  if (obj.force_path_style !== undefined && typeof obj.force_path_style !== "boolean") {
+    return err(new Error("'storage.force_path_style' must be a boolean"));
+  }
+  if (
+    obj.sync_interval_minutes !== undefined &&
+    (typeof obj.sync_interval_minutes !== "number" ||
+      !Number.isFinite(obj.sync_interval_minutes) ||
+      obj.sync_interval_minutes <= 0)
+  ) {
+    return err(new Error("'storage.sync_interval_minutes' must be a positive number"));
+  }
+  return ok({
+    backend: backendId,
+    path: obj.path as string | undefined,
+    bucket: obj.bucket as string | undefined,
+    region: obj.region as string | undefined,
+    endpoint: obj.endpoint as string | undefined,
+    forcePathStyle: obj.force_path_style as boolean | undefined,
+    container: obj.container as string | undefined,
+    prefix: obj.prefix as string | undefined,
+    syncIntervalMinutes: obj.sync_interval_minutes as number | undefined,
+  });
+}
+
 const RECOGNISED_TOOLS_KEYS = ["tier", "include", "exclude"] as const;
 
 function validateTools(raw: unknown): Result<ToolsConfig, Error> {
@@ -979,6 +1086,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const serverConfig = validateServer(root.server);
   if (!serverConfig.ok) return err(new Error(`malformed config: ${serverConfig.error.message}`));
 
+  const storageConfig = validateStorage(root.storage);
+  if (!storageConfig.ok) return err(new Error(`malformed config: ${storageConfig.error.message}`));
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -1058,5 +1168,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,
     server: serverConfig.value,
+    storage: storageConfig.value,
   });
 }
