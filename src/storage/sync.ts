@@ -25,7 +25,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { StorageBackend } from "./backend.js";
@@ -93,7 +93,7 @@ interface LocalFile {
 
 // Streaming hash so the walk phase never buffers a whole file — .git is in
 // scope now, and packfiles can dwarf the markdown they version.
-function hashFile(abs: string): Promise<{ hash: string; size: number }> {
+function streamHash(abs: string): Promise<{ hash: string; size: number }> {
   return new Promise((resolveHash, rejectHash) => {
     const digest = createHash("sha256");
     let size = 0;
@@ -105,6 +105,25 @@ function hashFile(abs: string): Promise<{ hash: string; size: number }> {
     stream.on("error", rejectHash);
     stream.on("end", () => resolveHash({ hash: digest.digest("hex"), size }));
   });
+}
+
+// (size, mtime) → hash memo so a periodic sync (`daftari serve`, every N
+// minutes) re-hashes only what actually changed instead of streaming the
+// whole tree — with .git in scope, full-history rehash every tick scales
+// with repo size, not the delta. In-memory on purpose: it lives exactly as
+// long as the serving process, needs no invalidation story across
+// processes, and a one-shot CLI run simply pays the honest full cost.
+const hashMemo = new Map<string, { size: number; mtimeMs: number; hash: string }>();
+
+async function hashFile(abs: string): Promise<{ hash: string; size: number }> {
+  const s = await stat(abs);
+  const memo = hashMemo.get(abs);
+  if (memo && memo.size === s.size && memo.mtimeMs === s.mtimeMs) {
+    return { hash: memo.hash, size: memo.size };
+  }
+  const hashed = await streamHash(abs);
+  hashMemo.set(abs, { size: hashed.size, mtimeMs: s.mtimeMs, hash: hashed.hash });
+  return hashed;
 }
 
 // Walks the vault tree (dotfiles included — .git is the point), hashing every

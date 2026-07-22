@@ -2,6 +2,9 @@
 // optional-SDK failure path. The fs backend's own contract lives in
 // test/storage/backends/fs.test.ts, mirroring src/.
 
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createBackend, validateEndpoint } from "../../src/storage/backend.js";
 
@@ -22,6 +25,23 @@ describe("backend factory gates (#6)", () => {
     });
     expect(azure.ok).toBe(false);
     if (!azure.ok) expect(azure.error.message).toContain("AZURE_STORAGE_CONNECTION_STRING");
+  });
+
+  it("the fs backend honors prefix (nested under path) and confines it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "daftari-fs-prefix-"));
+    try {
+      const prefixed = await createBackend({ backend: "fs", path: dir, prefix: "team-a" });
+      expect(prefixed.ok).toBe(true);
+      if (!prefixed.ok) return;
+      expect((await prefixed.value.put("tree/x.md", Buffer.from("x"))).ok).toBe(true);
+      expect(existsSync(join(dir, "team-a", "tree", "x.md"))).toBe(true);
+
+      const escaping = await createBackend({ backend: "fs", path: dir, prefix: "../out" });
+      expect(escaping.ok).toBe(false);
+      if (!escaping.ok) expect(escaping.error.message).toContain("escapes the fs path");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("a missing optional cloud SDK is a clear install instruction, not a crash", async () => {

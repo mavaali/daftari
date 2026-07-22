@@ -20,11 +20,21 @@ function keyToPath(root: string, key: string): Result<string, Error> {
   return ok(target);
 }
 
-export function createFsBackend(path: string): Result<StorageBackend, Error> {
+export function createFsBackend(path: string, prefix?: string): Result<StorageBackend, Error> {
   if (!path || path.trim().length === 0) {
     return err(new Error("storage backend 'fs' requires a non-empty 'path'"));
   }
-  const root = resolve(path);
+  const base = resolve(path);
+  // `prefix` is backend-agnostic (sharing one target between vaults); for fs
+  // it nests under the target directory — confined, so a prefix cannot walk
+  // out of the declared path.
+  const root = prefix ? resolve(base, prefix) : base;
+  if (prefix) {
+    const rel = relative(base, root);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      return err(new Error(`storage.prefix escapes the fs path: ${prefix}`));
+    }
+  }
 
   return ok({
     id: `fs:${root}`,

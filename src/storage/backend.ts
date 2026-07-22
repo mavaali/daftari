@@ -286,7 +286,7 @@ export async function createBackend(config: StorageConfig): Promise<Result<Stora
   switch (config.backend) {
     case "fs": {
       const { createFsBackend } = await import("./backends/fs.js");
-      return createFsBackend(config.path as string);
+      return createFsBackend(config.path as string, config.prefix);
     }
     case "s3":
       return createS3Backend(config);
