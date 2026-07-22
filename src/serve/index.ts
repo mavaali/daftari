@@ -132,10 +132,24 @@ export function validateServeStartup(
   const oauth = config.server.oauth;
   if (oauth) {
     for (const field of [oauth.issuer, oauth.jwksUri]) {
+      let parsed: URL;
       try {
-        new URL(field);
+        parsed = new URL(field);
       } catch {
         return { ok: false, error: `server.auth.oauth: '${field}' is not a valid URL` };
+      }
+      // JWKS/issuer over plaintext http would let a network-position
+      // attacker serve a forged key set and mint arbitrary authorized
+      // sessions — https only, with loopback http as the sole escape hatch
+      // (local test IdPs; no network position exists on the host itself).
+      const loopbackHost = ["127.0.0.1", "::1", "localhost"].includes(parsed.hostname);
+      if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopbackHost)) {
+        return {
+          ok: false,
+          error:
+            `server.auth.oauth: '${field}' must use https ` +
+            `(plain http is allowed only for loopback test IdPs)`,
+        };
       }
     }
     for (const [subject, entry] of Object.entries(oauth.subjects)) {

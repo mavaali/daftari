@@ -215,6 +215,27 @@ describe("serve OAuth resource-server auth (#7)", () => {
     expect(r2.ok).toBe(false);
     if (r2.ok) return;
     expect(r2.error).toContain("not a valid URL");
+
+    // Plain http to a NON-loopback IdP is a MITM vector: a network-position
+    // attacker could serve a forged JWKS and mint arbitrary authorized
+    // sessions. Loopback http (the fake IdP above) is the sole escape hatch.
+    const httpIdp: DaftariConfig = {
+      ...base,
+      server: {
+        ...base.server,
+        tokens: [],
+        oauth: {
+          issuer: ISSUER,
+          audience: AUDIENCE,
+          jwksUri: "http://idp.example/jwks.json",
+          subjects: {},
+        },
+      },
+    };
+    const r3 = validateServeStartup(httpIdp, "127.0.0.1", process.env);
+    expect(r3.ok).toBe(false);
+    if (r3.ok) return;
+    expect(r3.error).toContain("must use https");
   });
 
   it("oauth alone counts as auth configured: no token is 401, not guest", async () => {
