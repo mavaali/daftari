@@ -187,6 +187,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+// True when the doc carries a usable `daftari` sidecar — the exact test
+// okfToDaftari uses to take the verbatim round-trip path. Key presence alone is
+// not enough: a non-object sidecar value is ignored and the doc is synthesized
+// as foreign, so callers gating on "is this a round-trip?" must share this
+// check rather than re-deriving it.
+export function hasDaftariSidecar(okfRaw: Record<string, unknown>): boolean {
+  const sidecar = okfRaw[DAFTARI_SIDECAR_KEY];
+  return sidecar !== null && typeof sidecar === "object" && !Array.isArray(sidecar);
+}
+
 // True when an OKF `type` names the v0.2 Attested Computation concept. Used by
 // import to flag these docs for deliberate operator review (vault_set_tier) —
 // never to grant write protection automatically: a foreign bundle's
@@ -312,9 +322,8 @@ export function okfToDaftari(
   okfRaw: Record<string, unknown>,
   ctx: OkfImportContext,
 ): Record<string, unknown> {
-  const sidecar = okfRaw[DAFTARI_SIDECAR_KEY];
-  if (sidecar !== null && typeof sidecar === "object" && !Array.isArray(sidecar)) {
-    return { ...(sidecar as Record<string, unknown>) };
+  if (hasDaftariSidecar(okfRaw)) {
+    return { ...(okfRaw[DAFTARI_SIDECAR_KEY] as Record<string, unknown>) };
   }
 
   const title =

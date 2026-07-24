@@ -18,7 +18,7 @@ import { reindexVault } from "../search/reindex.js";
 import { listFiles, readFile } from "../storage/local.js";
 import { serializeDocument } from "../tools/write.js";
 import { commit } from "../utils/git.js";
-import { isAttestedComputation, okfToDaftari } from "./map.js";
+import { hasDaftariSidecar, isAttestedComputation, okfToDaftari } from "./map.js";
 import { OKF_RESERVED_FILES } from "./types.js";
 
 export interface ImportOptions {
@@ -92,9 +92,11 @@ export async function importBundle(
     const daftariRaw = okfToDaftari(okfRaw, { relPath, today, updatedBy: agent });
     const { frontmatter } = validateFrontmatter(daftariRaw);
 
+    const roundTrip = hasDaftariSidecar(okfRaw);
+
     // Advisory only, never enforcement: a bundle's self-declared type must not
     // buy write protection. The operator reviews and elevates deliberately.
-    if (isAttestedComputation(okfRaw.type) && !Object.hasOwn(okfRaw, "daftari")) {
+    if (isAttestedComputation(okfRaw.type) && !roundTrip) {
       warnings.push(
         `${relPath}: Attested Computation imported WITHOUT write protection — ` +
           `review it, then elevate with vault_set_tier (tier: source) if this vault should enforce it`,
@@ -105,7 +107,7 @@ export async function importBundle(
       relPath,
       collection: frontmatter.collection,
       title: frontmatter.title,
-      roundTrip: Object.hasOwn(okfRaw, "daftari"),
+      roundTrip,
     });
 
     if (dryRun) continue;
