@@ -351,13 +351,15 @@ export async function runLint(
   if (!tensionHealth.ok) return tensionHealth;
 
   // Each JSONL log is read ONCE; the lint summaries and the coverage view
-  // below are derived from the same in-memory records.
-  const edgesRes = await listEdges(vaultRoot, {}, now);
-  if (!edgesRes.ok) return edgesRes;
-  const shadowRecordsRes = await listShadowActions(vaultRoot);
-  if (!shadowRecordsRes.ok) return shadowRecordsRes;
+  // below are derived from the same in-memory records. Read order (staged,
+  // shadow, edges) matches the pre-consolidation sequence so a multi-log
+  // failure surfaces the same first error it always did.
   const stagedRes = await listStagedActions(vaultRoot);
   if (!stagedRes.ok) return stagedRes;
+  const shadowRecordsRes = await listShadowActions(vaultRoot);
+  if (!shadowRecordsRes.ok) return shadowRecordsRes;
+  const edgesRes = await listEdges(vaultRoot, {}, now);
+  if (!edgesRes.ok) return edgesRes;
 
   const stagedActions = pendingLintItems(stagedRes.value, now);
   const shadowActions = shadowLintSummaryOf(shadowRecordsRes.value);

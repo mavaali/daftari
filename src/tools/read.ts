@@ -433,7 +433,10 @@ export async function vaultStatus(
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([collection, count]) => ({ collection, count }));
 
-  // Staleness distribution over the visible set, from the same scan.
+  // Staleness distribution over the visible set, from the same scan. One
+  // shared instant scores every document (as listStaleFiles did) so two docs
+  // straddling a UTC day boundary mid-scan can't bucket inconsistently.
+  const scanNow = new Date();
   const visiblePaths = new Set(index.value.entries.map((e) => e.path));
   const stalenessDistribution: StalenessDistribution = {
     fresh: 0,
@@ -444,10 +447,13 @@ export async function vaultStatus(
   for (const doc of scan.value) {
     if (!visiblePaths.has(doc.relPath)) continue;
     stalenessDistribution.total += 1;
-    const score = computeStaleness({
-      updated: doc.frontmatter.updated,
-      ttl_days: doc.frontmatter.ttl_days,
-    }).score;
+    const score = computeStaleness(
+      {
+        updated: doc.frontmatter.updated,
+        ttl_days: doc.frontmatter.ttl_days,
+      },
+      scanNow,
+    ).score;
     if (score >= 1) stalenessDistribution.stale += 1;
     else if (score >= 0.5) stalenessDistribution.aging += 1;
     else stalenessDistribution.fresh += 1;

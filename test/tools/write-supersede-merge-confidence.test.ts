@@ -213,6 +213,11 @@ describe("vault_supersede", () => {
       agent: AGENT,
     });
     expect(result.ok).toBe(false);
+    // Pin the message: the successor check must fire (and keep firing) before
+    // parse/config/RBAC — a different error here means precedence drifted.
+    if (!result.ok) {
+      expect(result.error.message).toBe("vault_supersede: successor not found: pricing/ghost.md");
+    }
   });
 
   it("rejects a missing successor argument", async () => {

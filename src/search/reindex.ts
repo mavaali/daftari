@@ -604,15 +604,24 @@ export async function indexDocument(
     //
     // The path index is O(vault) to build, so it is constructed only when the
     // document actually links out — and outside the write transaction either
-    // way, to keep the transaction to row writes.
-    const linkTargets =
-      extractLinks(doc.content).length === 0
-        ? []
-        : outgoingLinkTargets(
-            doc.content,
-            doc.path,
-            buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p }))),
-          );
+    // way, to keep the transaction to row writes. The doc's OWN path is added
+    // to the universe (sorted, matching allDocumentPaths' ORDER BY) because a
+    // first-time index runs before this doc's row lands: without it, a bare
+    // link matching the doc's own basename would resolve to a same-basename
+    // sibling instead of being filtered as a self-link.
+    let linkTargets: string[] = [];
+    if (extractLinks(doc.content).length > 0) {
+      const universe = allDocumentPaths(db);
+      if (!universe.includes(doc.path)) {
+        universe.push(doc.path);
+        universe.sort();
+      }
+      linkTargets = outgoingLinkTargets(
+        doc.content,
+        doc.path,
+        buildPathIndexes(universe.map((p) => ({ path: p }))),
+      );
+    }
 
     const write = db.transaction(() => {
       deleteDocument(db, doc.path);
