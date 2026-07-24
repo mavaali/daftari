@@ -30,6 +30,11 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Bot-applied suggestion commits and auto-merge pushes fire
+          # `synchronize` as github-actions[bot]; without this the action
+          # refuses the run and the check fails. Scoped to that one bot —
+          # not "*" — so arbitrary bots can't spend the subscription.
+          allowed_bots: "github-actions"
           prompt: |
             Review this pull request for correctness bugs first, then for
             simplification and efficiency. Read CLAUDE.md before judging:

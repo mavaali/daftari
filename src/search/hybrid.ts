@@ -17,7 +17,7 @@
 // lexical-only and reports vectorUsed: false rather than failing.
 
 import { computeDecay, type DecayState } from "../curation/decay.js";
-import { ok, type Result } from "../frontmatter/types.js";
+import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   embeddingToBlob,
   getChunksForPath,
@@ -503,10 +503,7 @@ export function relatedSearch(
 
   const doc = getDocument(db, path);
   if (!doc) {
-    return {
-      ok: false,
-      error: new Error(`document not indexed: ${path} (try vault_reindex)`),
-    };
+    return err(new Error(`document not indexed: ${path} (try vault_reindex)`));
   }
 
   const provider = getProvider();

@@ -36,7 +36,7 @@ import { ok, type Result } from "../frontmatter/types.js";
 import { deleteDocument, openIndexDb } from "../storage/index-db.js";
 import { resolveVaultPath } from "../storage/local.js";
 import { getIndexStatus, markPathIndexing, markPathReady, onceIndexReady } from "./index-state.js";
-import { indexDocument } from "./reindex.js";
+import { indexDocument, readManifest, writeManifest } from "./reindex.js";
 import { consumeSelfWrite } from "./self-write.js";
 import { getProvider } from "./vector.js";
 
@@ -99,25 +99,13 @@ async function defaultDeleteFn(
   const db = dbResult.value;
   try {
     deleteDocument(db, relPath);
-    // Patch the manifest in place. Reusing reindex.ts internals would
-    // require an export churn for one use; the meta row is a JSON blob
-    // and a short read-modify-write under WAL is safe here.
-    const row = db.prepare("SELECT value FROM meta WHERE key = ?").get("vault_manifest") as
-      | { value: string }
-      | undefined;
-    if (row) {
-      try {
-        const manifest = JSON.parse(row.value) as Record<string, number>;
-        if (relPath in manifest) {
-          delete manifest[relPath];
-          db.prepare(
-            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-          ).run("vault_manifest", JSON.stringify(manifest));
-        }
-      } catch {
-        // A malformed manifest is non-fatal here — the next full reindex
-        // rewrites it from scratch.
-      }
+    // Patch the manifest in place via the shared reindex helpers. A malformed
+    // manifest reads as null — non-fatal here; the next full reindex rewrites
+    // it from scratch.
+    const manifest = readManifest(db);
+    if (manifest && relPath in manifest) {
+      delete manifest[relPath];
+      writeManifest(db, manifest);
     }
     return ok(undefined);
   } finally {

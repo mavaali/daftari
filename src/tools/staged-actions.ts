@@ -199,6 +199,30 @@ export interface RatifyResult {
   shadow?: boolean;
 }
 
+// The two tier-0 gate problem assemblies, shared by the four ratify gate
+// sites (direct promote/deprecate and their synthetic-write mirrors). Hidden
+// counts are coarsened (#217) — never exact. Null when the gate passes.
+function promoteGateProblems(gate: ReturnType<typeof tier0PromoteGate>): string | null {
+  const problems = [...gate.violations];
+  if (gate.hiddenConflicts > 0) {
+    problems.push(
+      `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
+    );
+  }
+  return problems.length > 0 ? problems.join("; ") : null;
+}
+
+function deprecateGateProblems(gate: ReturnType<typeof tier0DeprecateGate>): string | null {
+  const problems: string[] = [];
+  if (gate.dependents.length > 0) {
+    problems.push(`cited as a source by canonical: ${gate.dependents.join(", ")}`);
+  }
+  if (gate.hiddenDependents > 0) {
+    problems.push(`hidden canonical dependents: ${bucketHiddenDownstream(gate.hiddenDependents)}`);
+  }
+  return problems.length > 0 ? problems.join("; ") : null;
+}
+
 export async function vaultRatify(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -354,18 +378,12 @@ export async function vaultRatify(
           validation: report,
         };
         const docs = [...loaded.value.filter((d) => d.path !== action.targetPath), synthetic];
-        const gate = tier0PromoteGate(docs, action.targetPath, visible);
-        const problems = [...gate.violations];
-        if (gate.hiddenConflicts > 0) {
-          problems.push(
-            `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
-          );
-        }
-        if (problems.length > 0) {
+        const problems = promoteGateProblems(tier0PromoteGate(docs, action.targetPath, visible));
+        if (problems !== null) {
           return err(
             new Error(
               `vault_ratify: tier-0 gate blocked canonical write of ${action.targetPath}: ` +
-                `${problems.join("; ")} — the action stays pending`,
+                `${problems} — the action stays pending`,
             ),
           );
         }
@@ -379,39 +397,28 @@ export async function vaultRatify(
         // dependents exactly like an unforwarded staged deprecate, so it
         // gets the same gate. A merged superseded_by provides the
         // resolution path and passes, same as a forwarded deprecate.
-        const gate = tier0DeprecateGate(loaded.value, action.targetPath, visible);
-        const problems: string[] = [];
-        if (gate.dependents.length > 0) {
-          problems.push(`cited as a source by canonical: ${gate.dependents.join(", ")}`);
-        }
-        if (gate.hiddenDependents > 0) {
-          problems.push(
-            `hidden canonical dependents: ${bucketHiddenDownstream(gate.hiddenDependents)}`,
-          );
-        }
-        if (problems.length > 0) {
+        const problems = deprecateGateProblems(
+          tier0DeprecateGate(loaded.value, action.targetPath, visible),
+        );
+        if (problems !== null) {
           return err(
             new Error(
               `vault_ratify: tier-0 gate blocked demoting write of ${action.targetPath} ` +
-                `(canonical → ${frontmatter.status}): ${problems.join("; ")} — supersede ` +
+                `(canonical → ${frontmatter.status}): ${problems} — supersede ` +
                 `with a successor or update the dependents first; the action stays pending`,
             ),
           );
         }
       }
     } else if (action.actionType === "promote") {
-      const gate = tier0PromoteGate(loaded.value, action.targetPath, visible);
-      const problems = [...gate.violations];
-      if (gate.hiddenConflicts > 0) {
-        problems.push(
-          `non-canonical sources hidden from your role: ${bucketHiddenDownstream(gate.hiddenConflicts)}`,
-        );
-      }
-      if (problems.length > 0) {
+      const problems = promoteGateProblems(
+        tier0PromoteGate(loaded.value, action.targetPath, visible),
+      );
+      if (problems !== null) {
         return err(
           new Error(
             `vault_ratify: tier-0 gate blocked promote of ${action.targetPath}: ` +
-              `${problems.join("; ")} — the action stays pending`,
+              `${problems} — the action stays pending`,
           ),
         );
       }
@@ -419,21 +426,14 @@ export async function vaultRatify(
       // A deprecate carrying a superseded_by hint forwards dependents to a
       // successor (same as supersede) — only an unforwarded deprecate can
       // strand canonical dependents on a retired source.
-      const gate = tier0DeprecateGate(loaded.value, action.targetPath, visible);
-      const problems: string[] = [];
-      if (gate.dependents.length > 0) {
-        problems.push(`cited as a source by canonical: ${gate.dependents.join(", ")}`);
-      }
-      if (gate.hiddenDependents > 0) {
-        problems.push(
-          `hidden canonical dependents: ${bucketHiddenDownstream(gate.hiddenDependents)}`,
-        );
-      }
-      if (problems.length > 0) {
+      const problems = deprecateGateProblems(
+        tier0DeprecateGate(loaded.value, action.targetPath, visible),
+      );
+      if (problems !== null) {
         return err(
           new Error(
             `vault_ratify: tier-0 gate blocked deprecate of ${action.targetPath}: ` +
-              `${problems.join("; ")} — supersede with a successor or update the ` +
+              `${problems} — supersede with a successor or update the ` +
               `dependents first; the action stays pending`,
           ),
         );

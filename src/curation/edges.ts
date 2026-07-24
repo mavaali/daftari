@@ -61,6 +61,7 @@ import {
   setMeta,
   upsertDerivesFromEdge,
 } from "../storage/index-db.js";
+import { toSecondISO } from "../utils/dates.js";
 
 // --- calibration constants (provisional — open decision §12/#8) -------------
 //
@@ -177,11 +178,6 @@ function edgesLogStatMarker(vaultRoot: string): string {
 }
 
 // --- time helpers ------------------------------------------------------------
-
-// Second-resolution ISO, the same record format staged-actions uses.
-function toSecondISO(d: Date): string {
-  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
 
 export function edgeNowISO(): string {
   return toSecondISO(new Date());
@@ -467,18 +463,28 @@ function deriveEdge(state: EdgeState, now: Date): DerivesFromEdge {
 // stale twin. Best-effort by design: the append above is the canonical write,
 // and a failure here leaves the marker stale, so the next read self-heals via
 // ensureFreshEdgesIndex — the cache can be behind, never wrong.
-function writeThroughEdgesIndex(vaultRoot: string): void {
+//
+// Returns the collapsed states so the caller can read the after-state of its
+// own append without collapsing the log a second time. Null only when the
+// log itself could not be read.
+function writeThroughEdgesIndex(vaultRoot: string): Map<string, EdgeState> | null {
   try {
+    // Stat BEFORE reading — same marker discipline as rebuildEdgesIndex.
+    const marker = edgesLogStatMarker(vaultRoot);
+    const states = collapse(readRawRecords(vaultRoot));
     const opened = openIndexDb(vaultRoot, getProvider().dim);
-    if (!opened.ok) return;
-    const db = opened.value;
-    try {
-      rebuildEdgesIndex(db, vaultRoot);
-    } finally {
-      db.close();
+    if (opened.ok) {
+      const db = opened.value;
+      try {
+        rebuildEdgesIndexFromStates(db, states, marker);
+      } finally {
+        db.close();
+      }
     }
+    return states;
   } catch {
     // Self-heal on the next read.
+    return null;
   }
 }
 
@@ -533,11 +539,8 @@ export async function observeEdge(
     return err(new Error(`cannot record edge observation: ${reason}`));
   }
 
-  writeThroughEdgesIndex(vaultRoot);
-
-  const after = collapse(readRawRecords(vaultRoot)).get(
-    edgeKey(...canonPair(record.from, record.to)),
-  );
+  const states = writeThroughEdgesIndex(vaultRoot) ?? collapse(readRawRecords(vaultRoot));
+  const after = states.get(edgeKey(...canonPair(record.from, record.to)));
   if (!after) return err(new Error("edge not found after write"));
   return ok(deriveEdge(after, new Date()));
 }
@@ -587,9 +590,8 @@ export async function contestEdge(
     return err(new Error(`cannot record edge contest: ${reason}`));
   }
 
-  writeThroughEdgesIndex(vaultRoot);
-
-  const after = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(from, to)));
+  const states = writeThroughEdgesIndex(vaultRoot) ?? collapse(readRawRecords(vaultRoot));
+  const after = states.get(edgeKey(...canonPair(from, to)));
   if (!after) return err(new Error("edge not found after write"));
   return ok(deriveEdge(after, new Date()));
 }
@@ -758,7 +760,25 @@ export function rebuildEdgesIndex(
     // marker undercounts and the next read harmlessly rebuilds again. Statting
     // after would risk marking content the collapse never saw as fresh.
     const marker = edgesLogStatMarker(vaultRoot);
-    const edges = [...collapse(readRawRecords(vaultRoot)).values()].map((s) => deriveEdge(s, now));
+    const states = collapse(readRawRecords(vaultRoot));
+    return rebuildEdgesIndexFromStates(db, states, marker, now);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot rebuild derives_from index: ${reason}`));
+  }
+}
+
+// Table repopulation from an already-collapsed state map. Split out so the
+// write-through path (which needs the collapsed states for its own after-state
+// read) collapses the log exactly once per append.
+function rebuildEdgesIndexFromStates(
+  db: IndexDb,
+  states: Map<string, EdgeState>,
+  marker: string,
+  now: Date = new Date(),
+): Result<{ count: number }, Error> {
+  try {
+    const edges = [...states.values()].map((s) => deriveEdge(s, now));
     const at = toSecondISO(now);
     const rows: DerivesFromEdgeRow[] = edges.map((e) => ({
       from_path: e.fromPath,

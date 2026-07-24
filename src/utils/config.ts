@@ -392,6 +392,31 @@ function validateDefault(
 
 // Validates one entry of the `schema_extensions` block. A malformed
 // declaration fails config load — the same loud-failure contract as RBAC.
+// The two guards every config block repeats. `requireMapping` narrows a node
+// to a YAML mapping (the standard `<where> must be a mapping` error);
+// `rejectUnknownKeys` fails loud on a typo'd child key so a misspelled
+// setting can't silently fall back to its default.
+function requireMapping(raw: unknown, where: string): Result<Record<string, unknown>, Error> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error(`${where} must be a mapping`));
+  }
+  return ok(raw as Record<string, unknown>);
+}
+
+function rejectUnknownKeys(
+  obj: Record<string, unknown>,
+  recognised: readonly string[],
+  prefix: string,
+  noun = "setting",
+): Result<void, Error> {
+  for (const key of Object.keys(obj)) {
+    if (!recognised.includes(key)) {
+      return err(new Error(`'${prefix}.${key}' is not a recognised ${noun}`));
+    }
+  }
+  return ok(undefined);
+}
+
 function validateExtension(field: string, raw: unknown): Result<SchemaExtension, Error> {
   const where = `schema_extensions '${field}'`;
   // An extension adds a field; it must not reuse a built-in field name —
@@ -399,10 +424,9 @@ function validateExtension(field: string, raw: unknown): Result<SchemaExtension,
   if ((BUILTIN_FRONTMATTER_FIELDS as readonly string[]).includes(field)) {
     return err(new Error(`${where} shadows a built-in frontmatter field`));
   }
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error(`${where} must be a mapping`));
-  }
-  const obj = raw as Record<string, unknown>;
+  const mapping = requireMapping(raw, where);
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
 
   const rawType = obj.type;
   if (typeof rawType !== "string" || !(EXTENSION_TYPES as readonly string[]).includes(rawType)) {
@@ -555,16 +579,12 @@ function parseHookList(
 // extensions.
 function validateHooks(raw: unknown): Result<HookConfig, Error> {
   if (raw === undefined) return ok({ preWrite: [], preWriteTransform: [] });
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'hooks' must be a mapping"));
-  }
-  const obj = raw as Record<string, unknown>;
+  const mapping = requireMapping(raw, "'hooks'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
 
-  for (const key of Object.keys(obj)) {
-    if (!(RECOGNISED_HOOK_KEYS as readonly string[]).includes(key)) {
-      return err(new Error(`'hooks.${key}' is not a recognised hook surface`));
-    }
-  }
+  const known = rejectUnknownKeys(obj, RECOGNISED_HOOK_KEYS, "hooks", "hook surface");
+  if (!known.ok) return known;
 
   const preWrite = parseHookList(obj, "pre_write");
   if (!preWrite.ok) return preWrite;
@@ -580,17 +600,14 @@ function validateHooks(raw: unknown): Result<HookConfig, Error> {
 // fails config load, the same loud-failure contract as RBAC and extensions.
 function validateBackfillIdentityMap(raw: unknown): Result<Record<string, string>, Error> {
   if (raw === undefined) return ok({});
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'backfill' must be a mapping"));
-  }
-  const block = raw as Record<string, unknown>;
-  const rawMap = block.identity_map;
+  const block = requireMapping(raw, "'backfill'");
+  if (!block.ok) return block;
+  const rawMap = block.value.identity_map;
   if (rawMap === undefined) return ok({});
-  if (rawMap === null || typeof rawMap !== "object" || Array.isArray(rawMap)) {
-    return err(new Error("'backfill.identity_map' must be a mapping"));
-  }
+  const map = requireMapping(rawMap, "'backfill.identity_map'");
+  if (!map.ok) return map;
   const out: Record<string, string> = {};
-  for (const [author, identity] of Object.entries(rawMap as Record<string, unknown>)) {
+  for (const [author, identity] of Object.entries(map.value)) {
     if (typeof identity !== "string" || identity.length === 0) {
       return err(new Error(`'backfill.identity_map.${author}' must be a non-empty string`));
     }
@@ -608,15 +625,11 @@ const RECOGNISED_TENSION_SCAN_KEYS = ["max_llm_calls", "max_docs", "agent"] as c
 
 function validateTensionScan(raw: unknown): Result<TensionScanConfig, Error> {
   if (raw === undefined) return ok({ ...TENSION_SCAN_DEFAULTS });
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'tension_scan' must be a mapping"));
-  }
-  const obj = raw as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (!(RECOGNISED_TENSION_SCAN_KEYS as readonly string[]).includes(key)) {
-      return err(new Error(`'tension_scan.${key}' is not a recognised setting`));
-    }
-  }
+  const mapping = requireMapping(raw, "'tension_scan'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_TENSION_SCAN_KEYS, "tension_scan");
+  if (!known.ok) return known;
   const out: TensionScanConfig = { ...TENSION_SCAN_DEFAULTS };
   for (const key of ["max_llm_calls", "max_docs"] as const) {
     const v = obj[key];
@@ -644,15 +657,11 @@ const RECOGNISED_OAUTH_KEYS = ["issuer", "audience", "jwks_uri", "subjects"] as 
 // `server.auth.oauth` (#7). Shape-only validation here; URL parseability and
 // role existence are serve-startup concerns.
 function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'server.auth.oauth' must be a mapping"));
-  }
-  const obj = raw as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (!(RECOGNISED_OAUTH_KEYS as readonly string[]).includes(key)) {
-      return err(new Error(`'server.auth.oauth.${key}' is not a recognised setting`));
-    }
-  }
+  const mapping = requireMapping(raw, "'server.auth.oauth'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_OAUTH_KEYS, "server.auth.oauth");
+  if (!known.ok) return known;
   for (const field of ["issuer", "audience", "jwks_uri"] as const) {
     if (typeof obj[field] !== "string" || (obj[field] as string).trim().length === 0) {
       return err(new Error(`'server.auth.oauth.${field}' must be a non-empty string`));
@@ -702,15 +711,11 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
 // are validated there, not here.
 function validateServer(raw: unknown): Result<ServerConfig, Error> {
   if (raw === undefined) return ok({ tokens: [] });
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'server' must be a mapping"));
-  }
-  const obj = raw as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (!(RECOGNISED_SERVER_KEYS as readonly string[]).includes(key)) {
-      return err(new Error(`'server.${key}' is not a recognised setting`));
-    }
-  }
+  const mapping = requireMapping(raw, "'server'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_SERVER_KEYS, "server");
+  if (!known.ok) return known;
   const out: ServerConfig = { tokens: [] };
   if (obj.transport_security !== undefined) {
     if (obj.transport_security !== "external") {
@@ -724,15 +729,11 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
     out.transportSecurity = "external";
   }
   if (obj.auth !== undefined) {
-    if (obj.auth === null || typeof obj.auth !== "object" || Array.isArray(obj.auth)) {
-      return err(new Error("'server.auth' must be a mapping"));
-    }
-    const auth = obj.auth as Record<string, unknown>;
-    for (const key of Object.keys(auth)) {
-      if (!(RECOGNISED_SERVER_AUTH_KEYS as readonly string[]).includes(key)) {
-        return err(new Error(`'server.auth.${key}' is not a recognised setting`));
-      }
-    }
+    const authMapping = requireMapping(obj.auth, "'server.auth'");
+    if (!authMapping.ok) return authMapping;
+    const auth = authMapping.value;
+    const authKnown = rejectUnknownKeys(auth, RECOGNISED_SERVER_AUTH_KEYS, "server.auth");
+    if (!authKnown.ok) return authKnown;
     if (auth.oauth !== undefined) {
       const oauth = validateOAuth(auth.oauth);
       if (!oauth.ok) return oauth;
@@ -743,16 +744,15 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
         return err(new Error("'server.auth.tokens' must be a list"));
       }
       for (let i = 0; i < auth.tokens.length; i++) {
-        const entry = auth.tokens[i];
-        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-          return err(new Error(`'server.auth.tokens[${i}]' must be a mapping`));
-        }
-        const t = entry as Record<string, unknown>;
-        for (const key of Object.keys(t)) {
-          if (!(RECOGNISED_SERVER_TOKEN_KEYS as readonly string[]).includes(key)) {
-            return err(new Error(`'server.auth.tokens[${i}].${key}' is not a recognised setting`));
-          }
-        }
+        const entry = requireMapping(auth.tokens[i], `'server.auth.tokens[${i}]'`);
+        if (!entry.ok) return entry;
+        const t = entry.value;
+        const tokenKnown = rejectUnknownKeys(
+          t,
+          RECOGNISED_SERVER_TOKEN_KEYS,
+          `server.auth.tokens[${i}]`,
+        );
+        if (!tokenKnown.ok) return tokenKnown;
         for (const field of RECOGNISED_SERVER_TOKEN_KEYS) {
           if (typeof t[field] !== "string" || (t[field] as string).trim().length === 0) {
             return err(new Error(`'server.auth.tokens[${i}].${field}' must be a non-empty string`));
@@ -795,15 +795,11 @@ const STORAGE_REQUIRED: Record<StorageBackendId, "path" | "bucket" | "container"
 // enforced at backend creation, credentials come from the environment.
 function validateStorage(raw: unknown): Result<StorageConfig | undefined, Error> {
   if (raw === undefined) return ok(undefined);
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'storage' must be a mapping"));
-  }
-  const obj = raw as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (!(RECOGNISED_STORAGE_KEYS as readonly string[]).includes(key)) {
-      return err(new Error(`'storage.${key}' is not a recognised setting`));
-    }
-  }
+  const mapping = requireMapping(raw, "'storage'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_STORAGE_KEYS, "storage");
+  if (!known.ok) return known;
   const backend = obj.backend;
   if (typeof backend !== "string" || !(STORAGE_BACKENDS as readonly string[]).includes(backend)) {
     return err(
@@ -850,15 +846,11 @@ const RECOGNISED_TOOLS_KEYS = ["tier", "include", "exclude"] as const;
 
 function validateTools(raw: unknown): Result<ToolsConfig, Error> {
   if (raw === undefined) return ok({ ...TOOLS_DEFAULTS, include: [], exclude: [] });
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return err(new Error("'tools' must be a mapping"));
-  }
-  const obj = raw as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (!(RECOGNISED_TOOLS_KEYS as readonly string[]).includes(key)) {
-      return err(new Error(`'tools.${key}' is not a recognised setting`));
-    }
-  }
+  const mapping = requireMapping(raw, "'tools'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_TOOLS_KEYS, "tools");
+  if (!known.ok) return known;
   // An unknown TIER fails loud (same posture as embeddings.provider — a typo
   // must not quietly resolve to a different exposure). Unknown tool NAMES in
   // include/exclude are the server layer's warning, deliberately not an

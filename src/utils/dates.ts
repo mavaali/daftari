@@ -1,5 +1,11 @@
 // Date helpers shared across the frontmatter and index layers.
 
+// Second-resolution ISO — the shared record timestamp format of the
+// append-only JSONL stores (edges, staged actions, shadow log).
+export function toSecondISO(d: Date): string {
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 // Normalizes an ISO-shaped date string to canonical YYYY-MM-DD, or returns null
 // if it is not an unambiguous, real calendar date. Conservative by design: it
 // only recovers the missing-zero-pad case (e.g. "2026-3-1" -> "2026-03-01") and
