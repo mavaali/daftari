@@ -124,7 +124,7 @@ Delivered orders only, 30-day return window.
     expect(doc.data.okf_sources).toBeTruthy();
   });
 
-  it("imports an Attested Computation as tier: source", async () => {
+  it("imports an Attested Computation unprotected, with an advisory vault_set_tier warning", async () => {
     const bundle = mkTmp("okf-bundle-");
     const vault = mkTmp("okf-vault-");
     const attestedDoc = `---
@@ -152,10 +152,16 @@ SELECT 1
     if (!result.ok) return;
 
     const doc = matter(readFileSync(join(vault, "computations/revenue.md"), "utf-8"));
-    expect(doc.data.tier).toBe("source"); // body immutable — sanctioned computation
+    // Self-declared type never buys write protection — the operator elevates
+    // deliberately via vault_set_tier after review.
+    expect(doc.data.tier).toBeNull();
     expect(doc.data.okf_type).toBe("Attested Computation");
     expect(doc.data.okf_runtime).toBe("bigquery");
     expect(doc.data.okf_attester).toEqual({ resource: "attesters/sql_equality.py" });
+    // The import surfaced the advisory nudge.
+    const warning = result.value.warnings.find((w) => w.includes("computations/revenue.md"));
+    expect(warning).toContain("WITHOUT write protection");
+    expect(warning).toContain("vault_set_tier");
   });
 
   it("round-trips a doc carrying a daftari sidecar verbatim", async () => {

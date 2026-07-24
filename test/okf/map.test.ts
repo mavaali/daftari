@@ -6,6 +6,7 @@ import {
   dateFromGenerated,
   dateFromTimestamp,
   deriveDescription,
+  isAttestedComputation,
   isUri,
   okfToDaftari,
   slugify,
@@ -197,6 +198,15 @@ describe("path/slug helpers", () => {
   });
 });
 
+describe("isAttestedComputation", () => {
+  it("matches the v0.2 concept type case-insensitively, nothing else", () => {
+    expect(isAttestedComputation("Attested Computation")).toBe(true);
+    expect(isAttestedComputation("  attested computation ")).toBe(true);
+    expect(isAttestedComputation("BigQuery Table")).toBe(false);
+    expect(isAttestedComputation(undefined)).toBe(false);
+  });
+});
+
 describe("dateFromGenerated", () => {
   it("prefers generated.at, falls back to the v0.1 timestamp", () => {
     expect(dateFromGenerated({ generated: { by: "x", at: "2026-06-30T14:00:00Z" } })).toBe(
@@ -348,7 +358,7 @@ describe("okfToDaftari", () => {
     expect(out.ttl_days).toBe(199);
   });
 
-  it("imports an Attested Computation as tier source with its machinery preserved", () => {
+  it("preserves an Attested Computation's machinery but never auto-grants write protection", () => {
     const out = okfToDaftari(
       {
         type: "Attested Computation",
@@ -361,7 +371,9 @@ describe("okfToDaftari", () => {
       },
       ctx,
     );
-    expect(out.tier).toBe("source"); // agents must never edit the computation
+    // A bundle's self-declared type must not buy tier enforcement — only
+    // vault_set_tier (reason required, provenance-logged) grants it.
+    expect(out).not.toHaveProperty("tier");
     expect(out.okf_type).toBe("Attested Computation");
     expect(out.okf_runtime).toBe("bigquery");
     expect(out.okf_parameters).toEqual([{ name: "year", type: "integer", required: true }]);

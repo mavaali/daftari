@@ -46,9 +46,10 @@ import — adopt an OKF bundle into a vault (auto-commits + reindexes):
   mapped conservatively (docs land as drafts in the accumulation domain).
   v0.2 trust signals inform the mapping: human-reviewed docs (a human:* entry
   in 'verified') import with confidence high, 'status: deprecated' stays
-  deprecated, 'stale_after' converts to ttl_days, and an Attested Computation
-  lands as tier: source (body immutable — agents must not edit sanctioned
-  computations). Unmapped OKF fields are preserved under okf_* keys.
+  deprecated, and 'stale_after' converts to ttl_days. An Attested Computation
+  is flagged in a warning but NOT auto-write-protected — a bundle's
+  self-declared type is not an authorization; review it and elevate with
+  vault_set_tier. Unmapped OKF fields are preserved under okf_* keys.
 
   --help, -h           Show this help.
 `;

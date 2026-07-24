@@ -302,11 +302,14 @@ round-trips exactly via its sidecar; a foreign bundle is mapped conservatively
 preserved in an `okf_type` field). Trust signals inform the mapping: a
 human-reviewed doc (a `human:*` entry in `verified`) imports with `confidence:
 high`, `status: deprecated` stays `deprecated` (retired knowledge must not
-resurface as a fresh draft), `stale_after` converts to `ttl_days`, and an
-`Attested Computation` lands as `tier: source` — the spec forbids agents from
-editing sanctioned computations, and `source` makes the body immutable. OKF
-fields with no lossless Daftari slot (the trust record, attestation machinery)
-are preserved under `okf_*` keys. Writes auto-commit and the index is rebuilt.
+resurface as a fresh draft), and `stale_after` converts to `ttl_days`. An
+`Attested Computation` is surfaced in an import warning but **not**
+auto-write-protected: `tier: source` is enforcement, and its only sanctioned
+grant path is `vault_set_tier` (reason required, provenance-logged) — a foreign
+bundle's self-declared `type` doesn't buy it. Review the doc, then elevate
+deliberately. OKF fields with no lossless Daftari slot (the trust record,
+attestation machinery) are preserved under `okf_*` keys. Writes auto-commit and
+the index is rebuilt.
 
 ```bash
 daftari okf import ./okf-bundle --into ./my-vault --dry-run

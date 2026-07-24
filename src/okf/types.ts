@@ -78,8 +78,10 @@ export const OKF_STATUSES = ["draft", "stable", "deprecated"] as const;
 export type OkfStatus = (typeof OKF_STATUSES)[number];
 
 // The v0.2 concept type for a sanctioned computation. Agents may fill declared
-// parameters at call time but must never edit the computation itself — on
-// import that contract maps to Daftari's `tier: source` (body immutable).
+// parameters at call time but must never edit the computation itself. Import
+// flags these docs in a warning so an operator can grant `tier: source` via
+// vault_set_tier — it never auto-elevates, because a foreign bundle's
+// self-declared type is not an authorization for write-protection enforcement.
 export const OKF_ATTESTED_COMPUTATION_TYPE = "Attested Computation";
 
 // Prefix under which import preserves foreign OKF fields that have no lossless

@@ -25,10 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `confidence: high` (positive signals only ever raise confidence — absence
   keeps the `medium` default, since an unverified v0.2 doc is
   indistinguishable from a v0.1 doc), `status: deprecated` imports as
-  `deprecated` instead of resurfacing as a fresh draft, `stale_after` converts
-  to `ttl_days`, and the new `Attested Computation` concept type lands as
-  `tier: source` — the spec forbids agents from editing sanctioned
-  computations, and `source` makes the body immutable to every writer. OKF
+  `deprecated` instead of resurfacing as a fresh draft, and `stale_after`
+  converts to `ttl_days`. The new `Attested Computation` concept type is
+  surfaced in an import warning but never auto-elevated to a write-protected
+  tier — `tier: source` is enforcement whose only sanctioned grant path is
+  `vault_set_tier` (reason required, provenance-logged), and a foreign
+  bundle's self-declared `type` must not buy it; the operator reviews and
+  elevates deliberately. OKF
   fields with no lossless Daftari slot (the trust record, the attestation
   machinery, unknown producer fields) are preserved under `okf_*` keys, so
   import stays non-destructive. v0.1 bundles import unchanged.

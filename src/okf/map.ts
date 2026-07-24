@@ -187,6 +187,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+// True when an OKF `type` names the v0.2 Attested Computation concept. Used by
+// import to flag these docs for deliberate operator review (vault_set_tier) —
+// never to grant write protection automatically: a foreign bundle's
+// self-declared type is not an authorization.
+export function isAttestedComputation(type: unknown): boolean {
+  return (
+    typeof type === "string" &&
+    type.trim().toLowerCase() === OKF_ATTESTED_COMPUTATION_TYPE.toLowerCase()
+  );
+}
+
 // The document date of an OKF doc: v0.2 `generated.at`, falling back to the
 // v0.1 `timestamp` it renamed (the spec-mandated consumer fallback).
 export function dateFromGenerated(okfRaw: Record<string, unknown>): string | undefined {
@@ -290,9 +301,13 @@ const OKF_CONSUMED_FIELDS = new Set<string>([
 //     vault has not canonized foreign content, however stable its producer
 //     considers it.
 //   - `stale_after` converts to `ttl_days` anchored at the doc date.
-//   - An `Attested Computation` lands as `tier: source`: the spec forbids
-//     agents from editing the computation, and `source` makes the body
-//     immutable to every writer.
+//   - An `Attested Computation` is NOT auto-elevated to a write-protected
+//     tier: `tier: source` is an enforcement mechanism whose only sanctioned
+//     grant path is vault_set_tier (reason required, provenance-logged), and a
+//     foreign bundle's self-declared `type` must not buy enforcement without
+//     that gate. Import surfaces the doc in a warning instead so an operator
+//     can review and elevate deliberately; the attestation machinery survives
+//     under `okf_*` keys either way.
 export function okfToDaftari(
   okfRaw: Record<string, unknown>,
   ctx: OkfImportContext,
@@ -315,8 +330,6 @@ export function okfToDaftari(
 
   const okfStatus = typeof okfRaw.status === "string" ? okfRaw.status.trim().toLowerCase() : "";
 
-  const attested = okfType.trim().toLowerCase() === OKF_ATTESTED_COMPUTATION_TYPE.toLowerCase();
-
   const out: Record<string, unknown> = {
     title,
     domain: "accumulation",
@@ -327,7 +340,6 @@ export function okfToDaftari(
     updated: date,
     updated_by: ctx.updatedBy,
     provenance: "direct",
-    tier: attested ? "source" : null,
     sources: sourcesFromOkf(okfRaw),
     superseded_by: null,
     ttl_days: ttlFromStaleAfter(okfRaw.stale_after, date),
