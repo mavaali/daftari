@@ -1,94 +1,68 @@
 # Dedup Is Not Epistemics
 
-*Draft stub for waglesworld.com. Numbers are real and committed; see the
-[demo repo](https://github.com/.../integrations/langgraph-store-demo).
-[STUB: ContextVault section needs Mihir's sourcing before publish.]*
+*Draft for waglesworld.com. All numbers are machine-generated and committed:
+[demo + evidence](https://github.com/mavaali/daftari/tree/main/integrations/langgraph-store-demo).*
 
-Agent memory vendors sell consolidation as understanding. It isn't. I planted
-20 facts in a LangMem store and ran their consolidation. It merged 4 of 5
-duplicates and caught 0 of 14 contradictions. Given the chance to see the
-conflicts, it deleted the evidence instead. That's the whole post. Details
-below.
+Agent memory vendors sell consolidation as understanding, but it isn't. I planted 20 facts in a LangMem store and ran their consolidation with their consolidation directives verbatim. It merged 4 of 5 duplicates and caught 0 of 14 contradictions. Given the chance to see the conflicts, it deleted the evidence instead. This post is about my investigation.
+
+Disclaimers up front: this tests langmem 0.0.30, which is pre-1.0 and says so. The langgraph stack around it is post-1.0 and was rock solid. The critique is about what consolidation IS, not about ship quality. And [daftari](https://daftari.dev), the other tool in this post, is my project; discount accordingly, then run the three commands and check.
 
 ## The tell: pricing memory as inventory
 
-[STUB: ContextVault pricing argument. The shape: they price per memory
-stored. Inventory pricing. If your revenue grows with stored memories, you
-have no incentive to reconcile them, only to accumulate them. A warehouse
-charges for pallets; it doesn't audit what's on them.]
+Look at how agent memory gets priced. ContextVault's tiers are gated by memory count: 50 memories on the trial, 500 at $9.99 a month, 2,500 at $49.99, unlimited on Enterprise. You upgrade when you accumulate. Their marketing says nothing about deduplication, reconciliation, or consistency. This isn't about one vendor; it's the category's business model showing. A warehouse charges for pallets. It doesn't audit what's on them, and it has no reason to tell you two pallets contradict each other.
+
+Inventory pricing is at least understandable. The problem starts when a vendor prices like a warehouse and markets like an auditor.
 
 ## The claim under test
 
-LangMem's default prompt instructs its manager to "remove incorrect or
-redundant memories while maintaining internal consistency." That's an
-epistemics claim. Consistency maintenance, in writing, in the default prompt.
+LangMem's default prompt instructs its memory manager to "remove incorrect or redundant memories while maintaining internal consistency." That's an epistemics claim. Consistency maintenance, in writing, in the default prompt.
 
-So I tested it as written. Four simulated agent sessions for a fictional
-company: pricing, ops, support, docs. 20 planted facts. Five near-duplicate
-pairs as the control group. Three pairwise contradictions. Two temporal traps.
-One four-way contradiction where no single pair reveals the full inconsistency:
+So I tested it as written. One honest disclosure: their default prompt extracts user-profile memories, so I used their documented instructions parameter to point extraction at org facts instead. The consolidation directives, the part under test, stayed verbatim. Every prompt is in the
+repo.
+
+I ran four simulated agent sessions for a fictional company: pricing, ops, support, docs. I planted 20 facts among 30 benign ones. Five near-duplicate pairs as the control group. Three pairwise
+contradictions. Two temporal traps. And one four-way contradiction where no single pair reveals the full inconsistency:
 
 - Pricing sells 500 requests/sec, guaranteed on order forms.
 - Ops hard-caps the gateway at 350.
 - Support grants 800 rps bursts without asking ops.
 - Public docs say every plan throttles at 200.
 
-Embedding distance between these: 0.48 to 0.66. Vector similarity will never
-pair them. You need structure, not similarity.
+Embedding distance between these claims: 0.48 to 0.66 cosine. The near-duplicate pairs sit at 0.81 to 0.93. Vector similarity will never pair the contradictions. You need structure, not similarity.
 
 ## What their consolidation did
 
 The control worked: 4 of 5 near-dup pairs merged. Their dedup is real.
 
-The contradictions: 0 of 14 caught, in any configuration, in any run. Two
-failure modes, and you get exactly one of them:
+The contradictions: 0 of 14 caught, in both full runs, across three configurations (their documented per-agent namespaces, a shared namespace, and a global single-context pass). Two failure modes, and you always get exactly one of them:
 
-1. **Namespace-scoped (their documented pattern): blind.** Consolidation can't
-   see across agent namespaces. All 14 contradictions survive untouched.
-2. **Shared namespace (the charitable setup): destructive.** It saw the
-   conflicts and resolved them by deleting one side. The 500 rps revenue
-   guarantee: gone. The us-east-1 deploy region: gone. Recency won every
-   arbitration. No flag, no tombstone, no audit trail. It also rewrote two
-   conflicting capacity claims into one harmonized policy that nobody in any
-   session ever stated.
+1. **Namespace-scoped (their documented pattern): blind.** Consolidation can't see across agent namespaces. All 14 contradictions survive,  unflagged, forever.
+2. **Shared namespace (the charitable setup): destructive.** It saw the conflicts and resolved them by deleting one side. The 500 rps revenue guarantee: gone. The us-east-1 deploy region: gone. Recency won every arbitration. No flag, no tombstone, no audit trail. It also rewrote two conflicting capacity claims into one harmonized policy that nobody in any session ever stated.
 
-Bonus finding: extraction invented a fact. It promoted the CTO of the fictional
-company to CTO of their biggest customer, and consolidation kept the
-fabrication. Your memory layer is generating confident wrong facts and then
-defending them against correction.
+Bonus finding: extraction invented a fact. It promoted the fictional company's CTO to CTO of their biggest customer, and consolidation kept the fabrication. Your memory layer generates confident wrong facts, then defends them against correction.
 
 ## The counterexample that matters
 
-Daftari read the same Postgres store through a read-only role and compiled
-each memory into a claim note with provenance back to the store row. Then an
-agent pass judged related notes for conflict. Same model as LangMem's run.
-Same one-pair-at-a-time retrieval scope. No global view, ever.
+Daftari read the same Postgres store through a read-only role and compiled each memory into a claim note with provenance back to the store row. Then an agent pass judged related notes for conflict. Same model as LangMem's run. Same one-pair-at-a-time retrieval scope. No global view, ever.
 
-Result: 9 tensions logged, 0 false positives across ~30 filler facts. And the
-four-way capacity conflict surfaced as one connected component spanning all
-four sessions, assembled from three pairwise judgments that never saw each
-other. The graph knows something no single LLM call knew.
+Result: 3 of 3 pairwise contradictions logged, both temporal traps flagged without being auto-resolved by recency, and at most one borderline flag on the 30 benign facts across two runs (a filler fact that turned out to genuinely tension with a planted one; it's in the committed report, since I believe in transparency).
 
-That's the argument in one sentence: the intelligence isn't in the judge, it's
-in the ledger. LangMem had the same judge and destroyed the evidence. A
-tension log that only appends turned three narrow observations into an
-organizational diagnosis: your pricing, ops, support, and docs teams are
-selling four different products.
+And the four-way capacity conflict surfaced as one connected component spanning all four sessions, assembled from three pairwise judgments that never saw each other. The graph knows something no single LLM call knew.
+
+That's the argument in one sentence: the intelligence isn't in the judge, it's in the ledger. LangMem had the same judge and destroyed the evidence. An append-only tension log turned three narrow observations into an organizational diagnosis: your pricing, ops, support, and docs teams are selling four different products.
 
 ## The retrofit play
 
-Nobody migrates memory stores. You don't have to. The store is a Postgres
-table; reading it is store-agnosticism. Daftari imported LangMem's memories
-without LangMem's runtime, without write access, without touching the
-producing system. Any agent memory store with a readable substrate gets the
-same treatment: compile the claims, keep the provenance, grow the tension
-graph on top.
+Nobody migrates memory stores. You don't have to. LangMem's store is a Postgres table; reading it is the whole integration. Daftari imported the memories without LangMem's runtime, without write access, without touching the producing system. One command, 49 claim notes, every note traceable to its source row. Any memory store with a readable substrate gets the same treatment: compile the claims, keep the provenance, grow the tension graph on top.
 
-Dedup makes stores smaller. Epistemics makes them honest. They're different
-products, and the second one retrofits onto the first.
+Dedup makes stores smaller but epistemics makes them honest. Different products. The second one retrofits onto the first.
 
-My take: if your memory vendor's consolidation "maintains internal
-consistency," ask them one question. When two memories conflict, where does
-the loser go?
+If your memory vendor's consolidation "maintains internal consistency," ask them one question. When two memories conflict, where does the loser go? There are only three answers. It survives untouched (you have a search index, not memory). It disappears (you have evidence destruction). Or it's recorded as a conflict (you have epistemics). 
 
-[STUB: closing CTA, repo link, RESULTS.md numbers table.]
+Price accordingly.
+
+---
+
+*Reproduce it: [three commands from a clean clone](https://github.com/mavaali/daftari/blob/main/integrations/langgraph-store-demo/DEMO.md).
+Full planted-vs-detected tables: [RESULTS.md](https://github.com/mavaali/daftari/blob/main/integrations/langgraph-store-demo/RESULTS.md).
+Think I misconfigured LangMem? The fixtures are committed and the repo takes PRs. Show a configuration that catches the plants and I'll publish the correction with your name on it.*
