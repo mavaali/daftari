@@ -420,7 +420,7 @@ export async function vaultStatus(
   if (!scan.ok) return scan;
   const allEntries = scan.value.map(toIndexEntry);
   const visibleEntries = access ? filterByReadPermission(access.role, allEntries) : allEntries;
-  const index = { value: { count: visibleEntries.length, entries: visibleEntries } };
+  const indexEntries = { count: visibleEntries.length, entries: visibleEntries };
 
   const byCollection = new Map<string, number>();
   let invalidCount = 0;
