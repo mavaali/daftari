@@ -25,7 +25,7 @@ import {
   outgoingLinkTargets,
   resolveLink,
 } from "../curation/vault-docs.js";
-import { parseDocument } from "../frontmatter/parser.js";
+import { type ParsedDocument, parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
   CONFIDENCES,
@@ -50,7 +50,7 @@ import { indexDocument } from "../search/reindex.js";
 import { noteSelfWrite } from "../search/self-write.js";
 import { allDocumentPaths, getDocumentsByPaths } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
-import { loadConfig, type SchemaExtension } from "../utils/config.js";
+import { type DaftariConfig, loadConfig, type SchemaExtension } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
@@ -477,6 +477,104 @@ function denyIfProposeOnly(access: AccessContext | undefined, tool: string): Res
   return ok(undefined);
 }
 
+// The uniform RBAC write gate. One helper because the denial string is part
+// of the tool contract — every write tool emits the identical message shape,
+// and it must never leak more than the collection name.
+function requireWriteAccess(
+  access: AccessContext | undefined,
+  collection: string,
+): Result<void, Error> {
+  if (access && !canWrite(access.role, collection)) {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' cannot write to ` + `collection '${collection}'`,
+      ),
+    );
+  }
+  return ok(undefined);
+}
+
+// The target document as the frontmatter-only lifecycle tools (promote,
+// deprecate, set_confidence, set_tier, supersede) load it: canonical paths,
+// parsed document, and vault config, in the shared error order — resolve,
+// read (not-found named by the tool), parse, config.
+interface TargetDocument {
+  relPath: string;
+  absPath: string;
+  parsed: ParsedDocument;
+  config: DaftariConfig;
+}
+
+async function loadTargetDocument(
+  vaultRoot: string,
+  rawPath: string,
+  tool: string,
+): Promise<Result<TargetDocument, Error>> {
+  const resolved = resolveVaultPath(vaultRoot, rawPath);
+  if (!resolved.ok) return resolved;
+
+  const existing = await readFile(resolved.value.absPath);
+  if (!existing.ok) {
+    return err(new Error(`${tool}: document not found: ${rawPath}`));
+  }
+  const parsed = parseDocument(existing.value);
+  if (!parsed.ok) return parsed;
+
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+
+  return ok({
+    // Lock key, provenance, and commit path are all keyed on the CANONICAL
+    // relPath, never the raw caller string: aliased spellings of one file
+    // must contend on one lock (#127/#128).
+    relPath: resolved.value.relPath,
+    absPath: resolved.value.absPath,
+    parsed: parsed.value,
+    config: config.value,
+  });
+}
+
+// The shared performWrite tail for frontmatter-only mutations: body preserved
+// verbatim (bodyChanged false), file text re-serialized from the new
+// frontmatter over the existing content.
+function performFrontmatterWrite(opts: {
+  vaultRoot: string;
+  target: TargetDocument;
+  agent: string;
+  tool: string;
+  action: WriteResult["action"];
+  newFrontmatter: Frontmatter;
+  commitMessage: string;
+  baseVersion: string | undefined;
+  access?: AccessContext;
+}): Promise<Result<WriteResult, Error>> {
+  const { target } = opts;
+  return performWrite({
+    vaultRoot: opts.vaultRoot,
+    relPath: target.relPath,
+    absPath: target.absPath,
+    agent: opts.agent,
+    tool: opts.tool,
+    action: opts.action,
+    fileText: serializeDocument(
+      opts.newFrontmatter,
+      target.parsed.content,
+      target.config.schemaExtensions,
+      target.parsed.raw,
+    ),
+    newFrontmatter: opts.newFrontmatter,
+    oldFrontmatter: target.parsed.frontmatter,
+    validation: target.parsed.validation,
+    commitMessage: opts.commitMessage,
+    autoCommit: target.config.autoCommit,
+    gitDir: target.config.gitDir,
+    baseVersion: opts.baseVersion,
+    shadowMode: target.config.shadowMode,
+    principal: opts.access?.user,
+    bodyChanged: false,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // vault_write
 // ---------------------------------------------------------------------------
@@ -627,17 +725,8 @@ export async function vaultWrite(
   // collection is allowed to differ from the physical dir (e.g. a draft staged
   // in _drafts/ that declares its destination collection); it just never widens
   // access.
-  if (access) {
-    const collection = targetCollection(vaultRoot, path.value);
-    if (!canWrite(access.role, collection)) {
-      return err(
-        new Error(
-          `access denied: role '${access.roleName}' cannot write to ` +
-            `collection '${collection}'`,
-        ),
-      );
-    }
-  }
+  const writeGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!writeGate.ok) return writeGate;
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
@@ -960,17 +1049,8 @@ export async function vaultAppend(
   const extensions = config.value.schemaExtensions;
 
   const oldFrontmatter = parsed.value.frontmatter;
-  if (access) {
-    const collection = collectionOf(path.value, oldFrontmatter);
-    if (!canWrite(access.role, collection)) {
-      return err(
-        new Error(
-          `access denied: role '${access.roleName}' cannot write to ` +
-            `collection '${collection}'`,
-        ),
-      );
-    }
-  }
+  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+  if (!rbac.ok) return rbac;
   const newFrontmatter: Frontmatter = {
     ...oldFrontmatter,
     updated: todayISO(),
@@ -1081,21 +1161,10 @@ export async function vaultPromote(
     return err(new Error(`access denied: role '${access.roleName}' cannot promote documents`));
   }
 
-  const resolved = resolveVaultPath(vaultRoot, path.value);
-  if (!resolved.ok) return resolved;
+  const target = await loadTargetDocument(vaultRoot, path.value, "vault_promote");
+  if (!target.ok) return target;
 
-  const existing = await readFile(resolved.value.absPath);
-  if (!existing.ok) {
-    return err(new Error(`vault_promote: document not found: ${path.value}`));
-  }
-  const parsed = parseDocument(existing.value);
-  if (!parsed.ok) return parsed;
-
-  const config = loadConfig(vaultRoot);
-  if (!config.ok) return config;
-  const extensions = config.value.schemaExtensions;
-
-  const oldFrontmatter = parsed.value.frontmatter;
+  const oldFrontmatter = target.value.parsed.frontmatter;
   if (oldFrontmatter.status !== "draft") {
     return err(
       new Error(
@@ -1104,15 +1173,15 @@ export async function vaultPromote(
       ),
     );
   }
-  if (!parsed.value.validation.valid) {
-    const summary = parsed.value.validation.issues
+  if (!target.value.parsed.validation.valid) {
+    const summary = target.value.parsed.validation.issues
       .map((i) => `${i.field}: ${i.message}`)
       .join("; ");
     return err(new Error(`vault_promote: frontmatter is incomplete: ${summary}`));
   }
   // `confidence set` — the document must declare a confidence explicitly, not
   // ride on the validator's default.
-  const rawConfidence = parsed.value.raw.confidence;
+  const rawConfidence = target.value.parsed.raw.confidence;
   if (
     typeof rawConfidence !== "string" ||
     !(CONFIDENCES as readonly string[]).includes(rawConfidence)
@@ -1120,34 +1189,21 @@ export async function vaultPromote(
     return err(new Error("vault_promote: confidence must be set before promotion"));
   }
 
-  const newFrontmatter: Frontmatter = {
-    ...oldFrontmatter,
-    status: "canonical",
-    updated: todayISO(),
-    updated_by: agent.value,
-  };
-
-  return performWrite({
+  return performFrontmatterWrite({
     vaultRoot,
-    // Lock key, provenance, and commit path are all keyed on the CANONICAL
-    // relPath (resolved.value.relPath), never the raw caller string: aliased
-    // spellings of one file must contend on one lock (#127/#128).
-    relPath: resolved.value.relPath,
-    absPath: resolved.value.absPath,
+    target: target.value,
     agent: agent.value,
     tool: "vault_promote",
     action: "promote",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
-    newFrontmatter,
-    oldFrontmatter,
-    validation: parsed.value.validation,
+    newFrontmatter: {
+      ...oldFrontmatter,
+      status: "canonical",
+      updated: todayISO(),
+      updated_by: agent.value,
+    },
     commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
-    autoCommit: config.value.autoCommit,
-    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
-    shadowMode: config.value.shadowMode,
-    principal: access?.user,
-    bodyChanged: false,
+    access,
   });
 }
 
@@ -1184,63 +1240,31 @@ export async function vaultDeprecate(
     supersededBy = args.superseded_by;
   }
 
-  const resolved = resolveVaultPath(vaultRoot, path.value);
-  if (!resolved.ok) return resolved;
+  const target = await loadTargetDocument(vaultRoot, path.value, "vault_deprecate");
+  if (!target.ok) return target;
 
-  const existing = await readFile(resolved.value.absPath);
-  if (!existing.ok) {
-    return err(new Error(`vault_deprecate: document not found: ${path.value}`));
-  }
-  const parsed = parseDocument(existing.value);
-  if (!parsed.ok) return parsed;
+  const oldFrontmatter = target.value.parsed.frontmatter;
+  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+  if (!rbac.ok) return rbac;
 
-  const config = loadConfig(vaultRoot);
-  if (!config.ok) return config;
-  const extensions = config.value.schemaExtensions;
-
-  const oldFrontmatter = parsed.value.frontmatter;
-  if (access) {
-    const collection = collectionOf(path.value, oldFrontmatter);
-    if (!canWrite(access.role, collection)) {
-      return err(
-        new Error(
-          `access denied: role '${access.roleName}' cannot write to ` +
-            `collection '${collection}'`,
-        ),
-      );
-    }
-  }
-  const newFrontmatter: Frontmatter = {
-    ...oldFrontmatter,
-    status: "deprecated",
-    superseded_by: supersededBy,
-    updated: todayISO(),
-    updated_by: agent.value,
-  };
-
-  return performWrite({
+  return performFrontmatterWrite({
     vaultRoot,
-    // Lock key, provenance, and commit path are all keyed on the CANONICAL
-    // relPath (resolved.value.relPath), never the raw caller string: aliased
-    // spellings of one file must contend on one lock (#127/#128).
-    relPath: resolved.value.relPath,
-    absPath: resolved.value.absPath,
+    target: target.value,
     agent: agent.value,
     tool: "vault_deprecate",
     action: "deprecate",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
-    newFrontmatter,
-    oldFrontmatter,
-    validation: parsed.value.validation,
+    newFrontmatter: {
+      ...oldFrontmatter,
+      status: "deprecated",
+      superseded_by: supersededBy,
+      updated: todayISO(),
+      updated_by: agent.value,
+    },
     commitMessage:
       `vault_deprecate: ${path.value} by ${agent.value} — ${reason.value}` +
       (supersededBy ? ` (superseded by ${supersededBy})` : ""),
-    autoCommit: config.value.autoCommit,
-    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
-    shadowMode: config.value.shadowMode,
-    principal: access?.user,
-    bodyChanged: false,
+    access,
   });
 }
 
@@ -1277,32 +1301,12 @@ export async function vaultSetConfidence(
   const baseVersion = readBaseVersion(args, "vault_set_confidence");
   if (!baseVersion.ok) return baseVersion;
 
-  const resolved = resolveVaultPath(vaultRoot, path.value);
-  if (!resolved.ok) return resolved;
+  const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_confidence");
+  if (!target.ok) return target;
 
-  const existing = await readFile(resolved.value.absPath);
-  if (!existing.ok) {
-    return err(new Error(`vault_set_confidence: document not found: ${path.value}`));
-  }
-  const parsed = parseDocument(existing.value);
-  if (!parsed.ok) return parsed;
-
-  const config = loadConfig(vaultRoot);
-  if (!config.ok) return config;
-  const extensions = config.value.schemaExtensions;
-
-  const oldFrontmatter = parsed.value.frontmatter;
-  if (access) {
-    const collection = collectionOf(path.value, oldFrontmatter);
-    if (!canWrite(access.role, collection)) {
-      return err(
-        new Error(
-          `access denied: role '${access.roleName}' cannot write to ` +
-            `collection '${collection}'`,
-        ),
-      );
-    }
-  }
+  const oldFrontmatter = target.value.parsed.frontmatter;
+  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+  if (!rbac.ok) return rbac;
 
   // No-op guard: a confidence already at the target would churn a commit for no
   // change. Surface it as an error so a redundant staged confidence-up does not
@@ -1312,7 +1316,7 @@ export async function vaultSetConfidence(
   // validated value would wrongly reject set_confidence(…, "low") on a doc that
   // never declared one and never write the field (the trap vault_promote dodges
   // the same way, via parsed.value.raw.confidence).
-  const rawConfidence = parsed.value.raw.confidence;
+  const rawConfidence = target.value.parsed.raw.confidence;
   const currentConfidence =
     typeof rawConfidence === "string" && (CONFIDENCES as readonly string[]).includes(rawConfidence)
       ? rawConfidence
@@ -1323,36 +1327,23 @@ export async function vaultSetConfidence(
     );
   }
 
-  const newFrontmatter: Frontmatter = {
-    ...oldFrontmatter,
-    confidence: confidence.value as Frontmatter["confidence"],
-    updated: todayISO(),
-    updated_by: agent.value,
-  };
-
-  return performWrite({
+  return performFrontmatterWrite({
     vaultRoot,
-    // Lock key, provenance, and commit path are all keyed on the CANONICAL
-    // relPath (resolved.value.relPath), never the raw caller string: aliased
-    // spellings of one file must contend on one lock (#127/#128).
-    relPath: resolved.value.relPath,
-    absPath: resolved.value.absPath,
+    target: target.value,
     agent: agent.value,
     tool: "vault_set_confidence",
     action: "confidence-set",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
-    newFrontmatter,
-    oldFrontmatter,
-    validation: parsed.value.validation,
+    newFrontmatter: {
+      ...oldFrontmatter,
+      confidence: confidence.value as Frontmatter["confidence"],
+      updated: todayISO(),
+      updated_by: agent.value,
+    },
     commitMessage:
       `vault_set_confidence: ${path.value} ${oldFrontmatter.confidence}→${confidence.value} ` +
       `by ${agent.value} — ${reason.value}`,
-    autoCommit: config.value.autoCommit,
-    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
-    shadowMode: config.value.shadowMode,
-    principal: access?.user,
-    bodyChanged: false,
+    access,
   });
 }
 
@@ -1391,32 +1382,12 @@ export async function vaultSetTier(
   const baseVersion = readBaseVersion(args, "vault_set_tier");
   if (!baseVersion.ok) return baseVersion;
 
-  const resolved = resolveVaultPath(vaultRoot, path.value);
-  if (!resolved.ok) return resolved;
+  const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_tier");
+  if (!target.ok) return target;
 
-  const existing = await readFile(resolved.value.absPath);
-  if (!existing.ok) {
-    return err(new Error(`vault_set_tier: document not found: ${path.value}`));
-  }
-  const parsed = parseDocument(existing.value);
-  if (!parsed.ok) return parsed;
-
-  const config = loadConfig(vaultRoot);
-  if (!config.ok) return config;
-  const extensions = config.value.schemaExtensions;
-
-  const oldFrontmatter = parsed.value.frontmatter;
-  if (access) {
-    const collection = collectionOf(path.value, oldFrontmatter);
-    if (!canWrite(access.role, collection)) {
-      return err(
-        new Error(
-          `access denied: role '${access.roleName}' cannot write to ` +
-            `collection '${collection}'`,
-        ),
-      );
-    }
-  }
+  const oldFrontmatter = target.value.parsed.frontmatter;
+  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+  if (!rbac.ok) return rbac;
 
   // The manual consent boundary: only a human identity may lift `manual`.
   if (
@@ -1435,7 +1406,7 @@ export async function vaultSetTier(
   // No-op guard, same shape as vault_set_confidence: compare against the raw
   // on-disk value so an invalid raw tier (validated down to null) can still be
   // set to any member.
-  const rawTier = parsed.value.raw.tier;
+  const rawTier = target.value.parsed.raw.tier;
   const currentTier =
     typeof rawTier === "string" && (TIERS as readonly string[]).includes(rawTier)
       ? rawTier
@@ -1444,36 +1415,23 @@ export async function vaultSetTier(
     return err(new Error(`vault_set_tier: ${path.value} tier is already '${newTier}'`));
   }
 
-  const newFrontmatter: Frontmatter = {
-    ...oldFrontmatter,
-    tier: newTier,
-    updated: todayISO(),
-    updated_by: agent.value,
-  };
-
-  return performWrite({
+  return performFrontmatterWrite({
     vaultRoot,
-    // Lock key, provenance, and commit path are all keyed on the CANONICAL
-    // relPath (resolved.value.relPath), never the raw caller string: aliased
-    // spellings of one file must contend on one lock (#127/#128).
-    relPath: resolved.value.relPath,
-    absPath: resolved.value.absPath,
+    target: target.value,
     agent: agent.value,
     tool: "vault_set_tier",
     action: "tier-set",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
-    newFrontmatter,
-    oldFrontmatter,
-    validation: parsed.value.validation,
+    newFrontmatter: {
+      ...oldFrontmatter,
+      tier: newTier,
+      updated: todayISO(),
+      updated_by: agent.value,
+    },
     commitMessage:
       `vault_set_tier: ${path.value} ${oldFrontmatter.tier ?? "unset"}→${newTier} ` +
       `by ${agent.value} — ${reason.value}`,
-    autoCommit: config.value.autoCommit,
-    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
-    shadowMode: config.value.shadowMode,
-    principal: access?.user,
-    bodyChanged: false,
+    access,
   });
 }
 
@@ -1535,50 +1493,35 @@ export async function vaultSupersede(
 
   const config = loadConfig(vaultRoot);
   if (!config.ok) return config;
-  const extensions = config.value.schemaExtensions;
 
   const oldFrontmatter = parsed.value.frontmatter;
-  if (access) {
-    const collection = collectionOf(oldPath.value, oldFrontmatter);
-    if (!canWrite(access.role, collection)) {
-      return err(
-        new Error(
-          `access denied: role '${access.roleName}' cannot write to ` +
-            `collection '${collection}'`,
-        ),
-      );
-    }
-  }
+  const rbac = requireWriteAccess(access, collectionOf(oldPath.value, oldFrontmatter));
+  if (!rbac.ok) return rbac;
 
-  const newFrontmatter: Frontmatter = {
-    ...oldFrontmatter,
-    status: "superseded",
-    superseded_by: newPath.value,
-    updated: todayISO(),
-    updated_by: agent.value,
-  };
-
-  return performWrite({
+  return performFrontmatterWrite({
     vaultRoot,
     // Canonical relPath keys the lock/provenance/commit (#127/#128).
-    relPath: resolvedOld.value.relPath,
-    absPath: resolvedOld.value.absPath,
+    target: {
+      relPath: resolvedOld.value.relPath,
+      absPath: resolvedOld.value.absPath,
+      parsed: parsed.value,
+      config: config.value,
+    },
     agent: agent.value,
     tool: "vault_supersede",
     action: "supersede",
-    fileText: serializeDocument(newFrontmatter, parsed.value.content, extensions, parsed.value.raw),
-    newFrontmatter,
-    oldFrontmatter,
-    validation: parsed.value.validation,
+    newFrontmatter: {
+      ...oldFrontmatter,
+      status: "superseded",
+      superseded_by: newPath.value,
+      updated: todayISO(),
+      updated_by: agent.value,
+    },
     commitMessage:
       `vault_supersede: ${oldPath.value} superseded by ${newPath.value} ` +
       `by ${agent.value}${reason ? ` — ${reason}` : ""}`,
-    autoCommit: config.value.autoCommit,
-    gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
-    shadowMode: config.value.shadowMode,
-    principal: access?.user,
-    bodyChanged: false,
+    access,
   });
 }
 
@@ -1684,14 +1627,8 @@ export async function vaultMerge(
       targetCollection(vaultRoot, targetPath.value),
     ];
     for (const collection of collections) {
-      if (!canWrite(access.role, collection)) {
-        return err(
-          new Error(
-            `access denied: role '${access.roleName}' cannot write to ` +
-              `collection '${collection}'`,
-          ),
-        );
-      }
+      const gate = requireWriteAccess(access, collection);
+      if (!gate.ok) return gate;
     }
   }
 

@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
   created_at   TEXT NOT NULL,
   PRIMARY KEY (content_hash, model)
 );
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

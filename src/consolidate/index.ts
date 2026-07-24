@@ -25,7 +25,7 @@ import {
   type LlmTransport,
   resolveTransport,
 } from "../eval/llm-openrouter.js";
-import { err, ok } from "../frontmatter/types.js";
+import { err, ok, type Result } from "../frontmatter/types.js";
 import { vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
 import { changedSince, log as gitLog, isGitRepo } from "../utils/git.js";
@@ -154,17 +154,15 @@ const VALID_MODES: ReadonlySet<string> = new Set(["scan", "birth", "revision", "
 // Transport-aware LLM construction. The key check runs before the constructor
 // so a missing key fails fast with a clear message rather than the client's
 // terse internal throw.
-function constructLlm(transport: LlmTransport): { llm: LlmClient } | { error: string } {
+function constructLlm(transport: LlmTransport): Result<LlmClient, Error> {
   const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
   if (!process.env[keyVar]) {
-    return { error: `${keyVar} env var is required (transport: ${transport})` };
+    return err(new Error(`${keyVar} env var is required (transport: ${transport})`));
   }
   try {
-    return {
-      llm: transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient(),
-    };
+    return ok(transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient());
   } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+    return err(e instanceof Error ? e : new Error(String(e)));
   }
 }
 
@@ -323,7 +321,7 @@ export async function runConsolidate(argv: string[]): Promise<number> {
 
     const stage2: Stage2Result = emptyStage2();
     if (mode !== "scan") {
-      const cfg = await loadConfig(vaultRoot);
+      const cfg = loadConfig(vaultRoot);
       if (!cfg.ok) {
         process.stderr.write(`consolidate: ${cfg.error.message}\n`);
         return 2;
@@ -342,14 +340,14 @@ export async function runConsolidate(argv: string[]): Promise<number> {
         return 2;
       }
       const llmRes = constructLlm(transport);
-      if ("error" in llmRes) {
-        process.stderr.write(`consolidate: ${llmRes.error}\n`);
+      if (!llmRes.ok) {
+        process.stderr.write(`consolidate: ${llmRes.error.message}\n`);
         return 2;
       }
       // Cap total Stage-2 LLM spend when --max-llm-calls is given (a real spend
       // bound; --budget only caps queue items). Undefined leaves calls unlimited.
       const llm =
-        maxLlmCalls.value !== null ? withCallBudget(llmRes.llm, maxLlmCalls.value) : llmRes.llm;
+        maxLlmCalls.value !== null ? withCallBudget(llmRes.value, maxLlmCalls.value) : llmRes.value;
 
       stage2.shadowMode = cfg.value.shadowMode;
       const observe = makeObserve({
@@ -709,11 +707,11 @@ async function runDecorrelationReportCli(argv: string[]): Promise<number> {
     return 2;
   }
   const llmRes = constructLlm(transportRes.value);
-  if ("error" in llmRes) {
-    process.stderr.write(`consolidate: ${llmRes.error}\n`);
+  if (!llmRes.ok) {
+    process.stderr.write(`consolidate: ${llmRes.error.message}\n`);
     return 2;
   }
-  const llm = llmRes.llm;
+  const llm = llmRes.value;
 
   const model =
     flag(argv, "model") ??

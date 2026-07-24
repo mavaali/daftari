@@ -34,6 +34,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { toSecondISO } from "../utils/dates.js";
 import type { FrontmatterDiff } from "./provenance.js";
 import { listStagedActions } from "./staged-actions.js";
 import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tension-blast.js";
@@ -238,7 +239,7 @@ export async function recordShadowAction(
   const spentBefore = shadowSpent(vaultRoot);
 
   const record: ShadowActionRecord = {
-    at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    at: toSecondISO(new Date()),
     tool: input.tool,
     action: input.action,
     target_path: input.targetPath,
@@ -303,7 +304,7 @@ export async function recordEnvelopeDecision(
   input: EnvelopeJournalInput,
 ): Promise<Result<ShadowActionRecord, Error>> {
   const record: ShadowActionRecord = {
-    at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    at: toSecondISO(new Date()),
     tool: input.tool,
     action: input.action,
     target_path: input.targetPath,
@@ -402,20 +403,26 @@ function toLintItem(r: ShadowActionRecord): ShadowLintItem {
   };
 }
 
+// Pure summary over already-read records — the lint path reads the log once
+// and derives both this summary and its coverage view from the same records.
+export function shadowLintSummaryOf(records: ShadowActionRecord[]): ShadowLintSummary {
+  // would_gate-based view (doc-write calibration).
+  const gated = records.filter((r) => r.would_gate);
+  // decision-based view (envelope) — distinct from would_gate.
+  const decisionGated = records.filter((r) => r.decision === "gated");
+  return {
+    total: records.length,
+    gated: gated.length,
+    recentGated: gated.slice(-SHADOW_LINT_RECENT_LIMIT).reverse().map(toLintItem),
+    gatedCount: decisionGated.length,
+    gatedSurfaced: decisionGated.slice(-SHADOW_LINT_RECENT_LIMIT).reverse().map(toLintItem),
+  };
+}
+
 export async function shadowLintSummary(
   vaultRoot: string,
 ): Promise<Result<ShadowLintSummary, Error>> {
   const all = await listShadowActions(vaultRoot);
   if (!all.ok) return all;
-  // would_gate-based view (doc-write calibration).
-  const gated = all.value.filter((r) => r.would_gate);
-  // decision-based view (envelope) — distinct from would_gate.
-  const decisionGated = all.value.filter((r) => r.decision === "gated");
-  return ok({
-    total: all.value.length,
-    gated: gated.length,
-    recentGated: gated.slice(-SHADOW_LINT_RECENT_LIMIT).reverse().map(toLintItem),
-    gatedCount: decisionGated.length,
-    gatedSurfaced: decisionGated.slice(-SHADOW_LINT_RECENT_LIMIT).reverse().map(toLintItem),
-  });
+  return ok(shadowLintSummaryOf(all.value));
 }

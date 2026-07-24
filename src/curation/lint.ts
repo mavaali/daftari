@@ -13,10 +13,10 @@ import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
-import { listShadowActions, type ShadowLintSummary, shadowLintSummary } from "./shadow.js";
+import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
 import {
-  listPendingForLint,
   listStagedActions,
+  pendingLintItems,
   type StagedActionLintItem,
 } from "./staged-actions.js";
 
@@ -96,14 +96,18 @@ export interface TensionAging {
 
 // Cluster metrics (Phase 2 of the tension graph plan, 2026-05-31). The two
 // flag counts mirror the spec's stale-smell thresholds: a cluster with more
-// than 5 documents is large enough to warrant investigation, and a cluster
-// whose oldest tension is more than 90 days old is tech debt. Counts only —
-// `vault_lint` never auto-acts on them.
+// documents than LARGE_CLUSTER_MIN_SIZE is large enough to warrant
+// investigation, and a cluster whose oldest tension is older than
+// AGED_CLUSTER_MIN_DAYS is tech debt. Counts only — `vault_lint` never
+// auto-acts on them.
+export const LARGE_CLUSTER_MIN_SIZE = 5;
+export const AGED_CLUSTER_MIN_DAYS = 90;
+
 export interface TensionClustersHealth {
   count: number;
   maxSize: number;
-  large: number; // clusters where size > 5
-  aged: number; // clusters where oldest_tension_age_days > 90
+  large: number; // clusters where size > LARGE_CLUSTER_MIN_SIZE
+  aged: number; // clusters where oldest_tension_age_days > AGED_CLUSTER_MIN_DAYS
 }
 
 export interface TensionHealth {
@@ -346,18 +350,17 @@ export async function runLint(
   const tensionHealth = await computeTensionHealth(vaultRoot, allDocs, now);
   if (!tensionHealth.ok) return tensionHealth;
 
-  const stagedActions = await listPendingForLint(vaultRoot, now);
-  if (!stagedActions.ok) return stagedActions;
-
-  const shadowActions = await shadowLintSummary(vaultRoot);
-  if (!shadowActions.ok) return shadowActions;
-
+  // Each JSONL log is read ONCE; the lint summaries and the coverage view
+  // below are derived from the same in-memory records.
   const edgesRes = await listEdges(vaultRoot, {}, now);
   if (!edgesRes.ok) return edgesRes;
   const shadowRecordsRes = await listShadowActions(vaultRoot);
   if (!shadowRecordsRes.ok) return shadowRecordsRes;
   const stagedRes = await listStagedActions(vaultRoot);
   if (!stagedRes.ok) return stagedRes;
+
+  const stagedActions = pendingLintItems(stagedRes.value, now);
+  const shadowActions = shadowLintSummaryOf(shadowRecordsRes.value);
   const coverageEquityRes = coverageEquitySummary({
     docs,
     edges: edgesRes.value,
@@ -372,8 +375,8 @@ export async function runLint(
     checks,
     totalFindings,
     tensionHealth: tensionHealth.value,
-    stagedActions: stagedActions.value,
-    shadowActions: shadowActions.value,
+    stagedActions,
+    shadowActions,
     coverageEquity: coverageEquityRes.value,
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
   });
@@ -455,8 +458,8 @@ async function computeTensionHealth(
   let aged = 0;
   for (const c of clusterResult.clusters) {
     if (c.size > maxSize) maxSize = c.size;
-    if (c.size > 5) large += 1;
-    if (c.oldest_tension_age_days > 90) aged += 1;
+    if (c.size > LARGE_CLUSTER_MIN_SIZE) large += 1;
+    if (c.oldest_tension_age_days > AGED_CLUSTER_MIN_DAYS) aged += 1;
   }
   const clusters: TensionClustersHealth = {
     count: clusterResult.cluster_count,

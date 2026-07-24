@@ -14,7 +14,7 @@ import {
 } from "../curation/edge-staleness.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
-import { listStaleFiles } from "../curation/staleness.js";
+import { computeStaleness } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
@@ -287,15 +287,19 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
   return top ?? "";
 }
 
-export async function vaultIndex(
-  vaultRoot: string,
-  filters: VaultIndexFilters = {},
-  access?: AccessContext,
-): Promise<Result<VaultIndexResult, Error>> {
+// One parsed document from a whole-vault scan. Shared by vaultIndex and
+// vaultStatus so a status call pays for ONE read+parse sweep, not two.
+interface ScannedDoc {
+  relPath: string;
+  frontmatter: Frontmatter;
+  valid: boolean;
+}
+
+async function scanVaultDocs(vaultRoot: string): Promise<Result<ScannedDoc[], Error>> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return list;
 
-  const entries: VaultIndexEntry[] = [];
+  const docs: ScannedDoc[] = [];
   for (const relPath of list.value) {
     const resolved = resolveVaultPath(vaultRoot, relPath);
     if (!resolved.ok) continue;
@@ -303,35 +307,55 @@ export async function vaultIndex(
     if (!file.ok) continue;
     const parsed = parseDocument(file.value);
     if (!parsed.ok) continue;
-
-    const fm = parsed.value.frontmatter;
-    const collection = collectionOf(relPath, fm);
-
-    if (filters.collection && collection !== filters.collection) continue;
-    if (filters.status && fm.status !== filters.status) continue;
-    if (filters.domain && fm.domain !== filters.domain) continue;
-    if (filters.tags && filters.tags.length > 0) {
-      const hasAll = filters.tags.every((t) => fm.tags.includes(t));
-      if (!hasAll) continue;
-    }
-    if (filters.hasUnanswered !== undefined) {
-      if (fm.questions_raised.length > 0 !== filters.hasUnanswered) continue;
-    }
-
-    entries.push({
-      path: relPath,
-      title: fm.title,
-      collection,
-      domain: fm.domain,
-      status: fm.status,
-      confidence: fm.confidence,
-      updated: fm.updated,
-      tags: fm.tags,
-      questionsAnswered: fm.questions_answered,
-      questionsRaised: fm.questions_raised,
+    docs.push({
+      relPath,
+      frontmatter: parsed.value.frontmatter,
       valid: parsed.value.validation.valid,
     });
   }
+  return ok(docs);
+}
+
+function toIndexEntry(doc: ScannedDoc): VaultIndexEntry {
+  const fm = doc.frontmatter;
+  return {
+    path: doc.relPath,
+    title: fm.title,
+    collection: collectionOf(doc.relPath, fm),
+    domain: fm.domain,
+    status: fm.status,
+    confidence: fm.confidence,
+    updated: fm.updated,
+    tags: fm.tags,
+    questionsAnswered: fm.questions_answered,
+    questionsRaised: fm.questions_raised,
+    valid: doc.valid,
+  };
+}
+
+function matchesIndexFilters(doc: ScannedDoc, filters: VaultIndexFilters): boolean {
+  const fm = doc.frontmatter;
+  if (filters.collection && collectionOf(doc.relPath, fm) !== filters.collection) return false;
+  if (filters.status && fm.status !== filters.status) return false;
+  if (filters.domain && fm.domain !== filters.domain) return false;
+  if (filters.tags && filters.tags.length > 0 && !filters.tags.every((t) => fm.tags.includes(t))) {
+    return false;
+  }
+  if (filters.hasUnanswered !== undefined) {
+    if (fm.questions_raised.length > 0 !== filters.hasUnanswered) return false;
+  }
+  return true;
+}
+
+export async function vaultIndex(
+  vaultRoot: string,
+  filters: VaultIndexFilters = {},
+  access?: AccessContext,
+): Promise<Result<VaultIndexResult, Error>> {
+  const docs = await scanVaultDocs(vaultRoot);
+  if (!docs.ok) return docs;
+
+  const entries = docs.value.filter((d) => matchesIndexFilters(d, filters)).map(toIndexEntry);
 
   // RBAC: drop documents in collections the role cannot read.
   const visible = access ? filterByReadPermission(access.role, entries) : entries;
@@ -388,9 +412,15 @@ export async function vaultStatus(
   vaultRoot: string,
   access?: AccessContext,
 ): Promise<Result<VaultStatusResult, Error>> {
-  // vault_status reports only over the documents the role can read.
-  const index = await vaultIndex(vaultRoot, {}, access);
-  if (!index.ok) return index;
+  // vault_status reports only over the documents the role can read. ONE
+  // whole-vault scan feeds both the index-shaped aggregates and the staleness
+  // distribution — scoring from the already-parsed frontmatter instead of a
+  // second read+parse sweep through listStaleFiles.
+  const scan = await scanVaultDocs(vaultRoot);
+  if (!scan.ok) return scan;
+  const allEntries = scan.value.map(toIndexEntry);
+  const visibleEntries = access ? filterByReadPermission(access.role, allEntries) : allEntries;
+  const index = { value: { count: visibleEntries.length, entries: visibleEntries } };
 
   const byCollection = new Map<string, number>();
   let invalidCount = 0;
@@ -403,23 +433,21 @@ export async function vaultStatus(
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([collection, count]) => ({ collection, count }));
 
-  // Staleness: score every file, then keep only those the index already
-  // deemed visible, so the distribution honours RBAC. Threshold 0 makes
-  // listStaleFiles return every document with its decay score.
+  // Staleness distribution over the visible set, from the same scan.
   const visiblePaths = new Set(index.value.entries.map((e) => e.path));
-  const staleScan = await listStaleFiles(vaultRoot, 0);
-  if (!staleScan.ok) return staleScan;
-
   const stalenessDistribution: StalenessDistribution = {
     fresh: 0,
     aging: 0,
     stale: 0,
     total: 0,
   };
-  for (const file of staleScan.value) {
-    if (!visiblePaths.has(file.path)) continue;
+  for (const doc of scan.value) {
+    if (!visiblePaths.has(doc.relPath)) continue;
     stalenessDistribution.total += 1;
-    const score = file.staleness.score;
+    const score = computeStaleness({
+      updated: doc.frontmatter.updated,
+      ttl_days: doc.frontmatter.ttl_days,
+    }).score;
     if (score >= 1) stalenessDistribution.stale += 1;
     else if (score >= 0.5) stalenessDistribution.aging += 1;
     else stalenessDistribution.fresh += 1;

@@ -20,7 +20,7 @@
 import { stat } from "node:fs/promises";
 import { rebuildEdgesIndex } from "../curation/edges.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
-import { buildPathIndexes, outgoingLinkTargets } from "../curation/vault-docs.js";
+import { buildPathIndexes, extractLinks, outgoingLinkTargets } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
@@ -109,7 +109,7 @@ async function buildManifest(vaultRoot: string): Promise<Record<string, number> 
   return manifest;
 }
 
-function readManifest(db: IndexDb): Record<string, number> | null {
+export function readManifest(db: IndexDb): Record<string, number> | null {
   const raw = getMeta(db, MANIFEST_META_KEY);
   if (!raw) return null;
   try {
@@ -121,7 +121,7 @@ function readManifest(db: IndexDb): Record<string, number> | null {
   }
 }
 
-function writeManifest(db: IndexDb, manifest: Record<string, number>): void {
+export function writeManifest(db: IndexDb, manifest: Record<string, number>): void {
   setMeta(db, MANIFEST_META_KEY, JSON.stringify(manifest));
 }
 
@@ -416,7 +416,8 @@ export async function reindexVault(
     const missTexts = missHashes.map((h) => missTextByHash.get(h) ?? "");
 
     const totalChunks = allHashes.length;
-    const cacheHits = totalChunks - allHashes.filter((h) => !cached.has(h)).length;
+    let cacheHits = 0;
+    for (const h of allHashes) if (cached.has(h)) cacheHits += 1;
 
     let vectorEnabled = true;
     let committedEmbeds = 0;
@@ -595,23 +596,28 @@ export async function indexDocument(
       }
     }
 
+    // Refresh this doc's OUTGOING links against the indexed path universe.
+    // Inbound edges to it update as their sources are re-indexed — a doc
+    // created after a bare-name link to it was indexed stays unlinked until
+    // the linker's next write or a full reindex (accepted
+    // reindex-granularity staleness, #8).
+    //
+    // The path index is O(vault) to build, so it is constructed only when the
+    // document actually links out — and outside the write transaction either
+    // way, to keep the transaction to row writes.
+    const linkTargets =
+      extractLinks(doc.content).length === 0
+        ? []
+        : outgoingLinkTargets(
+            doc.content,
+            doc.path,
+            buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p }))),
+          );
+
     const write = db.transaction(() => {
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
-      // Refresh this doc's OUTGOING links against the indexed path universe.
-      // Inbound edges to it update as their sources are re-indexed — a doc
-      // created after a bare-name link to it was indexed stays unlinked until
-      // the linker's next write or a full reindex (accepted
-      // reindex-granularity staleness, #8).
-      replaceDocLinks(
-        db,
-        doc.path,
-        outgoingLinkTargets(
-          doc.content,
-          doc.path,
-          buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p }))),
-        ),
-      );
+      replaceDocLinks(db, doc.path, linkTargets);
       chunks.forEach((text, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,

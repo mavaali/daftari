@@ -37,6 +37,7 @@ import {
   type StagedActionRow,
   upsertStagedAction,
 } from "../storage/index-db.js";
+import { toSecondISO } from "../utils/dates.js";
 import { addTension } from "./tension.js";
 
 // The action verbs the queue understands. Each dispatches to a write tool on
@@ -129,12 +130,6 @@ export function stagedActionsPath(vaultRoot: string): string {
 }
 
 // --- time helpers ----------------------------------------------------------
-
-// ISO 8601 to the second (YYYY-MM-DDTHH:MM:SSZ) — drops the millisecond field
-// that toISOString() adds, matching the spec's record format.
-function toSecondISO(d: Date): string {
-  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
 
 // Current instant as a second-resolution ISO string. Exported so the tool
 // layer stamps ratify/reject decisions in the same format the log uses.
@@ -528,28 +523,30 @@ function firstSentence(text: string): string {
 }
 
 // Pending actions for the lint "Staged actions" section, soonest-to-expire
-// first. Read-only — the sweep that expires stale actions is a separate step.
+// first. Pure — the lint path derives this from an already-read action list
+// instead of collapsing the log a second time.
+export function pendingLintItems(actions: StagedAction[], now: Date): StagedActionLintItem[] {
+  return actions
+    .filter((a) => a.status === "pending")
+    .sort((a, b) => (a.expiresAt < b.expiresAt ? -1 : a.expiresAt > b.expiresAt ? 1 : 0))
+    .map((a) => ({
+      id: a.id,
+      actionType: a.actionType,
+      targetPath: a.targetPath,
+      ageDays: daysSince(a.proposedAt, now),
+      expiresInDays: daysUntil(a.expiresAt, now),
+      rationale: firstSentence(a.rationale),
+    }));
+}
+
+// Read-only — the sweep that expires stale actions is a separate step.
 export async function listPendingForLint(
   vaultRoot: string,
   now: Date = new Date(),
 ): Promise<Result<StagedActionLintItem[], Error>> {
-  try {
-    const items = currentRows(vaultRoot)
-      .filter((r) => r.status === "pending")
-      .sort((a, b) => (a.expires_at < b.expires_at ? -1 : a.expires_at > b.expires_at ? 1 : 0))
-      .map((r) => ({
-        id: r.id,
-        actionType: r.action_type,
-        targetPath: r.target_path,
-        ageDays: daysSince(r.proposed_at, now),
-        expiresInDays: daysUntil(r.expires_at, now),
-        rationale: firstSentence(r.rationale),
-      }));
-    return ok(items);
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`cannot read staged actions: ${reason}`));
-  }
+  const actions = await listStagedActions(vaultRoot);
+  if (!actions.ok) return actions;
+  return ok(pendingLintItems(actions.value, now));
 }
 
 export async function getStagedActionById(
