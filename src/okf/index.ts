@@ -18,7 +18,8 @@ const HELP = `daftari okf — bridge a Daftari vault and the Open Knowledge Form
 
 OKF is Google Cloud's vendor-neutral spec for the LLM-wiki pattern: a directory
 of markdown files with YAML frontmatter that any producer can emit and any
-consumer can read without translation.
+consumer can read without translation. v0.2 adds opt-in trust signals —
+provenance, verification, lifecycle, and freshness metadata.
 
 Usage:
   daftari okf export <vault> --out <dir> [--collection <name>]
@@ -30,6 +31,11 @@ export — write the vault as an OKF bundle (never mutates the vault):
 
   Each doc becomes an OKF concept doc (core fields + a verbatim 'daftari'
   sidecar for lossless round-trip) plus generated index.md and log.md.
+  Trust signals derive from native metadata: updated/updated_by become
+  'generated', status maps to draft/stable/deprecated, ttl_days becomes an
+  absolute 'stale_after' date, and sources become structured entries.
+  'verified' is never fabricated — Daftari records authorship, not
+  independent confirmations, so exported docs read as unverified.
 
 import — adopt an OKF bundle into a vault (auto-commits + reindexes):
   --into <vault>       Target Daftari vault (required).
@@ -38,6 +44,12 @@ import — adopt an OKF bundle into a vault (auto-commits + reindexes):
 
   A bundle from 'daftari okf export' round-trips exactly; a foreign bundle is
   mapped conservatively (docs land as drafts in the accumulation domain).
+  v0.2 trust signals inform the mapping: human-reviewed docs (a human:* entry
+  in 'verified') import with confidence high, 'status: deprecated' stays
+  deprecated, and 'stale_after' converts to ttl_days. An Attested Computation
+  is flagged in a warning but NOT auto-write-protected — a bundle's
+  self-declared type is not an authorization; review it and elevate with
+  vault_set_tier. Unmapped OKF fields are preserved under okf_* keys.
 
   --help, -h           Show this help.
 `;

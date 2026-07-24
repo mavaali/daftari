@@ -271,16 +271,25 @@ daftari backfill --apply --scope specs
 ## Open Knowledge Format (OKF)
 
 [OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-is Google Cloud's vendor-neutral spec (v0.1) for the LLM-wiki pattern: a
-directory of markdown files with YAML frontmatter that any producer can emit and
-any consumer can read without translation. A Daftari vault *is* that pattern, so
-`daftari okf` bridges the two directions.
+is Google Cloud's vendor-neutral spec for the LLM-wiki pattern: a directory of
+markdown files with YAML frontmatter that any producer can emit and any consumer
+can read without translation. A Daftari vault *is* that pattern, so `daftari
+okf` bridges the two directions.
+[v0.2](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals/)
+adds opt-in **trust signals** — raw credibility indicators (provenance,
+verification, lifecycle, freshness), never computed scores — and Daftari maps
+them from/to its native metadata.
 
 **Export** renders the vault as a portable OKF bundle — every doc becomes an OKF
-concept doc (the core `type` / `title` / `description` / `resource` / `tags` /
-`timestamp` fields, plus a verbatim `daftari` sidecar for lossless round-trip),
-with generated `index.md` (progressive-disclosure listing) and `log.md`
-(chronological history). The source vault is never mutated.
+concept doc (the core `type` / `title` / `description` / `resource` / `tags`
+fields, plus a verbatim `daftari` sidecar for lossless round-trip), with
+generated `index.md` (progressive-disclosure listing) and `log.md`
+(chronological history). Trust signals derive from native metadata:
+`updated`/`updated_by` become `generated`, the lifecycle maps to
+`draft`/`stable`/`deprecated`, `ttl_days` becomes an absolute `stale_after`
+date, and `sources` become structured entries. `verified` is never fabricated —
+Daftari records authorship, not independent confirmations, so exported docs
+honestly read as unverified. The source vault is never mutated.
 
 ```bash
 daftari okf export ./my-vault --out ./okf-bundle
@@ -290,7 +299,17 @@ daftari okf export ./my-vault --out ./okf-bundle --collection pricing
 **Import** adopts an OKF bundle into a vault. A bundle produced by `okf export`
 round-trips exactly via its sidecar; a foreign bundle is mapped conservatively
 (docs land as `draft` in the `accumulation` domain, the original OKF `type` is
-preserved in an `okf_type` field). Writes auto-commit and the index is rebuilt.
+preserved in an `okf_type` field). Trust signals inform the mapping: a
+human-reviewed doc (a `human:*` entry in `verified`) imports with `confidence:
+high`, `status: deprecated` stays `deprecated` (retired knowledge must not
+resurface as a fresh draft), and `stale_after` converts to `ttl_days`. An
+`Attested Computation` is surfaced in an import warning but **not**
+auto-write-protected: `tier: source` is enforcement, and its only sanctioned
+grant path is `vault_set_tier` (reason required, provenance-logged) — a foreign
+bundle's self-declared `type` doesn't buy it. Review the doc, then elevate
+deliberately. OKF fields with no lossless Daftari slot (the trust record,
+attestation machinery) are preserved under `okf_*` keys. Writes auto-commit and
+the index is rebuilt.
 
 ```bash
 daftari okf import ./okf-bundle --into ./my-vault --dry-run
