@@ -84,6 +84,80 @@ One row per order.
     expect(missing).toBe(true);
   });
 
+  it("maps v0.2 trust signals: verified, status, stale_after, structured sources", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    const v02Doc = `---
+type: Metric Definition
+title: Net Revenue
+generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-30T14:00:00Z }
+verified:
+  - { by: human:jsmith@acme, at: 2026-07-01T09:00:00Z }
+status: stable
+stale_after: 2026-12-31
+sources:
+  - id: revenue-policy
+    resource: https://wiki.test/policies/revenue
+    author: human:jsmith@acme
+    last_modified: 2026-06-15
+---
+
+# Net Revenue
+
+Delivered orders only, 30-day return window.
+`;
+    writeDoc(bundle, "metrics/net-revenue.md", v02Doc);
+
+    const result = await importBundle(bundle, vault, { today: "2026-07-13" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const doc = matter(readFileSync(join(vault, "metrics/net-revenue.md"), "utf-8"));
+    expect(doc.data.created).toBe("2026-06-30"); // from generated.at
+    expect(doc.data.confidence).toBe("high"); // human-reviewed trust tier
+    expect(doc.data.status).toBe("draft"); // stable is NOT canonized on import
+    expect(doc.data.ttl_days).toBe(184); // 2026-06-30 → 2026-12-31
+    expect(doc.data.sources).toEqual(["https://wiki.test/policies/revenue"]);
+    // The trust record survives under okf_* keys.
+    expect(doc.data.okf_generated).toBeTruthy();
+    expect(doc.data.okf_verified).toBeTruthy();
+    expect(doc.data.okf_sources).toBeTruthy();
+  });
+
+  it("imports an Attested Computation as tier: source", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    const attestedDoc = `---
+type: Attested Computation
+title: Revenue for a fiscal year
+runtime: bigquery
+parameters:
+  - { name: year, type: integer, required: true }
+executor:
+  resource: skills/run-on-bq.md
+receipt: [job_id, executed_sql, result]
+attester:
+  resource: attesters/sql_equality.py
+status: stable
+---
+
+# Computation
+
+SELECT 1
+`;
+    writeDoc(bundle, "computations/revenue.md", attestedDoc);
+
+    const result = await importBundle(bundle, vault, { today: "2026-07-13" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const doc = matter(readFileSync(join(vault, "computations/revenue.md"), "utf-8"));
+    expect(doc.data.tier).toBe("source"); // body immutable — sanctioned computation
+    expect(doc.data.okf_type).toBe("Attested Computation");
+    expect(doc.data.okf_runtime).toBe("bigquery");
+    expect(doc.data.okf_attester).toEqual({ resource: "attesters/sql_equality.py" });
+  });
+
   it("round-trips a doc carrying a daftari sidecar verbatim", async () => {
     const bundle = mkTmp("okf-bundle-");
     const vault = mkTmp("okf-vault-");

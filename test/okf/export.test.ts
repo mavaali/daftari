@@ -86,11 +86,35 @@ A speculative sketch.
     expect(doc.data.description).toBe("Helios bills in compute credits.");
     expect(doc.data.resource).toBe("https://helios.test/pricing"); // first URI source
     expect(doc.data.tags).toEqual(["helios", "pricing"]);
-    expect(doc.data.timestamp).toBe("2026-05-10T00:00:00Z");
+    // v0.2 trust signals derived from native metadata. `generated` replaces
+    // the v0.1 `timestamp`; `verified` is never fabricated.
+    expect(doc.data.generated).toEqual({ by: "human:me", at: "2026-05-10T00:00:00Z" });
+    expect(doc.data).not.toHaveProperty("timestamp");
+    expect(doc.data).not.toHaveProperty("verified");
+    expect(doc.data.status).toBe("stable"); // canonical → stable
+    expect(doc.data.stale_after).toBe("2026-06-24"); // updated + ttl_days 45
+    expect(doc.data.sources).toEqual([
+      { id: "helios-pricing-page" },
+      { id: "pricing", resource: "https://helios.test/pricing" },
+    ]);
     // Lossless sidecar retains the original Daftari frontmatter.
     expect((doc.data.daftari as Record<string, unknown>).status).toBe("canonical");
     // Body is preserved.
     expect(doc.content).toContain("Helios bills in compute credits.");
+  });
+
+  it("exports a draft with no TTL as draft with no stale_after", async () => {
+    const vault = makeVault({ "moonshot/moonshot.md": moonshot });
+    const out = mkdtempSync(join(tmpdir(), "daftari-okf-out-"));
+    tmpDirs.push(out);
+
+    await exportBundle(vault, out);
+
+    const doc = matter(readFileSync(join(out, "moonshot/moonshot.md"), "utf-8"));
+    expect(doc.data.status).toBe("draft");
+    expect(doc.data.generated).toEqual({ by: "agent:x", at: "2026-03-01T00:00:00Z" });
+    expect(doc.data).not.toHaveProperty("stale_after");
+    expect(doc.data).not.toHaveProperty("sources");
   });
 
   it("generates root index.md (with okf_version) and log.md", async () => {
@@ -101,7 +125,7 @@ A speculative sketch.
     await exportBundle(vault, out);
 
     const index = matter(readFileSync(join(out, "index.md"), "utf-8"));
-    expect(index.data.okf_version).toBe("0.1");
+    expect(index.data.okf_version).toBe("0.2");
     expect(index.content).toContain("(/pricing/helios.md)");
     expect(index.content).toContain("(/moonshot/moonshot.md)");
 

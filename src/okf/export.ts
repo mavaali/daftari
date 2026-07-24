@@ -1,8 +1,10 @@
 // `daftari okf export` — render a Daftari vault as an OKF bundle.
 //
 // Each vault document becomes an OKF concept doc at the same relative path (so
-// the collection folder layout is preserved), with OKF core frontmatter plus a
-// verbatim `daftari` sidecar for lossless round-trip. Two reserved files are
+// the collection folder layout is preserved), with OKF core frontmatter — v0.2
+// trust signals (`generated`, `status`, `stale_after`, structured `sources`)
+// derived from the doc's native metadata — plus a verbatim `daftari` sidecar
+// for lossless round-trip. Two reserved files are
 // generated at the bundle root: index.md (a progressive-disclosure listing) and
 // log.md (a chronological history, newest first). The source vault is never
 // mutated — this is a pure read-then-write to a separate output directory.

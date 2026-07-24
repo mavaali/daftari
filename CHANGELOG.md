@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **OKF bridge upgraded to spec v0.2 — trust signals.** OKF v0.2 adds opt-in
+  trust metadata (raw credibility indicators, never computed scores); the
+  `daftari okf` bridge now speaks it in both directions. Export derives the
+  signals from native metadata: `updated`/`updated_by` become
+  `generated: {by, at}` (the spec's rename of v0.1 `timestamp`), the Daftari
+  lifecycle maps onto `status: draft|stable|deprecated`
+  (canonical → stable; deprecated/superseded/archived → deprecated),
+  `ttl_days` becomes an absolute `stale_after` date anchored at `updated`, and
+  `sources` become structured `{id, resource}` entries. `verified` is never
+  fabricated — Daftari records authorship, not independent confirmations, so
+  exported docs honestly carry the "unverified" trust tier. Import understands
+  the signals: `generated.at` dates the doc (falling back to `timestamp` per
+  spec), a human-reviewed doc (`human:*` in `verified`) lands with
+  `confidence: high` (positive signals only ever raise confidence — absence
+  keeps the `medium` default, since an unverified v0.2 doc is
+  indistinguishable from a v0.1 doc), `status: deprecated` imports as
+  `deprecated` instead of resurfacing as a fresh draft, `stale_after` converts
+  to `ttl_days`, and the new `Attested Computation` concept type lands as
+  `tier: source` — the spec forbids agents from editing sanctioned
+  computations, and `source` makes the body immutable to every writer. OKF
+  fields with no lossless Daftari slot (the trust record, the attestation
+  machinery, unknown producer fields) are preserved under `okf_*` keys, so
+  import stays non-destructive. v0.1 bundles import unchanged.
+
 ## [1.31.0] - 2026-07-22
 
 The self-hosted deployment release: one always-on `daftari serve` instance

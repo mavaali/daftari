@@ -1,6 +1,6 @@
 // Open Knowledge Format (OKF) — shared constants and types.
 //
-// OKF is Google Cloud's vendor-neutral specification (v0.1) for the LLM-wiki
+// OKF is Google Cloud's vendor-neutral specification (v0.2) for the LLM-wiki
 // pattern: a directory of markdown files with YAML frontmatter that any
 // producer can emit and any consumer can read without translation. Daftari's
 // vault *is* this pattern, so `daftari okf export|import` bridges the two.
@@ -8,15 +8,30 @@
 // Spec essentials that this module implements:
 //   - A concept doc is any non-reserved `.md` file with a frontmatter block.
 //   - The single required frontmatter field is `type` (a free-form kind string).
-//   - Recommended fields: title, description, resource, tags, timestamp.
+//   - Recommended fields: title, description, resource, tags.
 //   - Reserved filenames: index.md (progressive-disclosure listing) and log.md
 //     (chronological change history, newest first).
 //   - Consumers must tolerate unknown fields and unknown `type` values.
+//
+// v0.2 adds opt-in trust signals — raw credibility indicators, never computed
+// scores, all optional so v0.1 bundles stay valid:
+//   - `generated: {by, at}` — who produced the content and when it last
+//     meaningfully changed. Renames v0.1 `timestamp` (consumers fall back).
+//   - `verified: [{by, at}]` — independent confirmations. The trust tier is
+//     derived: no key = unverified, machine actors only = machine-confirmed,
+//     any `human:<id>` entry = human-reviewed.
+//   - `status: draft | stable | deprecated` — lifecycle; absent means stable.
+//   - `stale_after: YYYY-MM-DD` — absolute date (not a TTL) for deterministic
+//     staleness checks.
+//   - `sources: [{id, resource, title, author, usage_count, last_modified}]`
+//     — structured provenance. Renames the v0.1 body `# Citations` list.
+//   - A new concept type, `Attested Computation`: a sanctioned computation
+//     agents may parameterize but never edit.
 
 // The OKF spec version this producer targets and this consumer understands.
 // Written into the exported bundle's root index.md frontmatter (the spec's
 // place for a bundle to declare its target version).
-export const OKF_VERSION = "0.1";
+export const OKF_VERSION = "0.2";
 
 // Reserved filenames with defined structural meaning. They are NOT concept
 // docs: export generates them, import skips them.
@@ -42,12 +57,33 @@ export const DEFAULT_OKF_TYPE = "note";
 export const DEFAULT_IMPORT_COLLECTION = "imported";
 
 // The canonical OKF frontmatter fields, in the order export writes them. `type`
-// is the only required one; the rest are recommended and omitted when empty.
+// is the only required one; the rest are recommended/optional and omitted when
+// empty. `timestamp` is the v0.1 name for `generated.at` — export writes the
+// v0.2 form, import still accepts the old one.
 export const OKF_CORE_FIELDS = [
   "type",
   "title",
   "description",
   "resource",
   "tags",
-  "timestamp",
+  "generated",
+  "verified",
+  "status",
+  "stale_after",
+  "sources",
 ] as const;
+
+// The v0.2 lifecycle states. Absence means "stable" per spec.
+export const OKF_STATUSES = ["draft", "stable", "deprecated"] as const;
+export type OkfStatus = (typeof OKF_STATUSES)[number];
+
+// The v0.2 concept type for a sanctioned computation. Agents may fill declared
+// parameters at call time but must never edit the computation itself — on
+// import that contract maps to Daftari's `tier: source` (body immutable).
+export const OKF_ATTESTED_COMPUTATION_TYPE = "Attested Computation";
+
+// Prefix under which import preserves foreign OKF fields that have no lossless
+// Daftari mapping (the trust record, attestation machinery, and any unknown
+// producer-defined fields). Keeps the import non-destructive, mirroring what
+// the `daftari` sidecar does in the export direction.
+export const OKF_PRESERVED_PREFIX = "okf_";

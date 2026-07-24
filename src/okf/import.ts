@@ -4,7 +4,8 @@
 // frontmatter (see okfToDaftari) and written into the target vault at the same
 // relative path. A bundle produced by `daftari okf export` round-trips exactly
 // via its `daftari` sidecar; a foreign bundle is mapped conservatively (imported
-// docs land as drafts in the accumulation domain). Writes are auto-committed —
+// docs land as drafts in the accumulation domain), with v0.2 trust signals
+// informing the mapping — see okfToDaftari. Writes are auto-committed —
 // git is Daftari's version layer — and the SQLite index is rebuilt so search
 // sees the new docs immediately. `--dry-run` reports the plan and writes nothing.
 
