@@ -424,7 +424,7 @@ export async function vaultStatus(
 
   const byCollection = new Map<string, number>();
   let invalidCount = 0;
-  for (const entry of index.value.entries) {
+  for (const entry of indexEntries.entries) {
     byCollection.set(entry.collection, (byCollection.get(entry.collection) ?? 0) + 1);
     if (!entry.valid) invalidCount += 1;
   }
@@ -437,7 +437,7 @@ export async function vaultStatus(
   // shared instant scores every document (as listStaleFiles did) so two docs
   // straddling a UTC day boundary mid-scan can't bucket inconsistently.
   const scanNow = new Date();
-  const visiblePaths = new Set(index.value.entries.map((e) => e.path));
+  const visiblePaths = new Set(indexEntries.entries.map((e) => e.path));
   const stalenessDistribution: StalenessDistribution = {
     fresh: 0,
     aging: 0,
@@ -503,7 +503,7 @@ export async function vaultStatus(
 
   return ok({
     vault: vaultRoot,
-    fileCount: index.value.count,
+    fileCount: indexEntries.count,
     collections,
     invalidCount,
     generatedAt: new Date().toISOString(),
