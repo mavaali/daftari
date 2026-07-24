@@ -254,3 +254,14 @@ describe("daftari eval --transport", () => {
     expect(stderrText()).toContain("OPENROUTER_API_KEY required");
   });
 });
+
+// Artifact ids double as filenames: an OpenRouter model slug's "/" must never
+// reach the results/scores paths.
+describe("modelIdSlug", () => {
+  it("flattens path separators and exotic characters", async () => {
+    const { modelIdSlug } = await import("../../src/eval/index.js");
+    expect(modelIdSlug("anthropic/claude-sonnet-4.6")).toBe("anthropic-claude-sonnet-4.6");
+    expect(modelIdSlug("claude-sonnet-4-6")).toBe("claude-sonnet-4-6");
+    expect(modelIdSlug("a b/c:d")).toBe("a-b-c-d");
+  });
+});

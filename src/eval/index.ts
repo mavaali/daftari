@@ -165,6 +165,14 @@ interface EvalLlm {
   transport: "anthropic" | "openrouter";
 }
 
+// Artifact ids double as filenames (results/<id>.json, scores/<id>.json), so
+// the model component must never carry a path separator — OpenRouter slugs
+// like "anthropic/claude-sonnet-4.6" would otherwise nest a directory that
+// does not exist and every incremental persist would ENOENT.
+export function modelIdSlug(model: string): string {
+  return model.replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
 function resolveEvalLlm(argv: string[]): Result<EvalLlm, Error> {
   const transportRes = resolveTransport(flag(argv, "transport"));
   if (!transportRes.ok) return transportRes;
@@ -264,7 +272,9 @@ async function runRun(argv: string[]): Promise<number> {
   // across the run and any later --resume; persist incrementally so a mid-run
   // failure leaves a resumable partial file.
   const timestamp = new Date().toISOString();
-  const runId = resumeFrom ? resumeFrom.id : `${qsRead.value.id}-${model}-${timestamp}`;
+  const runId = resumeFrom
+    ? resumeFrom.id
+    : `${qsRead.value.id}-${modelIdSlug(model)}-${timestamp}`;
   const run = await runAnswerer(qsRead.value, vault, llm.value.client, {
     k,
     model,
@@ -516,7 +526,7 @@ async function runTopLevel(argv: string[]): Promise<number> {
   // 2. Run — mint the stable id + timestamp up front and persist incrementally
   // so a mid-run failure leaves a resumable partial file.
   const runTimestamp = new Date().toISOString();
-  const runId = `${qs.id}-${model}-${runTimestamp}`;
+  const runId = `${qs.id}-${modelIdSlug(model)}-${runTimestamp}`;
   const runRes = await runAnswerer(qs, vault, apiClient, {
     k,
     model,

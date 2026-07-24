@@ -44,8 +44,20 @@ export function resolveTransport(explicit: string | undefined): Result<LlmTransp
   return err(new Error(`unknown LLM transport '${raw}' — valid values: anthropic, openrouter`));
 }
 
+// OpenAI-style tool call as relayed by OpenRouter: `function.arguments` is a
+// JSON-ENCODED STRING, not an object (the wire format difference vs
+// Anthropic's structured `input`).
+interface OpenRouterToolCall {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 interface OpenRouterChatResponse {
-  choices?: Array<{ message?: { content?: unknown }; finish_reason?: string | null }>;
+  choices?: Array<{
+    message?: { content?: unknown; tool_calls?: OpenRouterToolCall[] };
+    finish_reason?: string | null;
+  }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   // OpenRouter can relay provider errors in a 200 body (moderation blocks,
   // provider failures after headers were sent).
@@ -85,65 +97,77 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
   }
   const fetchImpl = opts?.fetchImpl ?? fetch;
 
+  // One POST to /chat/completions with the shared failure taxonomy:
+  // transport / 5xx / 429 are retryable; other HTTP statuses and embedded
+  // 200-body errors keep their existing classification. `complete` and the
+  // tool loop both go through here so the two paths cannot drift.
+  const postChat = async (
+    payload: Record<string, unknown>,
+  ): Promise<Result<OpenRouterChatResponse, CortexEvalError>> => {
+    let res: Awaited<ReturnType<typeof fetch>>;
+    try {
+      res = await fetchImpl(`${OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      // Transport-level failure (DNS, reset, timeout): transient, retryable.
+      const msg = e instanceof Error ? e.message : String(e);
+      return err({ kind: "llm", message: `openrouter fetch: ${msg}`, retryable: true });
+    }
+    if (res.status === 429 || res.status >= 500) {
+      return err({ kind: "llm", message: `openrouter http ${res.status}`, retryable: true });
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return err({
+        kind: "llm",
+        message: `openrouter http ${res.status}: ${body.slice(0, 200)}`,
+        retryable: false,
+      });
+    }
+    let json: OpenRouterChatResponse;
+    try {
+      json = (await res.json()) as OpenRouterChatResponse;
+    } catch (e) {
+      // Body cut mid-stream / malformed JSON on 200: transient, retryable.
+      const msg = e instanceof Error ? e.message : String(e);
+      return err({ kind: "llm", message: `openrouter body parse: ${msg}`, retryable: true });
+    }
+    if (json.error) {
+      // Error relayed in a 200 body. Surface ITS message; retry only when
+      // the embedded code is itself transient.
+      const code = typeof json.error.code === "number" ? json.error.code : undefined;
+      const msg =
+        typeof json.error.message === "string"
+          ? json.error.message
+          : JSON.stringify(json.error).slice(0, 200);
+      return err({
+        kind: "llm",
+        message: `openrouter error: ${msg}`,
+        retryable: code === 429 || (code !== undefined && code >= 500),
+      });
+    }
+    return ok(json);
+  };
+
   const complete = async (o: CompleteOpts): Promise<Result<CompleteResult, CortexEvalError>> => {
     return retry(async () => {
-      let res: Awaited<ReturnType<typeof fetch>>;
-      try {
-        res = await fetchImpl(`${OPENROUTER_BASE_URL}/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: o.model,
-            max_tokens: o.maxTokens ?? 4096,
-            ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
-            messages: [
-              { role: "system", content: o.system },
-              { role: "user", content: o.user },
-            ],
-          }),
-        });
-      } catch (e) {
-        // Transport-level failure (DNS, reset, timeout): transient, retryable.
-        const msg = e instanceof Error ? e.message : String(e);
-        return err({ kind: "llm", message: `openrouter fetch: ${msg}`, retryable: true });
-      }
-      if (res.status === 429 || res.status >= 500) {
-        return err({ kind: "llm", message: `openrouter http ${res.status}`, retryable: true });
-      }
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return err({
-          kind: "llm",
-          message: `openrouter http ${res.status}: ${body.slice(0, 200)}`,
-          retryable: false,
-        });
-      }
-      let json: OpenRouterChatResponse;
-      try {
-        json = (await res.json()) as OpenRouterChatResponse;
-      } catch (e) {
-        // Body cut mid-stream / malformed JSON on 200: transient, retryable.
-        const msg = e instanceof Error ? e.message : String(e);
-        return err({ kind: "llm", message: `openrouter body parse: ${msg}`, retryable: true });
-      }
-      if (json.error) {
-        // Error relayed in a 200 body. Surface ITS message; retry only when
-        // the embedded code is itself transient.
-        const code = typeof json.error.code === "number" ? json.error.code : undefined;
-        const msg =
-          typeof json.error.message === "string"
-            ? json.error.message
-            : JSON.stringify(json.error).slice(0, 200);
-        return err({
-          kind: "llm",
-          message: `openrouter error: ${msg}`,
-          retryable: code === 429 || (code !== undefined && code >= 500),
-        });
-      }
-      const choice = json.choices?.[0];
+      const json = await postChat({
+        model: o.model,
+        max_tokens: o.maxTokens ?? 4096,
+        ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+        messages: [
+          { role: "system", content: o.system },
+          { role: "user", content: o.user },
+        ],
+      });
+      if (!json.ok) return json;
+      const choice = json.value.choices?.[0];
       const text = flattenContent(choice?.message?.content);
       if (text === undefined) {
         return err({
@@ -155,8 +179,8 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
       const finish = choice?.finish_reason;
       return ok({
         text,
-        input_tokens: json.usage?.prompt_tokens ?? 0,
-        output_tokens: json.usage?.completion_tokens ?? 0,
+        input_tokens: json.value.usage?.prompt_tokens ?? 0,
+        output_tokens: json.value.usage?.completion_tokens ?? 0,
         stop_reason: finish ? (FINISH_TO_STOP[finish] ?? finish) : "unknown",
       });
     });
@@ -184,16 +208,104 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
     }
   };
 
+  // The OpenAI-style function-calling loop, mirroring the anthropic client's
+  // round structure exactly: ask, execute every returned tool call through
+  // opts.toolHandler, append the results, repeat until a round returns no
+  // tool calls (final answer) or maxRounds is exhausted. Wire-format
+  // differences handled here: tools go up as {type:"function",function:{...}},
+  // arguments come back JSON-encoded (parsed leniently — a malformed blob is
+  // handed to the handler as the raw string rather than dropped), and results
+  // go back as role:"tool" messages keyed by tool_call_id.
   const completeWithTools = async (
-    _o: CompleteWithToolsOpts,
+    o: CompleteWithToolsOpts,
   ): Promise<Result<CompleteWithToolsResult, CortexEvalError>> => {
-    // Deliberately unimplemented: only `daftari eval` drives tools, and eval
-    // stays on the anthropic transport. An untested OpenAI function-calling
-    // loop would be riskier than an explicit refusal.
+    const maxRounds = o.maxRounds ?? 12;
+    const toolCalls: CompleteWithToolsResult["tool_calls"] = [];
+    const messages: unknown[] = [
+      { role: "system", content: o.system },
+      { role: "user", content: o.user },
+    ];
+    const tools = o.tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.input_schema },
+    }));
+    let totalIn = 0;
+    let totalOut = 0;
+
+    for (let round = 0; round < maxRounds; round++) {
+      const res = await retry(async () =>
+        postChat({
+          model: o.model,
+          max_tokens: o.maxTokens ?? 4096,
+          ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+          tools,
+          messages,
+        }),
+      );
+      if (!res.ok) return res;
+      const json = res.value;
+      totalIn += json.usage?.prompt_tokens ?? 0;
+      totalOut += json.usage?.completion_tokens ?? 0;
+      const choice = json.choices?.[0];
+      const message = choice?.message;
+      const rawCalls = (message?.tool_calls ?? []).filter(
+        (c): c is OpenRouterToolCall & { function: { name: string } } =>
+          typeof c?.function?.name === "string",
+      );
+
+      if (rawCalls.length === 0) {
+        const finish = choice?.finish_reason;
+        return ok({
+          text: flattenContent(message?.content) ?? "",
+          input_tokens: totalIn,
+          output_tokens: totalOut,
+          stop_reason: finish ? (FINISH_TO_STOP[finish] ?? finish) : "unknown",
+          tool_calls: toolCalls,
+        });
+      }
+
+      // Echo the assistant turn back verbatim (content may be null when the
+      // model went straight to tool calls — that is valid on this wire).
+      messages.push({
+        role: "assistant",
+        content: message?.content ?? null,
+        tool_calls: message?.tool_calls,
+      });
+
+      for (let i = 0; i < rawCalls.length; i++) {
+        const tc = rawCalls[i] as OpenRouterToolCall & { function: { name: string } };
+        const rawArgs = tc.function.arguments ?? "";
+        let input: unknown;
+        try {
+          input = rawArgs === "" ? {} : JSON.parse(rawArgs);
+        } catch {
+          input = rawArgs;
+        }
+        const t0 = Date.now();
+        let output: unknown;
+        try {
+          output = await o.toolHandler(tc.function.name, input);
+        } catch (e) {
+          output = { tool_error: e instanceof Error ? e.message : String(e) };
+        }
+        toolCalls.push({
+          tool: tc.function.name,
+          input,
+          output,
+          latency_ms: Date.now() - t0,
+        });
+        messages.push({
+          role: "tool",
+          // Some providers omit ids on single calls; synthesize a stable one
+          // so the echo-back stays well-formed.
+          tool_call_id: tc.id ?? `call_${round}_${i}`,
+          content: typeof output === "string" ? output : JSON.stringify(output),
+        });
+      }
+    }
     return err({
       kind: "llm",
-      message:
-        "completeWithTools is not supported on the openrouter transport — run daftari eval on the anthropic transport",
+      message: `exceeded maxRounds (${maxRounds}) without final answer`,
       retryable: false,
     });
   };
