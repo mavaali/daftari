@@ -3,6 +3,30 @@
 ## What is this
 Daftari is an MCP server that exposes a curated markdown vault to AI agents. TypeScript, Node.js.
 
+## Code map
+Concepts and layer boundaries: docs/architecture.md. Where things live:
+- `src/tools/` — the vault_* MCP tool handlers
+- `src/frontmatter/` — markdown + YAML frontmatter parsing and schema validation
+- `src/storage/` — local file storage, the SQLite index, pluggable sync backends (#6)
+- `src/search/` — hybrid search: FTS5 BM25 + sqlite-vec embeddings
+- `src/curation/` — lint, decay, the edge graph, staleness, staged actions
+- `src/access/` — RBAC and file-level write locks
+- `src/lifecycle/` — the per-vault process lock
+- `src/court/` — Tension Court docket (operator-only, no access context)
+- `src/sleep/` — circadian maintenance cycle (`daftari sleep`)
+- `src/consolidate/` — cortex consolidation loop (`daftari consolidate`)
+- `src/witness/` — per-principal track records
+- `src/asof/` — belief archaeology over git history (`daftari asof`)
+- `src/audit/` — doc-to-code coherence audit (`daftari audit`)
+- `src/eval/` — vault quality eval: question generation + LLM judging (`daftari eval`)
+- `src/backfill/`, `src/import/`, `src/okf/` — adoption paths: metadata backfill, foreign-vault import, OKF export/import
+- `src/serve/` — server mode over Streamable HTTP (`daftari serve`); `src/sync/` — push/restore against storage backends
+- `src/hooks/` — vault-supplied hook module loading
+- `src/themes/` — clustering primitives for vault_themes
+- `src/utils/` — config.yaml loading, git plumbing, paths, hashing
+
+Entrypoints: `src/index.ts` (stdio MCP entry), `src/server.ts` (MCP server wiring), `src/cli.ts` (CLI).
+
 ## Build and test
 - `npm run build` — compile TypeScript
 - `npm test` — run tests with vitest

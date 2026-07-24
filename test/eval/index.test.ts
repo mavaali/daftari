@@ -201,3 +201,67 @@ describe("daftari eval CLI (#102)", () => {
     }
   });
 });
+
+// Transport selection (--transport / DAFTARI_LLM_TRANSPORT): the same rules
+// as daftari sleep/consolidate, gated per stage as a config error (exit 2).
+describe("daftari eval --transport", () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.DAFTARI_LLM_TRANSPORT;
+    errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    outSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.DAFTARI_LLM_TRANSPORT;
+    errSpy.mockRestore();
+    outSpy.mockRestore();
+  });
+
+  function stderrText(): string {
+    return errSpy.mock.calls.map((c) => String(c[0])).join("");
+  }
+
+  it("exits 2 when --transport openrouter is given without OPENROUTER_API_KEY", async () => {
+    const code = await runEval(["run", "--transport", "openrouter", "--questions", "qs-x"]);
+    expect(code).toBe(2);
+    expect(stderrText()).toContain("OPENROUTER_API_KEY required");
+  });
+
+  it("exits 2 on a malformed --transport value instead of billing a default", async () => {
+    const code = await runEval(["run", "--transport", "openroutr", "--questions", "qs-x"]);
+    expect(code).toBe(2);
+    expect(stderrText()).toContain("unknown LLM transport");
+  });
+
+  it("keeps the historical anthropic-default message when no key is set", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const code = await runEval(["run", "--questions", "qs-x"]);
+    expect(code).toBe(2);
+    expect(stderrText()).toContain("ANTHROPIC_API_KEY required");
+  });
+
+  it("honors the DAFTARI_LLM_TRANSPORT env fallback", async () => {
+    process.env.DAFTARI_LLM_TRANSPORT = "openrouter";
+    const code = await runEval(["score", "--results", "r-x"]);
+    expect(code).toBe(2);
+    expect(stderrText()).toContain("OPENROUTER_API_KEY required");
+  });
+});
+
+// Artifact ids double as filenames: an OpenRouter model slug's "/" must never
+// reach the results/scores paths.
+describe("modelIdSlug", () => {
+  it("flattens path separators and exotic characters", async () => {
+    const { modelIdSlug } = await import("../../src/eval/index.js");
+    expect(modelIdSlug("anthropic/claude-sonnet-4.6")).toBe("anthropic-claude-sonnet-4.6");
+    expect(modelIdSlug("claude-sonnet-4-6")).toBe("claude-sonnet-4-6");
+    expect(modelIdSlug("a b/c:d")).toBe("a-b-c-d");
+  });
+});

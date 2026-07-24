@@ -5,8 +5,10 @@
 
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { err, ok, type Result } from "../frontmatter/types.js";
 import { generateQuestions } from "./generate.js";
-import { createAnthropicClient } from "./llm.js";
+import { createAnthropicClient, type LlmClient } from "./llm.js";
+import { createOpenRouterClient, resolveTransport } from "./llm-openrouter.js";
 import { PROMPT_VERSION } from "./prompts.js";
 import { type DirPruneResult, type PruneRules, parseOlderThan, prune } from "./prune.js";
 import { runAnswerer } from "./run.js";
@@ -33,10 +35,10 @@ import {
 const HELP = `daftari eval — cortex quality metric.
 
 Usage:
-  daftari eval [--vault <path>] [--n <count>] [--k <count>] [--seed <str>] [--max-nodes <count>]
-  daftari eval generate [--vault <path>] [--n <count>] [--seed <str>] [--max-nodes <count>]
-  daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>]
-  daftari eval score    [--results <id>] [--vault <path>] [--grader-model <id>]
+  daftari eval [--vault <path>] [--n <count>] [--k <count>] [--seed <str>] [--max-nodes <count>] [--transport <t>]
+  daftari eval generate [--vault <path>] [--n <count>] [--seed <str>] [--max-nodes <count>] [--transport <t>]
+  daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>] [--transport <t>]
+  daftari eval score    [--results <id>] [--vault <path>] [--grader-model <id>] [--transport <t>]
   daftari eval prune    [--vault <path>] [--keep <count>] [--older-than <age>] [--dry-run]
 
   (--questions and --results take the artifact id printed by a prior stage,
@@ -45,12 +47,17 @@ Usage:
 Defaults:
   --n 15         total questions across three tiers (5 each)
   --k 2          runs per question for variance estimation
-  --model        claude-sonnet-4-6 (DEFAULT_MODEL in src/eval/index.ts)
+  --model        claude-sonnet-4-6 (DEFAULT_MODEL in src/eval/index.ts);
+                 anthropic/claude-sonnet-4.6 under --transport openrouter
   --vault        current working directory
   --max-nodes 5  subgraph size cap for question generation
+  --transport    anthropic (default, ANTHROPIC_API_KEY) or openrouter
+                 (OPENROUTER_API_KEY); env fallback DAFTARI_LLM_TRANSPORT —
+                 the same selection rules as daftari sleep/consolidate
 
 Environment:
-  ANTHROPIC_API_KEY   required for any LLM-mediated stage
+  ANTHROPIC_API_KEY    required for LLM-mediated stages on the anthropic transport
+  OPENROUTER_API_KEY   required for LLM-mediated stages on the openrouter transport
 
 Disk usage:
   .daftari/eval/results/ and scores/ grow without bound across runs. Use
@@ -142,10 +149,51 @@ function defaultSeed(vault: string): string {
 }
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
+// OpenRouter slug of the same judge — mirrors sleep's
+// TENSION_SCAN_DEFAULT_MODEL / TENSION_SCAN_DEFAULT_MODEL_OPENROUTER pairing.
+const DEFAULT_MODEL_OPENROUTER = "anthropic/claude-sonnet-4.6";
+
+// Shared transport gate for every LLM-mediated stage: resolve --transport
+// (env fallback DAFTARI_LLM_TRANSPORT, anthropic default — same rules as
+// `daftari sleep`), require the matching key, construct the matching client.
+// Any failure here is a config error (exit 2) at the caller.
+interface EvalLlm {
+  client: LlmClient;
+  defaultModel: string;
+  // Kept so the one-shot flow can forward the resolved transport to the
+  // score stage it invokes in-process.
+  transport: "anthropic" | "openrouter";
+}
+
+// Artifact ids double as filenames (results/<id>.json, scores/<id>.json), so
+// the model component must never carry a path separator — OpenRouter slugs
+// like "anthropic/claude-sonnet-4.6" would otherwise nest a directory that
+// does not exist and every incremental persist would ENOENT.
+export function modelIdSlug(model: string): string {
+  return model.replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
+function resolveEvalLlm(argv: string[]): Result<EvalLlm, Error> {
+  const transportRes = resolveTransport(flag(argv, "transport"));
+  if (!transportRes.ok) return transportRes;
+  const transport = transportRes.value;
+  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
+  if (!process.env[keyVar]) return err(new Error(`${keyVar} required`));
+  try {
+    return ok({
+      client: transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient(),
+      defaultModel: transport === "openrouter" ? DEFAULT_MODEL_OPENROUTER : DEFAULT_MODEL,
+      transport,
+    });
+  } catch (e) {
+    return err(e instanceof Error ? e : new Error(String(e)));
+  }
+}
 
 async function runGenerate(argv: string[]): Promise<number> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    process.stderr.write("ANTHROPIC_API_KEY required\n");
+  const llm = resolveEvalLlm(argv);
+  if (!llm.ok) {
+    process.stderr.write(`${llm.error.message}\n`);
     return 2;
   }
   const vault = flag(argv, "vault") ?? process.cwd();
@@ -158,10 +206,9 @@ async function runGenerate(argv: string[]): Promise<number> {
     process.stderr.write(`${sg.error.message}\n`);
     return 3;
   }
-  const client = createAnthropicClient();
-  const qs = await generateQuestions(sg.value, client, {
+  const qs = await generateQuestions(sg.value, llm.value.client, {
     n,
-    model: DEFAULT_MODEL,
+    model: llm.value.defaultModel,
     vaultHash: vaultHash(vault),
     seed,
   });
@@ -180,8 +227,9 @@ async function runGenerate(argv: string[]): Promise<number> {
 }
 
 async function runRun(argv: string[]): Promise<number> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    process.stderr.write("ANTHROPIC_API_KEY required\n");
+  const llm = resolveEvalLlm(argv);
+  if (!llm.ok) {
+    process.stderr.write(`${llm.error.message}\n`);
     return 2;
   }
   const vault = flag(argv, "vault") ?? process.cwd();
@@ -191,7 +239,7 @@ async function runRun(argv: string[]): Promise<number> {
     return 2;
   }
   const k = intFlag(argv, "k", 2);
-  const model = flag(argv, "model") ?? DEFAULT_MODEL;
+  const model = flag(argv, "model") ?? llm.value.defaultModel;
 
   const qsRead = await readQuestionSet(vault, questionsId);
   if (!qsRead.ok) {
@@ -224,9 +272,10 @@ async function runRun(argv: string[]): Promise<number> {
   // across the run and any later --resume; persist incrementally so a mid-run
   // failure leaves a resumable partial file.
   const timestamp = new Date().toISOString();
-  const runId = resumeFrom ? resumeFrom.id : `${qsRead.value.id}-${model}-${timestamp}`;
-  const client = createAnthropicClient();
-  const run = await runAnswerer(qsRead.value, vault, client, {
+  const runId = resumeFrom
+    ? resumeFrom.id
+    : `${qsRead.value.id}-${modelIdSlug(model)}-${timestamp}`;
+  const run = await runAnswerer(qsRead.value, vault, llm.value.client, {
     k,
     model,
     resumeFrom,
@@ -275,11 +324,12 @@ async function runScore(argv: string[]): Promise<number> {
     process.stderr.write("--results required\n");
     return 2;
   }
-  const graderModel = flag(argv, "grader-model") ?? DEFAULT_MODEL;
-  if (!process.env.ANTHROPIC_API_KEY) {
-    process.stderr.write("ANTHROPIC_API_KEY required\n");
+  const llm = resolveEvalLlm(argv);
+  if (!llm.ok) {
+    process.stderr.write(`${llm.error.message}\n`);
     return 2;
   }
+  const graderModel = flag(argv, "grader-model") ?? llm.value.defaultModel;
 
   const runRead = await readResults(vault, resultsId);
   if (!runRead.ok) {
@@ -294,7 +344,7 @@ async function runScore(argv: string[]): Promise<number> {
   }
   const qs = qsRead.value;
 
-  const grader = createAnthropicClient();
+  const grader = llm.value.client;
   const grades: Grade[] = [];
   const traces = new Map<string, Trace>();
   // Dropped-run accounting (#102): a run can fall out of the score because it
@@ -437,15 +487,16 @@ async function runTopLevel(argv: string[]): Promise<number> {
   // We thread the IDs in-memory rather than re-reading from disk, so a
   // failure mid-pipeline still leaves the on-disk artifacts that did
   // succeed for forensic / resume use.
-  if (!process.env.ANTHROPIC_API_KEY) {
-    process.stderr.write("ANTHROPIC_API_KEY required\n");
+  const llm = resolveEvalLlm(argv);
+  if (!llm.ok) {
+    process.stderr.write(`${llm.error.message}\n`);
     return 2;
   }
   const vault = flag(argv, "vault") ?? process.cwd();
   const n = intFlag(argv, "n", 15);
   const k = intFlag(argv, "k", 2);
   const seed = flag(argv, "seed") ?? defaultSeed(vault);
-  const model = flag(argv, "model") ?? DEFAULT_MODEL;
+  const model = flag(argv, "model") ?? llm.value.defaultModel;
   const maxNodes = maxNodesFlag(argv);
 
   // 1. Generate
@@ -454,7 +505,7 @@ async function runTopLevel(argv: string[]): Promise<number> {
     process.stderr.write(`${sg.error.message}\n`);
     return 3;
   }
-  const apiClient = createAnthropicClient();
+  const apiClient = llm.value.client;
   const qsRes = await generateQuestions(sg.value, apiClient, {
     n,
     model,
@@ -475,7 +526,7 @@ async function runTopLevel(argv: string[]): Promise<number> {
   // 2. Run — mint the stable id + timestamp up front and persist incrementally
   // so a mid-run failure leaves a resumable partial file.
   const runTimestamp = new Date().toISOString();
-  const runId = `${qs.id}-${model}-${runTimestamp}`;
+  const runId = `${qs.id}-${modelIdSlug(model)}-${runTimestamp}`;
   const runRes = await runAnswerer(qs, vault, apiClient, {
     k,
     model,
@@ -496,6 +547,17 @@ async function runTopLevel(argv: string[]): Promise<number> {
   if (wroteRun) return wroteRun;
   process.stdout.write(`ran ${Object.keys(run.runs).length} answerer invocations (id=${run.id})\n`);
 
-  // 3. Score — invoke the same grading logic runScore uses, in-process.
-  return await runScore(["--vault", vault, "--results", run.id, "--grader-model", model]);
+  // 3. Score — invoke the same grading logic runScore uses, in-process. The
+  // resolved transport is forwarded explicitly so the grader bills the same
+  // key the answerer did.
+  return await runScore([
+    "--vault",
+    vault,
+    "--results",
+    run.id,
+    "--grader-model",
+    model,
+    "--transport",
+    llm.value.transport,
+  ]);
 }

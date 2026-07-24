@@ -323,3 +323,51 @@ describe("generateQuestions", () => {
     expect(r.value.tier_counts_produced.retrieval).toBe(1);
   });
 });
+
+// The output budget must scale with the requested question count: the default
+// 4096-token cap truncates somewhere past ~15 questions, which surfaces as a
+// fence-never-closed JSON parse failure and loses the whole generation.
+describe("generateQuestions output budget", () => {
+  it("scales completeJson maxTokens with n and caps it", async () => {
+    const seen: Array<number | undefined> = [];
+    const client: LlmClient = {
+      complete: async () => ({
+        ok: true,
+        value: { text: "", input_tokens: 0, output_tokens: 0, stop_reason: "end_turn" },
+      }),
+      completeJson: async (opts) => {
+        seen.push(opts.maxTokens);
+        return {
+          ok: true,
+          value: {
+            parsed: { questions: [] },
+            input_tokens: 0,
+            output_tokens: 0,
+            stop_reason: "end_turn",
+            text: "",
+          },
+        };
+      },
+      completeWithTools: async () => ({
+        ok: true,
+        value: {
+          text: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      }),
+    };
+    const r30 = await generateQuestions(fakeSubgraph, client, { n: 30, model: "m" });
+    expect(r30.ok).toBe(true);
+    // First call and the top-up (empty output forces one) share the budget.
+    expect(seen[0]).toBe(1024 + 600 * 30);
+    expect(seen[1]).toBe(1024 + 600 * 30);
+
+    seen.length = 0;
+    const rHuge = await generateQuestions(fakeSubgraph, client, { n: 1000, model: "m" });
+    expect(rHuge.ok).toBe(true);
+    expect(seen[0]).toBe(32_000);
+  });
+});

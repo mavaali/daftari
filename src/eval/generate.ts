@@ -42,12 +42,28 @@ export async function generateQuestions(
 
   const validNodes = new Set(subgraph.nodes.map((n) => n.path));
 
+  // Output budget scales with the requested count: a question plus its
+  // expected answer and source list runs a few hundred tokens, so the default
+  // 4096 cap silently TRUNCATES the response somewhere past ~15 questions —
+  // the fence never closes, the parse fails, and the whole generation is
+  // lost.
+  //
+  // ASSUMPTION behind the 32k ceiling: the generator model accepts
+  // max_tokens >= 32k (true of the claude-sonnet defaults on both
+  // transports). --transport openrouter lets --model point at models with
+  // smaller output caps; those reject the request LOUDLY (an API error
+  // naming max_tokens) rather than truncating, which is the failure mode
+  // this budget exists to prevent. If that error shows up, lower --n or
+  // pick a larger-output model.
+  const maxTokens = Math.min(32_000, 1024 + 600 * opts.n);
+
   // [FIRST GENERATION] full per-tier counts. A failure here is fatal.
   const firstRes = await llm.completeJson({
     model: opts.model,
     system: GENERATOR_PROMPT,
     user: renderUserPrompt(subgraph, tierCountsRequested),
     schema: QuestionSetSchema,
+    maxTokens,
   });
   if (!firstRes.ok) return firstRes;
   const firstRaw = extractQuestions(firstRes.value.parsed);
@@ -71,6 +87,7 @@ export async function generateQuestions(
       system: GENERATOR_PROMPT,
       user: renderTopUpPrompt(subgraph, shortfall),
       schema: QuestionSetSchema,
+      maxTokens,
     });
     if (topUpRes.ok) {
       const topUpRaw = extractQuestions(topUpRes.value.parsed);

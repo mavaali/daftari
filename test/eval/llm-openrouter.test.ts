@@ -246,20 +246,8 @@ describe("completeJson", () => {
   });
 });
 
-describe("completeWithTools", () => {
-  it("returns an explicit not-supported error (eval runs on the anthropic transport)", async () => {
-    const client = createOpenRouterClient({
-      fetchImpl: vi.fn() as unknown as typeof fetch,
-    });
-    const r = await client.completeWithTools({
-      ...OPTS,
-      tools: [],
-      toolHandler: async () => ({}),
-    });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.message).toMatch(/not supported.*openrouter/i);
-  });
-});
+// The former not-supported stub is gone: completeWithTools is implemented
+// (OpenAI function-calling loop) — see the dedicated describe block below.
 
 describe("resolveTransport", () => {
   it("defaults to anthropic with no flag and no env", () => {
@@ -311,5 +299,115 @@ describe("resolveTransport", () => {
     process.env.DAFTARI_LLM_TRANSPORT = " openrouter ";
     const r = resolveTransport(undefined);
     expect(r).toEqual({ ok: true, value: "openrouter" });
+  });
+});
+
+// The OpenAI-style function-calling loop (completeWithTools): tools go up as
+// {type:"function"}, arguments come back JSON-encoded, results echo back as
+// role:"tool" messages, and the loop ends on the first round with no calls.
+describe("createOpenRouterClient — completeWithTools", () => {
+  const TOOL_OPTS = {
+    ...OPTS,
+    tools: [{ name: "vault_read", description: "read a doc", input_schema: { type: "object" } }],
+  };
+
+  function toolCallBody(name: string, args: string, id?: string) {
+    return {
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [{ id, type: "function", function: { name, arguments: args } }],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 50, completion_tokens: 10 },
+    };
+  }
+
+  it("executes tool calls and returns the final answer with accumulated usage", async () => {
+    const bodies: any[] = [];
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async (_url: string, init: any) => {
+        bodies.push(JSON.parse(init.body));
+        return fakeRes(200, toolCallBody("vault_read", '{"path":"a.md"}', "call_1"));
+      })
+      .mockImplementationOnce(async (_url: string, init: any) => {
+        bodies.push(JSON.parse(init.body));
+        return fakeRes(200, okBody("final answer", 60, 30));
+      });
+    const handler = vi.fn().mockResolvedValue({ content: "doc body" });
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+
+    const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.text).toBe("final answer");
+    expect(r.value.input_tokens).toBe(110);
+    expect(r.value.output_tokens).toBe(40);
+    expect(r.value.tool_calls).toHaveLength(1);
+    expect(r.value.tool_calls[0]).toMatchObject({
+      tool: "vault_read",
+      input: { path: "a.md" },
+      output: { content: "doc body" },
+    });
+    expect(handler).toHaveBeenCalledWith("vault_read", { path: "a.md" });
+
+    // Round 1 request carries OpenAI-style tools; round 2 echoes the
+    // assistant tool_calls turn and the role:"tool" result.
+    expect(bodies[0].tools[0]).toMatchObject({
+      type: "function",
+      function: { name: "vault_read" },
+    });
+    const roles = bodies[1].messages.map((m: any) => m.role);
+    expect(roles).toEqual(["system", "user", "assistant", "tool"]);
+    expect(bodies[1].messages[3]).toMatchObject({
+      tool_call_id: "call_1",
+      content: JSON.stringify({ content: "doc body" }),
+    });
+  });
+
+  it("hands malformed arguments to the handler as the raw string", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async () => fakeRes(200, toolCallBody("vault_read", "{not json")))
+      .mockImplementationOnce(async () => fakeRes(200, okBody("done")));
+    const handler = vi.fn().mockResolvedValue("ok");
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+
+    const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler });
+    expect(r.ok).toBe(true);
+    expect(handler).toHaveBeenCalledWith("vault_read", "{not json");
+  });
+
+  it("fails with maxRounds exceeded when the model never stops calling tools", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(async () => fakeRes(200, toolCallBody("vault_read", "{}")));
+    const handler = vi.fn().mockResolvedValue("ok");
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+
+    const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler, maxRounds: 3 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("exceeded maxRounds (3)");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("records a thrown tool handler as tool_error and keeps going", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async () => fakeRes(200, toolCallBody("vault_read", "{}")))
+      .mockImplementationOnce(async () => fakeRes(200, okBody("recovered")));
+    const handler = vi.fn().mockRejectedValue(new Error("boom"));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+
+    const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.text).toBe("recovered");
+    expect(r.value.tool_calls[0].output).toEqual({ tool_error: "boom" });
   });
 });
