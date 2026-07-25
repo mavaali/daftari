@@ -8,13 +8,13 @@
     "url": "https://github.com/mavaali/daftari",
     "source": "github"
   },
-  "version": "1.30.0",
+  "version": "1.32.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "daftari",
-      "version": "1.30.0",
+      "version": "1.32.0",
       "transport": {
         "type": "stdio"
       }

@@ -647,6 +647,36 @@ collection-pair > same-kind; no LLM): the court retrieves how this house has
 resolved similar disputes before, and whether a precedent applies stays the
 human's judgment. Memory grows case law.
 
+## The principal interview
+
+The vault interrogates you. `daftari interview` assembles a question sheet
+from what the vault already knows is unclear — open tensions (contested
+first, longest-carried first), canonical accumulation docs past their TTL,
+and `questions_raised` entries no document answers — deterministic and
+LLM-free, like the circadian pass:
+
+```bash
+# The sheet — read-only, priority-ordered
+daftari interview --vault ./my-vault
+
+# Sit for it. Answers are recorded VERBATIM; empty skips, 'q' ends.
+daftari interview ask --vault ./my-vault
+```
+
+Answered questions become a transcript document in an `interviews/`
+collection — `tier: source` (your words, body immutable), `provenance:
+direct`, no TTL (testimony doesn't expire) — committed like any other write,
+with `sources` tracing each question back to the tension or document that
+prompted it. The pattern is the companion interview on a living-summary
+page: the compiler's highest-value move is not more compilation, it is
+asking the principal about the unclear spots and folding the verbatim
+answers back into the corpus.
+
+Recording testimony resolves nothing. The transcript is *evidence*: the CLI
+ends by pointing at `daftari court rule <id> --references <transcript>` for
+tensions it touched, and at re-verified writes for stale docs. Operator-only,
+like the court — no MCP tool, no access context.
+
 ## Belief archaeology
 
 Git is the version layer, so the vault can answer **"what did we believe on

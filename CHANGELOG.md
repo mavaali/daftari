@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-07-25
+
+The interview release: the vault interrogates its principal. `daftari
+interview` turns the signals the vault already computes — open tensions,
+expired canon, unanswered `questions_raised` — into a question sheet, asks
+you at the terminal, and folds the verbatim answers back into the corpus as
+first-class source material. Plus the OKF bridge learns spec v0.2's trust
+signals. Design record:
+`docs/superpowers/specs/2026-07-25-principal-interview-design.md`.
+
+### Added
+
+- **`daftari interview` — the principal interview.** The design steal is the
+  companion interview on Terence Tao's AI-views "living summary" page: after
+  an assistant compiles a corpus of someone's positions, its highest-value
+  next move is to ask the principal about the places the corpus is unclear
+  and record the answers verbatim. Daftari already computes "unclear" three
+  ways, so the sheet is assembled deterministically (LLM-free, the circadian
+  precedent — nothing on this surface can spend): open tensions (contested
+  first, longest-carried first; legacy `unspecified` and system-generated
+  `inter-proposal` entries excluded), canonical accumulation docs past their
+  `ttl_days` (largest overshoot first; generative decay is expected, never
+  asked about), and `questions_raised` entries no document's
+  `questions_answered` covers (duplicate raisings merged). `daftari
+  interview` prints the sheet read-only; `daftari interview ask` conducts
+  the session and records answers **verbatim** as a vault document in an
+  `interviews/` collection — `tier: source` (body immutable), `provenance:
+  direct`, `ttl_days: null` (testimony doesn't expire), `sources` tracing
+  each question back to its prompting signal, `questions_answered` carrying
+  the question texts so a later sheet never re-asks. The write round-trips
+  the parser before touching disk, is confined by the same vault-path gate
+  as every other write, and auto-commits honoring `auto_commit`/`git_dir`.
+  Recording testimony resolves nothing: the CLI ends by pointing at
+  `daftari court rule <id> --references <transcript>` and at re-verified
+  writes — a tension may never masquerade as a supersession. Operator-only
+  like the court (no access context, no MCP tool); the `--collection` flag
+  is allow-listed (one path segment, reserved names rejected) so the
+  transcript can neither respell its RBAC collection nor land where vault
+  scans can't see it.
+
 ### Changed
 
 - **OKF bridge upgraded to spec v0.2 — trust signals.** OKF v0.2 adds opt-in
@@ -1511,6 +1551,7 @@ vault to AI agents, exposing 13 tools over stdio.
   example documents, git history, search index); `daftari --vault` serves it.
 - 160 tests covering all 13 tools and their supporting modules.
 
+[1.32.0]: https://github.com/mavaali/daftari/releases/tag/v1.32.0
 [1.31.0]: https://github.com/mavaali/daftari/releases/tag/v1.31.0
 [1.5.1]: https://github.com/mavaali/daftari/releases/tag/v1.5.1
 [1.4.0]: https://github.com/mavaali/daftari/releases/tag/v1.4.0
