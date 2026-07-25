@@ -6,6 +6,7 @@ import {
   dateFromGenerated,
   dateFromTimestamp,
   deriveDescription,
+  hasDaftariSidecar,
   isAttestedComputation,
   isUri,
   okfToDaftari,
@@ -281,6 +282,19 @@ describe("okfToDaftari", () => {
     const out = okfToDaftari({ type: "x", daftari: sidecar }, ctx);
     expect(out).toEqual(sidecar);
     expect(out).not.toBe(sidecar); // copied, not aliased
+  });
+
+  it("hasDaftariSidecar matches okfToDaftari's round-trip gate exactly", () => {
+    expect(hasDaftariSidecar({ daftari: { title: "Orig" } })).toBe(true);
+    // Key presence alone is not a round-trip: a non-object sidecar is ignored.
+    expect(hasDaftariSidecar({ daftari: "junk" })).toBe(false);
+    expect(hasDaftariSidecar({ daftari: null })).toBe(false);
+    expect(hasDaftariSidecar({ daftari: ["a"] })).toBe(false);
+    expect(hasDaftariSidecar({})).toBe(false);
+    // And a doc with a junk sidecar really is synthesized, not passed through.
+    const out = okfToDaftari({ type: "note", daftari: "junk" }, ctx);
+    expect(out.domain).toBe("accumulation");
+    expect(out.status).toBe("draft");
   });
 
   it("synthesizes conservative Daftari frontmatter for a foreign doc", () => {
