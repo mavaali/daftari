@@ -12,6 +12,12 @@
 #
 # To release: bump `version` in package.json (release PR), merge, then
 #   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# The tag push publishes to npm AND creates the GitHub Release page, with
+# the tag's CHANGELOG section as the notes (v1.30.0/v1.31.0 shipped to npm
+# but never got a Releases page — the page was a forgotten manual step).
+# Attaching artifacts (the .mcpb) to the page remains a maintainer step:
+#   gh release upload vX.Y.Z daftari-X.Y.Z.mcpb
 
 name: Release
 
@@ -25,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC token for npm trusted publishing
-      contents: read
+      contents: write # create the GitHub Release for the pushed tag
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -60,3 +66,31 @@ jobs:
           fi
 
       - run: npm publish
+
+      # Publish the GitHub Release page for this tag, notes taken verbatim
+      # from the tag's CHANGELOG section. Ordered AFTER npm publish so a
+      # failed publish never leaves a release page announcing a version npm
+      # doesn't have. Idempotent: a re-run (or a manually pre-created page)
+      # skips instead of failing.
+      - name: Create GitHub Release from CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists — skipping."
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "No CHANGELOG section found for $VERSION — falling back to a link." >&2
+            echo "See [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)." > "$RUNNER_TEMP/notes.md"
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"
