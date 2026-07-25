@@ -38,6 +38,7 @@ Usage:
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
   daftari import obsidian <v>        Adopt an Obsidian vault in place (see: daftari import --help)
+  daftari interview [ask] [options]   Interview the principal on what the vault finds unclear (see: daftari interview --help)
   daftari okf <export|import> ...     Bridge a vault and the Open Knowledge Format (see: daftari okf --help)
   daftari serve --vault <path>        Server mode over Streamable HTTP for multiple clients (see: daftari serve --help)
   daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
@@ -285,6 +286,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "court") {
     const { runCourt } = await import("./court/index.js");
     process.exitCode = await runCourt(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "interview") {
+    const { runInterview } = await import("./interview/index.js");
+    process.exitCode = await runInterview(argv.slice(1));
     return;
   }
 

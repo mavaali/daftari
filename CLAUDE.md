@@ -19,6 +19,7 @@ Concepts and layer boundaries: docs/architecture.md. Where things live:
 - `src/asof/` — belief archaeology over git history (`daftari asof`)
 - `src/audit/` — doc-to-code coherence audit (`daftari audit`)
 - `src/eval/` — vault quality eval: question generation + LLM judging (`daftari eval`)
+- `src/interview/` — principal interview: question sheet from tensions/staleness/open questions, verbatim transcript (`daftari interview`)
 - `src/backfill/`, `src/import/`, `src/okf/` — adoption paths: metadata backfill, foreign-vault import, OKF export/import
 - `src/serve/` — server mode over Streamable HTTP (`daftari serve`); `src/sync/` — push/restore against storage backends
 - `src/hooks/` — vault-supplied hook module loading
