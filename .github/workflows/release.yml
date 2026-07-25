@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC token for npm trusted publishing
-      contents: write # create the GitHub Release for the pushed tag
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -67,11 +67,20 @@ jobs:
 
       - run: npm publish
 
-      # Publish the GitHub Release page for this tag, notes taken verbatim
-      # from the tag's CHANGELOG section. Ordered AFTER npm publish so a
-      # failed publish never leaves a release page announcing a version npm
-      # doesn't have. Idempotent: a re-run (or a manually pre-created page)
-      # skips instead of failing.
+  # Publish the GitHub Release page for this tag, notes taken verbatim from
+  # the tag's CHANGELOG section. A SEPARATE job so the contents:write token
+  # never coexists with the steps that execute third-party code (npm ci,
+  # lint, build, test) — the publish job stays contents:read. `needs` orders
+  # it after npm publish, so a failed publish never leaves a release page
+  # announcing a version npm doesn't have. Idempotent: a re-run (or a
+  # manually pre-created page) skips instead of failing.
+  github-release:
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: write # create the GitHub Release for the pushed tag
+    steps:
+      - uses: actions/checkout@v7
       - name: Create GitHub Release from CHANGELOG
         env:
           GH_TOKEN: ${{ github.token }}
