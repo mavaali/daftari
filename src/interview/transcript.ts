@@ -37,6 +37,17 @@ export const DEFAULT_INTERVIEW_COLLECTION = "interviews";
 // path (S1, 2026-07-01) — the CLI flag gets the same treatment.
 export const COLLECTION_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
+// Segments listFiles hard-ignores that the regex alone would admit (its other
+// ignores — .daftari, .obsidian, .trash — are already blocked by the no-dot
+// rule). A transcript under one of these would be written and committed but
+// invisible to every vault-wide scan: staleness, lint, reindex, a later
+// interview sheet. Fail loudly here instead.
+const RESERVED_COLLECTION_NAMES = new Set(["node_modules"]);
+
+export function isValidCollectionName(name: string): boolean {
+  return COLLECTION_NAME_RE.test(name) && !RESERVED_COLLECTION_NAMES.has(name);
+}
+
 export interface InterviewAnswer {
   question: InterviewQuestion;
   answer: string; // verbatim — never trimmed beyond the terminal's own line
@@ -126,10 +137,11 @@ export async function writeTranscript(
   if (answers.length === 0) {
     return err(new Error("writeTranscript requires at least one answer"));
   }
-  if (!COLLECTION_NAME_RE.test(meta.collection)) {
+  if (!isValidCollectionName(meta.collection)) {
     return err(
       new Error(
-        `invalid collection name '${meta.collection}' — one path segment matching ${COLLECTION_NAME_RE}`,
+        `invalid collection name '${meta.collection}' — one path segment matching ` +
+          `${COLLECTION_NAME_RE}, not a reserved name`,
       ),
     );
   }

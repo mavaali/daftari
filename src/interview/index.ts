@@ -22,9 +22,9 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { gatherQuestions, type InterviewQuestion, renderSheet } from "./questions.js";
 import {
-  COLLECTION_NAME_RE,
   DEFAULT_INTERVIEW_COLLECTION,
   type InterviewAnswer,
+  isValidCollectionName,
   writeTranscript,
 } from "./transcript.js";
 
@@ -215,10 +215,10 @@ export async function runInterview(argv: string[], io?: InterviewIo): Promise<nu
     // collection lands in both the transcript's frontmatter and its on-disk
     // path, so a bad flag must fail here, not after the testimony is given.
     const collection = readStringArg(argv, "--collection") ?? DEFAULT_INTERVIEW_COLLECTION;
-    if (!COLLECTION_NAME_RE.test(collection)) {
+    if (!isValidCollectionName(collection)) {
       process.stderr.write(
         "daftari interview: --collection must be a single path segment " +
-          "(letters, digits, '-', '_')\n",
+          "(letters, digits, '-', '_') and not a reserved name like node_modules\n",
       );
       return 2;
     }

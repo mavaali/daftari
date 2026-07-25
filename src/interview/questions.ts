@@ -20,10 +20,8 @@
 
 import { computeStaleness } from "../curation/staleness.js";
 import { agingTier, listTensions, type TensionEntry } from "../curation/tension.js";
-import { parseDocument } from "../frontmatter/parser.js";
-import type { Frontmatter } from "../frontmatter/types.js";
+import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 
 export const QUESTION_KINDS = ["tension", "stale", "open_question"] as const;
 export type QuestionKind = (typeof QUESTION_KINDS)[number];
@@ -45,28 +43,6 @@ const RETIRED_STATUSES = new Set(["deprecated", "superseded", "archived"]);
 // vault's answered set. Exact semantics stay deterministic — no fuzzy match.
 export function normalizeQuestion(q: string): string {
   return q.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-interface WalkedDoc {
-  path: string;
-  frontmatter: Frontmatter;
-}
-
-async function walkDocs(vaultRoot: string): Promise<Result<WalkedDoc[], Error>> {
-  const list = await listFiles(vaultRoot);
-  if (!list.ok) return list;
-
-  const docs: WalkedDoc[] = [];
-  for (const relPath of list.value) {
-    const resolved = resolveVaultPath(vaultRoot, relPath);
-    if (!resolved.ok) continue;
-    const file = await readFile(resolved.value.absPath);
-    if (!file.ok) continue;
-    const parsed = parseDocument(file.value);
-    if (!parsed.ok) continue;
-    docs.push({ path: relPath, frontmatter: parsed.value.frontmatter });
-  }
-  return ok(docs);
 }
 
 // Aging-tier priority for tension questions: the disputes the vault has
@@ -102,8 +78,8 @@ function tensionQuestions(entries: TensionEntry[], now: Date): InterviewQuestion
   }));
 }
 
-function staleQuestions(docs: WalkedDoc[], now: Date): InterviewQuestion[] {
-  const candidates: { doc: WalkedDoc; overshootDays: number; ttlDays: number }[] = [];
+function staleQuestions(docs: LoadedDoc[], now: Date): InterviewQuestion[] {
+  const candidates: { doc: LoadedDoc; overshootDays: number; ttlDays: number }[] = [];
   for (const doc of docs) {
     const fm = doc.frontmatter;
     // Sleep's domain split: generative docs going stale is expected — never
@@ -132,7 +108,7 @@ function staleQuestions(docs: WalkedDoc[], now: Date): InterviewQuestion[] {
   }));
 }
 
-function openQuestions(docs: WalkedDoc[]): InterviewQuestion[] {
+function openQuestions(docs: LoadedDoc[]): InterviewQuestion[] {
   // An answer recorded anywhere counts, whatever the answering doc's status.
   const answered = new Set<string>();
   for (const doc of docs) {
@@ -185,7 +161,7 @@ export async function gatherQuestions(
 
   const tensions = await listTensions(vaultRoot);
   if (!tensions.ok) return tensions;
-  const docs = await walkDocs(vaultRoot);
+  const docs = await loadDocuments(vaultRoot);
   if (!docs.ok) return docs;
 
   let questions = [

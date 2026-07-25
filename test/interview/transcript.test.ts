@@ -139,6 +139,7 @@ describe("writeTranscript", () => {
       "../../outside", // vault escape
       "a/b", // multi-segment
       "team: a", // YAML mapping
+      "node_modules", // listFiles hard-ignores it — the vault could never see the doc
       "",
     ]) {
       const r = await writeTranscript(vault, answers, { ...META, collection });
