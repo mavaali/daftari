@@ -139,6 +139,15 @@ describe("runInterview — ask mode", () => {
     expect(output()).toContain("No answers recorded");
   });
 
+  it("rejects a bad --collection before asking a single question", async () => {
+    writeTension();
+    const { io, output } = scriptedIo(["should never be consumed"]);
+    const code = await runInterview(["ask", "--vault", vault, "--collection", "../evil"], io);
+    expect(code).toBe(2);
+    expect(output()).toBe(""); // the session never started
+    expect(existsSync(join(vault, "..", "evil"))).toBe(false);
+  });
+
   it("says so when nothing is unclear", async () => {
     writeDoc("pricing/fine.md", TODAY, 365);
     const { io } = scriptedIo([]);

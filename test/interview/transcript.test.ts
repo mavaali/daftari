@@ -131,4 +131,36 @@ describe("writeTranscript", () => {
     const r = await writeTranscript(vault, [], META);
     expect(r.ok).toBe(false);
   });
+
+  it("rejects a collection name carrying YAML structure or path traversal", async () => {
+    const answers = [{ question: question(), answer: "X stands." }];
+    for (const collection of [
+      "interviews\ncollection: public-notes", // duplicate-key YAML injection
+      "../../outside", // vault escape
+      "a/b", // multi-segment
+      "team: a", // YAML mapping
+      "",
+    ]) {
+      const r = await writeTranscript(vault, answers, { ...META, collection });
+      expect(r.ok, `collection ${JSON.stringify(collection)} must be rejected`).toBe(false);
+    }
+    expect(existsSync(join(vault, "..", "outside"))).toBe(false);
+  });
+
+  it("serializes YAML-significant content in answers and claims safely", async () => {
+    const answers = [
+      {
+        question: question({
+          question: 'a.md says "yes: [maybe]" while b.md says "no — {never}".',
+        }),
+        answer: "colon: dash - brace } quote \" tick ' hash # done",
+      },
+    ];
+    const parsed = parseDocument(renderTranscript(answers, META));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.validation.valid).toBe(true);
+    expect(parsed.value.frontmatter.collection).toBe("interviews");
+    expect(parsed.value.frontmatter.questions_answered).toEqual([answers[0]?.question.question]);
+  });
 });

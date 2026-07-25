@@ -22,6 +22,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { gatherQuestions, type InterviewQuestion, renderSheet } from "./questions.js";
 import {
+  COLLECTION_NAME_RE,
   DEFAULT_INTERVIEW_COLLECTION,
   type InterviewAnswer,
   writeTranscript,
@@ -51,6 +52,7 @@ Interview (ask):
   tier: source, provenance: direct — committed like any other write.
 
   --collection   Collection the transcript lands in (default: interviews).
+                 One path segment: letters, digits, '-', '_'.
                  Note: the transcript quotes claims from every collection
                  the sheet touched. Under the template config only roles
                  with read: ["*"] can read a new collection; granting a
@@ -121,6 +123,7 @@ async function runAsk(
   vaultRoot: string,
   questions: InterviewQuestion[],
   argv: string[],
+  collection: string,
   io: InterviewIo,
 ): Promise<number> {
   const answers: InterviewAnswer[] = [];
@@ -146,7 +149,7 @@ async function runAsk(
   const meta = {
     date: new Date().toISOString().slice(0, 10),
     by: readStringArg(argv, "--by") ?? `human:${userInfo().username}`,
-    collection: readStringArg(argv, "--collection") ?? DEFAULT_INTERVIEW_COLLECTION,
+    collection,
   };
   const written = await writeTranscript(vaultRoot, answers, meta);
   if (!written.ok) {
@@ -208,13 +211,24 @@ export async function runInterview(argv: string[], io?: InterviewIo): Promise<nu
   const questions = gathered.value;
 
   if (findPositionals(argv)[0] === "ask") {
+    // Validated before a single question is put to the principal: the
+    // collection lands in both the transcript's frontmatter and its on-disk
+    // path, so a bad flag must fail here, not after the testimony is given.
+    const collection = readStringArg(argv, "--collection") ?? DEFAULT_INTERVIEW_COLLECTION;
+    if (!COLLECTION_NAME_RE.test(collection)) {
+      process.stderr.write(
+        "daftari interview: --collection must be a single path segment " +
+          "(letters, digits, '-', '_')\n",
+      );
+      return 2;
+    }
     if (questions.length === 0) {
       process.stdout.write(
         "Nothing is unclear: no open tensions, no expired canon, no unanswered questions_raised.\n",
       );
       return 0;
     }
-    return runAsk(vaultRoot, questions, argv, io ?? terminalIo());
+    return runAsk(vaultRoot, questions, argv, collection, io ?? terminalIo());
   }
 
   const sheet = renderSheet(questions, new Date().toISOString().slice(0, 10));

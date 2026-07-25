@@ -20,12 +20,22 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import matter from "gray-matter";
+import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import type { InterviewQuestion } from "./questions.js";
 
 export const DEFAULT_INTERVIEW_COLLECTION = "interviews";
+
+// The collection name travels into both the transcript's frontmatter and its
+// on-disk path, so it is allow-listed rather than escaped: one path segment,
+// no separators, no `.` (rules out `..`), nothing YAML-significant. The same
+// frontmatter-vs-path collection confusion was hardened on the MCP write
+// path (S1, 2026-07-01) — the CLI flag gets the same treatment.
+export const COLLECTION_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export interface InterviewAnswer {
   question: InterviewQuestion;
@@ -38,41 +48,30 @@ export interface TranscriptMeta {
   collection: string;
 }
 
-// YAML double-quoted scalar. Question texts quote tension claims, so plain
-// scalars are not an option.
-function yamlQuote(s: string): string {
-  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-function yamlStringList(items: string[], key: string): string {
-  if (items.length === 0) return `${key}: []`;
-  return `${key}:\n${items.map((s) => `  - ${yamlQuote(s)}`).join("\n")}`;
-}
-
 export function renderTranscript(answers: InterviewAnswer[], meta: TranscriptMeta): string {
   const sources = [...new Set(answers.flatMap((a) => a.question.refs))];
-  const questionTexts = answers.map((a) => a.question.question);
 
-  const frontmatter = [
-    "---",
-    `title: ${yamlQuote(`Interview — ${meta.date}`)}`,
-    "domain: accumulation",
-    `collection: ${meta.collection}`,
-    "status: canonical",
-    "confidence: high",
-    `created: ${meta.date}`,
-    `updated: ${meta.date}`,
-    `updated_by: ${yamlQuote(meta.by)}`,
-    "provenance: direct",
-    "tier: source",
-    yamlStringList(sources, "sources"),
-    "superseded_by: null",
-    "ttl_days: null",
-    "tags: [interview]",
-    yamlStringList(questionTexts, "questions_answered"),
-    "questions_raised: []",
-    "---",
-  ].join("\n");
+  // Serialized with matter.stringify (js-yaml), the same path vault_write and
+  // the OKF bridge use — arbitrary strings (quoted claims, verbatim answers)
+  // can never produce malformed YAML. Insertion order is the emitted order.
+  const frontmatter: Record<string, unknown> = {
+    title: `Interview — ${meta.date}`,
+    domain: "accumulation",
+    collection: meta.collection,
+    status: "canonical",
+    confidence: "high",
+    created: meta.date,
+    updated: meta.date,
+    updated_by: meta.by,
+    provenance: "direct",
+    tier: "source",
+    sources,
+    superseded_by: null,
+    ttl_days: null,
+    tags: ["interview"],
+    questions_answered: answers.map((a) => a.question.question),
+    questions_raised: [],
+  };
 
   const body = [
     `# Interview — ${meta.date}`,
@@ -94,7 +93,7 @@ export function renderTranscript(answers: InterviewAnswer[], meta: TranscriptMet
     body.push("");
   }
 
-  return `${frontmatter}\n\n${body.join("\n")}`;
+  return matter.stringify(`\n${body.join("\n")}`, frontmatter);
 }
 
 // Allocates a collision-free vault-relative path for today's transcript:
@@ -127,13 +126,41 @@ export async function writeTranscript(
   if (answers.length === 0) {
     return err(new Error("writeTranscript requires at least one answer"));
   }
+  if (!COLLECTION_NAME_RE.test(meta.collection)) {
+    return err(
+      new Error(
+        `invalid collection name '${meta.collection}' — one path segment matching ${COLLECTION_NAME_RE}`,
+      ),
+    );
+  }
 
-  const relPath = transcriptRelPath(vaultRoot, meta.collection, meta.date);
   const content = renderTranscript(answers, meta);
+  // Refuse to persist testimony the vault could not read back: the rendered
+  // document must round-trip the same parser every read uses, cleanly.
+  const roundTrip = parseDocument(content);
+  if (!roundTrip.ok) {
+    return err(new Error(`refusing to write a malformed transcript: ${roundTrip.error.message}`));
+  }
+  if (!roundTrip.value.validation.valid) {
+    const issues = roundTrip.value.validation.issues
+      .map((i) => `${i.field}: ${i.message}`)
+      .join("; ");
+    return err(new Error(`refusing to write an invalid transcript: ${issues}`));
+  }
+
+  // Vault confinement, same gate as every other write path. The allow-list
+  // above already rules out traversal; this keeps the invariant structural
+  // rather than an accident of the regex.
+  const resolved = resolveVaultPath(
+    vaultRoot,
+    transcriptRelPath(vaultRoot, meta.collection, meta.date),
+  );
+  if (!resolved.ok) return resolved;
+  const relPath = resolved.value.relPath;
 
   try {
-    await mkdir(dirname(join(vaultRoot, relPath)), { recursive: true });
-    await writeFile(join(vaultRoot, relPath), content, "utf-8");
+    await mkdir(dirname(resolved.value.absPath), { recursive: true });
+    await writeFile(resolved.value.absPath, content, "utf-8");
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot write transcript: ${reason}`));
