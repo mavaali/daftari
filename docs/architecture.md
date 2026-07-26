@@ -7,12 +7,13 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, started against one vault directory, running as
-one access identity for its lifetime, serving 25 tools over stdio. Five more
+one access identity for its lifetime, serving 25 tools over stdio. Six more
 surfaces are CLI-only — `daftari backfill`, `daftari import obsidian`,
-`daftari audit`, `daftari eval`, and `daftari consolidate` — plus a one-shot
-`daftari --init` scaffolder; each is introduced below where it earns its place
-(see [Adoption](#adoption), [The consolidation loop](#the-consolidation-loop),
-and [Doc-to-code coherence](#doc-to-code-coherence)).
+`daftari schema`, `daftari audit`, `daftari eval`, and `daftari consolidate` —
+plus a one-shot `daftari --init` scaffolder; each is introduced below where it
+earns its place (see [Adoption](#adoption),
+[The consolidation loop](#the-consolidation-loop), and
+[Doc-to-code coherence](#doc-to-code-coherence)).
 
 That's it for the easy job. The rest is the four layers a single tool call falls
 through, and — the part worth your attention — *why each layer refuses to do
@@ -397,6 +398,21 @@ or committed — the apply commit is the durable audit trail. Existing frontmatt
 is preserved field-by-field (see
 [Non-destructive frontmatter writes](#non-destructive-frontmatter-writes)), and a
 doc whose frontmatter already validates is reported conformant and skipped.
+
+**`daftari schema infer` / `daftari schema diff`** answer a question backfill
+doesn't: not "does this doc validate against the declared schema" but "what
+does the vault's frontmatter actually look like." `infer` walks the vault (or
+a `--scope` folder) and reports every key that occurs — occurrence count,
+inferred type(s), example values, and whether it looks enum-like (a small,
+repeated value set). `diff` compares that de facto schema against the
+declared one (built-ins plus `schema_extensions`): undeclared keys in wide
+use, declared extensions never observed, values that drift from their
+declared type/enum, and near-miss field names (`state` vs `status`) that
+smell like a rename rather than a new key. Both are read-only and advisory —
+same posture as `vault_lint` — and both build on one vault walk (`scanVault`)
+so they never disagree about what they saw. Run `schema infer` before
+`daftari backfill` to see what a foreign wiki actually contains before
+deriving frontmatter for it.
 
 **`daftari import obsidian <vault>`** is an Obsidian-aware wrapper over
 `backfill`. It harvests inline `#tags` from the document body into the

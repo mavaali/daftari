@@ -40,6 +40,7 @@ Usage:
   daftari import obsidian <v>        Adopt an Obsidian vault in place (see: daftari import --help)
   daftari interview [ask] [options]   Interview the principal on what the vault finds unclear (see: daftari interview --help)
   daftari okf <export|import> ...     Bridge a vault and the Open Knowledge Format (see: daftari okf --help)
+  daftari schema <infer|diff>         Frontmatter schema inference and drift diff (see: daftari schema --help)
   daftari serve --vault <path>        Server mode over Streamable HTTP for multiple clients (see: daftari serve --help)
   daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
   daftari sync --vault <path>         Push the vault to its storage backing / restore (see: daftari sync --help)
@@ -304,6 +305,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "okf") {
     const { runOkf } = await import("./okf/index.js");
     process.exitCode = await runOkf(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "schema") {
+    const { runSchema } = await import("./schema/index.js");
+    process.exitCode = await runSchema(argv.slice(1));
     return;
   }
 
