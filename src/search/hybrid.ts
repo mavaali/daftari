@@ -214,12 +214,30 @@ function ftsRanking(db: IndexDb, query: string | null): Map<string, number> {
 // path → best-similarity map. sqlite-vec returns a cosine *distance*
 // (smaller = closer), so similarity is `1 - distance` clamped to [0, 1].
 // We keep each document's best-matching chunk.
+// `readableCollections` constrains the scan to the caller's readable
+// collections *inside* the KNN (spec 2026-07-26 fusion, Decision 3). Without
+// it the scan spends its K budget vault-wide and the tool handler's
+// post-filter can reduce a restricted role's vector half to nothing — the
+// starvation bug. Undefined means unfiltered (operator CLI, no access
+// context); an EMPTY array means "reads nothing", which is a legitimate
+// verdict for the deny-all guest and must not be confused with unfiltered.
+//
+// This is still omission, not redaction: unreadable documents never enter the
+// candidate set, no remainder is computed or reported, and the result is
+// shaped exactly as it would be in a vault where those collections do not
+// exist (2026-07-14 spec).
 function vecRanking(
   db: IndexDb,
   queryEmbedding: Float32Array,
   modelId: string,
+  readableCollections?: string[],
 ): Map<string, number> {
   const queryBlob = embeddingToBlob(queryEmbedding);
+  if (readableCollections !== undefined && readableCollections.length === 0) return new Map();
+  const collectionFilter =
+    readableCollections === undefined
+      ? ""
+      : ` AND v.collection IN (${readableCollections.map(() => "?").join(",")})`;
   const rows = db
     .prepare(
       `SELECT c.path AS path, v.distance AS distance
@@ -227,10 +245,13 @@ function vecRanking(
          JOIN chunks AS c ON c.content_hash = v.content_hash
         WHERE v.embedding MATCH ?
           AND v.model = ?
-          AND v.k = ?
+          AND v.k = ?${collectionFilter}
         ORDER BY v.distance`,
     )
-    .all(queryBlob, modelId, VEC_KNN_K) as { path: string; distance: number }[];
+    .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+    path: string;
+    distance: number;
+  }[];
   const result = new Map<string, number>();
   for (const r of rows) {
     const sim = Math.max(0, 1 - r.distance);
@@ -326,6 +347,8 @@ interface RankOptions {
   limit: number;
   excludePath?: string;
   lexicalGranularity: "document" | "chunk";
+  // Readable-collection allow-list pushed into the KNN scan; see vecRanking.
+  readableCollections?: string[];
 }
 
 // Core ranker shared by query search and related-document search.
@@ -364,7 +387,7 @@ function rankDocuments(
   let vectorUsed = false;
   if (queryEmbedding) {
     const provider = getProvider();
-    vectorRaw = vecRanking(db, queryEmbedding, provider.id);
+    vectorRaw = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
     if (vectorRaw.size > 0) vectorUsed = true;
   }
   const vectorNorm = normalize(vectorRaw);
@@ -431,6 +454,12 @@ export interface HybridSearchOptions {
   // canRead). The extra candidates cost nothing to materialize: rankDocuments
   // already builds a hit (snippet included) for every candidate before slicing.
   overFetch?: boolean;
+  // Collections the caller may read. Pushed into the vector KNN so a
+  // restricted role's K budget is spent on chunks it can actually read
+  // (spec 2026-07-26 fusion, Decision 3). Undefined = unfiltered, as today;
+  // the tool handler's post-rank canRead filter remains the authorization
+  // boundary either way, and still covers the lexical half.
+  readableCollections?: string[];
 }
 
 // Ranks vault documents against a free-text query.
@@ -466,6 +495,7 @@ export async function hybridSearch(
     limit: rankLimit,
     excludePath: undefined,
     lexicalGranularity,
+    readableCollections: options.readableCollections,
   });
 
   return ok({
@@ -529,6 +559,7 @@ export function relatedSearch(
     limit: rankLimit,
     excludePath: path,
     lexicalGranularity: "document",
+    readableCollections: options.readableCollections,
   });
 
   return ok({
