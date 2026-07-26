@@ -22,8 +22,7 @@ the exact moment the doc's claims are about to steer an action — gets every
 advisory surface the read path has grown (decay, upstream_staleness,
 structural, contested) *except* the one pointing at code. The doc says the
 retry loop lives at `api:src/retry.ts` lines 40–58; the code was rewritten
-three weeks ago; nothing in the read result says so. Staleness is
-discovered on the operator's schedule, and consumed on the agent's.
+three weeks ago; nothing in the read result says so.
 
 The evidence that retrieval-time re-checking is the right defense is now
 public. GitHub Copilot's agentic memory (public preview, 2026-01-15) stores
@@ -231,8 +230,7 @@ explicit opt-in is the future shape, not a changed default.
 
 Agents and humans write pins the way they write any frontmatter: a
 `vault_write` whose `describes` entries carry the suffix. No new tool, no
-write-path validation (Decision 1), lock/commit/provenance semantics
-unchanged.
+write-path validation (Decision 1), lock/commit/provenance unchanged.
 
 For adoption over an existing vault, `daftari audit --pin` backfills:
 for every resolvable binding that lacks a pin, it proposes appending

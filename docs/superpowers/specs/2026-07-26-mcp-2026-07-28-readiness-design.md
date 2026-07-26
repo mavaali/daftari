@@ -3,10 +3,9 @@
 2026-07-26. Status: **proposed — awaiting Mihir's review; implementation not
 started.**
 The final "stateless MCP" protocol revision (2026-07-28, RC published
-2026-05-21) lands two days after this spec's date. This document settles what
-daftari adopts, what it defers, and what it will never adopt, so the
-migration is a sequence of deliberate decisions rather than a chase of the
-changelog.
+2026-05-21) lands two days after this spec's date. This document settles
+what daftari adopts, what it defers, and what it will never adopt — a
+sequence of deliberate decisions, not a chase of the changelog.
 
 ## Why
 
@@ -23,8 +22,8 @@ What the 2026-07-28 revision changes, from the RC:
 - Tool schemas expand to full **JSON Schema 2020-12**; `structuredContent`
   may be any JSON value.
 - **Tasks** graduate to a standalone extension: `tools/call` may return a
-  durable task handle, polled via `tasks/get`/`tasks/list`/`tasks/cancel`/
-  `tasks/result`, with per-tool `execution.taskSupport` declarations.
+  durable task handle, polled via `tasks/get`/`list`/`cancel`/`result`, with
+  per-tool `execution.taskSupport` declarations.
 - A `resource_link` content type — handles, not payloads.
 
 Where daftari actually stands today, from the code:
@@ -38,15 +37,15 @@ Where daftari actually stands today, from the code:
   one `text` block, `JSON.stringify(result.value, null, 2)`.
 - `src/serve/index.ts` (spec 2026-07-20) is built on exactly the machinery
   the revision deletes: a `sessions` map keyed by `Mcp-Session-Id`, an
-  `isInitializeRequest` gate on session open, a session-id-is-not-a-
-  credential re-check on every later request.
+  `isInitializeRequest` gate, a session-id-is-not-a-credential re-check on
+  every later request.
 - `src/cli.ts` shows `sleep`, `consolidate`, `audit`, and `eval` are
   **CLI-only** — minutes-long maintenance passes no MCP client can invoke
   today, and that would time out any synchronous `tools/call` if they could.
 
 The theme throughout: the new protocol finally has vocabulary for things
 this codebase already believes. We adopt where the protocol catches up to
-the architecture, and refuse where it doesn't (sampling).
+the architecture; we refuse where it doesn't (sampling).
 
 ## Decision 1 — `daftari serve` goes stateless; identity is per REQUEST, resolved every time
 
@@ -125,9 +124,8 @@ Resources are not a convenience feature here; they are the protocol-level
 statement of the first house rule — **markdown with YAML frontmatter is the
 source of truth**. A client that speaks resources can pin and re-read a doc
 as a thing with an identity, instead of re-running a search and hoping the
-same text comes back. `resources/read` on `daftari://doc/{path}` returns the
-file verbatim, frontmatter included — the metadata layer travels with the
-document because it IS part of the document.
+same text comes back. `resources/read` returns the file verbatim,
+frontmatter included — the metadata layer IS part of the document.
 
 The invariant that gates all of it: **`resources/list` is a doc list, and
 doc lists never name docs in unreadable collections** (2026-07-14 spec:
@@ -150,9 +148,9 @@ tools, where the coarsening code already lives.
 
 Today `ToolDefinition` (src/tools/read.ts) has `inputSchema` and nothing
 else; every result ships as pretty-printed JSON in a text block. Search and
-lint are the worst token offenders — a `vault_search` over a real vault
-returns full chunk bodies for every hit, serialized twice over (JSON string
-escaping inside a text block), and vault-wide `vault_lint` output is a wall.
+lint are the worst token offenders — `vault_search` returns full chunk
+bodies for every hit, serialized twice over (JSON string escaping inside a
+text block), and vault-wide `vault_lint` output is a wall.
 
 `ToolDefinition` grows one field:
 
@@ -171,21 +169,21 @@ The CallTool bridge in `src/server.ts` splits its one response into three
 channels with distinct jobs:
 
 - **`structuredContent`** — the full typed result, verbatim, matching
-  `outputSchema`. (2026-07-28 allows any JSON value, so array-shaped search
-  hit lists need no wrapper object.)
-- **`content`** — a compact, model-facing summary. For search: rank, path,
-  score, snippet. For lint: counts by severity and the top findings.
+  `outputSchema` (2026-07-28 allows any JSON value, so array-shaped search
+  hit lists need no wrapper object);
+- **`content`** — a compact, model-facing summary: for search, rank + path +
+  score + snippet; for lint, counts by severity and the top findings;
 - **`resource_link`** entries — for every doc a result references, a link to
   `daftari://doc/{path}` (Decision 2) instead of the body. Handles, not
   payloads: the agent reads the two docs it actually needs at full fidelity
   via `resources/read`, instead of receiving twenty bodies it will truncate
   in context anyway.
 
-Links inherit the read-gating everything else has — a search can only
-surface docs the caller can read (already true), so every emitted link is
-readable by construction. This lands as a change to the shared bridge plus
-per-tool `outputSchema` declarations; tests mirror src/ as always, and every
-tool's test asserts its output validates against its own schema.
+Links inherit read-gating — a search can only surface docs the caller can
+read (already true), so every emitted link is readable by construction. This
+lands as a change to the shared bridge plus per-tool `outputSchema`
+declarations; tests mirror src/ as always, and every tool's test asserts its
+output validates against its own schema.
 
 ## Decision 4 — the maintenance passes become Tasks; fast tools stay synchronous
 
