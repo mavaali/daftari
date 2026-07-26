@@ -5,17 +5,16 @@
 ## Why
 
 The default local embedder is `all-MiniLM-L6-v2` — a 2021-era model, 384
-dimensions, ~512-token window, chosen in v1.9 because it was the smallest thing
-that made hybrid search real. It has aged out of its job. 2026 model guides file
-MiniLM under "prototyping, not production," and the gap is now measurable: on
-MTEB(eng, v2), MiniLM scores in the mid-50s, while two small local candidates
-that fit daftari's fully-local posture score ~70 — **EmbeddingGemma-300M**
-(622 MB, 768d, Matryoshka-truncatable, MTEB-eng-v2 69.67) and
-**Qwen3-Embedding-0.6B** (Apache-2.0, ~1.5 GB, MTEB-eng-v2 70.7). That is not a
-point-release delta; it is a model-generation delta, and the vector half of
-every `vault_search` is paying it.
+dimensions, ~512-token window, chosen in v1.9 because it was the smallest
+thing that made hybrid search real. It has aged out of its job: 2026 model
+guides file MiniLM under "prototyping, not production," and on MTEB(eng, v2)
+it scores in the mid-50s while two small local candidates that fit daftari's
+fully-local posture score ~70 — **EmbeddingGemma-300M** (622 MB, 768d,
+Matryoshka-truncatable, MTEB-eng-v2 69.67) and **Qwen3-Embedding-0.6B**
+(Apache-2.0, ~1.5 GB, MTEB-eng-v2 70.7). That is a model-generation delta, and
+the vector half of every `vault_search` is paying it.
 
-Two adjacent facts make this the right moment rather than merely a good idea:
+Two adjacent facts make this the right moment:
 
 1. **The cache key already did the hard migration work.** The durable
    `embeddings` table is keyed `(content_hash, model)` with a `dim` column
@@ -49,12 +48,12 @@ community weights, exactly the way `local-minilm` runs today**
 extractor, small fixed sub-batches, `Result`-typed failures degrading to
 lexical-only, `warm()` respecting `warm_embeddings`).
 
-Why Gemma over Qwen3-0.6B for the *default*: 622 MB vs ~1.5 GB of weights (the
-default provider downloads on first use — footprint is a first-run tax on every
-vault), and its Matryoshka truncation points are exactly what Decision 2 needs.
-Qwen3-Embedding-0.6B scores ~1 point higher on MTEB-eng-v2 and carries a 32K
-context (the full late-chunking unlock), so it ships as the **documented
-alternative** — a provider id, not the default.
+Why Gemma over Qwen3-0.6B for the *default*: 622 MB vs ~1.5 GB of weights —
+the default provider downloads on first use, so footprint is a first-run tax
+on every vault — and its Matryoshka points are exactly what Decision 2 needs.
+Qwen3 scores ~1 point higher on MTEB-eng-v2 and carries a 32K context (the
+full late-chunking unlock), so it ships as the **documented alternative** — a
+provider id, not the default.
 
 Verification honesty: ONNX exports of EmbeddingGemma exist and Transformers.js
 support for the Gemma-3-based embedding architecture landed upstream, but
@@ -81,14 +80,13 @@ embeddings:
 
 New ids join `EMBEDDING_PROVIDERS` in `src/utils/config.ts` plus a branch in
 `getProvider` — the exact three-touch extension the config comment already
-prescribes. The hard-error posture for unknown ids is unchanged: a typo refuses
-to start the server, it never falls through to a default. `local-minilm` is not
-removed or deprecated-in-place; existing vaults that never touch config keep
-exactly today's behavior. Memory note for `warm_embeddings`: the architecture
-doc's "~100 MB model footprint" becomes ~600 MB-class here (less with the q8
-ONNX variant — the spike picks the variant); the `warm_embeddings: false`
-escape hatch for low-memory deployments matters more than it used to, and the
-docs get that number updated.
+prescribes. The hard-error posture for unknown ids is unchanged: a typo
+refuses to start the server, never falls through to a default. `local-minilm`
+is not removed; vaults that never touch config keep today's behavior exactly.
+One consequence for warm-up gating: the architecture doc's "~100 MB model
+footprint" becomes ~600 MB-class (less with the q8 ONNX variant — the spike
+picks), so the `warm_embeddings: false` escape hatch matters more than it used
+to, and the docs get that number updated.
 
 ## Decision 2 — Matryoshka truncation is a provider parameter, recorded in the model id
 
@@ -99,12 +97,11 @@ storage, and 768→512 sits in the same regime. **Default the new provider to
 components and re-L2-normalizes (renormalization is required for cosine to
 stay meaningful).
 
-Note the brief's other candidate, 384d, is deliberately *not* offered for
-Gemma: 384 is not one of EmbeddingGemma's trained Matryoshka points, so
-truncating there is off-distribution. Qwen3 supports arbitrary output dims
-(32–1024), so `local-qwen3-0.6b` may offer finer choices later; for now both
-new providers expose `dim: 512` as the default with `768` (Gemma full) as the
-opt-up.
+384d is deliberately *not* offered for Gemma: it is not one of
+EmbeddingGemma's trained Matryoshka points, so truncating there is
+off-distribution. Qwen3 supports arbitrary output dims (32–1024) and may offer
+finer choices later; for now both new providers expose `dim: 512` as the
+default with `768` (Gemma full) as the opt-up.
 
 The load-bearing rule: **the truncation is part of the model id string** —
 `local-embeddinggemma@512`, `local-embeddinggemma@768` — which is what gets
@@ -143,14 +140,13 @@ rebuildable from the cache at any time — never a lossy transform of the source
 of truth.
 
 Search becomes scan-then-rescore: KNN over int8 retrieves `k × 4` candidates
-(the Sentence Transformers rescore-multiplier convention), then the top
-candidates are rescored with exact float32 cosine against vectors joined from
-the durable cache by `content_hash`, and the final top-k is taken from the
-rescored order. One extra indexed query per search; the literature above puts
-rescored-int8 retrieval within noise of full float32. Rescoring is not
-optional-config — it is simply how quantized search works here; the only knob
-is `embeddings.quantize: int8 | none` (default `int8` for the new providers,
-`none` preserved for exact-parity debugging).
+(the Sentence Transformers rescore-multiplier convention), rescored with exact
+float32 cosine against vectors joined from the durable cache by
+`content_hash`; final top-k comes from the rescored order. One extra indexed
+query per search; the literature above puts rescored-int8 within noise of full
+float32. Rescoring is not optional-config — it is simply how quantized search
+works here; the only knob is `embeddings.quantize: int8 | none` (default
+`int8` for the new providers, `none` kept for exact-parity debugging).
 
 Version honesty: the pinned `sqlite-vec` is ^0.1.9, and the 0.1.x line
 documents int8 vector columns, but **whether int8 composes with
@@ -161,12 +157,11 @@ equivalent ordering for unit vectors up to quantization error. If the pinned
 version can't do int8 at all, a minor sqlite-vec bump is in scope, re-running
 the 2026-07-19 spike's gates against it.
 
-Storage arithmetic on the reference 44K-chunk vault: today's index holds 384d
-float32 ≈ 1.5 KB/vector ≈ 68 MB; naive 768d float32 would be ≈ 135 MB;
-512d int8 is 512 B/vector ≈ 22 MB — **the index shrinks to a third of today's
-while the model quality jumps a generation**. The float32 cache grows (512d ≈
-2 KB/row vs today's 1.5 KB, plus retained old-model rows per Decision 4);
-that is durable-cache spend, priced in the migration section.
+Storage arithmetic on the reference 44K-chunk vault: today's 384d float32
+index ≈ 68 MB; naive 768d float32 ≈ 135 MB; 512d int8 ≈ 22 MB — **the index
+shrinks to a third of today's while model quality jumps a generation**. The
+float32 cache grows (2 KB/row at 512d vs 1.5 KB today, plus retained
+old-model rows); that durable-cache spend is priced in Decision 4.
 
 ## Decision 4 — migration: config change + background reindex; old rows are switching insurance
 
@@ -201,15 +196,12 @@ If the measured number breaches the kill condition, the default does not flip.
 
 **Housekeeping interaction, verified in code.** `gcOrphanedEmbeddings` deletes
 embeddings rows whose `content_hash` no longer appears in any chunk — it is
-model-agnostic by hash, which is exactly right for this migration: MiniLM rows
-for *live* chunk text survive every gc pass (switching insurance stays
-intact), while rows for text that has left the vault die across *all* models
-at once (the cache never hoards dead text in anyone's dimensions). No gc
-change is needed. The one cost is that insurance isn't free: retained MiniLM
-rows keep the cache larger than a single-model cache. Acceptable — the cache
-is cheap disk, and an operator who has committed to the new model can clear
-the old rows with a one-line `DELETE FROM embeddings WHERE model = ?`; a
-`vault_gc --model` convenience is deferred until someone actually asks.
+model-agnostic by hash, which is exactly right here: MiniLM rows for *live*
+chunk text survive every gc pass (switching insurance stays intact), while
+rows for text that has left the vault die across *all* models at once. No gc
+change needed. The cost is a cache larger than single-model; acceptable —
+cheap disk, and a committed operator can `DELETE FROM embeddings WHERE model =
+?`. A `vault_gc --model` convenience is deferred until someone asks.
 
 ## Decision 5 — late chunking: explicitly deferred, precondition named
 
@@ -241,10 +233,9 @@ change is upstream of storage.
 The claim "a model-generation jump beats a 2021 model" is plausible and
 therefore exactly the kind of claim daftari measures instead of trusts. Reuse
 the recall-bench adapter (`2026-06-20-daftari-recall-bench-adapter-design.md`)
-and the Stage-A metrics (recall@top-K for K ∈ {10, 20, 50}, day-coverage),
-hybrid and vector-only arms, on the same corpus the chunk-BM25 work used.
-
-Three arms, so model gain and quantization loss are separately attributable:
+and the Stage-A metrics (recall@top-K for K ∈ {10, 20, 50}, day-coverage) on
+the same corpus the chunk-BM25 work used, hybrid and vector-only arms. Three
+arms, so model gain and quantization loss are separately attributable:
 
 | Arm | Provider / representation | Answers |
 | --- | --- | --- |
@@ -263,18 +254,18 @@ underwhelms.
 
 ## Out of scope
 
-- **Reranker.** A cross-encoder rescoring stage is a different lever with a
-  different latency budget; it gets a companion spec and must not be smuggled
-  in as "more rescoring" here.
+- **Reranker.** A cross-encoder stage is a different lever with a different
+  latency budget; it gets a companion spec and must not be smuggled in as
+  "more rescoring" here.
 - **API-provider changes.** `openai-3-small` is untouched — no new API
-  providers, no dim/quantize options for it (its 1536d float32 rows behave
-  exactly as today).
-- **Removing `local-minilm`.** It remains a valid id indefinitely; this spec
-  changes the default for new vaults and documents migration, nothing forced.
+  providers, no dim/quantize options for it; its 1536d float32 rows behave
+  exactly as today.
+- **Removing `local-minilm`.** It remains a valid id indefinitely; nothing in
+  this spec is forced on existing vaults.
 - **Late chunking implementation** (Decision 5 — deferred with precondition).
-- **Vec-engine or binding changes.** sqlite-vec stays (a minor bump is allowed
-  if the int8 smoke requires it); the node:sqlite question stays parked per
-  the 2026-07-19 spike.
+- **Vec-engine or binding changes.** sqlite-vec stays (minor bump allowed if
+  the int8 smoke requires it); node:sqlite stays parked per the 2026-07-19
+  spike.
 
 ## Kill condition
 
