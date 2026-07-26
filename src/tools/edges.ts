@@ -307,6 +307,73 @@ export async function vaultEdges(
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
+// One collapsed edge (DerivesFromEdge), as all three tools report it. Shared
+// so the definitions below cannot drift from each other or from the store.
+// `strength` and `status` are live values recomputed at read time — never the
+// materialized row's frozen ones.
+const derivesFromEdgeSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    fromPath: { type: "string", description: "Vault-relative path of the deriving document" },
+    toPath: { type: "string", description: "Vault-relative path of the document it derives from" },
+    strength: {
+      type: "number",
+      description:
+        "Aged strength: the independent-vote count decayed by time since the " +
+        "last qualifying re-derivation. 0 for a revoked or never-voted edge.",
+    },
+    kSurvived: {
+      type: "integer",
+      description: "Raw independent-vote count the aging applies to (capped at EDGE_K_CAP)",
+    },
+    firstObserved: {
+      type: "string",
+      description: "ISO 8601 timestamp of the observation that seeded the current cycle",
+    },
+    lastRederived: {
+      type: "string",
+      description: "ISO 8601 timestamp of the last counted independent vote",
+    },
+    status: {
+      type: "string",
+      enum: [...EDGE_STATUSES],
+      description: "Live status derived from the aged strength (or 'revoked' after a contest)",
+    },
+    directionVerdict: {
+      type: "string",
+      enum: ["directed", "symmetric"],
+      description:
+        "Collapse of the cycle's premise votes. 'symmetric' (a from/to split " +
+        "or an explicit symmetric vote) stays visible but does not propagate triggers.",
+    },
+    observations: {
+      type: "integer",
+      description: "Observations recorded in the current earning cycle, qualifying or not",
+    },
+    contestedAt: {
+      type: ["string", "null"],
+      description: "ISO 8601 timestamp of the contest that revoked the edge; null if live",
+    },
+    contestReason: {
+      type: ["string", "null"],
+      description: "Why the re-derivation failed; null if the edge was never contested",
+    },
+  },
+  required: [
+    "fromPath",
+    "toPath",
+    "strength",
+    "kSurvived",
+    "firstObserved",
+    "lastRederived",
+    "status",
+    "directionVerdict",
+    "observations",
+    "contestedAt",
+    "contestReason",
+  ],
+};
+
 export const edgeTools: ToolDefinition[] = [
   {
     name: "vault_edge_observe",
@@ -354,6 +421,8 @@ export const edgeTools: ToolDefinition[] = [
       required: ["from_path", "to_path", "observed_by", "blind"],
       additionalProperties: false,
     },
+    // The edge's state AFTER this observation collapsed into it.
+    outputSchema: derivesFromEdgeSchema,
     handler: (vaultRoot, args, access) => vaultEdgeObserve(vaultRoot, args, access),
   },
   {
@@ -389,6 +458,19 @@ export const edgeTools: ToolDefinition[] = [
       required: ["from_path", "to_path", "contested_by", "reason"],
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        edge: derivesFromEdgeSchema,
+        tension_id: {
+          type: "string",
+          description:
+            "Id of the tension recording the contest — a reused open one, or " +
+            "the entry just appended. Absent when the reused legacy entry carries no id.",
+        },
+      },
+      required: ["edge"],
+    },
     handler: (vaultRoot, args, access) => vaultEdgeContest(vaultRoot, args, access),
   },
   {
@@ -421,6 +503,23 @@ export const edgeTools: ToolDefinition[] = [
       },
       required: [],
       additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        edges: {
+          type: "array",
+          items: derivesFromEdgeSchema,
+          description: "Matching edges, strongest aged strength first",
+        },
+        total: {
+          type: "integer",
+          description:
+            "Number of listed edges. Under RBAC an edge with an unreadable " +
+            "endpoint is omitted from the list AND from this count (#217 omission).",
+        },
+      },
+      required: ["edges", "total"],
     },
     handler: (vaultRoot, args, access) => vaultEdges(vaultRoot, args, access),
   },

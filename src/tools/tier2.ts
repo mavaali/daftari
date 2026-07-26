@@ -30,6 +30,7 @@ import {
   NO_CHANGE_TS,
   readTier2Verdicts,
   recordTier2Verdict,
+  TIER2_VERDICT_KINDS,
   type Tier2Verdict,
 } from "../curation/tier2.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
@@ -334,6 +335,97 @@ export async function vaultTier2Verdict(
   return ok({ recorded: recorded.value, tension_id: tensionId });
 }
 
+// Only the residual queues, so both surfaces speak the compiled-less class set.
+const residualEdgeClassSchema: Record<string, unknown> = {
+  type: "string",
+  enum: ["declared", "earned"],
+  description: "Edge provenance class of the judged pair; compiled edges never queue",
+};
+
+// One queue item (Tier2WorkItem) — the constrained judgment handed to the agent.
+const tier2WorkItemSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    artifact: { type: "string", description: "The dependent whose claim is being judged" },
+    unit: { type: "string", description: "The changed upstream it is judged against" },
+    edge_class: residualEdgeClassSchema,
+    baseline: {
+      type: ["string", "null"],
+      description: "ISO 8601 instant change is measured from; null when the pair was never checked",
+    },
+    changed_fields: { type: "array", items: { type: "string" } },
+    field_changes: {
+      type: "object",
+      description:
+        "Net per-field change since the baseline, keyed by field name. 'body' " +
+        "appears with nulls — the log stores only the flag.",
+      additionalProperties: {
+        type: "object",
+        properties: {
+          before: { description: "Field value at the baseline (any JSON value, or null)" },
+          after: { description: "Field value after the latest write (any JSON value, or null)" },
+        },
+        required: ["before", "after"],
+      },
+    },
+    usage_span: {
+      type: ["string", "null"],
+      description:
+        "The dependent's lines mentioning the unit, with context. Null when " +
+        "nothing matched — read the dependent in full then.",
+    },
+    question: { type: "string", description: "The specific question to answer" },
+  },
+  required: [
+    "artifact",
+    "unit",
+    "edge_class",
+    "baseline",
+    "changed_fields",
+    "field_changes",
+    "usage_span",
+    "question",
+  ],
+};
+
+// The recorded verdict as it lands in tier2-verdicts.jsonl.
+const tier2VerdictSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    timestamp: { type: "string", description: "ISO 8601 — when the verdict was recorded" },
+    artifact: { type: "string" },
+    unit: { type: "string" },
+    edge_class: residualEdgeClassSchema,
+    judged_change_ts: {
+      type: "string",
+      description:
+        "The unit's latest landed-write timestamp at judgment time — the change " +
+        "the judge saw. A later write to the unit makes this verdict stale and re-queues the pair.",
+    },
+    verdict: { type: "string", enum: [...TIER2_VERDICT_KINDS] },
+    tension_kind: {
+      type: "string",
+      enum: [...LOGGABLE_TENSION_KINDS],
+      description: "Set on 'broken' only",
+    },
+    tension_id: { type: "string", description: "Set on 'broken' only: the logged tension's id" },
+    reasoning: { type: "string" },
+    agent: { type: "string", description: "The judging agent's self-identification" },
+    principal: { type: "string", description: "The authenticated identity, when present" },
+    run_id: { type: "string" },
+  },
+  required: [
+    "timestamp",
+    "artifact",
+    "unit",
+    "edge_class",
+    "judged_change_ts",
+    "verdict",
+    "reasoning",
+    "agent",
+  ],
+};
+
 export const tier2Tools: ToolDefinition[] = [
   {
     name: "vault_tier2_queue",
@@ -359,6 +451,21 @@ export const tier2Tools: ToolDefinition[] = [
         },
       },
       additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: tier2WorkItemSchema,
+          description:
+            "Pending judgments, unit then artifact ordered. Under RBAC an item " +
+            "with an unreadable endpoint is omitted entirely — lists omit, only " +
+            "summaries coarsen (#217).",
+        },
+        total: { type: "integer", description: "Number of listed items" },
+      },
+      required: ["items", "total"],
     },
     handler: (vaultRoot, args, access) => vaultTier2Queue(vaultRoot, args, access),
   },
@@ -410,6 +517,17 @@ export const tier2Tools: ToolDefinition[] = [
       },
       required: ["artifact", "unit", "verdict", "reasoning", "agent"],
       additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        recorded: tier2VerdictSchema,
+        tension_id: {
+          type: ["string", "null"],
+          description: "The logged tension's id for a 'broken' verdict; null for 'still-valid'",
+        },
+      },
+      required: ["recorded", "tension_id"],
     },
     handler: (vaultRoot, args, access) => vaultTier2Verdict(vaultRoot, args, access),
   },

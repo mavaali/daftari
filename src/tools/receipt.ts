@@ -17,20 +17,22 @@
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
+  AGING_TIERS,
   type AgingTier,
   agingTier,
   DEFAULT_TENSION_STATUS,
   listTensions,
+  TENSION_KINDS,
   type TensionEntry,
   type TensionKind,
 } from "../curation/tension.js";
 import { visibleTensions } from "../curation/tension-access.js";
 import { parseDocument } from "../frontmatter/parser.js";
-import { err, ok, type Result } from "../frontmatter/types.js";
+import { CONFIDENCES, err, ok, PROVENANCES, type Result, STATUSES } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { log as gitLog, isGitRepo } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
-import type { ToolDefinition } from "./read.js";
+import { DECAY_SCHEMA, type ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
 export const MAX_RECEIPT_PATHS = 50;
@@ -345,6 +347,152 @@ export const receiptTools: ToolDefinition[] = [
       },
       required: ["paths"],
       additionalProperties: false,
+    },
+    // The receipt is a citable artifact: every field below is derived, never
+    // invented, so the schema is the derivation's shape. `additionalProperties`
+    // stays open on the source objects (frontmatter-derived values), closed
+    // nowhere the vault could legitimately grow a field.
+    outputSchema: {
+      type: "object",
+      properties: {
+        claim: {
+          type: ["string", "null"],
+          description: "Caller-supplied, carried verbatim; null when not provided",
+        },
+        sources: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Canonical vault-relative path" },
+              title: { type: "string" },
+              collection: { type: "string" },
+              status: { type: "string", enum: [...STATUSES] },
+              confidence: { type: "string", enum: [...CONFIDENCES] },
+              provenance: { type: "string", enum: [...PROVENANCES] },
+              created: { type: "string", description: "YYYY-MM-DD" },
+              updated: { type: "string", description: "YYYY-MM-DD" },
+              sources: { type: "array", items: { type: "string" } },
+              version: {
+                type: "string",
+                description: "SHA-256 (hex) of the raw file bytes — pins the cited content",
+              },
+              decay: DECAY_SCHEMA,
+              // Non-null iff the document is on a supersession chain. An
+              // unreadable hop degrades to the path-free `restricted` marker.
+              currentSource: {
+                oneOf: [
+                  {
+                    type: "object",
+                    properties: {
+                      kind: { const: "resolved" },
+                      path: { type: "string" },
+                      title: { type: "string" },
+                      hops: { type: "integer", minimum: 1 },
+                    },
+                    required: ["kind", "path", "title", "hops"],
+                  },
+                  {
+                    type: "object",
+                    properties: { kind: { const: "restricted" } },
+                    required: ["kind"],
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      kind: { const: "dangling" },
+                      brokenAt: { type: "string" },
+                    },
+                    required: ["kind", "brokenAt"],
+                  },
+                  {
+                    type: "object",
+                    properties: { kind: { const: "cycle" } },
+                    required: ["kind"],
+                  },
+                  { type: "null" },
+                ],
+              },
+              tensions: {
+                type: "array",
+                description: "Unresolved tensions touching this document",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: ["string", "null"], description: "Null for legacy entries" },
+                    title: { type: "string" },
+                    kind: { type: "string", enum: [...TENSION_KINDS] },
+                    date: { type: "string", description: "YYYY-MM-DD" },
+                    agingTier: { type: ["string", "null"], enum: [...AGING_TIERS, null] },
+                  },
+                  required: ["id", "title", "kind", "date", "agingTier"],
+                },
+              },
+            },
+            required: [
+              "path",
+              "title",
+              "collection",
+              "status",
+              "confidence",
+              "provenance",
+              "created",
+              "updated",
+              "sources",
+              "version",
+              "decay",
+              "currentSource",
+              "tensions",
+            ],
+          },
+        },
+        summary: {
+          type: "object",
+          properties: {
+            sourceCount: { type: "integer", minimum: 0 },
+            byStatus: {
+              type: "object",
+              description: "Cited-document count per status",
+              propertyNames: { enum: [...STATUSES] },
+              additionalProperties: { type: "integer", minimum: 0 },
+            },
+            openTensions: {
+              type: "integer",
+              minimum: 0,
+              description: "Distinct unresolved tensions across the cited set",
+            },
+            oldestUpdated: { type: ["string", "null"] },
+            newestUpdated: { type: ["string", "null"] },
+            flags: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Deterministic, sorted. Empty means every cited document is current, " +
+                "grounded, and uncontested as far as the vault knows",
+            },
+          },
+          required: [
+            "sourceCount",
+            "byStatus",
+            "openTensions",
+            "oldestUpdated",
+            "newestUpdated",
+            "flags",
+          ],
+        },
+        vaultHead: {
+          type: ["string", "null"],
+          description:
+            "Git HEAD of the vault at receipt time — the as-of anchor. Null when " +
+            "the vault is not a git repository (or has no commits yet)",
+        },
+        generatedAt: { type: "string", description: "ISO 8601" },
+        receiptHash: {
+          type: "string",
+          description: "SHA-256 over the canonical JSON of every field above",
+        },
+      },
+      required: ["claim", "sources", "summary", "vaultHead", "generatedAt", "receiptHash"],
     },
     handler: (vaultRoot, args, access) =>
       vaultReceipt(

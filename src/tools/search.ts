@@ -15,6 +15,7 @@ import {
 } from "../curation/edge-staleness.js";
 import { recordReads } from "../curation/read-log.js";
 import { structuralDecay } from "../curation/structural.js";
+import { TENSION_KINDS } from "../curation/tension.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -431,6 +432,267 @@ const weightsSchema = {
   additionalProperties: false,
 };
 
+// ---------------------------------------------------------------------------
+// Output schemas (spec 2026-07-26, Decision 3)
+//
+// JSON Schema 2020-12 for each handler's ok-value. These describe what the
+// handlers ALREADY return — HybridSearchResult / RelatedSearchResult
+// (src/search/hybrid.ts) and VaultReindexResult — so a client can validate
+// before parsing instead of guessing at the shape of `structuredContent`.
+// ---------------------------------------------------------------------------
+
+// Weights as they come back on a RESULT: both halves always present. Distinct
+// from the input `weightsSchema` above, where both are optional — the ranker
+// rewrites them to {bm25: 1, vector: 0} whenever the vector half is unused.
+const weightsResultSchema = {
+  type: "object",
+  properties: {
+    bm25: { type: "number" },
+    vector: { type: "number" },
+  },
+  required: ["bm25", "vector"],
+  additionalProperties: false,
+};
+
+// DecayState (src/curation/decay.ts). Null when the document is healthy.
+const decaySchema = {
+  type: ["object", "null"],
+  description: "Decay verdict for the document, or null when nothing is wrong.",
+  properties: {
+    level: { type: "string", enum: ["deprecated", "warn", "aging"] },
+    reasons: { type: "array", items: { type: "string" } },
+    banner: {
+      type: ["string", "null"],
+      description: "Null for `aging` (scarcity rule); text for warn/deprecated.",
+    },
+  },
+  required: ["level", "reasons", "banner"],
+  additionalProperties: false,
+};
+
+// CurrentSource (src/search/current-source.ts) — a closed union discriminated
+// on `kind`. Only `resolved` carries a path: an unreadable hop degrades to the
+// path-free `restricted` marker rather than naming the successor.
+const currentSourceSchema = {
+  description:
+    "Terminal current source for a superseded document, or the reason the " +
+    "chain could not be followed to one.",
+  oneOf: [
+    {
+      type: "object",
+      properties: {
+        kind: { const: "resolved" },
+        path: { type: "string", description: "Vault-relative path of the current source." },
+        title: { type: "string" },
+        snippet: { type: "string", description: "Leading preview of the successor's body." },
+        hops: { type: "integer", minimum: 1 },
+      },
+      required: ["kind", "path", "title", "snippet", "hops"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      description: "A hop in the chain is unreadable; no path is disclosed.",
+      properties: { kind: { const: "restricted" } },
+      required: ["kind"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        kind: { const: "dangling" },
+        brokenAt: { type: "string", description: "Path whose superseded_by points at nothing." },
+      },
+      required: ["kind", "brokenAt"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: { kind: { const: "cycle" } },
+      required: ["kind"],
+      additionalProperties: false,
+    },
+  ],
+};
+
+// ContestedTension (src/search/contested.ts). `id` is absent only on legacy
+// log entries.
+const contestedTensionSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    kind: { type: "string", enum: [...TENSION_KINDS] },
+    counterpart: { type: "string", description: "Vault-relative path of the other side." },
+    claimSelf: { type: "string" },
+    claimOther: { type: "string" },
+    loggedAt: { type: "string", description: "Entry date, YYYY-MM-DD." },
+  },
+  required: ["kind", "counterpart", "claimSelf", "claimOther", "loggedAt"],
+  additionalProperties: false,
+};
+
+// HybridHit. Everything past `decay` is enrichment attached by the tool
+// handler, not the ranker, and every enrichment field is absent when it has
+// nothing to say — absent is the "healthy / none" reading throughout.
+const hybridHitSchema = {
+  type: "object",
+  properties: {
+    path: { type: "string", description: "Vault-relative document path." },
+    title: { type: "string" },
+    collection: { type: "string" },
+    status: { type: "string" },
+    score: { type: "number", description: "Fused bm25/vector score; larger is better." },
+    bm25Score: { type: "number", description: "Normalised lexical component." },
+    vectorScore: { type: "number", description: "Normalised semantic component." },
+    snippet: { type: "string" },
+    decay: decaySchema,
+    currentSource: currentSourceSchema,
+    contested: {
+      type: "array",
+      description: "Unresolved tensions involving this document, capped at 3.",
+      items: contestedTensionSchema,
+    },
+    contestedCount: {
+      type: "integer",
+      description: "True total of visible tensions; may exceed the capped `contested` list.",
+    },
+    pendingBrokenUpstream: {
+      type: "string",
+      enum: ["some", "many"],
+      description:
+        "Coarse bucket of pending-broken compiled upstream edges the caller can read. " +
+        "Absent = none. Never an exact count.",
+    },
+    hiddenPendingUpstream: {
+      type: "string",
+      enum: ["some", "many"],
+      description:
+        "Coarse bucket of pending changes on upstream edges the caller cannot read; " +
+        "severity is withheld. Absent = none.",
+    },
+    orphan: { type: "boolean", description: "No inbound links from the caller's vantage." },
+    deprecatedStillLinked: { type: "boolean" },
+    viaCoverage: {
+      type: "boolean",
+      description: "True when the coverage pass added this doc rather than the ranker.",
+    },
+    coverageReason: { type: "string", enum: ["edge", "entity-window"] },
+  },
+  required: [
+    "path",
+    "title",
+    "collection",
+    "status",
+    "score",
+    "bm25Score",
+    "vectorScore",
+    "snippet",
+    "decay",
+  ],
+  additionalProperties: false,
+};
+
+// RerankCandidate — deliberately WITHOUT the enrichment joins the served hits
+// carry; the pool exists to be judged against the query.
+const rerankCandidateSchema = {
+  type: "object",
+  properties: {
+    rank: { type: "integer", minimum: 1, description: "1-based position in the fused ranking." },
+    path: { type: "string" },
+    title: { type: "string" },
+    collection: { type: "string" },
+    status: { type: "string" },
+    score: { type: "number" },
+    bm25Score: { type: "number" },
+    vectorScore: { type: "number" },
+    snippet: { type: "string" },
+  },
+  required: [
+    "rank",
+    "path",
+    "title",
+    "collection",
+    "status",
+    "score",
+    "bm25Score",
+    "vectorScore",
+    "snippet",
+  ],
+  additionalProperties: false,
+};
+
+const flaggedDocumentSchema = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    reason: { type: "string" },
+  },
+  required: ["path", "reason"],
+  additionalProperties: false,
+};
+
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3)
+//
+// The full typed value ships on `structuredContent`; this channel is plain
+// text meant to be READ by the model, never re-parsed as JSON. Search is the
+// worst token offender in the pre-Decision-3 shape (full chunk bodies per
+// hit, serialized twice), so the per-hit line carries identity + score +
+// enough snippet to judge relevance, and nothing else.
+// ---------------------------------------------------------------------------
+
+// Snippet budget per summary line. Hit snippets run to ~280 chars; a line the
+// model has to scan past defeats the point of the compact channel, and the
+// full snippet is one field away on structuredContent.
+const SUMMARY_SNIPPET_MAX = 160;
+
+function summaryLine(rank: number, hit: HybridHit): string {
+  // Snippets arrive whitespace-collapsed, so this is normally the whole
+  // snippet; the split keeps the line single-line regardless.
+  const head = (hit.snippet.split("\n", 1)[0] ?? "").trim();
+  const snippet =
+    head.length > SUMMARY_SNIPPET_MAX ? `${head.slice(0, SUMMARY_SNIPPET_MAX)}…` : head;
+  const tail = snippet.length > 0 ? ` — ${snippet}` : "";
+  return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}`;
+}
+
+// A single trailing note for the annotations the per-hit lines omit, pointing
+// at structuredContent for the detail. Null when there is nothing to say.
+function annotationNote(hits: HybridHit[]): string | null {
+  const parts: string[] = [];
+  const coverage = hits.filter((h) => h.viaCoverage).length;
+  if (coverage > 0) parts.push(`${coverage} added by the coverage pass`);
+  const sourced = hits.filter((h) => h.currentSource !== undefined).length;
+  if (sourced > 0) parts.push(`${sourced} superseded, current source attached`);
+  return parts.length > 0 ? `(${parts.join("; ")} — see structuredContent)` : null;
+}
+
+function summarizeHits(header: string, hits: HybridHit[]): string {
+  const lines = [header, ...hits.map((hit, i) => summaryLine(i + 1, hit))];
+  const note = annotationNote(hits);
+  if (note) lines.push(note);
+  return lines.join("\n");
+}
+
+// Hit paths in rank order, plus the path of any RESOLVED current source — a
+// `restricted` one carries no path by construction, so there is none to link
+// and none to leak. Every path here survived the handler's canRead filter, so
+// the emitted links are readable by construction.
+function hitDocLinks(hits: HybridHit[]): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  const push = (path: string): void => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    paths.push(path);
+  };
+  for (const hit of hits) {
+    push(hit.path);
+    if (hit.currentSource?.kind === "resolved") push(hit.currentSource.path);
+  }
+  return paths;
+}
+
 export const searchTools: ToolDefinition[] = [
   {
     name: "vault_search",
@@ -468,6 +730,50 @@ export const searchTools: ToolDefinition[] = [
       required: ["query"],
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The query as issued." },
+        count: {
+          type: "integer",
+          description: "Number of entries in `hits`, coverage additions included.",
+        },
+        vectorUsed: {
+          type: "boolean",
+          description: "False when the search degraded to lexical-only ranking.",
+        },
+        weights: weightsResultSchema,
+        hits: { type: "array", items: hybridHitSchema },
+        rerank: {
+          type: "object",
+          description: "Present only when rerank_candidates was passed.",
+          properties: {
+            instructions: { type: "string" },
+            candidates: { type: "array", items: rerankCandidateSchema },
+          },
+          required: ["instructions", "candidates"],
+          additionalProperties: false,
+        },
+      },
+      required: ["query", "count", "vectorUsed", "weights", "hits"],
+      additionalProperties: false,
+    },
+    summarize: (value) => {
+      const result = value as HybridSearchResult;
+      const n = result.hits.length;
+      const mode = result.vectorUsed ? "bm25+vector" : "bm25 only";
+      const header =
+        n === 0
+          ? `No hits for "${result.query}" (${mode}).`
+          : `${n} hit${n === 1 ? "" : "s"} for "${result.query}" (${mode}).`;
+      const summary = summarizeHits(header, result.hits);
+      // The rerank pool and its protocol text live on structuredContent; a
+      // caller reading only `content` would otherwise never learn it opted in.
+      return result.rerank
+        ? `${summary}\nRerank pool: ${result.rerank.candidates.length} candidate(s) — you are the reranker; see structuredContent.rerank.`
+        : summary;
+    },
+    docLinks: (value) => hitDocLinks((value as HybridSearchResult).hits),
     handler: (vaultRoot, args, access) => vaultSearch(vaultRoot, args, access),
   },
   {
@@ -494,6 +800,32 @@ export const searchTools: ToolDefinition[] = [
       required: ["path"],
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The reference document, excluded from `hits`." },
+        count: { type: "integer", description: "Number of entries in `hits`." },
+        vectorUsed: {
+          type: "boolean",
+          description: "False when the search degraded to lexical-only ranking.",
+        },
+        weights: weightsResultSchema,
+        hits: { type: "array", items: hybridHitSchema },
+      },
+      required: ["path", "count", "vectorUsed", "weights", "hits"],
+      additionalProperties: false,
+    },
+    summarize: (value) => {
+      const result = value as RelatedSearchResult;
+      const n = result.hits.length;
+      const mode = result.vectorUsed ? "bm25+vector" : "bm25 only";
+      const header =
+        n === 0
+          ? `No documents related to ${result.path} (${mode}).`
+          : `${n} document${n === 1 ? "" : "s"} related to ${result.path} (${mode}).`;
+      return summarizeHits(header, result.hits);
+    },
+    docLinks: (value) => hitDocLinks((value as RelatedSearchResult).hits),
     handler: (vaultRoot, args, access) => vaultSearchRelated(vaultRoot, args, access),
   },
   {
@@ -510,6 +842,44 @@ export const searchTools: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {},
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        vault: { type: "string", description: "Absolute path of the reindexed vault root." },
+        documentCount: { type: "integer" },
+        chunkCount: { type: "integer" },
+        vectorEnabled: { type: "boolean" },
+        skipped: {
+          type: "array",
+          description: "Files not indexed at all: unreadable, or malformed YAML frontmatter.",
+          items: flaggedDocumentSchema,
+        },
+        invalidFrontmatter: {
+          type: "array",
+          description:
+            "Files indexed but whose frontmatter violates the schema; the offending fields " +
+            "were coerced to defaults for the index row. vault_lint is the repair path.",
+          items: flaggedDocumentSchema,
+        },
+        indexedAt: { type: "string", description: "ISO-8601 timestamp." },
+        embeddedCount: { type: "integer", description: "Chunks that needed a fresh embedding." },
+        cacheHits: { type: "integer" },
+        orphansRemoved: { type: "integer" },
+      },
+      required: [
+        "vault",
+        "documentCount",
+        "chunkCount",
+        "vectorEnabled",
+        "skipped",
+        "invalidFrontmatter",
+        "indexedAt",
+        "embeddedCount",
+        "cacheHits",
+        "orphansRemoved",
+      ],
       additionalProperties: false,
     },
     handler: (vaultRoot) => vaultReindex(vaultRoot),

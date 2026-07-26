@@ -767,6 +767,70 @@ export async function vaultThemes(
 // MCP tool definition
 // ---------------------------------------------------------------------------
 
+// VaultTheme (spec 2026-07-26, Decision 3). The two counts are deliberately
+// different quantities: `documentCount` is coverage (a cross-cutting doc
+// counts in every theme it belongs to) while `primaryDocumentCount`
+// partitions docs by their argmax theme.
+const themeSchema = {
+  type: "object",
+  properties: {
+    id: {
+      type: "integer",
+      description:
+        "Cluster index from the k-means run — the id docMemberships references. " +
+        "NOT the position in the `themes` array.",
+    },
+    label: {
+      type: "string",
+      description: "Heuristic label: TF-IDF over the theme's titles + tags. No LLM call.",
+    },
+    documentCount: {
+      type: "integer",
+      description:
+        "COVERAGE: scoped docs holding any membership here. A two-theme doc counts in both.",
+    },
+    primaryDocumentCount: {
+      type: "integer",
+      description: "PARTITION: docs whose argmax theme is this one. Sums to totalDocuments.",
+    },
+    coherence: {
+      type: ["number", "null"],
+      description:
+        "Mean pairwise cosine among the theme's chunk vectors (stride-sampled above the cap). " +
+        "Null for a single-chunk theme: no pairs to average, and 1.0 would imply tightness " +
+        "that does not exist.",
+    },
+    representativeDocs: {
+      type: "array",
+      description:
+        "PRIMARY members ranked by membership weight — the theme's residents. Always " +
+        "disjoint from secondaryDocs; empty for a theme whose members are all visitors.",
+      items: { type: "string" },
+    },
+    secondaryDocs: {
+      type: "array",
+      description: "Member documents whose primary theme lies elsewhere — the cross-cutting docs.",
+      items: { type: "string" },
+    },
+    relatedTags: {
+      type: "array",
+      description: "Most frequent tags among the theme's label documents.",
+      items: { type: "string" },
+    },
+  },
+  required: [
+    "id",
+    "label",
+    "documentCount",
+    "primaryDocumentCount",
+    "coherence",
+    "representativeDocs",
+    "secondaryDocs",
+    "relatedTags",
+  ],
+  additionalProperties: false,
+};
+
 export const themesTools: ToolDefinition[] = [
   {
     name: "vault_themes",
@@ -805,6 +869,68 @@ export const themesTools: ToolDefinition[] = [
           description: "Restrict to documents that have all of these tags.",
         },
       },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        themes: {
+          type: "array",
+          description: "Sorted by documentCount desc, then label. May be shorter than selectedK.",
+          items: themeSchema,
+        },
+        docMemberships: {
+          type: "object",
+          description:
+            "Per-document theme distributions for CROSS-CUTTING docs only (membership in two " +
+            "or more themes), keyed by vault-relative path. Weights are fractions of the " +
+            "doc's chunks and sum to <= 1; single-theme docs are omitted.",
+          additionalProperties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                theme: { type: "integer", description: "A VaultTheme.id." },
+                weight: { type: "number", minimum: 0, maximum: 1 },
+              },
+              required: ["theme", "weight"],
+              additionalProperties: false,
+            },
+          },
+        },
+        totalDocuments: { type: "integer", description: "Scoped documents actually clustered." },
+        totalChunks: {
+          type: "integer",
+          description: "Chunk count actually clustered. k clamps to THIS, not to totalDocuments.",
+        },
+        skippedDocuments: {
+          type: "integer",
+          description:
+            "In-scope documents with no embedded chunk vector, so nothing to cluster on.",
+        },
+        selectedK: {
+          type: "integer",
+          description: "The k used — swept over {10, 15, 20, 25} unless `k` was passed.",
+        },
+        droppedClusters: {
+          type: "integer",
+          description:
+            "Chunk-bearing clusters no retained doc membership points at (every contributing " +
+            "doc's slice fell below the membership threshold). Counted so the omission from " +
+            "`themes` is visible rather than silent.",
+        },
+        clusteredAt: { type: "string", description: "ISO-8601 timestamp." },
+      },
+      required: [
+        "themes",
+        "docMemberships",
+        "totalDocuments",
+        "totalChunks",
+        "skippedDocuments",
+        "selectedK",
+        "droppedClusters",
+        "clusteredAt",
+      ],
       additionalProperties: false,
     },
     handler: (vaultRoot, args, access) => vaultThemes(vaultRoot, args, access),
