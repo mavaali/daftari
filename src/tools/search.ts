@@ -6,7 +6,7 @@
 // it. If the index is empty (first run after a fresh clone) they trigger a
 // reindex first, so search works without an explicit setup step.
 
-import { type AccessContext, canRead } from "../access/rbac.js";
+import { type AccessContext, canRead, readableCollections } from "../access/rbac.js";
 import { currentConsumesEdges } from "../curation/consumes.js";
 import {
   compiledUpstreamStaleness,
@@ -255,6 +255,11 @@ export async function vaultSearch(
       weights: parseWeights(args.weights),
       limit,
       overFetch: true,
+      // Push the readable-collection allow-list into the vector KNN so a
+      // restricted role's K budget is spent on chunks it can actually read
+      // (2026-07-26 fusion spec, Decision 3). The canRead filter below stays:
+      // pushdown is a recall fix, not the authorization boundary.
+      readableCollections: access ? readableCollections(access.role) : undefined,
     });
     if (!result.ok) return result;
 
@@ -373,6 +378,7 @@ export async function vaultSearchRelated(
       weights: parseWeights(args.weights),
       limit,
       overFetch: true,
+      readableCollections: access ? readableCollections(access.role) : undefined,
     });
     if (!result.ok) return result;
     // RBAC: drop related hits in collections the role cannot read (when an
