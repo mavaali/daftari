@@ -44,8 +44,7 @@ Where daftari actually stands today, from the code:
   today, and that would time out any synchronous `tools/call` if they could.
 
 The theme throughout: the new protocol finally has vocabulary for things
-this codebase already believes. We adopt where the protocol catches up to
-the architecture; we refuse where it doesn't (sampling).
+this codebase already believes.
 
 ## Decision 1 — `daftari serve` goes stateless; identity is per REQUEST, resolved every time
 
@@ -92,18 +91,16 @@ The cache is bounded by the config: the set of resolvable identities is the
 token list plus the OAuth subjects table — declared, finite, no eviction
 needed. RBAC staying config-driven does load-bearing work here. And the
 stateless transport does NOT change one thing: **single-holder is the
-process lock's job, not the transport's**. A round-robin LB in front of
-*one* daftari is fine (and pointless); two daftari processes on the same
+process lock's job, not the transport's**. Two daftari processes on the same
 vault is what `.daftari/process.lock` refuses (2026-07-20 Decision 4),
-stateless wire or not. Multi-instance stays out of scope exactly as before.
+stateless wire or not; multi-instance stays out of scope exactly as before.
 
 stdio (`src/index.ts`) is untouched — `--user`/`--role` bind identity for
 the process lifetime; there is no header to resolve per-request. Serve
 speaks the 2026-07-28 revision only: no dual-stacking, the same precedent as
 2026-07-20 refusing the deprecated HTTP+SSE transport; lagging clients use
-stdio, the same escape hatch as then. Since #5 is itself not yet
-implemented, the ideal outcome is that serve is *built* stateless and the
-session-map code above is never written.
+stdio. And since #5 is itself not yet implemented, the ideal outcome is that
+serve is *built* stateless and the session-map code above is never written.
 
 ## Decision 2 — docs and collections become MCP resources
 
@@ -179,10 +176,9 @@ channels with distinct jobs:
   in context anyway.
 
 Links inherit read-gating — a search can only surface docs the caller can
-read (already true), so every emitted link is readable by construction. This
-lands as a change to the shared bridge plus per-tool `outputSchema`
-declarations; tests mirror src/ as always, and every tool's test asserts its
-output validates against its own schema.
+read (already true), so every emitted link is readable by construction.
+Tests mirror src/ as always; every tool's test asserts its output validates
+against its own schema.
 
 ## Decision 4 — the maintenance passes become Tasks; fast tools stay synchronous
 
@@ -215,11 +211,11 @@ Gating, in order of severity:
 - The four task tools are **full-tier only** — free, since full is never
   enumerated in `src/server.ts` and new tools are full-tier by default.
 - RBAC: the passes stage under the loop-principal model — `consolidate` runs
-  as its own agent principal and its proposals land in the staged-action
-  queue for ratification, never as direct canon writes. The task tools
-  require a role holding the loop grants, and `tasks/list` shows a caller
-  only tasks its own identity started (a task list is a doc list in
-  disguise; omission over redaction applies).
+  as its own agent principal, its proposals land in the staged-action queue
+  for ratification, never as direct canon writes. The task tools require a
+  role holding the loop grants, and `tasks/list` shows a caller only tasks
+  its own identity started (a task list is a doc list in disguise; omission
+  over redaction applies).
 - The advisory rule is untouched: task-run passes report and stage; they do
   not fix and do not ratify.
 
