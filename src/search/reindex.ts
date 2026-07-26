@@ -43,6 +43,7 @@ import {
   insertEmbedding,
   insertEmbeddingVec,
   openIndexDb,
+  pruneStaleVecRows,
   replaceDocLinks,
   setMeta,
 } from "../storage/index-db.js";
@@ -665,7 +666,15 @@ export async function indexDocument(
       // INSERT OR IGNORE nor a unique constraint, so the check is explicit.
       const freshVecs = new Map(newlyEmbedded.map(({ hash, vec }) => [hash, vec]));
       for (const hash of new Set(hashes)) {
-        if (hash === "" || hasEmbeddingVec(db, hash, provider.id, doc.collection)) continue;
+        if (hash === "") continue;
+        // Drop rows this hash no longer justifies before adding the new one:
+        // a document that CHANGED collection keeps its hashes, so its old
+        // (hash, collection) row is invisible to every other cleanup path and
+        // would otherwise linger forever, eating KNN budget. Runs after the
+        // document/chunk rows above are current, so the validity query sees
+        // post-write state.
+        pruneStaleVecRows(db, hash, provider.id);
+        if (hasEmbeddingVec(db, hash, provider.id, doc.collection)) continue;
         const vec = freshVecs.get(hash) ?? readCachedVector(db, hash, provider.id);
         if (vec) insertEmbeddingVec(db, hash, provider.id, doc.collection, vec);
       }

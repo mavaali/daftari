@@ -691,6 +691,51 @@ export function insertEmbedding(
 // the end of a reindex to reap entries for chunks that no longer exist
 // anywhere in the vault. Returns the number of `embeddings` rows deleted —
 // the vec-mirror counts piggy-back and are not reported separately.
+// Drops `embeddings_vec` rows for this hash whose collection no longer has any
+// chunk carrying it — the cleanup half of the collection partition key.
+//
+// Why it is needed: a document that changes `collection` keeps its chunk
+// hashes, so nothing else notices. `deleteDocument` clears documents/chunks but
+// not the vec mirror, and `gcOrphanedEmbeddings` asks only whether a hash is
+// referenced by ANY chunk — which it still is, just from the new collection.
+// Without this, a recategorized document leaves its old (hash, collection) row
+// behind forever, quietly consuming the very VEC_KNN_K budget the pushdown
+// exists to protect. Not a disclosure bug (the tool-level canRead filter reads
+// the document's live collection), but it works against the fix, so it is
+// cleaned at the source.
+//
+// The rule is exactly the invariant the full rebuild constructs: a
+// (hash, collection) row is valid iff some chunk with that hash belongs to a
+// document in that collection.
+export function pruneStaleVecRows(db: IndexDb, contentHash: string, model: string): number {
+  const valid = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT d.collection AS collection
+             FROM chunks    AS c
+             JOIN documents AS d ON d.path = c.path
+            WHERE c.content_hash = ?`,
+        )
+        .all(contentHash) as { collection: string }[]
+    ).map((r) => r.collection),
+  );
+  const present = db
+    .prepare("SELECT collection FROM embeddings_vec WHERE content_hash = ? AND model = ?")
+    .all(contentHash, model) as { collection: string }[];
+
+  const del = db.prepare(
+    "DELETE FROM embeddings_vec WHERE content_hash = ? AND model = ? AND collection = ?",
+  );
+  let removed = 0;
+  for (const row of present) {
+    if (valid.has(row.collection)) continue;
+    del.run(contentHash, model, row.collection);
+    removed += 1;
+  }
+  return removed;
+}
+
 // The cached vector for one (content_hash, model), or null when the cache has
 // no row. The incremental index path needs it when a hash that is ALREADY
 // embedded reaches a collection whose vec row does not exist yet — a cache hit

@@ -79,8 +79,6 @@ export function hasAnyRead(role: RoleConfig | null): boolean {
   return role !== null && role.read.length > 0;
 }
 
-// Keeps only the items in collections the role may read. Each item must carry
-// a `collection` field.
 // The explicit list of collections a role may read, for pushing an ACL filter
 // down into a query (the vector KNN — 2026-07-26 fusion spec, Decision 3).
 //
@@ -96,6 +94,8 @@ export function readableCollections(role: RoleConfig | null): string[] | undefin
   return [...role.read];
 }
 
+// Keeps only the items in collections the role may read. Each item must carry
+// a `collection` field.
 export function filterByReadPermission<T extends { collection: string }>(
   role: RoleConfig | null,
   items: T[],

@@ -30,6 +30,8 @@ import {
   setProviderForTests,
 } from "../../src/search/vector.js";
 import {
+  deleteDocument,
+  hasEmbeddingVec,
   type IndexDb,
   type IndexedDocument,
   insertChunkRow,
@@ -37,6 +39,7 @@ import {
   insertEmbedding,
   insertEmbeddingVec,
   openIndexDb,
+  pruneStaleVecRows,
 } from "../../src/storage/index-db.js";
 import type { RoleConfig } from "../../src/utils/config.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -252,6 +255,100 @@ describe("reindex writes one vec row per (hash, collection)", () => {
     } finally {
       opened.value.close();
     }
+  });
+});
+
+// Regression for the review finding on #303: a document that changes
+// collection keeps its chunk hashes, so nothing else notices. deleteDocument
+// clears documents/chunks but not the vec mirror, and gcOrphanedEmbeddings
+// asks only whether a hash is referenced by ANY chunk — which it still is,
+// from the new collection. Without an explicit prune the old row survives
+// every incremental edit until a full reindex, eating the KNN budget this
+// change exists to protect.
+describe("recategorizing a document does not leave a stale vec row", () => {
+  it("drops the old collection's row and adds the new one", () => {
+    const model = getProvider().id;
+    const hash = "h-movable";
+    insertDocument(db, doc("secret/movable.md", "secret"));
+    insertChunkRow(db, {
+      path: "secret/movable.md",
+      chunkIndex: 0,
+      text: "movable body",
+      contentHash: hash,
+    });
+    insertEmbedding(db, hash, model, vec(1), "2026-05-01", DIM);
+    insertEmbeddingVec(db, hash, model, "secret", vec(1));
+
+    const collectionsFor = (h: string): string[] =>
+      (
+        db
+          .prepare("SELECT collection FROM embeddings_vec WHERE content_hash = ? AND model = ?")
+          .all(h, model) as { collection: string }[]
+      )
+        .map((r) => r.collection)
+        .sort();
+
+    expect(collectionsFor(hash)).toEqual(["secret"]);
+
+    // The move, as the incremental path performs it: the document row is
+    // replaced with one carrying the new collection, chunks are rewritten with
+    // the SAME hash, then the vec mirror is reconciled.
+    deleteDocument(db, "secret/movable.md");
+    insertDocument(db, doc("secret/movable.md", "public"));
+    insertChunkRow(db, {
+      path: "secret/movable.md",
+      chunkIndex: 0,
+      text: "movable body",
+      contentHash: hash,
+    });
+    pruneStaleVecRows(db, hash, model);
+    if (!hasEmbeddingVec(db, hash, model, "public")) {
+      insertEmbeddingVec(db, hash, model, "public", vec(1));
+    }
+
+    // The old row is gone, not merely shadowed.
+    expect(collectionsFor(hash)).toEqual(["public"]);
+  });
+
+  it("keeps a collection's row when another document still justifies it", () => {
+    const model = getProvider().id;
+    const hash = "h-shared-move";
+    // Two documents in different collections share the hash; only one moves.
+    for (const collection of ["secret", "pricing"]) {
+      insertDocument(db, doc(`${collection}/shared.md`, collection));
+      insertChunkRow(db, {
+        path: `${collection}/shared.md`,
+        chunkIndex: 0,
+        text: "shared body",
+        contentHash: hash,
+      });
+      insertEmbeddingVec(db, hash, model, collection, vec(1));
+    }
+    insertEmbedding(db, hash, model, vec(1), "2026-05-01", DIM);
+
+    // Move only the pricing one to public; `secret` is still justified by its
+    // own document and must survive.
+    deleteDocument(db, "pricing/shared.md");
+    insertDocument(db, doc("pricing/shared.md", "public"));
+    insertChunkRow(db, {
+      path: "pricing/shared.md",
+      chunkIndex: 0,
+      text: "shared body",
+      contentHash: hash,
+    });
+    pruneStaleVecRows(db, hash, model);
+    if (!hasEmbeddingVec(db, hash, model, "public")) {
+      insertEmbeddingVec(db, hash, model, "public", vec(1));
+    }
+
+    const collections = (
+      db
+        .prepare("SELECT collection FROM embeddings_vec WHERE content_hash = ? AND model = ?")
+        .all(hash, model) as { collection: string }[]
+    )
+      .map((r) => r.collection)
+      .sort();
+    expect(collections).toEqual(["public", "secret"]);
   });
 });
 
