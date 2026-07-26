@@ -63,6 +63,13 @@ function textOf(r: Awaited<ReturnType<Client["callTool"]>>): string {
   return (r.content as Array<{ text?: string }> | undefined)?.[0]?.text ?? "";
 }
 
+// The typed result rides `structuredContent` (spec 2026-07-26, Decision 3).
+// `content` is the model-facing channel: a tool that declares `summarize`
+// puts prose there, so parsing it as JSON asserts the wrong contract.
+function payloadOf<T>(r: Awaited<ReturnType<Client["callTool"]>>): T {
+  return (r.structuredContent ?? {}) as T;
+}
+
 // Poll vault_search until the freshly-spawned server's background reindex is
 // past the "still indexing" window. Mirrors the router integration test.
 async function waitForIndex(client: Client, timeoutMs: number): Promise<void> {
@@ -130,7 +137,7 @@ describe("daftari server e2e (built artifact over stdio)", () => {
       arguments: { path: "pricing/helios-consumption-pricing.md" },
     });
     expect(r.isError).toBeFalsy();
-    const payload = JSON.parse(textOf(r));
+    const payload = payloadOf<{ frontmatter?: { title?: string } }>(r);
     expect(payload.frontmatter?.title).toBeTruthy();
   });
 
@@ -140,7 +147,7 @@ describe("daftari server e2e (built artifact over stdio)", () => {
       arguments: { query: "helios pricing" },
     });
     expect(r.isError).toBeFalsy();
-    const payload = JSON.parse(textOf(r));
+    const payload = payloadOf<{ count?: number }>(r);
     expect(payload.count).toBeGreaterThan(0);
   });
 
@@ -171,7 +178,7 @@ describe("daftari server e2e (built artifact over stdio)", () => {
 
     const r = await admin.callTool({ name: "vault_read", arguments: { path: DRAFT_PATH } });
     expect(r.isError).toBeFalsy();
-    expect(JSON.parse(textOf(r)).frontmatter.title).toBe("E2E Write");
+    expect(payloadOf<{ frontmatter: { title: string } }>(r).frontmatter.title).toBe("E2E Write");
 
     // Git is the version layer: the write must have produced a commit.
     const after = execFileSync("git", ["-C", adminVault, "rev-list", "--count", "HEAD"])

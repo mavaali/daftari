@@ -7,6 +7,10 @@ import type { VaultConfig } from "./config.js";
 // the legacy branch is never reached; the cast below is safe for our use-case.
 export type CallToolResult = {
   content: unknown[];
+  // The typed result (daftari spec 2026-07-26, Decision 3). Children that
+  // declare an outputSchema answer here; `content` carries a model-facing
+  // summary that is not necessarily JSON.
+  structuredContent?: unknown;
   isError?: boolean;
 };
 
