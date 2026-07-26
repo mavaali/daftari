@@ -404,6 +404,16 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
       // CREATE IF NOT EXISTS will not alter an existing table — the 5 → 6 bump
       // adds derives_from_edges.direction_verdict, so that table is dropped and
       // re-materialized from edges.jsonl on the next reindex.
+      //
+      // `embeddings` is deliberately NOT in this list. It is keyed on
+      // (content_hash, model, dim) — a content-addressed cache, not a
+      // projection of the `documents` schema — so no column change here can
+      // invalidate a row in it, and the ALTER-racing rationale above does not
+      // apply. Dropping it would mean paying a hosted provider to regenerate
+      // vectors that were already correct, which contradicts the durability
+      // the cache is designed for (see the VEC_DIM_META_KEY comment).
+      // `embeddings_vec` stays dropped: it is a vec0 mirror, repopulated from
+      // `embeddings` by the next reindex at zero provider cost.
       db.exec(
         "DROP TRIGGER IF EXISTS documents_ai;" +
           "DROP TRIGGER IF EXISTS documents_ad;" +
@@ -416,7 +426,6 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
           "DROP TRIGGER IF EXISTS chunks_au;" +
           "DROP TABLE IF EXISTS chunks_fts;" +
           "DROP TABLE IF EXISTS chunks;" +
-          "DROP TABLE IF EXISTS embeddings;" +
           "DROP TABLE IF EXISTS derives_from_edges;",
       );
       db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
