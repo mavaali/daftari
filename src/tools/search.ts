@@ -17,6 +17,7 @@ import { recordReads } from "../curation/read-log.js";
 import { structuralDecay } from "../curation/structural.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
+import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { contestedFor } from "../search/contested.js";
 import {
@@ -43,8 +44,10 @@ import {
   onceIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { resolveValidAtSource } from "../search/valid-at-source.js";
 import { getProvider } from "../search/vector.js";
-import { documentCount, type IndexDb, openIndexDb } from "../storage/index-db.js";
+import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
 
 // All tool-side opens pass the active provider's dim so the sqlite-vec
@@ -224,6 +227,15 @@ async function annotateAndLogServedHits(
 // vault_search
 // ---------------------------------------------------------------------------
 
+// Evaluates one hit's interval from the index. Returns null when the document
+// authors no interval (valid-time-unknown) or is missing from the index —
+// both mean "nothing to say", never "valid".
+function validityForPath(db: IndexDb, path: string, at: string): ValidityReport | null {
+  const doc = getDocument(db, path);
+  if (!doc) return null;
+  return computeValidity({ valid_from: doc.validFrom, valid_until: doc.validUntil }, at);
+}
+
 export async function vaultSearch(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -234,6 +246,35 @@ export async function vaultSearch(
     return {
       ok: false,
       error: new Error("vault_search requires a non-empty 'query' argument"),
+    };
+  }
+
+  // A malformed valid_at is a caller bug, not something to paper over: a
+  // silently-ignored date would return today's answers to a question about
+  // the past, which is exactly the confusion this axis exists to remove.
+  let validAt: string | null = null;
+  if (args.valid_at !== undefined && args.valid_at !== null) {
+    if (typeof args.valid_at !== "string") {
+      return { ok: false, error: new Error("vault_search 'valid_at' must be a YYYY-MM-DD string") };
+    }
+    const normalized = normalizeIsoDate(args.valid_at);
+    if (normalized === null) {
+      return {
+        ok: false,
+        error: new Error(
+          `vault_search 'valid_at' must be a YYYY-MM-DD date, got "${args.valid_at}"`,
+        ),
+      };
+    }
+    validAt = normalized;
+  }
+  const validOnly = args.valid_only === true;
+  if (validOnly && validAt === null) {
+    return {
+      ok: false,
+      error: new Error(
+        "vault_search 'valid_only' requires 'valid_at' — there is no date to filter against",
+      ),
     };
   }
 
@@ -261,9 +302,36 @@ export async function vaultSearch(
     // context is present), THEN slice to the user-facing limit. Filtering the
     // full candidate set first is what makes the page a full `limit` of
     // permitted results. Enrichment then runs on the surviving hits.
-    const permittedRanked = access
+    const permittedRankedAll = access
       ? result.value.hits.filter((h) => canRead(access.role, h.collection))
       : result.value.hits;
+
+    // Validity pass — annotate, then optionally filter, BOTH BEFORE the slice.
+    // This is the same reasoning as the RBAC filter above: dropping expired
+    // hits after slicing would shrink the page below `limit` whenever expired
+    // docs occupy the top slots, and the caller would read the shortfall as a
+    // thin result set rather than as filtering. Cheap — two nullable columns
+    // already on IndexedDocument, no extra query.
+    //
+    // Runs only when `valid_at` is supplied: zero cost and zero output change
+    // for every existing caller.
+    let permittedRanked = permittedRankedAll;
+    if (validAt !== null) {
+      for (const hit of permittedRanked) {
+        hit.validity = validityForPath(db, hit.path, validAt);
+      }
+      if (validOnly) {
+        // `unknown` hits are KEPT. Absence of an authored interval is not
+        // evidence that the claim was false then — dropping them would delete
+        // every pre-adoption document from its own vault's results.
+        permittedRanked = permittedRanked.filter(
+          (h) =>
+            h.validity == null ||
+            (h.validity.state !== "expired" && h.validity.state !== "not_yet"),
+        );
+      }
+    }
+
     const ranked = permittedRanked.slice(0, limit);
 
     // Coverage pass: conditionally widen the ranked set with same-entity docs in
@@ -286,9 +354,25 @@ export async function vaultSearch(
     // Contested post-join (same pass): surface unresolved tensions inline.
     // The feud benchmark measured this shape — inline beats a dedicated tool
     // the agent must choose to call. Advisory only; never a score input.
+    // Coverage-added hits are annotated here rather than in the pass above,
+    // and are deliberately NOT subject to valid_only: coverage is a recall
+    // lever answering a different question, and silently filtering its
+    // additions would make the widening non-deterministic.
+    if (validAt !== null) {
+      for (const hit of permitted) {
+        if (hit.validity === undefined) hit.validity = validityForPath(db, hit.path, validAt);
+      }
+    }
+
     for (const hit of permitted) {
       const cs = resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
+      // Foreground the chain member covering `valid_at` when this hit's own
+      // interval does not. No-ops when the hit covers the date itself.
+      if (validAt !== null) {
+        const vas = resolveValidAtSource(db, hit.path, validAt, access);
+        if (vas) hit.validAtSource = vas;
+      }
       const ct = contestedFor(vaultRoot, db, hit.path, access);
       if (ct) {
         hit.contested = ct.contested;
@@ -457,6 +541,24 @@ export const searchTools: ToolDefinition[] = [
           description: "Maximum results to return (default 10, max 50)",
         },
         weights: weightsSchema,
+        valid_at: {
+          type: "string",
+          description:
+            "Bi-temporal query date (YYYY-MM-DD): annotate each hit with " +
+            "whether its claim was true IN THE WORLD on that date, and " +
+            "foreground the chain member that covers it when this one does " +
+            "not. This asks 'what was true then', which is different from " +
+            "'what did we write then' — use it for questions like 'what did " +
+            "Plan Pro cost in February'. Omit for present-day search.",
+        },
+        valid_only: {
+          type: "boolean",
+          description:
+            "With valid_at, drop hits whose claim had not started or had " +
+            "already ended on that date. Documents that author no interval " +
+            "are KEPT: the vault not knowing when a fact held is not evidence " +
+            "the fact was false. Requires valid_at. Default false.",
+        },
         rerank_candidates: {
           type: "number",
           description:
