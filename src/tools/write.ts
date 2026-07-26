@@ -167,6 +167,10 @@ export function serializeDocument(
     sources: fm.sources,
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
+    // `?? null` for the same reason as tier: a hand-built Frontmatter that
+    // predates these fields carries undefined, which js-yaml refuses to dump.
+    valid_from: fm.valid_from ?? null,
+    valid_until: fm.valid_until ?? null,
     tags: fm.tags,
     describes: fm.describes,
     questions_answered: fm.questions_answered,
@@ -1957,6 +1961,25 @@ const frontmatterProperty = {
       description:
         "Number of days after which this document is considered stale and " +
         "should be reviewed. null = no TTL.",
+    },
+    valid_from: {
+      type: ["string", "null"],
+      description:
+        "First date (YYYY-MM-DD) on which this document's claim was true IN " +
+        "THE WORLD. This is valid time, NOT the date the document was written " +
+        "or edited — do not copy it from 'created' or 'updated', which are " +
+        "transaction time. Set it only when you actually know when the fact " +
+        "started holding; null means unknown, which is never the same as " +
+        "'always true'. Inclusive.",
+    },
+    valid_until: {
+      type: ["string", "null"],
+      description:
+        "Last date (YYYY-MM-DD) on which this document's claim was true IN " +
+        "THE WORLD, inclusive. null with a valid_from means open-ended — still " +
+        "true as far as the vault knows — NOT 'unknown end'. Distinct from " +
+        "ttl_days, which is a promise to re-review, not a claim about when a " +
+        "fact stopped holding.",
     },
     tags: {
       type: "array",

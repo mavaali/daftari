@@ -582,6 +582,8 @@ export async function vaultThemes(
         ttlDays: null,
         created: "",
         supersededBy: null,
+        validFrom: null,
+        validUntil: null,
       });
     }
 

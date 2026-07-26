@@ -522,4 +522,50 @@ describe("reindexVault", () => {
       }
     }, 120_000);
   });
+
+  describe("valid-time columns", () => {
+    it("carries authored validity endpoints from frontmatter into the index", async () => {
+      await writeFile(
+        join(vault, "pricing/plan-pro-q1.md"),
+        "---\ntitle: Plan Pro Q1 pricing\ndomain: accumulation\ncollection: pricing\n" +
+          "status: canonical\nconfidence: high\ncreated: 2026-01-05\nupdated: 2026-01-05\n" +
+          "updated_by: agent:test\nprovenance: direct\n" +
+          "valid_from: 2026-01-01\nvalid_until: 2026-03-31\ntags: []\n---\n\n" +
+          "Plan Pro was 49 USD per seat per month.\n",
+      );
+
+      const result = await reindexVault(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+      try {
+        const doc = getDocument(db, "pricing/plan-pro-q1.md");
+        expect(doc?.validFrom).toBe("2026-01-01");
+        expect(doc?.validUntil).toBe("2026-03-31");
+      } finally {
+        db.close();
+      }
+    }, 60_000);
+
+    it("indexes a document with no authored validity as null on both endpoints", async () => {
+      const result = await reindexVault(vault);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      if (!opened.ok) throw opened.error;
+      const db = opened.value;
+      try {
+        // Every fixture document predates the feature — the pre-adoption state.
+        const docs = getAllDocuments(db);
+        expect(docs.length).toBeGreaterThan(0);
+        expect(docs.every((d) => d.validFrom === null && d.validUntil === null)).toBe(true);
+      } finally {
+        db.close();
+      }
+    }, 60_000);
+  });
 });

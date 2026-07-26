@@ -299,6 +299,8 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
         ttlDays: fm.ttl_days,
         created: fm.created,
         supersededBy: fm.superseded_by,
+        validFrom: fm.valid_from,
+        validUntil: fm.valid_until,
       },
       chunks,
       hashes,
