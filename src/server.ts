@@ -7,8 +7,15 @@
 
 import { readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
+import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
 import { edgeStalenessTools } from "./tools/edge-staleness.js";
@@ -136,7 +143,7 @@ export function createServer(
 ): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, resources: {} } },
   );
 
   const byName = new Map(allTools.map((t) => [t.name, t]));
@@ -149,9 +156,31 @@ export function createServer(
       ...(t.title ? { title: t.title } : {}),
       description: t.description,
       inputSchema: t.inputSchema,
+      outputSchema: t.outputSchema,
       ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
+
+  // Resources (spec 2026-07-26, Decision 2). Every listing and read resolves
+  // against this server's access context, exactly as tools do — a resource is
+  // not a back door around RBAC. src/resources.ts holds the disclosure rules.
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+    resourceTemplates: resourceTemplates(),
+  }));
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    const result = await listResources(vaultRoot, access);
+    // A listing failure yields an empty list rather than an error: a doc list
+    // that fails loudly for some callers and not others is itself a signal.
+    return { resources: result.ok ? result.value : [] };
+  });
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    const result = await readResource(vaultRoot, uri, access);
+    if (!result.ok) throw new Error(result.error.message);
+    return { contents: [result.value] };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
@@ -171,13 +200,34 @@ export function createServer(
           content: [{ type: "text" as const, text: `Error: ${result.error.message}` }],
         };
       }
+      // Three channels (spec 2026-07-26, Decision 3):
+      //   structuredContent — the full typed result, matching outputSchema;
+      //   content           — a compact, model-facing summary;
+      //   resource_link     — handles for the docs the result references,
+      //                       so the agent reads the two it needs at full
+      //                       fidelity instead of receiving twenty bodies it
+      //                       will truncate in context anyway.
+      //
+      // A tool with no `summarize` falls back to the pretty-printed value, so
+      // this is backward compatible for any tool that has not opted in.
+      const summary = tool.summarize
+        ? tool.summarize(result.value)
+        : JSON.stringify(result.value, null, 2);
+      const links = tool.docLinks ? tool.docLinks(result.value) : [];
       return {
         content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result.value, null, 2),
-          },
+          { type: "text" as const, text: summary },
+          // Links inherit read-gating: a handler only ever names docs the
+          // caller may read, so every link emitted here is readable by
+          // construction (Decision 3).
+          ...links.map((path) => ({
+            type: "resource_link" as const,
+            uri: docUri(path),
+            name: path,
+            mimeType: "text/markdown",
+          })),
         ],
+        structuredContent: result.value as Record<string, unknown>,
       };
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);

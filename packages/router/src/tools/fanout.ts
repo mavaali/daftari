@@ -23,7 +23,14 @@ export async function fanoutCall<T = unknown>(
         const text = (r.content?.[0] as { text?: string })?.text ?? "unknown error";
         return { vault: c.name, ok: false, error: text };
       }
-      // Tool responses are JSON-encoded in a single text content block.
+      // The typed result rides `structuredContent` (daftari spec 2026-07-26,
+      // Decision 3). `content` is the model-facing channel and carries a
+      // prose summary for tools that declare one, so it is only a fallback
+      // — for children old enough to predate structured output, where a
+      // single text block still holds JSON.
+      if (r.structuredContent !== undefined) {
+        return { vault: c.name, ok: true, value: r.structuredContent as T };
+      }
       const text = (r.content?.[0] as { text?: string })?.text ?? "null";
       return { vault: c.name, ok: true, value: JSON.parse(text) as T };
     } catch (e) {

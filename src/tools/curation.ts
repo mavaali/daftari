@@ -23,7 +23,7 @@ import {
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import type { ReviewThroughputSummary } from "../curation/review-throughput.js";
 import type { ShadowLintSummary } from "../curation/shadow.js";
-import { sweepExpiredActions } from "../curation/staged-actions.js";
+import { STAGED_ACTION_TYPES, sweepExpiredActions } from "../curation/staged-actions.js";
 import {
   addTension,
   LOGGABLE_TENSION_KINDS,
@@ -31,6 +31,7 @@ import {
   RESOLUTION_KINDS,
   type ResolutionKind,
   resolveTension,
+  TENSION_KINDS,
   type TensionEntry,
   type TensionResolution,
 } from "../curation/tension.js";
@@ -491,6 +492,522 @@ export async function vaultProvenance(
 }
 
 // ---------------------------------------------------------------------------
+// Output schemas (spec 2026-07-26, Decision 3)
+// ---------------------------------------------------------------------------
+//
+// JSON Schema 2020-12 for each handler's ok-value, derived from the return
+// types above. Closed vocabularies reuse the source-of-truth constants so a
+// rename there breaks this build instead of silently drifting the schema.
+// Where a structure is open by construction — a free-form counts map, a
+// verbatim frontmatter diff — the schema stays permissive rather than
+// promising a shape the handler never guarantees.
+
+// { key: integer } over a fixed vocabulary (byKind, byResolutionKind, ...).
+function countsByKey(keys: readonly string[]): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  for (const key of keys) properties[key] = { type: "integer" };
+  return { type: "object", properties, required: [...keys], additionalProperties: false };
+}
+
+const tensionResolutionSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    resolved_at: { type: "string", description: "ISO 8601 instant the tension was closed" },
+    resolved_by: { type: "string" },
+    kind: { type: "string", enum: [...RESOLUTION_KINDS] },
+    rationale: { type: "string" },
+    references: { type: "array", items: { type: "string" } },
+  },
+  required: ["resolved_at", "resolved_by", "kind"],
+  additionalProperties: false,
+};
+
+// One tension-log entry. `kinds` narrows the taxonomy to what the calling
+// tool can actually return: vault_tension_log mints only loggable kinds,
+// while vault_tension_resolve can close an entry of any kind (including the
+// system-generated inter-proposal one and legacy unspecified entries).
+function tensionEntrySchema(kinds: readonly string[]): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "e.g. 'tension-007'; absent on legacy entries" },
+      date: { type: "string", description: "YYYY-MM-DD" },
+      title: { type: "string" },
+      kind: { type: "string", enum: [...kinds] },
+      sourceA: { type: "string" },
+      claimA: { type: "string" },
+      sourceB: { type: "string" },
+      claimB: { type: "string" },
+      status: { type: "string", description: "'unresolved' | 'resolved'" },
+      loggedBy: { type: "string" },
+      decidedByPrincipal: { type: "string" },
+      resolved: { type: "boolean" },
+      resolution: tensionResolutionSchema,
+    },
+    required: [
+      "date",
+      "title",
+      "kind",
+      "sourceA",
+      "claimA",
+      "sourceB",
+      "claimB",
+      "status",
+      "loggedBy",
+      "resolved",
+    ],
+    additionalProperties: false,
+  };
+}
+
+const tensionClustersOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    cluster_count: { type: "integer" },
+    clusters: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "cluster:<8 hex chars>" },
+          size: { type: "integer" },
+          documents: { type: "array", items: { type: "string" } },
+          tension_count: { type: "integer" },
+          kinds: countsByKey(TENSION_KINDS),
+          oldest_tension_age_days: { type: "number" },
+          newest_tension_age_days: { type: "number" },
+        },
+        required: [
+          "id",
+          "size",
+          "documents",
+          "tension_count",
+          "kinds",
+          "oldest_tension_age_days",
+          "newest_tension_age_days",
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["cluster_count", "clusters"],
+  additionalProperties: false,
+};
+
+const tensionBlastOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    contested_document: { type: ["string", "null"] },
+    cluster_id: { type: ["string", "null"] },
+    cluster_documents: { type: "array", items: { type: "string" } },
+    downstream: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          dependency_type: { type: "string", enum: ["source", "link"] },
+          distance: { type: "integer" },
+        },
+        required: ["path", "dependency_type", "distance"],
+        additionalProperties: false,
+      },
+    },
+    primary_blast: { type: "integer", description: "docs reached via the 'sources' edge" },
+    advisory_blast: { type: "integer", description: "docs reached only via markdown links" },
+    max_depth: { type: "integer" },
+    hidden_downstream: {
+      type: "string",
+      enum: ["none", "some", "many"],
+      description: "Coarsened remainder of unreadable downstream docs — never an exact count",
+    },
+  },
+  required: [
+    "contested_document",
+    "cluster_id",
+    "cluster_documents",
+    "downstream",
+    "primary_blast",
+    "advisory_blast",
+    "max_depth",
+    "hidden_downstream",
+  ],
+  additionalProperties: false,
+};
+
+const lintFindingSchema: Record<string, unknown> = {
+  type: "object",
+  properties: { path: { type: "string" }, detail: { type: "string" } },
+  required: ["path", "detail"],
+  additionalProperties: false,
+};
+
+// `checks` is a Partial record — a filtered run carries exactly one key — so
+// no check name is required, only known.
+const lintChecksProperties: Record<string, unknown> = {};
+for (const check of LINT_CHECKS) {
+  lintChecksProperties[check] = { type: "array", items: lintFindingSchema };
+}
+
+const strengthGroupStatsSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    count: { type: "integer" },
+    mean: { type: "number" },
+    median: { type: "number" },
+    p10: { type: "number" },
+    p90: { type: "number" },
+    variance: { type: "number" },
+  },
+  required: ["count", "mean", "median", "p10", "p90", "variance"],
+  additionalProperties: false,
+};
+
+const shadowLintItemSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    at: { type: "string" },
+    tool: { type: "string" },
+    action: { type: "string" },
+    targetPath: { type: "string" },
+    agent: { type: "string" },
+    impact: { type: "number" },
+    budget: { type: "number" },
+  },
+  required: ["at", "tool", "action", "targetPath", "agent", "impact", "budget"],
+  additionalProperties: false,
+};
+
+const reviewThroughputWindowSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    arrivals: { type: "integer" },
+    decisions: { type: "integer" },
+    expiries: { type: "integer" },
+  },
+  required: ["arrivals", "decisions", "expiries"],
+  additionalProperties: false,
+};
+
+const lintOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    generatedAt: { type: "string" },
+    filter: {
+      type: ["string", "null"],
+      enum: [...LINT_CHECKS, null],
+      description: "The single check the report was restricted to, or null for all checks",
+    },
+    checks: {
+      type: "object",
+      properties: lintChecksProperties,
+      additionalProperties: false,
+    },
+    totalFindings: { type: "integer" },
+    // Vault-global by design (#217 decision C): counts only, no paths.
+    tensionHealth: {
+      type: "object",
+      properties: {
+        total: { type: "integer" },
+        byKind: countsByKey(TENSION_KINDS),
+        resolvedLifetime: { type: "integer" },
+        byResolutionKind: countsByKey(RESOLUTION_KINDS),
+        stableAcknowledged: { type: "integer" },
+        unspecifiedLegacy: { type: "integer" },
+        aging: {
+          type: "object",
+          properties: {
+            fresh: { type: "integer" },
+            aging: { type: "integer" },
+            stale: { type: "integer" },
+            staleByKind: countsByKey(TENSION_KINDS),
+            // Kind-keyed lint copy, present only for kinds with a nonzero
+            // stale count; `unspecified` never appears.
+            staleMessages: { type: "object", additionalProperties: { type: "string" } },
+          },
+          required: ["fresh", "aging", "stale", "staleByKind", "staleMessages"],
+          additionalProperties: false,
+        },
+        clusters: {
+          type: "object",
+          properties: {
+            count: { type: "integer" },
+            maxSize: { type: "integer" },
+            large: { type: "integer" },
+            aged: { type: "integer" },
+          },
+          required: ["count", "maxSize", "large", "aged"],
+          additionalProperties: false,
+        },
+        blastRadiusOfStaleTensions: { type: "integer" },
+      },
+      required: [
+        "total",
+        "byKind",
+        "resolvedLifetime",
+        "byResolutionKind",
+        "stableAcknowledged",
+        "unspecifiedLegacy",
+        "aging",
+        "clusters",
+        "blastRadiusOfStaleTensions",
+      ],
+      additionalProperties: false,
+    },
+    stagedActions: {
+      type: "array",
+      description: "Pending staged actions awaiting ratification, soonest-to-expire first",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          actionType: { type: "string", enum: [...STAGED_ACTION_TYPES] },
+          targetPath: { type: "string" },
+          ageDays: { type: "integer" },
+          expiresInDays: { type: "integer" },
+          rationale: { type: "string", description: "First sentence of the staged rationale" },
+        },
+        required: ["id", "actionType", "targetPath", "ageDays", "expiresInDays", "rationale"],
+        additionalProperties: false,
+      },
+    },
+    shadowActions: {
+      type: "object",
+      properties: {
+        total: { type: "integer" },
+        gated: { type: "integer" },
+        recentGated: { type: "array", items: shadowLintItemSchema },
+        gatedSurfaced: { type: "array", items: shadowLintItemSchema },
+        gatedCount: { type: "integer" },
+      },
+      required: ["total", "gated", "recentGated", "gatedSurfaced", "gatedCount"],
+      additionalProperties: false,
+    },
+    coverageEquity: {
+      type: "object",
+      properties: {
+        generatedAt: { type: "string" },
+        strengthDrift: {
+          type: "object",
+          properties: {
+            core: strengthGroupStatsSchema,
+            periphery: strengthGroupStatsSchema,
+            // Null when either group is empty — the gap is undefined, and a
+            // sentinel 0 would read as "no drift".
+            coreMinusPeripheryMedian: { type: ["number", "null"] },
+            belowTriggerCount: { type: "integer" },
+          },
+          required: ["core", "periphery", "coreMinusPeripheryMedian", "belowTriggerCount"],
+          additionalProperties: false,
+        },
+        backstopOverdue: {
+          type: "object",
+          properties: {
+            count: { type: "integer" },
+            stalest: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  fromPath: { type: "string" },
+                  toPath: { type: "string" },
+                  daysOverdue: { type: "number" },
+                },
+                required: ["fromPath", "toPath", "daysOverdue"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["count", "stalest"],
+          additionalProperties: false,
+        },
+        actionMix: {
+          type: "object",
+          properties: {
+            // Open by construction: keyed by whatever action names the edge
+            // ops and staged-action log carry.
+            counts: { type: "object", additionalProperties: { type: "integer" } },
+            cheapLinkFraction: { type: "number" },
+            total: { type: "integer" },
+          },
+          required: ["counts", "cheapLinkFraction", "total"],
+          additionalProperties: false,
+        },
+        directionResolution: {
+          type: "object",
+          properties: {
+            directed: { type: "integer" },
+            symmetric: { type: "integer" },
+            unresolvedFraction: { type: "number" },
+          },
+          required: ["directed", "symmetric", "unresolvedFraction"],
+          additionalProperties: false,
+        },
+      },
+      required: [
+        "generatedAt",
+        "strengthDrift",
+        "backstopOverdue",
+        "actionMix",
+        "directionResolution",
+      ],
+      additionalProperties: false,
+    },
+    reviewThroughput: {
+      type: "object",
+      properties: {
+        lifetime: {
+          type: "object",
+          properties: {
+            proposals: { type: "integer" },
+            ratified: { type: "integer" },
+            rejected: { type: "integer" },
+            expired: { type: "integer" },
+            pending: { type: "integer" },
+          },
+          required: ["proposals", "ratified", "rejected", "expired", "pending"],
+          additionalProperties: false,
+        },
+        last7d: reviewThroughputWindowSchema,
+        last30d: reviewThroughputWindowSchema,
+        timeToDecisionDays: {
+          type: "object",
+          properties: {
+            p50: { type: ["number", "null"] },
+            p90: { type: ["number", "null"] },
+          },
+          required: ["p50", "p90"],
+          additionalProperties: false,
+        },
+        oldestPendingDays: { type: ["number", "null"] },
+      },
+      required: ["lifetime", "last7d", "last30d", "timeToDecisionDays", "oldestPendingDays"],
+      additionalProperties: false,
+    },
+  },
+  required: [
+    "generatedAt",
+    "filter",
+    "checks",
+    "totalFindings",
+    "tensionHealth",
+    "stagedActions",
+    "shadowActions",
+    "coverageEquity",
+    "reviewThroughput",
+  ],
+  additionalProperties: false,
+};
+
+const provenanceOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    count: { type: "integer" },
+    history: {
+      type: "array",
+      description: "Provenance entries for this document, oldest first",
+      items: {
+        type: "object",
+        properties: {
+          timestamp: { type: "string" },
+          tool: { type: "string" },
+          file: { type: "string" },
+          agent: { type: "string", description: "Caller-claimed acting identity" },
+          action: { type: "string" },
+          principal: { type: "string", description: "Authenticated server identity (§11.6)" },
+          run_id: { type: "string" },
+          body_changed: { type: "boolean" },
+          // Per-field { before, after } over arbitrary frontmatter keys —
+          // open by construction, so the value shape stays unconstrained.
+          frontmatter_diff: { type: "object", additionalProperties: { type: "object" } },
+          reason: { type: "string" },
+        },
+        required: ["timestamp", "tool", "file", "agent", "action"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["path", "count", "history"],
+  additionalProperties: false,
+};
+
+// ---------------------------------------------------------------------------
+// vault_lint summarizer
+// ---------------------------------------------------------------------------
+//
+// Decision 3 names vault-wide lint output as a worst token offender: the full
+// report is a wall. The `content` channel gets counts plus a handful of
+// findings, one line each; the full report still rides the structured channel.
+
+// The tier-0 checks (#232) are certain structural failures rather than
+// advisory judgments — they lead the summary and its top-findings list.
+const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
+  "brokenSourceRefs",
+  "lifecycleConflicts",
+  "schemaInvalid",
+  "domainLeaks",
+];
+
+const LINT_SUMMARY_TOP_FINDINGS = 6;
+const LINT_SUMMARY_DETAIL_CHARS = 110;
+
+function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+function summarizeLint(value: unknown): string {
+  const report = value as VaultLintResult;
+
+  const perCheck: string[] = [];
+  let certain = 0;
+  let advisory = 0;
+  const flat: Array<{ check: LintCheckName; finding: LintFinding }> = [];
+  for (const check of LINT_CHECKS) {
+    const findings = report.checks[check] ?? [];
+    if (findings.length === 0) continue;
+    perCheck.push(`${check} ${findings.length}`);
+    if (TIER0_LINT_CHECKS.includes(check)) certain += findings.length;
+    else advisory += findings.length;
+    for (const finding of findings) flat.push({ check, finding });
+  }
+  // Certain (tier-0) findings first; sort is stable, so within each severity
+  // the LINT_CHECKS order is preserved.
+  flat.sort(
+    (a, b) =>
+      Number(TIER0_LINT_CHECKS.includes(b.check)) - Number(TIER0_LINT_CHECKS.includes(a.check)),
+  );
+
+  const health = report.tensionHealth;
+  const lines = [
+    `vault_lint [${report.filter ?? "all checks"}] ${report.totalFindings} finding(s): ` +
+      `${certain} certain (tier-0), ${advisory} advisory — ${report.generatedAt}`,
+    perCheck.length > 0 ? `by check: ${perCheck.join(", ")}` : "by check: clean",
+    `tensions: ${health.total} logged, ${health.resolvedLifetime} resolved, ` +
+      `${health.stableAcknowledged} accepted; aging ${health.aging.fresh}/${health.aging.aging}/` +
+      `${health.aging.stale} fresh/aging/stale; ${health.clusters.count} cluster(s) ` +
+      `(${health.clusters.large} large, ${health.clusters.aged} aged); ` +
+      `stale blast ${health.blastRadiusOfStaleTensions}`,
+    `staged: ${report.stagedActions.length} pending, ` +
+      `${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
+      `shadow: ${report.shadowActions.total} logged, ${report.shadowActions.gated} would-gate; ` +
+      `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s)`,
+  ];
+
+  const top = flat.slice(0, LINT_SUMMARY_TOP_FINDINGS);
+  if (top.length > 0) {
+    lines.push(`top ${top.length} of ${flat.length} finding(s):`);
+    for (const { check, finding } of top) {
+      lines.push(
+        `  [${check}] ${finding.path} — ${clip(finding.detail, LINT_SUMMARY_DETAIL_CHARS)}`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
@@ -545,6 +1062,8 @@ export const curationTools: ToolDefinition[] = [
       required: ["title", "sourceA", "claimA", "sourceB", "claimB", "agent", "kind"],
       additionalProperties: false,
     },
+    // The entry as logged: id assigned, status 'unresolved', no resolution.
+    outputSchema: tensionEntrySchema(LOGGABLE_TENSION_KINDS),
     handler: (vaultRoot, args, access) => vaultTensionLog(vaultRoot, args, access),
   },
   {
@@ -588,6 +1107,8 @@ export const curationTools: ToolDefinition[] = [
       required: ["id", "kind"],
       additionalProperties: false,
     },
+    // The updated entry: status 'resolved' with the resolution block attached.
+    outputSchema: tensionEntrySchema(TENSION_KINDS),
     handler: (vaultRoot, args, access) => vaultTensionResolve(vaultRoot, args, access),
   },
   {
@@ -608,6 +1129,7 @@ export const curationTools: ToolDefinition[] = [
       properties: {},
       additionalProperties: false,
     },
+    outputSchema: tensionClustersOutputSchema,
     handler: (vaultRoot, args, access) => vaultTensionClusters(vaultRoot, args, access),
   },
   {
@@ -647,6 +1169,7 @@ export const curationTools: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    outputSchema: tensionBlastOutputSchema,
     handler: (vaultRoot, args, access) => vaultTensionBlast(vaultRoot, args, access),
   },
   {
@@ -682,6 +1205,8 @@ export const curationTools: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    outputSchema: lintOutputSchema,
+    summarize: summarizeLint,
     handler: (vaultRoot, args, access) => vaultLint(vaultRoot, args, access),
   },
   {
@@ -703,6 +1228,7 @@ export const curationTools: ToolDefinition[] = [
       required: ["filePath"],
       additionalProperties: false,
     },
+    outputSchema: provenanceOutputSchema,
     handler: (vaultRoot, args, access) => vaultProvenance(vaultRoot, args, access),
   },
 ];

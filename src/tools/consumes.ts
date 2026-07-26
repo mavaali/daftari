@@ -12,6 +12,7 @@
 
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
 import {
+  CONSUMES_EDGE_TYPES,
   type ConsumesEdge,
   currentConsumesEdges,
   listConsumesEdges,
@@ -92,6 +93,31 @@ export async function vaultConsumes(
   });
 }
 
+// One compiled edge (ConsumesEdge), exactly as the log records it.
+const consumesEdgeSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    artifact: { type: "string", description: "Vault-relative path of the written document" },
+    unit: {
+      type: "string",
+      description: "Vault-relative path of a document the run read before writing the artifact",
+    },
+    edge_type: {
+      type: "string",
+      enum: [...CONSUMES_EDGE_TYPES],
+      description: "The consumption mode the producer observed",
+    },
+    fields: {
+      type: "array",
+      items: { type: "string" },
+      description: "Fields consumed; ['*'] means the whole document (v1)",
+    },
+    run_id: { type: "string", description: "Trace/run identifier that minted the edge" },
+    compile_ts: { type: "string", description: "ISO 8601 — when the write landed" },
+  },
+  required: ["artifact", "unit", "edge_type", "fields", "run_id", "compile_ts"],
+};
+
 export const consumesTools: ToolDefinition[] = [
   {
     name: "vault_consumes",
@@ -125,6 +151,29 @@ export const consumesTools: ToolDefinition[] = [
         },
       },
       additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: ["forward", "reverse"],
+          description: "Which query ran: 'forward' for 'artifact', 'reverse' for 'unit'",
+        },
+        anchor: { type: "string", description: "Canonical vault-relative path of the anchor" },
+        edges: { type: "array", items: consumesEdgeSchema },
+        total: {
+          type: "integer",
+          description:
+            "Number of listed edges. Under RBAC an edge with an unreadable " +
+            "endpoint is omitted from the list AND from this count (#217 omission).",
+        },
+        include_history: {
+          type: "boolean",
+          description: "Whether superseded compile groups were included",
+        },
+      },
+      required: ["direction", "anchor", "edges", "total", "include_history"],
     },
     handler: (vaultRoot, args, access) => vaultConsumes(vaultRoot, args, access),
   },

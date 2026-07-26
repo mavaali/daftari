@@ -40,6 +40,101 @@ export async function vaultWitness(
   return witness;
 }
 
+// ---------------------------------------------------------------------------
+// Output schema (spec 2026-07-26, Decision 3)
+// ---------------------------------------------------------------------------
+//
+// Two shapes share one schema: the full report carries `principals` (plus
+// `unattributedDocs`), and a single-principal request carries `principal`
+// instead. `concentration` and `flatCurveWarning` ride both — the flat-curve
+// monitor must reach the caller either way — so only those two are required.
+
+const principalRecordSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    principal: { type: "string", description: "e.g. 'agent:claude-code' or 'human:mihir'" },
+    // Raw activity.
+    writes: { type: "integer" },
+    firstWriteAt: { type: ["string", "null"] },
+    lastWriteAt: { type: ["string", "null"] },
+    docsAuthored: { type: "integer" },
+    // The open book.
+    liveClaims: { type: "integer", description: "Authored docs currently canonical" },
+    openExposure: { type: "number", description: "Σ stake(confidence) over live claims" },
+    contestedOpen: { type: "integer", description: "Live claims under unresolved tensions" },
+    stakeAtRisk: { type: "number" },
+    // The settled book.
+    lost: { type: "integer" },
+    burnedStake: { type: "number" },
+    survived: { type: "integer" },
+    creditEarned: { type: "number" },
+    balance: { type: "number", description: "creditEarned − burnedStake (advisory)" },
+    proposals: {
+      type: "object",
+      properties: {
+        total: { type: "integer" },
+        ratified: { type: "integer" },
+        rejected: { type: "integer" },
+        expired: { type: "integer" },
+        pending: { type: "integer" },
+      },
+      required: ["total", "ratified", "rejected", "expired", "pending"],
+      additionalProperties: false,
+    },
+    tensionsLogged: { type: "integer" },
+  },
+  required: [
+    "principal",
+    "writes",
+    "firstWriteAt",
+    "lastWriteAt",
+    "docsAuthored",
+    "liveClaims",
+    "openExposure",
+    "contestedOpen",
+    "stakeAtRisk",
+    "lost",
+    "burnedStake",
+    "survived",
+    "creditEarned",
+    "balance",
+    "proposals",
+    "tensionsLogged",
+  ],
+  additionalProperties: false,
+};
+
+const witnessOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    principals: {
+      type: "array",
+      items: principalRecordSchema,
+      description: "Every principal's record; absent when a single 'principal' was requested",
+    },
+    principal: principalRecordSchema,
+    unattributedDocs: {
+      type: "integer",
+      description: "Docs with no provenance history — nobody's record",
+    },
+    concentration: {
+      type: "object",
+      properties: {
+        topPrincipal: { type: ["string", "null"] },
+        topShare: { type: "number", description: "Write share of the top principal, 0–1" },
+      },
+      required: ["topPrincipal", "topShare"],
+      additionalProperties: false,
+    },
+    flatCurveWarning: {
+      type: "boolean",
+      description: "True when one principal holds ≥95% of writes — records are uninformative",
+    },
+  },
+  required: ["concentration", "flatCurveWarning"],
+  additionalProperties: false,
+};
+
 export const witnessTools: ToolDefinition[] = [
   {
     name: "vault_witness",
@@ -72,6 +167,7 @@ export const witnessTools: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    outputSchema: witnessOutputSchema,
     handler: (vaultRoot, args, access) => vaultWitness(vaultRoot, args, access),
   },
 ];

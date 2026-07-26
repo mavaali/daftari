@@ -224,6 +224,123 @@ export async function vaultStaleness(
   return brokenReadReport(vaultRoot, days);
 }
 
+// One classified upstream edge (UpstreamStaleness).
+const upstreamStalenessSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    unit: { type: "string", description: "Vault-relative path of the upstream document" },
+    edge_class: {
+      type: "string",
+      enum: ["compiled", "declared", "earned"],
+      description: "Edge provenance class the row was classified under",
+    },
+    staleness: {
+      type: "string",
+      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+      description: "Compatibility class of the change since this edge's baseline",
+    },
+    baseline: {
+      type: ["string", "null"],
+      description:
+        "ISO 8601 instant the classification measured change from; null when " +
+        "no baseline is derivable (which forces pending-unchecked)",
+    },
+    changed_fields: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Content fields the unit's writes touched since the baseline " +
+        "(bookkeeping stripped). Empty for current and bookkeeping-only churn.",
+    },
+    reason: { type: "string", description: "Why this class was assigned" },
+  },
+  required: ["unit", "edge_class", "staleness", "baseline", "changed_fields", "reason"],
+};
+
+// #217: pending edges to units the caller cannot read are reported ONLY as
+// this coarse bucket — never an exact count, which for a small cell would
+// disclose linked existence. Do not widen this to a number.
+const hiddenPendingSchema: Record<string, unknown> = {
+  type: "string",
+  enum: ["none", "some", "many"],
+  description:
+    "Coarsened remainder over upstream units outside your read scope that " +
+    "have pending changes. Never an exact count (#217).",
+};
+
+const artifactStalenessSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    mode: { type: "string", const: "artifact" },
+    artifact: { type: "string", description: "Canonical vault-relative path of the anchor" },
+    edges: {
+      type: "array",
+      items: upstreamStalenessSchema,
+      description: "Upstream edges whose unit the caller can read, unit then class ordered",
+    },
+    hidden_pending: hiddenPendingSchema,
+    summary: {
+      type: "object",
+      description: "Counts over the VISIBLE edges only — hidden ones never enter a count",
+      properties: {
+        current: { type: "integer" },
+        pending_unchecked: { type: "integer" },
+        pending_compatible: { type: "integer" },
+        pending_broken: { type: "integer" },
+      },
+      required: ["current", "pending_unchecked", "pending_compatible", "pending_broken"],
+    },
+  },
+  required: ["mode", "artifact", "edges", "hidden_pending", "summary"],
+};
+
+const brokenReadReportSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    mode: { type: "string", const: "report" },
+    window_days: { type: "number", description: "Report window in days" },
+    serves: {
+      type: "integer",
+      description: "Instrumented serves in the window (read-log entries carrying broken_upstream)",
+    },
+    broken_serves: {
+      type: "integer",
+      description: "Of those, serves of a document with at least one pending-broken upstream",
+    },
+    broken_read_rate: {
+      type: ["number", "null"],
+      description: "broken_serves / serves; null when nothing in the window was instrumented",
+    },
+    by_tool: {
+      type: "object",
+      description: "The same two counters sliced by serving tool, keyed by tool name",
+      additionalProperties: {
+        type: "object",
+        properties: {
+          serves: { type: "integer" },
+          broken_serves: { type: "integer" },
+        },
+        required: ["serves", "broken_serves"],
+      },
+    },
+    uninstrumented: {
+      type: "integer",
+      description:
+        "In-window entries predating the telemetry (no broken_upstream field), " +
+        "so a low rate over a mostly-uninstrumented window cannot pass for a healthy one",
+    },
+  },
+  required: [
+    "mode",
+    "window_days",
+    "serves",
+    "broken_serves",
+    "broken_read_rate",
+    "by_tool",
+    "uninstrumented",
+  ],
+};
+
 export const edgeStalenessTools: ToolDefinition[] = [
   {
     name: "vault_staleness",
@@ -257,6 +374,12 @@ export const edgeStalenessTools: ToolDefinition[] = [
         },
       },
       additionalProperties: false,
+    },
+    // Two modes, discriminated by `mode`: the per-artifact report or the
+    // vault-global broken-read report.
+    outputSchema: {
+      type: "object",
+      oneOf: [artifactStalenessSchema, brokenReadReportSchema],
     },
     handler: (vaultRoot, args, access) => vaultStaleness(vaultRoot, args, access),
   },
