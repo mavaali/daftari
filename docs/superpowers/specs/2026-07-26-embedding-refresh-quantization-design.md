@@ -153,14 +153,13 @@ is `embeddings.quantize: int8 | none` (default `int8` for the new providers,
 `none` preserved for exact-parity debugging).
 
 Version honesty: the pinned `sqlite-vec` is ^0.1.9, and the 0.1.x line
-documents int8 vector columns, but **whether int8 columns compose with
-`distance_metric=cosine` in the pinned build is unverified** — the same smoke
-spike covers it (create `int8[512]` table, insert, KNN MATCH, compare ordering
-against float32). If cosine-on-int8 is unsupported, the fallback is int8 with
-L2 distance — equivalent ordering for unit vectors up to quantization error —
-and if the pinned version can't do int8 at all, a minor-version bump of
-sqlite-vec is in scope for this change (re-running the 2026-07-19 spike's
-gates against the bumped version).
+documents int8 vector columns, but **whether int8 composes with
+`distance_metric=cosine` in the pinned build is unverified** — the smoke spike
+covers it (create `int8[512]`, insert, KNN MATCH, compare ordering against
+float32). If cosine-on-int8 is unsupported, fall back to int8 with L2 —
+equivalent ordering for unit vectors up to quantization error. If the pinned
+version can't do int8 at all, a minor sqlite-vec bump is in scope, re-running
+the 2026-07-19 spike's gates against it.
 
 Storage arithmetic on the reference 44K-chunk vault: today's index holds 384d
 float32 ≈ 1.5 KB/vector ≈ 68 MB; naive 768d float32 would be ≈ 135 MB;
@@ -255,12 +254,12 @@ Three arms, so model gain and quantization loss are separately attributable:
 
 Gates, in order of severity: **C must not regress recall@10 vs A** — a new
 default that retrieves worse than the model it replaces does not ship,
-whatever MTEB says. **C vs B within 1pp at every K** — larger means the
-quantize/rescore implementation is wrong (the literature says the loss is
-negligible; a bigger gap is a bug signal, not a tradeoff to accept). B vs A is
-the headline number and carries no gate — it is the measured size of the
-model-generation claim, reported honestly whatever it is. A Qwen3 arm is
-optional and only worth running if B vs A underwhelms.
+whatever MTEB says. **C vs B within 1pp at every K** — the literature says the
+quantization loss is negligible, so a bigger gap is a bug signal in the
+quantize/rescore path, not a tradeoff to accept. B vs A is the headline number
+and carries no gate — it is the measured size of the model-generation claim,
+reported honestly whatever it is. A Qwen3 arm runs only if B vs A
+underwhelms.
 
 ## Out of scope
 
@@ -283,17 +282,17 @@ Three, one per load-bearing bet:
 
 1. **Compatibility.** If the smoke spike cannot get EmbeddingGemma *or*
    Qwen3-0.6B producing reference-matching embeddings through Transformers.js
-   (pinned or reasonably bumped), the provider half of this spec dies as
-   specified — do not substitute a weaker model to save the spec; re-propose
-   when the ecosystem catches up.
+   (pinned or reasonably bumped), the provider half dies as specified — do not
+   substitute a weaker model to save the spec; re-propose when the ecosystem
+   catches up.
 2. **Quality.** If arm B fails to beat arm A on recall@10 by a measurable
    margin — the MTEB delta not transferring to daftari's corpus — the default
-   does not flip; the new providers may still land as non-default options, and
-   the int8 work (which is model-independent) survives on its own if arm-C-vs-B
-   holds on MiniLM.
+   does not flip. The new providers may still land as non-default options, and
+   the model-independent int8 work survives on its own if C-vs-B holds on
+   MiniLM.
 3. **Disposability.** If the measured cold reindex on the 44K-chunk reference
-   vault exceeds ~4 hours on commodity CPU with the best ONNX variant, the
-   new model cannot be the *default* — it would convert "delete the .db files
-   and rebuild" from a fallback into a threat, which the architecture doc
-   explicitly refuses. Non-default option only, revisit when local inference
+   vault exceeds ~4 hours on commodity CPU with the best ONNX variant, the new
+   model cannot be the *default* — it would convert "delete the .db files and
+   rebuild" from a fallback into a threat, which the architecture doc
+   explicitly refuses. Non-default option only; revisit when local inference
    gets faster.
