@@ -116,16 +116,14 @@ models to the cache: separate row sets under `(content_hash, model)`, separate
 `embeddings_vec` dims via the existing `VEC_DIM_META_KEY` rebuild, no new
 mechanism. The durable cache stores what the provider emits — the truncated
 512d float32, not the full 768d — so the `dim` column keeps its
-defense-in-depth meaning unchanged. (Storing full-width and re-truncating at
-read time was considered and rejected: it would make `dim` disagree with the
-id's promise and buy only the ability to change truncation without re-embed —
-a rare event, priced honestly as a re-embed.)
+defense-in-depth meaning. (Storing full-width and re-truncating at read time
+was rejected: it makes `dim` disagree with the id's promise, and buys only
+truncation changes without re-embed — a rare event, priced honestly as a
+re-embed.)
 
 Config: `embeddings.dim` as an optional sibling of `provider`, validated
 against the provider's allowed set, unknown values hard-error (same posture as
-`provider`). Index-size consequence: at 512d the vec index stays *smaller*
-than today even before quantization concern — and with Decision 3 it drops
-well below it.
+`provider`).
 
 ## Decision 3 — int8 in the vec index; float32 rescoring from the cache
 
@@ -195,13 +193,12 @@ disposability stops being a real fallback." This decision leans on that worry:
 a 300M-parameter model on CPU plausibly runs 3–10× MiniLM's per-chunk cost, so
 the 44K-chunk vault's ~25-minute MiniLM cold reindex could become 1–4 hours.
 That number is a spike deliverable, not a footnote — measure it on the real
-vault, publish it in the migration docs, and recommend the q8 ONNX variant if
-it closes the gap. The mitigations are honest, not clever: the migration
-reindex is a one-time cost per vault (the content-addressed cache makes every
-subsequent reindex O(changed chunks) regardless of model), `openai-3-small`
-remains the documented fast path for the impatient, and `local-minilm` remains
-available if the cost is unacceptable. If the measured number breaches the
-kill condition, the default does not flip.
+vault, publish it in the migration docs, and prefer the q8 ONNX variant if it
+closes the gap. The mitigations are honest, not clever: the migration reindex
+is a one-time cost per vault (the content-addressed cache keeps every later
+reindex O(changed chunks) regardless of model); `openai-3-small` remains the
+fast paid path; `local-minilm` remains available if the cost is unacceptable.
+If the measured number breaches the kill condition, the default does not flip.
 
 **Housekeeping interaction, verified in code.** `gcOrphanedEmbeddings` deletes
 embeddings rows whose `content_hash` no longer appears in any chunk — it is
@@ -219,29 +216,26 @@ the old rows with a one-line `DELETE FROM embeddings WHERE model = ?`; a
 
 Scoped as a deferral rather than dropped, because this spec creates its
 precondition and the follow-on should not have to re-argue it. Late chunking
-(arXiv:2409.04701) inverts daftari's pipeline: instead of chunking text and
-embedding each chunk independently, embed the whole document once and mean-pool
-each chunk's vector from the contextualized token embeddings — every chunk
-vector then carries whole-document context, with no LLM call and no change to
-what is stored (still one vector per chunk, same tables, same cache key
-semantics since the vector remains a function of… *more than* the chunk text).
+(arXiv:2409.04701) inverts daftari's pipeline: embed the whole document once,
+then mean-pool each chunk's vector from the contextualized token embeddings —
+every chunk vector carries whole-document context, no LLM call, still one
+vector per chunk in the same tables.
 
-That last clause is why it is deferred and not a small decision here: late
-chunking breaks the content-addressing invariant. A chunk's embedding would
-depend on its surrounding document, so `(content_hash, model)` no longer
-uniquely determines the vector — verbatim text moved between documents would
-need distinct rows. Fixing the key (e.g. hashing chunk + context, or keying by
-`(path, chunk_index, model)`) trades away the dedup and O(changed-chunks)
-properties this whole design leans on. That redesign deserves its own spec.
+Why deferred and not a small decision here: late chunking breaks the
+content-addressing invariant. A chunk's embedding becomes a function of its
+surrounding document, so `(content_hash, model)` no longer uniquely determines
+the vector — verbatim text moved between documents would need distinct rows.
+Fixing the key (hash chunk + context, or key by `(path, chunk_index, model)`)
+trades away the dedup and O(changed-chunks) properties this whole design leans
+on. That redesign deserves its own spec, with its own recall-bench measurement
+of late vs naive chunking.
 
 **Named precondition:** a shipped default provider whose context window
-comfortably exceeds the ~800-char chunk size by an order of magnitude —
-satisfied partially by EmbeddingGemma (2K tokens ≈ document-section context)
-and fully by Qwen3 (32K ≈ whole-document for nearly every vault doc). The
-follow-on spec must also carry a measurement plan (late vs naive chunking on
-recall-bench) and the cache-key redesign. Until then, nothing in this spec may
-foreclose it — which it doesn't: providers stay pure text→vector functions and
-the pooling change is upstream of storage.
+exceeds the ~800-char chunk size by an order of magnitude — satisfied
+partially by EmbeddingGemma (2K tokens ≈ section context) and fully by Qwen3
+(32K ≈ whole document for nearly every vault doc). Nothing in this spec
+forecloses it: providers stay pure text→vector functions and the pooling
+change is upstream of storage.
 
 ## Decision 6 — measurement: recall-bench A/B with a regression gate
 
