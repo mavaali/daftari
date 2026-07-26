@@ -62,3 +62,7 @@ integrations/recall-bench/results/
 
 # EDGAR chain-discovery run outputs (reproducible; do not commit pulled filings)
 .discover-out/
+
+# Jugalbandi protocol scratch (proposal/challenge artifacts written per run;
+# the review note checked into docs/superpowers/specs/ is the durable artifact)
+.jugalbandi/
