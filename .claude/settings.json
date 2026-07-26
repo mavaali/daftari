@@ -1,16 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "jugalbandi-protocol": {
-      "source": {
-        "source": "github",
-        "repo": "mavaali/jugalbandi-protocol",
-        "sha": "ec7af239c82d6e8896c00c8f20712113558d8994"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "jugalbandi@jugalbandi-protocol": true
-  },
   "permissions": {
     "allow": [
       "Bash(npm run build)",
