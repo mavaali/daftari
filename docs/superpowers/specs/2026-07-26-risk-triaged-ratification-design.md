@@ -10,7 +10,7 @@ central wager: advisory-only curation is right *if* ratification keeps pace
 with the flags, and the kill signal is the staged-action queue and the
 unresolved-tension count growing without bound — "advisory quietly becomes
 ignored." We already built the instrument that watches for it:
-`reviewThroughput` (src/curation/review-throughput.ts) counts arrivals vs.
+`reviewThroughputSummary` (src/curation/review-throughput.ts) counts arrivals vs.
 decisions vs. expiries, and its own comment calls an expiry "the
 review-capacity wall showing up in the data." This spec is the defense that
 instrument was waiting for: make the reviewer's scarce attention land on the
@@ -210,7 +210,7 @@ reason to fix it now rather than later.
 - **The witness term stays counts-only and pre-scoped.** `buildWitness`
   already filters actions and tensions to readable collections under an
   access context; the W term reads that output and carries no paths.
-- **Vault-global aggregates stay unfiltered by design.** `reviewThroughput`
+- **Vault-global aggregates stay unfiltered by design.** `reviewThroughputSummary`
   and `tensionHealth` remain whole-vault counts with no paths or principals,
   per the 2026-07-14 spec's decision C. Nothing here changes that.
 
@@ -245,7 +245,7 @@ Three, one per load-bearing bet, checkable in the system's own numbers:
   rate while the arrival rate keeps climbing, enumerated-list batching
   failed at its one job — preserving deliberateness — and it goes.
 - **The instrument stays the judge.** This whole spec exists to defend the
-  advisory wager, so its success metric is `reviewThroughput`'s: expiries
+  advisory wager, so its success metric is `reviewThroughputSummary`'s: expiries
   trending toward zero and `oldestPendingDays` bounded. If expiries keep
   climbing under risk triage, ordering was never the bottleneck — review
   capacity was — and the honest fix is upstream in the proposal budget, not

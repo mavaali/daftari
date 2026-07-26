@@ -95,7 +95,7 @@ Each chunk carries a one-line synthesized context:
   strict, harmless fallback — and the chunk-BM25 native/title-tag regression
   suites (2026-06-24 specs) decide whether it can be retired later.
 
-## Decision 3 — one-time full re-embed, shipped as SCHEMA_VERSION 10
+## Decision 3 — one-time full re-embed, shipped as a schema bump
 
 Every chunk's hash input changes, so every content hash changes, so the first
 post-upgrade reindex is a full cache miss: one cold re-embed of the whole
@@ -104,10 +104,16 @@ worries about ("a first cold reindex on a large vault is already
 multi-minute", docs/architecture.md ~997–1002). Addressed head-on rather than
 hidden:
 
-- **Ship with a schema bump** — `SCHEMA_VERSION` "9" → "10"
-  (`src/storage/index-db.ts:57`) plus the `chunks.context` column and the
-  two-column `chunks_fts` in the version-mismatch drop+recreate set. The
-  rebuild happens once, loudly, at upgrade, not lazily per query.
+- **Ship with a schema bump** — `SCHEMA_VERSION` (`src/storage/index-db.ts:57`)
+  advances, plus the `chunks.context` column and the two-column `chunks_fts`
+  in the version-mismatch drop+recreate set. The rebuild happens once,
+  loudly, at upgrade, not lazily per query. Version-number ownership: the
+  retrieval-fusion companion (its Decision 3) also bumps the version, and
+  both specs were drafted against version 9 — numbers are claimed at
+  implementation time in landing order (first to land takes 10, the second
+  11), or as one shared bump if they ship together. If the embedding-refresh
+  spec's model switch lands in the same release, fold it into this same
+  bump so the corpus pays one cold re-embed, not two.
 - **Once per corpus per model.** Content-addressing restores the incremental
   property immediately after: edits re-embed only changed chunks, renames zero.
 - **Interruptible.** The #54 batch-committed resume path (`EMBED_COMMIT_BATCH`,

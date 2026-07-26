@@ -172,8 +172,13 @@ rather than after it. **No dependency bump; this is schema and query work.**
 - Threading: `HybridSearchOptions` gains `readableCollections?: string[]`;
   the tool handler derives it from the access context. Absent (operator CLI,
   no access context) means unfiltered, as today.
-- Schema: bump `SCHEMA_VERSION` 9 → 10. The index is ephemeral and the
+- Schema: bump `SCHEMA_VERSION`. The index is ephemeral and the
   version-mismatch path already does a clean drop-and-rebuild; no migration.
+  Version-number ownership: this spec and the contextual-chunking companion
+  (its Decision 3) each require a bump, and both were drafted against
+  version 9 — the numbers are claimed *at implementation time*, in landing
+  order (first to land takes 10, the second takes 11), or as one shared
+  bump if they ship in the same release. Neither spec owns "10" by right.
 
 **The post-rank `canRead` filter in `src/tools/search.ts` stays.** Pushdown
 is a recall fix; the handler filter remains the authorization boundary
