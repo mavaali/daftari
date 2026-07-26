@@ -215,15 +215,14 @@ Gating, in order of severity:
   CLI-only; court/docket code never takes an access context (house rule),
   and exposing any court surface via MCP requires revisiting the 2026-07-14
   edge-graph spec first. The Tasks extension changes nothing about this.
-- The four task tools are **full-tier only** — which the tier code in
-  `src/server.ts` gives us for free (full is never enumerated; new tools
-  are full-tier by default).
-- RBAC: the passes stage under the loop-principal model — `consolidate`
-  runs as its own agent principal and its proposals land in the
-  staged-action queue for ratification, never as direct canon writes. The
-  task tools require a role holding the loop grants, and `tasks/list`
-  shows a caller only tasks its own identity started (a task list is a doc
-  list in disguise; omission over redaction applies).
+- The four task tools are **full-tier only** — free, since full is never
+  enumerated in `src/server.ts` and new tools are full-tier by default.
+- RBAC: the passes stage under the loop-principal model — `consolidate` runs
+  as its own agent principal and its proposals land in the staged-action
+  queue for ratification, never as direct canon writes. The task tools
+  require a role holding the loop grants, and `tasks/list` shows a caller
+  only tasks its own identity started (a task list is a doc list in
+  disguise; omission over redaction applies).
 - The advisory rule is untouched: task-run passes report and stage; they do
   not fix and do not ratify.
 
@@ -235,11 +234,10 @@ ceremony.
 
 `vault_ratify` (src/tools/staged-actions.ts) is the human approve/reject
 gate for the staged-action queue. Today the calling agent relays the
-question to its human however it likes — which means the approval UX is
-whatever the client improvises. The reworked stateless elicitation
-(SEP-1330/SEP-1034) lets the server hand the client a *form*: when
-`vault_ratify` is called without a decision, it returns an
-`InputRequiredResult` —
+question to its human however it likes — the approval UX is whatever the
+client improvises. The reworked stateless elicitation (SEP-1330/SEP-1034)
+lets the server hand the client a *form*: `vault_ratify` called without a
+decision returns an `InputRequiredResult` —
 
 ```json
 {
@@ -257,19 +255,19 @@ whatever the client improvises. The reworked stateless elicitation
 ```
 
 The client renders the form, the human answers, the client resubmits with
-the answer and the opaque state. The state carries the action id and the
-vault HEAD at proposal time, signed so it round-trips untampered; a resubmit
+the answer and the opaque state. The state carries the action id and vault
+HEAD at proposal time, signed so it round-trips untampered; a resubmit
 against a moved HEAD re-checks the action is still pending and conflict-free
-(the existing dispatch path already re-validates — this reuses it).
-Statelessness holds: the server remembers nothing between the two requests.
-The default is `reject` — the safe answer is the preselected one.
+(the existing dispatch path already re-validates — this reuses it). The
+server remembers nothing between the two requests; the default is `reject`,
+so the safe answer is the preselected one.
 
 This is the strongest protocol-level expression of the house's advisory
 posture: **the server proposes, the human disposes**, and now the wire
 format itself says so. RBAC is unchanged — the resubmitted decision is
 enforced against the requester's `ratify` grant exactly as today, and a
-direct `vault_ratify` call with the decision inline keeps working for
-clients that don't do elicitation.
+direct call with the decision inline keeps working for clients that don't
+do elicitation.
 
 ## Decision 6 — sampling: never. Stated once, here, so it stops being implicit
 
@@ -286,8 +284,8 @@ through whichever client happens to be connected, which for a shared
 vault's epistemics depend on an unpinned, uninspectable model. The witness
 track records and eval baselines assume the judging model is an operator
 choice; it stays one. Decision 4's task tools *trigger* the passes over MCP;
-the passes' LLM calls still go direct — the transport never carries an
-inference request in either direction.
+their LLM calls still go direct — the transport never carries an inference
+request in either direction.
 
 ## Out of scope
 
@@ -295,9 +293,8 @@ inference request in either direction.
   a separate spec if ever.
 - **Registry / server-card publication.** `package.json` already carries
   `mcpName: io.github.mavaali/daftari`; publishing metadata is a release
-  concern, not a protocol-readiness concern.
-- Replacements for deprecated Roots/Logging — daftari uses neither; nothing
-  to migrate.
+  concern, not a protocol-readiness one.
+- Replacements for deprecated Roots/Logging — daftari uses neither.
 - Multi-instance serve behind a real load balancer. Decision 1 removes the
   transport obstacle; the process lock and local locks remain the
   architectural one, deliberately (2026-07-20 Decision 3).

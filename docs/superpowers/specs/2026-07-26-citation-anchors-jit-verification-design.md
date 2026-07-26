@@ -60,7 +60,6 @@ Examples, all valid:
 ```yaml
 describes:
   - api:src/retry.ts                          # bare binding — unchanged
-  - api:src/retry.ts::withRetry               # symbol binding — unchanged
   - api:src/retry.ts@9f3c2ab                  # whole-file pin
   - api:src/retry.ts#L40-58@9f3c2ab           # range pin
   - api:src/retry.ts::withRetry#L40-58@9f3c2ab
@@ -88,9 +87,9 @@ just degraded (Decision 2, step 4).
 **Schema stays untouched.** `describes` remains `optionalStringArray`
 (src/frontmatter/schema.ts) — no new field, no write-time grammar
 validation, matching today's posture where even the base `repo:path`
-grammar is checked by the audit, not the write path. A malformed pin suffix
-degrades to a bare binding for existence purposes and surfaces as an
-advisory `malformed_pin` lint finding — never a rejected write.
+grammar is checked by the audit, not the write path. A malformed pin suffix degrades to a bare
+binding and surfaces as an advisory `malformed_pin` lint finding — never a
+rejected write.
 
 ## Decision 2 — the read path checks pins: git plumbing only, silence on failure
 
@@ -148,11 +147,10 @@ network:
 
 **Cheap by construction.** At most two git invocations plus one bounded
 file read per pin; pins per read are capped at a fixed constant (24), the
-remainder reported as skipped with a count, never checked lazily later.
-Any git failure — not a repo, git binary missing, cat-file error — degrades
-that binding's entry to absent, and the read never fails on the check
-(the recordRead best-effort contract). And the operator holds a
-kill-switch: `jit_anchors: false` removes the entire code path.
+remainder reported as skipped with a count. Any git failure degrades that
+binding's entry to absent, and the read never fails on the check (the
+recordRead best-effort contract). And the operator holds a kill-switch:
+`jit_anchors: false` removes the entire code path.
 
 **Annotation shape**, following the read path's null-when-silent contract
 (`decay`, `upstream_staleness`, `structural`):
@@ -183,9 +181,9 @@ serve mode the annotation is identical across sessions by construction.
 A `moved` or `missing` pin **never** auto-invalidates, demotes, filters, or
 rewrites the doc. The agent sees the flag and decides — the curation house
 rule (`vault_lint` reports, it does not fix) applied to code drift. What
-the flag is *for*: an agent about to act on `#L40-58@9f3c2ab` and told
-`moved` should re-read the code before trusting the doc's account of it,
-exactly as Copilot's agents re-verify citations before acting.
+the flag is *for*: an agent told `moved` should re-read the code before
+trusting the doc's account of it, exactly as Copilot's agents re-verify
+citations before acting.
 
 `daftari audit` remains the batch path and gains the identical pin
 classifier: per-binding pin state in the report, `pins_intact` /
@@ -245,9 +243,8 @@ precedent exactly — plan by default (print proposed frontmatter edits,
 write nothing), `--pin --apply` to edit and commit as
 `agent:daftari-audit`, requiring exactly one docs repo like
 `--auto-tension` does. This knowingly crosses the 2026-05-30 spec's "not a
-fixer" line the same way `--auto-tension` already did: opt-in twice (flag
-plus apply), writing only metadata it can derive mechanically, never
-touching a doc body.
+fixer" line the same way `--auto-tension` already did: opt-in twice,
+writing only mechanically derivable metadata, never touching a doc body.
 
 ## Out of scope
 
@@ -281,7 +278,7 @@ construction" claim dies if the check adds more than ~50ms p95 to
 `vault_read` on a real vault even under the pin cap — then the default
 flips to `jit_anchors: false` pending a redesign, because an advisory
 annotation that taxes every read has inverted its own justification. And
-Decision 4's softened copy dies on its own if reviewers judge all-pins-
-intact docs stale anyway in practice — copy that teaches agents to
-discount TTL would be the pin laundering whole-doc rot that the
-annotate-only rule exists to prevent.
+Decision 4's softened copy dies on its own if reviewers judge
+all-pins-intact docs stale anyway in practice — copy that teaches agents
+to discount TTL would be exactly the freshness-laundering the annotate-only
+rule exists to prevent.
