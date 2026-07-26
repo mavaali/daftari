@@ -605,9 +605,13 @@ Three of its concerns are simple enough to state in a line:
 - **Staleness.** Each document has a `ttl_days`. Past it, the document is
   flagged stale with a decay score. Stale does not mean deleted — it means "a
   human or agent should re-verify this."
-- **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
-  old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
-  questions raised but unanswered anywhere in the vault) and produces a report.
+- **Lint.** `vault_lint` runs twelve cross-vault checks and produces a report.
+  The originals: stale files, orphans, old drafts, stagnant low-confidence
+  files, deprecated-but-still-linked, and questions raised but unanswered
+  anywhere in the vault. Since joined by tier demotions, the tier 0 referential
+  checks (broken source refs, lifecycle conflicts, schema conformance, domain
+  leaks), and valid-time conflicts. The authoritative list is `LINT_CHECKS` in
+  `src/curation/lint.ts`; the tool's `filter` enum reads it directly.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
