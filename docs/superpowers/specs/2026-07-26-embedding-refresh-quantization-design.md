@@ -30,15 +30,15 @@ Two adjacent facts make this the right moment rather than merely a good idea:
    quality with negligible degradation, especially with float32 rescoring of
    the top-k (Sentence Transformers embedding-quantization docs; QAMA, CIKM
    2025), while binary quantization significantly impairs it on models this
-   size. So the storage story is int8 yes, binary no — and sqlite-vec's `vec0`
-   tables support int8 columns, so the index side needs no new dependency.
+   size. int8 yes, binary no — and sqlite-vec's `vec0` supports int8 columns,
+   so the index side needs no new dependency.
 
-One more reason, quieter but strategic: a long-context embedder is the
-prerequisite for **late chunking** (Jina, arXiv:2409.04701 — run the whole
-document through the encoder, then mean-pool per chunk from the token
-embeddings), which gives every chunk whole-document context with no LLM call.
-MiniLM's ~512-token window forecloses it; EmbeddingGemma's 2K window opens it
-partway and Qwen3's 32K opens it fully. Decision 5 scopes it.
+One quieter, strategic reason: a long-context embedder is the prerequisite for
+**late chunking** (Jina, arXiv:2409.04701 — encode the whole document, then
+mean-pool per chunk from the token embeddings: whole-document context for
+every chunk, no LLM call). MiniLM's ~512-token window forecloses it;
+EmbeddingGemma's 2K window opens it partway, Qwen3's 32K fully. Decision 5
+scopes it.
 
 ## Decision 1 — new default local provider: `local-embeddinggemma`
 
@@ -59,16 +59,15 @@ alternative** — a provider id, not the default.
 Verification honesty: ONNX exports of EmbeddingGemma exist and Transformers.js
 support for the Gemma-3-based embedding architecture landed upstream, but
 **compatibility with the pinned `@huggingface/transformers` ^4.2.0 line is
-unverified in this repo** — as is Qwen3-Embedding's. The implementation starts
-with a smoke spike in the style of `2026-07-19-sqlite-binding-spike.md`: load
-each model, embed a fixture batch, compare against the reference Python
-embeddings within tolerance. If the pinned line can't load the model, bumping
-the dependency is in scope; if no Transformers.js path works at all, that is a
-kill condition (below), not a workaround hunt. Two model-specific behaviors the
-spike must confirm because MiniLM has neither: EmbeddingGemma expects
-**asymmetric prompt prefixes** (a query prefix vs a document prefix — the
-provider must apply the document form at index time and the query form at
-search time), and Qwen3 uses last-token pooling, not mean pooling.
+unverified in this repo** — as is Qwen3-Embedding's. Implementation starts with
+a smoke spike in the style of `2026-07-19-sqlite-binding-spike.md`: load each
+model, embed a fixture batch, compare against reference Python embeddings
+within tolerance. A dependency bump is in scope if the pinned line can't load
+the model; no Transformers.js path at all is a kill condition (below), not a
+workaround hunt. Two behaviors the spike must confirm because MiniLM has
+neither: EmbeddingGemma expects **asymmetric prompt prefixes** (document form
+at index time, query form at search time — the provider must apply both), and
+Qwen3 uses last-token pooling, not mean pooling.
 
 Config and posture are unchanged in shape:
 
