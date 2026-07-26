@@ -20,6 +20,7 @@
 
 import { computeStaleness } from "../curation/staleness.js";
 import { agingTier, listTensions, type TensionEntry } from "../curation/tension.js";
+import { computeValidity } from "../curation/validity.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 
@@ -78,34 +79,86 @@ function tensionQuestions(entries: TensionEntry[], now: Date): InterviewQuestion
   }));
 }
 
+// Two shapes of stale question. A TTL overshoot asks "is this still true?" —
+// the vault does not know. An ended validity asks something sharper: the
+// document has already said it stopped being true, and nothing replaced it, so
+// the only open question is WHAT replaced it. That second question is also the
+// primary adoption ramp for the valid-time axis: answering it is how intervals
+// get authored in the first place.
+interface StaleCandidate {
+  doc: LoadedDoc;
+  overshootDays: number;
+  ttlDays: number | null;
+  endedOn: string | null;
+}
+
 function staleQuestions(docs: LoadedDoc[], now: Date): InterviewQuestion[] {
-  const candidates: { doc: LoadedDoc; overshootDays: number; ttlDays: number }[] = [];
+  const candidates: StaleCandidate[] = [];
+  const today = now.toISOString().slice(0, 10);
   for (const doc of docs) {
     const fm = doc.frontmatter;
     // Sleep's domain split: generative docs going stale is expected — never
     // asked about. Only canonical accumulation docs made a freshness promise.
     if (fm.domain !== "accumulation" || fm.status !== "canonical") continue;
+
+    const validity = computeValidity(
+      { valid_from: fm.valid_from ?? null, valid_until: fm.valid_until ?? null },
+      today,
+    );
+    if (validity?.state === "expired" && (fm.superseded_by ?? null) === null) {
+      const endedOn = validity.until ?? "";
+      candidates.push({
+        doc,
+        // Ordered by how long the claim has been dead, alongside TTL overshoot.
+        overshootDays: daysBetween(endedOn, today),
+        ttlDays: null,
+        endedOn,
+      });
+      continue;
+    }
+
     const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
     if (!staleness.expired || staleness.ttlDays === null) continue;
     candidates.push({
       doc,
       overshootDays: staleness.ageDays - staleness.ttlDays,
       ttlDays: staleness.ttlDays,
+      endedOn: null,
     });
   }
   candidates.sort(
     (a, b) => b.overshootDays - a.overshootDays || a.doc.path.localeCompare(b.doc.path),
   );
-  return candidates.map(({ doc, overshootDays, ttlDays }) => ({
-    id: "",
-    kind: "stale" as const,
-    question:
-      `"${doc.frontmatter.title}" (${doc.path}) is ${overshootDays} days past ` +
-      `its ${ttlDays}-day freshness window. Is it still accurate — and if ` +
-      `not, what changed?`,
-    context: `stale: updated ${doc.frontmatter.updated}, ttl ${ttlDays} days`,
-    refs: [doc.path],
-  }));
+  return candidates.map(({ doc, overshootDays, ttlDays, endedOn }) =>
+    endedOn !== null
+      ? {
+          id: "",
+          kind: "stale" as const,
+          question:
+            `"${doc.frontmatter.title}" (${doc.path}) says it stopped being ` +
+            `true on ${endedOn}, and nothing in the vault supersedes it. What ` +
+            "replaced it?",
+          context: `validity ended ${endedOn} (${overshootDays} days ago), no successor`,
+          refs: [doc.path],
+        }
+      : {
+          id: "",
+          kind: "stale" as const,
+          question:
+            `"${doc.frontmatter.title}" (${doc.path}) is ${overshootDays} days past ` +
+            `its ${ttlDays}-day freshness window. Is it still accurate — and if ` +
+            `not, what changed?`,
+          context: `stale: updated ${doc.frontmatter.updated}, ttl ${ttlDays} days`,
+          refs: [doc.path],
+        },
+  );
+}
+
+function daysBetween(fromISO: string, toISO: string): number {
+  const a = Date.parse(`${fromISO}T00:00:00Z`);
+  const b = Date.parse(`${toISO}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  return Math.floor((b - a) / 86_400_000);
 }
 
 function openQuestions(docs: LoadedDoc[]): InterviewQuestion[] {

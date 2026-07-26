@@ -10,6 +10,7 @@
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { listTensions } from "../curation/tension.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import { isGitRepo } from "../utils/git.js";
 import { resolveAsofCommit } from "./git-read.js";
 import { type AsofReport, renderJson, renderMarkdown } from "./report.js";
@@ -39,6 +40,13 @@ Flags:
                          vault_tension_blast), each downstream doc annotated
                          with its status today. "This fact turned out wrong —
                          who had inherited it, and where are they now?"
+  --valid-at <date>      Add the second temporal axis: of the documents at
+                         that commit, how many claimed to be true IN THE
+                         WORLD on this date. "On <ref>, what did the vault
+                         believe was true on <date>?" Note that valid time is
+                         authored and never inferred, so any commit predating
+                         a vault's adoption of valid_from/valid_until reports
+                         every document as unknown.
   --output <md>          Markdown report destination (default: stdout).
   --output-json <json>   JSON report destination (default: not written).
 
@@ -87,7 +95,20 @@ export async function runAsof(argv: string[]): Promise<number> {
     return 3;
   }
 
-  const snapshot = await beliefSnapshot(vaultRoot, commit.value, tensionsNow.value);
+  const rawValidAt = readStringArg(argv, "--valid-at");
+  let validAt: string | undefined;
+  if (rawValidAt !== undefined) {
+    const normalized = normalizeIsoDate(rawValidAt);
+    if (normalized === null) {
+      process.stderr.write(
+        `daftari asof: --valid-at must be a YYYY-MM-DD date, got "${rawValidAt}"\n`,
+      );
+      return 2;
+    }
+    validAt = normalized;
+  }
+
+  const snapshot = await beliefSnapshot(vaultRoot, commit.value, tensionsNow.value, validAt);
   if (!snapshot.ok) {
     process.stderr.write(`daftari asof: ${snapshot.error.message}\n`);
     return 3;
@@ -147,7 +168,10 @@ export async function runAsof(argv: string[]): Promise<number> {
 // The positional <ref-or-date> is the first argv entry that is neither a
 // --flag nor the value of a value-taking flag (the `--flag value` form; the
 // `--flag=value` form never occupies its own entry).
-const VALUE_FLAGS = ["--vault", "--doc", "--blast", "--output", "--output-json"];
+// Every flag that takes a separate value must be listed here, or findPositional
+// mistakes that value for the positional ref — `--valid-at 2026-02-15 HEAD`
+// would resolve the DATE as the ref and silently report the wrong commit.
+const VALUE_FLAGS = ["--vault", "--doc", "--blast", "--output", "--output-json", "--valid-at"];
 function findPositional(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] as string;

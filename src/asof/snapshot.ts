@@ -13,6 +13,7 @@ import {
   buildReverseSourceMap,
   computeBlast,
 } from "../curation/tension-blast.js";
+import { computeValidity } from "../curation/validity.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -77,6 +78,17 @@ export interface AsofSnapshot {
     openedSince: { title: string; date: string; kind: string }[];
     resolvedSince: { title: string; date: string; kind: string; resolutionKind: string }[];
   };
+  // The second temporal axis, present only when --valid-at was supplied.
+  // Reading: "at this commit, the vault believed N documents' claims held on
+  // `date`." `unknown` is its own bucket and never folded into either of the
+  // others — a document that authors no interval is not evidence either way,
+  // and for any ref predating the feature it is ALL of them.
+  validAt?: {
+    date: string;
+    covering: number;
+    notCovering: number;
+    unknown: number;
+  };
 }
 
 function countBy(docs: LoadedDoc[], key: (d: LoadedDoc) => string): Record<string, number> {
@@ -138,6 +150,7 @@ export async function beliefSnapshot(
   vaultRoot: string,
   commit: AsofCommit,
   tensionsNow: TensionEntry[],
+  validAt?: string,
 ): Promise<Result<AsofSnapshot, Error>> {
   const thenDocs = await loadDocumentsAt(vaultRoot, commit.hash);
   if (!thenDocs.ok) return thenDocs;
@@ -188,7 +201,37 @@ export async function beliefSnapshot(
       openedSince,
       resolvedSince,
     },
+    // A pure post-filter over the documents already loaded at the ref. Drift
+    // and the status rollup are deliberately untouched: drift is a
+    // transaction-time notion (what the vault RECORDED between then and now),
+    // and mixing the axes is the confusion this feature exists to remove.
+    ...(validAt !== undefined ? { validAt: partitionByValidity(thenDocs.value, validAt) } : {}),
   });
+}
+
+// Splits the docs at a ref into covering / not-covering / unknown at a date.
+function partitionByValidity(
+  docs: LoadedDoc[],
+  date: string,
+): { date: string; covering: number; notCovering: number; unknown: number } {
+  let covering = 0;
+  let notCovering = 0;
+  let unknown = 0;
+  for (const d of docs) {
+    const report = computeValidity(
+      {
+        valid_from: d.frontmatter.valid_from ?? null,
+        valid_until: d.frontmatter.valid_until ?? null,
+      },
+      date,
+    );
+    // Null (no interval authored) and "unknown" (malformed endpoint) both mean
+    // the vault cannot answer for this document. Neither is a "no".
+    if (report === null || report.state === "unknown") unknown += 1;
+    else if (report.state === "valid") covering += 1;
+    else notCovering += 1;
+  }
+  return { date, covering, notCovering, unknown };
 }
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import {
   buildReverseSourceMap,
   computeBlast,
 } from "../curation/tension-blast.js";
+import { computeValidity } from "../curation/validity.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 
@@ -100,7 +101,22 @@ export async function runSleepCycle(
     else if (s.score >= 0.5) staleness.aging += 1;
     else staleness.fresh += 1;
 
-    if (!s.expired) continue;
+    // Two independent reasons to wake a document. TTL expiry says "you
+    // promised to re-check this by now". Expired validity says something
+    // stronger and rarer: the document itself declares its claim stopped
+    // holding, and nothing was recorded as replacing it. A superseded doc is
+    // excluded — the handoff was recorded, so there is nothing to ask.
+    const validity = computeValidity(
+      {
+        valid_from: doc.frontmatter.valid_from ?? null,
+        valid_until: doc.frontmatter.valid_until ?? null,
+      },
+      now.toISOString().slice(0, 10),
+    );
+    const validityEnded =
+      validity?.state === "expired" && (doc.frontmatter.superseded_by ?? null) === null;
+
+    if (!s.expired && !validityEnded) continue;
     if (doc.frontmatter.domain === "generative") {
       generativeStale += 1;
       continue;
@@ -122,10 +138,14 @@ export async function runSleepCycle(
       blastAdvisory: blast.advisory_blast,
       blastTotal: blast.downstream.length,
       sources: doc.frontmatter.sources,
-      reason:
-        `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
-        `${blast.downstream.length} downstream document(s) depend on it — ` +
-        `re-verify against its sources and stage the diff for ratification`,
+      reason: validityEnded
+        ? `canonical, but its validity ended ${validity?.until} and nothing ` +
+          `supersedes it; ${blast.downstream.length} downstream document(s) ` +
+          "depend on it — find what replaced the claim and stage the diff for " +
+          "ratification"
+        : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
+          `${blast.downstream.length} downstream document(s) depend on it — ` +
+          `re-verify against its sources and stage the diff for ratification`,
     });
   }
 

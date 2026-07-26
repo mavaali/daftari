@@ -204,6 +204,8 @@ provenance: synthesized
 sources:
   - aurora-product-page
 ttl_days: 120
+valid_from: 2026-05-01
+valid_until: null
 tags: [aurora, ingestion, competitive]
 questions_answered:
   - "How does Aurora frame the ingestion/transformation boundary?"
@@ -215,6 +217,23 @@ questions_raised:
 Documents can make their epistemic edges explicit: `questions_answered` is what
 later agents can take as settled, `questions_raised` is where to build next.
 `vault_lint` turns the open questions across the vault into a coverage map.
+
+`valid_from` / `valid_until` are the second temporal axis. Everything else in
+the file records **transaction time** — when the vault came to believe
+something. These record **valid time**: when the claim was true in the world. A
+document edited this morning can describe a price that stopped applying in
+March, and only the second axis can tell you so. They are optional and always
+authored — nothing derives them from git dates or mtime, because that would
+manufacture a claim nobody made. Both null means unknown, which is never read
+as "always true".
+
+That makes supersession checkable rather than merely asserted:
+
+```bash
+daftari asof 2026-04-01 --valid-at 2026-01-15
+```
+
+"On April 1st, what did the vault believe was true on January 15th?"
 
 Full field reference in <docs/file-format.md>.
 
