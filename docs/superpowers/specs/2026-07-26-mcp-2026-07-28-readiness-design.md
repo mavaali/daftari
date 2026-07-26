@@ -90,16 +90,15 @@ function serverFor(access: AccessContext): Server {
 
 The cache is bounded by the config: the set of resolvable identities is the
 token list plus the OAuth subjects table — declared, finite, no eviction
-needed. RBAC staying config-driven does load-bearing work here.
-
-One thing the stateless transport does NOT change: **single-holder is the
+needed. RBAC staying config-driven does load-bearing work here. And the
+stateless transport does NOT change one thing: **single-holder is the
 process lock's job, not the transport's**. A round-robin LB in front of
 *one* daftari is fine (and pointless); two daftari processes on the same
 vault is what `.daftari/process.lock` refuses (2026-07-20 Decision 4),
 stateless wire or not. Multi-instance stays out of scope exactly as before.
 
 stdio (`src/index.ts`) is untouched — `--user`/`--role` bind identity for
-the process lifetime; there is no header to resolve per-request. And serve
+the process lifetime; there is no header to resolve per-request. Serve
 speaks the 2026-07-28 revision only: no dual-stacking, the same precedent as
 2026-07-20 refusing the deprecated HTTP+SSE transport; lagging clients use
 stdio, the same escape hatch as then. Since #5 is itself not yet
@@ -136,8 +135,8 @@ same not-found shape as a nonexistent path — a distinguishable "forbidden"
 IS the existence leak. Collection resources list only readable collections,
 and there is no anonymous resource surface: resources resolve against the
 request's access context exactly as tools do (Decision 1; on stdio, the
-process identity). Templates themselves are safe to advertise — they name a
-URI *shape*, not any document.
+process identity). Templates are safe to advertise — a URI *shape* names no
+document.
 
 Tension and edge data do **not** become resources: they are derived,
 disclosure-coarsened views (none/some/many, never exact counts), and stable
@@ -159,11 +158,11 @@ text block), and vault-wide `vault_lint` output is a wall.
   outputSchema: Record<string, unknown>;  // REQUIRED — no tool ships without one
 ```
 
-`outputSchema` is required, not optional — the handlers already return typed
-values (`Result<T, Error>`, house rule), so an unschematized output is a
-type we were too lazy to write down. JSON Schema 2020-12 means the
-frontmatter enums (`status`, `confidence`, `domain`) appear as enums on the
-wire, and clients can validate before parsing.
+Required, not optional — the handlers already return typed values
+(`Result<T, Error>`, house rule), so an unschematized output is a type we
+were too lazy to write down. JSON Schema 2020-12 means the frontmatter enums
+(`status`, `confidence`, `domain`) appear as enums on the wire, and clients
+can validate before parsing.
 
 The CallTool bridge in `src/server.ts` splits its one response into three
 channels with distinct jobs:
@@ -189,8 +188,8 @@ output validates against its own schema.
 
 `sleep`, `consolidate`, `audit`, and `eval` are today CLI-only
 (`src/cli.ts`) because they are minutes-long — the exact shape the Tasks
-extension exists for. Each gains an MCP tool (`vault_sleep`,
-`vault_consolidate`, `vault_audit`, `vault_eval`) declared task-only:
+extension exists for. Each gains a task-only MCP tool (`vault_sleep`,
+`vault_consolidate`, `vault_audit`, `vault_eval`):
 
 ```json
 { "name": "vault_sleep", "execution": { "taskSupport": "required" } }
@@ -199,13 +198,13 @@ extension exists for. Each gains an MCP tool (`vault_sleep`,
 `tools/call` returns a durable task handle immediately; the pass runs where
 it already runs (in-process, against the vault the process lock guarantees
 we exclusively hold); `tasks/get` reports progress through the plumbing
-`makeProgressReporter` feeds today; `tasks/result` returns the pass's report
-shaped per Decision 3. Task state lives in `.daftari/index.db` — ephemeral
-by design, like everything else in that file; a restart forgets unfinished
-tasks, and the passes are already idempotent because the CLI can be re-run.
-One maintenance pass at a time per vault, as today: a `tools/call` for a
-pass while one runs returns the *running* task's handle rather than an
-error — the caller wanted the pass to happen, and it is happening.
+`makeProgressReporter` feeds today; `tasks/result` returns the report shaped
+per Decision 3. Task state lives in `.daftari/index.db` — ephemeral by
+design; a restart forgets unfinished tasks, and the passes are already
+idempotent because the CLI can be re-run. One maintenance pass at a time per
+vault, as today: calling a pass while one runs returns the *running* task's
+handle rather than an error — the caller wanted the pass to happen, and it
+is happening.
 
 Gating, in order of severity:
 
@@ -275,15 +274,15 @@ LLM-calling features — `eval`'s judging, `consolidate`'s synthesis,
 `audit --semantic` — call the provider directly through the pinned
 `@anthropic-ai/sdk` (^0.110.0), CLI-side, with the operator's own key.
 
-This was implicit; making it a decision makes it enforceable. The reasons
-are daftari's, not just the SEP's: sampling routes the server's LLM calls
-through whichever client happens to be connected, which for a shared
-`daftari serve` means maintenance quality varies by connected client and the
+This was implicit; making it a decision makes it enforceable, and the
+reasons are daftari's, not just the SEP's: sampling routes the server's LLM
+calls through whichever client happens to be connected, so a shared
+`daftari serve` would have maintenance quality vary by client and the
 vault's epistemics depend on an unpinned, uninspectable model. The witness
 track records and eval baselines assume the judging model is an operator
 choice; it stays one. Decision 4's task tools *trigger* the passes over MCP;
-their LLM calls still go direct — the transport never carries an inference
-request in either direction.
+their LLM calls still go direct — the transport never carries inference in
+either direction.
 
 ## Out of scope
 
@@ -306,10 +305,10 @@ request in either direction.
 - If the final revision **retains sessions**, or ships a session-optional
   transport that major clients standardize on, Decision 1 reverts to the
   2026-07-20 per-session model — fully specified there, nothing lost.
-- If the **Tasks extension slips** from final publication, or the pinned
-  SDK line does not ship it within a release cycle, Decision 4's four tools
-  do not ship; the passes remain CLI-only — today's world, costing nothing
-  but the wait.
+- If the **Tasks extension slips** from final publication, or the pinned SDK
+  line does not ship it within a release cycle, Decision 4's four tools do
+  not ship; the passes remain CLI-only — today's world, costing only the
+  wait.
 - If stateless **elicitation** lands materially different from
   `InputRequiredResult` (e.g. server-held state), Decision 5 ships only the
   direct-call form of `vault_ratify` (today's behavior) until re-specified.
