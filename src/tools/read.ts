@@ -19,6 +19,7 @@ import { type StructuralDecay, structuralDecay } from "../curation/structural.js
 import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
+import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
   DOMAINS,
@@ -93,6 +94,13 @@ export interface VaultReadResult {
   validation: ValidationReport;
   hasFrontmatter: boolean;
   decay: DecayState | null;
+  // Valid time: whether the document's claim holds TODAY, as opposed to
+  // whether the document is fresh (that is `decay`). Null when neither
+  // endpoint is authored — the same nothing-to-say contract `decay` follows.
+  // Deliberately a sibling of `decay` rather than folded into it: an expired
+  // interval must not promote a document to a decay level, because
+  // consolidate/admit.ts treats `warn` as edge-blocking.
+  validity: ValidityReport | null;
   upstream_staleness: UpstreamReadStaleness | null;
   // #8: graph-shaped decay — orphanhood and deprecated-still-linked, from
   // the materialized inbound-link graph, computed from the caller's vantage.
@@ -237,6 +245,10 @@ export async function vaultRead(
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
     decay: computeDecay(parsed.value.frontmatter),
+    // Evaluated against today. No index access and no RBAC branch — these
+    // fields belong to a document the caller has already been permitted to
+    // read.
+    validity: computeValidity(parsed.value.frontmatter, new Date().toISOString().slice(0, 10)),
     upstream_staleness: upstream,
     structural,
     ...(contestedResult
@@ -376,6 +388,16 @@ export interface StalenessDistribution {
   total: number;
 }
 
+// Adoption monitor for the valid-time axis. A READ-ONLY signal, never a
+// target: valid time is authored, so driving this number up by any means
+// other than someone knowing the dates would defeat the point. Follows the
+// coverageEquity posture — report it, do not optimize it.
+export interface ValidityCoverage {
+  authored: number; // at least one endpoint set
+  unknown: number; // both endpoints absent
+  total: number;
+}
+
 export interface TensionSummary {
   title: string;
   date: string;
@@ -398,6 +420,7 @@ export interface VaultStatusResult {
   invalidCount: number;
   generatedAt: string;
   stalenessDistribution: StalenessDistribution;
+  validityCoverage: ValidityCoverage;
   unresolvedTensions: UnresolvedTensions;
   recentWrites: RecentWrites;
   // Number of embedding cache rows for the active model whose stored dim
@@ -444,9 +467,19 @@ export async function vaultStatus(
     stale: 0,
     total: 0,
   };
+  // Same loop, same visible-set gate, same shared instant — the adoption
+  // monitor must never widen the denominator past what the caller can read,
+  // or the count leaks vault size.
+  const validityCoverage: ValidityCoverage = { authored: 0, unknown: 0, total: 0 };
   for (const doc of scan.value) {
     if (!visiblePaths.has(doc.relPath)) continue;
     stalenessDistribution.total += 1;
+    validityCoverage.total += 1;
+    const hasInterval =
+      (doc.frontmatter.valid_from ?? null) !== null ||
+      (doc.frontmatter.valid_until ?? null) !== null;
+    if (hasInterval) validityCoverage.authored += 1;
+    else validityCoverage.unknown += 1;
     const score = computeStaleness(
       {
         updated: doc.frontmatter.updated,
@@ -508,6 +541,7 @@ export async function vaultStatus(
     invalidCount,
     generatedAt: new Date().toISOString(),
     stalenessDistribution,
+    validityCoverage,
     unresolvedTensions: {
       count: tensionEntries.length,
       recent: recentTensions,
@@ -542,7 +576,12 @@ export const readTools: ToolDefinition[] = [
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
       "frontmatter, a validation report, a decay assessment (null when " +
-      "healthy; otherwise level, reasons, and an optional banner), an " +
+      "healthy; otherwise level, reasons, and an optional banner), a " +
+      "validity report (valid time — whether the document's CLAIM was true " +
+      "in the world at a given date, which is not the same as whether the " +
+      "document is fresh: 'decay' answers freshness, 'validity' answers " +
+      "truth-in-the-world; null when the document authors no interval, which " +
+      "means unknown and never 'always true'), an " +
       "upstream_staleness report (#234 — per compiled input, whether it " +
       "changed since this document was compiled and what tier 1 says about " +
       "the pending change: current / pending-compatible / pending-broken; " +
