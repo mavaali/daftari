@@ -1,7 +1,11 @@
 # Memory-poisoning defenses — design
 
-2026-07-26. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-07-26. Status: **superseded by
+`2026-07-27-memory-poisoning-read-path-fence-design.md`.** Retained for the
+reasoning and the sources in ## Why, which carry forward. Its central mechanism
+— a fourth `TIERS` member, `untrusted`, plus a promotion gate — did not survive
+adversarial review; the successor records why and what replaced it. Do not
+implement from this document.
 No tracking issue yet. Predecessor threads: #141 (write-protection tiers),
 §11.2/§11.6 (staged actions, ratify grant), the witness module, and the
 2026-07-14 existence-disclosure spec, whose house principles this spec is
