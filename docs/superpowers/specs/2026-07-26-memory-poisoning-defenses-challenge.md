@@ -8,8 +8,16 @@ of praise here carries no information.
 
 13 challenges: 4 `[STRUCTURAL]`, 4 `[ASSUMPTION]`, 5 `[MISSING]`. **Surfaced, not
 resolved** — no disposition has been taken on any of them, and several may be
-answerable by a sentence the design already intended. Line references verified against
-the tree at time of review.
+answerable by a sentence the design already intended.
+
+**Line references are anchored to `750a329`** and were verified against that tree. This
+is a transcript, not a living document: it is not updated as the tree moves, and some
+citations will drift. One already has — challenge 7 cites `SCHEMA_VERSION` as `"9"` at
+`src/storage/index-db.ts:57`, which was accurate at `750a329`; an unrelated later change
+made it `"10"` at line 61. Check citations against `750a329`, not `main`. The argument
+each citation supports is unaffected by the drift; the successor design
+(`2026-07-27-memory-poisoning-read-path-fence-design.md`) is the current statement and
+deliberately cites no schema version number.
 
 ---
 
