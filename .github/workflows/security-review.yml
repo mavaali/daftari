@@ -19,7 +19,10 @@ on:
 
 jobs:
   security-review:
-    if: ${{ !github.event.pull_request.draft }}
+    # Skipped for Dependabot PRs: GitHub doesn't forward repo secrets to
+    # Dependabot-triggered runs, so ANTHROPIC_API_KEY would be empty and
+    # the job fails before doing anything useful.
+    if: ${{ !github.event.pull_request.draft && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

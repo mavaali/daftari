@@ -32,6 +32,9 @@ import { sha256Hex } from "../../src/utils/hash.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const MODEL = "test-model-v1";
+// embeddings_vec partitions by collection (2026-07-26 fusion spec, Decision 3);
+// these unit tests exercise one collection unless they say otherwise.
+const COLLECTION = "notes";
 
 const sampleDoc: IndexedDocument = {
   path: "pricing/foo.md",
@@ -323,7 +326,7 @@ describe("index-db", () => {
         const h = sha256Hex(`ref-${i}`);
         referenced.push(h);
         insertEmbedding(db, h, MODEL, vec, "2026-05-20T00:00:00Z", dim);
-        insertEmbeddingVec(db, h, MODEL, vec);
+        insertEmbeddingVec(db, h, MODEL, COLLECTION, vec);
         insertChunkRow(db, {
           path: `pricing/ref-${i}.md`,
           chunkIndex: 0,
@@ -335,7 +338,7 @@ describe("index-db", () => {
         const h = sha256Hex(`orphan-${i}`);
         orphans.push(h);
         insertEmbedding(db, h, MODEL, vec, "2026-05-20T00:00:00Z", dim);
-        insertEmbeddingVec(db, h, MODEL, vec);
+        insertEmbeddingVec(db, h, MODEL, COLLECTION, vec);
       }
 
       const removed = gcOrphanedEmbeddings(db);
@@ -356,7 +359,7 @@ describe("index-db", () => {
       const vec = new Float32Array(dim).fill(0.2);
       const h = sha256Hex("kept");
       insertEmbedding(db, h, MODEL, vec, "2026-05-20T00:00:00Z", dim);
-      insertEmbeddingVec(db, h, MODEL, vec);
+      insertEmbeddingVec(db, h, MODEL, COLLECTION, vec);
       insertChunkRow(db, { path: "pricing/kept.md", chunkIndex: 0, text: "kept", contentHash: h });
       expect(gcOrphanedEmbeddings(db)).toBe(0);
       expect(embeddingCount(db)).toBe(1);
@@ -460,9 +463,9 @@ describe("index-db", () => {
       const opened = openIndexDb(fresh, 4);
       if (!opened.ok) throw opened.error;
       db = opened.value;
-      insertEmbeddingVec(db, "h1", MODEL, v1);
-      insertEmbeddingVec(db, "h2", MODEL, v2);
-      insertEmbeddingVec(db, "h3", MODEL, v3);
+      insertEmbeddingVec(db, "h1", MODEL, COLLECTION, v1);
+      insertEmbeddingVec(db, "h2", MODEL, COLLECTION, v2);
+      insertEmbeddingVec(db, "h3", MODEL, COLLECTION, v3);
 
       const queryBlob = embeddingToBlob(v1);
       const rows = db
@@ -494,7 +497,7 @@ describe("index-db", () => {
       db = opened.value;
       expect(getMeta(db, "embeddings_vec_dim")).toBe("4");
       // Insert a 4-dim vector; it must survive the first round-trip.
-      insertEmbeddingVec(db, "h1", MODEL, new Float32Array([1, 0, 0, 0]));
+      insertEmbeddingVec(db, "h1", MODEL, COLLECTION, new Float32Array([1, 0, 0, 0]));
       expect(
         (
           db.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as {
@@ -521,9 +524,11 @@ describe("index-db", () => {
 
       // The new dim must actually be the column type — a wrong-length insert
       // is rejected by sqlite-vec.
-      expect(() => insertEmbeddingVec(db, "h1", MODEL, new Float32Array([1, 0, 0, 0]))).toThrow();
+      expect(() =>
+        insertEmbeddingVec(db, "h1", MODEL, COLLECTION, new Float32Array([1, 0, 0, 0])),
+      ).toThrow();
       // A correctly-sized vector goes through.
-      insertEmbeddingVec(db, "h2", MODEL, new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]));
+      insertEmbeddingVec(db, "h2", MODEL, COLLECTION, new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]));
 
       db.close();
       cleanupVault(fresh);

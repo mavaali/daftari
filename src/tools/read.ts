@@ -16,18 +16,21 @@ import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.
 import { recordRead } from "../curation/read-log.js";
 import { computeStaleness } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
-import { DEFAULT_TENSION_STATUS, listTensions } from "../curation/tension.js";
+import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation/tension.js";
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
+  CONFIDENCES,
   DOMAINS,
   err,
   type Frontmatter,
   ok,
+  PROVENANCES,
   type Result,
   STATUSES,
+  TIERS,
   type ValidationReport,
 } from "../frontmatter/types.js";
 import { type ContestedTension, contestedFor } from "../search/contested.js";
@@ -56,6 +59,17 @@ export interface ToolDefinition {
   title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  // JSON Schema (2020-12) for the handler's ok-value. Required: handlers
+  // already return typed values, so an unschematized output is a type we
+  // were too lazy to write down (spec 2026-07-26, Decision 3).
+  outputSchema: Record<string, unknown>;
+  // Compact model-facing summary for the `content` channel. Absent, the
+  // bridge falls back to pretty-printed JSON of the full value.
+  summarize?: (value: unknown) => string;
+  // Vault-relative doc paths the result references; the bridge emits a
+  // daftari://doc/{path} resource_link per entry. Paths must already be
+  // read-gated by the handler (links inherit read-gating by construction).
+  docLinks?: (value: unknown) => string[];
   annotations?: ToolAnnotations;
   // `access` is supplied by the server transport on every call. When omitted
   // (a direct in-process call, e.g. from a test) RBAC is not enforced.
@@ -293,7 +307,11 @@ export interface VaultIndexResult {
 
 // A document's collection is its frontmatter `collection`, falling back to the
 // top-level directory of its vault-relative path.
-function collectionOf(relPath: string, fm: Frontmatter): string {
+//
+// Exported because the MCP resource layer (src/resources.ts) gates
+// `resources/read` on the same predicate vault_read uses. One visibility rule,
+// not two that can drift apart.
+export function collectionOf(relPath: string, fm: Frontmatter): string {
   if (fm.collection) return fm.collection;
   const top = relPath.split("/")[0];
   return top ?? "";
@@ -558,6 +576,178 @@ export async function vaultStatus(
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
+// Output-schema fragments (JSON Schema 2020-12). Shared shapes live here
+// because several tools embed the same value: a schema that drifts between
+// two tools describes the same type two different ways, which is worse than
+// no schema at all.
+//
+// `additionalProperties: false` is used sparingly and only where a value is
+// closed by construction. Frontmatter carries config-declared extension
+// fields, `raw` is whatever the author's YAML said, and provenance entries
+// are read back from an append-only log written by older versions — all three
+// legitimately carry keys this schema does not name.
+
+// Frontmatter as validateFrontmatter always produces it: every built-in field
+// present and coerced, plus any config-declared extension fields.
+export const FRONTMATTER_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    domain: { type: "string", enum: [...DOMAINS] },
+    collection: { type: "string" },
+    status: { type: "string", enum: [...STATUSES] },
+    confidence: { type: "string", enum: [...CONFIDENCES] },
+    created: { type: "string", description: "YYYY-MM-DD (verbatim as authored)" },
+    updated: { type: "string", description: "YYYY-MM-DD (verbatim as authored)" },
+    updated_by: { type: "string", description: "agent:<id> | human:<username>" },
+    provenance: { type: "string", enum: [...PROVENANCES] },
+    // null means no write-path tier enforcement — the pre-#141 default.
+    tier: { type: ["string", "null"], enum: [...TIERS, null] },
+    sources: { type: "array", items: { type: "string" } },
+    superseded_by: { type: ["string", "null"] },
+    ttl_days: { type: ["number", "null"] },
+    tags: { type: "array", items: { type: "string" } },
+    describes: { type: "array", items: { type: "string" } },
+    questions_answered: { type: "array", items: { type: "string" } },
+    questions_raised: { type: "array", items: { type: "string" } },
+  },
+  required: [
+    "title",
+    "domain",
+    "collection",
+    "status",
+    "confidence",
+    "created",
+    "updated",
+    "updated_by",
+    "provenance",
+    "tier",
+    "sources",
+    "superseded_by",
+    "ttl_days",
+    "tags",
+    "describes",
+    "questions_answered",
+    "questions_raised",
+  ],
+};
+
+const VALIDATION_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    valid: { type: "boolean" },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          field: { type: "string" },
+          message: { type: "string" },
+        },
+        required: ["field", "message"],
+      },
+    },
+  },
+  required: ["valid", "issues"],
+};
+
+// computeDecay's return: null when healthy (the silent baseline), otherwise a
+// level with reasons and a banner that is null for `aging` (scarcity rule).
+// Exported: vault_receipt embeds the same value per cited source.
+export const DECAY_SCHEMA: Record<string, unknown> = {
+  type: ["object", "null"],
+  properties: {
+    level: { type: "string", enum: ["deprecated", "warn", "aging"] },
+    reasons: { type: "array", items: { type: "string" } },
+    banner: { type: ["string", "null"] },
+  },
+  required: ["level", "reasons", "banner"],
+};
+
+// One classified upstream edge (#234). Only compiled edges can reach
+// pending-broken; the other classes park in pending-unchecked.
+const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    unit: { type: "string" },
+    edge_class: { type: "string", enum: ["compiled", "declared", "earned"] },
+    staleness: {
+      type: "string",
+      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+    },
+    baseline: {
+      type: ["string", "null"],
+      description: "ISO timestamp the classification measured from; null when none is derivable",
+    },
+    changed_fields: { type: "array", items: { type: "string" } },
+    reason: { type: "string" },
+  },
+  required: ["unit", "edge_class", "staleness", "baseline", "changed_fields", "reason"],
+};
+
+// One index row / vault_index entry.
+const INDEX_ENTRY_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    path: { type: "string", description: "Vault-relative path" },
+    title: { type: "string" },
+    collection: { type: "string" },
+    domain: { type: "string", enum: [...DOMAINS] },
+    status: { type: "string", enum: [...STATUSES] },
+    confidence: { type: "string", enum: [...CONFIDENCES] },
+    updated: { type: "string" },
+    tags: { type: "array", items: { type: "string" } },
+    questionsAnswered: { type: "array", items: { type: "string" } },
+    questionsRaised: { type: "array", items: { type: "string" } },
+    valid: { type: "boolean", description: "Whether the document's frontmatter validates" },
+  },
+  required: [
+    "path",
+    "title",
+    "collection",
+    "domain",
+    "status",
+    "confidence",
+    "updated",
+    "tags",
+    "questionsAnswered",
+    "questionsRaised",
+    "valid",
+  ],
+};
+
+// A curation-log line, replayed. Entries are read back from an append-only
+// JSONL log — older versions wrote fewer keys, future ones may write more, so
+// only the four always-present fields are required and the object stays open.
+const PROVENANCE_ENTRY_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    timestamp: { type: "string", description: "ISO 8601" },
+    tool: { type: "string" },
+    file: { type: "string", description: "Vault-relative path" },
+    agent: { type: "string", description: "Caller-claimed identity, e.g. agent:claude-code" },
+    action: {
+      type: "string",
+      description:
+        "create | update | append | promote | deprecate for a write that landed; " +
+        "rejected_stale for one refused by the base_version check",
+    },
+    principal: { type: "string", description: "Authenticated identity, when the server has one" },
+    run_id: { type: "string" },
+    body_changed: { type: "boolean" },
+    frontmatter_diff: {
+      type: "object",
+      description: "Per-field before/after for every frontmatter field the write changed",
+      additionalProperties: {
+        type: "object",
+        properties: { before: {}, after: {} },
+      },
+    },
+    reason: { type: "string" },
+  },
+  required: ["timestamp", "tool", "file", "agent", "action"],
+};
+
 function asString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
@@ -610,6 +800,100 @@ export const readTools: ToolDefinition[] = [
       required: ["path"],
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The path as requested by the caller" },
+        content: { type: "string", description: "Markdown body, frontmatter block stripped" },
+        frontmatter: FRONTMATTER_SCHEMA,
+        raw: {
+          type: "object",
+          description: "Frontmatter exactly as parsed from YAML, before coercion",
+        },
+        validation: VALIDATION_SCHEMA,
+        hasFrontmatter: { type: "boolean" },
+        decay: DECAY_SCHEMA,
+        // Null when there is nothing to say — byte-identical to a document
+        // with no compiled edges at all (no existence signal either way).
+        upstream_staleness: {
+          type: ["object", "null"],
+          properties: {
+            edges: {
+              type: "array",
+              items: UPSTREAM_EDGE_SCHEMA,
+              description: "Only upstream units the caller can read (omission, #217)",
+            },
+            hidden_pending: {
+              type: "string",
+              enum: ["none", "some", "many"],
+              description:
+                "Coarse bucket over pending edges to units outside the caller's " +
+                "read scope — never an exact count",
+            },
+            pending_broken: {
+              type: "integer",
+              minimum: 0,
+              description: "Pending-broken count among the VISIBLE edges only",
+            },
+            banner: { type: ["string", "null"] },
+          },
+          required: ["edges", "hidden_pending", "pending_broken", "banner"],
+        },
+        // Null when healthy — same contract as `decay`.
+        structural: {
+          type: ["object", "null"],
+          properties: {
+            orphan: {
+              type: "boolean",
+              description: "No document the caller can read links here",
+            },
+            deprecated_still_linked: {
+              type: ["object", "null"],
+              properties: {
+                canonical_linkers: { type: "array", items: { type: "string" } },
+              },
+              required: ["canonical_linkers"],
+            },
+            banner: { type: "string" },
+          },
+          required: ["orphan", "deprecated_still_linked", "banner"],
+        },
+        // Absent (both fields) when no visible unresolved tension touches the
+        // document. `contested` is capped; `contestedCount` is the true total.
+        contested: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Absent only for legacy entries" },
+              kind: { type: "string", enum: [...TENSION_KINDS] },
+              counterpart: {
+                type: "string",
+                description: "Canonical vault-relative path of the other side",
+              },
+              claimSelf: { type: "string" },
+              claimOther: { type: "string" },
+              loggedAt: { type: "string", description: "Entry date, YYYY-MM-DD" },
+            },
+            required: ["kind", "counterpart", "claimSelf", "claimOther", "loggedAt"],
+          },
+        },
+        contestedCount: { type: "integer", minimum: 0 },
+        version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
+      },
+      required: [
+        "path",
+        "content",
+        "frontmatter",
+        "raw",
+        "validation",
+        "hasFrontmatter",
+        "decay",
+        "upstream_staleness",
+        "structural",
+        "version",
+      ],
+    },
     handler: (vaultRoot, args, access) => {
       const runId = readRunId(args, "vault_read");
       if (!runId.ok) return Promise.resolve(runId);
@@ -652,6 +936,18 @@ export const readTools: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        count: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of entries returned (post-RBAC, post-filter)",
+        },
+        entries: { type: "array", items: INDEX_ENTRY_SCHEMA },
+      },
+      required: ["count", "entries"],
+    },
     handler: (vaultRoot, args, access) =>
       vaultIndex(
         vaultRoot,
@@ -677,6 +973,91 @@ export const readTools: ToolDefinition[] = [
       type: "object",
       properties: {},
       additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        vault: { type: "string", description: "Absolute path of the vault root" },
+        fileCount: {
+          type: "integer",
+          minimum: 0,
+          description: "Documents the caller can read",
+        },
+        collections: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              collection: { type: "string" },
+              count: { type: "integer", minimum: 0 },
+            },
+            required: ["collection", "count"],
+          },
+        },
+        invalidCount: { type: "integer", minimum: 0 },
+        generatedAt: { type: "string", description: "ISO 8601" },
+        // fresh (< 0.5 of TTL elapsed), aging (>= 0.5, not expired), stale
+        // (>= 1.0). `total` equals the role's visible file count.
+        stalenessDistribution: {
+          type: "object",
+          properties: {
+            fresh: { type: "integer", minimum: 0 },
+            aging: { type: "integer", minimum: 0 },
+            stale: { type: "integer", minimum: 0 },
+            total: { type: "integer", minimum: 0 },
+          },
+          required: ["fresh", "aging", "stale", "total"],
+        },
+        unresolvedTensions: {
+          type: "object",
+          properties: {
+            count: { type: "integer", minimum: 0 },
+            recent: {
+              type: "array",
+              maxItems: 5,
+              items: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  date: { type: "string", description: "YYYY-MM-DD" },
+                },
+                required: ["title", "date"],
+              },
+            },
+          },
+          required: ["count", "recent"],
+        },
+        recentWrites: {
+          type: "object",
+          properties: {
+            count: { type: "integer", minimum: 0 },
+            entries: {
+              type: "array",
+              maxItems: 10,
+              items: PROVENANCE_ENTRY_SCHEMA,
+            },
+          },
+          required: ["count", "entries"],
+        },
+        embeddingDimMismatches: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "Embedding cache rows for the active model whose stored dim does not " +
+            "match the provider's; non-zero means those chunks are skipped in ranking",
+        },
+      },
+      required: [
+        "vault",
+        "fileCount",
+        "collections",
+        "invalidCount",
+        "generatedAt",
+        "stalenessDistribution",
+        "unresolvedTensions",
+        "recentWrites",
+        "embeddingDimMismatches",
+      ],
     },
     handler: (vaultRoot, _args, access) => vaultStatus(vaultRoot, access),
   },

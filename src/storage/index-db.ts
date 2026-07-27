@@ -54,8 +54,13 @@ export type IndexDb = Database.Database;
 // Bumped 8 → 9 to add doc_links, the materialized inbound-link graph that
 // backs inline structural decay (#8) — orphan and deprecated-still-linked
 // answered with one indexed query at read/search time.
-// Bumped 9 → 10 to add the valid-time columns (valid_from, valid_until) and
-// an index on superseded_by, which the bi-temporal walk queries in reverse.
+// 10 carries two independent changes that landed together, both of which the
+// same bump covers because the version-mismatch path drops and rebuilds every
+// derived table from the markdown — there is no migration to write:
+//   - `embeddings_vec` gains the `collection` partition key (2026-07-26
+//     retrieval-fusion spec, Decision 3).
+//   - the valid-time columns (valid_from, valid_until) and an index on
+//     superseded_by, which the bi-temporal walk queries in reverse.
 const SCHEMA_VERSION = "10";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
@@ -342,10 +347,22 @@ function createVecTable(db: IndexDb, dim: number): void {
     );
   }
   db.exec("DROP TABLE IF EXISTS embeddings_vec;");
+  // `collection` is a partition key so the KNN scan can be constrained to the
+  // caller's readable collections *inside* the scan (spec 2026-07-26 fusion
+  // Decision 3). Without it a restricted role's whole K budget can be spent on
+  // chunks it may not read and post-filtered to near-nothing — the vector half
+  // of hybrid search going dark for exactly the users RBAC exists for.
+  //
+  // The consequence for the cache: rows are keyed per
+  // (content_hash, model, collection), so chunk text that appears in documents
+  // from two collections gets one vec row per collection. That is the only
+  // honest shape — a single row cannot carry two ACL labels — and the durable
+  // `embeddings` cache stays content-addressed and deduped regardless.
   db.exec(
     `CREATE VIRTUAL TABLE embeddings_vec USING vec0(
        content_hash TEXT NOT NULL,
        model        TEXT NOT NULL,
+       collection   TEXT NOT NULL,
        embedding    FLOAT[${dim}] distance_metric=cosine
      );`,
   );
@@ -366,13 +383,33 @@ export function insertEmbeddingVec(
   db: IndexDb,
   contentHash: string,
   model: string,
+  collection: string,
   embedding: Float32Array,
 ): void {
-  db.prepare("INSERT INTO embeddings_vec(content_hash, model, embedding) VALUES (?, ?, ?)").run(
-    contentHash,
-    model,
-    embeddingToBlob(embedding),
-  );
+  db.prepare(
+    "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, ?)",
+  ).run(contentHash, model, collection, embeddingToBlob(embedding));
+}
+
+// True when the vec mirror already holds a row for this
+// (content_hash, model, collection). The incremental write path needs this
+// because vec0 supports neither INSERT OR IGNORE nor a unique constraint, and
+// because "the embedding was already cached" no longer implies "the vec row
+// exists" — the same chunk text reaching a SECOND collection is a cache hit
+// that still owes this table a row.
+export function hasEmbeddingVec(
+  db: IndexDb,
+  contentHash: string,
+  model: string,
+  collection: string,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 AS present FROM embeddings_vec
+        WHERE content_hash = ? AND model = ? AND collection = ? LIMIT 1`,
+    )
+    .get(contentHash, model, collection) as { present: number } | undefined;
+  return row !== undefined;
 }
 
 // `expectedVecDim` is the active embedding provider's dim. If the persisted
@@ -686,6 +723,62 @@ export function insertEmbedding(
 // the end of a reindex to reap entries for chunks that no longer exist
 // anywhere in the vault. Returns the number of `embeddings` rows deleted —
 // the vec-mirror counts piggy-back and are not reported separately.
+// Drops `embeddings_vec` rows for this hash whose collection no longer has any
+// chunk carrying it — the cleanup half of the collection partition key.
+//
+// Why it is needed: a document that changes `collection` keeps its chunk
+// hashes, so nothing else notices. `deleteDocument` clears documents/chunks but
+// not the vec mirror, and `gcOrphanedEmbeddings` asks only whether a hash is
+// referenced by ANY chunk — which it still is, just from the new collection.
+// Without this, a recategorized document leaves its old (hash, collection) row
+// behind forever, quietly consuming the very VEC_KNN_K budget the pushdown
+// exists to protect. Not a disclosure bug (the tool-level canRead filter reads
+// the document's live collection), but it works against the fix, so it is
+// cleaned at the source.
+//
+// The rule is exactly the invariant the full rebuild constructs: a
+// (hash, collection) row is valid iff some chunk with that hash belongs to a
+// document in that collection.
+export function pruneStaleVecRows(db: IndexDb, contentHash: string, model: string): number {
+  const valid = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT d.collection AS collection
+             FROM chunks    AS c
+             JOIN documents AS d ON d.path = c.path
+            WHERE c.content_hash = ?`,
+        )
+        .all(contentHash) as { collection: string }[]
+    ).map((r) => r.collection),
+  );
+  const present = db
+    .prepare("SELECT collection FROM embeddings_vec WHERE content_hash = ? AND model = ?")
+    .all(contentHash, model) as { collection: string }[];
+
+  const del = db.prepare(
+    "DELETE FROM embeddings_vec WHERE content_hash = ? AND model = ? AND collection = ?",
+  );
+  let removed = 0;
+  for (const row of present) {
+    if (valid.has(row.collection)) continue;
+    del.run(contentHash, model, row.collection);
+    removed += 1;
+  }
+  return removed;
+}
+
+// The cached vector for one (content_hash, model), or null when the cache has
+// no row. The incremental index path needs it when a hash that is ALREADY
+// embedded reaches a collection whose vec row does not exist yet — a cache hit
+// that still owes `embeddings_vec` a row under the collection partition key.
+export function getEmbeddingBlob(db: IndexDb, contentHash: string, model: string): Buffer | null {
+  const row = db
+    .prepare("SELECT embedding FROM embeddings WHERE content_hash = ? AND model = ?")
+    .get(contentHash, model) as { embedding: Buffer } | undefined;
+  return row?.embedding ?? null;
+}
+
 export function gcOrphanedEmbeddings(db: IndexDb): number {
   // Collect the orphan hashes first so we can drop them from both stores in
   // one transaction. `NOT EXISTS` with the `idx_chunks_content_hash` index lets

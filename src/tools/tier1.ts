@@ -200,6 +200,64 @@ export const tier1Tools: ToolDefinition[] = [
       required: ["unit"],
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        unit: { type: "string", description: "Canonical vault-relative path of the changed unit" },
+        changed_fields: {
+          type: "array",
+          items: { type: "string" },
+          description: "Frontmatter keys plus 'body', bookkeeping fields stripped",
+        },
+        change_source: {
+          type: "string",
+          enum: ["provenance", "explicit"],
+          description: "Latest logged write to the unit, or caller-supplied changed_fields",
+        },
+        verdicts: {
+          type: "array",
+          description:
+            "One verdict per dependent. Under RBAC a verdict naming an " +
+            "unreadable dependent is omitted from this list AND from the summary counts.",
+          items: {
+            type: "object",
+            properties: {
+              artifact: { type: "string", description: "Vault-relative path of the dependent" },
+              verdict: {
+                type: "string",
+                enum: ["unaffected", "affected", "possibly-affected", "semantic-review"],
+                description: "Class-bounded verdict; only a compiled edge can be 'affected'",
+              },
+              edge_class: { type: "string", enum: ["compiled", "declared", "earned"] },
+              reason: { type: "string" },
+            },
+            required: ["artifact", "verdict", "edge_class", "reason"],
+          },
+        },
+        summary: {
+          type: "object",
+          properties: {
+            unaffected: { type: "integer" },
+            affected: { type: "integer" },
+            possibly_affected: { type: "integer" },
+            semantic_review: { type: "integer" },
+            resolved_at_tier1: {
+              type: "boolean",
+              description:
+                "True when no dependent routed to semantic review — decided without an LLM",
+            },
+          },
+          required: [
+            "unaffected",
+            "affected",
+            "possibly_affected",
+            "semantic_review",
+            "resolved_at_tier1",
+          ],
+        },
+      },
+      required: ["unit", "changed_fields", "change_source", "verdicts", "summary"],
+    },
     handler: (vaultRoot, args, access) => vaultTier1(vaultRoot, args, access),
   },
 ];

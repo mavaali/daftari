@@ -2139,6 +2139,121 @@ const frontmatterProperty = {
   additionalProperties: true,
 };
 
+// --- output schemas (spec 2026-07-26, Decision 3) ---------------------------
+//
+// Every write tool's ok-value is a WriteResult, so the schema is built once
+// and specialized per tool: `action` is a single-member enum on all but
+// vault_write (which also stages), and only vault_write / vault_append carry
+// the advisory and staging fields. `additionalProperties` is deliberately
+// left open — the result is additive by design (#169's supersede_hint and
+// #4's domain_warnings both arrived that way).
+
+const validationReportProperty = {
+  type: "object",
+  description:
+    "Frontmatter validation report for the document as written. Advisory on " +
+    "the lifecycle tools (it reports the document as it was already on disk); " +
+    "on vault_write / vault_merge an invalid report fails the write instead.",
+  properties: {
+    valid: { type: "boolean", description: "True when no validation issues were found" },
+    issues: {
+      type: "array",
+      description: "Every problem found, in discovery order",
+      items: {
+        type: "object",
+        properties: {
+          field: { type: "string", description: "Frontmatter field the issue concerns" },
+          message: { type: "string", description: "What is wrong with it" },
+        },
+        required: ["field", "message"],
+      },
+    },
+  },
+  required: ["valid", "issues"],
+};
+
+const shadowProperty = {
+  type: "boolean",
+  description:
+    "Present and true only when the vault runs shadow_mode: the write was " +
+    "computed and logged to the shadow store but NOTHING was applied — no " +
+    "file, no commit, no index update, no provenance entry.",
+};
+
+const domainWarningsProperty = {
+  type: "array",
+  items: { type: "string" },
+  description:
+    "#4 advisory epistemic-boundary warnings: this accumulation-domain write " +
+    "references generative-domain documents the caller can read. Absent when " +
+    "there is nothing to warn about. The write has already landed.",
+};
+
+// The shared WriteResult shape. `actions` and `statuses` are the closed
+// vocabularies the specific tool can emit; `properties` adds the tool's own
+// optional fields.
+function writeResultSchema(opts: {
+  description: string;
+  actions: readonly string[];
+  statuses?: readonly string[];
+  properties?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    type: "object",
+    description: opts.description,
+    properties: {
+      path: {
+        type: "string",
+        description: "Vault-relative path of the document the write targeted",
+      },
+      action: {
+        type: "string",
+        enum: [...opts.actions],
+        description: "What the write did",
+      },
+      commit: {
+        type: ["string", "null"],
+        description:
+          "Short git commit hash when the write was auto-committed; null when " +
+          "the vault runs auto_commit: false, or when nothing was applied " +
+          "(shadow mode, or a staged proposal).",
+      },
+      committed: {
+        type: "boolean",
+        description: "Whether the write was auto-committed to git",
+      },
+      status: {
+        type: "string",
+        enum: [...(opts.statuses ?? STATUSES)],
+        description: "The document's lifecycle status after the write",
+      },
+      updated: {
+        type: "string",
+        description: "The stamped 'updated' date (YYYY-MM-DD)",
+      },
+      validation: validationReportProperty,
+      indexUpdated: {
+        type: "boolean",
+        description:
+          "Whether the search index was refreshed. False does not undo the " +
+          "write — the index is a rebuildable cache.",
+      },
+      shadow: shadowProperty,
+      ...(opts.properties ?? {}),
+    },
+    required: [
+      "path",
+      "action",
+      "commit",
+      "committed",
+      "status",
+      "updated",
+      "validation",
+      "indexUpdated",
+    ],
+  };
+}
+
 export const writeTools: ToolDefinition[] = [
   {
     name: "vault_write",
@@ -2181,6 +2296,56 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "body", "frontmatter", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied write ('create' or 'update'), or — for a propose-only " +
+        "role — the staged proposal that was recorded instead ('staged', " +
+        "nothing written).",
+      actions: ["create", "update", "staged"],
+      // "pending" is the staged-proposal status: no document status exists yet.
+      statuses: [...STATUSES, "pending"],
+      properties: {
+        supersede_hint: {
+          type: "string",
+          description:
+            "#169 advisory nudge, present only when this write overwrote an " +
+            "existing document: vault_supersede preserves the prior version " +
+            "and its lineage instead. The write has already landed.",
+        },
+        domain_warnings: domainWarningsProperty,
+        staged_id: {
+          type: "string",
+          description:
+            "Staged-action id of the recorded proposal. Present only when " + "action is 'staged'.",
+        },
+        expires_at: {
+          type: "string",
+          description:
+            "ISO timestamp after which the staged proposal expires unratified. " +
+            "Present only when action is 'staged'.",
+        },
+        conflicts_with: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Ids of other pending proposals contesting the same target. " +
+            "Present only when action is 'staged'; empty when uncontested.",
+        },
+        tension_id: {
+          type: ["string", "null"],
+          description:
+            "Id of the inter-proposal tension logged for the conflicting " +
+            "proposals, or null when none was needed. Present only when " +
+            "action is 'staged'.",
+        },
+        tension_error: {
+          type: "string",
+          description:
+            "Why the conflict tension could not be written. The proposal is " +
+            "still staged and conflicts_with still names the contenders.",
+        },
+      },
+    }),
     handler: (vaultRoot, args, access) => vaultWrite(vaultRoot, args, access),
   },
   {
@@ -2212,6 +2377,13 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "section", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied append. The document's status is unchanged — an append " +
+        "only touches the body and the 'updated' / 'updated_by' stamps.",
+      actions: ["append"],
+      properties: { domain_warnings: domainWarningsProperty },
+    }),
     handler: (vaultRoot, args, access) => vaultAppend(vaultRoot, args, access),
   },
   {
@@ -2236,6 +2408,11 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description: "The applied promotion. Status is always 'canonical' on success.",
+      actions: ["promote"],
+      statuses: ["canonical"],
+    }),
     handler: (vaultRoot, args, access) => vaultPromote(vaultRoot, args, access),
   },
   {
@@ -2268,6 +2445,11 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "reason", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description: "The applied deprecation. Status is always 'deprecated' on success.",
+      actions: ["deprecate"],
+      statuses: ["deprecated"],
+    }),
     handler: (vaultRoot, args, access) => vaultDeprecate(vaultRoot, args, access),
   },
   {
@@ -2301,6 +2483,12 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "confidence", "reason", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied confidence change. Status is unchanged — only the " +
+        "document's confidence and the 'updated' / 'updated_by' stamps moved.",
+      actions: ["confidence-set"],
+    }),
     handler: (vaultRoot, args, access) => vaultSetConfidence(vaultRoot, args, access),
   },
   {
@@ -2339,6 +2527,12 @@ export const writeTools: ToolDefinition[] = [
       required: ["path", "tier", "reason", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied tier change. Status is unchanged — only the document's " +
+        "write-protection tier and the 'updated' / 'updated_by' stamps moved.",
+      actions: ["tier-set"],
+    }),
     handler: (vaultRoot, args, access) => vaultSetTier(vaultRoot, args, access),
   },
   {
@@ -2373,6 +2567,13 @@ export const writeTools: ToolDefinition[] = [
       required: ["old_path", "new_path", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied supersession, reported for the OLD document (path is " +
+        "old_path). Status is always 'superseded' on success.",
+      actions: ["supersede"],
+      statuses: ["superseded"],
+    }),
     handler: (vaultRoot, args, access) => vaultSupersede(vaultRoot, args, access),
   },
   {
@@ -2418,6 +2619,14 @@ export const writeTools: ToolDefinition[] = [
       required: ["path_a", "path_b", "target_path", "body", "agent"],
       additionalProperties: false,
     },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied merge, reported for the TARGET document (path is " +
+        "target_path); the superseded sources are written under the same " +
+        "commit and are not enumerated here. 'commit' covers all three files, " +
+        "and 'indexUpdated' is true only when every written file reindexed.",
+      actions: ["merge"],
+    }),
     handler: (vaultRoot, args, access) => vaultMerge(vaultRoot, args, access),
   },
 ];

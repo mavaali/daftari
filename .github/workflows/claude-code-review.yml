@@ -13,7 +13,11 @@ on:
 
 jobs:
   review:
-    if: ${{ !github.event.pull_request.draft }}
+    # Skipped for Dependabot PRs: GitHub doesn't forward repo secrets to
+    # Dependabot-triggered runs, so CLAUDE_CODE_OAUTH_TOKEN would be empty
+    # (and the action would refuse the bot actor anyway). Version bumps
+    # don't need a Claude review.
+    if: ${{ !github.event.pull_request.draft && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

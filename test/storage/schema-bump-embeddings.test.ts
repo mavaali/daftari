@@ -82,7 +82,9 @@ describe("schema bump", () => {
   it("rebuilds embeddings_vec empty across a schema_version change", () => {
     const seed = open(vault);
     insertEmbedding(seed, "hash-a", MODEL, sampleVector(), CREATED_AT, LOCAL_MINILM_DIM);
-    insertEmbeddingVec(seed, "hash-a", MODEL, sampleVector());
+    // `collection` is the vec0 partition key added by the retrieval-fusion
+    // work (#303) so the KNN scan can pre-filter by readable collection.
+    insertEmbeddingVec(seed, "hash-a", MODEL, "pricing", sampleVector());
     expect(vecRowCount(seed)).toBe(1);
     seed.close();
 

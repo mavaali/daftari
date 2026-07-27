@@ -25,6 +25,7 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   allDocumentPaths,
+  blobToEmbedding,
   type ChunkRowInput,
   clearEmbeddingsVec,
   clearIndex,
@@ -32,7 +33,9 @@ import {
   documentCount,
   existingEmbeddingHashes,
   gcOrphanedEmbeddings,
+  getEmbeddingBlob,
   getMeta,
+  hasEmbeddingVec,
   type IndexDb,
   type IndexedDocument,
   insertChunkRow,
@@ -40,6 +43,7 @@ import {
   insertEmbedding,
   insertEmbeddingVec,
   openIndexDb,
+  pruneStaleVecRows,
   replaceDocLinks,
   setMeta,
 } from "../storage/index-db.js";
@@ -65,22 +69,38 @@ function openIndexForActiveProvider(vaultRoot: string) {
 function rebuildEmbeddingsVec(db: IndexDb, modelId: string): void {
   const rebuild = db.transaction(() => {
     clearEmbeddingsVec(db);
+    // One row per (content_hash, collection): the vec table's `collection`
+    // partition key lets the KNN scan filter to the caller's readable
+    // collections inside the scan. DISTINCT because a hash may appear in
+    // several chunks of the same document — that is one vec row, not many —
+    // while the same hash in two COLLECTIONS is genuinely two rows.
     const rows = db
       .prepare(
-        `SELECT e.content_hash AS content_hash, e.embedding AS embedding
+        `SELECT DISTINCT e.content_hash AS content_hash,
+                         d.collection   AS collection,
+                         e.embedding    AS embedding
            FROM embeddings AS e
-          WHERE e.model = ?
-            AND e.content_hash IN (SELECT content_hash FROM chunks)`,
+           JOIN chunks     AS c ON c.content_hash = e.content_hash
+           JOIN documents  AS d ON d.path = c.path
+          WHERE e.model = ?`,
       )
-      .all(modelId) as { content_hash: string; embedding: Buffer }[];
+      .all(modelId) as { content_hash: string; collection: string; embedding: Buffer }[];
     const insert = db.prepare(
-      "INSERT INTO embeddings_vec(content_hash, model, embedding) VALUES (?, ?, ?)",
+      "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, ?)",
     );
     for (const row of rows) {
-      insert.run(row.content_hash, modelId, row.embedding);
+      insert.run(row.content_hash, modelId, row.collection, row.embedding);
     }
   });
   rebuild();
+}
+
+// The cached vector for a hash, as a Float32Array, or null when the durable
+// cache has no row for this model. Used by the incremental path to mirror a
+// cache-hit chunk into a collection whose vec row does not exist yet.
+function readCachedVector(db: IndexDb, hash: string, modelId: string): Float32Array | null {
+  const blob = getEmbeddingBlob(db, hash, modelId);
+  return blob === null ? null : blobToEmbedding(blob);
 }
 
 // Manifest key in the meta table: JSON object mapping vault-relative path to
@@ -637,13 +657,28 @@ export async function indexDocument(
           contentHash: hashes[chunkIndex] ?? "",
         });
       });
-      // Mirror only the newly-embedded vectors into `embeddings_vec`.
-      // Hashes that were already cached are already in the vec table from
-      // a prior reindex / indexDocument call — re-inserting them would be
-      // duplicates. INSERT OR IGNORE isn't supported on vec0 virtual
-      // tables, so we keep this list to just the new vectors.
-      for (const { hash, vec } of newlyEmbedded) {
-        insertEmbeddingVec(db, hash, provider.id, vec);
+      // Mirror this document's vectors into `embeddings_vec` under ITS
+      // collection (the partition key, 2026-07-26 fusion spec Decision 3).
+      //
+      // "Already embedded" no longer implies "already mirrored": the same
+      // chunk text reaching a second collection — or this document moving to
+      // a new one — is a cache hit that still owes the vec table a row. So
+      // the loop runs over every chunk hash and asks the table, rather than
+      // over the newly-embedded list alone. vec0 supports neither
+      // INSERT OR IGNORE nor a unique constraint, so the check is explicit.
+      const freshVecs = new Map(newlyEmbedded.map(({ hash, vec }) => [hash, vec]));
+      for (const hash of new Set(hashes)) {
+        if (hash === "") continue;
+        // Drop rows this hash no longer justifies before adding the new one:
+        // a document that CHANGED collection keeps its hashes, so its old
+        // (hash, collection) row is invisible to every other cleanup path and
+        // would otherwise linger forever, eating KNN budget. Runs after the
+        // document/chunk rows above are current, so the validity query sees
+        // post-write state.
+        pruneStaleVecRows(db, hash, provider.id);
+        if (hasEmbeddingVec(db, hash, provider.id, doc.collection)) continue;
+        const vec = freshVecs.get(hash) ?? readCachedVector(db, hash, provider.id);
+        if (vec) insertEmbeddingVec(db, hash, provider.id, doc.collection, vec);
       }
     });
     write();

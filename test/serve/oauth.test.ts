@@ -93,13 +93,14 @@ describe("serve OAuth resource-server auth (#7)", () => {
     return client;
   }
 
+  // The typed result rides `structuredContent` (spec 2026-07-26, Decision 3);
+  // `content` carries the compact model-facing summary, not JSON.
   async function searchPaths(client: Client): Promise<string[]> {
     const res = (await client.callTool({
       name: "vault_search",
       arguments: { query: "zephyr", limit: 10, weights: { bm25: 1, vector: 0 } },
-    })) as { content: { type: string; text: string }[] };
-    const parsed = JSON.parse(res.content[0]?.text ?? "{}") as { hits?: { path: string }[] };
-    return (parsed.hits ?? []).map((h) => h.path);
+    })) as { structuredContent?: { hits?: { path: string }[] } };
+    return (res.structuredContent?.hits ?? []).map((h) => h.path);
   }
 
   beforeAll(async () => {

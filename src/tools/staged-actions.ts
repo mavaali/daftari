@@ -587,6 +587,52 @@ export async function vaultRatify(
 }
 
 // ---------------------------------------------------------------------------
+// Output schemas (spec 2026-07-26, Decision 3)
+// ---------------------------------------------------------------------------
+
+const stageActionOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "Id of the staged proposal, e.g. 'stage-042'" },
+    expires_at: { type: "string", description: "ISO 8601 instant the proposal auto-expires" },
+    // #235: empty when the proposal is uncontested.
+    conflicts_with: {
+      type: "array",
+      items: { type: "string" },
+      description: "Ids of other pending proposals already targeting the same document",
+    },
+    tension_id: {
+      type: ["string", "null"],
+      description: "Id of the inter-proposal tension logged for the conflict, null when none",
+    },
+    // Present only when the proposal staged but the tension write failed —
+    // the conflict is still in conflicts_with; this names why the log entry
+    // is missing.
+    tension_error: { type: "string" },
+  },
+  required: ["id", "expires_at", "conflicts_with", "tension_id"],
+  additionalProperties: false,
+};
+
+const ratifyOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    action_id: { type: "string" },
+    decision: { type: "string", enum: ["approve", "reject"] },
+    applied: {
+      type: "boolean",
+      description: "True only when the dispatch actually wrote; false on reject and in shadow mode",
+    },
+    commit: { type: "string", description: "Git commit the applied write landed in" },
+    // §11.5: computed and shadow-logged but not written — the action stays
+    // pending for a live ratification later.
+    shadow: { type: "boolean" },
+  },
+  required: ["action_id", "decision", "applied"],
+  additionalProperties: false,
+};
+
+// ---------------------------------------------------------------------------
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
@@ -650,6 +696,7 @@ export const stagedActionTools: ToolDefinition[] = [
       required: ["action_type", "target_path", "proposed_by", "rationale", "proposed_diff"],
       additionalProperties: false,
     },
+    outputSchema: stageActionOutputSchema,
     handler: (vaultRoot, args, access) => vaultStageAction(vaultRoot, args, access),
   },
   {
@@ -698,6 +745,7 @@ export const stagedActionTools: ToolDefinition[] = [
       required: ["id", "decision", "principal"],
       additionalProperties: false,
     },
+    outputSchema: ratifyOutputSchema,
     handler: (vaultRoot, args, access) => vaultRatify(vaultRoot, args, access),
   },
 ];
