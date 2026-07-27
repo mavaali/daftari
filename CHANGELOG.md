@@ -12,8 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bi-temporal validity.** Two optional built-in frontmatter fields,
   `valid_from` and `valid_until`, recording when a document's claim was true
   *in the world* — as distinct from when the vault recorded it, which git
-  history and `created`/`updated` already cover. Closed interval, day-granular.
-  Both null means valid-time-unknown, which is never read as "always true".
+  history and `created`/`updated` already cover. The window is **half-open**,
+  `[valid_from, valid_until)`, day-granular: `valid_until` is the first day the
+  claim no longer held, so a successor's `valid_from` is exactly its
+  predecessor's `valid_until` and a handoff shares no day. Both null means
+  valid-time-unknown, which is never read as "always true"; a contradictory
+  window (`valid_until <= valid_from`) reads as unknown everywhere and is
+  reported by lint, never evaluated.
   Design record:
   `docs/superpowers/specs/2026-07-26-bitemporal-validity-design.md`.
 - `vault_read` returns a `validity` report alongside `decay`; `vault_status`
@@ -25,10 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inverted intervals, supersession overlaps and gaps, and canonical documents
   whose validity ended with no successor.
 - `vault_supersede`, `vault_deprecate`, and `vault_merge` gain an optional
-  `boundary` argument — the date the successor takes over — which closes the
-  predecessor's interval the day before. The successor is never modified; the
-  result carries a hint instead.
-- `daftari asof --valid-at <date>` — the bi-temporal query: "on this commit,
+  `predecessor_valid_until` argument — the date the successor takes over —
+  written verbatim to the predecessor's `valid_until`. The successor is never
+  modified; the result carries a hint instead.
+- `daftari asof --valid <date>` — the bi-temporal query: "on this commit,
   what did the vault believe was true on that date?"
 - `daftari sleep` wakes canonical documents whose validity ended with nothing
   superseding them; `daftari interview` asks what replaced them.

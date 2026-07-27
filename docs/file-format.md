@@ -63,7 +63,7 @@ always valid even though you never typed those two fields.
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
 | `valid_from` | date or `null` | `null` | First date the document's claim was true **in the world**. Valid time, not transaction time — see [below](#valid_from--valid_until--valid-time). |
-| `valid_until` | date or `null` | `null` | Last date the claim was true, inclusive. `null` with a `valid_from` means open-ended, not unknown. |
+| `valid_until` | date or `null` | `null` | First date the claim was **no longer** true — the window is half-open, so this day is excluded. `null` with a `valid_from` means open-ended, not unknown. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
 | `describes` | list of strings | `[]` | Code paths this document documents — doc-to-code bindings. See [below](#describes--doc-to-code-bindings). |
 | `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
@@ -164,14 +164,34 @@ transaction time can tell you that.
 
 ```yaml
 valid_from: 2026-01-01
-valid_until: 2026-03-31
+valid_until: 2026-04-01   # first day it no longer held
 ```
+
+**The window is half-open: `[valid_from, valid_until)`.** A day is in-window
+iff `valid_from <= day < valid_until`. The example above covers 2026-03-31 and
+does *not* cover 2026-04-01.
+
+That reads slightly against how people speak — "valid through March" is written
+`valid_until: 2026-04-01` — and it is worth the friction, because it makes a
+handoff exact instead of arithmetic:
+
+```yaml
+# q1-pricing.md          # q2-pricing.md
+valid_from:  2026-01-01  # valid_from:  2026-04-01
+valid_until: 2026-04-01  # valid_until: null
+```
+
+The successor's `valid_from` is the predecessor's `valid_until`. Exactly one of
+them covers any given day — no shared day, no gap, and no off-by-one for a tool
+to get wrong. `vault_supersede`'s `predecessor_valid_until` writes that date
+verbatim for the same reason.
 
 | Shape | Meaning |
 |-------|---------|
-| both set | The claim held from `valid_from` through `valid_until`, **inclusive on both ends**. |
+| both set | The claim held from `valid_from` up to but **not including** `valid_until`. |
 | `valid_from` set, `valid_until: null` | Open-ended — still true as far as the vault knows. **Not** "unknown end". |
 | `valid_from: null`, `valid_until` set | Open-start: the vault does not know when it began, but knows when it ended. |
+| `valid_until <= valid_from` | A contradiction — an empty or inverted window. Read as **unknown** everywhere, never as "expired", and reported by `vault_lint`. |
 | both `null` | **Valid-time-unknown.** The default, and the state of every document written before this feature existed. Never read as "always true". |
 
 Three rules govern them.
@@ -180,7 +200,8 @@ Three rules govern them.
 `daftari import` will not synthesize one, and no LLM pass extracts them. Dates
 from git, mtime, or `created`/`updated` are transaction time; laundering them
 into valid time would manufacture a claim nobody made. The one assisted path is
-the `boundary` argument on `vault_supersede` / `vault_deprecate` / `vault_merge`,
+the `predecessor_valid_until` argument on `vault_supersede`,
+`vault_deprecate`, and `vault_merge`,
 and that date comes from the caller.
 
 **Not the same as `ttl_days`.** `ttl_days: 45` is a promise to re-review in 45

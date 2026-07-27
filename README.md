@@ -222,15 +222,19 @@ later agents can take as settled, `questions_raised` is where to build next.
 the file records **transaction time** — when the vault came to believe
 something. These record **valid time**: when the claim was true in the world. A
 document edited this morning can describe a price that stopped applying in
-March, and only the second axis can tell you so. They are optional and always
-authored — nothing derives them from git dates or mtime, because that would
-manufacture a claim nobody made. Both null means unknown, which is never read
-as "always true".
+March, and only the second axis can tell you so.
+
+The window is half-open — `[valid_from, valid_until)` — so `valid_until` is the
+first day the claim no longer held, and a successor's `valid_from` is exactly
+its predecessor's `valid_until`. Handoffs share no day and leave no gap. The
+fields are optional and always authored: nothing derives them from git dates or
+mtime, because that would manufacture a claim nobody made. Both null means
+unknown, which is never read as "always true".
 
 That makes supersession checkable rather than merely asserted:
 
 ```bash
-daftari asof 2026-04-01 --valid-at 2026-01-15
+daftari asof 2026-04-01 --valid 2026-01-15
 ```
 
 "On April 1st, what did the vault believe was true on January 15th?"

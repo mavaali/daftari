@@ -819,12 +819,17 @@ measures `now - updated` against a review promise; `ttl_days: 45` says "re-check
 me in 45 days", not "this price held for 45 days". Collapsing the two would be
 the same collapse-to-a-convenient-answer the rest of this architecture refuses.
 
-`valid_from` / `valid_until` are the second axis: an optional, closed,
-day-granular interval on every document. Three properties define the design.
+`valid_from` / `valid_until` are the second axis: an optional, half-open,
+day-granular window on every document — `[valid_from, valid_until)`, so
+`valid_until` names the first day the claim did *not* hold. That makes a
+handoff exact rather than arithmetic: a successor's `valid_from` is its
+predecessor's `valid_until`, sharing no day. Three properties define the rest
+of the design.
 
 **Authored, never inferred.** Nothing derives a value. Not backfill, not
 import, not the consolidation loop, not an LLM pass. The one assisted path is
-the `boundary` argument on the three supersession-writing tools, and that date
+the `predecessor_valid_until` argument on the three supersession-writing tools,
+and that date
 comes from the caller — the supersession *event* is the interval boundary, so
 nothing is invented.
 
@@ -841,7 +846,7 @@ through December and A claims validity from April, the vault is asserting two
 contradictory things — a deterministic lint finding rather than invisible
 incoherence.
 
-Retrieval follows the same discipline. `vault_search --valid-at` annotates each
+Retrieval follows the same discipline. `vault_search valid_at` annotates each
 hit with its state at a date and can foreground the chain member whose interval
 covers it. That walk is **direction-monotone**: supersession reachability is not
 fact identity, and since `vault_merge` points two sources at one successor, a

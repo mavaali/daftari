@@ -298,9 +298,10 @@ export interface WriteResult {
   updated: string;
   validation: ValidationReport;
   indexUpdated: boolean;
-  // Set when a `boundary` write closed a predecessor's interval: names the
-  // successor and the valid_from the caller probably wants on it. A hint, not
-  // an action — the successor is deliberately never written here.
+  // Set when a `predecessor_valid_until` write closed a predecessor's window:
+  // names the successor and the valid_from the caller probably wants on it,
+  // which under a half-open window is the same date. A hint, not an action —
+  // the successor is deliberately never written here.
   hint?: string;
   // True when the vault runs shadow_mode (spec §11.5): the write was computed
   // and logged to .daftari/shadow-actions.jsonl but NOTHING was written —
