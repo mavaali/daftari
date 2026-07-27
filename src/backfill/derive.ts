@@ -236,6 +236,13 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     tier: resolve("tier", null, "null"),
     superseded_by: resolve("superseded_by", null, "null"),
     ttl_days: resolve("ttl_days", null, "null"),
+    // Valid time is authored, never inferred (D2): backfill preserves an
+    // interval the author already wrote and derives nothing when absent.
+    // Deriving from mtime or git dates would launder transaction time into
+    // valid time, which is the exact collapse the two-axis model exists to
+    // prevent.
+    valid_from: resolve("valid_from", null, "null"),
+    valid_until: resolve("valid_until", null, "null"),
     tags: tagsValue,
     // No signal to derive doc-to-code bindings from raw content; default empty.
     describes: resolve("describes", [], "empty"),

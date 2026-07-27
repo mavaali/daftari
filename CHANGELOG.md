@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bi-temporal validity.** Two optional built-in frontmatter fields,
+  `valid_from` and `valid_until`, recording when a document's claim was true
+  *in the world* — as distinct from when the vault recorded it, which git
+  history and `created`/`updated` already cover. The window is **half-open**,
+  `[valid_from, valid_until)`, day-granular: `valid_until` is the first day the
+  claim no longer held, so a successor's `valid_from` is exactly its
+  predecessor's `valid_until` and a handoff shares no day. Both null means
+  valid-time-unknown, which is never read as "always true"; a contradictory
+  window (`valid_until <= valid_from`) reads as unknown everywhere and is
+  reported by lint, never evaluated.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-bitemporal-validity-design.md`.
+- `vault_read` returns a `validity` report alongside `decay`; `vault_status`
+  reports `validityCoverage` as a read-only adoption monitor.
+- `vault_search` gains `valid_at` (annotate hits by their state at a date, and
+  foreground the chain member covering it) and `valid_only` (drop hits outside
+  their interval; documents with no authored interval are kept).
+- `vault_lint` gains a `validityConflicts` check: malformed endpoints,
+  inverted intervals, supersession overlaps and gaps, and canonical documents
+  whose validity ended with no successor.
+- `vault_supersede`, `vault_deprecate`, and `vault_merge` gain an optional
+  `predecessor_valid_until` argument — the date the successor takes over —
+  written verbatim to the predecessor's `valid_until`. The successor is never
+  modified; the result carries a hint instead.
+- `daftari asof --valid <date>` — the bi-temporal query: "on this commit,
+  what did the vault believe was true on that date?"
+- `daftari sleep` wakes canonical documents whose validity ended with nothing
+  superseding them; `daftari interview` asks what replaced them.
+
+### Changed
+
+- The embedding cache is no longer dropped on a `SCHEMA_VERSION` bump. It is
+  keyed on `(content_hash, model, dim)` — content-addressed, not a projection
+  of the `documents` schema — so dropping it meant paying a hosted provider to
+  regenerate vectors that were already correct.
+
+### BREAKING
+
+- `valid_from` and `valid_until` are now built-in frontmatter fields. A vault
+  that declares either under `schema_extensions` in `.daftari/config.yaml` will
+  fail config load until the declaration is removed — silently reinterpreting
+  an authored extension as a built-in would change its semantics without
+  telling anyone. Existing values in documents are read as-is by the built-in
+  field. If your field meant something other than a closed valid-time interval,
+  rename the extension (e.g. `effective_from`). The error message states the
+  fix.
+
 ## [1.32.0] - 2026-07-25
 
 The interview release: the vault interrogates its principal. `daftari

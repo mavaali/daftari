@@ -54,10 +54,13 @@ export type IndexDb = Database.Database;
 // Bumped 8 → 9 to add doc_links, the materialized inbound-link graph that
 // backs inline structural decay (#8) — orphan and deprecated-still-linked
 // answered with one indexed query at read/search time.
-// 10: `embeddings_vec` gains the `collection` partition key (2026-07-26
-// retrieval-fusion spec, Decision 3). The index is ephemeral — the
-// version-mismatch path drops and rebuilds from the markdown, so there is no
-// migration to write.
+// 10 carries two independent changes that landed together, both of which the
+// same bump covers because the version-mismatch path drops and rebuilds every
+// derived table from the markdown — there is no migration to write:
+//   - `embeddings_vec` gains the `collection` partition key (2026-07-26
+//     retrieval-fusion spec, Decision 3).
+//   - the valid-time columns (valid_from, valid_until) and an index on
+//     superseded_by, which the bi-temporal walk queries in reverse.
 const SCHEMA_VERSION = "10";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
@@ -81,6 +84,8 @@ export interface IndexedDocument {
   ttlDays: number | null;
   created: string;
   supersededBy: string | null;
+  validFrom: string | null;
+  validUntil: string | null;
 }
 
 export interface IndexedChunk {
@@ -114,9 +119,17 @@ CREATE TABLE IF NOT EXISTS documents (
   tokens        TEXT NOT NULL,
   ttl_days      INTEGER,
   created       TEXT NOT NULL DEFAULT '',
-  superseded_by TEXT
+  superseded_by TEXT,
+  -- Valid time. Nullable with no default: NULL is the unknown sentinel, and
+  -- unlike created (required, so "" means undateable) these fields are
+  -- optional, so NULL carries the meaning directly.
+  valid_from    TEXT,
+  valid_until   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created);
+-- The reverse supersession edge: supersessionPredecessors scans by successor.
+CREATE INDEX IF NOT EXISTS idx_documents_superseded_by ON documents(superseded_by);
+CREATE INDEX IF NOT EXISTS idx_documents_validity ON documents(valid_from, valid_until);
 CREATE TABLE IF NOT EXISTS chunks (
   path          TEXT NOT NULL,
   chunk_index   INTEGER NOT NULL,
@@ -440,6 +453,16 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
       // CREATE IF NOT EXISTS will not alter an existing table — the 5 → 6 bump
       // adds derives_from_edges.direction_verdict, so that table is dropped and
       // re-materialized from edges.jsonl on the next reindex.
+      //
+      // `embeddings` is deliberately NOT in this list. It is keyed on
+      // (content_hash, model, dim) — a content-addressed cache, not a
+      // projection of the `documents` schema — so no column change here can
+      // invalidate a row in it, and the ALTER-racing rationale above does not
+      // apply. Dropping it would mean paying a hosted provider to regenerate
+      // vectors that were already correct, which contradicts the durability
+      // the cache is designed for (see the VEC_DIM_META_KEY comment).
+      // `embeddings_vec` stays dropped: it is a vec0 mirror, repopulated from
+      // `embeddings` by the next reindex at zero provider cost.
       db.exec(
         "DROP TRIGGER IF EXISTS documents_ai;" +
           "DROP TRIGGER IF EXISTS documents_ad;" +
@@ -452,7 +475,6 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
           "DROP TRIGGER IF EXISTS chunks_au;" +
           "DROP TABLE IF EXISTS chunks_fts;" +
           "DROP TABLE IF EXISTS chunks;" +
-          "DROP TABLE IF EXISTS embeddings;" +
           "DROP TABLE IF EXISTS derives_from_edges;",
       );
       db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
@@ -576,6 +598,12 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   // the established "undateable" sentinel the date readers already handle.
   const created = normalizeIsoDate(doc.created) ?? "";
   const updated = normalizeIsoDate(doc.updated) ?? "";
+  // Same normalize-or-drop for the valid-time columns, but to NULL rather than
+  // "": these are optional, so NULL already means valid-time-unknown and a
+  // malformed endpoint collapsing into it is the honest reading. The raw
+  // authored value stays on disk untouched for vault_lint to name.
+  const validFrom = doc.validFrom === null ? null : (normalizeIsoDate(doc.validFrom) ?? null);
+  const validUntil = doc.validUntil === null ? null : (normalizeIsoDate(doc.validUntil) ?? null);
   // ON CONFLICT(path) DO UPDATE (rather than INSERT OR REPLACE) is required
   // so the AFTER UPDATE trigger on `documents` fires and keeps
   // `documents_fts` in sync. SQLite's OR REPLACE conflict resolution does
@@ -585,8 +613,8 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   db.prepare(
     `INSERT INTO documents
        (path, title, collection, domain, status, confidence, updated, tags, content, tokens,
-        ttl_days, created, superseded_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ttl_days, created, superseded_by, valid_from, valid_until)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(path) DO UPDATE SET
        title         = excluded.title,
        collection    = excluded.collection,
@@ -599,7 +627,9 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
        tokens        = excluded.tokens,
        ttl_days      = excluded.ttl_days,
        created       = excluded.created,
-       superseded_by = excluded.superseded_by`,
+       superseded_by = excluded.superseded_by,
+       valid_from    = excluded.valid_from,
+       valid_until   = excluded.valid_until`,
   ).run(
     doc.path,
     doc.title,
@@ -614,6 +644,8 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
     doc.ttlDays,
     created,
     doc.supersededBy,
+    validFrom,
+    validUntil,
   );
 }
 
@@ -807,6 +839,8 @@ interface DocumentRow {
   ttl_days: number | null;
   created: string;
   superseded_by: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
 }
 
 function rowToDocument(row: DocumentRow): IndexedDocument {
@@ -824,7 +858,21 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
     ttlDays: row.ttl_days,
     created: row.created,
     supersededBy: row.superseded_by,
+    validFrom: row.valid_from,
+    validUntil: row.valid_until,
   };
+}
+
+// Every document that names `path` as its successor. An ARRAY, not a scalar:
+// `superseded_by` is functional in the forward direction but a relation in
+// reverse — vault_merge points both sources at one successor on every merge —
+// so a backward walk must handle fan-in rather than assume a single answer.
+// Ordered by path for determinism.
+export function supersessionPredecessors(db: IndexDb, path: string): IndexedDocument[] {
+  const rows = db
+    .prepare("SELECT * FROM documents WHERE superseded_by = ? ORDER BY path")
+    .all(path) as DocumentRow[];
+  return rows.map(rowToDocument);
 }
 
 export function getAllDocuments(db: IndexDb): IndexedDocument[] {
