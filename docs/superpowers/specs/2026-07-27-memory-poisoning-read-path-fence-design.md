@@ -47,6 +47,11 @@ history. Four adversarial review rounds produced 45 dispositioned challenges,
   (`src/access/rbac.ts:64-66`, no collection argument), so reusing it lets any
   team's ratifier vouch another team's content. A new per-collection grant is
   permanent config surface for a population the design could not demonstrate.
+- **Indexing a new field is not free.** The predecessor billed exposing
+  `tier`/`updated_by` on search hits as "straight from the indexed frontmatter;
+  no new joins." Neither is indexed, and a `SCHEMA_VERSION` bump drops every
+  embedding. This design pays that cost explicitly instead — see *How `tier`
+  reaches those surfaces without a schema bump* under Decision 5.
 - **Out-of-band CLI is not a boundary.** [DATA] `resolveAccess` is called from
   `src/index.ts:119`, `src/serve/index.ts` and `src/sleep/index.ts` only — never
   from CLI subcommands. A stdio agent host with shell access reaches a CLI
@@ -71,7 +76,7 @@ target — stamp what the operator did not author, do not stamp what they did:
 |---|---|
 | `vault_set_tier` | Yes — reason required, provenance-logged. Unchanged. |
 | `daftari import` | Yes. Foreign-vault import brings in material the operator did not write. |
-| `daftari backfill` | **No.** It adopts a vault the operator authored. `--tier-source` exists, default off. |
+| `daftari backfill` | **No.** It adopts a vault the operator authored. Gains a `--tier-source` flag, default off. |
 | `daftari okf import` | No. The sidecar short-circuit stays; a bundle cannot declare its own tier. |
 | `vault_write`, `vault_append` | Never. |
 
@@ -235,6 +240,44 @@ one, so the requirement is total.
 
 No marker is ever inserted into a frontmatter field. Fencing a `title` corrupts
 every consumer of it.
+
+### How `tier` reaches those surfaces without a schema bump
+
+This is priced rather than assumed, because the predecessor's review raised it
+and the naive answer is expensive.
+
+`vault_index` is free: `scanVaultDocs` (`src/tools/read.ts:316`) already parses
+every frontmatter, so `VaultIndexEntry` gains `tier` with no index involvement.
+
+`vault_search` is not. Hits are built off the `documents` row, and [DATA]
+`documents` (`src/storage/index-db.ts:100-115`) has no `tier` column. The
+obvious move — bump `SCHEMA_VERSION` — is the one to avoid: [DATA] the
+schema-bump path drops `documents`, `chunks`, `embeddings`, both FTS tables,
+`embeddings_vec` and `derives_from_edges`, so **every vault re-embeds its entire
+corpus on first start after upgrade**. That is a long stall on `local-minilm`
+and a real bill on a hosted provider. [DATA] Embeddings survive an ordinary
+reindex; it is specifically the version bump that discards them.
+
+So the column is added without a bump:
+
+1. `tier TEXT` joins the `documents` DDL, for freshly created databases.
+2. In `openIndexDb`, an idempotent `PRAGMA table_info` check followed by
+   `ALTER TABLE documents ADD COLUMN tier TEXT` for existing ones.
+3. Backfill is keyed on a source constant compared against a meta key. If the
+   stored generation differs, `openIndexDb` clears `vault_manifest` and **writes
+   no key**; the key is written only at the end of a completed reindex. Clearing
+   is idempotent and repeatable, so a process that opens the database without
+   reindexing — a `daftari serve` start, for instance — leaves the work pending
+   rather than burning the guard before the reindex it depends on.
+
+The alternative considered and rejected: annotate `tier` per hit from a
+frontmatter read in the tool handler, the way `currentSource`, `contested` and
+`pendingBrokenUpstream` are populated ("by the tool handler, not the ranker",
+`src/search/hybrid.ts:53-58`). It needs no migration at all, but costs an N-file
+read on the hot query path and **fails open** — a hit whose file read fails
+renders un-annotated, i.e. an ingested document displayed as ordinary. Failing
+open is the wrong direction for this defense, so the migration is worth its
+complexity.
 
 ## Decision 6 — two advisory lint checks
 
