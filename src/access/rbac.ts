@@ -79,6 +79,21 @@ export function hasAnyRead(role: RoleConfig | null): boolean {
   return role !== null && role.read.length > 0;
 }
 
+// The explicit list of collections a role may read, for pushing an ACL filter
+// down into a query (the vector KNN — 2026-07-26 fusion spec, Decision 3).
+//
+// Three cases, and the distinction between the last two is load-bearing:
+//   - wildcard read  → undefined, meaning "no filter needed" (reads everything)
+//   - a null role    → [], meaning "reads nothing" — the deny-all guest
+//   - a scoped role  → its declared collections
+// A caller must not collapse [] into undefined: one is a guest who may see
+// nothing, the other is an operator with no access context at all.
+export function readableCollections(role: RoleConfig | null): string[] | undefined {
+  if (role === null) return [];
+  if (role.read.includes(WILDCARD)) return undefined;
+  return [...role.read];
+}
+
 // Keeps only the items in collections the role may read. Each item must carry
 // a `collection` field.
 export function filterByReadPermission<T extends { collection: string }>(

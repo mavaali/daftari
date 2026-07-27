@@ -61,13 +61,34 @@ describe("reindex populates both virtual tables", () => {
       // must show up via FTS5, and vice versa.
       expect(fts).toBe(docs);
 
-      const embeddings = embeddingCount(db);
+      // `embeddings_vec` is keyed per (content_hash, model, COLLECTION) since
+      // the ACL-pushdown change (2026-07-26 fusion spec, Decision 3), so its
+      // row count is no longer simply the cache's row count: chunk text shared
+      // across two collections is one cache row but two vec rows — the only
+      // honest shape, since a single row cannot carry two ACL labels. The
+      // invariant that still holds exactly is one vec row per distinct
+      // (hash, collection) pair the chunks actually reference.
+      const expectedVec = (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM (
+               SELECT DISTINCT c.content_hash, d.collection
+                 FROM chunks     AS c
+                 JOIN documents  AS d ON d.path = c.path
+                 JOIN embeddings AS e ON e.content_hash = c.content_hash
+             )`,
+          )
+          .get() as { n: number }
+      ).n;
       const vec = (
         db.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as {
           n: number;
         }
       ).n;
-      expect(vec).toBe(embeddings);
+      expect(vec).toBe(expectedVec);
+      // The cache itself stays content-addressed: never more rows than the
+      // mirror, and non-empty whenever the mirror is.
+      expect(embeddingCount(db)).toBeLessThanOrEqual(vec);
     } finally {
       db.close();
     }
