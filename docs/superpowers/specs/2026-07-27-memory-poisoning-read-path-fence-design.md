@@ -102,8 +102,9 @@ tier-related field, and `tierDistribution` appears nowhere in the tree.
 
 It gains:
 
-- `tierDistribution: { source, compiled, manual, untiered }` — counts over the
-  vault.
+- `tierDistribution: { source, compiled, manual, untiered }` — **counts over the
+  caller's visible set, not the vault.** See the scoping note below; this is
+  load-bearing, not a detail.
 - The index tier-backfill generation state (Decision 5's migration).
 - `fenceHeuristic: "on" | "off"` — the Decision 7 setting.
 
@@ -112,6 +113,37 @@ it, and the two states "no document is fenced because nothing is foreign" and
 "no document is fenced because the leg is off" are indistinguishable. Every
 later reference in this document to `vault_status.tierDistribution` or to the
 reported setting means this addition, not an existing surface.
+
+**Scoping — `tierDistribution` is filtered, and must be.** [DATA] `vaultStatus`
+(`src/tools/read.ts:429`) opens with "vault_status reports only over the
+documents the role can read," and every aggregate it returns honours that:
+`fileCount` and `collections` come from `visibleEntries` via
+`filterByReadPermission`, `stalenessDistribution` iterates behind a
+`visiblePaths` guard, and `unresolvedTensions`/`recentWrites` go through
+`visibleTensions`/`sourceReadable` — whose comment states outright that neither
+may leak the existence of a doc in a denied collection.
+
+An unfiltered `tierDistribution` would break that. A role could infer the
+presence of `source` or `manual` documents in collections it cannot read by
+diffing the distribution across an import or a `vault_set_tier` call — the
+small-cell existence leak the 2026-07-14 edge-graph spec's coarsening exists to
+prevent. CLAUDE.md's carve-out for unfiltered aggregates names `vault_lint`
+specifically; it does not extend to `vault_status`.
+
+So the counts are computed from `visibleEntries` in the same single scan that
+already feeds the other aggregates, which makes them free: `scanVaultDocs`
+parses every frontmatter, and `VaultIndexEntry` carries `tier` under Decision 5.
+
+The consequence, stated rather than discovered later: **coverage is
+per-principal.** A role with partial read sees partial coverage and cannot
+conclude anything about the rest of the vault, which is the correct behaviour
+for an RBAC'd tool and a limitation for an operator using it to audit. The
+vault-global view belongs on the lint surface, where unfiltered aggregates are
+already sanctioned.
+
+The other two fields carry no disclosure risk and are returned unfiltered: the
+backfill generation is index-level state about no particular document, and
+`fenceHeuristic` is configuration, identical for every caller.
 
 ## Decision 2 — the fence trigger has two legs
 
