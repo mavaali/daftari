@@ -53,7 +53,7 @@ describe("vault_read — validity", () => {
     const r = await vaultRead(vault, "pricing/current.md");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value.validity?.state).toBe("valid");
+    expect(r.value.validity?.state).toBe("in-window");
     expect(r.value.validity?.from).toBe("2020-01-01");
     expect(r.value.validity?.banner).toBeNull();
   });

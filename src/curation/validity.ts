@@ -1,6 +1,14 @@
 // Valid time — when a fact is true IN THE WORLD, as opposed to when the vault
 // recorded it (transaction time: git history, created/updated).
 //
+// THE INTERVAL IS HALF-OPEN: [valid_from, valid_until). Day D is in-window iff
+// `valid_from <= D < valid_until`, so `valid_until` names the first day the
+// claim did NOT hold. Two things fall out of that and both are load-bearing:
+// a successor's valid_from is EXACTLY its predecessor's valid_until (contiguity
+// is identity, not arithmetic — there is no off-by-one to get wrong, which
+// matters most on the boundary write an agent drives), and `until <= from` is
+// an empty window rather than a merely odd one.
+//
 // Pure and total, mirroring staleness.ts / decay.ts. Never throws. A document
 // with no authored interval reads as nothing-to-say (null), which is the
 // silent baseline — absence of validity is NOT a claim of permanent validity,
@@ -19,7 +27,7 @@ import type { LoadedDoc } from "./vault-docs.js";
 
 const MS_PER_DAY = 86_400_000;
 
-export type ValidityState = "valid" | "expired" | "not_yet" | "unknown";
+export type ValidityState = "in-window" | "expired" | "not-yet" | "unknown";
 
 // The frontmatter subset computeValidity needs. A full Frontmatter is
 // structurally assignable, and so is the indexed-document projection once its
@@ -71,12 +79,31 @@ export function computeValidity(input: ValidityInput, at: string): ValidityRepor
     return { from: rawFrom, until: rawUntil, state: "unknown", banner: null };
   }
 
-  // ISO dates sort lexically, so string comparison is valid date comparison.
-  // The interval is closed on both ends.
-  if (from !== null && when < from) {
-    return { from: rawFrom, until: rawUntil, state: "not_yet", banner: null };
+  // An inverted or empty window (`until <= from`) is a contradiction, and it
+  // must read as `unknown` rather than being evaluated. Evaluating it would
+  // mark the document `not-yet` before `from` and `expired` after `until` —
+  // never `in-window` on any day — so one transposed date would silently
+  // produce a stale banner on vault_read, removal under valid_only, a wake
+  // entry in daftari sleep, and an interview question about a fact that never
+  // stopped being true. Lint reports the inversion; this keeps the bad state
+  // from propagating while it goes unfixed.
+  if (from !== null && until !== null && until <= from) {
+    return { from: rawFrom, until: rawUntil, state: "unknown", banner: null };
   }
-  if (until !== null && when > until) {
+
+  // ISO dates sort lexically, so string comparison is valid date comparison.
+  //
+  // The interval is HALF-OPEN: [from, until). Day D is in-window iff
+  // `from <= D < until`. This makes contiguity identity rather than
+  // arithmetic — a successor's valid_from is exactly its predecessor's
+  // valid_until, with no off-by-one to get wrong — and matches the
+  // invalid-at semantics the external systems settled on. It also means
+  // `valid_until` is the first day the claim did NOT hold, which is what the
+  // supersession boundary writes directly.
+  if (from !== null && when < from) {
+    return { from: rawFrom, until: rawUntil, state: "not-yet", banner: null };
+  }
+  if (until !== null && when >= until) {
     const agoDays = daysBetween(until, when);
     return {
       from: rawFrom,
@@ -85,7 +112,7 @@ export function computeValidity(input: ValidityInput, at: string): ValidityRepor
       banner: `⚠ STALE — validity ended ${until} (${agoDays}d ago)`,
     };
   }
-  return { from: rawFrom, until: rawUntil, state: "valid", banner: null };
+  return { from: rawFrom, until: rawUntil, state: "in-window", banner: null };
 }
 
 // --- lint ------------------------------------------------------------------
@@ -147,12 +174,17 @@ export function validityConflicts(docs: LoadedDoc[], now: Date): ValidityConflic
     // A malformed endpoint makes every downstream comparison meaningless.
     if ((rawFrom !== null && from === null) || (rawUntil !== null && until === null)) continue;
 
-    // 2. inverted — one document contradicting itself.
-    if (from !== null && until !== null && until < from) {
+    // 2. inverted — one document contradicting itself. Under a half-open
+    //    interval, `until === from` is the degenerate empty window (no day is
+    //    in it), so it is the same defect and reported the same way.
+    if (from !== null && until !== null && until <= from) {
       out.push({
         path: d.path,
         kind: "inverted",
-        detail: `valid_until ${until} is before valid_from ${from}`,
+        detail:
+          until === from
+            ? `valid_from and valid_until are both ${from} — a half-open window [${from}, ${until}) contains no days`
+            : `valid_until ${until} is not after valid_from ${from}`,
       });
       continue;
     }
@@ -164,15 +196,18 @@ export function validityConflicts(docs: LoadedDoc[], now: Date): ValidityConflic
       const successor = byPath.get(successorPath);
       const sFrom = successor ? normalizeIsoDate(successor.frontmatter.valid_from ?? "") : null;
       if (successor && sFrom !== null) {
-        if (sFrom <= until) {
+        // Half-open makes the clean handoff exact equality: the predecessor's
+        // window ends the instant the successor's begins, sharing no day.
+        // Anything earlier overlaps; anything later leaves a gap.
+        if (sFrom < until) {
           out.push({
             path: d.path,
             kind: "supersession-overlap",
             detail:
-              `this document claims validity through ${until}, but its successor ` +
+              `this document claims validity until ${until}, but its successor ` +
               `claims validity from ${sFrom} — the vault asserts both held at once`,
           });
-        } else if (daysBetween(until, sFrom) > 1) {
+        } else if (sFrom > until) {
           out.push({
             path: d.path,
             kind: "supersession-gap",

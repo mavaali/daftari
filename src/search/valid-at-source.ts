@@ -62,7 +62,7 @@ function covers(doc: IndexedDocument, at: string): boolean {
   const report = computeValidity({ valid_from: doc.validFrom, valid_until: doc.validUntil }, at);
   // Null means the document authors no interval — it cannot cover anything.
   // Absence is not evidence.
-  return report !== null && report.state === "valid";
+  return report !== null && report.state === "in-window";
 }
 
 function resolved(doc: IndexedDocument, hops: number): ValidAtSource {

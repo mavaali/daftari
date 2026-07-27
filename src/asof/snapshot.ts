@@ -78,16 +78,16 @@ export interface AsofSnapshot {
     openedSince: { title: string; date: string; kind: string }[];
     resolvedSince: { title: string; date: string; kind: string; resolutionKind: string }[];
   };
-  // The second temporal axis, present only when --valid-at was supplied.
+  // The second temporal axis, present only when --valid was supplied.
   // Reading: "at this commit, the vault believed N documents' claims held on
-  // `date`." `unknown` is its own bucket and never folded into either of the
-  // others — a document that authors no interval is not evidence either way,
+  // `date`." `unwindowed` is its own bucket and never folded into either of
+  // the others — a document that asserts no window is not evidence either way,
   // and for any ref predating the feature it is ALL of them.
-  validAt?: {
+  validity?: {
     date: string;
-    covering: number;
-    notCovering: number;
-    unknown: number;
+    inWindow: number; // the doc asserted a window covering `date`
+    outOfWindow: number; // it asserted a window, and `date` falls outside it
+    unwindowed: number; // no window asserted (or a contradictory one) — never counted either way
   };
 }
 
@@ -205,7 +205,7 @@ export async function beliefSnapshot(
     // and the status rollup are deliberately untouched: drift is a
     // transaction-time notion (what the vault RECORDED between then and now),
     // and mixing the axes is the confusion this feature exists to remove.
-    ...(validAt !== undefined ? { validAt: partitionByValidity(thenDocs.value, validAt) } : {}),
+    ...(validAt !== undefined ? { validity: partitionByValidity(thenDocs.value, validAt) } : {}),
   });
 }
 
@@ -213,10 +213,10 @@ export async function beliefSnapshot(
 function partitionByValidity(
   docs: LoadedDoc[],
   date: string,
-): { date: string; covering: number; notCovering: number; unknown: number } {
-  let covering = 0;
-  let notCovering = 0;
-  let unknown = 0;
+): { date: string; inWindow: number; outOfWindow: number; unwindowed: number } {
+  let inWindow = 0;
+  let outOfWindow = 0;
+  let unwindowed = 0;
   for (const d of docs) {
     const report = computeValidity(
       {
@@ -227,11 +227,11 @@ function partitionByValidity(
     );
     // Null (no interval authored) and "unknown" (malformed endpoint) both mean
     // the vault cannot answer for this document. Neither is a "no".
-    if (report === null || report.state === "unknown") unknown += 1;
-    else if (report.state === "valid") covering += 1;
-    else notCovering += 1;
+    if (report === null || report.state === "unknown") unwindowed += 1;
+    else if (report.state === "in-window") inWindow += 1;
+    else outOfWindow += 1;
   }
-  return { date, covering, notCovering, unknown };
+  return { date, inWindow, outOfWindow, unwindowed };
 }
 
 // ---------------------------------------------------------------------------

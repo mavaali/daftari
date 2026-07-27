@@ -85,15 +85,17 @@ describe("vault_supersede — boundary", () => {
     });
   });
 
-  it("closes the predecessor's interval the day before the boundary", async () => {
+  it("writes the supplied date verbatim — half-open needs no arithmetic", async () => {
+    // The successor takes over on 2026-04-01, so the predecessor's window is
+    // [.., 2026-04-01): it covers 2026-03-31 and not 2026-04-01. No shifting.
     const r = await vaultSupersede(vault, {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
-    expect((await validityOf(vault, "pricing/v1.md")).until).toBe("2026-03-31");
+    expect((await validityOf(vault, "pricing/v1.md")).until).toBe("2026-04-01");
   });
 
   it("handles a month boundary correctly", async () => {
@@ -101,10 +103,10 @@ describe("vault_supersede — boundary", () => {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "2026-03-01",
+      predecessor_valid_until: "2026-03-01",
     });
     expect(r.ok).toBe(true);
-    expect((await validityOf(vault, "pricing/v1.md")).until).toBe("2026-02-28");
+    expect((await validityOf(vault, "pricing/v1.md")).until).toBe("2026-03-01");
   });
 
   // --- C1: the successor must not be touched -------------------------------
@@ -117,7 +119,7 @@ describe("vault_supersede — boundary", () => {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
     expect(readFileSync(successorPath, "utf8")).toBe(before);
@@ -128,7 +130,7 @@ describe("vault_supersede — boundary", () => {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -159,7 +161,7 @@ describe("vault_supersede — boundary", () => {
       old_path: "pricing/closed.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -172,16 +174,16 @@ describe("vault_supersede — boundary", () => {
   it("accepts a boundary consistent with the existing valid_until", async () => {
     await seed(vault, "pricing/consistent.md", {
       valid_from: "2026-01-01",
-      valid_until: "2026-03-31",
+      valid_until: "2026-04-01",
     });
     const r = await vaultSupersede(vault, {
       old_path: "pricing/consistent.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
-    expect((await validityOf(vault, "pricing/consistent.md")).until).toBe("2026-03-31");
+    expect((await validityOf(vault, "pricing/consistent.md")).until).toBe("2026-04-01");
   });
 
   it("rejects a malformed boundary", async () => {
@@ -189,11 +191,11 @@ describe("vault_supersede — boundary", () => {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
       agent: AGENT,
-      boundary: "April 2026",
+      predecessor_valid_until: "April 2026",
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error.message).toContain("boundary");
+    expect(r.error.message).toContain("predecessor_valid_until");
   });
 });
 
@@ -214,10 +216,10 @@ describe("vault_deprecate — boundary", () => {
       path: "pricing/old.md",
       reason: "pricing changed",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
-    expect((await validityOf(vault, "pricing/old.md")).until).toBe("2026-03-31");
+    expect((await validityOf(vault, "pricing/old.md")).until).toBe("2026-04-01");
   });
 
   it("leaves validity untouched when boundary is omitted", async () => {
@@ -236,7 +238,7 @@ describe("vault_deprecate — boundary", () => {
       path: "pricing/closed.md",
       reason: "x",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(false);
   });
@@ -262,11 +264,11 @@ describe("vault_merge — boundary", () => {
       target_path: "pricing/merged.md",
       body: "# Merged\n\nCombined body.\n",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
-    expect((await validityOf(vault, "pricing/a.md")).until).toBe("2026-03-31");
-    expect((await validityOf(vault, "pricing/b.md")).until).toBe("2026-03-31");
+    expect((await validityOf(vault, "pricing/a.md")).until).toBe("2026-04-01");
+    expect((await validityOf(vault, "pricing/b.md")).until).toBe("2026-04-01");
   });
 
   it("refuses the WHOLE merge when either source conflicts", async () => {
@@ -285,7 +287,7 @@ describe("vault_merge — boundary", () => {
       target_path: "pricing/merged.md",
       body: "# Merged\n\nCombined body.\n",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(false);
     // path_a must not have been closed either.
@@ -299,7 +301,7 @@ describe("vault_merge — boundary", () => {
       target_path: "pricing/merged.md",
       body: "# Merged\n\nCombined body.\n",
       agent: AGENT,
-      boundary: "2026-04-01",
+      predecessor_valid_until: "2026-04-01",
     });
     expect(r.ok).toBe(true);
     // The target is the successor. Same rule as vault_supersede: not ours to

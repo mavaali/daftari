@@ -333,7 +333,7 @@ export async function vaultSearch(
         permittedRanked = permittedRanked.filter(
           (h) =>
             h.validity == null ||
-            (h.validity.state !== "expired" && h.validity.state !== "not_yet"),
+            (h.validity.state !== "expired" && h.validity.state !== "not-yet"),
         );
       }
     }

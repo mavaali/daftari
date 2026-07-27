@@ -1,4 +1,4 @@
-// `daftari asof <ref> --valid-at <date>` — the actual bi-temporal query.
+// `daftari asof <ref> --valid <date>` — the actual bi-temporal query.
 //
 //   "On <ref>, what did the vault believe was true on <valid-at>?"
 //
@@ -82,7 +82,7 @@ afterAll(() => {
   rmSync(vault, { recursive: true, force: true });
 });
 
-describe("beliefSnapshot — validAt partition", () => {
+describe("beliefSnapshot — validity partition", () => {
   it("omits the partition when validAt is not requested", async () => {
     const commit = await resolveAsofCommit(vault, "HEAD");
     expect(commit.ok).toBe(true);
@@ -92,10 +92,10 @@ describe("beliefSnapshot — validAt partition", () => {
     const snap = await beliefSnapshot(vault, commit.value, tensions.value);
     expect(snap.ok).toBe(true);
     if (!snap.ok) return;
-    expect(snap.value.validAt).toBeUndefined();
+    expect(snap.value.validity).toBeUndefined();
   });
 
-  it("partitions covering / not-covering / unknown at a date", async () => {
+  it("partitions in-window / out-of-window / unwindowed at a date", async () => {
     const commit = await resolveAsofCommit(vault, "HEAD");
     expect(commit.ok).toBe(true);
     if (!commit.ok) return;
@@ -104,13 +104,13 @@ describe("beliefSnapshot — validAt partition", () => {
     const snap = await beliefSnapshot(vault, commit.value, tensions.value, "2026-02-15");
     expect(snap.ok).toBe(true);
     if (!snap.ok) return;
-    expect(snap.value.validAt?.date).toBe("2026-02-15");
-    expect(snap.value.validAt?.covering).toBe(1); // base.md
-    expect(snap.value.validAt?.notCovering).toBe(1); // other.md, not_yet
-    expect(snap.value.validAt?.unknown).toBe(0);
+    expect(snap.value.validity?.date).toBe("2026-02-15");
+    expect(snap.value.validity?.inWindow).toBe(1); // base.md
+    expect(snap.value.validity?.outOfWindow).toBe(1); // other.md, not_yet
+    expect(snap.value.validity?.unwindowed).toBe(0);
   });
 
-  it("reports 100% unknown for a pre-adoption ref", async () => {
+  it("reports 100% unwindowed for a pre-adoption ref", async () => {
     // The C7 limitation, asserted rather than described.
     const commit = await resolveAsofCommit(vault, preAdoption);
     expect(commit.ok).toBe(true);
@@ -120,9 +120,9 @@ describe("beliefSnapshot — validAt partition", () => {
     const snap = await beliefSnapshot(vault, commit.value, tensions.value, "2026-02-15");
     expect(snap.ok).toBe(true);
     if (!snap.ok) return;
-    expect(snap.value.validAt?.unknown).toBe(2);
-    expect(snap.value.validAt?.covering).toBe(0);
-    expect(snap.value.validAt?.notCovering).toBe(0);
+    expect(snap.value.validity?.unwindowed).toBe(2);
+    expect(snap.value.validity?.inWindow).toBe(0);
+    expect(snap.value.validity?.outOfWindow).toBe(0);
   });
 
   it("leaves drift untouched — drift is a transaction-time notion", async () => {
@@ -139,9 +139,9 @@ describe("beliefSnapshot — validAt partition", () => {
   });
 });
 
-describe("daftari asof --valid-at (CLI)", () => {
-  it("does not consume the --valid-at value as the positional ref", async () => {
-    // The VALUE_FLAGS regression: omitting --valid-at from that list makes the
+describe("daftari asof --valid (CLI)", () => {
+  it("does not consume the --valid value as the positional ref", async () => {
+    // The VALUE_FLAGS regression: omitting --valid from that list makes the
     // positional finder mistake the DATE for the ref. Asserting exit 0 is not
     // enough — "2026-02-15" resolves as a date-ref perfectly well and reports
     // the WRONG commit. So assert the report names HEAD's commit.
@@ -152,7 +152,7 @@ describe("daftari asof --valid-at (CLI)", () => {
     const code = await runAsof([
       "--vault",
       vault,
-      "--valid-at",
+      "--valid",
       "2026-02-15",
       "HEAD",
       "--output",
@@ -163,10 +163,10 @@ describe("daftari asof --valid-at (CLI)", () => {
     rmSync(out, { force: true });
   });
 
-  it("exits 2 on a malformed --valid-at", async () => {
+  it("exits 2 on a malformed --valid", async () => {
     // Must fail on the DATE, not incidentally on ref resolution — so pass a
     // ref that resolves fine.
-    const code = await runAsof(["--vault", vault, "HEAD", "--valid-at", "February 2026"]);
+    const code = await runAsof(["--vault", vault, "HEAD", "--valid", "February 2026"]);
     expect(code).toBe(2);
   });
 
@@ -177,7 +177,7 @@ describe("daftari asof --valid-at (CLI)", () => {
     expect(plain).not.toContain("## Valid at");
 
     const out2 = join(vault, "..", `asof2-${Date.now()}.md`);
-    await runAsof(["--vault", vault, "HEAD", "--valid-at", "2026-02-15", "--output", out2]);
+    await runAsof(["--vault", vault, "HEAD", "--valid", "2026-02-15", "--output", out2]);
     const dated = readFileSync(out2, "utf-8");
     expect(dated).toContain("## Valid at 2026-02-15");
     rmSync(out, { force: true });
@@ -186,7 +186,7 @@ describe("daftari asof --valid-at (CLI)", () => {
 
   it("says so in words when nothing at the ref carries validity", async () => {
     const out = join(vault, "..", `asof3-${Date.now()}.md`);
-    await runAsof(["--vault", vault, preAdoption, "--valid-at", "2026-02-15", "--output", out]);
+    await runAsof(["--vault", vault, preAdoption, "--valid", "2026-02-15", "--output", out]);
     const text = readFileSync(out, "utf-8");
     // A bare "0 covering" would read as "nothing was true then".
     expect(text).toMatch(/no document at this ref carries authored validity/i);

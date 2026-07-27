@@ -73,7 +73,7 @@ describe("vault_search — valid_at", () => {
     expect(annotated.length).toBeGreaterThan(0);
     for (const hit of annotated) {
       if (hit.path.includes("exp-")) expect(hit.validity?.state).toBe("expired");
-      if (hit.path.includes("cur-")) expect(hit.validity?.state).toBe("valid");
+      if (hit.path.includes("cur-")) expect(hit.validity?.state).toBe("in-window");
     }
   }, 60_000);
 
@@ -82,9 +82,9 @@ describe("vault_search — valid_at", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const expA = r.value.hits.find((h) => h.path.includes("exp-a"));
-    expect(expA?.validity?.state).toBe("valid");
+    expect(expA?.validity?.state).toBe("in-window");
     const curA = r.value.hits.find((h) => h.path.includes("cur-a"));
-    expect(curA?.validity?.state).toBe("not_yet");
+    expect(curA?.validity?.state).toBe("not-yet");
   }, 60_000);
 
   it("does not filter by default — annotation only", async () => {
@@ -104,7 +104,7 @@ describe("vault_search — valid_at", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.hits.some((h) => h.validity?.state === "expired")).toBe(false);
-    expect(r.value.hits.some((h) => h.validity?.state === "not_yet")).toBe(false);
+    expect(r.value.hits.some((h) => h.validity?.state === "not-yet")).toBe(false);
   }, 60_000);
 
   it("KEEPS unknown hits under valid_only — absence is not evidence", async () => {

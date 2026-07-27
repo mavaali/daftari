@@ -68,10 +68,17 @@ function todayISO(): string {
 
 // --- supersession boundary (valid time) ------------------------------------
 //
-// `boundary` is "the date the successor takes over". Supplying it lets one
-// call record both the supersession event and the valid-time handoff, since
-// the event IS the interval boundary — derived from an authored relation plus
-// a caller-supplied date, never inferred from statistics.
+// `predecessor_valid_until` is the date the successor takes over. Supplying it
+// lets one call record both the supersession event and the valid-time handoff,
+// since the event IS the window boundary — derived from an authored relation
+// plus a caller-supplied date, never inferred from statistics.
+//
+// Because the window is half-open, the supplied date is written VERBATIM: the
+// predecessor's window ends exactly where the successor's begins, sharing no
+// day and needing no arithmetic. That is what half-open buys, and it is worth
+// the slightly less natural authoring precisely here — this is the path an
+// agent drives, and an off-by-one would silently open a one-day hole in, or
+// double-claim a day of, the vault's account of when a fact held.
 //
 // It only ever writes the PREDECESSOR. vault_supersede gates RBAC on the
 // predecessor's collection alone, so touching the successor would be a write
@@ -79,59 +86,55 @@ function todayISO(): string {
 // provenance entry, and a multi-file commit. The successor's valid_from is
 // surfaced as a hint for a separate, deliberate call.
 
-const MS_PER_DAY = 86_400_000;
-
-// Reads and validates the optional `boundary` argument. Null when absent.
+// Reads and validates the optional `predecessor_valid_until` argument.
+// Null when absent.
 function readBoundary(args: Record<string, unknown>, tool: string): Result<string | null, Error> {
-  if (args.boundary === undefined || args.boundary === null) return ok(null);
-  if (typeof args.boundary !== "string") {
-    return err(new Error(`${tool}: 'boundary' must be a YYYY-MM-DD date string`));
+  const raw = args.predecessor_valid_until;
+  if (raw === undefined || raw === null) return ok(null);
+  if (typeof raw !== "string") {
+    return err(new Error(`${tool}: 'predecessor_valid_until' must be a YYYY-MM-DD date string`));
   }
-  const normalized = normalizeIsoDate(args.boundary);
+  const normalized = normalizeIsoDate(raw);
   if (normalized === null) {
-    return err(new Error(`${tool}: 'boundary' must be a YYYY-MM-DD date, got "${args.boundary}"`));
+    return err(
+      new Error(`${tool}: 'predecessor_valid_until' must be a YYYY-MM-DD date, got "${raw}"`),
+    );
   }
   return ok(normalized);
 }
 
-// The predecessor's closing endpoint: the day before the successor takes over.
-// The interval is closed on both ends, so the two documents must not share a
-// day or they would both claim it.
-function dayBefore(iso: string): string {
-  return new Date(Date.parse(`${iso}T00:00:00Z`) - MS_PER_DAY).toISOString().slice(0, 10);
-}
-
-// Computes the predecessor's new valid_until, or refuses. An existing
+// Validates the predecessor's new valid_until, or refuses. An existing
 // non-null valid_until that disagrees is an authored claim, and a convenience
-// argument does not get to overwrite one — the caller has to reconcile the two
-// dates themselves. Agreeing values pass through idempotently.
+// argument does not get to overwrite one — the caller reconciles the two dates
+// themselves. An agreeing value passes through idempotently.
 function closingUntil(
   fm: Frontmatter,
   boundary: string,
   tool: string,
   path: string,
 ): Result<string, Error> {
-  const until = dayBefore(boundary);
   const existing = fm.valid_until ?? null;
-  if (existing !== null && existing !== until) {
+  if (existing !== null && existing !== boundary) {
     return err(
       new Error(
-        `${tool}: ${path} already declares valid_until ${existing}, but boundary ` +
-          `${boundary} implies ${until}. Refusing to overwrite an authored value — ` +
-          "reconcile the two dates, or omit 'boundary' and set valid_until directly.",
+        `${tool}: ${path} already declares valid_until ${existing}, but ` +
+          `predecessor_valid_until ${boundary} was supplied. Refusing to overwrite an ` +
+          "authored value — reconcile the two dates, or omit the argument and set " +
+          "valid_until directly.",
       ),
     );
   }
-  return ok(until);
+  return ok(boundary);
 }
 
 // The successor-side follow-up the caller should make deliberately, through
-// the tool that carries the successor's own RBAC gate.
+// the tool that carries the successor's own RBAC gate. Under a half-open
+// window the successor's valid_from is the SAME date — that is the point.
 function boundaryHint(successorPath: string, boundary: string): string {
   return (
     `valid_until was set on the predecessor. The successor ${successorPath} was NOT ` +
     `modified — set 'valid_from: ${boundary}' on it with vault_write if that is the ` +
-    "date its claim starts holding."
+    "date its claim starts holding (the two windows meet exactly, sharing no day)."
   );
 }
 
@@ -2018,12 +2021,15 @@ const baseVersionProperty = {
 const boundaryProperty = {
   type: "string",
   description:
-    "Optional YYYY-MM-DD: the date the successor takes over. Sets valid_until " +
-    "on the PREDECESSOR to the day before, recording the valid-time handoff " +
-    "alongside the supersession — this is about when the fact changed in the " +
-    "world, not when you are writing. The successor is NOT modified; the " +
-    "result carries a hint for setting its valid_from in a separate call. " +
-    "Refuses rather than overwriting an existing conflicting valid_until.",
+    "Optional YYYY-MM-DD: the date the successor takes over — i.e. the first " +
+    "day the PREDECESSOR's claim no longer held. Written verbatim to the " +
+    "predecessor's valid_until, recording the valid-time handoff alongside " +
+    "the supersession. This is about when the fact changed IN THE WORLD, not " +
+    "when you are writing. Validity windows are half-open, so the successor's " +
+    "valid_from is this same date — the two windows meet exactly and share no " +
+    "day. The successor is NOT modified; the result carries a hint for setting " +
+    "its valid_from in a separate call. Refuses rather than overwriting an " +
+    "existing conflicting valid_until.",
 };
 
 const runIdProperty = {
@@ -2438,7 +2444,7 @@ export const writeTools: ToolDefinition[] = [
           type: "string",
           description: "Optional vault-relative path of the document that replaces this one",
         },
-        boundary: boundaryProperty,
+        predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
         base_version: baseVersionProperty,
       },
@@ -2560,7 +2566,7 @@ export const writeTools: ToolDefinition[] = [
           type: "string",
           description: "Optional reason recorded in the commit message",
         },
-        boundary: boundaryProperty,
+        predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
         base_version: baseVersionProperty,
       },
@@ -2613,7 +2619,7 @@ export const writeTools: ToolDefinition[] = [
             "frontmatter with provenance set to 'synthesized'.",
           additionalProperties: true,
         },
-        boundary: boundaryProperty,
+        predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
       },
       required: ["path_a", "path_b", "target_path", "body", "agent"],
