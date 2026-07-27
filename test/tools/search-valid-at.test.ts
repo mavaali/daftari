@@ -122,7 +122,7 @@ describe("vault_search — valid_at", () => {
     expect(r.value.hits.some((h) => h.validity === null || h.validity === undefined)).toBe(true);
   }, 60_000);
 
-  // --- C8: the page-shrink regression --------------------------------------
+  // --- the page-shrink regression (design record, Decision 5) ---------------
 
   it("returns a FULL page when expired docs occupy the top-limit slots", async () => {
     // Three of the six seeded docs are expired. Asking for 3 under valid_only

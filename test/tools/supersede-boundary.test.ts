@@ -1,8 +1,10 @@
-// The `boundary` argument on vault_supersede, vault_deprecate, vault_merge.
+// `predecessor_valid_until` on vault_supersede, vault_deprecate, vault_merge.
 //
-// "The date the successor takes over." Supplying it closes the PREDECESSOR's
-// interval at boundary - 1 day, so a supersession event and a valid-time
-// handoff can be recorded in one call.
+// "The date the successor takes over." Supplying it records a supersession
+// event and a valid-time handoff in one call. Because windows are half-open,
+// the date is written VERBATIM to the predecessor's valid_until — the two
+// windows meet exactly and share no day, so there is no arithmetic and no
+// off-by-one to get wrong on the path an agent drives.
 //
 // THE SUCCESSOR IS NEVER WRITTEN. vaultSupersede writes one document and gates
 // RBAC on the predecessor's collection only; writing the successor too would
@@ -59,7 +61,7 @@ async function validityOf(vault: string, path: string) {
   };
 }
 
-describe("vault_supersede — boundary", () => {
+describe("vault_supersede — predecessor_valid_until", () => {
   let vault: string;
 
   beforeEach(async () => {
@@ -72,7 +74,7 @@ describe("vault_supersede — boundary", () => {
     cleanupVault(vault);
   });
 
-  it("leaves validity untouched when boundary is omitted", async () => {
+  it("leaves validity untouched when the argument is omitted", async () => {
     const r = await vaultSupersede(vault, {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
@@ -98,7 +100,7 @@ describe("vault_supersede — boundary", () => {
     expect((await validityOf(vault, "pricing/v1.md")).until).toBe("2026-04-01");
   });
 
-  it("handles a month boundary correctly", async () => {
+  it("does not shift the date across a month edge", async () => {
     const r = await vaultSupersede(vault, {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
@@ -109,7 +111,7 @@ describe("vault_supersede — boundary", () => {
     expect((await validityOf(vault, "pricing/v1.md")).until).toBe("2026-03-01");
   });
 
-  // --- C1: the successor must not be touched -------------------------------
+  // --- the successor must not be touched (design record, Decision 3) -------
 
   it("leaves the successor file BYTE-IDENTICAL", async () => {
     const successorPath = join(vault, "pricing/v2.md");
@@ -139,7 +141,7 @@ describe("vault_supersede — boundary", () => {
     expect(r.value.hint).toContain("2026-04-01");
   });
 
-  it("emits no hint when boundary is omitted", async () => {
+  it("emits no hint when the argument is omitted", async () => {
     const r = await vaultSupersede(vault, {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
@@ -171,7 +173,7 @@ describe("vault_supersede — boundary", () => {
     expect((await validityOf(vault, "pricing/closed.md")).until).toBe("2026-06-30");
   });
 
-  it("accepts a boundary consistent with the existing valid_until", async () => {
+  it("accepts a date consistent with the existing valid_until", async () => {
     await seed(vault, "pricing/consistent.md", {
       valid_from: "2026-01-01",
       valid_until: "2026-04-01",
@@ -186,7 +188,7 @@ describe("vault_supersede — boundary", () => {
     expect((await validityOf(vault, "pricing/consistent.md")).until).toBe("2026-04-01");
   });
 
-  it("rejects a malformed boundary", async () => {
+  it("rejects a malformed date", async () => {
     const r = await vaultSupersede(vault, {
       old_path: "pricing/v1.md",
       new_path: "pricing/v2.md",
@@ -199,7 +201,7 @@ describe("vault_supersede — boundary", () => {
   });
 });
 
-describe("vault_deprecate — boundary", () => {
+describe("vault_deprecate — predecessor_valid_until", () => {
   let vault: string;
 
   beforeEach(async () => {
@@ -211,7 +213,7 @@ describe("vault_deprecate — boundary", () => {
     cleanupVault(vault);
   });
 
-  it("closes the deprecated document's interval", async () => {
+  it("closes the deprecated document's window", async () => {
     const r = await vaultDeprecate(vault, {
       path: "pricing/old.md",
       reason: "pricing changed",
@@ -222,7 +224,7 @@ describe("vault_deprecate — boundary", () => {
     expect((await validityOf(vault, "pricing/old.md")).until).toBe("2026-04-01");
   });
 
-  it("leaves validity untouched when boundary is omitted", async () => {
+  it("leaves validity untouched when the argument is omitted", async () => {
     const r = await vaultDeprecate(vault, {
       path: "pricing/old.md",
       reason: "pricing changed",
@@ -244,7 +246,7 @@ describe("vault_deprecate — boundary", () => {
   });
 });
 
-describe("vault_merge — boundary", () => {
+describe("vault_merge — predecessor_valid_until", () => {
   let vault: string;
 
   beforeEach(async () => {

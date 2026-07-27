@@ -154,7 +154,7 @@ describe("resolveValidAtSource", () => {
     expect(resolveValidAtSource(db, "pricing/a.md", "2026-06-01")?.kind).toBe("cycle");
   });
 
-  // --- C3: the lineage-membership regression --------------------------------
+  // --- the lineage-membership regression (design record, Decision 6) --------
 
   it("does NOT foreground a sibling lineage across a merge fan-in", () => {
     // vault_merge shape: two independent sources, one successor. Seeded at
@@ -213,7 +213,7 @@ describe("resolveValidAtSource", () => {
     expect(r.count).toBe(2);
   });
 
-  // --- C4: the disclosure regression ---------------------------------------
+  // --- the disclosure regression (design record, Decision 6) ----------------
 
   it("degrades a FORWARD unreadable hop to a path-free restricted marker", () => {
     insertDocument(

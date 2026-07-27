@@ -65,8 +65,10 @@ describe("validity field parsing", () => {
   });
 });
 
-// The C2 regression tests. If any of these start failing with report.valid ===
-// false, an optional field has become a write blocker across five subsystems.
+// If any of these start failing with report.valid === false, an optional field
+// has become a write blocker across five subsystems (write.ts:943/:1176/:1678,
+// consolidate/admit.ts, curation/tier0.ts). Design record, Decision 1 —
+// deliberately divergent from the original proposal, which specified flagging.
 describe("validity never blocks a write", () => {
   it("preserves a malformed date string verbatim and reports no issue", () => {
     const r = validateFrontmatter(data({ valid_from: "January 2026" }));

@@ -86,9 +86,9 @@ describe("vault_lint — validityConflicts", () => {
   });
 
   it("does NOT make the document schema-invalid — validity never blocks a write", async () => {
-    // The C2 contract, asserted end-to-end: a malformed interval is a lint
-    // finding and nothing more. If schemaInvalid starts firing here, an
-    // optional field has become a hard blocker in five subsystems.
+    // Asserted end-to-end: a malformed interval is a lint finding and nothing
+    // more. If schemaInvalid starts firing here, an optional field has become a
+    // hard blocker in five subsystems. Design record, Decision 1.
     write(vault, "typo.md", { valid_from: "January 2026" });
     const report = await runLint(vault);
     expect(report.ok).toBe(true);
