@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MCP 2026-07-28.** The server speaks the final "stateless MCP" revision on
+  the v2 SDK line (`@modelcontextprotocol/server` 2.0). `daftari serve` is
+  stateless per the spec's Decision 1: the initialize handshake, the
+  `Mcp-Session-Id` header, and the session table are gone — identity is
+  resolved from the bearer on every request against the same config-declared
+  map, and 2025-era traffic is refused (no dual-stacking). stdio serves both
+  eras from one factory, so lagging clients use stdio; the RBAC,
+  existence-disclosure, and process-lock invariants carry over unchanged.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-mcp-2026-07-28-readiness-design.md`.
+- `vault_ratify` called without a `decision` now answers with a stateless
+  form-mode elicitation (`input_required`): approve/reject with reject
+  preselected, plus HMAC-signed opaque state carrying the action id, the
+  vault HEAD at proposal time, and the deciding user. A declined form applies
+  nothing and leaves the action pending; a direct call with the decision
+  inline keeps working. The server proposes, the human disposes — now on the
+  wire itself (Decision 5).
+- The maintenance passes (`sleep`, `consolidate`, `audit`, `eval`) remain
+  CLI-only: the spec's Decision 4 kill condition fired — the final revision
+  moved Tasks to a standalone extension (removing `tasks/list`) and the
+  TypeScript SDK ships no tasks runtime yet.
+
 ### Added
 
 - **Bi-temporal validity.** Two optional built-in frontmatter fields,
