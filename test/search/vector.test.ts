@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { ok } from "../../src/frontmatter/types.js";
+import type { EmbeddingProvider } from "../../src/search/embedding-provider.js";
 import {
   type ChunkInput,
   chunkDocument,
@@ -7,7 +9,13 @@ import {
   EMBEDDING_DIM,
   embed,
   embeddingInput,
+  embedQuery,
+  getProvider,
+  getQuantize,
   meanEmbedding,
+  resetProviderForTests,
+  setProviderForTests,
+  toIndexDim,
 } from "../../src/search/vector.js";
 import { sha256Hex } from "../../src/utils/hash.js";
 
@@ -236,6 +244,128 @@ describe("meanEmbedding", () => {
 
   it("returns null for an empty input", () => {
     expect(meanEmbedding([])).toBeNull();
+  });
+});
+
+describe("toIndexDim", () => {
+  it("is identity (a fresh copy) when the vector is already at the target dim", () => {
+    const v = new Float32Array([0.6, 0.8]);
+    const out = toIndexDim(v, 2);
+    expect(out[0]).toBeCloseTo(0.6, 5);
+    expect(out[1]).toBeCloseTo(0.8, 5);
+    expect(out).not.toBe(v); // fresh array, not the same reference
+  });
+
+  it("slices and re-L2-normalizes when truncating", () => {
+    // A unit vector in 4d; truncating to 2d and renormalizing must still be
+    // unit length, and the truncated components must be proportional to the
+    // original's.
+    const v = new Float32Array([0.5, 0.5, 0.5, 0.5]);
+    const out = toIndexDim(v, 2);
+    expect(out.length).toBe(2);
+    let norm = 0;
+    for (const x of out) norm += x * x;
+    expect(Math.sqrt(norm)).toBeCloseTo(1, 6);
+    expect(out[0]).toBeCloseTo(out[1] as number, 6); // proportionality preserved
+  });
+});
+
+describe("provider selection", () => {
+  afterEach(() => {
+    resetProviderForTests();
+  });
+
+  it("getQuantize() defaults to float32 after a reset", () => {
+    expect(getQuantize()).toBe("float32");
+  });
+
+  it("swaps the active provider when dim changes on an unchanged provider id", async () => {
+    resetProviderForTests();
+    const { setProvider } = await import("../../src/search/vector.js");
+    setProvider("local-embeddinggemma", { dim: 512 });
+    const first = getProvider();
+    expect(first.dim).toBe(512);
+    setProvider("local-embeddinggemma", { dim: 512 }); // repeated tuple: no-op
+    expect(getProvider()).toBe(first);
+    setProvider("local-embeddinggemma", { dim: 768 }); // dim flip: must swap
+    const second = getProvider();
+    expect(second.dim).toBe(768);
+    expect(second).not.toBe(first);
+  });
+
+  it("swaps activeQuantize when quantize changes even though (id, dim) is unchanged", async () => {
+    resetProviderForTests();
+    const { setProvider } = await import("../../src/search/vector.js");
+    setProvider("local-embeddinggemma", { dim: 512, quantize: "none" });
+    const providerA = getProvider();
+    expect(getQuantize()).toBe("float32");
+    setProvider("local-embeddinggemma", { dim: 512, quantize: "int8" });
+    expect(getProvider()).toBe(providerA); // same cached instance — id/dim unchanged
+    expect(getQuantize()).toBe("int8"); // but the quantize STATE must have swapped
+  });
+
+  it("resetProviderForTests reverts to local-minilm and quantize=float32", async () => {
+    const { setProvider } = await import("../../src/search/vector.js");
+    setProvider("local-embeddinggemma", { dim: 512, quantize: "int8" });
+    resetProviderForTests();
+    expect(getProvider().id).toBe("local-minilm");
+    expect(getQuantize()).toBe("float32");
+  });
+});
+
+function fakeProvider(overrides: Partial<EmbeddingProvider> = {}): EmbeddingProvider {
+  return {
+    id: "fake-provider",
+    dim: 4,
+    async embed(texts) {
+      return ok(texts.map(() => new Float32Array([1, 0, 0, 0])));
+    },
+    async warm() {
+      return ok(undefined);
+    },
+    ...overrides,
+  };
+}
+
+describe("embedQuery (module-level delegation)", () => {
+  afterEach(() => {
+    resetProviderForTests();
+  });
+
+  it("falls back to embed([text]) + toIndexDim when the provider has no embedQuery", async () => {
+    setProviderForTests(fakeProvider());
+    const result = await embedQuery("anything");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect([...result.value]).toEqual([1, 0, 0, 0]);
+  });
+
+  it("delegates directly to the provider's own embedQuery when present", async () => {
+    const queryVec = new Float32Array([0, 1, 0, 0]);
+    setProviderForTests(
+      fakeProvider({
+        async embedQuery() {
+          return ok(queryVec);
+        },
+      }),
+    );
+    const result = await embedQuery("anything");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBe(queryVec); // exactly the provider's own return, untouched
+  });
+
+  it("propagates a provider embed() failure as Result.err", async () => {
+    const { err } = await import("../../src/frontmatter/types.js");
+    setProviderForTests(
+      fakeProvider({
+        async embed() {
+          return err(new Error("boom"));
+        },
+      }),
+    );
+    const result = await embedQuery("anything");
+    expect(result.ok).toBe(false);
   });
 });
 

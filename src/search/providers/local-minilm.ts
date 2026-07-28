@@ -132,4 +132,5 @@ export const localMinilmProvider: EmbeddingProvider = {
   dim: LOCAL_MINILM_DIM,
   warm,
   embed,
+  isLoaded: isLocalMinilmLoaded,
 };
