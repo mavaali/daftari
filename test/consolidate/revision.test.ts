@@ -12,7 +12,7 @@ import {
   type RevisionOpts,
   revisionPanel,
 } from "../../src/consolidate/revision.js";
-import { computeInputsFingerprint } from "../../src/curation/edges.js";
+import { computeInputsFingerprint, evidenceClassKey } from "../../src/curation/edges.js";
 import type { LlmClient } from "../../src/eval/llm.js";
 import { ok } from "../../src/frontmatter/types.js";
 
@@ -56,6 +56,7 @@ const baseOpts: RevisionOpts = {
   panelSize: 2,
   budgetRemaining: 100,
   model: "claude-haiku-test",
+  independenceGraduated: false,
 };
 
 // Default: the envelope always admits. Refusing tests pass their own `admit`.
@@ -65,6 +66,20 @@ const ADMIT_OK: RevisionDeps["admit"] = async () => ({
   reason: "ok",
   impact: 0,
 });
+
+// Independence-aware promotion (Decisions 3-4) default stubs: an empty
+// pre-panel class map (so the panel behaves as before PR-2 unless a test
+// overrides `independenceGraduated` or the class read) and no-op journal /
+// tension recorders. Spread first in each `RevisionDeps` literal so a test
+// can still override any of the three.
+const DEFAULT_INDEPENDENCE_DEPS: Pick<
+  RevisionDeps,
+  "getEvidenceClasses" | "recordIndependenceShadow" | "recordNeedsReviewTension"
+> = {
+  getEvidenceClasses: async () => ok(new Map()),
+  recordIndependenceShadow: async () => ok(undefined),
+  recordNeedsReviewTension: async () => ok(undefined),
+};
 
 const dueEdge = {
   fromPath: "a.md",
@@ -103,6 +118,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: Array<{ axis?: string }> = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "ok" },
@@ -140,6 +156,7 @@ describe("revisionPanel — majority decides, once", () => {
         fp?: { inputs?: string; principal?: string; model?: string; prompt?: string };
       }> = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "ok" },
@@ -180,6 +197,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "still ok" },
@@ -212,6 +230,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "fails", reason: "no link" },
@@ -246,6 +265,7 @@ describe("revisionPanel — majority decides, once", () => {
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "ok" },
@@ -281,6 +301,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: async () => ({
           admit: false,
           gate: "budget" as const,
@@ -319,6 +340,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
       const observed: unknown[] = [];
       const contests: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: async () => ({
           admit: false,
           gate: "invariants" as const,
@@ -357,6 +379,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
     try {
       const observed: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: async () => {
           throw new Error("makeAdmit fs error");
         },
@@ -389,6 +412,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
     try {
       let admitCalls = 0;
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: async () => {
           admitCalls++;
           return ADMIT_OK({ action: "edge-observe", fromPath: "", toPath: "" });
@@ -439,6 +463,7 @@ describe("revisionPanel — independence by axis (§11.3 replay-gap)", () => {
         completeWithTools: vi.fn(),
       };
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm,
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
@@ -461,6 +486,7 @@ describe("revisionPanel — budget + stop", () => {
     const root = tmpVault();
     try {
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "1" },
@@ -489,6 +515,7 @@ describe("revisionPanel — budget + stop", () => {
     const root = tmpVault();
     try {
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "1" },
@@ -520,6 +547,7 @@ describe("revisionPanel — trace", () => {
     try {
       const rows: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([
           { verdict: "survives", reason: "1" },
@@ -554,6 +582,7 @@ describe("revisionPanel — trace", () => {
     try {
       const observed: unknown[] = [];
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([{ verdict: "survives", reason: "x" }]),
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
@@ -587,6 +616,7 @@ describe("revisionPanel — path canonicalization", () => {
         toPath: "research/./b.md",
       };
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([{ verdict: "survives", reason: "x" }]),
         loadDoc: async (p) => {
@@ -614,6 +644,7 @@ describe("revisionPanel — write failure post-vote (observe/contest disk error)
     const root = tmpVault();
     try {
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm: mockLlm([{ verdict: "survives", reason: "ok" }]),
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
@@ -662,6 +693,7 @@ describe("revisionPanel — LLM failures", () => {
         completeWithTools: vi.fn(),
       };
       const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
         admit: ADMIT_OK,
         llm,
         loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
@@ -678,6 +710,263 @@ describe("revisionPanel — LLM failures", () => {
       expect(r.value.votes.length).toBe(2); // both attempts recorded, one errored
       const errored = r.value.votes.filter((v) => "error" in v);
       expect(errored.length).toBe(1);
+    } finally {
+      cleanup(root);
+    }
+  });
+});
+
+describe("revisionPanel — independence-aware promotion (Decisions 3-4)", () => {
+  const panelClassKey = evidenceClassKey({
+    inputs: computeInputsFingerprint([
+      { path: "a.md", text: "[content of a.md]" },
+      { path: "b.md", text: "[content of b.md]" },
+    ]),
+    principal: "agent:curation-loop",
+    model: "claude-haiku-test",
+  });
+
+  it("graduated + correlated-only panel → needs-review, zero observes, one tension, trace carries the decision", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const tensions: Array<{ title: string; kind: string }> = [];
+      const journalRows: Array<{ wouldDecision: string | null; marginalGain: number }> = [];
+      const traceRows: Array<{
+        decision: string;
+        independence?: { wouldDecision: string | null };
+      }> = [];
+      const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
+        admit: ADMIT_OK,
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async (input) => {
+          observed.push(input);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async (r) => {
+          traceRows.push(r);
+          return ok(undefined);
+        },
+        // Two prior counted votes already in this exact class: the panel's
+        // survivors land at priorCount 2 and 3 → gains 0.25 + 0.125, both
+        // sub-boundary.
+        getEvidenceClasses: async () => ok(new Map([[panelClassKey, 2]])),
+        recordIndependenceShadow: async (r) => {
+          journalRows.push(r);
+          return ok(undefined);
+        },
+        recordNeedsReviewTension: async (input) => {
+          tensions.push({ title: input.title, kind: input.kind });
+          return ok(undefined);
+        },
+      };
+      const r = await revisionPanel(dueEdge, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+        independenceGraduated: true,
+      });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("needs-review");
+      expect(r.value.observedCount).toBe(0);
+      expect(observed.length).toBe(0);
+      expect(tensions).toEqual([
+        { title: "correlated-only survival: a.md derives_from b.md", kind: "interpretive" },
+      ]);
+      expect(journalRows.length).toBe(1);
+      expect(journalRows[0]?.wouldDecision).toBe("would_needs_review");
+      expect(traceRows.length).toBe(1);
+      expect(traceRows[0]?.decision).toBe("needs-review");
+      expect(traceRows[0]?.independence?.wouldDecision).toBe("would_needs_review");
+      expect(r.value.independenceWouldNeedsReview).toBe(true);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("graduated + fresh-class panel (no pre-existing classes) → accrues exactly as today", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const tensions: unknown[] = [];
+      const journalRows: Array<{ wouldDecision: string | null }> = [];
+      const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
+        admit: ADMIT_OK,
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async (input) => {
+          observed.push(input);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+        getEvidenceClasses: async () => ok(new Map()),
+        recordIndependenceShadow: async (r) => {
+          journalRows.push(r);
+          return ok(undefined);
+        },
+        recordNeedsReviewTension: async (input) => {
+          tensions.push(input);
+          return ok(undefined);
+        },
+      };
+      const r = await revisionPanel(dueEdge, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+        independenceGraduated: true,
+      });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("survives");
+      expect(observed.length).toBe(2);
+      expect(tensions.length).toBe(0);
+      expect(journalRows.length).toBe(1);
+      expect(journalRows[0]?.wouldDecision).toBe("would_accrue");
+      expect(r.value.independenceWouldNeedsReview).toBe(false);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("shadowed default: a correlated-only panel still accrues (writes are exactly today's), but the journal + would-be flag see the correlation", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      const journalRows: Array<{ wouldDecision: string | null }> = [];
+      const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
+        admit: ADMIT_OK,
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async (input) => {
+          observed.push(input);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+        getEvidenceClasses: async () => ok(new Map([[panelClassKey, 2]])),
+        recordIndependenceShadow: async (r) => {
+          journalRows.push(r);
+          return ok(undefined);
+        },
+      };
+      // independenceGraduated: false (baseOpts default) — decision and writes
+      // are exactly today's two-way verdict.
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
+      if (!r.ok) throw r.error;
+      expect(r.value.decision).toBe("survives");
+      expect(observed.length).toBe(2);
+      expect(r.value.independenceWouldNeedsReview).toBe(true); // would-be, reported not acted on
+      expect(journalRows[0]?.wouldDecision).toBe("would_needs_review");
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("one independence-shadow journal row per panel, including tie and gated (wouldDecision null)", async () => {
+    const root = tmpVault();
+    try {
+      const journalRows: Array<{ wouldDecision: string | null }> = [];
+      const recordIndependenceShadow: RevisionDeps["recordIndependenceShadow"] = async (r) => {
+        journalRows.push(r);
+        return ok(undefined);
+      };
+
+      // Tie: no majority, nothing written.
+      const tieDeps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
+        admit: ADMIT_OK,
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "fails", reason: "no" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
+        observe: async () => ok({ ...dueEdge }),
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+        recordIndependenceShadow,
+      };
+      const tieRes = await revisionPanel(dueEdge, tieDeps, { ...baseOpts, vaultRoot: root });
+      if (!tieRes.ok) throw tieRes.error;
+      expect(tieRes.value.decision).toBe("tie");
+
+      // Gated: majority survives, envelope refuses.
+      const gatedDeps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
+        admit: async () => ({
+          admit: false,
+          gate: "budget" as const,
+          reason: "trust-budget exhausted",
+          impact: 0.05,
+        }),
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
+        observe: async () => ok({ ...dueEdge }),
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+        recordIndependenceShadow,
+      };
+      const gatedRes = await revisionPanel(dueEdge, gatedDeps, { ...baseOpts, vaultRoot: root });
+      if (!gatedRes.ok) throw gatedRes.error;
+      expect(gatedRes.value.decision).toBe("gated");
+
+      expect(journalRows.length).toBe(2);
+      for (const row of journalRows) expect(row.wouldDecision).toBeNull();
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("a failed pre-panel classes read degrades to shadow-off: journal nothing, decision unaffected", async () => {
+    const root = tmpVault();
+    try {
+      const observed: unknown[] = [];
+      let journalCalls = 0;
+      const deps: RevisionDeps = {
+        ...DEFAULT_INDEPENDENCE_DEPS,
+        admit: ADMIT_OK,
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `c-${p}` }),
+        observe: async (input) => {
+          observed.push(input);
+          return ok({ ...dueEdge });
+        },
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+        getEvidenceClasses: async () => ({ ok: false, error: new Error("edges.jsonl unreadable") }),
+        recordIndependenceShadow: async () => {
+          journalCalls++;
+          return ok(undefined);
+        },
+      };
+      const r = await revisionPanel(dueEdge, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+        independenceGraduated: true,
+      });
+      if (!r.ok) throw r.error;
+      // Live decision unaffected: still accrues normally.
+      expect(r.value.decision).toBe("survives");
+      expect(observed.length).toBe(2);
+      expect(r.value.independenceJournalWriteFailure).toBe(true);
+      expect(journalCalls).toBe(0); // nothing journaled
     } finally {
       cleanup(root);
     }

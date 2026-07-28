@@ -117,8 +117,10 @@ export const EDGE_NEEDS_REVIEW_MIN_GAIN = 0.5;
 
 // Sentinel for an absent fingerprint component. Matches only itself: an
 // all-legacy (no-fp) trail collapses into a single class, never accidentally
-// split from a genuinely fingerprinted one.
-const FP_SENTINEL = "∅";
+// split from a genuinely fingerprinted one. Exported so consumers that decode
+// a class key (e.g. the needs-review tension body, src/consolidate/
+// independence.ts) share this exact literal instead of re-hardcoding it.
+export const FP_SENTINEL = "∅";
 
 // The loop's authenticated principal — mirrors CONSOLIDATE_AGENT
 // (src/consolidate/constants.ts), duplicated here as a literal rather than

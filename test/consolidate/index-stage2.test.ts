@@ -356,6 +356,90 @@ describe("--report=decorrelation", () => {
   });
 });
 
+describe("Stage 2 dispatch — revision, independence-aware promotion (Decisions 3-4)", () => {
+  it("shadowed default (independence_graduated unset): a due edge still panels and accrues, needs_review_emitted reported as would-be", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
+    const { observeEdge } = await import("../../src/curation/edges.js");
+    const past = new Date(Date.now() - 100 * 86_400_000).toISOString();
+    await observeEdge(dir, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: "agent:curation-loop",
+      blind: false,
+      at: past,
+    });
+    await observeEdge(dir, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: "agent:curation-loop",
+      blind: true,
+      axis: "prompt",
+      at: past,
+    });
+
+    const { out } = captureStdout();
+    const code = await runConsolidate(["--vault", dir, "--mode", "revision"]);
+    expect([0, 4]).toContain(code);
+    const text = out.join("");
+    expect(text).toMatch(/panels_cast: 1/);
+    // Not graduated: the report suffixes needs_review_emitted as would-be and
+    // never reports panels_skipped_needs_review (that line is graduated-only).
+    expect(text).toMatch(/needs_review_emitted: \d+ \(shadowed — would-be\)/);
+    expect(text).not.toMatch(/panels_skipped_needs_review/);
+  });
+
+  it("graduated + a due edge parked by an open needs-review tension: zero LLM calls, panel skipped", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    writeFileSync(
+      join(dir, ".daftari", "config.yaml"),
+      "version: 1\nshadow_mode: true\nindependence_graduated: true\n",
+    );
+    const { observeEdge } = await import("../../src/curation/edges.js");
+    const past = new Date(Date.now() - 100 * 86_400_000).toISOString();
+    // Seed a due edge a.md -> b.md (no premiseVote given, so the seed's own
+    // orientation — fromPath=a.md (dependent), toPath=b.md (premise) — is the
+    // output orientation the title must match).
+    await observeEdge(dir, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: "agent:curation-loop",
+      blind: false,
+      at: past,
+    });
+    await observeEdge(dir, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: "agent:curation-loop",
+      blind: true,
+      axis: "prompt",
+      at: past,
+    });
+    // An OPEN needs-review tension already parks this exact edge.
+    const t = await addTension(dir, {
+      title: "correlated-only survival: a.md derives_from b.md",
+      kind: "interpretive",
+      sourceA: "a.md",
+      claimA:
+        "1 classes over 1 counted votes — class 1 x1: model=unfingerprinted, principal=unfingerprinted, inputs=unfingerprinted",
+      sourceB: "b.md",
+      claimB: "survives re-derivation only on already-counted evidence",
+      loggedBy: "agent:curation-loop",
+    });
+    expect(t.ok).toBe(true);
+
+    const { out } = captureStdout();
+    const code = await runConsolidate(["--vault", dir, "--mode", "revision"]);
+    expect([0, 4]).toContain(code);
+    const text = out.join("");
+    expect(text).toMatch(/panels_cast: 0/);
+    expect(text).toMatch(/llm_calls: 0/);
+    expect(text).toMatch(/panels_skipped_needs_review: 1/);
+    // Would-be/real emissions counter stays at 0 — the panel never ran.
+    expect(text).toMatch(/needs_review_emitted: 0/);
+  });
+});
+
 describe("Stage 2 — trace failure → exit 5", () => {
   it("if the trace cannot be written (read-only .daftari), exit code is 5", async () => {
     process.env.ANTHROPIC_API_KEY = "test-key";

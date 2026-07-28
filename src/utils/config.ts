@@ -295,6 +295,13 @@ export interface DaftariConfig {
   // The consolidate loop refuses live writes (mode != scan) unless the operator
   // has made an explicit choice, so a surprising default can't spend or mutate.
   shadowModeSet: boolean;
+  // Independence-aware promotion graduation gate (2026-07-26 spec, Decision
+  // 4). Defaults to false — the shipped shadow posture: the revision loop
+  // computes and journals the would-be verdict but the live two-way decision
+  // is untouched. Opt-in only, unlike shadow_mode: absence is a valid false,
+  // no explicit-declaration tripwire, because the ungraduated behavior IS
+  // today's behavior (nothing new to silently start doing).
+  independenceGraduated: boolean;
   // Absolute path to an external git directory (git's --separate-git-dir), or
   // undefined for a normal in-vault .git. Lets a cloud-synced vault hold only a
   // static `.git` file while git's churn lives off-cloud. Always resolved
@@ -338,6 +345,7 @@ function emptyConfig(): DaftariConfig {
     backfillIdentityMap: {},
     shadowMode: false,
     shadowModeSet: false,
+    independenceGraduated: false,
     gitDir: undefined,
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
@@ -1241,6 +1249,17 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode = root.shadow_mode;
   }
 
+  // Independence-aware promotion graduation gate (2026-07-26 spec, Decision
+  // 4). Opt-in; absence is a valid false (unlike shadow_mode, no explicit-
+  // declaration requirement — the default behavior is today's behavior).
+  let independenceGraduated = false;
+  if (root.independence_graduated !== undefined) {
+    if (typeof root.independence_graduated !== "boolean") {
+      return err(new Error("malformed config: 'independence_graduated' must be true or false"));
+    }
+    independenceGraduated = root.independence_graduated;
+  }
+
   // Embedding provider selection. Defaults to local-minilm. Unknown ids fail
   // loud — the trust model is "vault owner configures the server" so a typo
   // is a config error, not a fall-through to default. The OPENAI_API_KEY
@@ -1389,6 +1408,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     backfillIdentityMap: backfillIdentityMap.value,
     shadowMode,
     shadowModeSet,
+    independenceGraduated,
     gitDir: gitDir.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,

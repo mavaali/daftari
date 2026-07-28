@@ -18,12 +18,16 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, posix } from "node:path";
 import {
+  agedStrength,
   type ContestEdgeInput,
   computeInputsFingerprint,
   type DerivesFromEdge,
   EDGE_AXES,
+  effectiveK,
+  evidenceClassKey,
   type ObserveEdgeInput,
 } from "../curation/edges.js";
+import type { TensionInput } from "../curation/tension.js";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
@@ -32,6 +36,12 @@ import {
   type ConsolidatePromptTemplate,
 } from "./constants.js";
 import type { Admit, EnvelopeVerdict } from "./envelope.js";
+import {
+  classesForTension,
+  type IndependenceShadowRow,
+  independenceVerdict,
+  needsReviewTensionInput,
+} from "./independence.js";
 
 // --- public surface ----------------------------------------------------------
 
@@ -47,6 +57,16 @@ export interface RevisionDeps {
   observe: (input: ObserveEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   contest: (input: ContestEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   recordRevisionTrace: (row: RevisionTraceRow) => Promise<Result<void, Error>>;
+  // Independence-aware promotion (Decisions 3-4). The edge's CURRENT
+  // evidence-class counts, fetched once at panel start (before any observe
+  // lands). A failure degrades the panel to shadow-off (journal nothing,
+  // count one journal failure) — it must never change the live decision.
+  getEvidenceClasses: (
+    fromPath: string,
+    toPath: string,
+  ) => Promise<Result<Map<string, number>, Error>>;
+  recordIndependenceShadow: (row: IndependenceShadowRow) => Promise<Result<void, Error>>;
+  recordNeedsReviewTension: (input: TensionInput) => Promise<Result<unknown, Error>>;
 }
 
 export interface RevisionOpts {
@@ -55,6 +75,13 @@ export interface RevisionOpts {
   panelSize: number;
   budgetRemaining: number;
   model: string;
+  // Decision 4 graduation gate — default false (shipped shadowed). When
+  // false, decision and writes are exactly today's two-way verdict; the
+  // independence verdict feeds only the shadow journal and the trace. When
+  // true, a correlated-only survives-majority panel becomes "needs-review"
+  // instead of "survives": no observes, no envelope consult, a tension
+  // instead.
+  independenceGraduated: boolean;
 }
 
 export interface RevisionVote {
@@ -72,7 +99,10 @@ export interface RevisionVoteError {
 // no write — they surface for human attention instead of churning edge state.
 // "gated" means a majority WAS reached (survives/fails) but the envelope refused
 // the write — the vote stands in the trace, but nothing was applied.
-export type RevisionDecision = "survives" | "fails" | "tie" | "no-vote" | "gated";
+// "needs-review" (Decision 3, graduated only): majority survives but every
+// surviving vote landed in an already-present evidence class — no observes,
+// a needs-review tension instead.
+export type RevisionDecision = "survives" | "fails" | "tie" | "no-vote" | "gated" | "needs-review";
 
 export interface RevisionTraceRow {
   at: string;
@@ -92,6 +122,16 @@ export interface RevisionTraceRow {
   // EnvelopeVerdict). Absent otherwise.
   gate?: "invariants" | "budget" | null;
   gateReason?: string;
+  // Independence-aware promotion (Decision 3's "last clause": the recall@K
+  // evaluator and the calibration reads see the class breakdown here too).
+  // Present only when the panel reached the majority-survives, admitted
+  // branch AND the pre-panel class read succeeded.
+  independence?: {
+    kEff: number;
+    marginalGain: number;
+    classKeys: string[];
+    wouldDecision: "would_accrue" | "would_needs_review" | null;
+  };
 }
 
 export interface RevisionOutcome {
@@ -114,6 +154,14 @@ export interface RevisionOutcome {
   outputTokens: number;
   traceWritten: boolean;
   traceError?: string;
+  // True iff the independence verdict computed to would_needs_review on this
+  // panel — the Decision-5 burden counter increments on this REGARDLESS of
+  // independenceGraduated (shadowed: would-be; graduated: the panel actually
+  // became "needs-review").
+  independenceWouldNeedsReview: boolean;
+  // The pre-panel getEvidenceClasses read failed, OR the shadow journal write
+  // itself failed. Counted like journalWriteFailures — reported, never gates.
+  independenceJournalWriteFailure: boolean;
 }
 
 // --- canon -------------------------------------------------------------------
@@ -252,6 +300,15 @@ export async function revisionPanel(
     { path: toPath, text: truncate(toRes.value.content) },
   ]);
 
+  // Independence-aware promotion (Decisions 3-4): fetch the edge's CURRENT
+  // evidence classes BEFORE any observe lands this panel — alongside loadDoc,
+  // once per panel. A failed read degrades to shadow-off for this panel only
+  // (no journal row, no independence verdict); the live majority-decides
+  // path below never depends on this succeeding.
+  const preClassesRes = await deps.getEvidenceClasses(fromPath, toPath);
+  const preClasses = preClassesRes.ok ? preClassesRes.value : new Map<string, number>();
+  const classesAvailable = preClassesRes.ok;
+
   const axes = axesForPanel(opts.panelSize);
   const votes: Array<RevisionVote | RevisionVoteError> = [];
   const writeErrors: Array<{ axis: ConsolidatePromptTemplate; error: string }> = [];
@@ -301,6 +358,15 @@ export async function revisionPanel(
   let contestedCount = 0;
   let gate: "invariants" | "budget" | null | undefined;
   let gateReason: string | undefined;
+  // Independence verdict (Decisions 3-4): set ONLY on the majority-survives,
+  // admitted branch — wouldDecision stays null for fails/tie/no-vote/gated
+  // panels, matching the spec's "the independence verdict only splits
+  // survives" scope. survivingClassKeysUsed mirrors it for the journal row.
+  let indVerdict: {
+    marginalGain: number;
+    wouldDecision: "would_accrue" | "would_needs_review";
+  } | null = null;
+  let survivingClassKeysUsed: string[] = [];
 
   if (survivesCount === 0 && failsCount === 0) {
     decision = "no-vote"; // all errored / budget-starved — surface, write nothing
@@ -339,34 +405,99 @@ export async function revisionPanel(
       gateReason = verdict.reason;
       surviving.length = 0; // ensure the loop below applies nothing
     } else {
-      decision = "survives";
-      for (let i = 0; i < surviving.length; i++) {
-        const storeAxis = EDGE_AXES[i % EDGE_AXES.length];
-        const obs = await deps.observe({
+      // Independence verdict (Decision 3): every surviving vote in THIS
+      // panel shares one class key — (inputs, principal, model) are
+      // identical across the panel's votes (only fp.prompt, excluded from
+      // the key, varies by template) — so the panel's marginal k_eff gain
+      // against the edge's PRE-panel classes measures whether this panel is
+      // genuinely fresh evidence or a repeat of an already-present class.
+      const classKey = evidenceClassKey({
+        inputs: inputsFingerprint,
+        principal: CONSOLIDATE_AGENT,
+        model: opts.model,
+      });
+      survivingClassKeysUsed = surviving.map(() => classKey);
+      indVerdict = classesAvailable
+        ? independenceVerdict(preClasses, survivingClassKeysUsed)
+        : null;
+
+      if (opts.independenceGraduated && indVerdict?.wouldDecision === "would_needs_review") {
+        // Correlated-only survival (graduated): no observes, no further
+        // envelope consult — the tension IS the surface (Decision 3). The
+        // one admit above already consulted the envelope for this panel
+        // decision; needs-review writes nothing to the edge store.
+        decision = "needs-review";
+        const tensionInput = needsReviewTensionInput(
           fromPath,
           toPath,
-          observedBy: opts.agent,
-          blind: true,
-          axis: storeAxis,
-          note: `revision/${surviving[i].axis}: ${surviving[i].reason}`,
-          fp: {
-            inputs: inputsFingerprint,
-            principal: CONSOLIDATE_AGENT,
-            model: opts.model,
-            prompt: `revision/${surviving[i].axis}`,
-          },
-        });
-        if (obs.ok) observedCount++;
-        else
+          classesForTension(preClasses),
+        );
+        const tensionRes = await deps.recordNeedsReviewTension(tensionInput);
+        if (!tensionRes.ok) {
           writeErrors.push({
-            axis: surviving[i].axis,
-            error: `observe failed: ${obs.error.message}`,
+            axis: axes[0],
+            error: `needs-review tension failed: ${tensionRes.error.message}`,
           });
+        }
+      } else {
+        // Shipped default (independenceGraduated: false) OR a genuinely
+        // fresh-class panel: decision and writes are exactly today's.
+        decision = "survives";
+        for (let i = 0; i < surviving.length; i++) {
+          const storeAxis = EDGE_AXES[i % EDGE_AXES.length];
+          const obs = await deps.observe({
+            fromPath,
+            toPath,
+            observedBy: opts.agent,
+            blind: true,
+            axis: storeAxis,
+            note: `revision/${surviving[i].axis}: ${surviving[i].reason}`,
+            fp: {
+              inputs: inputsFingerprint,
+              principal: CONSOLIDATE_AGENT,
+              model: opts.model,
+              prompt: `revision/${surviving[i].axis}`,
+            },
+          });
+          if (obs.ok) observedCount++;
+          else
+            writeErrors.push({
+              axis: surviving[i].axis,
+              error: `observe failed: ${obs.error.message}`,
+            });
+        }
       }
     }
   } else {
     // Tie (survives === fails, both > 0): no majority ⇒ surface, write nothing.
     decision = "tie";
+  }
+
+  // Independence shadow journal (Decision 4): one row per panel regardless
+  // of decision, so the calibration denominator is honest. A failed
+  // pre-panel classes read degrades to "journal nothing, count one failure"
+  // — never the live decision above.
+  let independenceJournalWriteFailure = false;
+  if (classesAvailable) {
+    const kEffPre = effectiveK(preClasses.values());
+    const now = new Date();
+    const shadowRow: IndependenceShadowRow = {
+      at: now.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      fromPath,
+      toPath,
+      kSurvived: edge.kSurvived,
+      kEff: kEffPre,
+      strength: edge.strength,
+      strengthIndependent: agedStrength(kEffPre, edge.lastRederived, now),
+      classes: [...preClasses.entries()].map(([key, count]) => ({ key, count })),
+      panelClassKeys: survivingClassKeysUsed,
+      marginalGain: indVerdict?.marginalGain ?? 0,
+      wouldDecision: indVerdict?.wouldDecision ?? null,
+    };
+    const shadowRes = await deps.recordIndependenceShadow(shadowRow);
+    if (!shadowRes.ok) independenceJournalWriteFailure = true;
+  } else {
+    independenceJournalWriteFailure = true;
   }
 
   const traceRes = await deps.recordRevisionTrace({
@@ -382,6 +513,16 @@ export async function revisionPanel(
     observedCount,
     contestedCount,
     ...(decision === "gated" ? { gate, gateReason } : {}),
+    ...(indVerdict
+      ? {
+          independence: {
+            kEff: effectiveK(preClasses.values()),
+            marginalGain: indVerdict.marginalGain,
+            classKeys: survivingClassKeysUsed,
+            wouldDecision: indVerdict.wouldDecision,
+          },
+        }
+      : {}),
   });
 
   return ok({
@@ -398,6 +539,8 @@ export async function revisionPanel(
     outputTokens,
     traceWritten: traceRes.ok,
     ...(traceRes.ok ? {} : { traceError: traceRes.error.message }),
+    independenceWouldNeedsReview: indVerdict?.wouldDecision === "would_needs_review",
+    independenceJournalWriteFailure,
   });
 }
 
