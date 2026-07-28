@@ -1,5 +1,12 @@
 name: CI
 
+# Read-only. Every job checks out, installs, and runs lint/build/test; none
+# writes to the repository, publishes, or posts to a pull request. Without this
+# block the jobs inherit whatever the repository default grants, which is a
+# broader token than any step here uses.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
