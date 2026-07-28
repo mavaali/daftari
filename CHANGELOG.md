@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Contextual chunking + optional local reranker.** `chunkDocument`
+  (replacing `chunkText`) splits document bodies at ATX headings (never
+  packing across a heading boundary) and gives every chunk a one-line
+  breadcrumb context (`{collection} › {title} › {headings} · tags: a, b, c`)
+  that is hashed and embedded together with the chunk's body text, and
+  stored as a second `chunks_fts` column — contextual embeddings and
+  contextual BM25 from one string-prefix change, no LLM call. Displayed
+  snippets are read from the body column only; the synthesized breadcrumb
+  never appears in served content. Schema bump `SCHEMA_VERSION` 10 → 11:
+  every chunk's hash input changed, so the first post-upgrade reindex is a
+  one-time full re-embed of the whole corpus (~25 min local-minilm / ~2 min
+  ~$0.10 openai-3-small for the 44k-chunk reference vault). Retitling a
+  document, moving it between collections, or changing its tag *set*
+  re-embeds all of that document's chunks (the breadcrumb is part of the
+  hash); tag *reorder* is a no-op (tags are sorted before hashing).
+  Also lands an optional local cross-encoder reranker: `rerank.provider:
+  local-bge-m3` (default `none`) reorders the top-50 RBAC-filtered
+  `vault_search` hits with a ~600MB ONNX q8 model
+  (`onnx-community/bge-reranker-v2-m3-ONNX` via `@huggingface/transformers`,
+  already a dependency — zero new deps), between the RBAC filter and the
+  slice to `limit`. A 1.5s per-search timeout, a not-warm skip that fires a
+  background warm instead of blocking the call, and a provider `Result.err`
+  all degrade to the fused order identically. `vault_search`'s result gains
+  `rerankUsed: boolean`, the honest twin of `vectorUsed`. Ships opt-in; the
+  default flip to `local-bge-m3` is gated on a post-merge recall
+  measurement, same playbook as chunk-level BM25's v1.29.0 default flip.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-contextual-chunking-reranker-design.md`.
+
 - **MCP `content`-channel summaries for every remaining tool.** Every
   registered tool now has a `summarize` (compact, model-facing text) and,
   where it names documents, a `docLinks` (`resource_link` entries) — closing

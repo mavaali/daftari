@@ -437,9 +437,14 @@ Deliberately deferred to keep the surface tight:
   advisory boundary warnings shipped in the meantime: `vault_lint`'s
   `domainLeaks` check and write-time `domain_warnings`)
 
-(LLM reranking, deferred here originally, has since shipped as the opt-in
-agent-as-judge `rerank_candidates` on `vault_search`: the server prepares the
-fused candidate pool and the protocol; the calling agent is the judge.)
+(LLM reranking, deferred here originally, has since shipped two ways. The
+agent-as-judge `rerank_candidates` on `vault_search` is opt-in and free: the
+server prepares the fused candidate pool and the protocol; the calling agent
+is the judge. A second, local cross-encoder reranker (`rerank.provider:
+local-bge-m3` in `.daftari/config.yaml`) also ships, opt-in and default off —
+it reorders the top-50 RBAC-filtered hits with a local ONNX model before the
+`vault_search` response is sliced to `limit`; see `docs/architecture.md` for
+the config block and degradation behavior.)
 
 Each is a clean increment on a surface that already works.
 

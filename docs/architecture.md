@@ -182,9 +182,22 @@ Three things sit alongside the markdown:
 
   The vector embeddings are produced by a configurable
   **`EmbeddingProvider`** (see `src/search/embedding-provider.ts`). Each
-  document body is split into ~800-character chunks; every chunk is embedded
-  into a fixed-dimension vector by the active provider. Two providers ship
-  with v1.9:
+  document body is split into heading-aware, ~800-character-max chunks by
+  `chunkDocument` (`src/search/vector.ts`, spec 2026-07-26-contextual-
+  chunking-reranker-design.md): a heading boundary always starts a new
+  chunk, never packed across sections, and every chunk carries a one-line
+  synthesized breadcrumb context (`{collection} › {title} › {headings} ·
+  tags: a, b, c`, capped at 160 chars). The context is hashed and embedded
+  TOGETHER with the chunk's body text (`embeddingInput = context + "\n\n" +
+  text`) — this is the "contextual embeddings" half of Anthropic's
+  contextual-retrieval recipe, done with a string prefix instead of an LLM
+  call. It is also stored as a second `chunks_fts` column, so
+  `bm25(chunks_fts)` scores title/collection/tag tokens together with body
+  tokens — contextual BM25, the other half. Displayed snippets are read from
+  the `text` column only; the synthesized context never appears in served
+  content (Markdown is truth). Every chunk is then embedded into a
+  fixed-dimension vector by the active provider. Two providers ship with
+  v1.9:
 
   - **`local-minilm`** (default) — runs `all-MiniLM-L6-v2` in-process via
     `@huggingface/transformers` (Transformers.js). 384-dimension vectors,
@@ -232,22 +245,37 @@ Three things sit alongside the markdown:
   or for low-memory deployments where the ~100MB model footprint is
   unwelcome. A warm-up failure (no network on first run, model download
   blocked) is logged but never crashes the server — the next `embed()` call
-  retries.
+  retries. The same flag covers the optional reranker below: once the
+  embedder warms, the server warms `rerank.provider` too when one is
+  configured — no separate knob, since `warm_embeddings`'s meaning ("pay
+  model cold-starts at startup, not on the first query") applies to either
+  model equally.
 
   Embeddings are stored in a separate, **content-addressed** `embeddings`
   table keyed by `(content_hash, model)`, with a `dim` column recording the
   vector dimension as defense-in-depth against a corrupt or cross-provider
-  mix. A `chunks` row carries the `sha256` of its text and joins to the
-  `embeddings` table for the current model. The consequence is the key
-  idea: an embedding is the property of a chunk's *text*, not of a file path
-  or its mtime.
+  mix. A `chunks` row carries the `sha256` of `embeddingInput` — the
+  breadcrumb context concatenated with the chunk's body text, per the
+  contextual-chunking note above — and joins to the `embeddings` table for
+  the current model. The consequence is the key idea: an embedding is the
+  property of a chunk's *retrieval identity* (context + text), not of a file
+  path or its mtime.
 
-  That property is what makes reindexing cheap. A reindex hashes every
-  chunk, asks the cache which hashes already have a row for the current
-  model, and only embeds the misses — so its cost scales with the number of
-  *changed chunks*, not the size of the vault. Edit one paragraph and you
-  re-embed one chunk; rename a file and you re-embed zero; move a paragraph
-  verbatim to another file and you re-embed zero. (The first reindex after a
+  That property is what makes reindexing cheap, with one honest cost.  A
+  reindex hashes every chunk, asks the cache which hashes already have a row
+  for the current model, and only embeds the misses — so its cost scales
+  with the number of *changed chunks*, not the size of the vault. Edit one
+  paragraph and you re-embed one chunk; rename a file and you re-embed zero
+  (title/collection/tags unchanged, so the breadcrumb is unchanged); move a
+  paragraph verbatim to another file that shares the SAME title, collection,
+  and tag set and you re-embed zero. But because the breadcrumb is part of
+  the hash, **retitling a document, moving it between collections, or
+  changing its tag *set* re-embeds every one of its chunks** — the embedding
+  input genuinely changed, and a stale-vector cache hit would silently serve
+  pre-edit semantics, which is worse than paying the recompute. Tag
+  *reorder* is a no-op (tags are sorted before hashing). Curation flows that
+  touch metadata at scale (backfill, decay retitles, tag hygiene) should
+  batch their edits with this cost in mind. (The first reindex after a
   schema bump finds an empty cache, so it pays a one-time full embed; every
   reindex after that is incremental.)
 
@@ -258,6 +286,33 @@ Three things sit alongside the markdown:
   `(content_hash, model)` is deliberate: a future model migration can keep
   both the old and new model's embeddings present under the same hash, so a
   roll-forward never has to clear the cache first.
+
+  **Optional local reranker.** A `RerankProvider` seam
+  (`src/search/rerank-provider.ts`) mirrors `EmbeddingProvider`: config-
+  selected, memoised per process, `warm()`/lazy-load, `Result`-returning
+  with graceful degradation. It has one real provider today,
+  `local-bge-m3` — `BAAI/bge-reranker-v2-m3`, ONNX q8, via the same
+  `@huggingface/transformers` runtime `local-minilm` uses (zero new
+  dependencies) — and defaults to `none` (off):
+
+  ```yaml
+  rerank:
+    provider: none   # none | local-bge-m3
+  ```
+
+  When configured, `vault_search` scores the top-50 RBAC-filtered hits
+  against the query with the cross-encoder and reorders them, between the
+  RBAC filter and the slice to `limit` — after RBAC so cross-encoder budget
+  is never spent on a hit the caller cannot see, before the slice so a
+  fused-#12 hit can still land #1 of a limit-10 page. `vault_search`'s
+  result gains `rerankUsed: boolean` — `false` covers `none`, a not-yet-warm
+  model (a background warm fires instead of blocking the call), a provider
+  error, and a 1.5s-timeout alike, matching `vectorUsed`'s honest-degrade
+  shape. The ~600MB q8 weights are an order of magnitude past
+  `local-minilm`'s footprint, which is why this stays opt-in rather than
+  defaulting on: the same "ship behind a flag, measure, then flip the
+  default on evidence" playbook chunk-level BM25 used for its v1.29.0
+  default flip.
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
@@ -983,9 +1038,19 @@ quietly settled. That is the entire product, in one fact's lifetime.
    Denied collections are filtered out of results entirely.
 3. **Layer 1** reads the markdown (or queries the index) and returns it, with
    an advisory frontmatter validation report attached.
-4. (`vault_search` only) Two additive, lossless post-passes run on the
-   RBAC-filtered hit list — never re-ranking, never leaking content from
-   denied collections:
+4. (`vault_search` only, optional) **Rerank stage.** When `rerank.provider`
+   is configured, a local cross-encoder (`local-bge-m3`) re-scores the
+   top-50 RBAC-filtered hits against the query and reorders them — after
+   RBAC, before the slice to `limit`, so cross-encoder budget is never spent
+   on a hit the caller cannot see and a fused-#12 hit can still land #1 of a
+   limit-10 page. Skipped (fused order stands, `rerankUsed: false`) when no
+   provider is configured, the model is not yet warm (a background warm is
+   fired instead — reranking never triggers a synchronous model load inside
+   a tool call), the provider errors, or scoring exceeds a 1.5s timeout. See
+   `docs/superpowers/specs/2026-07-26-contextual-chunking-reranker-design.md`.
+5. (`vault_search` only) Two additive, lossless post-passes run on the
+   reranked (or, if skipped, fused) RBAC-filtered hit list — never
+   re-ranking, never leaking content from denied collections:
    - **Coverage pass.** When the top seeds share a frontmatter tag with
      at least two of the top-K, the index is queried for other docs
      carrying that tag inside the seeds' `created`-date window
@@ -1056,7 +1121,29 @@ staying *cheap*. It is cheap because embeddings are content-addressed and only
 changed chunks re-embed — but a first cold reindex on a large vault is already
 multi-minute. If that ever becomes multi-hour, "delete the `.db` files and
 continue" stops being a real fallback and becomes a threat, and the disposability
-I keep advertising is disposability you can't afford to use.
+I keep advertising is disposability you can't afford to use. 1.33.0's contextual-
+chunking schema bump (SCHEMA_VERSION 10 → 11, spec 2026-07-26-contextual-
+chunking-reranker-design.md Decision 3) pays exactly this cost once, deliberately
+and loudly, not lazily: every chunk's hash input changed, so the first post-
+upgrade reindex is a full cold re-embed of the whole corpus (~25 min local-
+minilm / ~2 min openai-3-small for a 44k-chunk reference vault; see the 1.33.0
+release notes for the exact numbers). The same trade recurs in smaller doses
+after that: because the breadcrumb context is now part of a chunk's hash,
+retitling a document, moving it between collections, or changing its tag *set*
+re-embeds every one of that document's chunks — correct (the retrieval identity
+genuinely changed), but a cost curation flows that touch metadata at scale
+(backfill, decay retitles, tag hygiene) need to batch around rather than trigger
+document-by-document.
+
+**The reranker is a second cost lever, opt-in.** `rerank.provider: local-bge-m3`
+adds a ~600MB local cross-encoder to the search path — an order of magnitude
+past local-minilm's footprint — with a hard 1.5s per-search timeout so a slow or
+cold model degrades to the fused order rather than hanging a tool call. It ships
+default-off, behind the same "measure before flipping the default" playbook
+chunk-level BM25 used in v1.29.0: if the measured recall lift never clears the
+bar, or serve-mode concurrency under real load turns out to serialize badly on
+one CPU, it stays permanently opt-in rather than becoming everyone's default
+latency tax.
 
 **The locks neither queue nor merge.** This is sufficient *because* agents usually
 write to different documents. If contention on a few hot documents turns out to be
