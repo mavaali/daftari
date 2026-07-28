@@ -45,9 +45,11 @@ import {
   onceIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { classifyQuery, makeDfLookup, type RouteClass, routeWeights } from "../search/router.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
 import { getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
+import { loadConfig } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
 import { clip } from "./summary.js";
@@ -111,8 +113,14 @@ export async function ensureIndexReady(vaultRoot: string): Promise<Result<void, 
   return ok(undefined);
 }
 
-function parseWeights(raw: unknown): HybridWeights {
-  if (raw && typeof raw === "object") {
+// Distinguishes an ABSENT `weights` arg (null: the caller expressed no
+// preference — the router, if on, may pick) from an INVALID one (present but
+// malformed — a caller who tried to control weights and failed must never
+// silently fall through to the router; that would make a typo behave like an
+// opt-in to router-driven ranking the caller never asked for).
+function parseExplicitWeights(raw: unknown): HybridWeights | "invalid" | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     const bm25 = obj.bm25;
     const vector = obj.vector;
@@ -126,7 +134,14 @@ function parseWeights(raw: unknown): HybridWeights {
       return { bm25, vector };
     }
   }
-  return DEFAULT_WEIGHTS;
+  return "invalid";
+}
+
+// vault_search_related has no user query to classify — it is never routed,
+// so an absent or invalid `weights` arg both fall back to the static
+// default (today's exact parseWeights behaviour, unchanged).
+function staticWeightsFallback(explicit: HybridWeights | "invalid" | null): HybridWeights {
+  return explicit !== null && explicit !== "invalid" ? explicit : DEFAULT_WEIGHTS;
 }
 
 // Shared numeric-arg posture: a positive finite number floors and clamps to
@@ -238,11 +253,18 @@ function validityForPath(db: IndexDb, path: string, at: string): ValidityReport 
   return computeValidity({ valid_from: doc.validFrom, valid_until: doc.validUntil }, at);
 }
 
+// vault_search's result shape: HybridSearchResult plus the optional `routed`
+// diagnostic the tool handler attaches when (and only when) the query router
+// chose the weights (spec 2026-07-26 fusion overhaul, Decision 2).
+export interface VaultSearchResult extends HybridSearchResult {
+  routed?: { class: RouteClass; signals: string[] };
+}
+
 export async function vaultSearch(
   vaultRoot: string,
   args: Record<string, unknown>,
   access?: AccessContext,
-): Promise<Result<HybridSearchResult, Error>> {
+): Promise<Result<VaultSearchResult, Error>> {
   const query = args.query;
   if (typeof query !== "string" || query.trim().length === 0) {
     return {
@@ -288,13 +310,46 @@ export async function vaultSearch(
   const db = dbResult.value;
   try {
     const limit = parseLimit(args.limit);
+
+    // Weight resolution precedence (spec 2026-07-26 fusion overhaul,
+    // Decision 2): an explicit VALID `weights` arg always wins. An explicit
+    // INVALID `weights` arg gets the static default — a caller who expressed
+    // intent to control weights and got the shape wrong must never silently
+    // fall through to router-driven ranking. Only a genuinely ABSENT
+    // `weights` arg considers the router, and only when `search.routing` is
+    // on; a config LOAD failure degrades to the static default rather than
+    // failing the search. `routed` stays undefined unless the router
+    // actually chose the weights — it is absent for explicit weights,
+    // routing-off, and config-load degrade alike, so its presence
+    // distinguishes "the router picked lexical-only" from "embeddings
+    // degraded" even though both can report vectorUsed: false.
+    const explicitWeights = parseExplicitWeights(args.weights);
+    const cfg = loadConfig(vaultRoot);
+    const routingOn = cfg.ok && cfg.value.search.routing;
+    let routed: { class: RouteClass; signals: string[] } | undefined;
+    let weights: HybridWeights;
+    if (explicitWeights !== null && explicitWeights !== "invalid") {
+      weights = explicitWeights;
+    } else if (explicitWeights === "invalid") {
+      weights = DEFAULT_WEIGHTS;
+    } else if (routingOn) {
+      const classified = classifyQuery(query, {
+        df: makeDfLookup(db),
+        docCount: documentCount(db),
+      });
+      routed = classified;
+      weights = routeWeights(classified.class);
+    } else {
+      weights = DEFAULT_WEIGHTS;
+    }
+
     // Over-fetch every ranked candidate so RBAC filtering happens BEFORE the
     // user-facing slice. If we sliced to `limit` first (the old behaviour),
     // restricted docs occupying the top-`limit` slots would be dropped by
     // canRead below and shrink the permitted page below `limit`, even though
     // more readable docs ranked just past the cut.
     const result = await hybridSearch(db, query, {
-      weights: parseWeights(args.weights),
+      weights,
       limit,
       overFetch: true,
       // Push the readable-collection allow-list into the vector KNN so a
@@ -425,6 +480,7 @@ export async function vaultSearch(
       ...result.value,
       count: capped.length,
       hits: capped,
+      ...(routed ? { routed } : {}),
       ...(rerank ? { rerank } : {}),
     });
   } finally {
@@ -460,7 +516,7 @@ export async function vaultSearchRelated(
     // Over-fetch, then RBAC-filter, then slice — same ordering as vaultSearch so
     // restricted docs in the top-`limit` slots can't shrink the permitted page.
     const result = relatedSearch(db, path, {
-      weights: parseWeights(args.weights),
+      weights: staticWeightsFallback(parseExplicitWeights(args.weights)),
       limit,
       overFetch: true,
       readableCollections: access ? readableCollections(access.role) : undefined,
@@ -811,7 +867,12 @@ export const searchTools: ToolDefinition[] = [
       "of the fused ranking as compact judging records plus instructions — " +
       "and act as the reranker yourself: fusion scores measure retrieval " +
       "proximity, not answer quality, so judging the pool against the query " +
-      "can surface candidates ranked past the returned hits.",
+      "can surface candidates ranked past the returned hits. When the " +
+      "vault's `search.routing` config is on and no explicit `weights` was " +
+      "passed, a `routed` field reports the class the query router picked " +
+      "and which signals fired — present only when the router chose the " +
+      "weights, distinguishing a routed lexical-only result from one where " +
+      "embeddings degraded.",
     inputSchema: {
       type: "object",
       properties: {
@@ -864,6 +925,23 @@ export const searchTools: ToolDefinition[] = [
         },
         weights: weightsResultSchema,
         hits: { type: "array", items: hybridHitSchema },
+        routed: {
+          type: "object",
+          description:
+            "Present only when the query router chose the weights (search.routing " +
+            "on, no explicit `weights` arg). Absent for explicit weights, " +
+            "routing-off, and embedding-degrade alike.",
+          properties: {
+            class: { type: "string", enum: ["extreme-lexical", "lexical", "balanced"] },
+            signals: {
+              type: "array",
+              description: "Every signal that fired, not just the ones that decided `class`.",
+              items: { type: "string" },
+            },
+          },
+          required: ["class", "signals"],
+          additionalProperties: false,
+        },
         rerank: {
           type: "object",
           description: "Present only when rerank_candidates was passed.",
@@ -879,21 +957,26 @@ export const searchTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     summarize: (value) => {
-      const result = value as HybridSearchResult;
+      const result = value as VaultSearchResult;
       const n = result.hits.length;
       const mode = result.vectorUsed ? "bm25+vector" : "bm25 only";
       const header =
         n === 0
           ? `No hits for "${result.query}" (${mode}).`
           : `${n} hit${n === 1 ? "" : "s"} for "${result.query}" (${mode}).`;
-      const summary = summarizeHits(header, result.hits);
+      let summary = summarizeHits(header, result.hits);
+      if (result.routed) {
+        summary += `\nRouted: ${result.routed.class}${
+          result.routed.signals.length > 0 ? ` (${result.routed.signals.join(", ")})` : ""
+        }`;
+      }
       // The rerank pool and its protocol text live on structuredContent; a
       // caller reading only `content` would otherwise never learn it opted in.
       return result.rerank
         ? `${summary}\nRerank pool: ${result.rerank.candidates.length} candidate(s) — you are the reranker; see structuredContent.rerank.`
         : summary;
     },
-    docLinks: (value) => hitDocLinks((value as HybridSearchResult).hits),
+    docLinks: (value) => hitDocLinks((value as VaultSearchResult).hits),
     handler: (vaultRoot, args, access) => vaultSearch(vaultRoot, args, access),
   },
   {

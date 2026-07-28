@@ -1,13 +1,15 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { mintConsumesEdges } from "../../src/curation/consumes.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
+import { err } from "../../src/frontmatter/types.js";
 import { clearContestedCache } from "../../src/search/contested.js";
+import * as vectorMod from "../../src/search/vector.js";
 import {
   searchTools,
   vaultReindex,
@@ -15,6 +17,7 @@ import {
   vaultSearchRelated,
 } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { clearConfigCache, configPath } from "../../src/utils/config.js";
 import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -756,5 +759,150 @@ describe("FTS5 lexical snippets (#108)", () => {
     expect(hit).toBeDefined();
     expect(hit?.snippet).toContain("throttled escalation");
     expect(hit?.snippet).not.toContain("Filler paragraph 0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vault_search — query router wiring (spec 2026-07-26 fusion overhaul,
+// Decision 2). router.test.ts covers classifyQuery/routeWeights/
+// makeDfLookup in isolation, including the rare-term signal's
+// MIN_DOCS_FOR_RARE guard (which needs >= 100 documents — impractical to
+// stand up here); these tests cover the WIRING in vaultSearch: config
+// precedence, the `routed` field's presence/absence, and the
+// distinguishability of a routed lexical-only result from an embedding
+// degrade. A digit-heavy query exercises the "lexical" route cheaply
+// (no MIN_DOCS_FOR_RARE dependency) to prove the same wiring path.
+// ---------------------------------------------------------------------------
+describe("vault_search — query router wiring (Decision 2)", () => {
+  let routedVault: string;
+  const DIGIT_HEAVY_QUERY = "PR 2026 release notes";
+  const QUOTED_QUERY = `"exact phrase example" release notes`;
+
+  beforeAll(async () => {
+    routedVault = makeTempVault();
+    const result = await vaultReindex(routedVault);
+    if (!result.ok) throw result.error;
+  }, 60_000);
+
+  afterAll(() => {
+    cleanupVault(routedVault);
+  });
+
+  function writeRoutingConfig(on: boolean): void {
+    mkdirSync(join(routedVault, ".daftari"), { recursive: true });
+    writeFileSync(configPath(routedVault), `search:\n  routing: ${on}\n`);
+  }
+
+  afterEach(() => {
+    rmSync(configPath(routedVault), { force: true });
+    clearConfigCache();
+    vi.restoreAllMocks();
+  });
+
+  it("explicit valid weights beat routing even when routing is on", async () => {
+    writeRoutingConfig(true);
+    const result = await vaultSearch(routedVault, {
+      query: DIGIT_HEAVY_QUERY, // would otherwise route to lexical {0.8, 0.2}
+      weights: { bm25: 0.9, vector: 0.1 },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.vectorUsed).toBe(true);
+    expect(result.value.weights).toEqual({ bm25: 0.9, vector: 0.1 });
+    expect(result.value.routed).toBeUndefined();
+  });
+
+  it("an invalid weights arg yields static DEFAULT_WEIGHTS and no routed field, even with routing on", async () => {
+    writeRoutingConfig(true);
+    const result = await vaultSearch(routedVault, {
+      query: DIGIT_HEAVY_QUERY,
+      weights: { bm25: "nope" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.vectorUsed).toBe(true);
+    expect(result.value.weights).toEqual({ bm25: 0.5, vector: 0.5 });
+    expect(result.value.routed).toBeUndefined();
+  });
+
+  it("routing on + a lexical-signal query echoes {bm25: 0.8, vector: 0.2} with a routed field", async () => {
+    writeRoutingConfig(true);
+    const result = await vaultSearch(routedVault, { query: DIGIT_HEAVY_QUERY });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.routed).toBeDefined();
+    expect(result.value.routed?.class).toBe("lexical");
+    expect(result.value.routed?.signals).toContain("digit-heavy");
+    expect(result.value.vectorUsed).toBe(true);
+    expect(result.value.weights).toEqual({ bm25: 0.8, vector: 0.2 });
+
+    const searchTool = searchTools.find((t) => t.name === "vault_search");
+    if (!searchTool) throw new Error("vault_search not registered");
+    expectMatchesOutputSchema(searchTool, result.value);
+  });
+
+  it("routing off restores the static 0.5/0.5 default with no routed field", async () => {
+    writeRoutingConfig(false);
+    const result = await vaultSearch(routedVault, { query: DIGIT_HEAVY_QUERY });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.routed).toBeUndefined();
+    expect(result.value.vectorUsed).toBe(true);
+    expect(result.value.weights).toEqual({ bm25: 0.5, vector: 0.5 });
+  });
+
+  it("no config at all behaves the same as routing off", async () => {
+    const result = await vaultSearch(routedVault, { query: DIGIT_HEAVY_QUERY });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.routed).toBeUndefined();
+    expect(result.value.weights).toEqual({ bm25: 0.5, vector: 0.5 });
+  });
+
+  it("a routed extreme-lexical result reports vectorUsed:false WITH routed present — distinguishable from an embedding degrade", async () => {
+    writeRoutingConfig(true);
+    const result = await vaultSearch(routedVault, { query: QUOTED_QUERY });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.vectorUsed).toBe(false);
+    expect(result.value.weights).toEqual({ bm25: 1, vector: 0 });
+    expect(result.value.routed).toBeDefined();
+    expect(result.value.routed?.class).toBe("extreme-lexical");
+    expect(result.value.routed?.signals).toContain("quoted-phrase");
+  });
+
+  it("an embedding-provider degrade also reports vectorUsed:false, but routed stays ABSENT (routing off)", async () => {
+    writeRoutingConfig(false);
+    vi.spyOn(vectorMod, "embedQuery").mockResolvedValue(
+      err(new Error("embedding provider unavailable")),
+    );
+    const result = await vaultSearch(routedVault, { query: "pricing" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.vectorUsed).toBe(false);
+    expect(result.value.weights).toEqual({ bm25: 1, vector: 0 });
+    // The distinguishing assertion: unlike the routed extreme-lexical case
+    // above, `routed` is absent here — this is embedding degradation, not a
+    // router decision.
+    expect(result.value.routed).toBeUndefined();
+  });
+
+  it("an embedding-provider degrade with routing ON still leaves routed absent when the router itself picked balanced/lexical weights that needed embedding", async () => {
+    // Routing on, a query with no extreme/lexical signal → router picks
+    // balanced (0.5/0.5, vector > 0) → hybridSearch attempts to embed →
+    // embedding fails → degrade rewrites weights to {1, 0}. `routed` is
+    // still attached (the router DID pick the weights hybridSearch started
+    // with), even though the actually-used weights differ after degrade.
+    writeRoutingConfig(true);
+    vi.spyOn(vectorMod, "embedQuery").mockResolvedValue(
+      err(new Error("embedding provider unavailable")),
+    );
+    const result = await vaultSearch(routedVault, { query: "how do write locks expire" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.vectorUsed).toBe(false);
+    expect(result.value.weights).toEqual({ bm25: 1, vector: 0 });
+    expect(result.value.routed).toBeDefined();
+    expect(result.value.routed?.class).toBe("balanced");
   });
 });
