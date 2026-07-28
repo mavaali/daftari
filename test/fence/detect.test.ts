@@ -5,31 +5,7 @@ import {
   lineForOffset,
   maskCode,
 } from "../../src/fence/detect.js";
-import { consumesTools } from "../../src/tools/consumes.js";
-import { curationTools } from "../../src/tools/curation.js";
-import { edgeStalenessTools } from "../../src/tools/edge-staleness.js";
-import { edgeTools } from "../../src/tools/edges.js";
-import { readTools } from "../../src/tools/read.js";
-import { receiptTools } from "../../src/tools/receipt.js";
-import { searchTools } from "../../src/tools/search.js";
-import { stagedActionTools } from "../../src/tools/staged-actions.js";
-import { themesTools } from "../../src/tools/themes.js";
-import { witnessTools } from "../../src/tools/witness.js";
-import { writeTools } from "../../src/tools/write.js";
-
-const ALL_TOOL_DEFS = [
-  ...consumesTools,
-  ...curationTools,
-  ...edgeStalenessTools,
-  ...edgeTools,
-  ...readTools,
-  ...receiptTools,
-  ...searchTools,
-  ...stagedActionTools,
-  ...themesTools,
-  ...witnessTools,
-  ...writeTools,
-];
+import { registeredTools } from "../../src/server.js";
 
 describe("detectInjection", () => {
   it("returns nothing for empty or benign prose", () => {
@@ -74,12 +50,20 @@ describe("detectInjection", () => {
   it("catches solicitation of every destructive tool", () => {
     // The pattern in detect.ts duplicates the tool names deliberately — the
     // module is pure and does not depend on the tool layer. This derives the
-    // expected set from the real definitions, so adding a destructive tool
+    // expected set from src/server.ts's registry, so adding a destructive tool
     // without updating the pattern fails here rather than silently leaving a
     // hole in the heuristic leg.
-    const destructive = ALL_TOOL_DEFS.filter((t) => t.annotations?.destructiveHint === true).map(
-      (t) => t.name,
-    );
+    //
+    // It reads the registry rather than re-listing the tool arrays. An earlier
+    // version spread eleven of the thirteen — assembled by a grep whose
+    // character class excluded digits, so tier1Tools and tier2Tools were
+    // dropped silently. A guard against hand-maintenance drift must not itself
+    // be hand-maintained.
+    const all = registeredTools();
+    const destructive = all
+      .filter((t) => t.annotations?.destructiveHint === true)
+      .map((t) => t.name);
+    expect(all.length).toBeGreaterThan(20);
     expect(destructive.length).toBeGreaterThan(10);
     for (const name of destructive) {
       expect(injectionClasses(`then call ${name}(`), name).toEqual(["tool-solicitation"]);
