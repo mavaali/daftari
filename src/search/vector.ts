@@ -44,11 +44,17 @@ export const EMBED_BATCH_SIZE = 8;
 
 const CHUNK_MAX_CHARS = 800;
 
-// Splits a document body into embeddable chunks. Paragraphs (blank-line
-// separated) are packed greedily up to CHUNK_MAX_CHARS; a single paragraph
-// longer than the cap is hard-split. Always returns at least one chunk so an
-// empty body still produces a (possibly empty) vector slot.
-export function chunkText(text: string): string[] {
+// Paragraph-packing loop, private to this module. Blank-line-separated
+// paragraphs are packed greedily up to CHUNK_MAX_CHARS; a single paragraph
+// longer than the cap is hard-split. Always returns at least one chunk for
+// non-empty input; an all-whitespace input returns [].
+//
+// Reused verbatim (this WAS chunkText's whole body pre-contextual-chunking)
+// as the within-SECTION packer for chunkDocument below — a heading boundary
+// always starts a new chunk (spec 2026-07-26 Decision 1), so packing never
+// spans two sections. This function itself is section-agnostic; it just packs
+// whatever text blob it's given.
+function packParagraphs(text: string): string[] {
   const paragraphs = text
     .split(/\n\s*\n/)
     .map((p) => p.trim())
@@ -75,7 +81,196 @@ export function chunkText(text: string): string[] {
     }
   }
   if (current) chunks.push(current);
-  return chunks.length > 0 ? chunks : [text.trim()];
+  return chunks;
+}
+
+// --- Contextual chunking (spec 2026-07-26 contextual-chunking-reranker) ---
+
+export interface ChunkInput {
+  title: string;
+  collection: string;
+  tags: string[];
+  body: string;
+}
+
+export interface DocumentChunk {
+  text: string; // verbatim body slice, exactly what chunks.text stores
+  context: string; // one-line breadcrumb, <=160 chars
+}
+
+// Single source of truth for the retrieval identity of a chunk — used by BOTH
+// the content_hash and the embedding input so they can never drift. See spec
+// Decision 2: the context is part of the chunk's retrieval identity, so it is
+// hashed and embedded together with the body text.
+export function embeddingInput(c: DocumentChunk): string {
+  return c.context.length > 0 ? `${c.context}\n\n${c.text}` : c.text;
+}
+
+const CONTEXT_MAX_CHARS = 160;
+const CONTEXT_MAX_TAGS = 5;
+
+// ATX headings, levels 1-4 only (spec: #####/###### and setext headings
+// degrade to plain text — the vault house style is ATX).
+const ATX_HEADING_RE = /^(#{1,4})\s+(.*)$/;
+const FENCE_RE = /^(```|~~~)/;
+
+function stripHeadingText(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim();
+}
+
+// Longest prefix of `text` (<=maxLen chars) such that `render(prefix + "…")`
+// (or `render("…")` at zero chars) still fits within CONTEXT_MAX_CHARS. Used
+// for both the innermost-heading and title tail-truncation steps below —
+// binary search over the truncation point, not a plain slice, because the
+// ellipsis and the surrounding breadcrumb literals shift where the cutoff
+// needs to land.
+function longestFittingPrefix(text: string, render: (candidate: string) => string): string {
+  let lo = 0;
+  let hi = text.length;
+  let best = "…";
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = mid > 0 ? `${text.slice(0, mid)}…` : "…";
+    if (render(candidate).length <= CONTEXT_MAX_CHARS) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
+}
+
+// Builds the one-line breadcrumb context for a chunk:
+//   {collection} › {doc title} › {H1} › {H2} › … · tags: a, b, c
+//
+// Tags are sorted lexicographically (so tag REORDER never perturbs the hash,
+// C7) then capped at CONTEXT_MAX_TAGS; the tag suffix is omitted entirely for
+// an untagged doc. The whole line is hard-capped at CONTEXT_MAX_CHARS;
+// truncation, in order, is: (1) collapse every heading component except the
+// innermost into a single "…", (2) tail-truncate the innermost heading,
+// (3) drop the tag suffix, (4) tail-truncate the title. Collection and title
+// always survive AS COMPONENTS (never dropped outright) — they are the
+// highest-value disambiguators for the vault's short, similar-shaped docs.
+function buildContext(
+  input: { title: string; collection: string; tags: string[] },
+  headingPath: string[],
+): string {
+  const sortedTags = [...input.tags].sort((a, b) => a.localeCompare(b)).slice(0, CONTEXT_MAX_TAGS);
+  const tagsSuffix = sortedTags.length > 0 ? ` · tags: ${sortedTags.join(", ")}` : "";
+
+  const render = (headings: string[], title: string, tags: string): string =>
+    [input.collection, title, ...headings].join(" › ") + tags;
+
+  let line = render(headingPath, input.title, tagsSuffix);
+  if (line.length <= CONTEXT_MAX_CHARS) return line;
+
+  // Step 1: collapse every heading but the innermost into a single "…".
+  let headings = headingPath;
+  if (headingPath.length > 1) {
+    headings = ["…", headingPath[headingPath.length - 1] as string];
+    line = render(headings, input.title, tagsSuffix);
+    if (line.length <= CONTEXT_MAX_CHARS) return line;
+  }
+
+  // Step 2: tail-truncate the innermost heading.
+  if (headings.length > 0) {
+    const innermostIdx = headings.length - 1;
+    const innermost = headings[innermostIdx] as string;
+    const truncated = longestFittingPrefix(innermost, (candidate) =>
+      render([...headings.slice(0, innermostIdx), candidate], input.title, tagsSuffix),
+    );
+    headings = [...headings.slice(0, innermostIdx), truncated];
+    line = render(headings, input.title, tagsSuffix);
+    if (line.length <= CONTEXT_MAX_CHARS) return line;
+  }
+
+  // Step 3: drop the tag suffix.
+  line = render(headings, input.title, "");
+  if (line.length <= CONTEXT_MAX_CHARS) return line;
+
+  // Step 4: tail-truncate the title. Collection is never truncated.
+  const truncatedTitle = longestFittingPrefix(input.title, (candidate) =>
+    render(headings, candidate, ""),
+  );
+  return render(headings, truncatedTitle, "");
+}
+
+// Splits a document body into heading-aware, breadcrumb-contextualized
+// chunks (spec 2026-07-26 Decision 1/2). Line-scans the body tracking fenced
+// code blocks (``` / ~~~ toggles — a `#` line inside a fence is never a
+// heading) and the open ATX heading stack (levels 1-4). A heading line closes
+// the current section and starts a new one; the heading line itself remains
+// part of ITS section's text (document content — snippets and FTS body text
+// stay real, never synthesized). Within a section, paragraphs are packed
+// exactly as before (packParagraphs) — no packing across section boundaries,
+// ever, even when two small sections would fit in one chunk together (a
+// chunk spanning two headings has no honest breadcrumb).
+//
+// Always returns >=1 chunk, preserving chunkText's old guarantee: an empty or
+// whitespace-only body returns a single chunk with the trimmed (possibly
+// empty) body and a heading-path-free breadcrumb.
+export function chunkDocument(input: ChunkInput): DocumentChunk[] {
+  const { title, collection, tags, body } = input;
+  const lines = body.split("\n");
+
+  const sections: { headingPath: string[]; text: string }[] = [];
+  let currentPath: string[] = [];
+  let currentLines: string[] = [];
+  let inFence = false;
+  let fenceMarker = "";
+
+  const flush = (): void => {
+    // currentPath can hold sparse holes (e.g. a document that opens directly
+    // at ## with no preceding #, or after a level drops back below one that
+    // was never set) — filter them so the heading path is always a dense
+    // sequence of the headings actually open, never "undefined › Section".
+    const headingPath = currentPath.filter((h): h is string => typeof h === "string");
+    sections.push({ headingPath, text: currentLines.join("\n") });
+    currentLines = [];
+  };
+
+  for (const line of lines) {
+    const fenceMatch = FENCE_RE.exec(line);
+    if (fenceMatch) {
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = fenceMatch[1] as string;
+      } else if (line.trimStart().startsWith(fenceMarker)) {
+        inFence = false;
+      }
+      currentLines.push(line);
+      continue;
+    }
+    if (!inFence) {
+      const headingMatch = ATX_HEADING_RE.exec(line);
+      if (headingMatch) {
+        flush();
+        const level = (headingMatch[1] as string).length;
+        const text = stripHeadingText(headingMatch[2] as string);
+        currentPath = currentPath.slice(0, level - 1);
+        currentPath[level - 1] = text;
+        currentLines.push(line);
+        continue;
+      }
+    }
+    currentLines.push(line);
+  }
+  flush();
+
+  const chunks: DocumentChunk[] = [];
+  for (const section of sections) {
+    if (section.text.trim().length === 0) continue; // empty preamble before an immediate heading
+    const context = buildContext({ title, collection, tags }, section.headingPath);
+    for (const text of packParagraphs(section.text)) {
+      chunks.push({ text, context });
+    }
+  }
+
+  if (chunks.length === 0) {
+    chunks.push({ text: body.trim(), context: buildContext({ title, collection, tags }, []) });
+  }
+  return chunks;
 }
 
 // Cosine similarity in [-1, 1]. Mismatched lengths or a zero vector yield 0.
