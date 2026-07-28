@@ -55,9 +55,10 @@ history. Four adversarial review rounds produced 45 dispositioned challenges,
   permanent config surface for a population the design could not demonstrate.
 - **Indexing a new field is not free.** The predecessor billed exposing
   `tier`/`updated_by` on search hits as "straight from the indexed frontmatter;
-  no new joins." Neither is indexed, and a `SCHEMA_VERSION` bump drops every
-  embedding. This design pays that cost explicitly instead — see *How `tier`
-  reaches those surfaces without a schema bump* under Decision 5.
+  no new joins." Neither is indexed, so exposing either means a schema change.
+  What that costs has since changed — see *How `tier` reaches those surfaces*
+  under Decision 5 — but it is never zero, and claiming otherwise is what the
+  review caught.
 - **Out-of-band CLI is not a boundary.** [DATA] `resolveAccess` is called from
   `src/index.ts:119`, `src/serve/index.ts` and `src/sleep/index.ts` only — never
   from CLI subcommands. A stdio agent host with shell access reaches a CLI
@@ -111,7 +112,8 @@ It gains:
 - `tierDistribution: { source, compiled, manual, untiered }` — **counts over the
   caller's visible set, not the vault.** See the scoping note below; this is
   load-bearing, not a detail.
-- The index tier-backfill generation state (Decision 5's migration).
+- The index schema version in effect, so an operator can tell a vault that has
+  reindexed since the `tier` column landed from one that has not.
 - `fenceHeuristic: "on" | "off"` — the Decision 7 setting.
 
 Without this an operator cannot see the defense's actual coverage, only infer
@@ -279,34 +281,39 @@ one, so the requirement is total.
 No marker is ever inserted into a frontmatter field. Fencing a `title` corrupts
 every consumer of it.
 
-### How `tier` reaches those surfaces without a schema bump
-
-This is priced rather than assumed, because the predecessor's review raised it
-and the naive answer is expensive.
+### How `tier` reaches those surfaces
 
 `vault_index` is free: `scanVaultDocs` (`src/tools/read.ts:316`) already parses
 every frontmatter, so `VaultIndexEntry` gains `tier` with no index involvement.
 
-`vault_search` is not. Hits are built off the `documents` row, and [DATA]
-`documents` (`src/storage/index-db.ts:104-118`) has no `tier` column. The
-obvious move — bump `SCHEMA_VERSION` — is the one to avoid: [DATA] the
-schema-bump path drops `documents`, `chunks`, `embeddings`, both FTS tables,
-`embeddings_vec` and `derives_from_edges`, so **every vault re-embeds its entire
-corpus on first start after upgrade**. That is a long stall on `local-minilm`
-and a real bill on a hosted provider. [DATA] Embeddings survive an ordinary
-reindex; it is specifically the version bump that discards them.
+`vault_search` needs the column. Hits are built off the `documents` row, and
+[DATA] `documents` has no `tier` column. **`tier TEXT` joins the DDL and
+`SCHEMA_VERSION` is bumped.** That is all.
 
-So the column is added without a bump:
+An earlier revision of this document argued at length against the bump, on the
+grounds that the mismatch path dropped `embeddings` and every vault would
+re-embed its corpus on upgrade — a stall on `local-minilm`, a bill on a hosted
+provider — and specified an idempotent `ALTER TABLE` plus a generation-keyed
+backfill to avoid it. **That is no longer true.** #305 removed `embeddings` from
+the drop list, with the rationale that it is content-addressed on
+(content_hash, model, dim) and so cannot be invalidated by a `documents` column
+change; `test/storage/schema-bump-embeddings.test.ts` pins it. `embeddings_vec`
+is still dropped and rebuilt from the cache at zero provider cost.
 
-1. `tier TEXT` joins the `documents` DDL, for freshly created databases.
-2. In `openIndexDb`, an idempotent `PRAGMA table_info` check followed by
-   `ALTER TABLE documents ADD COLUMN tier TEXT` for existing ones.
-3. Backfill is keyed on a source constant compared against a meta key. If the
-   stored generation differs, `openIndexDb` clears `vault_manifest` and **writes
-   no key**; the key is written only at the end of a completed reindex. Clearing
-   is idempotent and repeatable, so a process that opens the database without
-   reindexing — a `daftari serve` start, for instance — leaves the work pending
-   rather than burning the guard before the reindex it depends on.
+So the bump now costs a reindex of derived tables from the markdown, which is
+what the index is for. The `ALTER` machinery bought nothing and is dropped from
+this design — it was complexity in service of a cost that no longer exists.
+
+[DATA] Confirmed against the tree: the drop list at `src/storage/index-db.ts`
+contains `documents`, `chunks`, both FTS tables, `embeddings_vec` and
+`derives_from_edges`, and does not contain `embeddings`.
+
+One caution this episode earns a place for: a bump is only cheap if it actually
+happens. #305 added `valid_from`/`valid_until` to the `documents` DDL without
+moving `SCHEMA_VERSION`, and `CREATE TABLE IF NOT EXISTS` is a no-op against an
+existing table — so every index built between #303 and #305 kept version 10
+without the columns and failed its first upsert. Adding a column to `documents`
+means bumping the constant in the same commit.
 
 The alternative considered and rejected: annotate `tier` per hit from a
 frontmatter read in the tool handler, the way `currentSource`, `contested` and
