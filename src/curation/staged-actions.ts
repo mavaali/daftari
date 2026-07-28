@@ -58,6 +58,25 @@ export type StagedActionType = (typeof STAGED_ACTION_TYPES)[number];
 
 export const DEFAULT_TTL_DAYS = 14;
 
+// Decision 3 (2026-07-26 risk-triaged-ratification spec): every ratify/reject
+// verdict is tagged with a machine-readable decision kind and (usually) a
+// correction category, so the outcome data Decision 1's W term and the
+// witness's per-principal tallies read is structured, not just free text.
+export const DECISION_KINDS = ["approve", "edit-then-approve", "reject"] as const;
+export type DecisionKind = (typeof DECISION_KINDS)[number];
+
+export const REASON_CATEGORIES = [
+  "wrong-conclusion",
+  "wrong-target",
+  "overbroad",
+  "stale-evidence",
+  "duplicate",
+  "formatting",
+  "policy",
+  "other",
+] as const;
+export type ReasonCategory = (typeof REASON_CATEGORIES)[number];
+
 // The lifecycle states a staged action moves through. `ratified-pending-tool`
 // is a legacy terminal state from v1.17 (before §11.4 wired up the
 // supersede/merge/confidence-up write tools); it is no longer produced but is
@@ -98,6 +117,29 @@ export interface StagedAction {
   // Caller-supplied trace/run identifier stamped at stage time (#235). Like
   // decidedByPrincipal, JSONL-only — not in the sqlite staged_actions table.
   runId: string | null;
+  // Decision 3 (risk-triaged-ratification spec, 2026-07-26): how the verdict
+  // was reached and, usually, why. Both null until a decision lands; JSONL
+  // only, like decidedByPrincipal.
+  decisionKind: string | null;
+  reasonCategory: string | null;
+  // The amendment payload when decisionKind is 'edit-then-approve' — same
+  // JSON-encode/parse convention as proposedDiff. Null otherwise.
+  amendedDiff: unknown;
+  // The authenticated identity (access.user) that STAGED the proposal (C4
+  // disposition of the risk-triaged-ratification spec) — distinct from
+  // proposedBy, which is a caller-claimed, unauthenticated display string.
+  // Null for legacy records and for proposals staged without an access
+  // context (operator CLI use). JSONL-only.
+  stagedByPrincipal: string | null;
+  // Decision from Mihir (2026-07-27, risk-triaged-ratification spec): a
+  // NON-AUTHORITATIVE snapshot of the derived risk score at the moment this
+  // decision was recorded. JSONL-only — never mirrored to sqlite, never read
+  // for queue ordering (rankPendingActions always recomputes on read). Exists
+  // solely so the kill-condition-#1 analysis can partition PAST decisions by
+  // risk quartile without needing to reconstruct blast radius / tension state
+  // as it was at decision time. Null on proposal rows and on sweep-authored
+  // expiries (an expiry is not a decision).
+  riskAtDecision: number | null;
 }
 
 export interface StageActionInput {
@@ -113,6 +155,9 @@ export interface StageActionInput {
   // Override the proposal timestamp — only used by tests for deterministic
   // expiry math; production callers omit it and get the current clock.
   proposedAt?: string;
+  // The authenticated identity staging the proposal (access.user). Optional —
+  // callers without an AccessContext (operator CLI) omit it.
+  stagedByPrincipal?: string;
 }
 
 export interface DecisionInput {
@@ -123,6 +168,18 @@ export interface DecisionInput {
   // The authenticated identity that issued the decision (access.user, §11.6).
   // Optional — omitted when no AccessContext is present.
   decidedByPrincipal?: string;
+  // Decision 3 fields (risk-triaged-ratification spec). Validated for enum
+  // membership here (the durable-boundary re-check, matching
+  // validateStageInput's precedent) but NOT enforced as required — the tool
+  // layer (vault_ratify) owns requiredness policy, same split as the
+  // pending-status check. The sweep never sets any of these three.
+  decisionKind?: DecisionKind;
+  reasonCategory?: ReasonCategory;
+  amendedDiff?: unknown;
+  // Non-authoritative risk snapshot (Mihir's 2026-07-27 decision). Any finite
+  // number, including 0, is a valid snapshot — undefined means "not computed
+  // / not available", never coerced to null silently.
+  riskAtDecision?: number;
 }
 
 export function stagedActionsPath(vaultRoot: string): string {
@@ -173,6 +230,13 @@ interface RawRecord {
   ratification_reason?: string | null;
   decided_by_principal?: string | null;
   run_id?: string | null;
+  // Proposal branch only (Decision 3, C4 disposition).
+  staged_by_principal?: string | null;
+  // Decision branch only (Decision 3 / Mihir's 2026-07-27 addendum).
+  decision_kind?: string | null;
+  reason_category?: string | null;
+  amended_diff?: string | null;
+  risk_at_decision?: number | null;
 }
 
 function readRawRecords(vaultRoot: string): RawRecord[] {
@@ -221,6 +285,11 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
         ratification_reason: null,
         decided_by_principal: null,
         run_id: rec.run_id ?? null,
+        staged_by_principal: rec.staged_by_principal ?? null,
+        decision_kind: null,
+        reason_category: null,
+        amended_diff: null,
+        risk_at_decision: null,
       });
     } else {
       // Decision record — only meaningful if the proposal was already seen.
@@ -231,6 +300,10 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
       existing.ratified_by = rec.ratified_by ?? null;
       existing.ratification_reason = rec.ratification_reason ?? null;
       existing.decided_by_principal = rec.decided_by_principal ?? null;
+      existing.decision_kind = rec.decision_kind ?? null;
+      existing.reason_category = rec.reason_category ?? null;
+      existing.amended_diff = rec.amended_diff ?? null;
+      existing.risk_at_decision = rec.risk_at_decision ?? null;
     }
   }
   return byId;
@@ -242,6 +315,14 @@ function rowToStagedAction(row: StagedActionRow): StagedAction {
     proposedDiff = JSON.parse(row.proposed_diff);
   } catch {
     proposedDiff = row.proposed_diff;
+  }
+  let amendedDiff: unknown = null;
+  if (row.amended_diff) {
+    try {
+      amendedDiff = JSON.parse(row.amended_diff);
+    } catch {
+      amendedDiff = row.amended_diff;
+    }
   }
   return {
     id: row.id,
@@ -256,11 +337,17 @@ function rowToStagedAction(row: StagedActionRow): StagedAction {
     ratifiedAt: row.ratified_at,
     ratifiedBy: row.ratified_by,
     ratificationReason: row.ratification_reason,
-    // NOTE: decided_by_principal and run_id are JSONL-only — no DDL column in
-    // staged_actions; SQLite-backed reads (rebuildStagedActionsIndex) always
-    // yield null here.
+    // NOTE: decided_by_principal, run_id, staged_by_principal, decision_kind,
+    // reason_category, amended_diff, and risk_at_decision are all JSONL-only —
+    // no DDL column in staged_actions; SQLite-backed reads
+    // (rebuildStagedActionsIndex) always yield null for every field below.
     decidedByPrincipal: row.decided_by_principal ?? null,
     runId: row.run_id ?? null,
+    stagedByPrincipal: row.staged_by_principal ?? null,
+    decisionKind: row.decision_kind ?? null,
+    reasonCategory: row.reason_category ?? null,
+    amendedDiff,
+    riskAtDecision: row.risk_at_decision ?? null,
   };
 }
 
@@ -338,6 +425,9 @@ function appendProposalRecord(
     rationale: input.rationale.trim(),
     proposed_diff: JSON.stringify(input.proposedDiff),
     ...(input.runId && input.runId.trim().length > 0 ? { run_id: input.runId.trim() } : {}),
+    ...(input.stagedByPrincipal && input.stagedByPrincipal.trim().length > 0
+      ? { staged_by_principal: input.stagedByPrincipal.trim() }
+      : {}),
   };
   appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
   return { id, expires_at: expiresAt };
@@ -452,6 +542,22 @@ export async function recordDecision(
   id: string,
   decision: DecisionInput,
 ): Promise<Result<StagedAction, Error>> {
+  if (
+    decision.decisionKind !== undefined &&
+    !(DECISION_KINDS as readonly string[]).includes(decision.decisionKind)
+  ) {
+    return err(
+      new Error(`recordDecision: decisionKind must be one of: ${DECISION_KINDS.join(", ")}`),
+    );
+  }
+  if (
+    decision.reasonCategory !== undefined &&
+    !(REASON_CATEGORIES as readonly string[]).includes(decision.reasonCategory)
+  ) {
+    return err(
+      new Error(`recordDecision: reasonCategory must be one of: ${REASON_CATEGORIES.join(", ")}`),
+    );
+  }
   try {
     // Collapse the pre-existing log ONCE. The decision we are about to write is
     // fully known, so rather than re-reading + re-collapsing the whole file a
@@ -470,6 +576,16 @@ export async function recordDecision(
       ...(decision.decidedByPrincipal != null
         ? { decided_by_principal: decision.decidedByPrincipal }
         : {}),
+      ...(decision.decisionKind !== undefined ? { decision_kind: decision.decisionKind } : {}),
+      ...(decision.reasonCategory !== undefined
+        ? { reason_category: decision.reasonCategory }
+        : {}),
+      ...(decision.amendedDiff !== undefined
+        ? { amended_diff: JSON.stringify(decision.amendedDiff) }
+        : {}),
+      ...(decision.riskAtDecision !== undefined
+        ? { risk_at_decision: decision.riskAtDecision }
+        : {}),
     };
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
@@ -481,6 +597,10 @@ export async function recordDecision(
     existing.ratified_by = record.ratified_by ?? null;
     existing.ratification_reason = record.ratification_reason ?? null;
     existing.decided_by_principal = record.decided_by_principal ?? null;
+    existing.decision_kind = record.decision_kind ?? null;
+    existing.reason_category = record.reason_category ?? null;
+    existing.amended_diff = record.amended_diff ?? null;
+    existing.risk_at_decision = record.risk_at_decision ?? null;
     return ok(rowToStagedAction(existing));
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -504,7 +624,10 @@ export async function listStagedActions(
 }
 
 // One pending action as the lint surface presents it. `rationale` is trimmed
-// to its first sentence; ages are whole days relative to `now`.
+// to its first sentence; ages are whole days relative to `now`. Superseded as
+// the lint queue's item shape by RankedStagedActionItem (src/curation/risk.ts,
+// 2026-07-26 risk-triaged-ratification spec) — kept exported and as the base
+// interface so the two can't drift on their shared fields.
 export interface StagedActionLintItem {
   id: string;
   actionType: string;
@@ -515,38 +638,62 @@ export interface StagedActionLintItem {
 }
 
 // First sentence of a rationale: up to the first sentence-ending period
-// followed by whitespace, else the whole trimmed string.
-function firstSentence(text: string): string {
+// followed by whitespace, else the whole trimmed string. Exported so
+// src/curation/risk.ts's ranked queue item can reuse the same trimming rule.
+export function firstSentence(text: string): string {
   const trimmed = text.trim();
   const m = trimmed.match(/^(.*?[.!?])(\s|$)/);
   return m ? (m[1] as string) : trimmed;
 }
 
-// Pending actions for the lint "Staged actions" section, soonest-to-expire
-// first. Pure — the lint path derives this from an already-read action list
-// instead of collapsing the log a second time.
-export function pendingLintItems(actions: StagedAction[], now: Date): StagedActionLintItem[] {
-  return actions
-    .filter((a) => a.status === "pending")
-    .sort((a, b) => (a.expiresAt < b.expiresAt ? -1 : a.expiresAt > b.expiresAt ? 1 : 0))
-    .map((a) => ({
-      id: a.id,
-      actionType: a.actionType,
-      targetPath: a.targetPath,
-      ageDays: daysSince(a.proposedAt, now),
-      expiresInDays: daysUntil(a.expiresAt, now),
-      rationale: firstSentence(a.rationale),
-    }));
+// Per-principal proposal outcome tallies — the shared implementation behind
+// both the witness's proposal record (src/witness/track-record.ts) and the
+// risk scorer's W term (src/curation/risk.ts), so the two can never drift
+// apart on what counts as ratified/rejected/expired/edited (2026-07-26
+// risk-triaged-ratification spec, Decision 3 / C4 disposition).
+//
+// Keyed by `stagedByPrincipal ?? proposedBy`: the authenticated identity that
+// staged the proposal when the record has one, else the caller-claimed
+// `proposedBy` string (legacy records, or proposals staged without an access
+// context). This closes the C4 laundering/poisoning hole — rotating the
+// unauthenticated `proposed_by` string under one authenticated stager still
+// lands in a single tally bucket, and junk staged by principal X under a
+// rival's claimed name counts against X, not the rival.
+export interface ProposalTallies {
+  total: number;
+  ratified: number;
+  rejected: number;
+  expired: number;
+  pending: number;
+  // Count of ratified rows whose decisionKind is 'edit-then-approve'. A
+  // SUBSET of `ratified`, not an addition to it — status stays authoritative.
+  edited: number;
+  byCategory: Record<string, number>;
 }
 
-// Read-only — the sweep that expires stale actions is a separate step.
-export async function listPendingForLint(
-  vaultRoot: string,
-  now: Date = new Date(),
-): Promise<Result<StagedActionLintItem[], Error>> {
-  const actions = await listStagedActions(vaultRoot);
-  if (!actions.ok) return actions;
-  return ok(pendingLintItems(actions.value, now));
+export function proposalTallies(actions: StagedAction[]): Map<string, ProposalTallies> {
+  const tallies = new Map<string, ProposalTallies>();
+  const recordFor = (key: string): ProposalTallies => {
+    let t = tallies.get(key);
+    if (!t) {
+      t = { total: 0, ratified: 0, rejected: 0, expired: 0, pending: 0, edited: 0, byCategory: {} };
+      tallies.set(key, t);
+    }
+    return t;
+  };
+  for (const a of actions) {
+    const key = a.stagedByPrincipal ?? a.proposedBy;
+    const t = recordFor(key);
+    t.total += 1;
+    if (a.status === "ratified" || a.status === "ratified-pending-tool") t.ratified += 1;
+    else if (a.status === "rejected") t.rejected += 1;
+    else if (a.status === "expired") t.expired += 1;
+    else t.pending += 1;
+    if (a.decisionKind === "edit-then-approve") t.edited += 1;
+    if (a.reasonCategory)
+      t.byCategory[a.reasonCategory] = (t.byCategory[a.reasonCategory] ?? 0) + 1;
+  }
+  return tallies;
 }
 
 export async function getStagedActionById(

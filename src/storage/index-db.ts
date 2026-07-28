@@ -1254,6 +1254,16 @@ export interface StagedActionRow {
   // Trace/run id from the proposal record (#235). JSONL-only, like
   // decided_by_principal — no sqlite column.
   run_id?: string | null;
+  // 2026-07-26 risk-triaged-ratification spec, Decision 3. All four follow the
+  // decided_by_principal / run_id precedent exactly: JSONL + row type only,
+  // no DDL column, no upsert change — SQLite-backed reads always yield null.
+  staged_by_principal?: string | null; // proposal branch (C4)
+  decision_kind?: string | null; // decision branch
+  reason_category?: string | null; // decision branch
+  amended_diff?: string | null; // decision branch, JSON-encoded
+  // Non-authoritative risk snapshot (Mihir's 2026-07-27 decision) — decision
+  // branch only, never read for ordering.
+  risk_at_decision?: number | null;
 }
 
 // Inserts or replaces a staged-action row by id. Used by the jsonl→sqlite
