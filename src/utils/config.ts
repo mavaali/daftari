@@ -65,6 +65,14 @@ export interface SchemaExtension {
 export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
 
+// Recognised values of `rerank.provider` (spec 2026-07-26-contextual-
+// chunking-reranker-design.md Decision 5). "none" (the default) means no
+// rerank stage at all — getRerankProvider() returns null, callers branch on
+// presence rather than a null-object provider. Adding a third provider means
+// a new id here AND a new branch in rerank-provider.ts's instantiateProvider.
+export const RERANK_PROVIDERS = ["none", "local-bge-m3"] as const;
+export type RerankProviderId = (typeof RERANK_PROVIDERS)[number];
+
 // Budgets and attribution for the sleep tension-scan dream (`daftari sleep
 // --dream tension-scan`). All values are HARD requirements on the pass:
 // `maxLlmCalls` caps pairwise judgments per pass (the real spend bound),
@@ -221,6 +229,13 @@ export interface DaftariConfig {
   // providers preserves both side's rows — the new provider populates a
   // fresh row set on first reindex, and switching back reuses the old.
   embeddingProvider: EmbeddingProviderId;
+  // Local cross-encoder reranker selection (`rerank` block, spec 2026-07-26-
+  // contextual-chunking-reranker-design.md Decision 5). Defaults to "none" —
+  // opt-in, unlike embeddings: the rerank stage's q8 weights are a much
+  // heavier default-install cost, and the project's own playbook (chunk-level
+  // BM25) is to ship a lever behind an option, measure it, then flip the
+  // default on evidence.
+  rerankProvider: RerankProviderId;
   // Optional git-author → identity mapping consumed by `daftari backfill`
   // (§11.1) when deriving the `updated_by` frontmatter field from a doc's git
   // history. Keys are raw git author names (`%aN`); values are Daftari
@@ -275,6 +290,7 @@ function emptyConfig(): DaftariConfig {
     watch: true,
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
+    rerankProvider: "none",
     backfillIdentityMap: {},
     shadowMode: false,
     shadowModeSet: false,
@@ -1220,6 +1236,36 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     );
   }
 
+  // Rerank provider selection (spec 2026-07-26-contextual-chunking-reranker-
+  // design.md Decision 5). Defaults to "none" — opt-in, since local-bge-m3's
+  // q8 weights are an order of magnitude past local-minilm's on-disk/RAM
+  // footprint and the default install must stay light. Same posture as
+  // embeddings.provider above: an unknown id fails loud rather than silently
+  // falling back to "none" — a typo that meant to enable reranking must never
+  // silently no-op. No env-var check: local-bge-m3 is a fully local model,
+  // no API key to validate.
+  let rerankProvider: RerankProviderId = "none";
+  if (root.rerank !== undefined) {
+    if (root.rerank === null || typeof root.rerank !== "object" || Array.isArray(root.rerank)) {
+      return err(new Error("malformed config: 'rerank' must be a mapping"));
+    }
+    const block = root.rerank as Record<string, unknown>;
+    if (block.provider !== undefined) {
+      if (typeof block.provider !== "string") {
+        return err(new Error("malformed config: 'rerank.provider' must be a string"));
+      }
+      if (!(RERANK_PROVIDERS as readonly string[]).includes(block.provider)) {
+        return err(
+          new Error(
+            `malformed config: unknown rerank.provider ${JSON.stringify(block.provider)} ` +
+              `(expected one of ${RERANK_PROVIDERS.join(", ")})`,
+          ),
+        );
+      }
+      rerankProvider = block.provider as RerankProviderId;
+    }
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
@@ -1228,6 +1274,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     watch,
     warmEmbeddings,
     embeddingProvider,
+    rerankProvider,
     backfillIdentityMap: backfillIdentityMap.value,
     shadowMode,
     shadowModeSet,
