@@ -6,14 +6,7 @@
 // bug cannot take the stdio connection down.
 
 import { readFileSync } from "node:fs";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { ResourceNotFoundError, Server, type Tool } from "@modelcontextprotocol/server";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
 import { consumesTools } from "./tools/consumes.js";
@@ -150,13 +143,16 @@ export function createServer(
   const exposedNames = toolsConfig ? resolveToolExposure(toolsConfig).exposed : null;
   const exposed = exposedNames ? allTools.filter((t) => exposedNames.has(t.name)) : allTools;
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     tools: exposed.map((t) => ({
       name: t.name,
       ...(t.title ? { title: t.title } : {}),
       description: t.description,
-      inputSchema: t.inputSchema,
-      outputSchema: t.outputSchema,
+      // ToolDefinition keeps schemas as plain Record JSON Schema (2020-12);
+      // the wire type narrows the root to `type: "object"`, which every
+      // registered schema satisfies by construction.
+      inputSchema: t.inputSchema as Tool["inputSchema"],
+      outputSchema: t.outputSchema as Tool["outputSchema"],
       ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
@@ -164,25 +160,28 @@ export function createServer(
   // Resources (spec 2026-07-26, Decision 2). Every listing and read resolves
   // against this server's access context, exactly as tools do — a resource is
   // not a back door around RBAC. src/resources.ts holds the disclosure rules.
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+  server.setRequestHandler("resources/templates/list", async () => ({
     resourceTemplates: resourceTemplates(),
   }));
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  server.setRequestHandler("resources/list", async () => {
     const result = await listResources(vaultRoot, access);
     // A listing failure yields an empty list rather than an error: a doc list
     // that fails loudly for some callers and not others is itself a signal.
     return { resources: result.ok ? result.value : [] };
   });
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler("resources/read", async (request) => {
     const uri = request.params.uri;
     const result = await readResource(vaultRoot, uri, access);
-    if (!result.ok) throw new Error(result.error.message);
+    // One error for "no such document" and "you may not read it" alike —
+    // resources.ts keeps the messages byte-identical (omission over
+    // redaction), and this single throw site keeps the wire code identical.
+    if (!result.ok) throw new ResourceNotFoundError(uri, result.error.message);
     return { contents: [result.value] };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler("tools/call", async (request) => {
     const name = request.params.name;
     const tool = byName.get(name);
     if (!tool) {
