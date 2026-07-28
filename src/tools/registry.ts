@@ -203,6 +203,12 @@ const vaultToolsDefinition: ToolDefinition = {
     additionalProperties: false,
   },
   outputSchema: {
+    // The MCP Tool schema requires outputSchema.type === "object" at the
+    // root (the SDK's own client-side Zod validator rejects a bare `oneOf`
+    // with no sibling `type` — caught by test/e2e/server.e2e.test.ts against
+    // the built artifact). `type: "object"` here is the root-level contract;
+    // `oneOf` still discriminates on `mode` underneath it.
+    type: "object",
     oneOf: [
       {
         type: "object",
