@@ -125,7 +125,18 @@ describe("missing API key", () => {
 
   it("states what a default run will spend", async () => {
     await runCanaryCli([]);
+    // 6 items x 3 arms x 5 reps + 6 control.
     expect(errOut.join("")).toContain("96 model calls");
+  });
+
+  it("costs the actual invocation, not the default", async () => {
+    // Arguments are parsed before the key check, so quoting the default here
+    // would misreport every run that passed --repetitions.
+    await runCanaryCli(["--repetitions", "10"]);
+    const msg = errOut.join("");
+    expect(msg).toContain("186 model calls"); // 6 x 3 x 10 + 6
+    expect(msg).not.toContain("96 model calls");
+    expect(msg).toContain("x 10 repetitions");
   });
 });
 

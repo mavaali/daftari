@@ -74,14 +74,17 @@ export async function runCanaryCli(
   } catch {
     // The shared eval client's own message names `daftari eval`, which is
     // wrong and confusing when the user ran `daftari canary`. Say what this
-    // command needs, and what it will spend it on.
+    // command needs, and what THIS invocation would spend — arguments are
+    // already parsed here, so quoting the default would misreport any run that
+    // passed --repetitions.
     const items = CANARY_ITEMS.length;
-    const trials = 3 * items * 5 + items;
+    const reps = opts.value.repetitions ?? 5;
+    const trials = 3 * items * reps + items;
     process.stderr.write(
       `daftari canary: ANTHROPIC_API_KEY is required.\n\n` +
         `  export ANTHROPIC_API_KEY=sk-ant-...\n\n` +
-        `A default run makes ${trials} model calls (${items} items x 3 arms x 5 ` +
-        `repetitions, plus ${items} positive-control trials).\n` +
+        `This run would make ${trials} model calls (${items} items x 3 arms x ` +
+        `${reps} repetitions, plus ${items} positive-control trials).\n` +
         `Use --repetitions to change that; fewer than 3 makes the interval too ` +
         `wide to conclude anything.\n`,
     );
