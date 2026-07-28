@@ -54,27 +54,29 @@ export type IndexDb = Database.Database;
 // Bumped 8 → 9 to add doc_links, the materialized inbound-link graph that
 // backs inline structural decay (#8) — orphan and deprecated-still-linked
 // answered with one indexed query at read/search time.
-// 10 carries two independent changes that landed together, both of which the
-// same bump covers because the version-mismatch path drops and rebuilds every
-// derived table from the markdown — there is no migration to write:
-//   - `embeddings_vec` gains the `collection` partition key (2026-07-26
-//     retrieval-fusion spec, Decision 3).
-//   - the valid-time columns (valid_from, valid_until) and an index on
-//     superseded_by, which the bi-temporal walk queries in reverse.
-// 10 -> 11: chunks.context + two-column chunks_fts(context, text) —
+// 10 added the `collection` partition key to `embeddings_vec` (2026-07-26
+// retrieval-fusion spec, Decision 3), in #303.
+// 11 on main covers the valid-time columns (valid_from, valid_until) and the
+// index on superseded_by that the bi-temporal walk queries in reverse. Those
+// columns arrived in #305, which added them to the `documents` DDL and to the
+// upsert but left this constant at "10" — every index built between #303 and
+// #305 stored version 10 with no valid_from column, skipped the rebuild on
+// the version check, and then failed the first upsert with `no such column:
+// valid_from`. #309 fixed that by claiming "11".
+// The enhancement-wave branch, cut before #309, had independently claimed
+// 11-13 for its own chain; the merge renumbers that chain 12-14 so no value
+// is claimed twice and every pre-merge index — either lineage — rebuilds:
+// 11 -> 12: chunks.context + two-column chunks_fts(context, text) —
 // contextual chunking, spec 2026-07-26-contextual-chunking-reranker-design.md
 // Decision 2. Every chunk's hash input changes (context is now hashed WITH
 // the text — see embeddingInput in search/vector.ts), so this bump forces a
-// full re-embed by design; the release notes carry the cost. Number
-// ownership: claimed at MERGE, not at branch, per that spec's Phase 0
-// coordination contract with the (separately implemented, later)
-// embedding-refresh spec — see the contract note there before reusing "11".
-// 11 -> 12: derives_from_edges.k_eff — the independence-aware-promotion
+// full re-embed by design; the release notes carry the cost.
+// 12 -> 13: derives_from_edges.k_eff — the independence-aware-promotion
 // spec's shadow-only effective-k column (2026-07-26-independence-aware-
 // promotion-design.md, Decisions 1-2/4). A column addition to a jsonl-derived
 // table, so the version-mismatch path's existing drop-and-rebuild of
 // derives_from_edges covers it; no migration to write.
-// 12 -> 13: documents.updated_by — the context-packs spec's provenance line
+// 13 -> 14: documents.updated_by — the context-packs spec's provenance line
 // (2026-07-26-context-packs-progressive-disclosure-design.md, final plan
 // 2.5): vault_context's per-entry "updated N by M" flag reads this column
 // instead of re-parsing frontmatter. Populated from `frontmatter.updated_by`
@@ -82,7 +84,10 @@ export type IndexDb = Database.Database;
 // so the version-mismatch path's full rebuild backfills every existing row
 // and no migration statement is needed for a mid-version upgrade — the index
 // is an ephemeral cache, rebuilt wholesale on a version bump.
-const SCHEMA_VERSION = "13";
+// The bumps stay cheap because #305 removed `embeddings` from the drop list
+// below: derived tables are rebuilt from the markdown, and the durable
+// vector cache survives.
+const SCHEMA_VERSION = "14";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
