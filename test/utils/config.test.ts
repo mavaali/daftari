@@ -895,4 +895,71 @@ describe("malformed-comment hint on YAML parse errors (#26)", () => {
     expect(malformedCommentHint(text, 3)).toBeNull();
     expect(malformedCommentHint(text, null)).toBeNull();
   });
+
+  describe("search.routing (spec 2026-07-26 fusion overhaul, Decision 2)", () => {
+    it("defaults to routing: false when the block is absent", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search).toEqual({ routing: false });
+    });
+
+    it("parses search.routing: true", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(true);
+    });
+
+    it("parses search.routing: false", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(false);
+    });
+
+    it('parses search.routing: "on" (quoted string)', () => {
+      writeConfig('version: 1\nvault_name: v\nsearch:\n  routing: "on"\n');
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(true);
+    });
+
+    it('parses search.routing: off (bare word — js-yaml 4\'s YAML-1.2 core schema loads it as the string "off", not a boolean)', () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: off\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(false);
+    });
+
+    it("rejects an invalid routing value", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: sometimes\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("search.routing");
+      expect(result.error.message).toContain("on/off or true/false");
+    });
+
+    it("rejects an unknown child key", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routnig: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'search.routnig' is not a recognised setting");
+    });
+
+    it("rejects a non-mapping search block", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'search' must be a mapping");
+    });
+  });
 });

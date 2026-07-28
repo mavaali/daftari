@@ -103,6 +103,19 @@ export const TOOLS_DEFAULTS: ToolsConfig = {
   exclude: [],
 };
 
+// `search` block (spec 2026-07-26 fusion overhaul, Decision 2). Library-
+// level fusion options (RRF vs weighted) never get a config knob — only the
+// query router's opt-in does, because unlike fusion mode, routing changes
+// what weights a query gets based on its own shape, which an operator may
+// reasonably want to keep off even after the fusion default flips.
+export interface SearchConfig {
+  routing: boolean;
+}
+
+// Off by default; flipped to true only after the fusion-runner.mjs bench's
+// gates.routingFlip passes (PR 3 of the fusion overhaul).
+export const SEARCH_DEFAULTS: SearchConfig = { routing: false };
+
 // `server` block (#5, spec 2026-07-20): configuration for `daftari serve`.
 // Token VALUES never live here — .daftari/config.yaml sits inside the vault's
 // git repo, so each entry names the ENV VAR that carries the secret. An
@@ -246,6 +259,9 @@ export interface DaftariConfig {
   // with no backing configured; `daftari sync` then refuses with a pointer
   // to the config block.
   storage?: StorageConfig;
+  // Query router opt-in (`search` block, spec 2026-07-26 fusion overhaul
+  // Decision 2). Always populated — routing off when the block is absent.
+  search: SearchConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -267,6 +283,7 @@ function emptyConfig(): DaftariConfig {
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
     server: { tokens: [] },
     storage: undefined,
+    search: { ...SEARCH_DEFAULTS },
   };
 }
 
@@ -898,6 +915,37 @@ function validateTools(raw: unknown): Result<ToolsConfig, Error> {
   return ok({ tier, include: include.value, exclude: exclude.value });
 }
 
+const RECOGNISED_SEARCH_KEYS = ["routing"] as const;
+
+// `routing` accepts booleans AND the strings "on"/"off" — js-yaml 4's
+// YAML-1.2 core schema loads a bare `off`/`on` as the STRING "off"/"on", not
+// a boolean, so a config author writing the natural `search.routing: off`
+// (the spec's own example) must not hit a type error.
+function validateSearch(raw: unknown): Result<SearchConfig, Error> {
+  if (raw === undefined) return ok({ ...SEARCH_DEFAULTS });
+  const mapping = requireMapping(raw, "'search'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_SEARCH_KEYS, "search");
+  if (!known.ok) return known;
+
+  let routing: boolean = SEARCH_DEFAULTS.routing;
+  if (obj.routing !== undefined) {
+    if (typeof obj.routing === "boolean") {
+      routing = obj.routing;
+    } else if (obj.routing === "on" || obj.routing === "off") {
+      routing = obj.routing === "on";
+    } else {
+      return err(
+        new Error(
+          `'search.routing' must be on/off or true/false (got ${JSON.stringify(obj.routing)})`,
+        ),
+      );
+    }
+  }
+  return ok({ routing });
+}
+
 function dataHome(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
@@ -1105,6 +1153,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const storageConfig = validateStorage(root.storage);
   if (!storageConfig.ok) return err(new Error(`malformed config: ${storageConfig.error.message}`));
 
+  const searchConfig = validateSearch(root.search);
+  if (!searchConfig.ok) return err(new Error(`malformed config: ${searchConfig.error.message}`));
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -1185,5 +1236,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     tools: toolsConfig.value,
     server: serverConfig.value,
     storage: storageConfig.value,
+    search: searchConfig.value,
   });
 }
