@@ -12,6 +12,7 @@ import {
   type RevisionOpts,
   revisionPanel,
 } from "../../src/consolidate/revision.js";
+import { computeInputsFingerprint } from "../../src/curation/edges.js";
 import type { LlmClient } from "../../src/eval/llm.js";
 import { ok } from "../../src/frontmatter/types.js";
 
@@ -127,6 +128,47 @@ describe("revisionPanel — majority decides, once", () => {
       expect(new Set(observed.map((o) => o.axis)).size).toBe(2);
       expect(contests.length).toBe(0);
       expect(r.value.observedCount).toBe(2);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("each surviving observe carries an fp whose inputs hash the truncated endpoint bodies", async () => {
+    const root = tmpVault();
+    try {
+      const observed: Array<{
+        fp?: { inputs?: string; principal?: string; model?: string; prompt?: string };
+      }> = [];
+      const deps: RevisionDeps = {
+        admit: ADMIT_OK,
+        llm: mockLlm([
+          { verdict: "survives", reason: "ok" },
+          { verdict: "survives", reason: "still" },
+        ]),
+        loadDoc: async (p) => ok({ path: p, content: `[content of ${p}]` }),
+        observe: async (input) => {
+          observed.push({ fp: input.fp });
+          return ok({ ...dueEdge });
+        },
+        contest: async () => ok({ ...dueEdge }),
+        recordRevisionTrace: async () => ok(undefined),
+      };
+      const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
+      if (!r.ok) throw r.error;
+      expect(observed.length).toBe(2);
+      const expectedInputs = computeInputsFingerprint([
+        { path: "a.md", text: "[content of a.md]" },
+        { path: "b.md", text: "[content of b.md]" },
+      ]);
+      for (const o of observed) {
+        expect(o.fp?.inputs).toBe(expectedInputs);
+        expect(o.fp?.principal).toBe("agent:curation-loop");
+        expect(o.fp?.model).toBe(baseOpts.model);
+      }
+      // Same inputs hash across both votes (same panel, same docs); the
+      // template id is what makes the two fp.prompt values distinct.
+      expect(observed[0]?.fp?.prompt).toMatch(/^revision\//);
+      expect(observed[1]?.fp?.prompt).not.toBe(observed[0]?.fp?.prompt);
     } finally {
       cleanup(root);
     }

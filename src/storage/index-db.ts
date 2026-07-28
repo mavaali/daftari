@@ -69,7 +69,12 @@ export type IndexDb = Database.Database;
 // ownership: claimed at MERGE, not at branch, per that spec's Phase 0
 // coordination contract with the (separately implemented, later)
 // embedding-refresh spec — see the contract note there before reusing "11".
-const SCHEMA_VERSION = "11";
+// 11 -> 12: derives_from_edges.k_eff — the independence-aware-promotion
+// spec's shadow-only effective-k column (2026-07-26-independence-aware-
+// promotion-design.md, Decisions 1-2/4). A column addition to a jsonl-derived
+// table, so the version-mismatch path's existing drop-and-rebuild of
+// derives_from_edges covers it; no migration to write.
+const SCHEMA_VERSION = "12";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -212,6 +217,7 @@ CREATE TABLE IF NOT EXISTS derives_from_edges (
   to_path        TEXT NOT NULL,
   strength       REAL NOT NULL,
   k_survived     INTEGER NOT NULL,
+  k_eff          REAL NOT NULL DEFAULT 0,
   first_observed TEXT NOT NULL,
   last_rederived TEXT NOT NULL,
   last_age_decay TEXT NOT NULL,
@@ -1344,6 +1350,7 @@ export interface DerivesFromEdgeRow {
   to_path: string;
   strength: number;
   k_survived: number;
+  k_eff: number;
   first_observed: string;
   last_rederived: string;
   last_age_decay: string;
@@ -1359,13 +1366,14 @@ export interface DerivesFromEdgeRow {
 export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): void {
   db.prepare(
     `INSERT INTO derives_from_edges
-       (from_path, to_path, strength, k_survived, first_observed, last_rederived,
+       (from_path, to_path, strength, k_survived, k_eff, first_observed, last_rederived,
         last_age_decay, status, direction_verdict, observations, contested_at,
         contest_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(from_path, to_path) DO UPDATE SET
        strength       = excluded.strength,
        k_survived     = excluded.k_survived,
+       k_eff          = excluded.k_eff,
        first_observed = excluded.first_observed,
        last_rederived = excluded.last_rederived,
        last_age_decay = excluded.last_age_decay,
@@ -1379,6 +1387,7 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
     row.to_path,
     row.strength,
     row.k_survived,
+    row.k_eff,
     row.first_observed,
     row.last_rederived,
     row.last_age_decay,

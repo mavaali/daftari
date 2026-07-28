@@ -19,13 +19,18 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join, posix } from "node:path";
 import {
   type ContestEdgeInput,
+  computeInputsFingerprint,
   type DerivesFromEdge,
   EDGE_AXES,
   type ObserveEdgeInput,
 } from "../curation/edges.js";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { CONSOLIDATE_PROMPT_TEMPLATES, type ConsolidatePromptTemplate } from "./constants.js";
+import {
+  CONSOLIDATE_AGENT,
+  CONSOLIDATE_PROMPT_TEMPLATES,
+  type ConsolidatePromptTemplate,
+} from "./constants.js";
 import type { Admit, EnvelopeVerdict } from "./envelope.js";
 
 // --- public surface ----------------------------------------------------------
@@ -238,6 +243,15 @@ export async function revisionPanel(
   const toRes = await deps.loadDoc(toPath);
   if (!toRes.ok) return toRes;
 
+  // Evidence fingerprint (Decision 1): hashed over the EXACT truncated
+  // strings userBody places in the prompt, computed once per panel — every
+  // vote in the panel reads the same two endpoint texts, so they share one
+  // `inputs` hash regardless of which prompt template ran.
+  const inputsFingerprint = computeInputsFingerprint([
+    { path: fromPath, text: truncate(fromRes.value.content) },
+    { path: toPath, text: truncate(toRes.value.content) },
+  ]);
+
   const axes = axesForPanel(opts.panelSize);
   const votes: Array<RevisionVote | RevisionVoteError> = [];
   const writeErrors: Array<{ axis: ConsolidatePromptTemplate; error: string }> = [];
@@ -335,6 +349,12 @@ export async function revisionPanel(
           blind: true,
           axis: storeAxis,
           note: `revision/${surviving[i].axis}: ${surviving[i].reason}`,
+          fp: {
+            inputs: inputsFingerprint,
+            principal: CONSOLIDATE_AGENT,
+            model: opts.model,
+            prompt: `revision/${surviving[i].axis}`,
+          },
         });
         if (obs.ok) observedCount++;
         else

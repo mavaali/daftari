@@ -18,6 +18,7 @@ import {
   reconcileDirection,
 } from "../../src/consolidate/birth.js";
 import type { DerivationVerdict } from "../../src/consolidate/derivation-prompt.js";
+import { computeInputsFingerprint } from "../../src/curation/edges.js";
 import type { LlmClient } from "../../src/eval/llm.js";
 import { ok } from "../../src/frontmatter/types.js";
 
@@ -197,6 +198,38 @@ describe("birthOne — directed", () => {
       if (!r.ok) throw r.error;
       expect(observed).toEqual([{ from: "b.md", to: "a.md", premiseVote: "to" }]);
       expect(r.value.llmCalls).toBe(2);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("observe carries an fp whose inputs hash the (doc, neighbor) bytes and prompt id 'birth/foundational'", async () => {
+    const root = tmpVault();
+    try {
+      const observedFp: unknown[] = [];
+      const { deps } = makeDeps({
+        llm: mockLlm(V.docPremise()),
+        observe: async (input) => {
+          observedFp.push(input.fp);
+          return ok(stubEdge(input.fromPath, input.toPath));
+        },
+      });
+      const r = await birthOne({ relPath: "a.md", content: "claim A" }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(r.ok).toBe(true);
+      expect(observedFp.length).toBe(1);
+      const expectedInputs = computeInputsFingerprint([
+        { path: "a.md", text: "claim A" },
+        { path: "b.md", text: "neighbor content body" },
+      ]);
+      expect(observedFp[0]).toMatchObject({
+        inputs: expectedInputs,
+        principal: "agent:curation-loop",
+        model: baseOpts.model,
+        prompt: "birth/foundational",
+      });
     } finally {
       cleanup(root);
     }

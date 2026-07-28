@@ -43,6 +43,8 @@ function stubEdge(
     toPath,
     strength: 0,
     kSurvived: 0,
+    kEff: 0,
+    strengthIndependent: 0,
     firstObserved: at,
     lastRederived: at,
     status,
