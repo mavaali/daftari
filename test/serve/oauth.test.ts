@@ -7,8 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type ServeHandle, startHttpServer, validateServeStartup } from "../../src/serve/index.js";
@@ -88,7 +87,11 @@ describe("serve OAuth resource-server auth (#7)", () => {
       new URL(`http://127.0.0.1:${handle.port}/mcp`),
       { requestInit: token ? { headers: { Authorization: `Bearer ${token}` } } : {} },
     );
-    const client = new Client({ name: "oauth-test", version: "0.0.0" });
+    // Serve is 2026-07-28-only (Decision 1) — pin the modern revision.
+    const client = new Client(
+      { name: "oauth-test", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+    );
     await client.connect(transport);
     return client;
   }
@@ -151,26 +154,28 @@ describe("serve OAuth resource-server auth (#7)", () => {
   }, 30_000);
 
   it("a valid JWT with an UNMAPPED subject is 403 — never guest, never a default role", async () => {
-    await expect(connect(await signJwt("mallory@example.com"))).rejects.toThrow(/forbidden/);
+    await expect(connect(await signJwt("mallory@example.com"))).rejects.toThrow(
+      /forbidden|HTTP 403/i,
+    );
   });
 
   it("subjects colliding with Object.prototype members are still 403", async () => {
     // A plain-object lookup would resolve these to inherited members and
     // skip the unmapped-subject rejection.
     for (const sub of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
-      await expect(connect(await signJwt(sub))).rejects.toThrow(/forbidden/);
+      await expect(connect(await signJwt(sub))).rejects.toThrow(/forbidden|HTTP 403/i);
     }
   }, 30_000);
 
   it("wrong audience, wrong issuer, and expired tokens are 401", async () => {
     await expect(
       connect(await signJwt("alice@example.com", { audience: "someone-else" })),
-    ).rejects.toThrow(/unauthorized/);
+    ).rejects.toThrow(/unauthorized|HTTP 401/i);
     await expect(
       connect(await signJwt("alice@example.com", { issuer: "https://evil.example" })),
-    ).rejects.toThrow(/unauthorized/);
+    ).rejects.toThrow(/unauthorized|HTTP 401/i);
     await expect(connect(await signJwt("alice@example.com", { expiresIn: "-5m" }))).rejects.toThrow(
-      /unauthorized/,
+      /unauthorized|HTTP 401/i,
     );
   });
 
@@ -265,6 +270,6 @@ describe("serve OAuth resource-server auth (#7)", () => {
   });
 
   it("oauth alone counts as auth configured: no token is 401, not guest", async () => {
-    await expect(connect()).rejects.toThrow(/unauthorized/);
+    await expect(connect()).rejects.toThrow(/unauthorized|HTTP 401/i);
   });
 });
