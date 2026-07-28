@@ -174,7 +174,16 @@ export function accumulateFieldChanges(
     for (const [field, diff] of Object.entries(e.frontmatter_diff ?? {})) {
       const existing = changes[field];
       if (existing) existing.after = diff.after;
-      else changes[field] = { before: diff.before, after: diff.after };
+      // A `create` action's diff has no prior value: frontmatterDiff sets
+      // `before: undefined` (the field didn't exist on the null "before"
+      // frontmatter), and JSON serialization of the provenance log then
+      // drops that key entirely — `diff.before` reads back as `undefined`,
+      // not `null`. Normalize here so a FieldChange always carries a real
+      // `null` for "no prior value" instead of an absent key; the schema
+      // (field_changes' tier2WorkItemSchema) requires both `before` and
+      // `after` to be present, with `null` as the documented "no value"
+      // signal — an absent key is a shape the contract never promised.
+      else changes[field] = { before: diff.before ?? null, after: diff.after };
     }
     if (e.body_changed ?? (e.action === "create" || e.action === "update" || e.action === "append"))
       bodyChanged = true;
