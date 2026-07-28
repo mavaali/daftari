@@ -62,8 +62,42 @@ export interface SchemaExtension {
 // the runtime instantiates the matching backend (see search/vector.ts
 // getProvider). Adding a third provider would mean a new id here AND a new
 // branch in getProvider AND a config-load check if it needs env vars.
-export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
+//
+// local-embeddinggemma / local-qwen3-0.6b added by the 2026-07-26 embedding-
+// refresh-quantization spec (Decision 1): Matryoshka-truncatable, fully
+// local providers run via @huggingface/transformers, same posture as
+// local-minilm. Neither is the programmatic default yet (loadConfig's
+// fallback stays local-minilm — the flip is gated on the spec's Phase 5
+// recall-bench, not landed with this PR).
+export const EMBEDDING_PROVIDERS = [
+  "local-minilm",
+  "openai-3-small",
+  "local-embeddinggemma",
+  "local-qwen3-0.6b",
+] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
+
+// Allowed `embeddings.dim` values per provider. `null` means the provider is
+// fixed-dim and `dim` must not be set for it (a hard error, same posture as
+// an unknown provider id) — local-minilm (384) and openai-3-small (1536)
+// have no Matryoshka truncation to configure. The two new providers expose
+// 512 (default) and 768 (full, untruncated).
+export const EMBEDDING_DIMS: Record<EmbeddingProviderId, readonly number[] | null> = {
+  "local-minilm": null,
+  "openai-3-small": null,
+  "local-embeddinggemma": [512, 768],
+  "local-qwen3-0.6b": [512, 768],
+};
+
+// Recognised values of `embeddings.quantize`. "int8" is the vec-INDEX
+// representation only — the durable `embeddings` cache always stays
+// float32, native-dim (spec Decision 3/9). Default is "int8" for the two new
+// providers and "none" for local-minilm/openai-3-small (existing vaults stay
+// bit-identical unless the operator opts in). "int8" is accepted for ANY
+// provider — every provider L2-normalizes, so quantization is calibration-
+// free unit-range scaling regardless of which model produced the vector.
+export const EMBEDDING_QUANTIZE_VALUES = ["int8", "none"] as const;
+export type EmbeddingQuantize = (typeof EMBEDDING_QUANTIZE_VALUES)[number];
 
 // Recognised values of `rerank.provider` (spec 2026-07-26-contextual-
 // chunking-reranker-design.md Decision 5). "none" (the default) means no
@@ -229,6 +263,14 @@ export interface DaftariConfig {
   // providers preserves both side's rows — the new provider populates a
   // fresh row set on first reindex, and switching back reuses the old.
   embeddingProvider: EmbeddingProviderId;
+  // `embeddings.dim` — optional Matryoshka truncation target. null when
+  // absent (the provider's own default applies); validated against
+  // EMBEDDING_DIMS for the active provider (spec Decision 2).
+  embeddingDim: number | null;
+  // `embeddings.quantize` — vec-index representation (spec Decision 3).
+  // Defaults to "int8" for the two new local providers, "none" otherwise;
+  // see EMBEDDING_QUANTIZE_VALUES.
+  embeddingQuantize: EmbeddingQuantize;
   // Local cross-encoder reranker selection (`rerank` block, spec 2026-07-26-
   // contextual-chunking-reranker-design.md Decision 5). Defaults to "none" —
   // opt-in, unlike embeddings: the rerank stage's q8 weights are a much
@@ -290,6 +332,8 @@ function emptyConfig(): DaftariConfig {
     watch: true,
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
+    embeddingDim: null,
+    embeddingQuantize: "none",
     rerankProvider: "none",
     backfillIdentityMap: {},
     shadowMode: false,
@@ -1203,7 +1247,13 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   // check happens here too: a paid provider with no key in env can't quietly
   // degrade to lexical-only after every search; the vault owner needs to
   // know at startup that the key is missing.
+  const RECOGNISED_EMBEDDINGS_KEYS = ["provider", "dim", "quantize"] as const;
   let embeddingProvider: EmbeddingProviderId = "local-minilm";
+  let embeddingDim: number | null = null;
+  // Default quantize is per-provider (int8 for the two new local providers,
+  // none for local-minilm/openai-3-small) — resolved AFTER the provider is
+  // known, below.
+  let embeddingQuantizeRaw: EmbeddingQuantize | undefined;
   if (root.embeddings !== undefined) {
     if (
       root.embeddings === null ||
@@ -1213,6 +1263,8 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       return err(new Error("malformed config: 'embeddings' must be a mapping"));
     }
     const block = root.embeddings as Record<string, unknown>;
+    const known = rejectUnknownKeys(block, RECOGNISED_EMBEDDINGS_KEYS, "embeddings");
+    if (!known.ok) return err(new Error(`malformed config: ${known.error.message}`));
     if (block.provider !== undefined) {
       if (typeof block.provider !== "string") {
         return err(new Error("malformed config: 'embeddings.provider' must be a string"));
@@ -1227,6 +1279,26 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       }
       embeddingProvider = block.provider as EmbeddingProviderId;
     }
+    if (block.dim !== undefined) {
+      if (typeof block.dim !== "number" || !Number.isInteger(block.dim) || block.dim <= 0) {
+        return err(new Error("malformed config: 'embeddings.dim' must be a positive integer"));
+      }
+      embeddingDim = block.dim;
+    }
+    if (block.quantize !== undefined) {
+      if (
+        typeof block.quantize !== "string" ||
+        !(EMBEDDING_QUANTIZE_VALUES as readonly string[]).includes(block.quantize)
+      ) {
+        return err(
+          new Error(
+            `malformed config: 'embeddings.quantize' must be one of ` +
+              `${EMBEDDING_QUANTIZE_VALUES.join(", ")} (got ${JSON.stringify(block.quantize)})`,
+          ),
+        );
+      }
+      embeddingQuantizeRaw = block.quantize as EmbeddingQuantize;
+    }
   }
   if (embeddingProvider === "openai-3-small" && !process.env.OPENAI_API_KEY) {
     return err(
@@ -1235,6 +1307,43 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       ),
     );
   }
+
+  // `dim` validation against the active provider's allowed set (spec
+  // Decision 2). A fixed-dim provider (EMBEDDING_DIMS[id] === null) rejects
+  // `dim` outright — setting it would silently disagree with the id's real
+  // (only) dimension. A Matryoshka provider with `dim` unset falls back to
+  // its first (default) allowed value.
+  const allowedDims = EMBEDDING_DIMS[embeddingProvider];
+  if (allowedDims === null) {
+    if (embeddingDim !== null) {
+      return err(
+        new Error(
+          `malformed config: 'embeddings.dim' is not accepted for provider '${embeddingProvider}' ` +
+            "(it has no configurable dimension)",
+        ),
+      );
+    }
+  } else {
+    if (embeddingDim === null) {
+      embeddingDim = allowedDims[0] as number;
+    } else if (!(allowedDims as readonly number[]).includes(embeddingDim)) {
+      return err(
+        new Error(
+          `malformed config: 'embeddings.dim' ${embeddingDim} is not valid for provider ` +
+            `'${embeddingProvider}' (expected one of ${allowedDims.join(", ")})`,
+        ),
+      );
+    }
+  }
+
+  // `quantize` default: "int8" for the two new local providers, "none"
+  // otherwise (existing vaults stay bit-identical unless the operator opts
+  // in). Explicit config value always wins.
+  const embeddingQuantize: EmbeddingQuantize =
+    embeddingQuantizeRaw ??
+    (embeddingProvider === "local-embeddinggemma" || embeddingProvider === "local-qwen3-0.6b"
+      ? "int8"
+      : "none");
 
   // Rerank provider selection (spec 2026-07-26-contextual-chunking-reranker-
   // design.md Decision 5). Defaults to "none" — opt-in, since local-bge-m3's
@@ -1274,6 +1383,8 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     watch,
     warmEmbeddings,
     embeddingProvider,
+    embeddingDim,
+    embeddingQuantize,
     rerankProvider,
     backfillIdentityMap: backfillIdentityMap.value,
     shadowMode,

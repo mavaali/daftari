@@ -109,7 +109,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // but a future provider that DOES validate at construction time gets the
   // same startup-refusal posture as the embedding provider.
   try {
-    setProvider(config.value.embeddingProvider);
+    setProvider(config.value.embeddingProvider, {
+      dim: config.value.embeddingDim ?? undefined,
+      quantize: config.value.embeddingQuantize,
+    });
     setRerankProvider(config.value.rerankProvider);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);

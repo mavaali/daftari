@@ -562,7 +562,10 @@ export async function runServe(argv: string[]): Promise<number> {
   });
 
   try {
-    setProvider(config.value.embeddingProvider);
+    setProvider(config.value.embeddingProvider, {
+      dim: config.value.embeddingDim ?? undefined,
+      quantize: config.value.embeddingQuantize,
+    });
     setRerankProvider(config.value.rerankProvider);
   } catch (e) {
     process.stderr.write(`daftari serve: ${e instanceof Error ? e.message : String(e)}\n`);
