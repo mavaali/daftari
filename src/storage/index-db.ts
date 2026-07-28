@@ -61,7 +61,15 @@ export type IndexDb = Database.Database;
 //     retrieval-fusion spec, Decision 3).
 //   - the valid-time columns (valid_from, valid_until) and an index on
 //     superseded_by, which the bi-temporal walk queries in reverse.
-const SCHEMA_VERSION = "10";
+// 10 -> 11: chunks.context + two-column chunks_fts(context, text) —
+// contextual chunking, spec 2026-07-26-contextual-chunking-reranker-design.md
+// Decision 2. Every chunk's hash input changes (context is now hashed WITH
+// the text — see embeddingInput in search/vector.ts), so this bump forces a
+// full re-embed by design; the release notes carry the cost. Number
+// ownership: claimed at MERGE, not at branch, per that spec's Phase 0
+// coordination contract with the (separately implemented, later)
+// embedding-refresh spec — see the contract note there before reusing "11".
+const SCHEMA_VERSION = "11";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -92,6 +100,7 @@ export interface IndexedChunk {
   path: string;
   chunkIndex: number;
   text: string;
+  context: string;
   contentHash: string;
   embedding: Float32Array | null;
 }
@@ -134,6 +143,13 @@ CREATE TABLE IF NOT EXISTS chunks (
   path          TEXT NOT NULL,
   chunk_index   INTEGER NOT NULL,
   text          TEXT NOT NULL,
+  -- One-line breadcrumb context ({collection} > {title} > {headings}, tags),
+  -- spec 2026-07-26 Decision 2. Part of the chunk's retrieval identity: it is
+  -- hashed and embedded together with the chunk text (see embeddingInput,
+  -- search/vector.ts) and is the second chunks_fts column. DEFAULT '' only
+  -- matters for direct low-level inserts (tests); every real write path
+  -- (reindex.ts) always supplies a real breadcrumb.
+  context       TEXT NOT NULL DEFAULT '',
   content_hash  TEXT NOT NULL,
   PRIMARY KEY (path, chunk_index)
 );
@@ -203,15 +219,22 @@ CREATE INDEX IF NOT EXISTS idx_edges_status ON derives_from_edges(status);
 // stock English stemming pipeline; it lowercases, strips diacritics, and
 // folds plurals / -ing forms.
 //
-// Also contains chunks_fts: an FTS5 external-content table over `chunks`
-// using the same pattern. FTS sync relies on delete-before-insert: every
-// write path deletes a path's chunk rows before inserting new ones, so
-// the triggers fire in the right order. chunks_au is defensive — no current
-// write path UPDATEs a chunk row in place — but is included for correctness.
-// Note: recursive_triggers is OFF in this project, so INSERT OR REPLACE
-// conflict triggers do NOT fire both DELETE+INSERT; that is why the
-// documents write path was migrated off INSERT OR REPLACE. chunks follows
-// the same pattern.
+// Also contains chunks_fts: a TWO-COLUMN FTS5 external-content table over
+// `chunks` (context, text) — spec 2026-07-26 Decision 2. bm25(chunks_fts)
+// scores both columns at default weight, spanning the breadcrumb context
+// (title/collection/tags/headings) AND the body text: this IS contextual
+// BM25. Column order matters for two SQL-level reasons: snippet()'s column
+// index argument (hybrid.ts's chunkFtsRanking targets column 1, `text`, so a
+// served snippet can never contain synthesized breadcrumb prose — spec
+// Decision 4), and the `chunks_fts : (…)` prefix-restrict syntax elsewhere
+// keys off column NAME, not position, so it is unaffected either way. FTS
+// sync relies on delete-before-insert: every write path deletes a path's
+// chunk rows before inserting new ones, so the triggers fire in the right
+// order. chunks_au is defensive — no current write path UPDATEs a chunk row
+// in place — but is included for correctness. Note: recursive_triggers is
+// OFF in this project, so INSERT OR REPLACE conflict triggers do NOT fire
+// both DELETE+INSERT; that is why the documents write path was migrated off
+// INSERT OR REPLACE. chunks follows the same pattern.
 const FTS_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
   title, tags, content_body,
@@ -234,20 +257,22 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
   VALUES (new.rowid, new.title, new.tags, new.content);
 END;
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  text,
+  context, text,
   content='chunks',
   content_rowid='rowid',
   tokenize='porter unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-  INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+  INSERT INTO chunks_fts(rowid, context, text) VALUES (new.rowid, new.context, new.text);
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+  INSERT INTO chunks_fts(chunks_fts, rowid, context, text)
+    VALUES('delete', old.rowid, old.context, old.text);
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
-  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
-  INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+  INSERT INTO chunks_fts(chunks_fts, rowid, context, text)
+    VALUES('delete', old.rowid, old.context, old.text);
+  INSERT INTO chunks_fts(rowid, context, text) VALUES (new.rowid, new.context, new.text);
 END;
 `;
 
@@ -653,6 +678,12 @@ export interface ChunkRowInput {
   path: string;
   chunkIndex: number;
   text: string;
+  // Breadcrumb context (spec 2026-07-26 Decision 2). Optional so direct
+  // low-level callers (tests exercising unrelated behavior) don't all need a
+  // real breadcrumb; defaults to '' — the same default the column carries.
+  // Every real write path (reindex.ts) supplies the real chunkDocument()
+  // context.
+  context?: string;
   contentHash: string;
 }
 
@@ -667,9 +698,9 @@ export interface ChunkRowInput {
 // instead, surfacing caller bugs loudly rather than drifting the FTS index.
 export function insertChunkRow(db: IndexDb, chunk: ChunkRowInput): void {
   db.prepare(
-    `INSERT INTO chunks (path, chunk_index, text, content_hash)
-     VALUES (?, ?, ?, ?)`,
-  ).run(chunk.path, chunk.chunkIndex, chunk.text, chunk.contentHash);
+    `INSERT INTO chunks (path, chunk_index, text, context, content_hash)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(chunk.path, chunk.chunkIndex, chunk.text, chunk.context ?? "", chunk.contentHash);
 }
 
 // Returns the set of content_hash values that already have a row for `model`
@@ -950,6 +981,7 @@ interface ChunkJoinRow {
   path: string;
   chunk_index: number;
   text: string;
+  context: string;
   content_hash: string;
   embedding: Buffer | null;
   dim: number | null;
@@ -976,6 +1008,7 @@ function rowToChunk(row: ChunkJoinRow, expectedDim: number): IndexedChunk {
     path: row.path,
     chunkIndex: row.chunk_index,
     text: row.text,
+    context: row.context,
     contentHash: row.content_hash,
     embedding,
   };
@@ -991,7 +1024,7 @@ function rowToChunk(row: ChunkJoinRow, expectedDim: number): IndexedChunk {
 export function getAllChunks(db: IndexDb, model: string, expectedDim = 0): IndexedChunk[] {
   const rows = db
     .prepare(
-      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding, e.dim
+      `SELECT c.path, c.chunk_index, c.text, c.context, c.content_hash, e.embedding, e.dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
@@ -1009,7 +1042,7 @@ export function getChunksForPath(
 ): IndexedChunk[] {
   const rows = db
     .prepare(
-      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding, e.dim
+      `SELECT c.path, c.chunk_index, c.text, c.context, c.content_hash, e.embedding, e.dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
@@ -1018,6 +1051,65 @@ export function getChunksForPath(
     )
     .all(model, path) as ChunkJoinRow[];
   return rows.map((row) => rowToChunk(row, expectedDim));
+}
+
+// --- Passage lookups for the reranker (Part B, §4.2) ------------------------
+//
+// The rerank stage needs the exact (context, text) of the chunk that WON a
+// hit's ranking — the same shape the embedding pipeline hashed
+// (embeddingInput = context + "\n\n" + text). These three helpers cover the
+// three passage-reference kinds a rank-time hit can carry (PassageRef in
+// tools/search.ts): a lexical winner by rowid, a vector winner by
+// (path, content_hash), or the terminal `first` fallback. None of them join
+// against `embeddings` — the reranker never needs the vector, only the text.
+
+export interface ChunkPassage {
+  context: string;
+  text: string;
+}
+
+// Batched lookup by chunks.rowid — the lexical winner's rowid, as tracked by
+// chunkFtsRanking. Chunked under SQLite's bound-variable ceiling like every
+// other batched IN() lookup in this file.
+export function getChunkTextsByRowids(db: IndexDb, rowids: number[]): Map<number, ChunkPassage> {
+  const out = new Map<number, ChunkPassage>();
+  if (rowids.length === 0) return out;
+  const BATCH = 500;
+  for (let start = 0; start < rowids.length; start += BATCH) {
+    const slice = rowids.slice(start, start + BATCH);
+    const placeholders = slice.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT rowid AS rowid, context, text FROM chunks WHERE rowid IN (${placeholders})`)
+      .all(...slice) as { rowid: number; context: string; text: string }[];
+    for (const r of rows) out.set(r.rowid, { context: r.context, text: r.text });
+  }
+  return out;
+}
+
+// The chunk at `path` whose content_hash matches — the vector winner's best
+// KNN chunk. A hash can repeat within a path (rare, but content-addressing
+// allows it); the first match is as good as any since they're byte-identical.
+export function getChunkByPathAndHash(
+  db: IndexDb,
+  path: string,
+  contentHash: string,
+): ChunkPassage | null {
+  const row = db
+    .prepare("SELECT context, text FROM chunks WHERE path = ? AND content_hash = ? LIMIT 1")
+    .get(path, contentHash) as { context: string; text: string } | undefined;
+  return row ?? null;
+}
+
+// The terminal passage fallback for a hit with no query-matched chunk
+// (a title/tag-tier-only hit): the document's first chunk by chunk_index.
+// Total, not partial — chunkDocument() guarantees every indexed doc has
+// >=1 chunk, so this never returns null for a document that made it into
+// `chunks` at all.
+export function getFirstChunk(db: IndexDb, path: string): ChunkPassage | null {
+  const row = db
+    .prepare("SELECT context, text FROM chunks WHERE path = ? ORDER BY chunk_index ASC LIMIT 1")
+    .get(path) as { context: string; text: string } | undefined;
+  return row ?? null;
 }
 
 export function getMeta(db: IndexDb, key: string): string | null {
