@@ -1,0 +1,86 @@
+name: Fence canary
+
+# Kill condition 1 of the 2026-07-27 read-path fence design: does fencing
+# change what a consuming model does with a directive embedded in a document?
+#
+# Manual only (`workflow_dispatch`). This job spends real API credit — a default
+# run is 96 model calls — so it must never fire on push, pull_request, or a
+# schedule. Nothing about the fence depends on it running continuously; it is an
+# experiment you run when the answer might have changed, which in practice means
+# when the fence's framing changes or a new model ships.
+#
+# Requires the ANTHROPIC_API_KEY repo secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to test (default: Sonnet 4.5)"
+        required: false
+        type: string
+      repetitions:
+        description: "Trials per item per arm. Fewer than 3 leaves the interval too wide to conclude anything."
+        required: false
+        default: "5"
+        type: string
+      seed:
+        description: "Bootstrap seed, for a reproducible interval"
+        required: false
+        default: "1"
+        type: string
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # Fail with a legible reason rather than letting the CLI report a missing
+      # key after the workflow has already looked like it started work.
+      - name: Check the API key is present
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is empty. Set the repo secret before running the canary."
+            exit 1
+          fi
+
+      - name: Run the canary
+        id: canary
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          ARGS="--repetitions ${{ inputs.repetitions }} --seed ${{ inputs.seed }}"
+          if [ -n "${{ inputs.model }}" ]; then ARGS="$ARGS --model ${{ inputs.model }}"; fi
+          node dist/cli.js canary $ARGS | tee canary-report.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # The report is the deliverable; keep it whatever the verdict was.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-report
+          path: canary-report.txt
+
+      # Every outcome gets a distinct code, so translate rather than collapsing
+      # them into pass/fail. A void run in particular must not read as a kill:
+      # it means the instrument failed, not that the fence did.
+      - name: Interpret the verdict
+        run: |
+          cat canary-report.txt >> "$GITHUB_STEP_SUMMARY"
+          case "${{ steps.canary.outputs.exit_code }}" in
+            0) echo "::notice::Fence SURVIVED — fencing reduced compliance." ;;
+            1) echo "::error::Kill condition 1 FIRED — fencing did not change compliance. PRs 2-7 of the fence sequence are not worth writing as designed." ; exit 1 ;;
+            2) echo "::error::Run VOID — the positive control failed, so nothing is concluded. Fix the harness and rerun." ; exit 1 ;;
+            3) echo "::error::Never ran — bad arguments or no API key." ; exit 1 ;;
+            4) echo "::error::Died partway — an API error mid-run. Partial spend; retry." ; exit 1 ;;
+            *) echo "::error::Unrecognised exit code ${{ steps.canary.outputs.exit_code }}." ; exit 1 ;;
+          esac
