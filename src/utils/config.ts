@@ -417,10 +417,34 @@ function rejectUnknownKeys(
   return ok(undefined);
 }
 
+// Built-in field names that were plausibly declared as schema extensions
+// before they became built-ins, and so need an upgrade message rather than
+// the generic shadowing error.
+const VALIDITY_FIELDS: readonly string[] = ["valid_from", "valid_until"];
+
 function validateExtension(field: string, raw: unknown): Result<SchemaExtension, Error> {
   const where = `schema_extensions '${field}'`;
   // An extension adds a field; it must not reuse a built-in field name —
   // doing so would let the extension silently override the built-in on write.
+  //
+  // valid_from / valid_until get a bespoke message. Before they became
+  // built-ins, declaring them as an extension was the ONLY way to record valid
+  // time, so an upgrading vault hits this error — and loadConfig runs on
+  // essentially every write path, meaning the vault stops loading entirely.
+  // The refusal stands (reinterpreting an authored extension as a built-in
+  // would change its semantics silently, and the declared type may not even be
+  // a date), but it has to tell the operator what to do about it.
+  if (VALIDITY_FIELDS.includes(field)) {
+    return err(
+      new Error(
+        `${where}: '${field}' is now a built-in frontmatter field. Remove it from ` +
+          "schema_extensions in .daftari/config.yaml — existing values in your documents " +
+          "are read as-is by the built-in field, which is a closed, day-granular valid-time " +
+          `interval. If your '${field}' means something else, rename your extension ` +
+          "(e.g. 'effective_from') and the vault will load.",
+      ),
+    );
+  }
   if ((BUILTIN_FRONTMATTER_FIELDS as readonly string[]).includes(field)) {
     return err(new Error(`${where} shadows a built-in frontmatter field`));
   }

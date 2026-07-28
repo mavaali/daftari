@@ -35,7 +35,13 @@
 //   addon — not ABI-bound at all. One binary per platform covers
 //   everything.
 //
-// Idempotent: safe to re-run after `npm install`.
+// Idempotent: safe to re-run.
+//
+// The script mutates node_modules into artifact shape (devDependencies pruned,
+// better-sqlite3's loader patched, foreign-platform binaries staged) and
+// restores it on the way out, on success or failure alike. Leaving the tree
+// packed meant a later `npm install` or `npm audit fix` would silently break
+// every SQLite-backed test — see restoreDevTree.
 
 import { execSync } from 'node:child_process';
 import {
@@ -106,6 +112,54 @@ function section(msg) {
 	console.log(`\n=== ${msg} ===`);
 }
 
+// Put node_modules back the way a developer needs it.
+//
+// Packing deliberately leaves the tree in a shape that is correct for the
+// ARTIFACT and broken for local work:
+//
+//   - `npm prune --omit=dev` removes typescript, vitest, and biome, so
+//     `npm run build`, `npm test`, and `npm run lint` all stop working.
+//   - lib/database.js is patched to load from a Release-<platform>-<arch>-<abi>
+//     directory. A later `npm install` or `npm audit fix` rebuilds the binary
+//     into plain build/Release/ but does NOT revert the patch — npm sees the
+//     package as already installed at the right version and leaves the file
+//     alone. The loader then points at a directory that no longer exists and
+//     every SQLite-backed test dies with MODULE_NOT_FOUND, with nothing in the
+//     failure naming pack:mcpb as the cause.
+//
+// That second failure is the nasty one: it surfaces days later, in an
+// unrelated dependency operation, as a mysteriously broken test suite. So the
+// script cleans up after itself rather than leaving a trap for its future self.
+//
+// Removing the three added directories and reinstalling restores all of it,
+// and has a useful side effect: the `existsSync` guards below can no longer
+// short-circuit across runs, so bumping SHARP_WIN32_VERSION or
+// SQLITE_VEC_VERSION actually takes effect instead of silently reusing the
+// previously downloaded binary.
+//
+// Set DAFTARI_PACK_NO_RESTORE=1 when iterating on this script and you want the
+// packed tree preserved for inspection.
+function restoreDevTree() {
+	if (process.env.DAFTARI_PACK_NO_RESTORE === '1') {
+		console.log(
+			'\n=== Skipping dev-tree restore (DAFTARI_PACK_NO_RESTORE=1) ===\n' +
+				'node_modules is in PACK state: devDependencies pruned and the\n' +
+				'better-sqlite3 loader patched. Run `npm install` after removing\n' +
+				`${SQLITE_DIR} to get a working dev tree back.`,
+		);
+		return;
+	}
+	section('Restore dev tree');
+	// better-sqlite3 must be removed, not just reinstalled over: npm treats an
+	// already-present package at the right version as a no-op and would leave
+	// the patched loader in place.
+	for (const dir of [SQLITE_DIR, SHARP_WIN32_DIR, SQLITE_VEC_WIN32_DIR]) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	run('npm install');
+	console.log('node_modules restored: devDependencies back, loader unpatched.');
+}
+
 // 1. Host sanity check. Pack runs on darwin-arm64 by convention — every
 //    install/build/curl/tar path here is POSIX. To support a different host,
 //    extend this script.
@@ -125,123 +179,132 @@ rmSync(SQLITE_DIR, { recursive: true, force: true });
 run('npm install');
 run('npm run build');
 
-// 2a. Drop devDependencies (typescript, vitest, vite, tsx, biome, etc.) and
-//     their transitives from node_modules — they have no role at runtime
-//     and shipping them bloats the .mcpb by ~75 MB and ~thousands of files.
-//     The artifact size matters: large extension uninstalls hit ENOTEMPTY
-//     races on Windows during Claude Desktop upgrades.
-//
-//     Order matters: prune BEFORE we extract the win32 tarballs below,
-//     because npm prune removes packages it doesn't recognise as part of
-//     the dep tree — and those tarballs aren't installed via npm, they're
-//     curled in. If we pruned after, they'd be deleted.
-section('Prune devDependencies');
-run('npm prune --omit=dev');
+// Everything from here on mutates node_modules into a shape that is correct
+// for the ARTIFACT and wrong for local development: devDependencies pruned,
+// better-sqlite3's loader patched, foreign-platform packages curled in. The
+// finally block puts the tree back — see restoreDevTree for why that matters.
+try {
+	// 2a. Drop devDependencies (typescript, vitest, vite, tsx, biome, etc.) and
+	//     their transitives from node_modules — they have no role at runtime
+	//     and shipping them bloats the .mcpb by ~75 MB and ~thousands of files.
+	//     The artifact size matters: large extension uninstalls hit ENOTEMPTY
+	//     races on Windows during Claude Desktop upgrades.
+	//
+	//     Order matters: prune BEFORE we extract the win32 tarballs below,
+	//     because npm prune removes packages it doesn't recognise as part of
+	//     the dep tree — and those tarballs aren't installed via npm, they're
+	//     curled in. If we pruned after, they'd be deleted.
+	section('Prune devDependencies');
+	run('npm prune --omit=dev');
 
-// 3. Fetch every (runtime, ABI, platform, arch) prebuild directly from the
-//    better-sqlite3 GitHub release. We don't use prebuild-install here
-//    because we need to fetch *Electron* prebuilds in addition to Node
-//    ones, and prebuild-install's runtime/target plumbing is unnecessary
-//    when the tarball URL is constructible from the ABI alone. Each
-//    tarball contains exactly one file: build/Release/better_sqlite3.node.
-section(`Fetch better-sqlite3 prebuilds (${TARGETS.length} binaries)`);
-for (const target of TARGETS) {
-	const dir = stagedDir(target);
-	const bin = stagedBin(target);
-	if (existsSync(bin)) {
-		console.log(`Already staged: ${bin}`);
-		continue;
-	}
-	mkdirSync(dir, { recursive: true });
-	const url = prebuildUrl(target);
-	const tmp = mkdtempSync(join(tmpdir(), 'bsq-prebuild-'));
-	try {
-		run(`curl -sSfL ${url} | tar -xz -C ${tmp}`, { shell: '/bin/bash' });
-		const extracted = join(tmp, 'build', 'Release', 'better_sqlite3.node');
-		if (!existsSync(extracted)) {
-			throw new Error(`Tarball did not contain build/Release/better_sqlite3.node: ${url}`);
+	// 3. Fetch every (runtime, ABI, platform, arch) prebuild directly from the
+	//    better-sqlite3 GitHub release. We don't use prebuild-install here
+	//    because we need to fetch *Electron* prebuilds in addition to Node
+	//    ones, and prebuild-install's runtime/target plumbing is unnecessary
+	//    when the tarball URL is constructible from the ABI alone. Each
+	//    tarball contains exactly one file: build/Release/better_sqlite3.node.
+	section(`Fetch better-sqlite3 prebuilds (${TARGETS.length} binaries)`);
+	for (const target of TARGETS) {
+		const dir = stagedDir(target);
+		const bin = stagedBin(target);
+		if (existsSync(bin)) {
+			console.log(`Already staged: ${bin}`);
+			continue;
 		}
-		renameSync(extracted, bin);
-		console.log(
-			`Staged ${bin} (${target.runtime}-v${target.abi}-${target.platform}-${target.arch})`,
-		);
-	} finally {
-		rmSync(tmp, { recursive: true, force: true });
+		mkdirSync(dir, { recursive: true });
+		const url = prebuildUrl(target);
+		const tmp = mkdtempSync(join(tmpdir(), 'bsq-prebuild-'));
+		try {
+			run(`curl -sSfL ${url} | tar -xz -C ${tmp}`, { shell: '/bin/bash' });
+			const extracted = join(tmp, 'build', 'Release', 'better_sqlite3.node');
+			if (!existsSync(extracted)) {
+				throw new Error(`Tarball did not contain build/Release/better_sqlite3.node: ${url}`);
+			}
+			renameSync(extracted, bin);
+			console.log(
+				`Staged ${bin} (${target.runtime}-v${target.abi}-${target.platform}-${target.arch})`,
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	}
-}
 
-// 4. Patch lib/database.js so DEFAULT_ADDON loads from the platform+arch+ABI-
-//    tagged directory rather than going through bindings(). One line.
-//    Idempotent — marker comment guards against double-patching.
-section('Patch better-sqlite3 loader');
-const MARKER = '// PATCHED:cross-platform-mcpb';
-let dbSrc = readFileSync(DATABASE_JS, 'utf8');
-if (dbSrc.includes(MARKER)) {
-	console.log('Already patched.');
-} else {
-	const original =
-		"addon = DEFAULT_ADDON || (DEFAULT_ADDON = require('bindings')('better_sqlite3.node'));";
-	const patched =
-		'addon = DEFAULT_ADDON || (DEFAULT_ADDON = require(path.join(__dirname, "..", "build", `Release-${process.platform}-${process.arch}-${process.versions.modules}`, "better_sqlite3.node"))); ' +
-		MARKER;
-	if (!dbSrc.includes(original)) {
-		throw new Error(`Could not find binding load site in ${DATABASE_JS}`);
+	// 4. Patch lib/database.js so DEFAULT_ADDON loads from the platform+arch+ABI-
+	//    tagged directory rather than going through bindings(). One line.
+	//    Idempotent — marker comment guards against double-patching.
+	section('Patch better-sqlite3 loader');
+	const MARKER = '// PATCHED:cross-platform-mcpb';
+	let dbSrc = readFileSync(DATABASE_JS, 'utf8');
+	if (dbSrc.includes(MARKER)) {
+		console.log('Already patched.');
+	} else {
+		const original =
+			"addon = DEFAULT_ADDON || (DEFAULT_ADDON = require('bindings')('better_sqlite3.node'));";
+		const patched =
+			'addon = DEFAULT_ADDON || (DEFAULT_ADDON = require(path.join(__dirname, "..", "build", `Release-${process.platform}-${process.arch}-${process.versions.modules}`, "better_sqlite3.node"))); ' +
+			MARKER;
+		if (!dbSrc.includes(original)) {
+			throw new Error(`Could not find binding load site in ${DATABASE_JS}`);
+		}
+		dbSrc = dbSrc.replace(original, patched);
+		writeFileSync(DATABASE_JS, dbSrc);
+		console.log(`Patched ${DATABASE_JS}`);
 	}
-	dbSrc = dbSrc.replace(original, patched);
-	writeFileSync(DATABASE_JS, dbSrc);
-	console.log(`Patched ${DATABASE_JS}`);
+
+	// 5. Install @img/sharp-win32-x64 alongside the host's darwin-arm64 sharp.
+	//    Sharp resolves via require('@img/sharp-<platform>-<arch>/sharp.node'),
+	//    so as long as the package directory exists with the .node and DLLs,
+	//    sharp picks it on Windows. NAPI -> ABI-stable; one set covers Node 22,
+	//    Node 24, and every Electron. The Windows tarball bundles its own
+	//    libvips DLLs (no separate @img/sharp-libvips-win32-x64 needed at
+	//    runtime).
+	section('Install @img/sharp-win32-x64');
+	const sharpNode = join(SHARP_WIN32_DIR, 'lib', 'sharp-win32-x64.node');
+	if (existsSync(sharpNode)) {
+		console.log('Already installed.');
+	} else {
+		mkdirSync(SHARP_WIN32_DIR, { recursive: true });
+		const tarball = execSync(
+			`npm view @img/sharp-win32-x64@${SHARP_WIN32_VERSION} dist.tarball`,
+			{ encoding: 'utf8' },
+		).trim();
+		console.log(`Downloading ${tarball}`);
+		run(`curl -sSfL ${tarball} | tar -xz --strip-components=1 -C ${SHARP_WIN32_DIR}`, {
+			shell: '/bin/bash',
+		});
+	}
+
+	// 6. Install sqlite-vec-windows-x64 alongside the host's sqlite-vec-darwin-arm64.
+	//    sqlite-vec resolves via `import.meta.resolve('sqlite-vec-windows-x64/vec0.dll')`
+	//    (its own loader, see node_modules/sqlite-vec/index.mjs). SQLite
+	//    extensions are not Node addons / not ABI-bound — one binary per
+	//    platform covers all Node and Electron versions.
+	section('Install sqlite-vec-windows-x64');
+	const sqliteVecDll = join(SQLITE_VEC_WIN32_DIR, 'vec0.dll');
+	if (existsSync(sqliteVecDll)) {
+		console.log('Already installed.');
+	} else {
+		mkdirSync(SQLITE_VEC_WIN32_DIR, { recursive: true });
+		const tarball = execSync(
+			`npm view sqlite-vec-windows-x64@${SQLITE_VEC_VERSION} dist.tarball`,
+			{ encoding: 'utf8' },
+		).trim();
+		console.log(`Downloading ${tarball}`);
+		run(`curl -sSfL ${tarball} | tar -xz --strip-components=1 -C ${SQLITE_VEC_WIN32_DIR}`, {
+			shell: '/bin/bash',
+		});
+	}
+
+	section('Validate manifest');
+	run('npx --yes @anthropic-ai/mcpb validate manifest.json');
+
+	const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
+	const outFile = `daftari-${manifest.version}.mcpb`;
+	section(`Pack -> ${outFile}`);
+	run(`npx --yes @anthropic-ai/mcpb pack . ${outFile}`);
+
+	console.log(`\nDone. Artifact: ${outFile}`);
+} finally {
+	restoreDevTree();
 }
 
-// 5. Install @img/sharp-win32-x64 alongside the host's darwin-arm64 sharp.
-//    Sharp resolves via require('@img/sharp-<platform>-<arch>/sharp.node'),
-//    so as long as the package directory exists with the .node and DLLs,
-//    sharp picks it on Windows. NAPI -> ABI-stable; one set covers Node 22,
-//    Node 24, and every Electron. The Windows tarball bundles its own
-//    libvips DLLs (no separate @img/sharp-libvips-win32-x64 needed at
-//    runtime).
-section('Install @img/sharp-win32-x64');
-const sharpNode = join(SHARP_WIN32_DIR, 'lib', 'sharp-win32-x64.node');
-if (existsSync(sharpNode)) {
-	console.log('Already installed.');
-} else {
-	mkdirSync(SHARP_WIN32_DIR, { recursive: true });
-	const tarball = execSync(
-		`npm view @img/sharp-win32-x64@${SHARP_WIN32_VERSION} dist.tarball`,
-		{ encoding: 'utf8' },
-	).trim();
-	console.log(`Downloading ${tarball}`);
-	run(`curl -sSfL ${tarball} | tar -xz --strip-components=1 -C ${SHARP_WIN32_DIR}`, {
-		shell: '/bin/bash',
-	});
-}
-
-// 6. Install sqlite-vec-windows-x64 alongside the host's sqlite-vec-darwin-arm64.
-//    sqlite-vec resolves via `import.meta.resolve('sqlite-vec-windows-x64/vec0.dll')`
-//    (its own loader, see node_modules/sqlite-vec/index.mjs). SQLite
-//    extensions are not Node addons / not ABI-bound — one binary per
-//    platform covers all Node and Electron versions.
-section('Install sqlite-vec-windows-x64');
-const sqliteVecDll = join(SQLITE_VEC_WIN32_DIR, 'vec0.dll');
-if (existsSync(sqliteVecDll)) {
-	console.log('Already installed.');
-} else {
-	mkdirSync(SQLITE_VEC_WIN32_DIR, { recursive: true });
-	const tarball = execSync(
-		`npm view sqlite-vec-windows-x64@${SQLITE_VEC_VERSION} dist.tarball`,
-		{ encoding: 'utf8' },
-	).trim();
-	console.log(`Downloading ${tarball}`);
-	run(`curl -sSfL ${tarball} | tar -xz --strip-components=1 -C ${SQLITE_VEC_WIN32_DIR}`, {
-		shell: '/bin/bash',
-	});
-}
-
-section('Validate manifest');
-run('npx --yes @anthropic-ai/mcpb validate manifest.json');
-
-const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
-const outFile = `daftari-${manifest.version}.mcpb`;
-section(`Pack -> ${outFile}`);
-run(`npx --yes @anthropic-ai/mcpb pack . ${outFile}`);
-
-console.log(`\nDone. Artifact: ${outFile}`);

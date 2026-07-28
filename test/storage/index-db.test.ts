@@ -50,6 +50,8 @@ const sampleDoc: IndexedDocument = {
   ttlDays: null,
   created: "2026-01-01",
   supersededBy: null,
+  validFrom: null,
+  validUntil: null,
 };
 
 describe("index-db", () => {
@@ -175,9 +177,12 @@ describe("index-db", () => {
     db.close();
 
     // Reopen the same DB — openIndexDb must detect the version mismatch,
-    // drop documents/chunks/embeddings, recreate them, and write the current
-    // schema version. The manifest meta entry is also cleared so the next
-    // freshness check sees no stale snapshot.
+    // drop the derived tables (documents/chunks and the virtual tables),
+    // recreate them, and write the current schema version. The manifest meta
+    // entry is also cleared so the next freshness check sees no stale
+    // snapshot. `embeddings` is deliberately exempt from the drop — it is a
+    // content-addressed cache, covered by schema-bump-embeddings.test.ts —
+    // so the count below is 0 only because this test inserts none.
     const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
     if (!reopened.ok) throw reopened.error;
     db = reopened.value;

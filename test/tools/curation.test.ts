@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../../src/consolidate/constants.js";
+import { LINT_CHECKS } from "../../src/curation/lint.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension, listTensions, resolveTension } from "../../src/curation/tension.js";
 import {
@@ -36,7 +37,10 @@ describe("curation tools", () => {
       if (!result.ok) return;
       expect(result.value.filter).toBeNull();
       expect(result.value.totalFindings).toBe(9);
-      expect(Object.keys(result.value.checks)).toHaveLength(11);
+      // Derived from LINT_CHECKS rather than hardcoded: the point of this
+      // assertion is that EVERY registered check appears in the report, not
+      // that the vault happens to have N of them.
+      expect(Object.keys(result.value.checks).sort()).toEqual([...LINT_CHECKS].sort());
     });
 
     it("narrows the report to a single check when filtered", async () => {
