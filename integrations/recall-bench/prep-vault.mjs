@@ -1,9 +1,21 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = "/Users/mihirwagle/projects/daftari";
-const CORPUS = "/tmp/recall-review/packages/recall-bench/personas/executive-assistant/memories-180d";
-const VAULT = "/tmp/cov-recall/vault";
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const CORPUS =
+  "/tmp/recall-review/packages/recall-bench/personas/executive-assistant/memories-180d";
+
+// --out <dir>: destination vault directory (spec 2026-07-26 fusion overhaul,
+// disposition C7 — the fusion bench preps into its own /tmp/fusion-recall/vault
+// so it never clobbers the sibling chunkbm25 bench's /tmp/cov-recall/vault
+// fixture; no forked prep script). Default unchanged for chunkbm25.
+const outFlagIdx = process.argv.indexOf("--out");
+const VAULT = outFlagIdx !== -1 ? process.argv[outFlagIdx + 1] : "/tmp/cov-recall/vault";
+if (outFlagIdx !== -1 && !VAULT) {
+  console.error("--out requires a directory argument");
+  process.exit(1);
+}
 const BASE_DATE = "2026-01-01";
 
 if (!existsSync(CORPUS)) {
@@ -31,18 +43,22 @@ const nums = files.map((f) => Number(/day-(\d+)/.exec(f)[1])).sort((a, b) => a -
 // Invariant assertions (the date-window depends on monotonic, contiguous, one-per-day):
 if (files.length !== 180) throw new Error(`expected 180 day-files, got ${files.length}`);
 for (let i = 0; i < nums.length; i++) {
-  if (nums[i] !== i + 1) throw new Error(`non-contiguous day numbering at index ${i}: got ${nums[i]}`);
+  if (nums[i] !== i + 1)
+    throw new Error(`non-contiguous day numbering at index ${i}: got ${nums[i]}`);
 }
 // Spot-check ONLY the base offset (NOT per-file in-body dates — body dates are often topic prose):
 const day1 = readFileSync(join(CORPUS, "day-0001.md"), "utf8");
-if (!day1.includes(BASE_DATE)) console.warn(`warning: day-0001 body does not mention ${BASE_DATE}; confirm BASE_DATE`);
+if (!day1.includes(BASE_DATE))
+  console.warn(`warning: day-0001 body does not mention ${BASE_DATE}; confirm BASE_DATE`);
 
 rmSync(VAULT, { recursive: true, force: true });
 mkdirSync(join(VAULT, "notes"), { recursive: true });
 
 for (const n of nums) {
   const created = dayDate(n);
-  const body = stripFrontmatter(readFileSync(join(CORPUS, `day-${String(n).padStart(4, "0")}.md`), "utf8"));
+  const body = stripFrontmatter(
+    readFileSync(join(CORPUS, `day-${String(n).padStart(4, "0")}.md`), "utf8"),
+  );
   // Inert, question-orthogonal title (NOT the first prose header — that would enter FTS and perturb ranking).
   const fm =
     `---\n` +
@@ -69,4 +85,5 @@ if (!r.ok) {
   process.exit(1);
 }
 console.log(`prep: indexed ${r.value.documentCount} docs`);
-if (r.value.documentCount !== 180) throw new Error(`indexed ${r.value.documentCount}, expected 180`);
+if (r.value.documentCount !== 180)
+  throw new Error(`indexed ${r.value.documentCount}, expected 180`);
