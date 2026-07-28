@@ -633,6 +633,32 @@ const ratifyOutputSchema: Record<string, unknown> = {
 };
 
 // ---------------------------------------------------------------------------
+// Compact `content` summaries (spec 2026-07-26, Decision 3, PR 1 gap
+// closure). Neither tool's docLinks names a path: the target document
+// itself is not part of either result value (StageActionResult carries only
+// the proposal's own id/expiry; RatifyResult carries only the decision),
+// and the docLinks hard rule forbids inventing one from args.
+// ---------------------------------------------------------------------------
+
+function summarizeStageAction(value: unknown): string {
+  const r = value as StageActionResult;
+  const conflicts =
+    r.conflicts_with.length > 0
+      ? `conflicts with ${r.conflicts_with.length}: ${r.conflicts_with.join(", ")}`
+      : "uncontested";
+  const lines = [`staged ${r.id}, expires ${r.expires_at} — ${conflicts}`];
+  if (r.tension_id) lines.push(`tension: ${r.tension_id}`);
+  if (r.tension_error) lines.push(`tension error: ${r.tension_error}`);
+  return lines.join("\n");
+}
+
+function summarizeRatify(value: unknown): string {
+  const r = value as RatifyResult;
+  const outcome = r.shadow ? "shadow" : r.applied ? (r.commit ?? "applied") : "not applied";
+  return `${r.action_id} ${r.decision} — ${outcome}`;
+}
+
+// ---------------------------------------------------------------------------
 // MCP tool definitions
 // ---------------------------------------------------------------------------
 
@@ -697,6 +723,7 @@ export const stagedActionTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: stageActionOutputSchema,
+    summarize: summarizeStageAction,
     handler: (vaultRoot, args, access) => vaultStageAction(vaultRoot, args, access),
   },
   {
@@ -746,6 +773,7 @@ export const stagedActionTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: ratifyOutputSchema,
+    summarize: summarizeRatify,
     handler: (vaultRoot, args, access) => vaultRatify(vaultRoot, args, access),
   },
 ];

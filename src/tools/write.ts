@@ -330,6 +330,11 @@ export interface WriteResult {
   conflicts_with?: string[];
   tension_id?: string | null;
   tension_error?: string;
+  // vault_merge only: the two source documents folded into `path`, canonical
+  // relPaths. Exists so vault_merge's docLinks summarizer can name the
+  // sources without re-deriving them from anything outside the result value
+  // (the docLinks hard rule: only paths literally present in the value).
+  sources?: string[];
 }
 
 // First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
@@ -1898,6 +1903,7 @@ export async function vaultMerge(
       validation: targetReport,
       indexUpdated: false,
       shadow: true,
+      sources: [resolvedA.value.relPath, resolvedB.value.relPath],
     });
   }
 
@@ -1975,6 +1981,7 @@ export async function vaultMerge(
       updated: stampedTarget.updated,
       validation: targetReport,
       indexUpdated: allIndexed,
+      sources: [resolvedA.value.relPath, resolvedB.value.relPath],
     });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -2261,6 +2268,47 @@ function writeResultSchema(opts: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure). One shared pair — every write tool's ok-value is a
+// WriteResult, and the shape they need to report is the same: what
+// happened, to which document, and any advisory note that rode along.
+// ---------------------------------------------------------------------------
+
+function summarizeWrite(value: unknown): string {
+  const r = value as WriteResult;
+  const commitPart = r.commit
+    ? ` (${r.commit})`
+    : r.shadow
+      ? " (shadow — nothing written)"
+      : r.committed
+        ? ""
+        : " (not committed)";
+  const lines = [`${r.action}: ${r.path}${commitPart}`];
+  if (r.action === "staged") {
+    const conflicts =
+      r.conflicts_with && r.conflicts_with.length > 0
+        ? `; conflicts with ${r.conflicts_with.length}: ${r.conflicts_with.join(", ")}`
+        : "; uncontested";
+    lines.push(`staged as ${r.staged_id}, expires ${r.expires_at}${conflicts}`);
+    if (r.tension_id) lines.push(`tension: ${r.tension_id}`);
+    if (r.tension_error) lines.push(`tension error: ${r.tension_error}`);
+  }
+  if (r.hint) lines.push(`hint: ${r.hint}`);
+  if (r.supersede_hint) lines.push(`hint: ${r.supersede_hint}`);
+  if (r.domain_warnings && r.domain_warnings.length > 0) {
+    lines.push(`domain warnings: ${r.domain_warnings.join("; ")}`);
+  }
+  return lines.join("\n");
+}
+
+// The written path, plus (vault_merge only) the two sources it folded in —
+// both already RBAC-gated by the handler before the write landed.
+function docLinksWrite(value: unknown): string[] {
+  const r = value as WriteResult;
+  return r.sources && r.sources.length > 0 ? [r.path, ...r.sources] : [r.path];
+}
+
 export const writeTools: ToolDefinition[] = [
   {
     name: "vault_write",
@@ -2353,6 +2401,8 @@ export const writeTools: ToolDefinition[] = [
         },
       },
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultWrite(vaultRoot, args, access),
   },
   {
@@ -2391,6 +2441,8 @@ export const writeTools: ToolDefinition[] = [
       actions: ["append"],
       properties: { domain_warnings: domainWarningsProperty },
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultAppend(vaultRoot, args, access),
   },
   {
@@ -2420,6 +2472,8 @@ export const writeTools: ToolDefinition[] = [
       actions: ["promote"],
       statuses: ["canonical"],
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultPromote(vaultRoot, args, access),
   },
   {
@@ -2457,6 +2511,8 @@ export const writeTools: ToolDefinition[] = [
       actions: ["deprecate"],
       statuses: ["deprecated"],
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultDeprecate(vaultRoot, args, access),
   },
   {
@@ -2496,6 +2552,8 @@ export const writeTools: ToolDefinition[] = [
         "document's confidence and the 'updated' / 'updated_by' stamps moved.",
       actions: ["confidence-set"],
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultSetConfidence(vaultRoot, args, access),
   },
   {
@@ -2540,6 +2598,8 @@ export const writeTools: ToolDefinition[] = [
         "write-protection tier and the 'updated' / 'updated_by' stamps moved.",
       actions: ["tier-set"],
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultSetTier(vaultRoot, args, access),
   },
   {
@@ -2581,6 +2641,8 @@ export const writeTools: ToolDefinition[] = [
       actions: ["supersede"],
       statuses: ["superseded"],
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultSupersede(vaultRoot, args, access),
   },
   {
@@ -2629,11 +2691,21 @@ export const writeTools: ToolDefinition[] = [
     outputSchema: writeResultSchema({
       description:
         "The applied merge, reported for the TARGET document (path is " +
-        "target_path); the superseded sources are written under the same " +
-        "commit and are not enumerated here. 'commit' covers all three files, " +
-        "and 'indexUpdated' is true only when every written file reindexed.",
+        "target_path). 'commit' covers all three files, and 'indexUpdated' " +
+        "is true only when every written file reindexed.",
       actions: ["merge"],
+      properties: {
+        sources: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Canonical vault-relative paths of the two source documents " +
+            "superseded into the target, written under the same commit.",
+        },
+      },
     }),
+    summarize: summarizeWrite,
+    docLinks: docLinksWrite,
     handler: (vaultRoot, args, access) => vaultMerge(vaultRoot, args, access),
   },
 ];

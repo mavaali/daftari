@@ -47,6 +47,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { clip, SUMMARY_DETAIL_CHARS } from "./summary.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
 // (or any role with no read access) is denied.
@@ -950,12 +951,6 @@ const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
 ];
 
 const LINT_SUMMARY_TOP_FINDINGS = 6;
-const LINT_SUMMARY_DETAIL_CHARS = 110;
-
-function clip(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 function summarizeLint(value: unknown): string {
   const report = value as VaultLintResult;
@@ -999,11 +994,69 @@ function summarizeLint(value: unknown): string {
   if (top.length > 0) {
     lines.push(`top ${top.length} of ${flat.length} finding(s):`);
     for (const { check, finding } of top) {
-      lines.push(
-        `  [${check}] ${finding.path} — ${clip(finding.detail, LINT_SUMMARY_DETAIL_CHARS)}`,
-      );
+      lines.push(`  [${check}] ${finding.path} — ${clip(finding.detail, SUMMARY_DETAIL_CHARS)}`);
     }
   }
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links for the remaining curation
+// tools (spec 2026-07-26, Decision 3, PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function summarizeTensionEntry(value: unknown): string {
+  const t = value as TensionEntry;
+  return `${t.id ?? "(legacy, no id)"} [${t.kind}] ${t.status}`;
+}
+
+// sourceA/sourceB are already present in the (already visible) result value
+// — the hard rule that docLinks never re-derives or re-queries anything.
+function docLinksTensionEntry(value: unknown): string[] {
+  const t = value as TensionEntry;
+  return [t.sourceA, t.sourceB];
+}
+
+function summarizeTensionClusters(value: unknown): string {
+  const r = value as TensionClustersResult;
+  if (r.cluster_count === 0) return "0 tension clusters.";
+  const lines = [`${r.cluster_count} tension cluster(s):`];
+  for (const c of r.clusters) {
+    lines.push(
+      `  ${c.id}: ${c.size} doc(s), ${c.tension_count} tension(s), ` +
+        `${c.oldest_tension_age_days}-${c.newest_tension_age_days}d old`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function summarizeTensionBlast(value: unknown): string {
+  const r = value as TensionBlastResult;
+  const anchor = r.contested_document ?? r.cluster_id ?? "(unknown anchor)";
+  return (
+    `blast from ${anchor}: ${r.downstream.length} downstream ` +
+    `(${r.primary_blast} primary / ${r.advisory_blast} advisory), ` +
+    `depth ${r.max_depth}, hidden: ${r.hidden_downstream}`
+  );
+}
+
+// Every path the (already RBAC-filtered) value names: the contested anchor
+// (when a single document was queried), the cluster's members, and the
+// visible downstream set.
+function docLinksTensionBlast(value: unknown): string[] {
+  const r = value as TensionBlastResult;
+  const paths: string[] = [];
+  if (r.contested_document) paths.push(r.contested_document);
+  paths.push(...r.cluster_documents);
+  paths.push(...r.downstream.map((d) => d.path));
+  return paths;
+}
+
+function summarizeProvenance(value: unknown): string {
+  const r = value as VaultProvenanceResult;
+  if (r.count === 0) return `${r.path}: no write history.`;
+  const lines = [`${r.path}: ${r.count} entry(ies)`];
+  for (const e of r.history.slice(-5)) lines.push(`  ${e.timestamp} ${e.agent} ${e.action}`);
   return lines.join("\n");
 }
 
@@ -1064,6 +1117,8 @@ export const curationTools: ToolDefinition[] = [
     },
     // The entry as logged: id assigned, status 'unresolved', no resolution.
     outputSchema: tensionEntrySchema(LOGGABLE_TENSION_KINDS),
+    summarize: summarizeTensionEntry,
+    docLinks: docLinksTensionEntry,
     handler: (vaultRoot, args, access) => vaultTensionLog(vaultRoot, args, access),
   },
   {
@@ -1109,6 +1164,8 @@ export const curationTools: ToolDefinition[] = [
     },
     // The updated entry: status 'resolved' with the resolution block attached.
     outputSchema: tensionEntrySchema(TENSION_KINDS),
+    summarize: summarizeTensionEntry,
+    docLinks: docLinksTensionEntry,
     handler: (vaultRoot, args, access) => vaultTensionResolve(vaultRoot, args, access),
   },
   {
@@ -1130,6 +1187,7 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: tensionClustersOutputSchema,
+    summarize: summarizeTensionClusters,
     handler: (vaultRoot, args, access) => vaultTensionClusters(vaultRoot, args, access),
   },
   {
@@ -1170,6 +1228,8 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: tensionBlastOutputSchema,
+    summarize: summarizeTensionBlast,
+    docLinks: docLinksTensionBlast,
     handler: (vaultRoot, args, access) => vaultTensionBlast(vaultRoot, args, access),
   },
   {
@@ -1229,6 +1289,8 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: provenanceOutputSchema,
+    summarize: summarizeProvenance,
+    docLinks: (value) => [(value as VaultProvenanceResult).path],
     handler: (vaultRoot, args, access) => vaultProvenance(vaultRoot, args, access),
   },
 ];
