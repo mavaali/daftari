@@ -54,14 +54,23 @@ export type IndexDb = Database.Database;
 // Bumped 8 → 9 to add doc_links, the materialized inbound-link graph that
 // backs inline structural decay (#8) — orphan and deprecated-still-linked
 // answered with one indexed query at read/search time.
-// 10 carries two independent changes that landed together, both of which the
-// same bump covers because the version-mismatch path drops and rebuilds every
-// derived table from the markdown — there is no migration to write:
-//   - `embeddings_vec` gains the `collection` partition key (2026-07-26
-//     retrieval-fusion spec, Decision 3).
-//   - the valid-time columns (valid_from, valid_until) and an index on
-//     superseded_by, which the bi-temporal walk queries in reverse.
-const SCHEMA_VERSION = "10";
+// 10 added the `collection` partition key to `embeddings_vec` (2026-07-26
+// retrieval-fusion spec, Decision 3), in #303.
+// 11 covers the valid-time columns (valid_from, valid_until) and the index on
+// superseded_by that the bi-temporal walk queries in reverse. Those columns
+// arrived in #305, which added them to the `documents` DDL and to the upsert
+// but left this constant at "10" — the comment there claimed the bump covered
+// them, and no bump had happened. `CREATE TABLE IF NOT EXISTS` is a no-op
+// against an existing table, so every index built between #303 and #305 stored
+// version 10 with no valid_from column, skipped the rebuild on the version
+// check, and then failed the first upsert with `no such column: valid_from`.
+// CI never caught it because `.daftari/index.db` is gitignored and every run
+// builds a fresh index; only an upgrade in place reaches that state.
+//
+// The bump is cheap now precisely because #305 also removed `embeddings` from
+// the drop list below: derived tables are rebuilt from the markdown, and the
+// durable vector cache survives.
+const SCHEMA_VERSION = "11";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
