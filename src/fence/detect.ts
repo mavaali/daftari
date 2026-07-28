@@ -54,42 +54,63 @@ const MASKED_CLASSES: ReadonlySet<InjectionClass> = new Set(["role-impersonation
 // Replaces fenced code block CONTENT with spaces, preserving both length and
 // newlines so every offset and line number computed against the masked text is
 // valid against the original. Blanking rather than deleting is the whole point.
+//
+// Open/close pairing follows CommonMark: a fence closes only on the SAME
+// delimiter character, at least as long as the opener, with nothing but
+// whitespace after it. Matching any fence-like line against any other is not a
+// cosmetic shortcut — a document that shows a ``` example inside a ````` block
+// has an odd number of fence-like lines, so a naive toggle ends the scan still
+// "open" and blanks everything to EOF. Since masking gates the
+// role-impersonation class, that would silently disable the one security-
+// relevant detector for the rest of the file, far past the declared residual.
+function blankRange(out: string[], from: number, to: number): void {
+  for (let i = Math.max(0, from); i < Math.min(to, out.length); i += 1) {
+    if (out[i] !== "\n") out[i] = " ";
+  }
+}
+
 export function maskCode(text: string): string {
   const out = text.split("");
-  // ``` or ~~~ fences, optionally indented, with an optional info string.
-  const fence = /^[ \t]*(`{3,}|~{3,})[^\n]*$/gm;
-  let open: RegExpExecArray | null = null;
-  fence.lastIndex = 0;
-  for (;;) {
-    const m = fence.exec(text);
-    if (m === null) break;
-    if (open === null) {
-      open = m;
-      continue;
+  const fenceLine = /^[ \t]*(`{3,}|~{3,})([^\n]*)$/;
+
+  let openChar: string | null = null;
+  let openLen = 0;
+  let contentFrom = -1;
+  let offset = 0;
+
+  for (const line of text.split("\n")) {
+    const m = fenceLine.exec(line);
+    if (m !== null) {
+      const delim = m[1];
+      const char = delim[0];
+      const len = delim.length;
+      if (openChar === null) {
+        // Opening fence. Its info string is legible; content starts next line.
+        openChar = char;
+        openLen = len;
+        contentFrom = offset + line.length;
+      } else if (char === openChar && len >= openLen && m[2].trim() === "") {
+        blankRange(out, contentFrom, offset);
+        openChar = null;
+        contentFrom = -1;
+      }
+      // A fence-like line that does not satisfy the close rule is content of
+      // the open block, and is blanked with the rest of it.
     }
-    // Blank everything between the end of the opening fence line and the start
-    // of the closing fence line. The fence lines themselves stay legible.
-    for (let i = open.index + open[0].length; i < m.index; i += 1) {
-      if (out[i] !== "\n") out[i] = " ";
-    }
-    open = null;
+    offset += line.length + 1; // +1 for the newline split() removed
   }
+
   // An unterminated fence blanks to end of text: a payload after an unclosed
   // ``` is inside a code block as far as every renderer is concerned.
-  if (open !== null) {
-    for (let i = open.index + open[0].length; i < out.length; i += 1) {
-      if (out[i] !== "\n") out[i] = " ";
-    }
-  }
+  if (openChar !== null) blankRange(out, contentFrom, out.length);
+
   // Inline code spans, same treatment, same reason.
   const inline = /`[^`\n]+`/g;
   inline.lastIndex = 0;
   for (;;) {
     const m = inline.exec(text);
     if (m === null) break;
-    for (let i = m.index + 1; i < m.index + m[0].length - 1; i += 1) {
-      if (out[i] !== "\n") out[i] = " ";
-    }
+    blankRange(out, m.index + 1, m.index + m[0].length - 1);
   }
   return out.join("");
 }

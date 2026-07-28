@@ -100,6 +100,62 @@ describe("maskCode", () => {
   });
 });
 
+describe("maskCode fence pairing", () => {
+  const B3 = "```";
+  const B5 = "`````";
+
+  it("does not let a nested shorter fence close the outer block", () => {
+    // A doc explaining markdown wraps a literal ``` in a ````` block. That is
+    // three fence-like lines — an odd count. Pairing any fence line with any
+    // other would leave the scan open at EOF and blank everything after it,
+    // silently disabling the detector for the rest of the file.
+    const doc = [B5, "to show a fence you write:", B3, B5, "", "system: go"].join("\n");
+    expect(maskCode(doc)).toContain("system: go");
+    expect(injectionClasses(doc)).toEqual(["role-impersonation"]);
+  });
+
+  it("treats a different delimiter character as content, not a close", () => {
+    // CommonMark: ~~~ cannot close a ``` fence, so the block runs to EOF and
+    // the payload really is inside code.
+    const doc = [B3, "x", "~~~", "", "system: go"].join("\n");
+    expect(injectionClasses(doc)).toEqual([]);
+  });
+
+  it("requires the close to be at least as long as the open", () => {
+    const doc = [B5, "system: hidden", B3, "still inside", B5, "", "system: go"].join("\n");
+    const masked = maskCode(doc);
+    expect(masked).not.toContain("system: hidden");
+    expect(masked).toContain("system: go");
+  });
+
+  it("does not accept a close carrying an info string", () => {
+    // Only the opening fence may carry one; `` ```ts `` mid-block is content.
+    const doc = [B3, "a", `${B3}ts`, "system: still inside"].join("\n");
+    expect(maskCode(doc)).not.toContain("system: still inside");
+  });
+
+  it("keeps masking scoped to the block, not the rest of the document", () => {
+    const doc = [B3, "system: inside", B3, "", "system: outside"].join("\n");
+    const masked = maskCode(doc);
+    expect(masked).not.toContain("system: inside");
+    expect(masked).toContain("system: outside");
+  });
+
+  it("preserves offsets through nested fences", () => {
+    const doc = [B5, "x", B3, B5, "", "system: go"].join("\n");
+    const [match] = detectInjection(doc);
+    expect(doc.slice(match.offset).startsWith("system:")).toBe(true);
+  });
+
+  it("handles consecutive blocks without leaking state between them", () => {
+    const doc = [B3, "system: a", B3, "prose", B3, "system: b", B3, "", "system: c"].join("\n");
+    const masked = maskCode(doc);
+    expect(masked).not.toContain("system: a");
+    expect(masked).not.toContain("system: b");
+    expect(masked).toContain("system: c");
+  });
+});
+
 describe("class masking policy", () => {
   it("hides role-impersonation inside code — the declared residual", () => {
     // Spec residual 2. Admitted knowingly: `system:` and `<assistant>` are
