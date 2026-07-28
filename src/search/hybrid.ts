@@ -8,9 +8,21 @@
 //     virtual table, joining back to `chunks` to map content hashes onto
 //     document paths.
 //
-// Each ranker still produces raw scores on its own scale, so both are
-// min-normalised to [0, 1] (divide by the top score) before being mixed by
-// weight. Default weighting is an even 0.5 / 0.5 split.
+// Each ranker still produces raw scores on its own scale. Two fusion modes
+// combine them (spec 2026-07-26 fusion overhaul, Decision 1):
+//   - "weighted" (relatedSearch's default): both halves are min-normalised
+//     to [0, 1] (divide by the top score) and mixed by weight.
+//   - "rrf" (hybridSearch's default): each half is converted to a rank list
+//     and mixed via reciprocal rank fusion at k=60, SCALED by (k+1) so a
+//     rank-1 contribution is 1.0 rather than textbook RRF's 1/61 — ordering-
+//     identical to textbook RRF, but keeps fused scores in (0, 1] with a
+//     top≈1 scale for downstream consumers (summaryLine's toFixed(3), the
+//     rerank pool, vault hooks) that already calibrate against the weighted
+//     mode's range. `bm25Score`/`vectorScore` on each hit carry these
+//     per-ranker contributions (weighted: normalised score; rrf: scaled
+//     reciprocal rank), unweighted; `score` applies the weights on top.
+//
+// Default weighting is an even 0.5 / 0.5 split.
 //
 // Vector ranking is best-effort. If the query cannot be embedded (model
 // unavailable) or the index holds no embeddings, the search degrades to
@@ -38,6 +50,27 @@ export interface HybridWeights {
 }
 
 export const DEFAULT_WEIGHTS: HybridWeights = { bm25: 0.5, vector: 0.5 };
+
+// Fusion mode: how the lexical and vector rank lists are combined into one
+// fused score (spec 2026-07-26 fusion overhaul, Decision 1). See the file
+// header for the score-scale rationale.
+export type FusionMode = "weighted" | "rrf";
+
+// hybridSearch's own default. Flipped to "rrf" in PR 3, gated on the
+// fusion-runner.mjs bench (docs/superpowers/specs/2026-07-26-retrieval-
+// fusion-overhaul-design.md).
+export const DEFAULT_FUSION: FusionMode = "weighted";
+
+// relatedSearch's own default. Deliberately NOT flipped alongside
+// DEFAULT_FUSION: relatedSearch is a materially different fusion problem (up
+// to 64 prefix-OR'd source tokens, document granularity) with no bench arm
+// exercising it. Callers can still opt in via `fusion: "rrf"`.
+const RELATED_DEFAULT_FUSION: FusionMode = "weighted";
+
+// RRF's rank-damping constant. Module-private and not configurable — RRF's
+// whole appeal is that it needs no tuning; k=60 is the standard literature
+// default.
+const RRF_K = 60;
 
 export interface HybridHit {
   path: string;
@@ -156,6 +189,24 @@ function normalize(scores: Map<string, number>): Map<string, number> {
   for (const v of scores.values()) if (v > max) max = v;
   if (max === 0) return new Map([...scores].map(([k]) => [k, 0]));
   return new Map([...scores].map(([k, v]) => [k, v / max]));
+}
+
+// Rank-list construction for RRF. Sorts a score map descending (ties broken
+// by path ascending, for deterministic ranks) and maps each entry to its
+// scaled reciprocal-rank contribution (RRF_K + 1) / (RRF_K + rank), rank
+// 1-based. The (RRF_K + 1) numerator is a constant multiple of textbook
+// 1/(k + rank): ordering-identical, but contributions live in (0, 1] with
+// rank 1 = 1.0, so fused scores keep the top≈1 scale downstream consumers
+// (summaryLine's toFixed(3), the rerank pool, vault hooks) already
+// calibrate against. An empty map returns an empty map.
+function rrfContributions(scores: Map<string, number>): Map<string, number> {
+  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const out = new Map<string, number>();
+  ranked.forEach(([path], i) => {
+    const rank = i + 1;
+    out.set(path, (RRF_K + 1) / (RRF_K + rank));
+  });
+  return out;
 }
 
 // Wraps a prefix-OR'd FTS match string in an FTS5 column filter (e.g. "{title tags}"). Null query → null.
@@ -359,6 +410,7 @@ interface RankOptions {
   lexicalGranularity: "document" | "chunk";
   // Readable-collection allow-list pushed into the KNN scan; see vecRanking.
   readableCollections?: string[];
+  fusion: FusionMode;
 }
 
 // Core ranker shared by query search and related-document search.
@@ -400,12 +452,19 @@ function rankDocuments(
     vectorRaw = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
     if (vectorRaw.size > 0) vectorUsed = true;
   }
-  const vectorNorm = normalize(vectorRaw);
 
   // With no usable vector signal, lexical ranking carries the full weight.
   const weights: HybridWeights = vectorUsed ? opts.weights : { bm25: 1, vector: 0 };
 
-  const candidates = new Set<string>([...bm25Norm.keys(), ...vectorNorm.keys()]);
+  // The two fusion modes differ only in how the lexical map (bm25Norm, built
+  // above — untouched by fusion mode) meets the vector map. "weighted" keeps
+  // today's cross-ranker normalize(); "rrf" replaces both with rank-based
+  // scaled-reciprocal-rank contributions and never normalizes across
+  // rankers. See rrfContributions and the file header.
+  const lexScores = opts.fusion === "rrf" ? rrfContributions(bm25Norm) : bm25Norm;
+  const vecScores = opts.fusion === "rrf" ? rrfContributions(vectorRaw) : normalize(vectorRaw);
+
+  const candidates = new Set<string>([...lexScores.keys(), ...vecScores.keys()]);
 
   // Fetch full rows for ONLY the candidate paths — not the whole vault. The
   // FTS + vector rankers above have already collapsed the vault to a small set
@@ -421,8 +480,8 @@ function rankDocuments(
     if (path === opts.excludePath) continue;
     const doc = byPath.get(path);
     if (!doc) continue;
-    const bm25Score = bm25Norm.get(path) ?? 0;
-    const vectorScore = vectorNorm.get(path) ?? 0;
+    const bm25Score = lexScores.get(path) ?? 0;
+    const vectorScore = vecScores.get(path) ?? 0;
     const score = weights.bm25 * bm25Score + weights.vector * vectorScore;
     if (score <= 0) continue;
     hits.push({
@@ -448,7 +507,12 @@ function rankDocuments(
     });
   }
 
-  hits.sort((a, b) => b.score - a.score);
+  // Deterministic tie-break in BOTH modes: exact fused-score ties are common
+  // under RRF (many candidates share the same rank-derived contribution),
+  // and insertion order otherwise descends from SQL row order with no
+  // cross-run guarantee. Benign for weighted mode too — it only reorders
+  // exact ties, which SQL row order previously broke arbitrarily.
+  hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
   return { hits: hits.slice(0, opts.limit), vectorUsed };
 }
 
@@ -470,6 +534,10 @@ export interface HybridSearchOptions {
   // the tool handler's post-rank canRead filter remains the authorization
   // boundary either way, and still covers the lexical half.
   readableCollections?: string[];
+  // Fusion mode (spec 2026-07-26 fusion overhaul, Decision 1). Library-level
+  // option — no MCP tool argument grows for it. hybridSearch defaults to
+  // DEFAULT_FUSION; relatedSearch defaults to its own RELATED_DEFAULT_FUSION.
+  fusion?: FusionMode;
 }
 
 // Ranks vault documents against a free-text query.
@@ -480,6 +548,7 @@ export async function hybridSearch(
 ): Promise<Result<HybridSearchResult, Error>> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  const fusion = options.fusion ?? DEFAULT_FUSION;
   // Default flipped to "chunk" in v1.29.0: chunk-level BM25 recovers the
   // multi-topic-document dilution gap (RB recall + SQuAD retrieval) and produces
   // better end-to-end answers where it out-retrieves document, with no regression
@@ -506,6 +575,7 @@ export async function hybridSearch(
     excludePath: undefined,
     lexicalGranularity,
     readableCollections: options.readableCollections,
+    fusion,
   });
 
   return ok({
@@ -537,6 +607,7 @@ export function relatedSearch(
 ): Result<RelatedSearchResult, Error> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  const fusion = options.fusion ?? RELATED_DEFAULT_FUSION;
   // See hybridSearch: over-fetch lets the RBAC-filtering tool handler drop
   // restricted hits before slicing to the user-facing limit.
   const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
@@ -570,6 +641,7 @@ export function relatedSearch(
     excludePath: path,
     lexicalGranularity: "document",
     readableCollections: options.readableCollections,
+    fusion,
   });
 
   return ok({

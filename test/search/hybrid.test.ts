@@ -2,9 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { err } from "../../src/frontmatter/types.js";
 import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { reindexVault } from "../../src/search/reindex.js";
+import * as vectorMod from "../../src/search/vector.js";
 import * as indexDb from "../../src/storage/index-db.js";
 import { type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -720,5 +722,249 @@ Additional filler content for padding the vault retrieval set.
     if (!res.ok) return;
     expect(res.value.hits[0]?.path).toBe("bodywin.md");
     expect(res.value.hits.some((h) => h.path === "titlecoincidence.md")).toBe(true);
+  });
+
+  // Under RRF, the tier invariant (every body match precedes every
+  // title-only match) is preserved at the lexical-LIST layer by
+  // construction: tieredLexical's output is strict and tie-free, so its
+  // sorted order feeds rrfContributions unchanged.
+  it("preserves the body-before-title tier invariant under RRF", async () => {
+    const res = await hybridSearch(ttDb, "tiebreak", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+      fusion: "rrf",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits[0]?.path).toBe("bodywin.md");
+    const bodyIdx = res.value.hits.findIndex((h) => h.path === "bodywin.md");
+    const titleIdx = res.value.hits.findIndex((h) => h.path === "titlecoincidence.md");
+    expect(bodyIdx).toBeGreaterThanOrEqual(0);
+    expect(titleIdx).toBeGreaterThan(bodyIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RRF fusion (spec 2026-07-26 fusion overhaul, Decision 1)
+// ---------------------------------------------------------------------------
+// A small, hand-built fixture with three documents whose ONLY difference is
+// how many times "widget" appears (5 / 3 / 1), padded with distinct filler
+// tokens so every document is the same length — length normalization cannot
+// confound the term-frequency ordering, so document-granularity BM25 ranks
+// them top/second/third strictly by widget count, deterministically.
+describe("hybrid search — RRF fusion (Decision 1)", () => {
+  let rrfVault: string;
+  let rrfDb: IndexDb;
+
+  function widgetDoc(name: string, title: string, widgetCount: number, fillerPrefix: string) {
+    const widget = Array.from({ length: widgetCount }, () => "widget").join(" ");
+    const filler = Array.from({ length: 5 - widgetCount }, (_, i) => `${fillerPrefix}${i}`).join(
+      " ",
+    );
+    return `---
+title: "${title}"
+domain: product
+collection: general
+status: canonical
+confidence: high
+created: 2026-01-01
+updated: 2026-01-01
+updated_by: human:test
+provenance: direct
+sources:
+  - test-source
+superseded_by: null
+tags: [test]
+---
+
+# ${title}
+
+${widget} ${filler}
+`;
+  }
+
+  beforeAll(async () => {
+    rrfVault = mkdtempSync(join(tmpdir(), "daftari-rrf-"));
+    writeFileSync(join(rrfVault, "top.md"), widgetDoc("top", "Top Doc", 5, "topfiller"));
+    writeFileSync(join(rrfVault, "second.md"), widgetDoc("second", "Second Doc", 3, "secfiller"));
+    writeFileSync(join(rrfVault, "third.md"), widgetDoc("third", "Third Doc", 1, "thirdfiller"));
+
+    const reindexed = await reindexVault(rrfVault);
+    if (!reindexed.ok) throw reindexed.error;
+    const opened = openIndexDb(rrfVault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    rrfDb = opened.value;
+  }, 60_000);
+
+  afterAll(() => {
+    rrfDb.close();
+    rmSync(rrfVault, { recursive: true, force: true });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("scores rank 1 at exactly 1.0 and rank r at (k+1)/(k+r) under pure-lexical RRF", async () => {
+    const res = await hybridSearch(rrfDb, "widget", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "document",
+      fusion: "rrf",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.map((h) => h.path)).toEqual(["top.md", "second.md", "third.md"]);
+    expect(res.value.hits[0]?.score).toBeCloseTo(1.0, 12);
+    expect(res.value.hits[0]?.bm25Score).toBeCloseTo(1.0, 12);
+    expect(res.value.hits[1]?.score).toBeCloseTo(61 / 62, 12);
+    expect(res.value.hits[2]?.score).toBeCloseTo(61 / 63, 12);
+    // vector:0 → the vector list is never even queried, so every hit's
+    // vectorScore contributes 0.
+    for (const hit of res.value.hits) expect(hit.vectorScore).toBe(0);
+  });
+
+  it("weights: {bm25: 1, vector: 0} + fusion: rrf reproduces the pure tiered lexical ordering", async () => {
+    const weighted = await hybridSearch(rrfDb, "widget", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "document",
+      fusion: "weighted",
+    });
+    const rrf = await hybridSearch(rrfDb, "widget", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "document",
+      fusion: "rrf",
+    });
+    expect(weighted.ok && rrf.ok).toBe(true);
+    if (!weighted.ok || !rrf.ok) return;
+    expect(rrf.value.hits.map((h) => h.path)).toEqual(weighted.value.hits.map((h) => h.path));
+  });
+
+  it("defaults to weighted fusion when `fusion` is omitted (regression)", async () => {
+    const implicit = await hybridSearch(rrfDb, "widget", { lexicalGranularity: "document" });
+    const explicit = await hybridSearch(rrfDb, "widget", {
+      lexicalGranularity: "document",
+      fusion: "weighted",
+    });
+    expect(implicit.ok && explicit.ok).toBe(true);
+    if (!implicit.ok || !explicit.ok) return;
+    expect(implicit.value.hits.map((h) => h.path)).toEqual(explicit.value.hits.map((h) => h.path));
+    expect(implicit.value.hits.map((h) => h.score)).toEqual(
+      explicit.value.hits.map((h) => h.score),
+    );
+  });
+
+  it("degrades to lexical-only RRF when the embedding provider fails", async () => {
+    const spy = vi
+      .spyOn(vectorMod, "embedQuery")
+      .mockResolvedValue(err(new Error("embedding provider unavailable")));
+
+    const res = await hybridSearch(rrfDb, "widget", {
+      lexicalGranularity: "document",
+      fusion: "rrf",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(spy).toHaveBeenCalled();
+    expect(res.value.vectorUsed).toBe(false);
+    expect(res.value.weights).toEqual({ bm25: 1, vector: 0 });
+    expect(res.value.hits.map((h) => h.path)).toEqual(["top.md", "second.md", "third.md"]);
+    expect(res.value.hits[0]?.score).toBeCloseTo(1.0, 12);
+  });
+
+  it("ties break deterministically by path ascending, twice in a row", async () => {
+    // second.md and third.md have distinct widget counts, so force an exact
+    // tie instead by querying a term that hits none of them and only
+    // "second"/"third" via title/tag path — simplest reliable tie: two docs
+    // scoring identically under document-granularity BM25 for a shared term.
+    // Reuse "widget" but restrict candidates via bm25:1 so ties are visible
+    // only among docs with IDENTICAL term frequency: top.md vs a clone.
+    const cloneVault = mkdtempSync(join(tmpdir(), "daftari-rrf-tie-"));
+    try {
+      writeFileSync(join(cloneVault, "alpha.md"), widgetDoc("alpha", "Alpha", 3, "af"));
+      writeFileSync(join(cloneVault, "beta.md"), widgetDoc("beta", "Beta", 3, "bf"));
+      const reindexed = await reindexVault(cloneVault);
+      expect(reindexed.ok).toBe(true);
+      if (!reindexed.ok) return;
+      const opened = openIndexDb(cloneVault, LOCAL_MINILM_DIM);
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      const db = opened.value;
+      try {
+        const run = async () =>
+          hybridSearch(db, "widget", {
+            weights: { bm25: 1, vector: 0 },
+            lexicalGranularity: "document",
+            fusion: "rrf",
+          });
+        const first = await run();
+        const second = await run();
+        expect(first.ok && second.ok).toBe(true);
+        if (!first.ok || !second.ok) return;
+        // Identical term frequency + identical length → tied bm25 → tied
+        // fused score → deterministic path-ascending tie-break both times.
+        expect(first.value.hits.map((h) => h.path)).toEqual(["alpha.md", "beta.md"]);
+        expect(second.value.hits.map((h) => h.path)).toEqual(["alpha.md", "beta.md"]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(cloneVault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("surfaces a semantic-only doc via its vector-list RRF contribution (cross-list fusion)", async () => {
+    // None of these query words appear anywhere in the vault, so the entire
+    // lexical contribution is 0 for every hit; any surfaced hit is driven
+    // purely by the vector list's RRF contribution.
+    const res = await hybridSearch(rrfDb, "gadgets and gizmos for everyday tasks", {
+      fusion: "rrf",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.vectorUsed).toBe(true);
+    expect(res.value.hits.length).toBeGreaterThan(0);
+    // The top vector-rank doc contributes the full (k+1)/(k+1)=1.0 from its
+    // vector half; at default 0.5/0.5 weights that alone should out-score
+    // every doc's zero lexical contribution.
+    expect(res.value.hits[0]?.vectorScore).toBeCloseTo(1.0, 6);
+  });
+});
+
+describe("relatedSearch — fusion default (Decision 1)", () => {
+  let relVault: string;
+  let relDb: IndexDb;
+
+  beforeAll(async () => {
+    relVault = makeTempVault();
+    const reindexed = await reindexVault(relVault);
+    if (!reindexed.ok) throw reindexed.error;
+    const opened = openIndexDb(relVault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    relDb = opened.value;
+  }, 60_000);
+
+  afterAll(() => {
+    relDb.close();
+    cleanupVault(relVault);
+  });
+
+  it("defaults to weighted fusion (independent of hybridSearch's DEFAULT_FUSION)", () => {
+    const path = "pricing/helios-consumption-pricing.md";
+    const implicit = relatedSearch(relDb, path, { limit: 4 });
+    const explicitWeighted = relatedSearch(relDb, path, { limit: 4, fusion: "weighted" });
+    expect(implicit.ok && explicitWeighted.ok).toBe(true);
+    if (!implicit.ok || !explicitWeighted.ok) return;
+    expect(implicit.value.hits.map((h) => h.path)).toEqual(
+      explicitWeighted.value.hits.map((h) => h.path),
+    );
+    expect(implicit.value.hits.map((h) => h.score)).toEqual(
+      explicitWeighted.value.hits.map((h) => h.score),
+    );
+  });
+
+  it("accepts fusion: rrf as an explicit opt-in", () => {
+    const path = "pricing/helios-consumption-pricing.md";
+    const res = relatedSearch(relDb, path, { limit: 4, fusion: "rrf" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.length).toBeGreaterThan(0);
   });
 });
