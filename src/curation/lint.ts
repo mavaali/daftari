@@ -7,8 +7,13 @@
 // triage. The three tier-0 checks (#232, tier0.ts) are certain rather than
 // advisory judgments, but the posture is the same: report only.
 
+import { classifyAgainstHash, resolveConfinedFile } from "../anchors/classify.js";
+import { looksLikeMalformedPin, type PinSpec, splitPin } from "../anchors/pin.js";
+import { parseDescribesEntry } from "../audit/describes.js";
 import { listIndependenceShadow } from "../consolidate/independence.js";
 import { ok, type Result } from "../frontmatter/types.js";
+import { loadConfig } from "../utils/config.js";
+import { hashObjects } from "../utils/git.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { independenceCalibrationView, listEdges } from "./edges.js";
@@ -69,6 +74,10 @@ export const LINT_CHECKS = [
   // Appended, not inserted: LINT_CHECKS order is presentation order, and new
   // checks go at the end so an existing reader's mental layout does not shift.
   "validityConflicts",
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: a describes entry whose
+  // pin suffix is near-miss-malformed (tightened heuristic, C11). Pure
+  // string scan — no git work.
+  "malformedPins",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -116,6 +125,13 @@ export interface TensionAging {
 // auto-acts on them.
 export const LARGE_CLUSTER_MIN_SIZE = 5;
 export const AGED_CLUSTER_MIN_DAYS = 90;
+
+// 2026-07-26 citation-anchors-jit spec, Phase 8 / plan resolution C3: caps
+// the number of step-3 (drift-path) pin classifications a single lint run
+// performs for the Decision-4 softening pass. Beyond the budget, affected
+// docs simply don't get the softened copy — the check is advisory
+// copy-softening, so dropping it is the correct degradation, not an error.
+export const LINT_PIN_STEP3_BUDGET = 200;
 
 export interface TensionClustersHealth {
   count: number;
@@ -179,6 +195,12 @@ export interface LintReport {
   // Both underlying reads are error-tolerant: a failure yields the zero
   // summary (lint stays advisory, never fails on a calibration read).
   independenceCalibration: IndependenceCalibrationSummary;
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: how many pins the
+  // Decision-4 softening pass classified via step 3 (git cat-file + a
+  // bounded text read) this run — the budget-spend counter that makes a
+  // slowdown attributable. 0 when jit_anchors is off, code_repos is empty,
+  // or no stale doc carries a pinned range binding.
+  pinsClassified: number;
 }
 
 export interface LintOptions {
@@ -262,7 +284,22 @@ export async function runLint(
     schemaInvalid: [],
     domainLeaks: [],
     validityConflicts: [],
+    malformedPins: [],
   };
+
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: malformedPins is a pure
+  // string scan over every doc's describes entries — no git work, so it
+  // always runs regardless of jit_anchors/code_repos.
+  for (const d of docs) {
+    for (const raw of d.frontmatter.describes ?? []) {
+      if (looksLikeMalformedPin(raw)) {
+        checks.malformedPins.push({
+          path: d.path,
+          detail: `malformed pin ignored: ${raw}`,
+        });
+      }
+    }
+  }
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
   // contradictory interval: the schema layer deliberately declines to, because
@@ -383,6 +420,124 @@ export async function runLint(
     });
   }
 
+  // 2026-07-26 citation-anchors-jit spec, Decision 4 (lint side), batched
+  // and budgeted per the plan resolution (C1/C3): collect candidate pins
+  // across ALL stale docs first, dedupe the git work — one fs-confinement
+  // check per unique (repo, path), one hashObjects batch per repo for the
+  // WHOLE run — and memoise verdicts by full pin identity, so a triple
+  // recurring across docs is classified once. Soft-fails entirely: any
+  // config-load or git failure just means no docs get softened this run,
+  // never a lint failure (lint's own advisory posture).
+  let pinsClassified = 0;
+  const lintAnchorsConfig = loadConfig(vaultRoot);
+  if (
+    lintAnchorsConfig.ok &&
+    lintAnchorsConfig.value.jitAnchors &&
+    Object.keys(lintAnchorsConfig.value.codeRepos).length > 0
+  ) {
+    const codeRepos = lintAnchorsConfig.value.codeRepos;
+    const staleDocPaths = new Set(checks.staleFiles.map((f) => f.path));
+
+    type PinCandidate = { repo: string; path: string; pin: PinSpec };
+    const byDoc = new Map<string, PinCandidate[]>();
+    const pathsPerRepo = new Map<string, Set<string>>();
+
+    for (const d of docs) {
+      if (!staleDocPaths.has(d.path)) continue;
+      const cands: PinCandidate[] = [];
+      for (const raw of d.frontmatter.describes ?? []) {
+        const { binding, pin } = splitPin(raw);
+        if (!pin) continue;
+        const parsed = parseDescribesEntry(binding, "");
+        if (parsed.repo === "" || !(parsed.repo in codeRepos)) continue;
+        cands.push({ repo: parsed.repo, path: parsed.path, pin });
+        const set = pathsPerRepo.get(parsed.repo) ?? new Set<string>();
+        set.add(parsed.path);
+        pathsPerRepo.set(parsed.repo, set);
+      }
+      if (cands.length > 0) byDoc.set(d.path, cands);
+    }
+
+    // Step 1 (confinement, cheap) + step 2 (ONE hashObjects batch per repo
+    // for the whole run) — independent of how many docs/pins reference the
+    // same (repo, path).
+    const currentHash = new Map<string, string>(); // `${repo} ${path}` -> blob id
+    const confinedOf = new Map<string, { absPath: string; relPath: string }>();
+    for (const [repo, paths] of pathsPerRepo) {
+      const repoAbsPath = codeRepos[repo] as string;
+      const survivors: string[] = [];
+      for (const p of paths) {
+        const confined = resolveConfinedFile(repoAbsPath, p);
+        if (confined) {
+          confinedOf.set(`${repo} ${p}`, confined);
+          survivors.push(p);
+        }
+      }
+      if (survivors.length === 0) continue;
+      const relPaths = survivors.map(
+        (p) => (confinedOf.get(`${repo} ${p}`) as { relPath: string }).relPath,
+      );
+      const hashRes = await hashObjects(repoAbsPath, relPaths);
+      if (!hashRes.ok) continue;
+      survivors.forEach((p, i) => {
+        currentHash.set(`${repo} ${p}`, hashRes.value[i] as string);
+      });
+    }
+
+    const verdictCache = new Map<string, "intact" | "moved" | "missing">();
+    for (const [docPath, cands] of byDoc) {
+      let allIntact = true;
+      let droppedForBudget = false;
+      for (const c of cands) {
+        const hashKey = `${c.repo} ${c.path}`;
+        const hash = currentHash.get(hashKey);
+        if (hash === undefined) {
+          allIntact = false; // repo/path unresolved this run -> not softened
+          continue;
+        }
+        const verdictKey = `${hashKey} ${c.pin.sha} ${c.pin.start} ${c.pin.end}`;
+        let state = verdictCache.get(verdictKey);
+        if (state === undefined) {
+          if (hash.startsWith(c.pin.sha)) {
+            state = "intact";
+          } else if (c.pin.start === null || c.pin.end === null) {
+            state = "moved";
+          } else if (pinsClassified >= LINT_PIN_STEP3_BUDGET) {
+            droppedForBudget = true;
+            continue; // over budget: leave uncached, doc goes unsoftened
+          } else {
+            pinsClassified += 1;
+            const confined = confinedOf.get(hashKey);
+            state = confined
+              ? (
+                  await classifyAgainstHash(
+                    codeRepos[c.repo] as string,
+                    confined.absPath,
+                    c.pin,
+                    hash,
+                  )
+                ).state
+              : "missing";
+          }
+          verdictCache.set(verdictKey, state);
+        }
+        if (state !== "intact") allIntact = false;
+      }
+      if (droppedForBudget || !allIntact) continue;
+
+      const idx = checks.staleFiles.findIndex((f) => f.path === docPath);
+      if (idx === -1) continue;
+      const n = cands.length;
+      const entry = checks.staleFiles[idx] as LintFinding;
+      checks.staleFiles[idx] = {
+        ...entry,
+        detail:
+          `${entry.detail}; past TTL, but its ${n} code pin${n === 1 ? "" : "s"} are intact — ` +
+          "the code it describes has not changed since the pins were written",
+      };
+    }
+  }
+
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
   // Hoisted (Phase 5, 2026-07-26 risk-triaged-ratification spec): tensions.md
@@ -452,6 +607,7 @@ export async function runLint(
     coverageEquity: coverageEquityRes.value,
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
     independenceCalibration,
+    pinsClassified,
   });
 }
 

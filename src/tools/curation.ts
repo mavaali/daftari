@@ -359,6 +359,9 @@ export interface VaultLintResult {
   coverageEquity: CoverageEquitySummary;
   reviewThroughput: ReviewThroughputSummary;
   independenceCalibration: IndependenceCalibrationSummary;
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: step-3 pin classifications
+  // spent this run by the Decision-4 softening pass (budget-spend counter).
+  pinsClassified: number;
 }
 
 export async function vaultLint(
@@ -420,6 +423,7 @@ export async function vaultLint(
       coverageEquity: report.value.coverageEquity,
       reviewThroughput: report.value.reviewThroughput,
       independenceCalibration: report.value.independenceCalibration,
+      pinsClassified: report.value.pinsClassified,
     });
   }
 
@@ -435,6 +439,7 @@ export async function vaultLint(
     coverageEquity: report.value.coverageEquity,
     reviewThroughput: report.value.reviewThroughput,
     independenceCalibration: report.value.independenceCalibration,
+    pinsClassified: report.value.pinsClassified,
   });
 }
 
@@ -993,6 +998,9 @@ const lintOutputSchema: Record<string, unknown> = {
       ],
       additionalProperties: false,
     },
+    // 2026-07-26 citation-anchors-jit spec, Phase 8: step-3 pin
+    // classifications spent this run by the Decision-4 softening pass.
+    pinsClassified: { type: "integer", minimum: 0 },
   },
   required: [
     "generatedAt",
@@ -1006,6 +1014,7 @@ const lintOutputSchema: Record<string, unknown> = {
     "coverageEquity",
     "reviewThroughput",
     "independenceCalibration",
+    "pinsClassified",
   ],
   additionalProperties: false,
 };
