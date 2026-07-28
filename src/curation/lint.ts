@@ -13,13 +13,11 @@ import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
+import { type RankedStagedActionItem, rankPendingActions } from "./risk.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
-import {
-  listStagedActions,
-  pendingLintItems,
-  type StagedActionLintItem,
-} from "./staged-actions.js";
+import { listStagedActions } from "./staged-actions.js";
 
+export type { RankedStagedActionItem } from "./risk.js";
 export type { StagedActionLintItem } from "./staged-actions.js";
 
 import { ageInDays, computeStaleness } from "./staleness.js";
@@ -30,9 +28,15 @@ import {
   type ResolutionKind,
   STALE_TIER_LINT_COPY,
   TENSION_KINDS,
+  type TensionEntry,
   type TensionKind,
 } from "./tension.js";
-import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tension-blast.js";
+import {
+  buildReverseLinkMap,
+  buildReverseSourceMap,
+  computeBlast,
+  type HiddenDownstream,
+} from "./tension-blast.js";
 import { computeTensionClusters } from "./tension-clusters.js";
 import { tier0Findings } from "./tier0.js";
 import { validityConflicts } from "./validity.js";
@@ -136,11 +140,20 @@ export interface LintReport {
   checks: Record<LintCheckName, LintFinding[]>;
   totalFindings: number;
   tensionHealth: TensionHealth;
-  // Pending staged actions awaiting ratification (spec §11.2), soonest-to-
-  // expire first. Empty when nothing is staged. Reported, not flagged — like
-  // the rest of vault_lint. The actual expiry sweep is a side effect of the
-  // vault_lint tool, not of runLint (which stays read-only).
-  stagedActions: StagedActionLintItem[];
+  // Pending staged actions awaiting ratification (spec §11.2), risk descending
+  // with soonest-to-expire as the tiebreak (2026-07-26 risk-triaged-ratification
+  // spec, Decisions 1 + 2 — inverts the prior expiry-only sort). Empty when
+  // nothing is staged. Reported, not flagged — like the rest of vault_lint.
+  // The actual expiry sweep is a side effect of the vault_lint tool, not of
+  // runLint (which stays read-only). Filtered to the caller's vantage
+  // (Decision 4) — an item whose target the caller cannot read is omitted,
+  // never named.
+  stagedActions: RankedStagedActionItem[];
+  // Coarsened count of pending actions omitted from `stagedActions` because
+  // their target is unreadable under the caller's vantage — none/some/many,
+  // never an exact count (Decision 4). "none" under an operator run (no
+  // pathVisible) or when nothing is hidden.
+  hiddenStagedActions: HiddenDownstream;
   // Shadow-mode summary (spec §11.5): how many writes were shadow-logged and
   // which would have been gated by the trust budget — the "Would-have-gated
   // actions" surface Decision 3's calibration reads. Zeroes when the vault has
@@ -359,10 +372,17 @@ export async function runLint(
 
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
 
+  // Hoisted (Phase 5, 2026-07-26 risk-triaged-ratification spec): tensions.md
+  // is read ONCE here and fed into both computeTensionHealth (vault-global,
+  // unfiltered — #216 rider / #217 decision C) and rankPendingActions (which
+  // applies pathVisible internally, per-item, for the risk queue).
+  const tensionsRes = await listTensions(vaultRoot);
+  if (!tensionsRes.ok) return tensionsRes;
+
   // Vault-global by design (#216 rider / #217 decision C): tension health is
   // the operator's whole-vault view, so it aggregates over ALL docs and
   // tensions regardless of pathVisible. Counts only — no paths cross here.
-  const tensionHealth = await computeTensionHealth(vaultRoot, allDocs, now);
+  const tensionHealth = computeTensionHealth(tensionsRes.value, allDocs, now);
   if (!tensionHealth.ok) return tensionHealth;
 
   // Each JSONL log is read ONCE; the lint summaries and the coverage view
@@ -376,7 +396,18 @@ export async function runLint(
   const edgesRes = await listEdges(vaultRoot, {}, now);
   if (!edgesRes.ok) return edgesRes;
 
-  const stagedActions = pendingLintItems(stagedRes.value, now);
+  // Risk-triaged queue (Decisions 1 + 2 + 4): risk descending, expiry
+  // ascending tiebreak, filtered to the caller's vantage with the hidden
+  // remainder coarsened. `docs` here is the FULL, unfiltered set — B and T
+  // read the whole graph and apply pathVisible internally per item, per the
+  // spec's per-vantage scoring rule (never subtract-the-visible-terms leakage).
+  const { items: stagedActions, hiddenPending: hiddenStagedActions } = rankPendingActions({
+    actions: stagedRes.value,
+    docs: allDocs,
+    tensions: tensionsRes.value,
+    now,
+    pathVisible,
+  });
   const shadowActions = shadowLintSummaryOf(shadowRecordsRes.value);
   const coverageEquityRes = coverageEquitySummary({
     docs,
@@ -393,6 +424,7 @@ export async function runLint(
     totalFindings,
     tensionHealth: tensionHealth.value,
     stagedActions,
+    hiddenStagedActions,
     shadowActions,
     coverageEquity: coverageEquityRes.value,
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
@@ -408,14 +440,11 @@ export async function runLint(
 // entries — including `resolution.kind: accepted` — do not appear in any
 // aging tier; they show up in the Phase 1 stable-acknowledged and resolved
 // totals instead.
-async function computeTensionHealth(
-  vaultRoot: string,
+function computeTensionHealth(
+  tensions: TensionEntry[],
   docs: LoadedDoc[],
   now: Date,
-): Promise<Result<TensionHealth, Error>> {
-  const tensions = await listTensions(vaultRoot);
-  if (!tensions.ok) return tensions;
-
+): Result<TensionHealth, Error> {
   const byKind = Object.fromEntries(TENSION_KINDS.map((k) => [k, 0])) as Record<
     TensionKind,
     number
@@ -436,7 +465,7 @@ async function computeTensionHealth(
   let aging = 0;
   let stale = 0;
 
-  for (const t of tensions.value) {
+  for (const t of tensions) {
     total += 1;
     byKind[t.kind] += 1;
     if (t.kind === "unspecified") unspecifiedLegacy += 1;
@@ -469,7 +498,7 @@ async function computeTensionHealth(
   // Cluster surface (Phase 2). computeTensionClusters applies the same scope
   // filter the cluster tool does — unresolved AND non-accepted — so the lint
   // metrics line up exactly with what `vault_tension_clusters` reports.
-  const clusterResult = computeTensionClusters(tensions.value, now);
+  const clusterResult = computeTensionClusters(tensions, now);
   let maxSize = 0;
   let large = 0;
   let aged = 0;
@@ -495,7 +524,7 @@ async function computeTensionHealth(
   // source edge), but the published metric is the primary count only — the
   // top-level lint metric stays disciplined against advisory inflation.
   const staleSeeds = new Set<string>();
-  for (const t of tensions.value) {
+  for (const t of tensions) {
     if (t.resolved) continue;
     if (agingTier(t, now) !== "stale") continue;
     if (t.sourceA) staleSeeds.add(t.sourceA);

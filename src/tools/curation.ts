@@ -16,8 +16,8 @@ import {
   LINT_CHECKS,
   type LintCheckName,
   type LintFinding,
+  type RankedStagedActionItem,
   runLint,
-  type StagedActionLintItem,
   type TensionHealth,
 } from "../curation/lint.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
@@ -39,6 +39,7 @@ import { canSeeTension, sourceReadable, visibleTensions } from "../curation/tens
 import {
   bucketHiddenDownstream,
   computeTensionBlast,
+  type HiddenDownstream,
   type TensionBlastResult,
 } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
@@ -351,7 +352,8 @@ export interface VaultLintResult {
   checks: Partial<Record<LintCheckName, LintFinding[]>>;
   totalFindings: number;
   tensionHealth: TensionHealth;
-  stagedActions: StagedActionLintItem[];
+  stagedActions: RankedStagedActionItem[];
+  hiddenStagedActions: HiddenDownstream;
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
   reviewThroughput: ReviewThroughputSummary;
@@ -411,6 +413,7 @@ export async function vaultLint(
       totalFindings: findings.length,
       tensionHealth: report.value.tensionHealth,
       stagedActions: report.value.stagedActions,
+      hiddenStagedActions: report.value.hiddenStagedActions,
       shadowActions: report.value.shadowActions,
       coverageEquity: report.value.coverageEquity,
       reviewThroughput: report.value.reviewThroughput,
@@ -424,6 +427,7 @@ export async function vaultLint(
     totalFindings: report.value.totalFindings,
     tensionHealth: report.value.tensionHealth,
     stagedActions: report.value.stagedActions,
+    hiddenStagedActions: report.value.hiddenStagedActions,
     shadowActions: report.value.shadowActions,
     coverageEquity: report.value.coverageEquity,
     reviewThroughput: report.value.reviewThroughput,
@@ -757,7 +761,10 @@ const lintOutputSchema: Record<string, unknown> = {
     },
     stagedActions: {
       type: "array",
-      description: "Pending staged actions awaiting ratification, soonest-to-expire first",
+      description:
+        "Pending staged actions awaiting ratification, risk descending, soonest-to-expire " +
+        "tiebreak (2026-07-26 risk-triaged-ratification spec). Filtered to the caller's " +
+        "vantage — see hiddenStagedActions for the coarsened remainder.",
       items: {
         type: "object",
         properties: {
@@ -767,10 +774,48 @@ const lintOutputSchema: Record<string, unknown> = {
           ageDays: { type: "integer" },
           expiresInDays: { type: "integer" },
           rationale: { type: "string", description: "First sentence of the staged rationale" },
+          risk: { type: "number", description: "Ordinal risk score in [0,1], recomputed on read" },
+          proposedBy: { type: "string" },
+          proposerTrackRecord: {
+            type: "number",
+            description: "The risk score's W term: proposer's Laplace-smoothed correction rate",
+          },
+          diffBucket: { type: "string", enum: ["small", "medium", "large"] },
+          blast: {
+            type: "object",
+            properties: {
+              primary: { type: "integer" },
+              advisory: { type: "integer" },
+              hidden: { type: "string", enum: ["none", "some", "many"] },
+            },
+            required: ["primary", "advisory", "hidden"],
+            additionalProperties: false,
+          },
+          openTension: { type: "boolean" },
+          conflict: { type: "boolean" },
         },
-        required: ["id", "actionType", "targetPath", "ageDays", "expiresInDays", "rationale"],
+        required: [
+          "id",
+          "actionType",
+          "targetPath",
+          "ageDays",
+          "expiresInDays",
+          "rationale",
+          "risk",
+          "proposedBy",
+          "proposerTrackRecord",
+          "diffBucket",
+          "blast",
+          "openTension",
+          "conflict",
+        ],
         additionalProperties: false,
       },
+    },
+    hiddenStagedActions: {
+      type: "string",
+      enum: ["none", "some", "many"],
+      description: "Coarsened count of pending actions omitted from stagedActions — never exact",
     },
     shadowActions: {
       type: "object",
@@ -893,6 +938,7 @@ const lintOutputSchema: Record<string, unknown> = {
     "totalFindings",
     "tensionHealth",
     "stagedActions",
+    "hiddenStagedActions",
     "shadowActions",
     "coverageEquity",
     "reviewThroughput",
@@ -984,8 +1030,10 @@ function summarizeLint(value: unknown): string {
       `${health.aging.stale} fresh/aging/stale; ${health.clusters.count} cluster(s) ` +
       `(${health.clusters.large} large, ${health.clusters.aged} aged); ` +
       `stale blast ${health.blastRadiusOfStaleTensions}`,
-    `staged: ${report.stagedActions.length} pending, ` +
-      `${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
+    `staged: ${report.stagedActions.length} pending` +
+      (report.stagedActions[0] ? ` (top risk ${report.stagedActions[0].risk.toFixed(2)})` : "") +
+      (report.hiddenStagedActions !== "none" ? `, ${report.hiddenStagedActions} hidden` : "") +
+      `, ${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
       `shadow: ${report.shadowActions.total} logged, ${report.shadowActions.gated} would-gate; ` +
       `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s)`,
   ];
@@ -1249,7 +1297,15 @@ export const curationTools: ToolDefinition[] = [
       "stable acknowledged persistent disagreements, and legacy unspecified " +
       "entries) — tension-health counts are deliberately VAULT-GLOBAL, not " +
       "RBAC-filtered: counts only, no paths, so vault health reads the same " +
-      "for every role. Lists pending staged actions awaiting ratification, and — " +
+      "for every role. Lists pending staged actions awaiting ratification, ordered " +
+      "risk descending with soonest-to-expire as the tiebreak (2026-07-26 " +
+      "risk-triaged-ratification spec) — each item carries an ordinal risk " +
+      "score in [0,1] (recomputed on read, never stored), the diff-size " +
+      "bucket, the proposer's smoothed track record, visible blast counts, " +
+      "and open-tension / conflict flags. Filtered to the caller's vantage: " +
+      "an item whose target is unreadable is omitted, and the hidden " +
+      "remainder is reported coarsened (hiddenStagedActions: none/some/many), " +
+      "never as an exact count. And — " +
       "when the vault has run shadow_mode — summarizes shadow-logged writes " +
       "with the ones the trust budget would have gated. " +
       "Never auto-fixes vault content; it does, as housekeeping, expire " +
