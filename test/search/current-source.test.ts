@@ -44,7 +44,7 @@ describe("resolveCurrentSource", () => {
 
   beforeEach(() => {
     vault = makeTempVault();
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     db = opened.value;
   });

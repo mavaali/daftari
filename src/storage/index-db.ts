@@ -78,6 +78,23 @@ const SCHEMA_VERSION = "11";
 // cache hits.
 const VEC_DIM_META_KEY = "embeddings_vec_dim";
 
+// Meta key that records the sqlite-vec column TYPE `embeddings_vec` was
+// created at ("float32" | "int8") — twin of VEC_DIM_META_KEY (2026-07-26
+// embedding-refresh-quantization spec, Phase 3a). A quantize flip
+// (embeddings.quantize: none -> int8, or back) on an otherwise-unchanged
+// vault must trigger the same drop-and-recreate a dim mismatch does — the
+// vec0 column type is fixed at CREATE TABLE time, same as its width.
+const VEC_KIND_META_KEY = "embeddings_vec_kind";
+
+// The sqlite-vec column representation. "float32" is today's exact behaviour
+// (byte-for-byte); "int8" is the quantized-index path (spec Decision 3) —
+// components are int8-scaled ([-127, 127]) under the calibration-free
+// assumption that every provider L2-normalizes (components live in
+// [-1, 1]). The durable `embeddings` cache is ALWAYS float32, native-dim,
+// regardless of this setting — quantization is an index-representation
+// choice only, droppable and rebuildable from the cache at any time.
+export type VecKind = "float32" | "int8";
+
 export interface IndexedDocument {
   path: string;
   title: string;
@@ -359,12 +376,23 @@ function loadVecExtension(db: IndexDb): Result<void, Error> {
   return ok(undefined);
 }
 
-// Creates the sqlite-vec virtual table at the given dim, dropping any
-// existing copy first. `dim` is fixed at CREATE TABLE time for vec0, so a
-// provider switch (which changes the active dim) means dropping and
-// recreating; the durable `embeddings` cache survives, and the next reindex
-// repopulates `embeddings_vec` from it.
-function createVecTable(db: IndexDb, dim: number): void {
+// Creates the sqlite-vec virtual table at the given dim + kind, dropping any
+// existing copy first. Both `dim` and the column type are fixed at CREATE
+// TABLE time for vec0, so a provider switch OR a quantize flip (which
+// changes the active dim/kind) means dropping and recreating; the durable
+// `embeddings` cache survives, and the next reindex repopulates
+// `embeddings_vec` from it.
+//
+// `distance_metric=cosine` is used for BOTH kinds unless the Phase 0 spike
+// (docs/superpowers/specs/2026-07-26-embedding-refresh-quantization-
+// design.md, gate 3) finds cosine unsupported on int8 in the pinned
+// sqlite-vec build, in which case the fallback is L2 — equivalent candidate
+// ORDERING for unit vectors up to quantization error, never used as a score
+// on the int8 path regardless (see hybrid.ts's vecRanking). That spike has
+// not been run in this environment; cosine is used for both kinds here as
+// the working assumption, with this comment as the pointer to revisit if a
+// real int8 table creation fails.
+function createVecTable(db: IndexDb, dim: number, kind: VecKind): void {
   if (!Number.isInteger(dim) || dim <= 0) {
     throw new Error(
       `cannot create embeddings_vec at non-positive dim ${dim} — ` +
@@ -383,15 +411,33 @@ function createVecTable(db: IndexDb, dim: number): void {
   // from two collections gets one vec row per collection. That is the only
   // honest shape — a single row cannot carry two ACL labels — and the durable
   // `embeddings` cache stays content-addressed and deduped regardless.
+  const columnType = kind === "int8" ? `int8[${dim}]` : `FLOAT[${dim}]`;
   db.exec(
     `CREATE VIRTUAL TABLE embeddings_vec USING vec0(
        content_hash TEXT NOT NULL,
        model        TEXT NOT NULL,
        collection   TEXT NOT NULL,
-       embedding    FLOAT[${dim}] distance_metric=cosine
+       embedding    ${columnType} distance_metric=cosine
      );`,
   );
   setMeta(db, VEC_DIM_META_KEY, String(dim));
+  setMeta(db, VEC_KIND_META_KEY, kind);
+}
+
+// Quantizes an L2-normalized Float32Array to int8: round(x * 127) clamped to
+// [-127, 127]. Deterministic, provider-agnostic — calibration-free because
+// every EmbeddingProvider normalizes its output (components live in
+// [-1, 1]), so a fixed unit-range scale needs no per-model calibration step
+// (spec Decision 3). JS-side rather than sqlite-vec's own quantize helper —
+// keeps the same rounding rule visible and testable independent of the
+// sqlite-vec build.
+export function quantizeInt8(vec: Float32Array): Buffer {
+  const out = new Int8Array(vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    const scaled = Math.round((vec[i] as number) * 127);
+    out[i] = Math.max(-127, Math.min(127, scaled));
+  }
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
 // Drops every row from `embeddings_vec`. Called by the reindex path when
@@ -404,13 +450,34 @@ export function clearEmbeddingsVec(db: IndexDb): void {
 // Inserts a vector row into the sqlite-vec mirror. Separate from
 // `insertEmbedding` because the durable cache and the vec index are two
 // stores — the cache survives a vec-table rebuild on provider switch.
+// `kind` selects the on-disk representation: "float32" (default — byte-for-
+// byte today's behaviour) writes the vector as-is; "int8" quantizes it first
+// (spec Decision 3) via `quantizeInt8`. `embedding` must already be at the
+// table's configured dim (callers apply `toIndexDim`, src/search/vector.ts,
+// before calling this — this function does no truncation of its own).
 export function insertEmbeddingVec(
   db: IndexDb,
   contentHash: string,
   model: string,
   collection: string,
   embedding: Float32Array,
+  kind: VecKind = "float32",
 ): void {
+  // sqlite-vec infers a bound blob's vector TYPE from its byte layout, which
+  // defaults to float32 — a raw int8-byte blob bound directly into an
+  // int8[] column is rejected ("expected type int8, but a float32 vector
+  // was provided"). The `vec_int8(?)` SQL function is the documented way to
+  // tell sqlite-vec the bound blob is already int8-encoded; confirmed
+  // empirically against the pinned sqlite-vec build in this repo (this is
+  // the "working insert/query binding form" the governing spec's Phase 0
+  // gate 3 asks the (unrun) spike to record — recorded here instead, since
+  // the spike itself has not been run in this environment).
+  if (kind === "int8") {
+    db.prepare(
+      "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, vec_int8(?))",
+    ).run(contentHash, model, collection, quantizeInt8(embedding));
+    return;
+  }
   db.prepare(
     "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, ?)",
   ).run(contentHash, model, collection, embeddingToBlob(embedding));
@@ -437,14 +504,27 @@ export function hasEmbeddingVec(
   return row !== undefined;
 }
 
-// `expectedVecDim` is the active embedding provider's dim. If the persisted
-// `embeddings_vec` was created at a different dim (or doesn't exist yet),
-// it is dropped and recreated at the expected dim — the durable `embeddings`
-// cache is untouched, so a switch back to the previous provider is all
-// cache hits. `expectedVecDim` is required — pass the active provider's dim
-// (e.g. `getProvider().dim`). Tests that don't exercise vector queries should
-// use `LOCAL_MINILM_DIM` from `src/search/providers/local-minilm.ts`.
-export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<IndexDb, Error> {
+// `expectedVecDim` is the active embedding provider's dim; `expectedVecKind`
+// is the active quantization kind ("float32" | "int8", `getQuantize()` in
+// src/search/vector.ts). If the persisted `embeddings_vec` was created at a
+// different dim OR kind (or doesn't exist yet), it is dropped and recreated
+// at the expected dim/kind — the durable `embeddings` cache is untouched, so
+// a switch back to the previous provider/quantize setting is all cache hits.
+//
+// `expectedVecKind` is REQUIRED (2026-07-26 embedding-refresh-quantization
+// spec, disposition C2) for the same reason `expectedVecDim` already was
+// (see the historic precedent this comment used to cite): a default here
+// would turn every caller that doesn't thread the active quantize setting
+// into a silent destructive drop the moment quantization is used anywhere
+// in the vault. Making it required moves that hazard from a runtime bug
+// class to a compile error — every production call site passes
+// `getQuantize()`; test callers that don't exercise quantization pass
+// `"float32"` explicitly.
+export function openIndexDb(
+  vaultRoot: string,
+  expectedVecDim: number,
+  expectedVecKind: VecKind,
+): Result<IndexDb, Error> {
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     const db = new Database(indexDbPath(vaultRoot));
@@ -504,23 +584,28 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
       );
       db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
       db.prepare("DELETE FROM meta WHERE key = ?").run(VEC_DIM_META_KEY);
+      db.prepare("DELETE FROM meta WHERE key = ?").run(VEC_KIND_META_KEY);
     }
     db.exec(SCHEMA);
     db.exec(FTS_SCHEMA);
 
-    // If the persisted dim matches AND the virtual table already exists, leave
-    // it alone — recreating would drop all the indexed vectors for no reason.
+    // If the persisted dim AND kind both match, AND the virtual table already
+    // exists, leave it alone — recreating would drop all the indexed vectors
+    // for no reason. Either mismatching (a provider/dim switch, or a
+    // quantize flip — 2026-07-26 embedding-refresh-quantization spec,
+    // disposition C2) triggers a drop-and-recreate.
     const targetDim = expectedVecDim;
     const persistedDimRaw = getMeta(db, VEC_DIM_META_KEY);
     const persistedDim = persistedDimRaw ? Number.parseInt(persistedDimRaw, 10) : null;
+    const persistedKind = getMeta(db, VEC_KIND_META_KEY) as VecKind | null;
     const vecTableExists =
       (
         db
           .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name=?")
           .get("embeddings_vec") as { n: number }
       ).n > 0;
-    if (!vecTableExists || persistedDim !== targetDim) {
-      createVecTable(db, targetDim);
+    if (!vecTableExists || persistedDim !== targetDim || persistedKind !== expectedVecKind) {
+      createVecTable(db, targetDim, expectedVecKind);
     }
 
     setMeta(db, "schema_version", SCHEMA_VERSION);

@@ -212,7 +212,7 @@ describe("vault_themes", () => {
 
       // Strip every embeddings-table row so each indexed document loses its
       // (chunk → embedding) join. Every doc should then be `skipped`.
-      const dbResult = openIndexDb(isolated, LOCAL_MINILM_DIM);
+      const dbResult = openIndexDb(isolated, LOCAL_MINILM_DIM, "float32");
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const db = dbResult.value;
@@ -308,7 +308,7 @@ describe("vault_themes", () => {
       // Mutate the index content: drop half the embeddings. The signature
       // must change and the next call must re-pool rather than serve stale
       // pooled vectors.
-      const dbResult = openIndexDb(isolated, LOCAL_MINILM_DIM);
+      const dbResult = openIndexDb(isolated, LOCAL_MINILM_DIM, "float32");
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const db = dbResult.value;

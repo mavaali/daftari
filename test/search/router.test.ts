@@ -136,7 +136,7 @@ describe("makeDfLookup — real indexed handle (stem-aware df)", () => {
       const reindexed = await reindexVault(vault);
       expect(reindexed.ok).toBe(true);
       if (!reindexed.ok) return;
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       expect(opened.ok).toBe(true);
       if (!opened.ok) return;
       db = opened.value;

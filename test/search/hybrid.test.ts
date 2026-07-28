@@ -24,7 +24,7 @@ describe("hybrid search", () => {
     vault = makeTempVault();
     const reindexed = await reindexVault(vault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     db = opened.value;
   }, 60_000);
@@ -309,7 +309,7 @@ Reference material for general use across the vault.
 
     const reindexed = await reindexVault(decayVault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(decayVault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(decayVault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     decayDb = opened.value;
   }, 60_000);
@@ -437,7 +437,7 @@ The zephyr system was briefly mentioned in a prior report and has no further det
 
     const reindexed = await reindexVault(chunkVault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(chunkVault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(chunkVault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     chunkDb = opened.value;
   }, 60_000);
@@ -680,7 +680,7 @@ Additional filler content for padding the vault retrieval set.
 
     const reindexed = await reindexVault(ttVault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(ttVault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(ttVault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     ttDb = opened.value;
   }, 60_000);
@@ -873,7 +873,7 @@ ${widget} ${filler}
 
     const reindexed = await reindexVault(rrfVault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(rrfVault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(rrfVault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     rrfDb = opened.value;
   }, 60_000);
@@ -965,7 +965,7 @@ ${widget} ${filler}
       const reindexed = await reindexVault(cloneVault);
       expect(reindexed.ok).toBe(true);
       if (!reindexed.ok) return;
-      const opened = openIndexDb(cloneVault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(cloneVault, LOCAL_MINILM_DIM, "float32");
       expect(opened.ok).toBe(true);
       if (!opened.ok) return;
       const db = opened.value;
@@ -1018,7 +1018,7 @@ describe("relatedSearch — fusion default (Decision 1)", () => {
     relVault = makeTempVault();
     const reindexed = await reindexVault(relVault);
     if (!reindexed.ok) throw reindexed.error;
-    const opened = openIndexDb(relVault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(relVault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     relDb = opened.value;
   }, 60_000);
@@ -1092,7 +1092,7 @@ describe("hybridSearch — passage ref provenance (capturePassageRefs, C4)", () 
 
   beforeEach(() => {
     vault = makeTempVault();
-    const opened = openIndexDb(vault, DIM);
+    const opened = openIndexDb(vault, DIM, "float32");
     if (!opened.ok) throw opened.error;
     db = opened.value;
 
@@ -1177,5 +1177,176 @@ describe("hybridSearch — passage ref provenance (capturePassageRefs, C4)", () 
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.passageRefs).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// int8 scan-then-rescore (spec 2026-07-26-embedding-refresh-quantization,
+// Phase 3c / disposition C3). Hand-built rows, same convention as the
+// passage-ref provenance block above: no reindex, no real embedding model,
+// full control over which vectors go into the durable cache vs the vec
+// mirror so the rescore/orphan behavior is deterministic.
+// ---------------------------------------------------------------------------
+describe("hybridSearch — int8 scan-then-rescore (C3)", () => {
+  const DIM = 8;
+
+  function doc(path: string): indexDb.IndexedDocument {
+    return {
+      path,
+      title: path,
+      collection: "general",
+      domain: "accumulation",
+      status: "canonical",
+      confidence: "high",
+      updated: "2026-05-01",
+      tags: [],
+      content: `body of ${path}`,
+      tokens: ["body"],
+      ttlDays: null,
+      created: "2026-01-01",
+      supersededBy: null,
+      validFrom: null,
+      validUntil: null,
+    };
+  }
+
+  function normalize(v: number[]): Float32Array {
+    const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+    return new Float32Array(v.map((x) => x / norm));
+  }
+
+  let vault: string;
+  let db: IndexDb;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+    const opened = openIndexDb(vault, DIM, "int8"); // vec mirror created at kind=int8
+    if (!opened.ok) throw opened.error;
+    db = opened.value;
+  });
+
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+    vectorMod.resetProviderForTests();
+  });
+
+  it("rescored ordering matches exact float32 cosine, not raw quantized distance", async () => {
+    // A close pair (docA, docB) where a single-component int8 rounding
+    // difference (~1/127) is comparable to their true cosine gap — if the
+    // rescore ever regressed to scoring off the quantized distance instead
+    // of the durable-cache float32 vector, this pairing is the one likely
+    // to flip. docC is far from both, a sanity anchor.
+    const query = normalize([10, 9, 9, 9, 0, 0, 0, 0]);
+    const vecA = query; // identical to the query — cos = 1 exactly
+    const vecB = normalize([10, 9, 9, 8, 0, 0, 0, 0]); // very close, not identical
+    const vecC = normalize([0, 0, 0, 0, 10, 9, 9, 9]); // far
+
+    vectorMod.setProviderForTests(
+      {
+        id: "fake-int8-rescore",
+        dim: DIM,
+        warm: async () => ({ ok: true, value: undefined }) as const,
+        embed: async (texts) => ({ ok: true, value: texts.map(() => query) }) as const,
+      },
+      "int8",
+    );
+    const model = vectorMod.getProvider().id;
+
+    for (const [path, vec] of [
+      ["docA.md", vecA],
+      ["docB.md", vecB],
+      ["docC.md", vecC],
+    ] as const) {
+      indexDb.insertDocument(db, doc(path));
+      indexDb.insertChunkRow(db, {
+        path,
+        chunkIndex: 0,
+        text: `irrelevant filler for ${path}`,
+        context: `general › ${path}`,
+        contentHash: `hash-${path}`,
+      });
+      // Durable cache: exact float32 (what rescoring reads).
+      indexDb.insertEmbedding(db, `hash-${path}`, model, vec, "2026-05-01", DIM);
+      // Vec mirror: int8-quantized (what candidate SELECTION reads).
+      indexDb.insertEmbeddingVec(db, `hash-${path}`, model, "general", vec, "int8");
+    }
+
+    const res = await hybridSearch(db, "irrelevant filler", {
+      weights: { bm25: 0, vector: 1 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.vectorUsed).toBe(true);
+    const order = res.value.hits.map((h) => h.path);
+    // docC is orthogonal to the query (cosine 0), so a normalized score of 0
+    // is legitimately filtered out of hits entirely (score <= 0) — the
+    // load-bearing assertion is docA before docB, both present.
+    expect(order.slice(0, 2)).toEqual(["docA.md", "docB.md"]);
+
+    // The exact rescore's own reported vectorScore for docA is the true
+    // cosine (1.0), not a quantized approximation.
+    const scoreA = res.value.hits.find((h) => h.path === "docA.md")?.vectorScore;
+    expect(scoreA).toBeCloseTo(1, 3);
+  });
+
+  it("a candidate with a vec-mirror row but no durable cache row (orphan) is dropped, and every score is in [0, 1]", async () => {
+    const query = normalize([1, 1, 1, 1, 0, 0, 0, 0]);
+
+    vectorMod.setProviderForTests(
+      {
+        id: "fake-int8-orphan",
+        dim: DIM,
+        warm: async () => ({ ok: true, value: undefined }) as const,
+        embed: async (texts) => ({ ok: true, value: texts.map(() => query) }) as const,
+      },
+      "int8",
+    );
+    const model = vectorMod.getProvider().id;
+
+    // orphan.md: a PERFECT vector match (would rank #1 if not dropped), and
+    // NO lexical signal at all — so if it survives the rescore it is the
+    // ONLY thing that could put it in the candidate set (bm25 weight is 0).
+    indexDb.insertDocument(db, doc("orphan.md"));
+    indexDb.insertChunkRow(db, {
+      path: "orphan.md",
+      chunkIndex: 0,
+      text: "nothing lexically relevant here",
+      context: "general › orphan.md",
+      contentHash: "hash-orphan",
+    });
+    // Vec mirror row exists (a gc race left it behind)...
+    indexDb.insertEmbeddingVec(db, "hash-orphan", model, "general", query, "int8");
+    // ...but the durable cache row does NOT — orphan.
+
+    // A normal, non-orphaned document for scale/comparison.
+    indexDb.insertDocument(db, doc("normal.md"));
+    indexDb.insertChunkRow(db, {
+      path: "normal.md",
+      chunkIndex: 0,
+      text: "also nothing lexically relevant",
+      context: "general › normal.md",
+      contentHash: "hash-normal",
+    });
+    const normalVec = normalize([1, 1, 0, 0, 0, 0, 0, 0]);
+    indexDb.insertEmbedding(db, "hash-normal", model, normalVec, "2026-05-01", DIM);
+    indexDb.insertEmbeddingVec(db, "hash-normal", model, "general", normalVec, "int8");
+
+    const res = await hybridSearch(db, "irrelevant query text", {
+      weights: { bm25: 0, vector: 1 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const paths = res.value.hits.map((h) => h.path);
+    expect(paths).not.toContain("orphan.md"); // dropped, not approximated
+    expect(paths).toContain("normal.md");
+    for (const hit of res.value.hits) {
+      expect(hit.vectorScore).toBeGreaterThanOrEqual(0);
+      expect(hit.vectorScore).toBeLessThanOrEqual(1);
+      expect(hit.score).toBeGreaterThanOrEqual(0);
+      expect(hit.score).toBeLessThanOrEqual(1);
+    }
   });
 });

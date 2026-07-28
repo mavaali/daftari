@@ -49,7 +49,7 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { getProvider } from "../search/vector.js";
+import { getProvider, getQuantize } from "../search/vector.js";
 import {
   clearDerivesFromEdges,
   type DerivesFromEdgeRow,
@@ -472,7 +472,7 @@ function writeThroughEdgesIndex(vaultRoot: string): Map<string, EdgeState> | nul
     // Stat BEFORE reading — same marker discipline as rebuildEdgesIndex.
     const marker = edgesLogStatMarker(vaultRoot);
     const states = collapse(readRawRecords(vaultRoot));
-    const opened = openIndexDb(vaultRoot, getProvider().dim);
+    const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
     if (opened.ok) {
       const db = opened.value;
       try {
@@ -673,7 +673,7 @@ export async function listEdges(
   filter: ListEdgesFilter = {},
   now: Date = new Date(),
 ): Promise<Result<DerivesFromEdge[], Error>> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) return listEdgesFromLog(vaultRoot, filter, now);
   const db = opened.value;
   try {
@@ -716,7 +716,7 @@ export async function getEdge(
   toPath: string,
   now: Date = new Date(),
 ): Promise<Result<DerivesFromEdge | null, Error>> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) {
     // Same degraded posture as listEdgesFromLog: canonical store, no cache.
     try {
@@ -811,7 +811,7 @@ function rebuildEdgesIndexFromStates(
 // derives_from_edges table, and closes. Startup path when no reindex is
 // otherwise running; the reindex path calls rebuildEdgesIndex directly.
 export function materializeEdges(vaultRoot: string): Result<{ count: number }, Error> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) return opened;
   const db = opened.value;
   try {

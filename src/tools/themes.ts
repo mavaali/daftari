@@ -26,7 +26,7 @@
 
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { getProvider } from "../search/vector.js";
+import { getProvider, toIndexDim } from "../search/vector.js";
 import { blobToEmbedding, type IndexDb, type IndexedDocument } from "../storage/index-db.js";
 import {
   clusterCoherence,
@@ -229,16 +229,23 @@ function loadEmbeddingsByPath(
     collection ? db.prepare(sql).all(model, collection) : db.prepare(sql).all(model)
   ) as Row[];
   const provider = getProvider();
-  const expectedDim = provider.dim;
+  // The durable cache stores NATIVE-dim vectors (2026-07-26 embedding-
+  // refresh-quantization spec, disposition C9) — the dim guard below must
+  // compare against nativeDim (falling back to dim for providers with no
+  // Matryoshka gap), not the configured index dim, or every row would fail
+  // the guard. Each surviving vector is truncated to the CONFIGURED dim via
+  // toIndexDim before being handed to the caller's clustering math — same
+  // pattern as relatedSearch's meanEmbedding inputs (hybrid.ts).
+  const expectedDim = provider.nativeDim ?? provider.dim;
   const out = new Map<string, Float32Array[]>();
   for (const row of rows) {
     if (!row.embedding) continue;
     // Defense-in-depth: skip rows whose stored dim disagrees with the
-    // provider's expected dim — same guard `getAllChunks` applies.
+    // provider's expected (native) dim — same guard `getAllChunks` applies.
     const blobOk = row.embedding.length === expectedDim * 4;
     const dimOk = row.dim === expectedDim;
     if (!blobOk || !dimOk) continue;
-    const vec = blobToEmbedding(row.embedding);
+    const vec = toIndexDim(blobToEmbedding(row.embedding), provider.dim);
     const list = out.get(row.path);
     if (list) list.push(vec);
     else out.set(row.path, [vec]);

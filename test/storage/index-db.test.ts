@@ -60,7 +60,7 @@ describe("index-db", () => {
 
   beforeEach(() => {
     vault = makeTempVault();
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     db = opened.value;
   });
@@ -183,7 +183,7 @@ describe("index-db", () => {
     // snapshot. `embeddings` is deliberately exempt from the drop — it is a
     // content-addressed cache, covered by schema-bump-embeddings.test.ts —
     // so the count below is 0 only because this test inserts none.
-    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!reopened.ok) throw reopened.error;
     db = reopened.value;
 
@@ -207,7 +207,7 @@ describe("index-db", () => {
     expect(documentCount(db)).toBe(1);
     db.close();
 
-    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!reopened.ok) throw reopened.error;
     db = reopened.value;
 
@@ -460,7 +460,7 @@ describe("index-db", () => {
       // afterEach has a live handle to close.
       db.close();
       const fresh = makeTempVault();
-      const opened = openIndexDb(fresh, 4);
+      const opened = openIndexDb(fresh, 4, "float32");
       if (!opened.ok) throw opened.error;
       db = opened.value;
       insertEmbeddingVec(db, "h1", MODEL, COLLECTION, v1);
@@ -483,7 +483,7 @@ describe("index-db", () => {
       // suite-level afterEach has a valid db handle.
       db.close();
       cleanupVault(fresh);
-      const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const reopened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!reopened.ok) throw reopened.error;
       db = reopened.value;
     });
@@ -492,7 +492,7 @@ describe("index-db", () => {
       // First open creates the vec table at dim=4.
       db.close();
       const fresh = makeTempVault();
-      let opened = openIndexDb(fresh, 4);
+      let opened = openIndexDb(fresh, 4, "float32");
       if (!opened.ok) throw opened.error;
       db = opened.value;
       expect(getMeta(db, "embeddings_vec_dim")).toBe("4");
@@ -510,7 +510,7 @@ describe("index-db", () => {
       // Reopen at a different dim — the vec table is dropped and recreated;
       // any rows in it are gone (the durable cache survives — `embeddings`
       // and `chunks` tables are not touched).
-      opened = openIndexDb(fresh, 8);
+      opened = openIndexDb(fresh, 8, "float32");
       if (!opened.ok) throw opened.error;
       db = opened.value;
       expect(getMeta(db, "embeddings_vec_dim")).toBe("8");
@@ -532,7 +532,7 @@ describe("index-db", () => {
 
       db.close();
       cleanupVault(fresh);
-      const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const reopened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!reopened.ok) throw reopened.error;
       db = reopened.value;
     });
@@ -586,7 +586,7 @@ describe("getDocumentsInDateRange", () => {
   let db: IndexDb;
   beforeEach(() => {
     vault = makeTempVault();
-    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!o.ok) throw o.error;
     db = o.value;
   });
@@ -624,7 +624,7 @@ describe("insertDocument date normalization (index is cleaned; source is not)", 
   let db: IndexDb;
   beforeEach(() => {
     vault = makeTempVault();
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     db = opened.value;
   });
@@ -680,7 +680,7 @@ describe("chunks_fts", () => {
       writeFileSync(join(vault, "big.md"), `---\ntitle: Big\n---\n\n${para1}\n\n${para2}\n`);
       let r = await reindexVault(vault);
       if (!r.ok) throw r.error;
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!opened.ok) throw opened.error;
       const db = opened.value;
 
@@ -739,7 +739,7 @@ describe("chunks_fts", () => {
     // We call deleteDocument + insertChunkRow directly to mirror that code path
     // without spinning up the embedding model or file system watcher.
     const vault = makeTempVault();
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const testDb = opened.value;
 

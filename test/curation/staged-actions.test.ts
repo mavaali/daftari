@@ -190,7 +190,7 @@ describe("staged-actions", () => {
       ratifiedBy: "human:mihir",
     });
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {
@@ -213,7 +213,7 @@ describe("staged-actions", () => {
     if (!result.ok) return;
     expect(result.value.count).toBe(1);
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     try {
       expect(getAllStagedActions(opened.value)).toHaveLength(1);

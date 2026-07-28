@@ -260,7 +260,7 @@ describe("derives_from edge store", () => {
     });
 
     mkdirSync(join(vault, ".daftari"), { recursive: true });
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -573,7 +573,7 @@ describe("derives_from direction verdict", () => {
       at: T0,
     });
     mkdirSync(join(vault, ".daftari"), { recursive: true });
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -601,7 +601,7 @@ describe("sql-authoritative edge reads", () => {
   });
 
   function withDb<T>(fn: (db: IndexDb) => T): T {
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {

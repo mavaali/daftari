@@ -46,7 +46,7 @@ describe("reindexVault", () => {
     expect(result.value.skipped).toEqual([]);
     expect(result.value.vectorEnabled).toBe(true);
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -93,7 +93,7 @@ describe("reindexVault", () => {
 
     // Still indexed and searchable — advisory, not rejected (matches the
     // _drafts/incomplete-note.md fixture's documented intent).
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -195,7 +195,7 @@ describe("reindexVault", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -261,7 +261,7 @@ describe("reindexVault", () => {
       expect(first.ok).toBe(true);
       if (!first.ok) return;
       const cacheSizeBefore = (() => {
-        const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+        const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
         if (!opened.ok) throw opened.error;
         try {
           return embeddingCount(opened.value);
@@ -282,7 +282,7 @@ describe("reindexVault", () => {
       // Cache size unchanged — every old hash is still referenced (by the
       // renamed file) so no orphans were reaped.
       const cacheSizeAfter = (() => {
-        const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+        const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
         if (!opened.ok) throw opened.error;
         try {
           return embeddingCount(opened.value);
@@ -364,7 +364,7 @@ describe("reindexVault", () => {
       expect(first.ok).toBe(true);
       if (!first.ok) return;
       const cacheBefore = (() => {
-        const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+        const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
         if (!opened.ok) throw opened.error;
         try {
           return embeddingCount(opened.value);
@@ -390,7 +390,7 @@ describe("reindexVault", () => {
 
       // After the reindex, every surviving embeddings row must be referenced
       // by at least one chunk row.
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
@@ -491,6 +491,12 @@ describe("reindexVault", () => {
       };
       setProviderForTests(altProvider);
 
+      // Vec-coherence check (C1): a provider switch on an otherwise
+      // unchanged vault must be detected as stale BEFORE the reindex that
+      // fixes it — this is what makes "config change + background reindex"
+      // an actually-triggered migration rather than a silent no-op.
+      expect(await isIndexFresh(vault)).toBe(false);
+
       const second = await reindexVault(vault);
       expect(second.ok).toBe(true);
       if (!second.ok) return;
@@ -503,7 +509,7 @@ describe("reindexVault", () => {
 
       // Both providers' rows coexist in the cache (the composite PK lets
       // them) — a switch-back to the original id would be all cache hits.
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
@@ -520,7 +526,7 @@ describe("reindexVault", () => {
       }
 
       // The current provider's id is what gets written to meta.
-      const dbMeta = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const dbMeta = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!dbMeta.ok) throw dbMeta.error;
       try {
         expect(getMeta(dbMeta.value, "embedding_model")).toBe("alt-minilm");
@@ -537,7 +543,7 @@ describe("reindexVault", () => {
       const result = await reindexVault(vault);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
@@ -552,6 +558,131 @@ describe("reindexVault", () => {
         db.close();
       }
     }, 120_000);
+  });
+
+  // 2026-07-26 embedding-refresh-quantization spec, Phase 3d / dispositions
+  // C1 (freshness coherence) and C9 (native-dim cache, dim-free id). A fake
+  // Matryoshka-style provider — same cache id, varying `dim`/`nativeDim` —
+  // keeps these tests fast and network-free instead of paying local-minilm's
+  // real embed cost like the "provider switch" tests above.
+  describe("dim / quantize coherence (C1, C9)", () => {
+    const FAKE_ID = "fake-truncatable";
+    const NATIVE_DIM = 8;
+
+    function fakeVectorFor(text: string): Float32Array {
+      const v = new Float32Array(NATIVE_DIM);
+      for (let i = 0; i < NATIVE_DIM; i++) v[i] = ((text.charCodeAt(i % text.length) ?? 1) % 7) + 1;
+      let norm = 0;
+      for (const x of v) norm += x * x;
+      const inv = 1 / Math.sqrt(norm);
+      for (let i = 0; i < v.length; i++) v[i] = (v[i] as number) * inv;
+      return v;
+    }
+
+    function fakeTruncatableProvider(dim: number, counter: { calls: number }): EmbeddingProvider {
+      return {
+        id: FAKE_ID,
+        dim,
+        nativeDim: NATIVE_DIM,
+        async warm(): Promise<Result<void, Error>> {
+          return ok(undefined);
+        },
+        async embed(texts) {
+          counter.calls += texts.length;
+          return ok(texts.map((t) => fakeVectorFor(t)));
+        },
+      };
+    }
+
+    afterEach(() => {
+      resetProviderForTests();
+    });
+
+    it("a dim flip on the same provider id is all cache hits — zero embed calls, mirror rebuilt truncated", async () => {
+      const counter = { calls: 0 };
+      setProviderForTests(fakeTruncatableProvider(NATIVE_DIM, counter), "float32");
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.value.embeddedCount).toBeGreaterThan(0);
+      const embedsAtNativeDim = counter.calls;
+      expect(embedsAtNativeDim).toBeGreaterThan(0);
+
+      // Flip dim 8 -> 4 on the SAME provider id. isIndexFresh must catch
+      // this (embeddings_vec gets drop-recreated at the new dim, emptying
+      // it, under an unchanged model id — the case check (a) alone misses).
+      counter.calls = 0;
+      setProviderForTests(fakeTruncatableProvider(4, counter), "float32");
+      expect(await isIndexFresh(vault)).toBe(false);
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.value.embeddedCount).toBe(0); // zero embed() calls — pure cache hits
+      expect(second.value.cacheHits).toBeGreaterThan(0);
+      expect(counter.calls).toBe(0); // the provider's own embed() was never invoked
+
+      const opened = openIndexDb(vault, 4, "float32");
+      if (!opened.ok) throw opened.error;
+      try {
+        expect(getMeta(opened.value, "embeddings_vec_dim")).toBe("4");
+        const row = opened.value.prepare("SELECT embedding FROM embeddings_vec LIMIT 1").get() as
+          | { embedding: Buffer }
+          | undefined;
+        expect(row).toBeDefined();
+        expect(row?.embedding.byteLength).toBe(4 * 4); // 4 float32 components, truncated
+        const vecCount = opened.value.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as {
+          n: number;
+        };
+        expect(vecCount.n).toBeGreaterThan(0);
+      } finally {
+        opened.value.close();
+      }
+
+      // Switch back to dim 8 — also all cache hits.
+      counter.calls = 0;
+      setProviderForTests(fakeTruncatableProvider(NATIVE_DIM, counter), "float32");
+      expect(await isIndexFresh(vault)).toBe(false);
+      const third = await reindexVault(vault);
+      expect(third.ok).toBe(true);
+      if (!third.ok) return;
+      expect(third.value.embeddedCount).toBe(0);
+      expect(counter.calls).toBe(0);
+    }, 60_000);
+
+    it("a quantize flip alone (provider/dim unchanged) is caught by isIndexFresh and repopulates via cache hits", async () => {
+      const counter = { calls: 0 };
+      setProviderForTests(fakeTruncatableProvider(NATIVE_DIM, counter), "float32");
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      expect(await isIndexFresh(vault)).toBe(true);
+
+      // Same provider object (same id, same dim) — only the quantize STATE
+      // flips. This is exactly the case check (a) (embedding_model meta)
+      // cannot see: the model id is unchanged.
+      counter.calls = 0;
+      setProviderForTests(fakeTruncatableProvider(NATIVE_DIM, counter), "int8");
+      expect(await isIndexFresh(vault)).toBe(false);
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.value.embeddedCount).toBe(0); // all cache hits
+      expect(counter.calls).toBe(0);
+
+      const opened = openIndexDb(vault, NATIVE_DIM, "int8");
+      if (!opened.ok) throw opened.error;
+      try {
+        expect(getMeta(opened.value, "embeddings_vec_kind")).toBe("int8");
+        const vecCount = opened.value.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as {
+          n: number;
+        };
+        expect(vecCount.n).toBeGreaterThan(0); // KNN-non-empty after the repopulating reindex
+      } finally {
+        opened.value.close();
+      }
+      expect(await isIndexFresh(vault)).toBe(true); // now coherent again
+    }, 60_000);
   });
 
   describe("valid-time columns", () => {
@@ -569,7 +700,7 @@ describe("reindexVault", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {
@@ -586,7 +717,7 @@ describe("reindexVault", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       if (!opened.ok) throw opened.error;
       const db = opened.value;
       try {

@@ -53,7 +53,7 @@ describe("detectSharedEntity", () => {
   let db: IndexDb;
   beforeEach(() => {
     vault = makeTempVault();
-    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!o.ok) throw o.error;
     db = o.value;
   });
@@ -107,7 +107,7 @@ describe("computeWindow", () => {
   let db: IndexDb;
   beforeEach(() => {
     vault = makeTempVault();
-    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!o.ok) throw o.error;
     db = o.value;
   });
@@ -180,7 +180,7 @@ describe("applyCoveragePass", () => {
   let db: IndexDb;
   beforeEach(() => {
     vault = makeTempVault();
-    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!o.ok) throw o.error;
     db = o.value;
   });

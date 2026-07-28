@@ -49,7 +49,7 @@ import { type ReindexResult, reindexVault } from "../search/reindex.js";
 import { getRerankProvider, warmRerankModel } from "../search/rerank-provider.js";
 import { classifyQuery, makeDfLookup, type RouteClass, routeWeights } from "../search/router.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
-import { embeddingInput, getProvider } from "../search/vector.js";
+import { embeddingInput, getProvider, getQuantize } from "../search/vector.js";
 import {
   type ChunkPassage,
   documentCount,
@@ -73,7 +73,7 @@ import { clip } from "./summary.js";
 // Exported so other index-backed tools (vault_themes) reuse the same
 // dim-aware open path.
 export function openIndexForActiveProvider(vaultRoot: string): Result<IndexDb, Error> {
-  return openIndexDb(vaultRoot, getProvider().dim);
+  return openIndexDb(vaultRoot, getProvider().dim, getQuantize());
 }
 
 // Read-only index handle for RBAC collection lookups. openIndexForActiveProvider

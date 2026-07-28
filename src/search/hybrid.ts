@@ -32,17 +32,27 @@ import { computeDecay, type DecayState } from "../curation/decay.js";
 import type { ValidityReport } from "../curation/validity.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
+  blobToEmbedding,
   embeddingToBlob,
   getChunksForPath,
   getDocument,
   getDocumentsByPaths,
   type IndexDb,
+  quantizeInt8,
+  type VecKind,
 } from "../storage/index-db.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
 import type { ValidAtSource } from "./valid-at-source.js";
-import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
+import {
+  cosineSimilarity,
+  embedQuery,
+  getProvider,
+  getQuantize,
+  meanEmbedding,
+  toIndexDim,
+} from "./vector.js";
 
 export interface HybridWeights {
   bm25: number;
@@ -167,6 +177,16 @@ const SNIPPET_RADIUS = 140;
 // 64 is empirically generous for typical limit ≤ 10; bump if vault chunk
 // counts grow into the millions.
 const VEC_KNN_K = 64;
+
+// Over-fetch multiplier for the int8 scan-then-rescore path (spec 2026-07-26
+// embedding-refresh-quantization Decision 3, the Sentence Transformers
+// rescore-multiplier convention). The KNN scan asks sqlite-vec for
+// VEC_KNN_K * RESCORE_MULTIPLIER quantized-distance candidates; every
+// candidate is then rescored with exact float32 cosine against the durable
+// cache, and the final top-VEC_KNN_K comes from the RESCORED order — the
+// quantized distance is used for candidate selection only, never as a score
+// (disposition C3).
+const RESCORE_MULTIPLIER = 4;
 
 // Pulls a readable excerpt from a document body, centred on the earliest
 // occurrence of any query term. Falls back to the document head when no term
@@ -324,13 +344,26 @@ function ftsRanking(db: IndexDb, query: string | null): Map<string, number> {
 // the whole over-fetched candidate set would pay per-candidate joins for an
 // O(collection)-sized set to use ~50 (C2); the tool handler resolves text
 // only for the top RERANK_POOL permitted hits via getChunkByPathAndHash.
+// `kind` selects the scoring path (spec Decision 3/C3):
+//   - "float32": byte-for-byte today's behaviour — sqlite-vec's own distance
+//     IS the score (1 - distance, clamped to [0, 1]).
+//   - "int8": scan-then-rescore. The KNN scan over the quantized column
+//     retrieves VEC_KNN_K * RESCORE_MULTIPLIER candidates by quantized
+//     distance (candidate SELECTION only); each candidate is then rescored
+//     with exact float32 cosine against the durable cache, joined in the
+//     same statement by content_hash + model. A candidate whose cache row
+//     is missing (a gc race between the vec mirror and the cache) is
+//     DROPPED from the ranking, not approximated with the quantized
+//     distance — the over-fetch makes dropping cheap and BM25 still carries
+//     the document. There is no distance -> score conversion on this path
+//     at all.
 function vecRanking(
   db: IndexDb,
   queryEmbedding: Float32Array,
   modelId: string,
+  kind: VecKind,
   readableCollections?: string[],
 ): { scores: Map<string, number>; bestHash: Map<string, string> } {
-  const queryBlob = embeddingToBlob(queryEmbedding);
   if (readableCollections !== undefined && readableCollections.length === 0) {
     return { scores: new Map(), bestHash: new Map() };
   }
@@ -338,25 +371,69 @@ function vecRanking(
     readableCollections === undefined
       ? ""
       : ` AND v.collection IN (${readableCollections.map(() => "?").join(",")})`;
+
+  if (kind === "float32") {
+    const queryBlob = embeddingToBlob(queryEmbedding);
+    const rows = db
+      .prepare(
+        `SELECT c.path AS path, v.content_hash AS content_hash, v.distance AS distance
+           FROM embeddings_vec AS v
+           JOIN chunks AS c ON c.content_hash = v.content_hash
+          WHERE v.embedding MATCH ?
+            AND v.model = ?
+            AND v.k = ?${collectionFilter}
+          ORDER BY v.distance`,
+      )
+      .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+      path: string;
+      content_hash: string;
+      distance: number;
+    }[];
+    const scores = new Map<string, number>();
+    const bestHash = new Map<string, string>();
+    for (const r of rows) {
+      const sim = Math.max(0, 1 - r.distance);
+      const prev = scores.get(r.path) ?? -Infinity;
+      if (sim > prev) {
+        scores.set(r.path, sim);
+        bestHash.set(r.path, r.content_hash);
+      }
+    }
+    return { scores, bestHash };
+  }
+
+  // int8 path: over-fetch by RESCORE_MULTIPLIER, rescore exact-cosine
+  // against the durable cache (joined in-statement), drop orphans.
+  //
+  // `vec_int8(?)` wraps the MATCH parameter — sqlite-vec infers a bound
+  // blob's vector type from its byte layout (defaults to float32), so an
+  // unwrapped int8-byte blob against an int8[] column is rejected ("Query
+  // vector ... expected to be of type int8, but a float32 vector was
+  // provided"). Confirmed empirically against the pinned sqlite-vec build.
+  const queryBlob = quantizeInt8(queryEmbedding);
+  const overFetchK = VEC_KNN_K * RESCORE_MULTIPLIER;
   const rows = db
     .prepare(
-      `SELECT c.path AS path, v.content_hash AS content_hash, v.distance AS distance
+      `SELECT c.path AS path, v.content_hash AS content_hash, e.embedding AS cache_embedding
          FROM embeddings_vec AS v
          JOIN chunks AS c ON c.content_hash = v.content_hash
-        WHERE v.embedding MATCH ?
+         LEFT JOIN embeddings AS e
+           ON e.content_hash = v.content_hash AND e.model = v.model
+        WHERE v.embedding MATCH vec_int8(?)
           AND v.model = ?
-          AND v.k = ?${collectionFilter}
-        ORDER BY v.distance`,
+          AND v.k = ?${collectionFilter}`,
     )
-    .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+    .all(queryBlob, modelId, overFetchK, ...(readableCollections ?? [])) as {
     path: string;
     content_hash: string;
-    distance: number;
+    cache_embedding: Buffer | null;
   }[];
   const scores = new Map<string, number>();
   const bestHash = new Map<string, string>();
   for (const r of rows) {
-    const sim = Math.max(0, 1 - r.distance);
+    if (!r.cache_embedding) continue; // orphan candidate — dropped, not approximated (C3)
+    const cached = toIndexDim(blobToEmbedding(r.cache_embedding), queryEmbedding.length);
+    const sim = Math.max(0, cosineSimilarity(queryEmbedding, cached));
     const prev = scores.get(r.path) ?? -Infinity;
     if (sim > prev) {
       scores.set(r.path, sim);
@@ -556,7 +633,13 @@ function rankDocuments(
   let vecBestHash = new Map<string, string>();
   if (queryEmbedding) {
     const provider = getProvider();
-    const vecRanked = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
+    const vecRanked = vecRanking(
+      db,
+      queryEmbedding,
+      provider.id,
+      getQuantize(),
+      opts.readableCollections,
+    );
     vectorRaw = vecRanked.scores;
     vecBestHash = vecRanked.bestHash;
     if (vectorRaw.size > 0) vectorUsed = true;
@@ -759,9 +842,20 @@ export function relatedSearch(
   }
 
   const provider = getProvider();
-  const chunkVectors = getChunksForPath(db, path, provider.id, provider.dim)
+  // getChunksForPath's expectedDim guard reads the DURABLE cache, which
+  // stores NATIVE-dim vectors (2026-07-26 embedding-refresh-quantization
+  // spec, disposition C9) — pass nativeDim (falling back to dim for
+  // providers with no Matryoshka gap), not the configured index dim, or
+  // every row would fail the dim guard and relatedSearch would silently see
+  // no vectors at all. Each chunk vector is then truncated to the
+  // CONFIGURED dim via toIndexDim before meanEmbedding averages them (C9:
+  // "meanEmbedding inputs pass through toIndexDim") — the mean of unit
+  // vectors stays in [-1, 1], so the later quantizeInt8 rescore path applies
+  // unchanged.
+  const chunkVectors = getChunksForPath(db, path, provider.id, provider.nativeDim ?? provider.dim)
     .map((c) => c.embedding)
-    .filter((e): e is Float32Array => e !== null);
+    .filter((e): e is Float32Array => e !== null)
+    .map((e) => toIndexDim(e, provider.dim));
   const queryEmbedding = meanEmbedding(chunkVectors);
 
   // Build the FTS5 match string from the source document's stored token

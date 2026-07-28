@@ -34,7 +34,7 @@ import {
   type ValidationReport,
 } from "../frontmatter/types.js";
 import { type ContestedTension, contestedFor } from "../search/contested.js";
-import { getProvider } from "../search/vector.js";
+import { getProvider, getQuantize } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
@@ -549,13 +549,20 @@ export async function vaultStatus(
   // Dim-mismatch counter. A non-zero value means some embedding cache rows
   // for the active model have the wrong dim and are being silently skipped
   // by vector ranking. We open the DB defensively — if sqlite-vec isn't
-  // installed or the index hasn't been built yet, the field is 0.
+  // installed or the index hasn't been built yet, the field is 0. The
+  // durable cache stores NATIVE-dim vectors (C9), so the expected dim here
+  // is nativeDim (falling back to dim for providers with no Matryoshka gap),
+  // not the configured index dim.
   const provider = getProvider();
   let embeddingDimMismatches = 0;
-  const dbResult = openIndexDb(vaultRoot, provider.dim);
+  const dbResult = openIndexDb(vaultRoot, provider.dim, getQuantize());
   if (dbResult.ok) {
     try {
-      embeddingDimMismatches = countDimMismatches(dbResult.value, provider.id, provider.dim);
+      embeddingDimMismatches = countDimMismatches(
+        dbResult.value,
+        provider.id,
+        provider.nativeDim ?? provider.dim,
+      );
     } finally {
       dbResult.value.close();
     }

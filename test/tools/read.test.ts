@@ -502,7 +502,7 @@ describe("vaultStatus", () => {
 
     it("is 0 when all cached embeddings match the active provider dim", async () => {
       vault = makeTempVault();
-      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const db = dbResult.value;
@@ -525,7 +525,7 @@ describe("vaultStatus", () => {
 
     it("is non-zero when cached embeddings have the wrong dim for the active model", async () => {
       vault = makeTempVault();
-      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const db = dbResult.value;

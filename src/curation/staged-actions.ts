@@ -29,7 +29,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { getProvider } from "../search/vector.js";
+import { getProvider, getQuantize } from "../search/vector.js";
 import {
   clearStagedActions,
   type IndexDb,
@@ -626,7 +626,7 @@ export function rebuildStagedActionsIndex(
 // directly against its already-open handle. The provider dim matters: opening
 // at the wrong dim would drop and recreate the embeddings_vec mirror.
 export function materializeStagedActions(vaultRoot: string): Result<{ count: number }, Error> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
