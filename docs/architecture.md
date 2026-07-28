@@ -7,12 +7,13 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, started against one vault directory, running as
-one access identity for its lifetime, serving 25 tools over stdio. Five more
-surfaces are CLI-only — `daftari backfill`, `daftari import obsidian`,
-`daftari audit`, `daftari eval`, and `daftari consolidate` — plus a one-shot
-`daftari --init` scaffolder; each is introduced below where it earns its place
-(see [Adoption](#adoption), [The consolidation loop](#the-consolidation-loop),
-and [Doc-to-code coherence](#doc-to-code-coherence)).
+one access identity for its lifetime, serving 25 tools over stdio. The rest of
+the surfaces are CLI-only — `daftari asof`, `audit`, `backfill`, `canary`,
+`consolidate`, `court`, `eval`, `import obsidian`, `interview`, `okf`, `serve`,
+`sleep` and `sync` — plus a one-shot `daftari --init` scaffolder; each is
+introduced below where it earns its place (see [Adoption](#adoption),
+[The consolidation loop](#the-consolidation-loop), and
+[Doc-to-code coherence](#doc-to-code-coherence)).
 
 That's it for the easy job. The rest is the four layers a single tool call falls
 through, and — the part worth your attention — *why each layer refuses to do
