@@ -293,39 +293,70 @@ describe("reindexVault", () => {
       expect(cacheSizeAfter).toBe(cacheSizeBefore);
     }, 120_000);
 
-    it("moved paragraph re-embeds zero: identical chunk text in a different file is a cache hit", async () => {
+    // Contextual chunking (spec 2026-07-26-contextual-chunking-reranker-design.md
+    // Decision 2 / plan C7): the chunk hash covers the breadcrumb context
+    // (collection > title > headings > tags) AS WELL AS the body text — the
+    // context is part of the chunk's retrieval identity now, not a
+    // pre-contextual-chunking cache key of text alone. So identical body text
+    // is a cache hit ONLY when the surrounding metadata (title/collection/tags)
+    // also matches; a differently-titled document with the same paragraph is
+    // an intentional cache MISS (a stale-vector hit would silently serve
+    // pre-edit semantics, which the spec judges worse than the recompute).
+    it("identical body text under IDENTICAL title/collection/tags shares one embedding row (same-pass dedupe)", async () => {
       const first = await reindexVault(vault);
       expect(first.ok).toBe(true);
       if (!first.ok) return;
 
-      // Grab an actual chunk's text from the index and use it verbatim as
-      // the body of a brand-new file. Because chunkText is deterministic
-      // and the body equals exactly one chunk's worth of text, the new
-      // file's chunker round-trips to the same content_hash — which the
-      // cache already holds.
-      const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
-      if (!opened.ok) throw opened.error;
-      const chunkText = (() => {
-        try {
-          const all = getAllChunks(opened.value, EMBEDDING_MODEL);
-          return all[0]?.text ?? "";
-        } finally {
-          opened.value.close();
-        }
-      })();
-      expect(chunkText.length).toBeGreaterThan(0);
-
+      const uniqueParagraph =
+        "orthogonal quokka fandango cache-identity probe text that appears nowhere else.";
+      const frontmatter =
+        "---\ntitle: Twin Doc\ndomain: positioning\nstatus: draft\nconfidence: low\n" +
+        "updated: 2026-05-20\ntags: [probe]\n---\n\n";
       await writeFile(
-        join(vault, "competitive-intel/clone-paragraph.md"),
-        `---\ntitle: Clone\ndomain: positioning\nstatus: draft\nconfidence: low\nupdated: 2026-05-20\ntags: []\n---\n\n${chunkText}\n`,
+        join(vault, "competitive-intel/twin-a.md"),
+        `${frontmatter}${uniqueParagraph}\n`,
+      );
+      await writeFile(
+        join(vault, "competitive-intel/twin-b.md"),
+        `${frontmatter}${uniqueParagraph}\n`,
       );
 
       const second = await reindexVault(vault);
       expect(second.ok).toBe(true);
       if (!second.ok) return;
-      // No new embedding work — the cloned chunk hashes to a cached row.
-      expect(second.value.embeddedCount).toBe(0);
-      expect(second.value.documentCount).toBe(first.value.documentCount + 1);
+      // Both new files hash identically (same context AND same text) — the
+      // in-pass miss-dedupe (missTextByHash) embeds the shared hash exactly
+      // once, not twice.
+      expect(second.value.embeddedCount).toBe(1);
+      expect(second.value.documentCount).toBe(first.value.documentCount + 2);
+    }, 120_000);
+
+    it("identical body text under DIFFERENT titles produces two embedding rows, not a cache hit (C7)", async () => {
+      const first = await reindexVault(vault);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const uniqueParagraph =
+        "cerulean marmoset syzygy cache-identity probe text that appears nowhere else.";
+      const frontmatterFor = (title: string): string =>
+        `---\ntitle: ${title}\ndomain: positioning\nstatus: draft\nconfidence: low\n` +
+        "updated: 2026-05-20\ntags: [probe]\n---\n\n";
+      await writeFile(
+        join(vault, "competitive-intel/distinct-a.md"),
+        `${frontmatterFor("Distinct Title A")}${uniqueParagraph}\n`,
+      );
+      await writeFile(
+        join(vault, "competitive-intel/distinct-b.md"),
+        `${frontmatterFor("Distinct Title B")}${uniqueParagraph}\n`,
+      );
+
+      const second = await reindexVault(vault);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      // Same body text, different titles => different breadcrumb context =>
+      // different content_hash => NOT deduped. Two embedding rows, not one.
+      expect(second.value.embeddedCount).toBe(2);
+      expect(second.value.documentCount).toBe(first.value.documentCount + 2);
     }, 120_000);
 
     it("vault_gc reaps embeddings whose chunks no longer reference them", async () => {

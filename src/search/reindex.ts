@@ -50,7 +50,7 @@ import {
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
-import { chunkText, embed, getProvider } from "./vector.js";
+import { chunkDocument, type DocumentChunk, embed, embeddingInput, getProvider } from "./vector.js";
 
 // Opens the index DB with the active embedding provider's dim, so the
 // sqlite-vec virtual table is created (or rebuilt) at the right
@@ -250,7 +250,7 @@ export function reindexWarnings(result: ReindexResult): string[] {
 
 interface StagedDocument {
   doc: IndexedDocument;
-  chunks: string[];
+  chunks: DocumentChunk[];
   hashes: string[];
 }
 
@@ -298,8 +298,11 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
   // match still ranks.
   const tokens = tokenize(`${fm.title} ${fm.tags.join(" ")} ${body}`);
 
-  const chunks = chunkText(body);
-  const hashes = chunks.map((t) => sha256Hex(t));
+  // Hoisted so the document row and the chunk breadcrumbs agree on the same
+  // resolved collection (spec 2026-07-26 contextual-chunking Decision 2).
+  const collection = fm.collection || (relPath.split("/")[0] ?? "");
+  const chunks = chunkDocument({ title: fm.title, collection, tags: fm.tags, body });
+  const hashes = chunks.map((c) => sha256Hex(embeddingInput(c)));
 
   return {
     kind: "staged",
@@ -308,7 +311,7 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
       doc: {
         path: relPath,
         title: fm.title,
-        collection: fm.collection || (relPath.split("/")[0] ?? ""),
+        collection,
         domain: fm.domain,
         status: fm.status,
         confidence: fm.confidence,
@@ -374,11 +377,12 @@ function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
     for (const { doc, chunks, hashes } of staged) {
       insertDocument(db, doc);
       replaceDocLinks(db, doc.path, outgoingLinkTargets(doc.content, doc.path, linkIndexes));
-      chunks.forEach((text, chunkIndex) => {
+      chunks.forEach((chunk, chunkIndex) => {
         const row: ChunkRowInput = {
           path: doc.path,
           chunkIndex,
-          text,
+          text: chunk.text,
+          context: chunk.context,
           contentHash: hashes[chunkIndex] ?? "",
         };
         insertChunkRow(db, row);
@@ -416,9 +420,9 @@ export async function reindexVault(
     for (const s of staged) {
       for (let i = 0; i < s.chunks.length; i++) {
         const h = s.hashes[i] ?? "";
-        const t = s.chunks[i] ?? "";
+        const chunk = s.chunks[i];
         allHashes.push(h);
-        allTexts.push(t);
+        allTexts.push(chunk ? embeddingInput(chunk) : "");
       }
     }
 
@@ -593,7 +597,8 @@ export async function indexDocument(
       const h = hashes[i] ?? "";
       if (cached.has(h)) continue;
       if (missTextByHash.has(h)) continue;
-      missTextByHash.set(h, chunks[i] ?? "");
+      const chunk = chunks[i];
+      missTextByHash.set(h, chunk ? embeddingInput(chunk) : "");
     }
     const missHashes = [...missTextByHash.keys()];
     const missTexts = missHashes.map((h) => missTextByHash.get(h) ?? "");
@@ -649,11 +654,12 @@ export async function indexDocument(
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
       replaceDocLinks(db, doc.path, linkTargets);
-      chunks.forEach((text, chunkIndex) => {
+      chunks.forEach((chunk, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,
           chunkIndex,
-          text,
+          text: chunk.text,
+          context: chunk.context,
           contentHash: hashes[chunkIndex] ?? "",
         });
       });
