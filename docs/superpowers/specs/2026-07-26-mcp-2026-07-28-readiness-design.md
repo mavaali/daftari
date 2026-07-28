@@ -1,7 +1,10 @@
 # MCP 2026-07-28 readiness — design
 
-2026-07-26. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-07-26. Status: **implemented except Decision 4 — see the kill-condition
+outcomes at the bottom.** Decisions 2, 3, and 6 landed 2026-07-26 (#302);
+Decisions 1 and 5 landed 2026-07-28 against the final revision on the v2 SDK
+line (`@modelcontextprotocol/server` 2.0). Decision 4's kill condition fired
+— the passes remain CLI-only.
 The final "stateless MCP" protocol revision (2026-07-28, RC published
 2026-05-21) lands two days after this spec's date. This document settles
 what daftari adopts, what it defers, and what it will never adopt.
@@ -301,3 +304,36 @@ go direct — the transport never carries inference in either direction.
 
 Each decision lands as its own PR, in the order written; Decision 1 gates
 only Decision 4 (tasks ride the new transport's types).
+
+## Kill-condition outcomes (2026-07-28, checked against the final revision)
+
+- **Decision 1 — survived.** [DATA] The final revision matches the RC in the
+  load-bearing places: `initialize` and `Mcp-Session-Id` are gone, client
+  info rides `_meta`, `server/discover` replaces the upfront capability
+  exchange. Implemented on `@modelcontextprotocol/server` 2.0 +
+  `@modelcontextprotocol/node` 2.0 (the stable line published with the final
+  revision; the monolithic 1.x SDK survives only as a devDependency so the
+  e2e suite keeps proving a lagging stdio client works). Serve is
+  `legacy: "reject"`; stdio serves both eras from one factory.
+- **Decision 4 — KILLED, for now.** [DATA] Two independent hits:
+  (a) the final revision moved Tasks to a standalone extension and **removed
+  `tasks/list` outright** (unsafe without sessions — only `tasks/get`,
+  `tasks/update`, `tasks/cancel` remain), so this spec's task-list
+  RBAC posture is moot until re-specified; (b) the v2 TypeScript SDK ships
+  the task types as "2025-11-25 wire vocabulary with no SDK runtime; kept
+  importable for interoperability only" — `execution.taskSupport` and
+  `capabilities.tasks` are deleted fields in the 2026 wire shape, and no
+  tasks-extension runtime package exists on npm. Exactly the spec's named
+  outcome: the four task tools do not ship; `sleep`, `consolidate`, `audit`,
+  and `eval` remain CLI-only — today's world, costing the wait. Revisit when
+  the TS SDK line ships the extension runtime; note the `tasks/list` removal
+  simplifies the omission-over-redaction bullet (handle-holders only).
+- **Decision 5 — survived.** [DATA] Stateless elicitation landed as
+  `InputRequiredResult` with opaque client-resubmitted `requestState`
+  (field names differ from the RC-era sketch — `inputRequests` /
+  `requestState` / `inputResponses` — but the model is materially the one
+  specified: the server remembers nothing between rounds). Implemented with
+  the SDK's HMAC request-state codec; the state binds action id + vault HEAD
+  + deciding user.
+- **Decisions 2, 3, 6 — no protocol risk materialized**, as predicted
+  (#302, 2026-07-26).

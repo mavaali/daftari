@@ -1,14 +1,14 @@
-// `daftari serve` (#5): startup gating, token auth, and per-session RBAC
-// vantage over Streamable HTTP. The server runs IN-PROCESS on an ephemeral
-// loopback port and is driven by the SDK's own client transport — no spawn,
-// no network flake surface (spec 2026-07-20, test posture).
+// `daftari serve` (#5): startup gating, token auth, and per-request RBAC
+// vantage over the stateless 2026-07-28 revision (spec 2026-07-26,
+// Decision 1). The server runs IN-PROCESS on an ephemeral loopback port and
+// is driven by the SDK's own client transport — no spawn, no network flake
+// surface (spec 2026-07-20, test posture).
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   matchToken,
@@ -80,7 +80,12 @@ async function connect(port: number, token?: string): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
     requestInit: token ? { headers: { Authorization: `Bearer ${token}` } } : {},
   });
-  const client = new Client({ name: "serve-test", version: "0.0.0" });
+  // The client SDK still defaults to legacy negotiation; serve is
+  // 2026-07-28-only (Decision 1), so pin the modern revision.
+  const client = new Client(
+    { name: "serve-test", version: "0.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
   await client.connect(transport);
   return client;
 }
@@ -185,7 +190,7 @@ describe("serve over Streamable HTTP (in-process, loopback)", () => {
     rmSync(vault, { recursive: true, force: true });
   });
 
-  it("two sessions with different tokens see different RBAC vantages", async () => {
+  it("two clients with different tokens see different RBAC vantages", async () => {
     const analyst = await connect(handle.port, "analyst-secret");
     const admin = await connect(handle.port, "admin-secret");
     try {
@@ -201,14 +206,16 @@ describe("serve over Streamable HTTP (in-process, loopback)", () => {
     }
   }, 30_000);
 
-  it("rejects a missing or unmatched token at session open (401)", async () => {
-    await expect(connect(handle.port)).rejects.toThrow(/unauthorized/);
-    await expect(connect(handle.port, "wrong-secret")).rejects.toThrow(/unauthorized/);
+  it("rejects a missing or unmatched token on every request (401)", async () => {
+    await expect(connect(handle.port)).rejects.toThrow(/unauthorized|HTTP 401/i);
+    await expect(connect(handle.port, "wrong-secret")).rejects.toThrow(/unauthorized|HTTP 401/i);
   });
 
-  it("a session id is not a credential — mismatched identity is 401", async () => {
-    // Open a session as the analyst via raw fetch so the session id header
-    // is observable, then replay it with the admin's token.
+  it("speaks 2026-07-28 only — a 2025-era initialize is refused, and no session id is ever issued", async () => {
+    // Decision 1: no dual-stacking. A legacy `initialize` (the session-open
+    // ceremony the 2026-07-28 revision deleted) gets the
+    // unsupported-protocol-version rejection, not a session. Lagging clients
+    // use stdio, which serves both eras.
     const init = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
       method: "POST",
       headers: {
@@ -227,22 +234,10 @@ describe("serve over Streamable HTTP (in-process, loopback)", () => {
         },
       }),
     });
-    expect(init.status).toBe(200);
-    const sessionId = init.headers.get("mcp-session-id");
-    expect(sessionId).toBeTruthy();
-    await init.body?.cancel();
-
-    const hijack = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer admin-secret",
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-        "mcp-session-id": sessionId as string,
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
-    });
-    expect(hijack.status).toBe(401);
+    expect(init.headers.get("mcp-session-id")).toBeNull();
+    const body = await init.text();
+    expect(body).toMatch(/protocol/i);
+    expect(body).not.toMatch(/"result"\s*:\s*\{[^}]*serverInfo/);
   });
 
   it("non-/mcp paths are 404", async () => {
@@ -294,9 +289,9 @@ describe("serve over Streamable HTTP (in-process, loopback)", () => {
     });
     expect(evil.status).toBe(403);
 
-    // A loopback Origin for the bound port passes the guard (the request
-    // then fails further in as an unknown session, which is the point —
-    // it got past the rebinding gate, not the session gate).
+    // A loopback Origin for the bound port passes the guard (the bare
+    // legacy-shaped request is then refused further in by the protocol
+    // router, which is the point — it got past the rebinding gate).
     const okOrigin = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
       method: "POST",
       headers: {
@@ -330,7 +325,7 @@ describe("serve with no auth declared (loopback guest mode)", () => {
     rmSync(vault, { recursive: true, force: true });
   });
 
-  it("sessions open without a token and run as the deny-all guest", async () => {
+  it("requests without a token run as the deny-all guest", async () => {
     const guest = await connect(handle.port);
     try {
       const paths = await searchPaths(guest, "zephyr protocol calibration");
