@@ -2,12 +2,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeEdge } from "../../src/curation/edges.js";
 import { DEFAULT_TENSION_STATUS, listTensions } from "../../src/curation/tension.js";
 import { vaultStaleness } from "../../src/tools/edge-staleness.js";
-import { vaultTier2Queue, vaultTier2Verdict } from "../../src/tools/tier2.js";
+import { tier2Tools, vaultTier2Queue, vaultTier2Verdict } from "../../src/tools/tier2.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:compiler";
 const JUDGE = "agent:semantic-judge";
+
+function tier2Tool(name: string) {
+  const t = tier2Tools.find((x) => x.name === name);
+  if (!t) throw new Error(`${name} not registered`);
+  return t;
+}
 
 function frontmatter(overrides: Record<string, unknown> = {}) {
   return {
@@ -90,6 +97,7 @@ describe("tier-2 queue and verdicts (#232)", () => {
     const queue = await vaultTier2Queue(vault, {});
     expect(queue.ok).toBe(true);
     if (!queue.ok) throw queue.error;
+    expectMatchesOutputSchema(tier2Tool("vault_tier2_queue"), queue.value);
     const pairs = queue.value.items.map((i) => `${i.artifact}|${i.edge_class}`);
     expect(pairs).toContain("pricing/citer.md|declared");
     expect(pairs).toContain("pricing/earned-dep.md|earned");
@@ -112,6 +120,7 @@ describe("tier-2 queue and verdicts (#232)", () => {
     expect(valid.ok).toBe(true);
     if (!valid.ok) throw valid.error;
     expect(valid.value.tension_id).toBeNull();
+    expectMatchesOutputSchema(tier2Tool("vault_tier2_verdict"), valid.value);
 
     const after = await vaultTier2Queue(vault, {});
     if (!after.ok) throw after.error;

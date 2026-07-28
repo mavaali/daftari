@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { vaultConsumes } from "../../src/tools/consumes.js";
+import { consumesTools, vaultConsumes } from "../../src/tools/consumes.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:compiler";
+const consumesTool = consumesTools.find((t) => t.name === "vault_consumes");
+if (!consumesTool) throw new Error("vault_consumes not registered");
 
 function frontmatter(overrides: Record<string, unknown> = {}) {
   return {
@@ -66,6 +69,7 @@ describe("vault_consumes (#233)", () => {
     ]);
     expect(forward.value.edges[0]?.edge_type).toBe("whole-doc-read");
     expect(forward.value.edges[0]?.run_id).toBe("run-42");
+    expectMatchesOutputSchema(consumesTool, forward.value);
 
     // Reverse: the unit's dependents.
     const reverse = await vaultConsumes(vault, {

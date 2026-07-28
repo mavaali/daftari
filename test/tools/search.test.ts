@@ -8,11 +8,19 @@ import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
-import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
+import {
+  searchTools,
+  vaultReindex,
+  vaultSearch,
+  vaultSearchRelated,
+} from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const INSIGHT_DOC = "competitive-intel/vega-insight-positioning.md";
+const reindexTool = searchTools.find((t) => t.name === "vault_reindex");
+if (!reindexTool) throw new Error("vault_reindex not registered");
 
 describe("search tools", () => {
   let vault: string;
@@ -36,6 +44,7 @@ describe("search tools", () => {
       if (!result.ok) return;
       expect(result.value.documentCount).toBe(10);
       expect(result.value.vault).toBe(vault);
+      expectMatchesOutputSchema(reindexTool, result.value);
     });
   });
 
@@ -48,6 +57,9 @@ describe("search tools", () => {
       if (!result.ok) return;
       expect(result.value.hits.length).toBeGreaterThan(0);
       expect(result.value.hits[0]?.path).toBe("pricing/helios-consumption-pricing.md");
+      const searchTool = searchTools.find((t) => t.name === "vault_search");
+      if (!searchTool) throw new Error("vault_search not registered");
+      expectMatchesOutputSchema(searchTool, result.value);
     });
 
     it("rejects a missing or empty query", async () => {

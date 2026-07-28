@@ -12,6 +12,10 @@ import {
   WAGER_GONE_STAKE,
   WAGER_SURVIVAL_CREDIT,
 } from "../../src/witness/track-record.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
+
+const witnessTool = witnessTools.find((t) => t.name === "vault_witness");
+if (!witnessTool) throw new Error("vault_witness not registered");
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -225,8 +229,13 @@ describe("vaultWitness tool", () => {
     await logWrite("pricing/a.md", "agent:alpha");
     const one = await vaultWitness(vault, { principal: "agent:alpha" });
     expect(one.ok).toBe(true);
+    if (one.ok) expectMatchesOutputSchema(witnessTool, one.value);
     const miss = await vaultWitness(vault, { principal: "agent:nobody" });
     expect(miss.ok).toBe(false);
+
+    const full = await vaultWitness(vault, {});
+    expect(full.ok).toBe(true);
+    if (full.ok) expectMatchesOutputSchema(witnessTool, full.value);
   });
 
   it("denies a role with no read access", async () => {

@@ -2,11 +2,23 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { observeEdge } from "../../src/curation/edges.js";
 import { listTensions } from "../../src/curation/tension.js";
-import { vaultEdgeContest, vaultEdgeObserve, vaultEdges } from "../../src/tools/edges.js";
+import {
+  edgeTools,
+  vaultEdgeContest,
+  vaultEdgeObserve,
+  vaultEdges,
+} from "../../src/tools/edges.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:curation-loop";
+
+function edgeTool(name: string) {
+  const t = edgeTools.find((x) => x.name === name);
+  if (!t) throw new Error(`${name} not registered`);
+  return t;
+}
 const GUEST: AccessContext = { user: "guest", roleName: "guest", role: null };
 
 function frontmatter(overrides: Record<string, unknown> = {}) {
@@ -59,6 +71,7 @@ describe("vault_edge_observe", () => {
     if (!result.ok) return;
     expect(result.value.status).toBe("candidate");
     expect(result.value.kSurvived).toBe(0); // birth is not a survival
+    expectMatchesOutputSchema(edgeTool("vault_edge_observe"), result.value);
   }, 60_000);
 
   it("rejects an edge whose endpoint document does not exist", async () => {
@@ -119,6 +132,7 @@ describe("vault_edge_observe", () => {
     const all = await vaultEdges(vault, {});
     expect(all.ok && all.value.total).toBe(1);
     expect(all.ok && all.value.edges[0]?.fromPath).toBe("pricing/a.md");
+    if (all.ok) expectMatchesOutputSchema(edgeTool("vault_edges"), all.value);
   }, 60_000);
 
   it("rejects an endpoint that escapes the vault", async () => {
@@ -191,6 +205,7 @@ describe("vault_edge_contest", () => {
     if (!result.ok) return;
     expect(result.value.edge.status).toBe("revoked");
     expect(result.value.tension_id).toMatch(/^tension-\d+$/);
+    expectMatchesOutputSchema(edgeTool("vault_edge_contest"), result.value);
 
     const tensions = await listTensions(vault);
     expect(tensions.ok).toBe(true);

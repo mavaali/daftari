@@ -16,9 +16,17 @@ import {
   vaultStatus,
 } from "../../src/tools/read.js";
 import { sha256Hex } from "../../src/utils/hash.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const VAULT = resolve("test/fixtures/sample-vault");
+
+const readTool = readTools.find((t) => t.name === "vault_read");
+if (!readTool) throw new Error("vault_read not registered");
+const indexTool = readTools.find((t) => t.name === "vault_index");
+if (!indexTool) throw new Error("vault_index not registered");
+const statusTool = readTools.find((t) => t.name === "vault_status");
+if (!statusTool) throw new Error("vault_status not registered");
 
 const PRICING_ANALYST: AccessContext = {
   user: "human:test",
@@ -38,6 +46,7 @@ describe("vaultRead", () => {
     expect(result.value.frontmatter.status).toBe("canonical");
     expect(result.value.content).toContain("## Questions Answered");
     expect(result.value.validation.valid).toBe(true);
+    expectMatchesOutputSchema(readTool, result.value);
   });
 
   it("succeeds on a document with invalid frontmatter, flagging issues", async () => {
@@ -177,6 +186,7 @@ describe("vaultIndex", () => {
     if (!result.ok) return;
     expect(result.value.count).toBe(10);
     expect(result.value.entries).toHaveLength(10);
+    expectMatchesOutputSchema(indexTool, result.value);
   });
 
   it("filters by collection", async () => {
@@ -331,6 +341,7 @@ describe("vaultStatus", () => {
     expect(counts["competitive-intel"]).toBe(4);
     expect(counts.pricing).toBe(4);
     expect(counts.moonshot).toBe(1);
+    expectMatchesOutputSchema(statusTool, result.value);
   });
 
   it("reports the count of documents with invalid frontmatter", async () => {

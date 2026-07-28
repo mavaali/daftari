@@ -16,8 +16,15 @@ import {
   vaultTensionLog,
   vaultTensionResolve,
 } from "../../src/tools/curation.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
+
+function curationTool(name: string) {
+  const t = curationTools.find((x) => x.name === name);
+  if (!t) throw new Error(`${name} not registered`);
+  return t;
+}
 
 describe("curation tools", () => {
   let vault: string;
@@ -37,6 +44,7 @@ describe("curation tools", () => {
       if (!result.ok) return;
       expect(result.value.filter).toBeNull();
       expect(result.value.totalFindings).toBe(9);
+      expectMatchesOutputSchema(curationTool("vault_lint"), result.value);
       // Derived from LINT_CHECKS rather than hardcoded: the point of this
       // assertion is that EVERY registered check appears in the report, not
       // that the vault happens to have N of them.
@@ -101,6 +109,7 @@ describe("curation tools", () => {
       expect(result.value.status).toBe("unresolved");
       expect(result.value.loggedBy).toBe("agent:claude-code");
       expect(result.value.kind).toBe("factual");
+      expectMatchesOutputSchema(curationTool("vault_tension_log"), result.value);
 
       const logged = await listTensions(vault);
       expect(logged.ok && logged.value).toHaveLength(1);
@@ -171,6 +180,7 @@ describe("curation tools", () => {
       expect(cluster?.documents).toEqual(["a.md", "b.md", "c.md"]);
       expect(cluster?.id).toMatch(/^cluster:[0-9a-f]{8}$/);
       expect(cluster?.tension_count).toBe(2);
+      expectMatchesOutputSchema(curationTool("vault_tension_clusters"), result.value);
     });
 
     it("drops accepted-resolution tensions from cluster scope", async () => {
@@ -260,6 +270,7 @@ describe("curation tools", () => {
       if (!result.ok) return;
       expect(result.value.count).toBe(2);
       expect(result.value.history.map((e) => e.action)).toEqual(["create", "promote"]);
+      expectMatchesOutputSchema(curationTool("vault_provenance"), result.value);
     });
 
     it("returns an empty history for a file with no recorded writes", async () => {

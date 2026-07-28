@@ -5,12 +5,22 @@ import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
 import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
-import { vaultRatify, vaultStageAction } from "../../src/tools/staged-actions.js";
+import {
+  stagedActionTools,
+  vaultRatify,
+  vaultStageAction,
+} from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:curation-loop";
 const HUMAN = "human:mihir";
+
+const stageActionTool = stagedActionTools.find((t) => t.name === "vault_stage_action");
+if (!stageActionTool) throw new Error("vault_stage_action not registered");
+const ratifyTool = stagedActionTools.find((t) => t.name === "vault_ratify");
+if (!ratifyTool) throw new Error("vault_ratify not registered");
 
 function draftFrontmatter(overrides: Record<string, unknown> = {}) {
   return {
@@ -65,6 +75,7 @@ describe("vault_stage_action", () => {
     if (!result.ok) return;
     expect(result.value.id).toBe("stage-001");
     expect(result.value.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expectMatchesOutputSchema(stageActionTool, result.value);
   }, 60_000);
 
   it("denies a role that lacks write access to the target collection", async () => {
@@ -222,6 +233,7 @@ describe("vault_ratify", () => {
     if (!ratified.ok) return;
     expect(ratified.value.applied).toBe(true);
     expect(ratified.value.commit).toMatch(/^[0-9a-f]+$/);
+    expectMatchesOutputSchema(ratifyTool, ratified.value);
 
     // The document is now canonical.
     const read = await vaultRead(vault, "pricing/federation.md");

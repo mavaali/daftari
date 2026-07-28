@@ -5,11 +5,14 @@ import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import * as indexDb from "../../src/storage/index-db.js";
 import { openIndexDb } from "../../src/storage/index-db.js";
 import { vaultReindex } from "../../src/tools/search.js";
-import { __resetThemesCache, vaultThemes } from "../../src/tools/themes.js";
+import { __resetThemesCache, themesTools, vaultThemes } from "../../src/tools/themes.js";
 import { loadConfig } from "../../src/utils/config.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const SAMPLE = resolve("test/fixtures/sample-vault");
+const themesTool = themesTools.find((t) => t.name === "vault_themes");
+if (!themesTool) throw new Error("vault_themes not registered");
 
 const sampleConfig = loadConfig(SAMPLE);
 if (!sampleConfig.ok) throw sampleConfig.error;
@@ -38,6 +41,7 @@ describe("vault_themes", () => {
     const result = await vaultThemes(vault, {});
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expectMatchesOutputSchema(themesTool, result.value);
     const v = result.value;
     expect(typeof v.totalDocuments).toBe("number");
     expect(typeof v.skippedDocuments).toBe("number");
