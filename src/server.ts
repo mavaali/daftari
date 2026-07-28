@@ -5,8 +5,19 @@
 // additionally guards against unexpected throws at the transport boundary so a
 // bug cannot take the stdio connection down.
 
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { ResourceNotFoundError, Server, type Tool } from "@modelcontextprotocol/server";
+import {
+  acceptedContent,
+  type CallToolResult,
+  createRequestStateCodec,
+  type InputRequiredResult,
+  inputRequired,
+  ResourceNotFoundError,
+  Server,
+  type ServerContext,
+  type Tool,
+} from "@modelcontextprotocol/server";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
 import { consumesTools } from "./tools/consumes.js";
@@ -16,7 +27,7 @@ import { edgeTools } from "./tools/edges.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { receiptTools } from "./tools/receipt.js";
 import { searchTools } from "./tools/search.js";
-import { stagedActionTools } from "./tools/staged-actions.js";
+import { describeRatifyElicitation, stagedActionTools } from "./tools/staged-actions.js";
 import { themesTools } from "./tools/themes.js";
 import { tier1Tools } from "./tools/tier1.js";
 import { tier2Tools } from "./tools/tier2.js";
@@ -123,6 +134,110 @@ export function resolveToolExposure(tools: ToolsConfig): ToolExposure {
   return { exposed, unknown: [...unknown] };
 }
 
+// vault_ratify form-mode elicitation (spec 2026-07-26, Decision 5): called
+// without a decision, the tool answers with an input_required form instead of
+// an error — the server proposes, the human disposes, and the wire format
+// itself says so. The opaque request state carries the action id, the vault
+// HEAD at proposal time, and the deciding user, HMAC-signed so it round-trips
+// untampered; the server remembers nothing between the two requests.
+//
+// A per-process random key is sound here because the process lock guarantees
+// exactly one daftari process serves every round of a flow (2026-07-20
+// Decision 4); a restart invalidates in-flight forms, and the client simply
+// re-calls. TTL matches the codec default posture: a stale form must not
+// ratify.
+interface RatifyElicitState {
+  action: string;
+  head: string | null;
+  user: string;
+}
+
+const ratifyStateCodec = createRequestStateCodec<RatifyElicitState>({
+  key: randomBytes(32),
+  ttlSeconds: 600,
+});
+
+// One round of the vault_ratify elicitation flow, entered only when the call
+// carries no decision. Returns a `reply` to short-circuit with (the form, a
+// declined-form acknowledgement, or a gate error), or the args augmented with
+// the elicited decision to fall through to the normal dispatch — which
+// re-validates pending/conflict-free exactly as a direct call would.
+async function ratifyElicitationRound(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access: AccessContext,
+  ctx: ServerContext,
+): Promise<
+  | { reply: CallToolResult | InputRequiredResult; args?: undefined }
+  | { reply?: undefined; args: Record<string, unknown> }
+> {
+  // Resubmit path: a verified state minted by THIS process, bound to the
+  // same user and the same action. The state is bearer proof of nothing more
+  // than "this identity was shown this form" — the ratify grant and the
+  // action's pending/conflict-free status are re-checked downstream.
+  const state = ctx.mcpReq.requestState<RatifyElicitState>();
+  if (state && state.user === access.user && state.action === args.id) {
+    const answer = acceptedContent<{ decision?: unknown }>(ctx.mcpReq.inputResponses, "decision");
+    const decision = answer?.decision;
+    if (decision === "approve" || decision === "reject") {
+      return { args: { ...args, decision } };
+    }
+    // Declined or cancelled: apply nothing, record nothing. The action
+    // stays pending — the safe answer is the one that changes nothing.
+    return {
+      reply: {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `vault_ratify: elicitation declined — staged action ` +
+              `${state.action} remains pending`,
+          },
+        ],
+      },
+    };
+  }
+
+  // First round: run the same gates vaultRatify would (grant, propose-only,
+  // unknown/decided action) so a caller that could not ratify never sees a
+  // form, then hand the client the form plus the signed state.
+  const form = await describeRatifyElicitation(vaultRoot, args, access);
+  if (!form.ok) {
+    return {
+      reply: {
+        isError: true,
+        content: [{ type: "text" as const, text: `Error: ${form.error.message}` }],
+      },
+    };
+  }
+  return {
+    reply: inputRequired({
+      inputRequests: {
+        decision: inputRequired.elicit({
+          message: form.value.message,
+          requestedSchema: {
+            type: "object",
+            required: ["decision"],
+            properties: {
+              decision: {
+                type: "string",
+                enum: ["approve", "reject"],
+                default: "reject",
+                description: "Approve applies the staged action; reject records the refusal.",
+              },
+            },
+          },
+        }),
+      },
+      requestState: await ratifyStateCodec.mint({
+        action: form.value.actionId,
+        head: form.value.head,
+        user: access.user,
+      }),
+    }),
+  };
+}
+
 // The server runs as one access identity for its whole lifetime — the
 // --user / --role it was started with. Every tool call is enforced against it.
 // Absent an explicit context the server falls back to the deny-all guest.
@@ -136,7 +251,12 @@ export function createServer(
 ): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {}, resources: {} } },
+    {
+      capabilities: { tools: {}, resources: {} },
+      // Decision 5: echoed request state is attacker-controlled input; the
+      // codec's verify hook is what makes ctx.mcpReq.requestState() trusted.
+      requestState: { verify: ratifyStateCodec.verify },
+    },
   );
 
   const byName = new Map(allTools.map((t) => [t.name, t]));
@@ -181,7 +301,7 @@ export function createServer(
     return { contents: [result.value] };
   });
 
-  server.setRequestHandler("tools/call", async (request) => {
+  server.setRequestHandler("tools/call", async (request, ctx) => {
     const name = request.params.name;
     const tool = byName.get(name);
     if (!tool) {
@@ -191,7 +311,17 @@ export function createServer(
       };
     }
     try {
-      const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+      let args = (request.params.arguments ?? {}) as Record<string, unknown>;
+      // vault_ratify without a decision speaks form-mode elicitation
+      // (Decision 5). A direct call with the decision inline never enters
+      // this branch — it keeps working for clients that don't do
+      // elicitation, and on 2025-era connections the SDK's legacy shim
+      // fulfils the form over the session.
+      if (name === "vault_ratify" && typeof args.decision !== "string") {
+        const round = await ratifyElicitationRound(vaultRoot, args, access, ctx);
+        if (round.reply !== undefined) return round.reply;
+        args = round.args;
+      }
       const result = await tool.handler(vaultRoot, args, access);
       if (!result.ok) {
         return {
