@@ -196,7 +196,7 @@ export function formatReport(r: CanaryReport): string {
     "",
     r.verdict.reason,
   ];
-  if (r.fencedVsPlacebo.significant === false && r.fencedVsUnfenced.significant) {
+  if (!r.fencedVsPlacebo.significant && r.fencedVsUnfenced.significant) {
     lines.push(
       "",
       "NOTE: fenced differs from unfenced but NOT from placebo. That is consistent",
