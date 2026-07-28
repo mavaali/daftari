@@ -20,7 +20,11 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, posix } from "node:path";
-import type { DerivesFromEdge, ObserveEdgeInput } from "../curation/edges.js";
+import {
+  computeInputsFingerprint,
+  type DerivesFromEdge,
+  type ObserveEdgeInput,
+} from "../curation/edges.js";
 import type { TensionInput } from "../curation/tension.js";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -338,6 +342,15 @@ export async function birthOne(
         axis: "prompt",
         premiseVote: "to",
         note: `birth: ${reason}`,
+        fp: {
+          inputs: computeInputsFingerprint([
+            { path: docPath, text: docContent },
+            { path: neighbor, text: neighborContent },
+          ]),
+          principal: CONSOLIDATE_AGENT,
+          model: opts.model,
+          prompt: "birth/foundational",
+        },
       });
       if (!obs.ok) {
         verdicts.push({ neighbor, error: `observe failed: ${obs.error.message}` });
@@ -381,6 +394,15 @@ export async function birthOne(
       axis: "prompt",
       premiseVote: "symmetric",
       note: `birth/symmetric(${which}): ${reason}`,
+      fp: {
+        inputs: computeInputsFingerprint([
+          { path: docPath, text: docContent },
+          { path: neighbor, text: neighborContent },
+        ]),
+        principal: CONSOLIDATE_AGENT,
+        model: opts.model,
+        prompt: "birth/foundational",
+      },
     });
     if (!obs.ok) {
       verdicts.push({ neighbor, error: `observe failed: ${obs.error.message}` });

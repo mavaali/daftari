@@ -20,11 +20,13 @@
 
 import { type AccessContext, canRatify, hasAnyRead } from "../access/rbac.js";
 import {
+  computeInputsFingerprint,
   contestEdge,
   type DerivesFromEdge,
   EDGE_AXES,
   EDGE_STATUSES,
   type EdgeAxis,
+  type EdgeFingerprint,
   type EdgeStatus,
   getEdge,
   listEdges,
@@ -36,6 +38,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { canonicalVaultRelPath, readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { SUMMARY_MAX_ROWS } from "./summary.js";
 
 function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
   if (access && !hasAnyRead(access.role)) {
@@ -71,6 +74,30 @@ async function requireDocument(
     return err(new Error(`${tool}: document not found: ${relPath}`));
   }
   return ok(undefined);
+}
+
+// Reads the current full bytes of each canonicalized evidence path — the
+// server-computed half of the fp trust split (C3): `fp.inputs` is a hash
+// over what the server itself read, never a caller-supplied hash. Each path
+// must name a real document (mirrors requireDocument's stage-time check).
+async function loadEvidenceBytes(
+  vaultRoot: string,
+  relPaths: string[],
+  tool: string,
+): Promise<Result<Array<{ path: string; text: string }>, Error>> {
+  const out: Array<{ path: string; text: string }> = [];
+  for (const raw of relPaths) {
+    const canonPath = canonicalVaultRelPath(vaultRoot, raw);
+    if (!canonPath.ok) return canonPath;
+    const resolved = resolveVaultPath(vaultRoot, canonPath.value);
+    if (!resolved.ok) return resolved;
+    const content = await readFile(resolved.value.absPath);
+    if (!content.ok) {
+      return err(new Error(`${tool}: evidence path not found: ${canonPath.value}`));
+    }
+    out.push({ path: canonPath.value, text: content.value });
+  }
+  return ok(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +143,40 @@ export async function vaultEdgeObserve(
     if (trimmed.length > 0) note = trimmed;
   }
 
+  // Evidence fingerprint (spec Decision 1, PR-3): `evidence_paths` names the
+  // vault-relative paths the caller's derivation actually read; the server
+  // hashes their CURRENT full bytes — the caller cannot mint fp.inputs
+  // without naming real, presently-readable documents. `model` / `prompt_id`
+  // are recorded verbatim (caller-attested, same trust class as
+  // blind/varied_axis today). `fp.principal` comes ONLY from the access
+  // context — never from args, never from the free-text `observed_by`.
+  let evidencePaths: string[] | undefined;
+  if (args.evidence_paths !== undefined && args.evidence_paths !== null) {
+    if (
+      !Array.isArray(args.evidence_paths) ||
+      !args.evidence_paths.every((p) => typeof p === "string" && p.trim().length > 0)
+    ) {
+      return err(
+        new Error("vault_edge_observe 'evidence_paths' must be a list of non-empty strings"),
+      );
+    }
+    evidencePaths = args.evidence_paths as string[];
+  }
+  let model: string | undefined;
+  if (args.model !== undefined && args.model !== null) {
+    if (typeof args.model !== "string" || args.model.includes("\n")) {
+      return err(new Error("vault_edge_observe 'model' must be a string with no newline"));
+    }
+    if (args.model.trim().length > 0) model = args.model.trim();
+  }
+  let promptId: string | undefined;
+  if (args.prompt_id !== undefined && args.prompt_id !== null) {
+    if (typeof args.prompt_id !== "string" || args.prompt_id.includes("\n")) {
+      return err(new Error("vault_edge_observe 'prompt_id' must be a string with no newline"));
+    }
+    if (args.prompt_id.trim().length > 0) promptId = args.prompt_id.trim();
+  }
+
   const canonFrom = canonicalVaultRelPath(vaultRoot, fromPath.value);
   if (!canonFrom.ok) return canonFrom;
   const canonTo = canonicalVaultRelPath(vaultRoot, toPath.value);
@@ -132,6 +193,23 @@ export async function vaultEdgeObserve(
   const toExists = await requireDocument(vaultRoot, canonTo.value, "vault_edge_observe");
   if (!toExists.ok) return toExists;
 
+  let inputsFingerprint: string | undefined;
+  if (evidencePaths !== undefined) {
+    const bytes = await loadEvidenceBytes(vaultRoot, evidencePaths, "vault_edge_observe");
+    if (!bytes.ok) return bytes;
+    inputsFingerprint = computeInputsFingerprint(bytes.value);
+  }
+  const principal = access?.user;
+  const fp: EdgeFingerprint | undefined =
+    inputsFingerprint !== undefined || model !== undefined || promptId !== undefined || principal
+      ? {
+          ...(inputsFingerprint !== undefined ? { inputs: inputsFingerprint } : {}),
+          ...(principal ? { principal } : {}),
+          ...(model !== undefined ? { model } : {}),
+          ...(promptId !== undefined ? { prompt: promptId } : {}),
+        }
+      : undefined;
+
   return observeEdge(vaultRoot, {
     fromPath: canonFrom.value,
     toPath: canonTo.value,
@@ -139,6 +217,7 @@ export async function vaultEdgeObserve(
     blind: args.blind,
     ...(axis !== undefined ? { axis } : {}),
     ...(note !== undefined ? { note } : {}),
+    ...(fp !== undefined ? { fp } : {}),
   });
 }
 
@@ -326,6 +405,19 @@ const derivesFromEdgeSchema: Record<string, unknown> = {
       type: "integer",
       description: "Raw independent-vote count the aging applies to (capped at EDGE_K_CAP)",
     },
+    kEff: {
+      type: "number",
+      description:
+        "Independence-aware promotion shadow calibration value (2026-07-26 spec): kSurvived " +
+        "discounted for votes sharing an evidence-fingerprint class. Not yet the live status " +
+        "input — status still derives from strength/kSurvived.",
+    },
+    strengthIndependent: {
+      type: "number",
+      description:
+        "Shadow calibration value: the aged strength agedStrength would compute from kEff " +
+        "instead of kSurvived. Not yet the live status input.",
+    },
     firstObserved: {
       type: "string",
       description: "ISO 8601 timestamp of the observation that seeded the current cycle",
@@ -364,6 +456,8 @@ const derivesFromEdgeSchema: Record<string, unknown> = {
     "toPath",
     "strength",
     "kSurvived",
+    "kEff",
+    "strengthIndependent",
     "firstObserved",
     "lastRederived",
     "status",
@@ -374,17 +468,80 @@ const derivesFromEdgeSchema: Record<string, unknown> = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function edgeLine(e: DerivesFromEdge): string {
+  return `${e.fromPath} → ${e.toPath} (k=${e.kSurvived}, strength=${e.strength.toFixed(2)}, ${e.status})`;
+}
+
+function summarizeEdgeObserve(value: unknown): string {
+  return `observed: ${edgeLine(value as DerivesFromEdge)}`;
+}
+
+function docLinksEdge(value: unknown): string[] {
+  const e = value as DerivesFromEdge;
+  return [e.fromPath, e.toPath];
+}
+
+function summarizeEdgeContest(value: unknown): string {
+  const r = value as ContestResult;
+  const tension = r.tension_id ? ` — tension ${r.tension_id}` : "";
+  return `contested (revoked): ${edgeLine(r.edge)}${tension}`;
+}
+
+function docLinksEdgeContest(value: unknown): string[] {
+  return docLinksEdge((value as ContestResult).edge);
+}
+
+function summarizeEdges(value: unknown): string {
+  const r = value as EdgesResult;
+  if (r.total === 0) return "0 edges match.";
+  const shown = r.edges.slice(0, SUMMARY_MAX_ROWS);
+  const lines = [`${r.total} edge(s):`, ...shown.map((e) => `  ${edgeLine(e)}`)];
+  const rest = r.total - shown.length;
+  if (rest > 0) lines.push(`  … ${rest} more in structuredContent`);
+  return lines.join("\n");
+}
+
+function docLinksEdges(value: unknown): string[] {
+  const r = value as EdgesResult;
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const e of r.edges.slice(0, SUMMARY_MAX_ROWS)) {
+    for (const p of [e.fromPath, e.toPath]) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      paths.push(p);
+    }
+  }
+  return paths;
+}
+
 export const edgeTools: ToolDefinition[] = [
   {
     name: "vault_edge_observe",
     title: "Record a derives_from observation",
+    oneLine: "Record a derives_from observation between two documents.",
     annotations: { destructiveHint: false },
     description:
       "Record that a (re-)derivation observed a derives_from edge between two " +
       "documents. The first observation seeds the edge as a zero-strength " +
       "candidate; an edge earns strength only through later blind observations " +
       "that vary at least one axis (prompt | input-neighborhood | model). " +
-      "Normally called by the consolidation loop, not by a human directly.",
+      "Optionally carries an evidence fingerprint (2026-07-26 independence-aware-" +
+      "promotion spec, Decision 1) that feeds the SHADOW k_eff calibration — " +
+      "'evidence_paths' is server-computed (hashed from the named paths' current " +
+      "bytes), 'principal' is server-derived from the access context (never from " +
+      "args), and 'model'/'prompt_id' are caller-attested, the same trust class " +
+      "as 'blind'/'varied_axis' today ('attestation, not verification' — RBAC is " +
+      "the control on who may write, not fingerprint validation). This is also " +
+      "the human resolution path for a needs-review tension (Decision 3): supply " +
+      "a genuinely independent re-derivation — different model, principal, or " +
+      "inputs — with a fresh fingerprint. Normally called by the consolidation " +
+      "loop, not by a human directly.",
     inputSchema: {
       type: "object",
       properties: {
@@ -417,17 +574,38 @@ export const edgeTools: ToolDefinition[] = [
           type: "string",
           description: "Optional free-text context recorded with the observation",
         },
+        evidence_paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Vault-relative paths this re-derivation actually read. The server " +
+            "computes fp.inputs as a hash over their CURRENT full bytes — each " +
+            "path must exist. Omit to leave fp.inputs unset (∅, the sentinel class).",
+        },
+        model: {
+          type: "string",
+          description:
+            "The model id this re-derivation ran on (caller-attested). Recorded as fp.model.",
+        },
+        prompt_id: {
+          type: "string",
+          description:
+            "The prompt-template id this re-derivation used (caller-attested). Recorded as fp.prompt.",
+        },
       },
       required: ["from_path", "to_path", "observed_by", "blind"],
       additionalProperties: false,
     },
     // The edge's state AFTER this observation collapsed into it.
     outputSchema: derivesFromEdgeSchema,
+    summarize: summarizeEdgeObserve,
+    docLinks: docLinksEdge,
     handler: (vaultRoot, args, access) => vaultEdgeObserve(vaultRoot, args, access),
   },
   {
     name: "vault_edge_contest",
     title: "Contest and revoke a derives_from edge",
+    oneLine: "Contest and revoke a derives_from edge.",
     annotations: { destructiveHint: true },
     description:
       "Record a case-2 contradiction: a re-derivation failed with no upstream " +
@@ -471,11 +649,14 @@ export const edgeTools: ToolDefinition[] = [
       },
       required: ["edge"],
     },
+    summarize: summarizeEdgeContest,
+    docLinks: docLinksEdgeContest,
     handler: (vaultRoot, args, access) => vaultEdgeContest(vaultRoot, args, access),
   },
   {
     name: "vault_edges",
     title: "List derives_from edges",
+    oneLine: "List derives_from edges, optionally filtered by document or status.",
     annotations: { readOnlyHint: true },
     description:
       "List derives_from edges with their live aged strength, strongest " +
@@ -521,6 +702,8 @@ export const edgeTools: ToolDefinition[] = [
       },
       required: ["edges", "total"],
     },
+    summarize: summarizeEdges,
+    docLinks: docLinksEdges,
     handler: (vaultRoot, args, access) => vaultEdges(vaultRoot, args, access),
   },
 ];

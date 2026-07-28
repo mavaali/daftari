@@ -309,10 +309,32 @@ export async function vaultReceipt(
 // MCP tool definition
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function summarizeReceipt(value: unknown): string {
+  const r = value as VaultReceiptResult;
+  const s = r.summary;
+  const verdict = s.flags.length === 0 ? "clean" : s.flags.join(", ");
+  const lines = [
+    `receipt: ${s.sourceCount} source(s) — ${verdict}` +
+      (s.openTensions > 0 ? ` (${s.openTensions} open tension(s))` : ""),
+  ];
+  for (const src of r.sources) lines.push(`  ${src.path} (${src.status}/${src.confidence})`);
+  return lines.join("\n");
+}
+
+function docLinksReceipt(value: unknown): string[] {
+  return (value as VaultReceiptResult).sources.map((s) => s.path);
+}
+
 export const receiptTools: ToolDefinition[] = [
   {
     name: "vault_receipt",
     title: "Compile an epistemic receipt",
+    oneLine: "Compile a signed receipt over cited sources: status, decay, and tensions.",
     annotations: { readOnlyHint: true },
     description:
       "Compile an epistemic receipt for the vault documents an answer relies " +
@@ -494,6 +516,8 @@ export const receiptTools: ToolDefinition[] = [
       },
       required: ["claim", "sources", "summary", "vaultHead", "generatedAt", "receiptHash"],
     },
+    summarize: summarizeReceipt,
+    docLinks: docLinksReceipt,
     handler: (vaultRoot, args, access) =>
       vaultReceipt(
         vaultRoot,

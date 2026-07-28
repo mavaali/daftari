@@ -182,41 +182,114 @@ Three things sit alongside the markdown:
 
   The vector embeddings are produced by a configurable
   **`EmbeddingProvider`** (see `src/search/embedding-provider.ts`). Each
-  document body is split into ~800-character chunks; every chunk is embedded
-  into a fixed-dimension vector by the active provider. Two providers ship
-  with v1.9:
+  document body is split into heading-aware, ~800-character-max chunks by
+  `chunkDocument` (`src/search/vector.ts`, spec 2026-07-26-contextual-
+  chunking-reranker-design.md): a heading boundary always starts a new
+  chunk, never packed across sections, and every chunk carries a one-line
+  synthesized breadcrumb context (`{collection} › {title} › {headings} ·
+  tags: a, b, c`, capped at 160 chars). The context is hashed and embedded
+  TOGETHER with the chunk's body text (`embeddingInput = context + "\n\n" +
+  text`) — this is the "contextual embeddings" half of Anthropic's
+  contextual-retrieval recipe, done with a string prefix instead of an LLM
+  call. It is also stored as a second `chunks_fts` column, so
+  `bm25(chunks_fts)` scores title/collection/tag tokens together with body
+  tokens — contextual BM25, the other half. Displayed snippets are read from
+  the `text` column only; the synthesized context never appears in served
+  content (Markdown is truth). Every chunk is then embedded into a
+  fixed-dimension vector by the active provider. Four providers ship as of
+  the 2026-07-26 embedding-refresh-quantization spec:
 
-  - **`local-minilm`** (default) — runs `all-MiniLM-L6-v2` in-process via
-    `@huggingface/transformers` (Transformers.js). 384-dimension vectors,
-    fully local, no embedding API call. The only network access is the
-    one-time download of the model weights to the Hugging Face cache on
-    first use. Slow on cold-start (multi-minute on large vaults) but free.
+  - **`local-minilm`** (programmatic default) — runs `all-MiniLM-L6-v2`
+    in-process via `@huggingface/transformers` (Transformers.js).
+    384-dimension vectors, fully local, no embedding API call. The only
+    network access is the one-time download of the model weights to the
+    Hugging Face cache on first use. Slow on cold-start (multi-minute on
+    large vaults) but free. `all-MiniLM-L6-v2` is a 2021-era model; the two
+    entries below are the model-generation replacement, currently opt-in.
+
+  - **`local-embeddinggemma`** — runs `google/embeddinggemma-300m`
+    in-process via the same Transformers.js runtime. 768-dimension native
+    output, Matryoshka-truncatable; the configured index dim defaults to
+    512 (`embeddings.dim: 512 | 768`). Asymmetric prompt prefixes (document
+    vs. query form) are applied internally by the provider. ~600MB-class
+    model footprint (less with the q8 ONNX variant this provider defaults
+    to). **Verification honesty:** the exact prompt-prefix strings and the
+    Transformers.js compatibility of this model are [TRAINING] hypotheses
+    from the governing spec, pending a smoke-spike verification that has
+    not been run against a real model download as of this writing — see
+    `src/search/providers/local-embeddinggemma.ts`'s header and the spec's
+    Phase 0. Cold-reindex, query-latency, and RSS numbers are therefore not
+    yet measured; this section will carry real figures once that spike and
+    the Phase 5 recall-bench (`integrations/recall-bench/embedrefresh-
+    runner.mjs`) have run.
+
+  - **`local-qwen3-0.6b`** — runs `Qwen/Qwen3-Embedding-0.6B`, same
+    runtime, last-token pooling instead of mean pooling. Exposes up to
+    768d (the model's native 1024d is deliberately not offered yet).
+    ~1.5GB-class model footprint — larger than EmbeddingGemma, which is
+    why it ships as the documented alternative rather than a default
+    candidate. Same verification-honesty caveat as `local-embeddinggemma`
+    above; additionally, its last-token-pooling implementation path is a
+    [HYPOTHESIS] pending the same unrun spike (see the file header of
+    `src/search/providers/local-transformers.ts` for the specific kill
+    condition).
 
   - **`openai-3-small`** — calls OpenAI's `text-embedding-3-small`
     (1536-dim) over HTTPS. Fast (~2 min for a 44k-chunk vault vs ~25 min
     locally) but paid. Requires `OPENAI_API_KEY` in the server's
     environment; the key is never read from config files. Batched at 96
     inputs per request, with exponential backoff on 429 / 5xx (up to 3
-    retries).
+    retries). Untouched by the embedding-refresh spec — no dim/quantize
+    options, 1536d float32 rows behave exactly as before.
 
-  The active provider is set in `.daftari/config.yaml`:
+  The active provider, its dim, and its vec-index quantization are set in
+  `.daftari/config.yaml`:
 
   ```yaml
   embeddings:
-    provider: local-minilm   # or: openai-3-small
+    provider: local-minilm   # local-minilm | openai-3-small | local-embeddinggemma | local-qwen3-0.6b
+    # dim: 512               # local-embeddinggemma / local-qwen3-0.6b only: 512 (default) | 768
+    # quantize: int8         # int8 (default for the two new providers) | none
   ```
 
-  An unknown provider id, or `openai-3-small` with no `OPENAI_API_KEY`
-  in env, is a hard config error — the server refuses to start. Embedding
-  is best-effort at runtime: if the model cannot load (local) or the API
-  is unreachable (paid), a reindex still builds the FTS5 lexical index and chunks
-  land with no embedding row, so search degrades to lexical-only rather
-  than failing.
+  An unknown provider id, an out-of-range `dim` for the active provider (or
+  any `dim` at all for `local-minilm`/`openai-3-small`, which have none to
+  configure), an unrecognised `quantize` value, or `openai-3-small` with no
+  `OPENAI_API_KEY` in env, is a hard config error — the server refuses to
+  start. Embedding is best-effort at runtime: if the model cannot load
+  (local) or the API is unreachable (paid), a reindex still builds the
+  FTS5 lexical index and chunks land with no embedding row, so search
+  degrades to lexical-only rather than failing.
 
-  Switching providers between server runs is safe: the `embeddings` table
-  is keyed by `(content_hash, model)`, so the new provider populates a
-  fresh row set on first reindex while the previous provider's rows stay
-  in the cache as cheap insurance for switching back.
+  Switching providers, `dim`, or `quantize` between server runs is safe.
+  The durable `embeddings` cache is keyed by `(content_hash, model)` and
+  ALWAYS stores the FULL NATIVE-dim, float32 vector regardless of the
+  active provider's configured dim or quantize setting — truncation to the
+  configured dim happens at a single choke point (`toIndexDim`,
+  `src/search/vector.ts`) wherever a cached vector meets the sqlite-vec
+  index or a query. A provider switch populates a fresh row set on first
+  reindex while the previous provider's rows stay in the cache as cheap
+  insurance for switching back; a `dim` or `quantize` flip on an UNCHANGED
+  provider needs no re-embed at all — it is purely a vec-index-mirror
+  rebuild from the existing cache (`isIndexFresh` detects the staleness and
+  the next reindex is all cache hits, typically minutes not hours).
+
+  **Vec-index quantization.** `embeddings.quantize: int8` (the default for
+  the two new local providers) stores the sqlite-vec `embeddings_vec`
+  mirror as `int8[dim]` instead of `FLOAT[dim]` — a calibration-free
+  `round(x * 127)` clamped to `[-127, 127]`, valid because every provider
+  L2-normalizes its output (components live in `[-1, 1]`). Search becomes
+  scan-then-rescore: the KNN scan over the quantized column selects
+  candidates by quantized distance ONLY (4x over-fetch); each candidate is
+  then rescored with exact float32 cosine similarity against the durable
+  cache, joined in the same query — the quantized distance never becomes a
+  score. A candidate whose cache row is unexpectedly missing (a GC race) is
+  dropped from the ranking rather than approximated. `quantize: none` (the
+  default for `local-minilm`/`openai-3-small`) keeps today's exact float32
+  index, byte-for-byte. sqlite-vec's `vec_int8(?)` SQL wrapper is required
+  around both inserted and queried int8 vectors — a raw int8-byte blob
+  bound directly against an `int8[]` column is rejected by the pinned
+  sqlite-vec build.
 
   The model loads **lazily**: `getExtractor()` is invoked only when
   `embed()` actually has texts to embed, not at startup. With the
@@ -229,25 +302,43 @@ Three things sit alongside the markdown:
   finished, so that search does not pay the ~500ms cold start. The warm-up
   is gated by the optional `warm_embeddings` flag in `.daftari/config.yaml`
   (default `true`); set it to `false` for read-only roles that never embed,
-  or for low-memory deployments where the ~100MB model footprint is
-  unwelcome. A warm-up failure (no network on first run, model download
+  or for low-memory deployments where the model footprint is unwelcome —
+  ~100MB-class for `local-minilm`, ~600MB-class for `local-embeddinggemma`,
+  ~1.5GB-class for `local-qwen3-0.6b` (all q8-ONNX-variant estimates,
+  pending real measurement — see the provider list above). A warm-up
+  failure (no network on first run, model download
   blocked) is logged but never crashes the server — the next `embed()` call
-  retries.
+  retries. The same flag covers the optional reranker below: once the
+  embedder warms, the server warms `rerank.provider` too when one is
+  configured — no separate knob, since `warm_embeddings`'s meaning ("pay
+  model cold-starts at startup, not on the first query") applies to either
+  model equally.
 
   Embeddings are stored in a separate, **content-addressed** `embeddings`
   table keyed by `(content_hash, model)`, with a `dim` column recording the
   vector dimension as defense-in-depth against a corrupt or cross-provider
-  mix. A `chunks` row carries the `sha256` of its text and joins to the
-  `embeddings` table for the current model. The consequence is the key
-  idea: an embedding is the property of a chunk's *text*, not of a file path
-  or its mtime.
+  mix. A `chunks` row carries the `sha256` of `embeddingInput` — the
+  breadcrumb context concatenated with the chunk's body text, per the
+  contextual-chunking note above — and joins to the `embeddings` table for
+  the current model. The consequence is the key idea: an embedding is the
+  property of a chunk's *retrieval identity* (context + text), not of a file
+  path or its mtime.
 
-  That property is what makes reindexing cheap. A reindex hashes every
-  chunk, asks the cache which hashes already have a row for the current
-  model, and only embeds the misses — so its cost scales with the number of
-  *changed chunks*, not the size of the vault. Edit one paragraph and you
-  re-embed one chunk; rename a file and you re-embed zero; move a paragraph
-  verbatim to another file and you re-embed zero. (The first reindex after a
+  That property is what makes reindexing cheap, with one honest cost.  A
+  reindex hashes every chunk, asks the cache which hashes already have a row
+  for the current model, and only embeds the misses — so its cost scales
+  with the number of *changed chunks*, not the size of the vault. Edit one
+  paragraph and you re-embed one chunk; rename a file and you re-embed zero
+  (title/collection/tags unchanged, so the breadcrumb is unchanged); move a
+  paragraph verbatim to another file that shares the SAME title, collection,
+  and tag set and you re-embed zero. But because the breadcrumb is part of
+  the hash, **retitling a document, moving it between collections, or
+  changing its tag *set* re-embeds every one of its chunks** — the embedding
+  input genuinely changed, and a stale-vector cache hit would silently serve
+  pre-edit semantics, which is worse than paying the recompute. Tag
+  *reorder* is a no-op (tags are sorted before hashing). Curation flows that
+  touch metadata at scale (backfill, decay retitles, tag hygiene) should
+  batch their edits with this cost in mind. (The first reindex after a
   schema bump finds an empty cache, so it pays a one-time full embed; every
   reindex after that is incremental.)
 
@@ -255,9 +346,38 @@ Three things sit alongside the markdown:
   chunks, the reindex runs an internal `vault_gc` step that drops embeddings
   rows whose `content_hash` is no longer referenced by any chunk, so orphans
   don't accumulate across edits. And the composite primary key on
-  `(content_hash, model)` is deliberate: a future model migration can keep
-  both the old and new model's embeddings present under the same hash, so a
-  roll-forward never has to clear the cache first.
+  `(content_hash, model)` is deliberate: a model migration keeps both the
+  old and new model's embeddings present under the same hash, so a
+  roll-forward never has to clear the cache first — this is exactly the
+  mechanism the `local-embeddinggemma`/`local-qwen3-0.6b` migration above
+  rides, not a new one.
+
+  **Optional local reranker.** A `RerankProvider` seam
+  (`src/search/rerank-provider.ts`) mirrors `EmbeddingProvider`: config-
+  selected, memoised per process, `warm()`/lazy-load, `Result`-returning
+  with graceful degradation. It has one real provider today,
+  `local-bge-m3` — `BAAI/bge-reranker-v2-m3`, ONNX q8, via the same
+  `@huggingface/transformers` runtime `local-minilm` uses (zero new
+  dependencies) — and defaults to `none` (off):
+
+  ```yaml
+  rerank:
+    provider: none   # none | local-bge-m3
+  ```
+
+  When configured, `vault_search` scores the top-50 RBAC-filtered hits
+  against the query with the cross-encoder and reorders them, between the
+  RBAC filter and the slice to `limit` — after RBAC so cross-encoder budget
+  is never spent on a hit the caller cannot see, before the slice so a
+  fused-#12 hit can still land #1 of a limit-10 page. `vault_search`'s
+  result gains `rerankUsed: boolean` — `false` covers `none`, a not-yet-warm
+  model (a background warm fires instead of blocking the call), a provider
+  error, and a 1.5s-timeout alike, matching `vectorUsed`'s honest-degrade
+  shape. The ~600MB q8 weights are an order of magnitude past
+  `local-minilm`'s footprint, which is why this stays opt-in rather than
+  defaulting on: the same "ship behind a flag, measure, then flip the
+  default on evidence" playbook chunk-level BM25 used for its v1.29.0
+  default flip.
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
@@ -668,22 +788,55 @@ suggest changes without ever enacting them.
 
 The queue has two ends. `vault_stage_action` is the producer (normally the loop,
 exposed for testing and future callers): it records a proposed `promote` /
-`deprecate` / `supersede` / `merge` / `confidence-up` with a rationale, a
-proposed diff, and a TTL (default 14 days). `vault_ratify` is the consumer: a
-human `approve`s or `reject`s one pending action. On approve it dispatches to the
-matching write tool, which auto-commits — `promote` → `vault_promote`,
-`deprecate` → `vault_deprecate`, `supersede` → `vault_supersede`,
-`confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
-write tools). A dispatch failure, including a malformed proposed diff, leaves the
-action pending so it can be retried. (The legacy `ratified-pending-tool` status,
-from before §11.4 wired up the last three tools, is no longer produced.)
+`deprecate` / `supersede` / `merge` / `confidence-up` / `write` with a
+rationale, a proposed diff, and a TTL (default 14 days). `vault_ratify` is the
+consumer: a human `approve`s or `reject`s one pending action, or up to
+`BATCH_RATIFY_MAX` (20) at once via an explicit `ids` list — never a threshold
+or an "all pending" sentinel; each id is processed independently, so a
+gate-blocked or failing id leaves only that action pending while the rest land
+(2026-07-26 risk-triaged-ratification spec, Decision 2). On approve it
+dispatches to the matching write tool, which auto-commits — `promote` →
+`vault_promote`, `deprecate` → `vault_deprecate`, `supersede` →
+`vault_supersede`, `confidence-up` → `vault_set_confidence`, `merge` →
+`vault_merge`, `write` → `vault_write` (the §11.4 / #235 write tools). A
+dispatch failure, including a malformed proposed diff, leaves the action
+pending so it can be retried. (The legacy `ratified-pending-tool` status, from
+before §11.4 wired up the last three tools, is no longer produced.)
+
+Every verdict carries a machine-readable `decision_kind`
+(`approve` | `edit-then-approve` | `reject`, derived server-side) and, on
+reject or `edit-then-approve`, a closed `reason_category` — **reject now
+REQUIRES a category; this is an intentional, spec-mandated break from the
+prior optional contract for reject callers only** (approve-path callers are
+untouched). `vault_ratify` also accepts an optional `amended_diff` on a
+single-id approve: the tier-0 gates and the dispatch run against the amendment
+instead of the staged diff, and the decision record keeps both what was
+proposed and what actually landed. Under `shadow_mode`, `amended_diff` errors
+rather than silently discarding the amendment — shadow mode records no
+decisions of any kind. The witness (below) folds `edited` and per-category
+counts into each principal's proposal record.
 
 Storage mirrors the rest of Daftari: an append-only canonical log at
 `.daftari/staged-actions.jsonl` is the source of truth, with a derived
 `staged_actions` table in the ephemeral index rebuilt from it. `vault_lint`
-surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
-housekeeping sweep on each run — the queue can grow stale, but it never grows
-unbounded.
+surfaces pending actions **risk descending, soonest-to-expire as the
+tiebreak** (inverted from the prior expiry-only sort by the 2026-07-26
+risk-triaged-ratification spec) and expires past-TTL ones as a housekeeping
+sweep on each run — the queue can grow stale, but it never grows unbounded.
+The risk score — a weighted sum of six deterministic terms (action-kind
+severity, diff size, blast radius, open tension, conflict/retry markers,
+proposer track record) — is **derived on every read, never stored**: no
+`risk` field is appended to the jsonl and no column lands in the sqlite
+table, the same posture `derives_from` strength takes. Like every other
+queue listing, it is filtered to the caller's vantage: an item whose target
+is unreadable is omitted, and the hidden remainder is reported coarsened
+(none/some/many), never as an exact count. Each ratify/reject decision
+additionally carries a **non-authoritative `risk_at_decision`** snapshot
+(jsonl-only, never mirrored to sqlite, never read for ordering) — a frozen
+observation of the score at decision time, so the spec's first kill
+condition (partition decisions by risk quartile, compare correction rates)
+can be evaluated without reconstructing blast radius or tension state as of
+a past instant.
 
 #### derives_from edges
 
@@ -800,6 +953,74 @@ ratification-queue depth), and `vault_ratify` returns
 `applied: false, shadow: true` instead of recording a false `ratified`.
 This is the calibration posture the cortex loop runs in until
 coverage/equity ratchets clear and the auto-write tier graduates.
+
+#### Independence-aware promotion (shadow calibration)
+
+`k_survived` counts *attestations*, not *independent evidence* — a panel of M
+votes from the same loop pass, same model, same principal, over the same two
+truncated endpoint texts, differs only in which prompt template ran, and the
+decorrelation verdict already measured that axis's lift at ~0. The
+independence-aware-promotion spec
+(`docs/superpowers/specs/2026-07-26-independence-aware-promotion-design.md`)
+closes that gap: every `observe` may now carry an evidence fingerprint
+`fp: { inputs, principal, model, prompt }`, `inputs` a mechanical hash over the
+bytes actually read; the store partitions each edge's COUNTED votes into
+equivalence classes (agree on inputs+principal+model, `prompt` excluded) and
+computes a geometrically-discounted `k_eff` alongside the untouched raw
+`k_survived`. `k_eff` and its aged `strengthIndependent` are shadow-only —
+materialized, exported, and journaled, but live `strength`/`status` still key
+on `k_survived` exclusively.
+
+The revision loop journals one row per panel to
+`.daftari/independence-shadow.jsonl` (`would_accrue | would_needs_review |
+null`, the last for fails/tie/no-vote/gated panels) and, only once graduated
+(`independence_graduated: true`, default false), a correlated-only
+survives-majority panel becomes `needs-review` instead of `survives`: no
+observes, an interpretive tension instead
+(`correlated-only survival: <from> derives_from <to>`), and the loop parks
+that edge — it does not re-panel it — while the tension stays open. The edge
+keeps aging under Decision 2's normal clock throughout the parked window:
+decay-pending-adjudication is the deliberately conservative default, since the
+alternative (refreshing the clock on correlated evidence) lets a suspect edge
+coast trigger-bearing indefinitely under an ignored tension.
+
+`vault_lint`'s `independenceCalibration` section is the graduation dashboard:
+the k-vs-k_eff distribution, would-drop-below-trigger counts (split
+legacy-only vs signal), and the would-be needs-review rate. Graduate only
+after a full quarterly shadow window and only if (a) the would-be
+needs-review rate is stable and the risk-triaged queue can drain it, (b) a
+hand audit of 20 would-be-demoted edges finds a majority genuinely
+correlated, and (c) `ρ`, the class-key component set, and
+`EDGE_NEEDS_REVIEW_MIN_GAIN` survived the window without retuning. **Warm-up
+rule:** criterion (a) is judged on `wouldNeedsReviewRateInformative`
+(`informativePanels` restricted to rows whose pre-panel classes already carry
+a non-∅ key), not the raw rate — a fingerprinted class key can never equal
+`∅`, so every legacy edge's *first* fingerprinted panel reads `would_accrue`
+by construction, and the raw rate is degenerate for at least the first
+post-ship revision cycle. Two independent kill conditions, evaluated
+separately: if the hand audit finds the discount isn't discriminating (the
+class key too coarse), recalibrate the component set once and re-shadow, or
+if a second window still fails, delete the `k_eff` scoring + Decision-3
+machinery and keep only the `fp` recording (the fingerprint trail stays
+valuable as provenance even if the scoring dies); if the would-be
+needs-review rate exceeds what the triage queue demonstrably drains, fold
+correlated-only survival into a lint counter and drop the needs-review
+outcome, keeping Decisions 1-2.
+
+Two caveats the Decision-4 hand audit must read the sample through. **Byte-
+stability, not independence:** `fp.inputs` hashes the endpoint bytes at
+observe time, so it detects "did the text change", not "was this derivation
+independent" — any edit mints a fresh class, so an actively-edited edge reads
+`k_eff ≈ k_survived` regardless of true correlation, and the flagged
+population skews toward byte-frozen docs. A frozen-doc-only sample is
+evidence toward the first kill condition (the class-key design may be wrong),
+not clean validation. **Attestation, not verification (C3):** `fp.inputs` is
+server-computed and `fp.principal` is server-derived from the RBAC access
+context, but `fp.model`/`fp.prompt` are caller-attested — the same trust
+class `blind`/`varied_axis` already occupy. `nonLoopFingerprintedCountedVotes`
+(view + lint section) reports how much of the class structure this attested,
+not verified, component set rests on; the graduation reading treats it
+accordingly.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
 process silently rewrites or deletes knowledge. Every change is a deliberate,
@@ -929,6 +1150,76 @@ The cortex quality sampler (`daftari eval`) follows the same edge kind:
 vault-resident code loads as a separate, non-citable context node, so the
 answerer is never asked to retrieve code on the agent's behalf.
 
+### Citation anchors — just-in-time verification at read time
+
+`daftari audit` is a batch sweep the operator has to run; between audits, a
+`describes` binding is inert. Citation anchors close that gap. A binding may
+carry a **pin** — `repo:path[#L<start>-<end>]@<sha>`, the git blob id (and
+optional line range) the author looked at when the binding was written —
+and `vault_read` verifies every pin against the locally checked-out
+`code_repos` at read time, the exact moment an agent is about to act on the
+doc's account of the code. See docs/superpowers/specs/2026-07-26-citation-
+anchors-jit-verification-design.md for the full grammar and the four-step
+git-plumbing classifier (`intact` / `moved` / `missing`).
+
+The pin grammar's suffix pattern is end-anchored and sha-strict, so it is
+backward compatible by construction — but a path that itself *ends* in text
+matching the pin shape (`#L<n>[-<n>]@<7-40 lowercase hex>`) is a known,
+accepted ambiguity: **the pin wins**, the trailing text is parsed as a pin
+rather than as part of the path. This is pathological, not silent: the
+stripped path no longer resolves against the code repo, and a real
+collision surfaces as a `broken_describes` finding at audit time, exactly
+like any other missing target.
+
+Verification is advisory always (the curation house rule): a `moved` or
+`missing` pin never auto-invalidates, demotes, or rewrites the doc — it
+tells the reading agent to re-verify before trusting the doc's account of
+the code. An intact pin on a past-TTL doc softens the decay banner's copy
+(annotate, never extend — the TTL clock itself never moves) because the one
+thing the pin actually verified — this code — has not changed, even though
+the doc as a whole is stale by the clock.
+
+Configuring `code_repos` makes blob-level facts about those repos — path
+existence, whether a pinned blob still matches the current file, and
+relocated line numbers for a moved pin — visible to a reader. That
+visibility is gated per role: a principal sees the `anchors` annotation only
+where their role can already read the pinned doc **and** the role carries
+the `code_repo_visibility` grant in `.daftari/config.yaml` (default off for
+every non-operator role). A server run without an access context (stdio,
+no `--role`) is unaffected by the gate — the operator posture the rest of
+this document assumes throughout.
+
+## Progressive tool disclosure and task briefs
+
+Two coupled tools attack the context cost of a daftari session before the
+first document is ever read (spec 2026-07-26-context-packs-progressive-
+disclosure-design.md).
+
+`vault_tools` is a pure advertisement seam over the registry `src/tools/
+registry.ts` assembles from every `src/tools/*.ts` file's exports. Index mode
+returns a `{name, oneLine}` line per registered tool; expand mode returns full
+schemas for named tools. It reads the FULL registry minus the vault's
+`exclude` config list — exclude always wins (#104) — but tier and `include`
+never narrow it, because making tiered-out tools discoverable in-band is the
+tool's entire purpose. `CallTool` is unaffected either way: every registered
+name stays callable regardless of what any tool advertises (#103).
+
+`vault_context(task, budget?)` is the assembly layer over the search stack:
+hybrid retrieval, RBAC filtered BEFORE any budgeting, supersession dedup (a
+collapsed chain's flags are all keyed on the head's OWN index row — never a
+stale member's), then a greedy budget cut at `budget * 0.9` estimated tokens
+(chars/4, no tokenizer — `src/context/estimate.ts`), then markdown
+templating (`src/context/assemble.ts`, pure and deterministic — no I/O, no
+LLM call). The pack selects and points; it never synthesizes: an open tension
+renders both claims verbatim, never a blended verdict, and a supersession
+prints only the pointer and hop count, the chain head's own content carrying
+the snippet. `hidden_remainder` is a LOWER-BOUND signal over observable
+withholding (RBAC-dropped BM25-side pool candidates, dropped coverage
+additions, restricted supersession hops) — "none" means "no withholding
+observed," never "nothing withheld," because the vector half of retrieval is
+already RBAC-pushdown-scrubbed (Decision 3 of the retrieval-fusion-overhaul
+spec) and structurally invisible to this count.
+
 ## A fact's life — the request path
 
 Everything above is the machinery at rest. Watch it move, and the four layers
@@ -983,9 +1274,19 @@ quietly settled. That is the entire product, in one fact's lifetime.
    Denied collections are filtered out of results entirely.
 3. **Layer 1** reads the markdown (or queries the index) and returns it, with
    an advisory frontmatter validation report attached.
-4. (`vault_search` only) Two additive, lossless post-passes run on the
-   RBAC-filtered hit list — never re-ranking, never leaking content from
-   denied collections:
+4. (`vault_search` only, optional) **Rerank stage.** When `rerank.provider`
+   is configured, a local cross-encoder (`local-bge-m3`) re-scores the
+   top-50 RBAC-filtered hits against the query and reorders them — after
+   RBAC, before the slice to `limit`, so cross-encoder budget is never spent
+   on a hit the caller cannot see and a fused-#12 hit can still land #1 of a
+   limit-10 page. Skipped (fused order stands, `rerankUsed: false`) when no
+   provider is configured, the model is not yet warm (a background warm is
+   fired instead — reranking never triggers a synchronous model load inside
+   a tool call), the provider errors, or scoring exceeds a 1.5s timeout. See
+   `docs/superpowers/specs/2026-07-26-contextual-chunking-reranker-design.md`.
+5. (`vault_search` only) Two additive, lossless post-passes run on the
+   reranked (or, if skipped, fused) RBAC-filtered hit list — never
+   re-ranking, never leaking content from denied collections:
    - **Coverage pass.** When the top seeds share a frontmatter tag with
      at least two of the top-K, the index is queried for other docs
      carrying that tag inside the seeds' `created`-date window
@@ -1044,6 +1345,23 @@ staged-action queue and the unresolved-tension count growing without bound acros
 real use. If they do, advisory restraint was a luxury for small vaults, not a
 principle.
 
+The 2026-07-26 risk-triaged-ratification spec is this wager's defense: it puts
+the reviewer's scarce attention on the proposals a wrong verdict costs the most,
+rather than the ones that merely expire soonest. It ships with three of its own
+kill conditions, checkable in the system's own numbers, not this document's
+prose: **(1)** the risk score must predict corrections — after a real body of
+decisions, the reject + edit-then-approve rate in the top risk quartile at
+decision time must beat the bottom quartile, or the score is decorative and gets
+cut while the outcome logging stays; **(2)** batch ratify must not become the
+rubber stamp with better lighting — if batch approvals come to dominate with a
+near-zero in-batch reject rate while the arrival rate keeps climbing, enumerated
+batching failed its one job and goes; **(3)** `reviewThroughputSummary` stays the
+judge — if expiries keep climbing under risk triage, ordering was never the
+bottleneck and the honest fix is upstream in the proposal budget, not another
+pass over the queue. Condition (1) reads `risk_at_decision`, the non-authoritative
+snapshot each decision record carries — see Staged actions above — rather than
+approximating a past instant's blast radius and tension state from present data.
+
 **One identity per process** makes access control a single flag instead of a user
 database — but it pushes multi-tenancy out to deployment: you get N identities by
 running N processes, not by authenticating N callers at runtime. That trade is
@@ -1056,7 +1374,29 @@ staying *cheap*. It is cheap because embeddings are content-addressed and only
 changed chunks re-embed — but a first cold reindex on a large vault is already
 multi-minute. If that ever becomes multi-hour, "delete the `.db` files and
 continue" stops being a real fallback and becomes a threat, and the disposability
-I keep advertising is disposability you can't afford to use.
+I keep advertising is disposability you can't afford to use. 1.33.0's contextual-
+chunking schema bump (SCHEMA_VERSION 10 → 11, spec 2026-07-26-contextual-
+chunking-reranker-design.md Decision 3) pays exactly this cost once, deliberately
+and loudly, not lazily: every chunk's hash input changed, so the first post-
+upgrade reindex is a full cold re-embed of the whole corpus (~25 min local-
+minilm / ~2 min openai-3-small for a 44k-chunk reference vault; see the 1.33.0
+release notes for the exact numbers). The same trade recurs in smaller doses
+after that: because the breadcrumb context is now part of a chunk's hash,
+retitling a document, moving it between collections, or changing its tag *set*
+re-embeds every one of that document's chunks — correct (the retrieval identity
+genuinely changed), but a cost curation flows that touch metadata at scale
+(backfill, decay retitles, tag hygiene) need to batch around rather than trigger
+document-by-document.
+
+**The reranker is a second cost lever, opt-in.** `rerank.provider: local-bge-m3`
+adds a ~600MB local cross-encoder to the search path — an order of magnitude
+past local-minilm's footprint — with a hard 1.5s per-search timeout so a slow or
+cold model degrades to the fused order rather than hanging a tool call. It ships
+default-off, behind the same "measure before flipping the default" playbook
+chunk-level BM25 used in v1.29.0: if the measured recall lift never clears the
+bar, or serve-mode concurrency under real load turns out to serialize badly on
+one CPU, it stays permanently opt-in rather than becoming everyone's default
+latency tax.
 
 **The locks neither queue nor merge.** This is sufficient *because* agents usually
 write to different documents. If contention on a few hot documents turns out to be

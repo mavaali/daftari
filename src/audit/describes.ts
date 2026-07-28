@@ -4,6 +4,7 @@
 // that the reference-integrity check (checks/describes_refs.ts) verifies against
 // the resolved target repo.
 
+import { splitPin } from "../anchors/pin.js";
 import type { DescribesEdge, RepoSnapshot } from "./types.js";
 
 export interface ParsedDescribes {
@@ -42,7 +43,12 @@ export function classifyDescribesEdges(snapshots: RepoSnapshot[]): DescribesEdge
     const sourceRepo = snap.config.name;
     for (const doc of snap.docs.values()) {
       for (const raw of doc.describes ?? []) {
-        const parsed = parseDescribesEntry(raw, sourceRepo);
+        // Pins strip FIRST (2026-07-26 citation-anchors-jit spec, Decision 1)
+        // — the remainder goes to parseDescribesEntry untouched, so
+        // targetPath is always pin-stripped and checkDescribesRefs /
+        // runSemanticCheck are unaffected.
+        const { binding, pin } = splitPin(raw);
+        const parsed = parseDescribesEntry(binding, sourceRepo);
         // A blank or whitespace-only entry resolves to an empty target path —
         // skip it rather than emit a confusing "missing file: repo/" finding.
         if (parsed.path.length === 0) continue;
@@ -53,6 +59,7 @@ export function classifyDescribesEdges(snapshots: RepoSnapshot[]): DescribesEdge
           targetPath: parsed.path,
           symbol: parsed.symbol,
           raw,
+          pin,
         });
       }
     }

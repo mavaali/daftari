@@ -71,6 +71,7 @@ describe("classifyDescribesEdges", () => {
         targetPath: "src/login.ts",
         symbol: null,
         raw: "svc:src/login.ts",
+        pin: null,
       },
       {
         sourceRepo: "docs",
@@ -79,6 +80,7 @@ describe("classifyDescribesEdges", () => {
         targetPath: "guide.md",
         symbol: null,
         raw: "guide.md",
+        pin: null,
       },
     ]);
   });

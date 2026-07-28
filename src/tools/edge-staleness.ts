@@ -341,10 +341,45 @@ const brokenReadReportSchema: Record<string, unknown> = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure). Two modes, discriminated by `mode` — see
+// ArtifactStalenessResult / BrokenReadReport above. No new prose is written
+// over what summarizeUpstream already computed for the artifact mode; this
+// just renders its counts plus the coarsened hidden-pending bucket verbatim
+// (#217 — never sharpened into a number).
+// ---------------------------------------------------------------------------
+
+function summarizeStaleness(value: unknown): string {
+  const r = value as ArtifactStalenessResult | BrokenReadReport;
+  if (r.mode === "artifact") {
+    const s = r.summary;
+    return (
+      `${r.artifact}: ${s.current} current, ${s.pending_unchecked} pending-unchecked, ` +
+      `${s.pending_compatible} pending-compatible, ${s.pending_broken} pending-broken ` +
+      `(hidden_pending: ${r.hidden_pending})`
+    );
+  }
+  const rate = r.broken_read_rate === null ? "n/a" : `${(r.broken_read_rate * 100).toFixed(1)}%`;
+  return (
+    `broken-read rate over ${r.window_days}d: ${rate} (${r.broken_serves}/${r.serves} serves) ` +
+    `— ${r.uninstrumented} uninstrumented`
+  );
+}
+
+// Artifact mode: the anchor plus every visible upstream unit. Report mode
+// names no document — by_tool is keyed by tool name, not a path.
+function docLinksStaleness(value: unknown): string[] {
+  const r = value as ArtifactStalenessResult | BrokenReadReport;
+  if (r.mode !== "artifact") return [];
+  return [r.artifact, ...r.edges.map((e) => e.unit)];
+}
+
 export const edgeStalenessTools: ToolDefinition[] = [
   {
     name: "vault_staleness",
     title: "Edge staleness — pending upstream changes and the broken-read rate",
+    oneLine: "Report pending upstream changes and the vault's broken-read rate.",
     annotations: { readOnlyHint: true },
     description:
       "Edge staleness (#234): is a document stale WITH RESPECT TO its " +
@@ -381,6 +416,8 @@ export const edgeStalenessTools: ToolDefinition[] = [
       type: "object",
       oneOf: [artifactStalenessSchema, brokenReadReportSchema],
     },
+    summarize: summarizeStaleness,
+    docLinks: docLinksStaleness,
     handler: (vaultRoot, args, access) => vaultStaleness(vaultRoot, args, access),
   },
 ];

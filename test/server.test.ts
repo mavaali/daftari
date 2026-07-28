@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  advertisedSurfaceCost,
+  allRegisteredTools,
   CORE_TOOLS,
+  formatSuccessResult,
   registeredToolNames,
   resolveToolExposure,
   STANDARD_TOOLS,
 } from "../src/server.js";
+import type { ToolDefinition } from "../src/tools/read.js";
+import { serializeToolDefinition } from "../src/tools/registry.js";
 import type { ToolsConfig } from "../src/utils/config.js";
+import { compileToolSchema } from "./helpers/output-schema.js";
+import { cleanupVault, makeTempVault } from "./helpers/temp-vault.js";
 
 function exposure(overrides: Partial<ToolsConfig>): ReturnType<typeof resolveToolExposure> {
   return resolveToolExposure({ tier: "full", include: [], exclude: [], ...overrides });
@@ -64,5 +71,211 @@ describe("tool exposure tiers (#103/#104)", () => {
     });
     expect(unknown.sort()).toEqual(["vault_also_future", "vault_future_tool"]);
     expect(exposed.size).toBe(CORE_TOOLS.length);
+  });
+});
+
+// spec 2026-07-26, Decision 3 / jugalbandi challenge C6: every registered
+// tool's outputSchema must compile under STRICT JSON Schema 2020-12 — a
+// misspelled keyword must fail this test, not silently validate everything.
+describe("outputSchema — registry-wide strict compile (Decision 3, C6)", () => {
+  it("every registered tool's outputSchema compiles under strict 2020-12", () => {
+    for (const tool of allRegisteredTools()) {
+      expect(
+        () => compileToolSchema(tool),
+        `${tool.name}'s outputSchema failed strict compilation`,
+      ).not.toThrow();
+    }
+  });
+
+  it("outputSchema is present on every registered tool (Decision 3: required, not optional)", () => {
+    for (const tool of allRegisteredTools()) {
+      expect(tool.outputSchema, `${tool.name} has no outputSchema`).toBeTruthy();
+    }
+  });
+});
+
+// spec 2026-07-26, Decision 3, PR 1 gap closure. formatSuccessResult is the
+// CallTool bridge's presentation step, extracted so it can be driven
+// directly against hand-built stub tools — including ones a real registered
+// tool can never be (no summarize; a throwing summarize) — without a live
+// Server/transport.
+describe("formatSuccessResult — CallTool bridge presentation (Decision 3, C5)", () => {
+  const stubTool = (overrides: Partial<ToolDefinition>): ToolDefinition => ({
+    name: "stub_tool",
+    oneLine: "test stub",
+    description: "test stub",
+    inputSchema: { type: "object", properties: {} },
+    outputSchema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] },
+    handler: async () => ({ ok: true, value: { n: 1 } }),
+    ...overrides,
+  });
+
+  it("a tool with no summarize falls back to pretty-printed JSON (back-compat pin)", () => {
+    const tool = stubTool({});
+    const value = { n: 1, label: "x" };
+    const out = formatSuccessResult(tool, value);
+    expect(out.content[0]).toEqual({ type: "text", text: JSON.stringify(value, null, 2) });
+    expect(out.structuredContent).toBe(value);
+  });
+
+  it("a tool with summarize ships the summary text instead of JSON", () => {
+    const tool = stubTool({ summarize: (v) => `summary of ${(v as { n: number }).n}` });
+    const out = formatSuccessResult(tool, { n: 42 });
+    expect(out.content[0]).toEqual({ type: "text", text: "summary of 42" });
+  });
+
+  it("a throwing summarize still returns the JSON fallback, never an error", () => {
+    const tool = stubTool({
+      summarize: () => {
+        throw new Error("boom");
+      },
+    });
+    const value = { n: 7 };
+    const out = formatSuccessResult(tool, value);
+    expect(out.content[0]).toEqual({ type: "text", text: JSON.stringify(value, null, 2) });
+    // formatSuccessResult never sets isError — the caller (CallTool handler)
+    // decides that, and a presentation failure must never make it decide
+    // "error" over a successful handler result.
+    expect((out as { isError?: boolean }).isError).toBeUndefined();
+  });
+
+  it("a throwing docLinks still returns the summary, with no resource_link entries", () => {
+    const tool = stubTool({
+      summarize: () => "ok",
+      docLinks: () => {
+        throw new Error("boom");
+      },
+    });
+    const out = formatSuccessResult(tool, { n: 1 });
+    expect(out.content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  it("docLinks round-trip through docUri as resource_link entries", () => {
+    const tool = stubTool({
+      summarize: () => "ok",
+      docLinks: () => ["a/b.md", "c.md"],
+    });
+    const out = formatSuccessResult(tool, { n: 1 });
+    const links = out.content.slice(1);
+    expect(links).toEqual([
+      {
+        type: "resource_link",
+        uri: "daftari://doc/a/b.md",
+        name: "a/b.md",
+        mimeType: "text/markdown",
+      },
+      { type: "resource_link", uri: "daftari://doc/c.md", name: "c.md", mimeType: "text/markdown" },
+    ]);
+  });
+
+  it("docLinks entries are filtered to non-empty strings before becoming links", () => {
+    const tool = stubTool({
+      summarize: () => "ok",
+      // biome-ignore lint/suspicious/noExplicitAny: exercising a malformed docLinks return
+      docLinks: () => ["", "real.md", null as any, undefined as any],
+    });
+    const out = formatSuccessResult(tool, { n: 1 });
+    expect(out.content).toHaveLength(2); // text + one real link
+    expect(out.content[1]).toMatchObject({ uri: "daftari://doc/real.md" });
+  });
+
+  it("wireValue projects structuredContent while summarize/docLinks still see the full value", () => {
+    const seenBySummarize: unknown[] = [];
+    const tool = stubTool({
+      summarize: (v) => {
+        seenBySummarize.push(v);
+        return "ok";
+      },
+      wireValue: (v) => {
+        const { secret: _secret, ...rest } = v as { secret: string; n: number };
+        return rest;
+      },
+    });
+    const value = { n: 1, secret: "full-value" };
+    const out = formatSuccessResult(tool, value);
+    expect(out.structuredContent).toEqual({ n: 1 });
+    expect(seenBySummarize).toEqual([value]);
+  });
+
+  it("no wireValue ships the value verbatim on structuredContent", () => {
+    const tool = stubTool({ summarize: () => "ok" });
+    const value = { n: 1 };
+    const out = formatSuccessResult(tool, value);
+    expect(out.structuredContent).toBe(value);
+  });
+});
+
+// vault_read (C11): the body ships exactly once, on the `content` channel —
+// never doubled onto structuredContent.
+describe("vault_read wire projection (Decision 3, C11)", () => {
+  it("structuredContent carries no `content` field, while content[0].text carries it verbatim", () => {
+    const tool = allRegisteredTools().find((t) => t.name === "vault_read");
+    expect(tool).toBeTruthy();
+    const value = {
+      path: "a.md",
+      content: "the body text",
+      frontmatter: { title: "t", status: "draft", confidence: "low", collection: "c" },
+      raw: {},
+      validation: { valid: true, issues: [] },
+      hasFrontmatter: true,
+      decay: null,
+      validity: null,
+      upstream_staleness: null,
+      structural: null,
+      version: "deadbeef",
+    };
+    const out = formatSuccessResult(tool as ToolDefinition, value);
+    expect(out.structuredContent).not.toHaveProperty("content");
+    expect(out.structuredContent).toMatchObject({ path: "a.md", version: "deadbeef" });
+    const text = (out.content[0] as { text: string }).text;
+    expect(text).toContain("the body text");
+  });
+});
+
+// spec 2026-07-26-context-packs-progressive-disclosure-design.md, final plan
+// Phase 1.5.
+describe("vault_tools / vault_context tier membership (Phase 1.4)", () => {
+  it("both new tools are advertised under tier: core", () => {
+    const { exposed } = exposure({ tier: "core" });
+    expect(exposed.has("vault_tools")).toBe(true);
+    expect(exposed.has("vault_context")).toBe(true);
+  });
+});
+
+describe("advertisedSurfaceCost", () => {
+  it("counts only the exposed set, not the whole registry", () => {
+    const core = allRegisteredTools().filter((t) => CORE_TOOLS.includes(t.name));
+    const full = allRegisteredTools();
+    expect(core.length).toBeLessThan(full.length);
+    expect(advertisedSurfaceCost(core)).toBeLessThan(advertisedSurfaceCost(full));
+  });
+
+  it("is the chars/4 estimate of the exact ListTools serialization", () => {
+    const core = allRegisteredTools().filter((t) => CORE_TOOLS.includes(t.name));
+    const serialized = core.map(serializeToolDefinition);
+    expect(advertisedSurfaceCost(core)).toBe(Math.ceil(JSON.stringify(serialized).length / 4));
+  });
+});
+
+describe("vault_tools expand output matches the ListTools wire shape (drift test)", () => {
+  it("serializeToolDefinition is what both vault_tools' expand mode and ListTools ship", async () => {
+    const searchDef = allRegisteredTools().find((t) => t.name === "vault_search");
+    expect(searchDef).toBeTruthy();
+    if (!searchDef) return;
+    const viaListTools = serializeToolDefinition(searchDef);
+
+    const vaultToolsDef = allRegisteredTools().find((t) => t.name === "vault_tools");
+    expect(vaultToolsDef).toBeTruthy();
+    if (!vaultToolsDef) return;
+    const vault = makeTempVault();
+    try {
+      const result = await vaultToolsDef.handler(vault, { expand: ["vault_search"] }, undefined);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const expanded = (result.value as { tools: unknown[] }).tools[0];
+      expect(expanded).toEqual(viaListTools);
+    } finally {
+      cleanupVault(vault);
+    }
   });
 });

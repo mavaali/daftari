@@ -38,7 +38,7 @@ function fakeProvider(dieAfterCalls = Number.POSITIVE_INFINITY): {
 }
 
 function embeddingRowCount(vault: string): number {
-  const db = openIndexDb(vault, DIM);
+  const db = openIndexDb(vault, DIM, "float32");
   if (!db.ok) throw db.error;
   try {
     const row = db.value

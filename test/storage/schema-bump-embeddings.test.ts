@@ -28,7 +28,7 @@ function sampleVector(): Float32Array {
 }
 
 function open(vault: string): IndexDb {
-  const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+  const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
   if (!opened.ok) throw opened.error;
   return opened.value;
 }

@@ -1,11 +1,14 @@
 // src/audit/report.ts
 // Pure formatters over AuditReport. No IO.
 
+import type { PinApplyResult, PinPlanResult } from "./pin.js";
 import type { SemanticFinding } from "./semantic.js";
 import type {
   AuditReport,
   BrokenRefFinding,
   DescribesRefFinding,
+  PinFinding,
+  RegistryMismatch,
   StalenessFinding,
 } from "./types.js";
 
@@ -44,6 +47,27 @@ function renderDescribesRefs(rows: DescribesRefFinding[]): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderPins(rows: PinFinding[]): string {
+  if (rows.length === 0) return "_no pinned bindings._\n";
+  const lines = ["| state | source | target | relocated |", "|---|---|---|---|"];
+  for (const r of rows) {
+    const relocated = r.relocated ? `L${r.relocated.start}-${r.relocated.end}` : "—";
+    lines.push(
+      `| ${r.state} | ${r.source.repo}/${r.source.path} | ${r.target.repo}/${r.target.path} | ${relocated} |`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function renderRegistryMismatches(rows: RegistryMismatch[]): string {
+  if (rows.length === 0) return "";
+  const lines = ["", "## Registry mismatches (read path vs. audit registry)", ""];
+  for (const r of rows) {
+    lines.push(`- '${r.repo}' referenced from ${r.docsRepo}: ${r.detail}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function renderSemantic(rows: SemanticFinding[]): string {
   // Only non-coherent verdicts are worth surfacing (drifted, contradicted, skipped).
   const notable = rows.filter((r) => r.verdict !== "coherent");
@@ -70,7 +94,10 @@ export function renderMarkdown(report: AuditReport): string {
     t.directlyStale === 0 &&
     t.transitivelyStale === 0 &&
     t.brokenDescribes === 0 &&
-    report.semantic.length === 0;
+    t.pinsMoved === 0 &&
+    t.pinsMissing === 0 &&
+    report.semantic.length === 0 &&
+    report.registryMismatches.length === 0;
   const head = [
     "# Coherence Audit Report",
     "",
@@ -86,6 +113,7 @@ export function renderMarkdown(report: AuditReport): string {
     `- transitively stale docs: **${t.transitivelyStale}**`,
     `- broken doc-to-code bindings: **${t.brokenDescribes}**`,
     `- doc-to-code semantic drift: **${t.semanticDrifted}**`,
+    `- code pins intact / moved / missing: **${t.pinsIntact} / ${t.pinsMoved} / ${t.pinsMissing}**`,
     "",
   ];
   if (empty) {
@@ -103,10 +131,54 @@ export function renderMarkdown(report: AuditReport): string {
     "## Broken doc-to-code bindings",
     "",
     renderDescribesRefs(report.describesRefs),
+    "## Pin verification",
+    "",
+    renderPins(report.pins),
     ...(report.semantic.length > 0
       ? ["## Semantic coherence", "", renderSemantic(report.semantic)]
       : []),
+    renderRegistryMismatches(report.registryMismatches),
   ].join("\n");
+}
+
+// --- `daftari audit --pin` / `--pin --apply` output (pure formatters) -----
+
+export function renderPinPlan(plan: PinPlanResult): string {
+  const lines: string[] = [
+    `daftari audit --pin: plan for docs repo '${plan.docsRepoName}' (${plan.docsRepoPath})`,
+    "",
+  ];
+  if (plan.proposals.length === 0) {
+    lines.push("no unpinned, plannable bindings found.");
+  } else {
+    for (const p of plan.proposals) {
+      lines.push(`${p.path} · ${p.oldEntry} -> ${p.newEntry}`);
+    }
+  }
+  lines.push("", `proposed: ${plan.proposals.length}`);
+  if (plan.skipped.length > 0) {
+    lines.push("", "skipped: working tree differs from HEAD (commit first, then re-run):");
+    for (const s of plan.skipped) lines.push(`  ${s.path} · ${s.repo}:${s.targetPath}`);
+    lines.push(`skipped: ${plan.skipped.length}`);
+  }
+  if (plan.unpinnable.length > 0) {
+    lines.push(
+      "",
+      "unpinnable: not in code_repos (referenced only by the audit's --code-repo/audit.yaml registry):",
+    );
+    for (const prefix of plan.unpinnable) lines.push(`  ${prefix}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderPinApplyResult(result: PinApplyResult): string {
+  const lines: string[] = [
+    `daftari audit --pin --apply: ${result.applied.length} doc(s) written, ` +
+      `${result.unchanged.length} already at their proposed state, ${result.skipped.length} skipped`,
+  ];
+  if (result.commit) lines.push(`commit: ${result.commit}`);
+  for (const s of result.skipped) lines.push(`skipped: ${s.path} — ${s.reason}`);
+  return `${lines.join("\n")}\n`;
 }
 
 export function renderJson(report: AuditReport): string {

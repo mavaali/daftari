@@ -30,10 +30,26 @@ export interface ToolDef {
   input_schema: any;
 }
 
+// The stub content every excess tool_use id receives once maxToolCalls is
+// exhausted mid-round (spec 2026-07-26-context-packs-progressive-disclosure-
+// design.md, final plan Phase 3.3 / C5). Exported so the OpenRouter twin and
+// tests share the exact string.
+export const TOOL_BUDGET_EXHAUSTED_MESSAGE =
+  "tool-call budget exhausted; answer with the information you already have";
+
 export interface CompleteWithToolsOpts extends CompleteOpts {
   tools: ToolDef[];
   toolHandler: (name: string, input: unknown) => Promise<unknown>;
   maxRounds?: number; // default 12
+  // Hard cap on REALIZED tool calls (C5): a round whose parallel tool_use
+  // blocks would overshoot the remaining budget executes only the first
+  // `maxToolCalls - used` in block order; every excess id still gets a
+  // tool_result (the API requires one per id) carrying
+  // TOOL_BUDGET_EXHAUSTED_MESSAGE, and is never pushed onto `tool_calls` —
+  // so `tool_calls.length` is a true, enforced upper bound, not a request-
+  // time hint parallel calls can blow past. Undefined = uncapped (today's
+  // behavior).
+  maxToolCalls?: number;
 }
 
 export interface CompleteResult {
@@ -125,6 +141,11 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
     let totalOut = 0;
     let lastStop = "unknown";
 
+    // Once the budget is exhausted, the NEXT request omits `tools` entirely
+    // — the model cannot request another call, so it is forced to a final
+    // answer (C5).
+    let toolsExhausted = false;
+
     for (let round = 0; round < maxRounds; round++) {
       const res = await retry(async () =>
         ok(
@@ -133,7 +154,7 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
             max_tokens: opts.maxTokens ?? 4096,
             system: opts.system,
             // biome-ignore lint/suspicious/noExplicitAny: SDK types
-            tools: opts.tools as any,
+            ...(toolsExhausted ? {} : { tools: opts.tools as any }),
             // biome-ignore lint/suspicious/noExplicitAny: SDK types
             messages: messages as any,
             ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
@@ -165,8 +186,20 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
 
       messages.push({ role: "assistant", content: blocks });
 
+      // C5: cap REALIZED calls, not requested ones. A round's parallel
+      // tool_use blocks are executed in order up to the remaining budget;
+      // every block past that still gets a tool_result (the API requires
+      // exactly one per tool_use id in the SAME user turn) but is stubbed,
+      // never executed, never counted.
+      const remaining =
+        opts.maxToolCalls === undefined
+          ? toolUses.length
+          : Math.max(0, opts.maxToolCalls - toolCalls.length);
+      const toExecute = toolUses.slice(0, remaining);
+      const toStub = toolUses.slice(remaining);
+
       const toolResults: unknown[] = [];
-      for (const tu of toolUses) {
+      for (const tu of toExecute) {
         const t0 = Date.now();
         let output: unknown;
         try {
@@ -182,7 +215,18 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
           content: typeof output === "string" ? output : JSON.stringify(output),
         });
       }
+      for (const tu of toStub) {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: JSON.stringify({ tool_error: TOOL_BUDGET_EXHAUSTED_MESSAGE }),
+        });
+      }
       messages.push({ role: "user", content: toolResults });
+
+      if (opts.maxToolCalls !== undefined && toolCalls.length >= opts.maxToolCalls) {
+        toolsExhausted = true;
+      }
     }
     return err({
       kind: "llm",

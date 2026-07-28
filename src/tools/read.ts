@@ -5,6 +5,7 @@
 // definitions; tests call the logic functions directly.
 
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import { type AnchorsAnnotation, computeAnchors } from "../anchors/read.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   compiledUpstreamStaleness,
@@ -34,12 +35,14 @@ import {
   type ValidationReport,
 } from "../frontmatter/types.js";
 import { type ContestedTension, contestedFor } from "../search/contested.js";
-import { getProvider } from "../search/vector.js";
+import { getProvider, getQuantize } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { SUMMARY_MAX_ROWS } from "./summary.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
 // *hints* — clients must not gate behavior on them — but directory reviewers
@@ -57,6 +60,14 @@ export interface ToolDefinition {
   // Human-readable title surfaced in UIs (Claude Desktop, the connectors
   // directory). `name` stays machine-style; `title` is for humans.
   title?: string;
+  // One-line index entry for vault_tools' index mode (spec 2026-07-26
+  // context-packs-progressive-disclosure, Decision 1 / Phase 1.2): imperative,
+  // no schema talk, capped at 120 chars (enforced by a test, not a runtime
+  // truncation — a tool whose one-liner needs more than 120 chars needs a
+  // shorter one-liner, not a truncated one). Required so every tool the
+  // registry ever gains is forced to declare one; there is no back-compat
+  // fallback because vault_tools ships alongside this field, not before it.
+  oneLine: string;
   description: string;
   inputSchema: Record<string, unknown>;
   // JSON Schema (2020-12) for the handler's ok-value. Required: handlers
@@ -70,6 +81,14 @@ export interface ToolDefinition {
   // daftari://doc/{path} resource_link per entry. Paths must already be
   // read-gated by the handler (links inherit read-gating by construction).
   docLinks?: (value: unknown) => string[];
+  // Projects the full ok-value down to what rides `structuredContent`
+  // (spec 2026-07-26, Decision 3 / C11). Absent, the bridge ships the value
+  // verbatim. Exists so a tool whose body-shaped payload already rides
+  // `content` in full (vault_read) does not ship it a second time on
+  // structuredContent — the wire's worst token offender, doubled, in the PR
+  // whose purpose is cutting waste. `summarize`/`docLinks` still see the
+  // FULL value; only the wire projection is narrowed.
+  wireValue?: (value: unknown) => Record<string, unknown>;
   annotations?: ToolAnnotations;
   // `access` is supplied by the server transport on every call. When omitted
   // (a direct in-process call, e.g. from a test) RBAC is not enforced.
@@ -125,6 +144,15 @@ export interface VaultReadResult {
   // none are visible.
   contested?: ContestedTension[];
   contestedCount?: number;
+  // Citation-anchors JIT verification (2026-07-26 spec, Decisions 1-2): per
+  // pinned `describes` binding, whether the code the doc cites still matches
+  // what the pin recorded. Null when there is nothing to say — no pinned
+  // bindings, no resolvable code_repos, jit_anchors: false, OR (2026-07-27
+  // resolution) the caller's role lacks the code_repo_visibility grant even
+  // though the underlying check ran (see the recordRead call below — the
+  // read-log counts are unfiltered local telemetry; this field is the
+  // caller-facing, role-gated surface).
+  anchors: AnchorsAnnotation | null;
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -159,6 +187,30 @@ export async function vaultRead(
     }
   }
 
+  // Citation anchors (2026-07-26 spec, Decisions 1-2): JIT-verify this doc's
+  // pinned `describes` bindings against the locally checked-out code_repos.
+  // Placed AFTER the RBAC gate; independent of the index-db handle below.
+  // Computed regardless of the caller's role — recordRead's anchors_* counts
+  // are local operator telemetry (kill-condition (b) instrumentation),
+  // unfiltered by design, the same posture broken_upstream already takes.
+  // The RETURNED `anchors` field is separately role-gated just before the
+  // final return (2026-07-27 resolution): the check runs either way, but a
+  // role without code_repo_visibility never sees its result. Config-load
+  // failure, jit_anchors: false, an empty code_repos map, or a doc with no
+  // describes entries all short-circuit before any git work.
+  const config = loadConfig(vaultRoot);
+  let rawAnchors: AnchorsAnnotation | null = null;
+  if (
+    config.ok &&
+    config.value.jitAnchors &&
+    Object.keys(config.value.codeRepos).length > 0 &&
+    parsed.value.frontmatter.describes.length > 0
+  ) {
+    rawAnchors = await computeAnchors(parsed.value.frontmatter.describes, config.value.codeRepos);
+  }
+  const anchorsVisible = !access || access.role?.codeRepoVisibility === true;
+  const anchors = anchorsVisible ? rawAnchors : null;
+
   // #234: classify this document's compiled upstream edges as of the serve.
   // Best-effort — the read never fails on telemetry; on a log-read error the
   // serve is still recorded, just uninstrumented (broken_upstream absent).
@@ -192,6 +244,13 @@ export async function vaultRead(
     ...(access?.user != null ? { principal: access.user } : {}),
     ...(rows
       ? { broken_upstream: rows.filter((r) => r.staleness === "pending-broken").length }
+      : {}),
+    ...(rawAnchors
+      ? {
+          anchors_moved: rawAnchors.entries.filter((e) => e.state === "moved").length,
+          anchors_missing: rawAnchors.entries.filter((e) => e.state === "missing").length,
+          anchors_errored: rawAnchors.errored,
+        }
       : {}),
   });
 
@@ -251,6 +310,35 @@ export async function vaultRead(
     db?.close();
   }
 
+  // Decision 4: an intact pin is evidence of freshness — annotate, never
+  // extend. computeDecay stays pure and byte-identical (vault_status's
+  // distribution is unaffected); this only appends to the ALREADY-non-null
+  // banner a past-TTL doc gets, and only when every classified pin is
+  // intact with nothing dropped (skipped/errored) — a censored or partial
+  // sample must never license an "unchanged" claim (C8).
+  let decay = computeDecay(parsed.value.frontmatter);
+  if (decay?.banner) {
+    const staleness = computeStaleness(
+      { updated: parsed.value.frontmatter.updated, ttl_days: parsed.value.frontmatter.ttl_days },
+      new Date(),
+    );
+    const allIntact =
+      anchors !== null &&
+      anchors.entries.length >= 1 &&
+      anchors.skipped === 0 &&
+      anchors.errored === 0 &&
+      anchors.entries.every((e) => e.state === "intact");
+    if (staleness.expired && allIntact) {
+      const n = (anchors as AnchorsAnnotation).entries.length;
+      decay = {
+        ...decay,
+        banner:
+          `${decay.banner}\n— past TTL, but its ${n} code pin${n === 1 ? "" : "s"} are intact: ` +
+          "the code it describes has not changed since the pins were written.",
+      };
+    }
+  }
+
   return ok({
     path,
     content: parsed.value.content,
@@ -258,7 +346,7 @@ export async function vaultRead(
     raw: parsed.value.raw,
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
-    decay: computeDecay(parsed.value.frontmatter),
+    decay,
     // Evaluated against today. No index access and no RBAC branch — these
     // fields belong to a document the caller has already been permitted to
     // read.
@@ -268,6 +356,7 @@ export async function vaultRead(
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
+    anchors,
     version: sha256Hex(file.value),
   });
 }
@@ -540,13 +629,20 @@ export async function vaultStatus(
   // Dim-mismatch counter. A non-zero value means some embedding cache rows
   // for the active model have the wrong dim and are being silently skipped
   // by vector ranking. We open the DB defensively — if sqlite-vec isn't
-  // installed or the index hasn't been built yet, the field is 0.
+  // installed or the index hasn't been built yet, the field is 0. The
+  // durable cache stores NATIVE-dim vectors (C9), so the expected dim here
+  // is nativeDim (falling back to dim for providers with no Matryoshka gap),
+  // not the configured index dim.
   const provider = getProvider();
   let embeddingDimMismatches = 0;
-  const dbResult = openIndexDb(vaultRoot, provider.dim);
+  const dbResult = openIndexDb(vaultRoot, provider.dim, getQuantize());
   if (dbResult.ok) {
     try {
-      embeddingDimMismatches = countDimMismatches(dbResult.value, provider.id, provider.dim);
+      embeddingDimMismatches = countDimMismatches(
+        dbResult.value,
+        provider.id,
+        provider.nativeDim ?? provider.dim,
+      );
     } finally {
       dbResult.value.close();
     }
@@ -664,6 +760,55 @@ export const DECAY_SCHEMA: Record<string, unknown> = {
   required: ["level", "reasons", "banner"],
 };
 
+// One classified citation-anchor pin (2026-07-26 spec, Decisions 1-2).
+// `relocated` is present only for a range pin that classified `intact` via
+// step 3's substring search.
+const ANCHOR_ENTRY_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    raw: { type: "string", description: "The describes entry exactly as written" },
+    repo: { type: "string" },
+    path: { type: "string" },
+    symbol: { type: ["string", "null"] },
+    pin: {
+      type: "object",
+      properties: {
+        start: { type: ["integer", "null"] },
+        end: { type: ["integer", "null"] },
+        sha: { type: "string" },
+      },
+      required: ["start", "end", "sha"],
+    },
+    state: { type: "string", enum: ["intact", "moved", "missing"] },
+    relocated: {
+      type: "object",
+      properties: {
+        start: { type: "integer" },
+        end: { type: "integer" },
+      },
+      required: ["start", "end"],
+    },
+  },
+  required: ["raw", "repo", "path", "symbol", "pin", "state"],
+};
+
+// Null when there is nothing to say — no pinned bindings, no resolvable
+// code_repos, jit_anchors: false, or (2026-07-27 resolution) the caller's
+// role lacks code_repo_visibility. `errored` (C8) counts classifier
+// failures dropped from `entries`, so the Decision-4 "all intact" softening
+// never quantifies over a silently-censored sample.
+export const ANCHORS_SCHEMA: Record<string, unknown> = {
+  type: ["object", "null"],
+  properties: {
+    entries: { type: "array", items: ANCHOR_ENTRY_SCHEMA },
+    checked: { type: "integer", minimum: 0 },
+    skipped: { type: "integer", minimum: 0, description: "Over-cap remainder (MAX_PINS_PER_READ)" },
+    errored: { type: "integer", minimum: 0 },
+    banner: { type: ["string", "null"] },
+  },
+  required: ["entries", "checked", "skipped", "errored", "banner"],
+};
+
 // One classified upstream edge (#234). Only compiled edges can reach
 // pending-broken; the other classes park in pending-unchecked.
 const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
@@ -758,10 +903,78 @@ function asStringArray(v: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+// vault_read: header line, then every advisory banner that is non-null, then
+// the contested count, then the body VERBATIM — this is the one and only
+// channel the body crosses the wire on (see `wireValue` below / C11).
+function summarizeRead(value: unknown): string {
+  const r = value as VaultReadResult;
+  const fm = r.frontmatter;
+  const lines = [`${r.path} — ${fm.status} / ${fm.confidence} confidence / ${fm.collection}`];
+  if (r.decay?.banner) lines.push(`decay: ${r.decay.banner}`);
+  if (r.validity?.banner) lines.push(`validity: ${r.validity.banner}`);
+  if (r.upstream_staleness?.banner) lines.push(`upstream: ${r.upstream_staleness.banner}`);
+  if (r.structural?.banner) lines.push(`structural: ${r.structural.banner}`);
+  if (r.anchors?.banner) lines.push(`anchors: ${r.anchors.banner}`);
+  if (r.contestedCount !== undefined && r.contestedCount > 0) {
+    lines.push(`contested: ${r.contestedCount} unresolved tension(s)`);
+  }
+  lines.push("", r.content);
+  return lines.join("\n");
+}
+
+// Every upstream unit the caller can see, plus the document itself — all
+// already RBAC-filtered by vaultRead (omission, #217), so every path here is
+// readable by construction.
+function docLinksRead(value: unknown): string[] {
+  const r = value as VaultReadResult;
+  const paths = [r.path];
+  for (const edge of r.upstream_staleness?.edges ?? []) paths.push(edge.unit);
+  return paths;
+}
+
+// C11: the body ships once, in `content` (summarizeRead, above) — never
+// doubled onto `structuredContent`. Delivered via the doc resource too
+// (Decision 2), for a programmatic consumer that wants it without the
+// summary text around it.
+function wireValueRead(value: unknown): Record<string, unknown> {
+  const { content: _content, ...rest } = value as VaultReadResult;
+  return rest;
+}
+
+function summarizeIndex(value: unknown): string {
+  const r = value as VaultIndexResult;
+  if (r.count === 0) return "0 documents match.";
+  const shown = r.entries.slice(0, SUMMARY_MAX_ROWS);
+  const lines = [`${r.count} document(s):`, ...shown.map((e) => `  ${e.path} (${e.status})`)];
+  const rest = r.count - shown.length;
+  if (rest > 0) lines.push(`  … ${rest} more in structuredContent`);
+  return lines.join("\n");
+}
+
+function summarizeStatus(value: unknown): string {
+  const r = value as VaultStatusResult;
+  const sd = r.stalenessDistribution;
+  const vc = r.validityCoverage;
+  return [
+    `${r.vault}: ${r.fileCount} doc(s), ${r.invalidCount} invalid — ${r.generatedAt}`,
+    `index health: ${r.embeddingDimMismatches} embedding dim mismatch(es)`,
+    `staleness: ${sd.fresh} fresh / ${sd.aging} aging / ${sd.stale} stale (of ${sd.total})`,
+    `validity: ${vc.authored} authored / ${vc.unknown} unknown (of ${vc.total})`,
+    `tensions: ${r.unresolvedTensions.count} unresolved`,
+    `recent writes: ${r.recentWrites.count}`,
+  ].join("\n");
+}
+
 export const readTools: ToolDefinition[] = [
   {
     name: "vault_read",
     title: "Read a vault document",
+    oneLine: "Read a single vault document, with decay, validity, and staleness annotations.",
     annotations: { readOnlyHint: true },
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
@@ -779,9 +992,14 @@ export const readTools: ToolDefinition[] = [
       "orphan: nothing you can read links here; deprecated_still_linked: " +
       "canonical docs still lean on this deprecated one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
-      "shape as search hits), and a 'version' token (SHA-256 of the file) " +
-      "that can be passed back to a write tool as 'base_version' for " +
-      "optimistic-concurrency checking. Path is relative to the vault root.",
+      "shape as search hits), an anchors report (citation-anchors JIT " +
+      "verification — per pinned `describes` binding, whether the code it " +
+      "cites still matches what was pinned: intact/moved/missing; null when " +
+      "there are no pins, no configured code_repos, jit_anchors is off, or " +
+      "the caller's role lacks code-repo visibility), and a 'version' token " +
+      "(SHA-256 of the file) that can be passed back to a write tool as " +
+      "'base_version' for optimistic-concurrency checking. Path is relative " +
+      "to the vault root.",
     inputSchema: {
       type: "object",
       properties: {
@@ -804,7 +1022,14 @@ export const readTools: ToolDefinition[] = [
       type: "object",
       properties: {
         path: { type: "string", description: "The path as requested by the caller" },
-        content: { type: "string", description: "Markdown body, frontmatter block stripped" },
+        content: {
+          type: "string",
+          description:
+            "Markdown body, frontmatter block stripped. Delivered in the `content` " +
+            "channel (verbatim, alongside the header/banners) and via the doc " +
+            "resource (daftari://doc/{path}) — never duplicated onto " +
+            "structuredContent, so this field is absent there (C11).",
+        },
         frontmatter: FRONTMATTER_SCHEMA,
         raw: {
           type: "object",
@@ -879,11 +1104,11 @@ export const readTools: ToolDefinition[] = [
           },
         },
         contestedCount: { type: "integer", minimum: 0 },
+        anchors: ANCHORS_SCHEMA,
         version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
       },
       required: [
         "path",
-        "content",
         "frontmatter",
         "raw",
         "validation",
@@ -891,9 +1116,13 @@ export const readTools: ToolDefinition[] = [
         "decay",
         "upstream_staleness",
         "structural",
+        "anchors",
         "version",
       ],
     },
+    summarize: summarizeRead,
+    docLinks: docLinksRead,
+    wireValue: wireValueRead,
     handler: (vaultRoot, args, access) => {
       const runId = readRunId(args, "vault_read");
       if (!runId.ok) return Promise.resolve(runId);
@@ -903,6 +1132,7 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_index",
     title: "List vault documents",
+    oneLine: "List vault documents with metadata, optionally filtered.",
     annotations: { readOnlyHint: true },
     description:
       "List vault documents with their metadata, including each document's " +
@@ -948,6 +1178,7 @@ export const readTools: ToolDefinition[] = [
       },
       required: ["count", "entries"],
     },
+    summarize: summarizeIndex,
     handler: (vaultRoot, args, access) =>
       vaultIndex(
         vaultRoot,
@@ -964,6 +1195,7 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_status",
     title: "Vault health dashboard",
+    oneLine: "Vault health dashboard: staleness, tensions, and recent writes.",
     annotations: { readOnlyHint: true },
     description:
       "Vault health dashboard: total file count, per-collection counts, " +
@@ -1059,6 +1291,7 @@ export const readTools: ToolDefinition[] = [
         "embeddingDimMismatches",
       ],
     },
+    summarize: summarizeStatus,
     handler: (vaultRoot, _args, access) => vaultStatus(vaultRoot, access),
   },
 ];

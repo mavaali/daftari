@@ -56,21 +56,38 @@ export type IndexDb = Database.Database;
 // answered with one indexed query at read/search time.
 // 10 added the `collection` partition key to `embeddings_vec` (2026-07-26
 // retrieval-fusion spec, Decision 3), in #303.
-// 11 covers the valid-time columns (valid_from, valid_until) and the index on
-// superseded_by that the bi-temporal walk queries in reverse. Those columns
-// arrived in #305, which added them to the `documents` DDL and to the upsert
-// but left this constant at "10" — the comment there claimed the bump covered
-// them, and no bump had happened. `CREATE TABLE IF NOT EXISTS` is a no-op
-// against an existing table, so every index built between #303 and #305 stored
-// version 10 with no valid_from column, skipped the rebuild on the version
-// check, and then failed the first upsert with `no such column: valid_from`.
-// CI never caught it because `.daftari/index.db` is gitignored and every run
-// builds a fresh index; only an upgrade in place reaches that state.
-//
-// The bump is cheap now precisely because #305 also removed `embeddings` from
-// the drop list below: derived tables are rebuilt from the markdown, and the
-// durable vector cache survives.
-const SCHEMA_VERSION = "11";
+// 11 on main covers the valid-time columns (valid_from, valid_until) and the
+// index on superseded_by that the bi-temporal walk queries in reverse. Those
+// columns arrived in #305, which added them to the `documents` DDL and to the
+// upsert but left this constant at "10" — every index built between #303 and
+// #305 stored version 10 with no valid_from column, skipped the rebuild on
+// the version check, and then failed the first upsert with `no such column:
+// valid_from`. #309 fixed that by claiming "11".
+// The enhancement-wave branch, cut before #309, had independently claimed
+// 11-13 for its own chain; the merge renumbers that chain 12-14 so no value
+// is claimed twice and every pre-merge index — either lineage — rebuilds:
+// 11 -> 12: chunks.context + two-column chunks_fts(context, text) —
+// contextual chunking, spec 2026-07-26-contextual-chunking-reranker-design.md
+// Decision 2. Every chunk's hash input changes (context is now hashed WITH
+// the text — see embeddingInput in search/vector.ts), so this bump forces a
+// full re-embed by design; the release notes carry the cost.
+// 12 -> 13: derives_from_edges.k_eff — the independence-aware-promotion
+// spec's shadow-only effective-k column (2026-07-26-independence-aware-
+// promotion-design.md, Decisions 1-2/4). A column addition to a jsonl-derived
+// table, so the version-mismatch path's existing drop-and-rebuild of
+// derives_from_edges covers it; no migration to write.
+// 13 -> 14: documents.updated_by — the context-packs spec's provenance line
+// (2026-07-26-context-packs-progressive-disclosure-design.md, final plan
+// 2.5): vault_context's per-entry "updated N by M" flag reads this column
+// instead of re-parsing frontmatter. Populated from `frontmatter.updated_by`
+// on every write path (stageOne, src/search/reindex.ts); NOT NULL DEFAULT ''
+// so the version-mismatch path's full rebuild backfills every existing row
+// and no migration statement is needed for a mid-version upgrade — the index
+// is an ephemeral cache, rebuilt wholesale on a version bump.
+// The bumps stay cheap because #305 removed `embeddings` from the drop list
+// below: derived tables are rebuilt from the markdown, and the durable
+// vector cache survives.
+const SCHEMA_VERSION = "14";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -78,6 +95,23 @@ const SCHEMA_VERSION = "11";
 // the vec-table rebuild and a switch-back to the previous provider is all
 // cache hits.
 const VEC_DIM_META_KEY = "embeddings_vec_dim";
+
+// Meta key that records the sqlite-vec column TYPE `embeddings_vec` was
+// created at ("float32" | "int8") — twin of VEC_DIM_META_KEY (2026-07-26
+// embedding-refresh-quantization spec, Phase 3a). A quantize flip
+// (embeddings.quantize: none -> int8, or back) on an otherwise-unchanged
+// vault must trigger the same drop-and-recreate a dim mismatch does — the
+// vec0 column type is fixed at CREATE TABLE time, same as its width.
+const VEC_KIND_META_KEY = "embeddings_vec_kind";
+
+// The sqlite-vec column representation. "float32" is today's exact behaviour
+// (byte-for-byte); "int8" is the quantized-index path (spec Decision 3) —
+// components are int8-scaled ([-127, 127]) under the calibration-free
+// assumption that every provider L2-normalizes (components live in
+// [-1, 1]). The durable `embeddings` cache is ALWAYS float32, native-dim,
+// regardless of this setting — quantization is an index-representation
+// choice only, droppable and rebuildable from the cache at any time.
+export type VecKind = "float32" | "int8";
 
 export interface IndexedDocument {
   path: string;
@@ -95,12 +129,18 @@ export interface IndexedDocument {
   supersededBy: string | null;
   validFrom: string | null;
   validUntil: string | null;
+  // Frontmatter `updated_by` (spec 2026-07-26-context-packs-progressive-
+  // disclosure-design.md, final plan 2.5) — vault_context's provenance flag
+  // reads this instead of a second frontmatter parse. '' when the document
+  // authors no updated_by (schema default).
+  updatedBy: string;
 }
 
 export interface IndexedChunk {
   path: string;
   chunkIndex: number;
   text: string;
+  context: string;
   contentHash: string;
   embedding: Float32Array | null;
 }
@@ -129,6 +169,11 @@ CREATE TABLE IF NOT EXISTS documents (
   ttl_days      INTEGER,
   created       TEXT NOT NULL DEFAULT '',
   superseded_by TEXT,
+  -- Frontmatter updated_by (spec 2026-07-26-context-packs-progressive-
+  -- disclosure-design.md, final plan 2.5). NOT NULL DEFAULT '' matching the
+  -- created column's convention: an "undateable"-shaped sibling for
+  -- "unattributed".
+  updated_by    TEXT NOT NULL DEFAULT '',
   -- Valid time. Nullable with no default: NULL is the unknown sentinel, and
   -- unlike created (required, so "" means undateable) these fields are
   -- optional, so NULL carries the meaning directly.
@@ -143,6 +188,13 @@ CREATE TABLE IF NOT EXISTS chunks (
   path          TEXT NOT NULL,
   chunk_index   INTEGER NOT NULL,
   text          TEXT NOT NULL,
+  -- One-line breadcrumb context ({collection} > {title} > {headings}, tags),
+  -- spec 2026-07-26 Decision 2. Part of the chunk's retrieval identity: it is
+  -- hashed and embedded together with the chunk text (see embeddingInput,
+  -- search/vector.ts) and is the second chunks_fts column. DEFAULT '' only
+  -- matters for direct low-level inserts (tests); every real write path
+  -- (reindex.ts) always supplies a real breadcrumb.
+  context       TEXT NOT NULL DEFAULT '',
   content_hash  TEXT NOT NULL,
   PRIMARY KEY (path, chunk_index)
 );
@@ -188,6 +240,7 @@ CREATE TABLE IF NOT EXISTS derives_from_edges (
   to_path        TEXT NOT NULL,
   strength       REAL NOT NULL,
   k_survived     INTEGER NOT NULL,
+  k_eff          REAL NOT NULL DEFAULT 0,
   first_observed TEXT NOT NULL,
   last_rederived TEXT NOT NULL,
   last_age_decay TEXT NOT NULL,
@@ -212,15 +265,22 @@ CREATE INDEX IF NOT EXISTS idx_edges_status ON derives_from_edges(status);
 // stock English stemming pipeline; it lowercases, strips diacritics, and
 // folds plurals / -ing forms.
 //
-// Also contains chunks_fts: an FTS5 external-content table over `chunks`
-// using the same pattern. FTS sync relies on delete-before-insert: every
-// write path deletes a path's chunk rows before inserting new ones, so
-// the triggers fire in the right order. chunks_au is defensive — no current
-// write path UPDATEs a chunk row in place — but is included for correctness.
-// Note: recursive_triggers is OFF in this project, so INSERT OR REPLACE
-// conflict triggers do NOT fire both DELETE+INSERT; that is why the
-// documents write path was migrated off INSERT OR REPLACE. chunks follows
-// the same pattern.
+// Also contains chunks_fts: a TWO-COLUMN FTS5 external-content table over
+// `chunks` (context, text) — spec 2026-07-26 Decision 2. bm25(chunks_fts)
+// scores both columns at default weight, spanning the breadcrumb context
+// (title/collection/tags/headings) AND the body text: this IS contextual
+// BM25. Column order matters for two SQL-level reasons: snippet()'s column
+// index argument (hybrid.ts's chunkFtsRanking targets column 1, `text`, so a
+// served snippet can never contain synthesized breadcrumb prose — spec
+// Decision 4), and the `chunks_fts : (…)` prefix-restrict syntax elsewhere
+// keys off column NAME, not position, so it is unaffected either way. FTS
+// sync relies on delete-before-insert: every write path deletes a path's
+// chunk rows before inserting new ones, so the triggers fire in the right
+// order. chunks_au is defensive — no current write path UPDATEs a chunk row
+// in place — but is included for correctness. Note: recursive_triggers is
+// OFF in this project, so INSERT OR REPLACE conflict triggers do NOT fire
+// both DELETE+INSERT; that is why the documents write path was migrated off
+// INSERT OR REPLACE. chunks follows the same pattern.
 const FTS_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
   title, tags, content_body,
@@ -243,20 +303,22 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
   VALUES (new.rowid, new.title, new.tags, new.content);
 END;
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  text,
+  context, text,
   content='chunks',
   content_rowid='rowid',
   tokenize='porter unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-  INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+  INSERT INTO chunks_fts(rowid, context, text) VALUES (new.rowid, new.context, new.text);
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+  INSERT INTO chunks_fts(chunks_fts, rowid, context, text)
+    VALUES('delete', old.rowid, old.context, old.text);
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
-  INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
-  INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+  INSERT INTO chunks_fts(chunks_fts, rowid, context, text)
+    VALUES('delete', old.rowid, old.context, old.text);
+  INSERT INTO chunks_fts(rowid, context, text) VALUES (new.rowid, new.context, new.text);
 END;
 `;
 
@@ -343,12 +405,23 @@ function loadVecExtension(db: IndexDb): Result<void, Error> {
   return ok(undefined);
 }
 
-// Creates the sqlite-vec virtual table at the given dim, dropping any
-// existing copy first. `dim` is fixed at CREATE TABLE time for vec0, so a
-// provider switch (which changes the active dim) means dropping and
-// recreating; the durable `embeddings` cache survives, and the next reindex
-// repopulates `embeddings_vec` from it.
-function createVecTable(db: IndexDb, dim: number): void {
+// Creates the sqlite-vec virtual table at the given dim + kind, dropping any
+// existing copy first. Both `dim` and the column type are fixed at CREATE
+// TABLE time for vec0, so a provider switch OR a quantize flip (which
+// changes the active dim/kind) means dropping and recreating; the durable
+// `embeddings` cache survives, and the next reindex repopulates
+// `embeddings_vec` from it.
+//
+// `distance_metric=cosine` is used for BOTH kinds unless the Phase 0 spike
+// (docs/superpowers/specs/2026-07-26-embedding-refresh-quantization-
+// design.md, gate 3) finds cosine unsupported on int8 in the pinned
+// sqlite-vec build, in which case the fallback is L2 — equivalent candidate
+// ORDERING for unit vectors up to quantization error, never used as a score
+// on the int8 path regardless (see hybrid.ts's vecRanking). That spike has
+// not been run in this environment; cosine is used for both kinds here as
+// the working assumption, with this comment as the pointer to revisit if a
+// real int8 table creation fails.
+function createVecTable(db: IndexDb, dim: number, kind: VecKind): void {
   if (!Number.isInteger(dim) || dim <= 0) {
     throw new Error(
       `cannot create embeddings_vec at non-positive dim ${dim} — ` +
@@ -367,15 +440,33 @@ function createVecTable(db: IndexDb, dim: number): void {
   // from two collections gets one vec row per collection. That is the only
   // honest shape — a single row cannot carry two ACL labels — and the durable
   // `embeddings` cache stays content-addressed and deduped regardless.
+  const columnType = kind === "int8" ? `int8[${dim}]` : `FLOAT[${dim}]`;
   db.exec(
     `CREATE VIRTUAL TABLE embeddings_vec USING vec0(
        content_hash TEXT NOT NULL,
        model        TEXT NOT NULL,
        collection   TEXT NOT NULL,
-       embedding    FLOAT[${dim}] distance_metric=cosine
+       embedding    ${columnType} distance_metric=cosine
      );`,
   );
   setMeta(db, VEC_DIM_META_KEY, String(dim));
+  setMeta(db, VEC_KIND_META_KEY, kind);
+}
+
+// Quantizes an L2-normalized Float32Array to int8: round(x * 127) clamped to
+// [-127, 127]. Deterministic, provider-agnostic — calibration-free because
+// every EmbeddingProvider normalizes its output (components live in
+// [-1, 1]), so a fixed unit-range scale needs no per-model calibration step
+// (spec Decision 3). JS-side rather than sqlite-vec's own quantize helper —
+// keeps the same rounding rule visible and testable independent of the
+// sqlite-vec build.
+export function quantizeInt8(vec: Float32Array): Buffer {
+  const out = new Int8Array(vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    const scaled = Math.round((vec[i] as number) * 127);
+    out[i] = Math.max(-127, Math.min(127, scaled));
+  }
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
 // Drops every row from `embeddings_vec`. Called by the reindex path when
@@ -388,13 +479,34 @@ export function clearEmbeddingsVec(db: IndexDb): void {
 // Inserts a vector row into the sqlite-vec mirror. Separate from
 // `insertEmbedding` because the durable cache and the vec index are two
 // stores — the cache survives a vec-table rebuild on provider switch.
+// `kind` selects the on-disk representation: "float32" (default — byte-for-
+// byte today's behaviour) writes the vector as-is; "int8" quantizes it first
+// (spec Decision 3) via `quantizeInt8`. `embedding` must already be at the
+// table's configured dim (callers apply `toIndexDim`, src/search/vector.ts,
+// before calling this — this function does no truncation of its own).
 export function insertEmbeddingVec(
   db: IndexDb,
   contentHash: string,
   model: string,
   collection: string,
   embedding: Float32Array,
+  kind: VecKind = "float32",
 ): void {
+  // sqlite-vec infers a bound blob's vector TYPE from its byte layout, which
+  // defaults to float32 — a raw int8-byte blob bound directly into an
+  // int8[] column is rejected ("expected type int8, but a float32 vector
+  // was provided"). The `vec_int8(?)` SQL function is the documented way to
+  // tell sqlite-vec the bound blob is already int8-encoded; confirmed
+  // empirically against the pinned sqlite-vec build in this repo (this is
+  // the "working insert/query binding form" the governing spec's Phase 0
+  // gate 3 asks the (unrun) spike to record — recorded here instead, since
+  // the spike itself has not been run in this environment).
+  if (kind === "int8") {
+    db.prepare(
+      "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, vec_int8(?))",
+    ).run(contentHash, model, collection, quantizeInt8(embedding));
+    return;
+  }
   db.prepare(
     "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, ?)",
   ).run(contentHash, model, collection, embeddingToBlob(embedding));
@@ -421,14 +533,27 @@ export function hasEmbeddingVec(
   return row !== undefined;
 }
 
-// `expectedVecDim` is the active embedding provider's dim. If the persisted
-// `embeddings_vec` was created at a different dim (or doesn't exist yet),
-// it is dropped and recreated at the expected dim — the durable `embeddings`
-// cache is untouched, so a switch back to the previous provider is all
-// cache hits. `expectedVecDim` is required — pass the active provider's dim
-// (e.g. `getProvider().dim`). Tests that don't exercise vector queries should
-// use `LOCAL_MINILM_DIM` from `src/search/providers/local-minilm.ts`.
-export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<IndexDb, Error> {
+// `expectedVecDim` is the active embedding provider's dim; `expectedVecKind`
+// is the active quantization kind ("float32" | "int8", `getQuantize()` in
+// src/search/vector.ts). If the persisted `embeddings_vec` was created at a
+// different dim OR kind (or doesn't exist yet), it is dropped and recreated
+// at the expected dim/kind — the durable `embeddings` cache is untouched, so
+// a switch back to the previous provider/quantize setting is all cache hits.
+//
+// `expectedVecKind` is REQUIRED (2026-07-26 embedding-refresh-quantization
+// spec, disposition C2) for the same reason `expectedVecDim` already was
+// (see the historic precedent this comment used to cite): a default here
+// would turn every caller that doesn't thread the active quantize setting
+// into a silent destructive drop the moment quantization is used anywhere
+// in the vault. Making it required moves that hazard from a runtime bug
+// class to a compile error — every production call site passes
+// `getQuantize()`; test callers that don't exercise quantization pass
+// `"float32"` explicitly.
+export function openIndexDb(
+  vaultRoot: string,
+  expectedVecDim: number,
+  expectedVecKind: VecKind,
+): Result<IndexDb, Error> {
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     const db = new Database(indexDbPath(vaultRoot));
@@ -488,23 +613,28 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
       );
       db.prepare("DELETE FROM meta WHERE key = ?").run("vault_manifest");
       db.prepare("DELETE FROM meta WHERE key = ?").run(VEC_DIM_META_KEY);
+      db.prepare("DELETE FROM meta WHERE key = ?").run(VEC_KIND_META_KEY);
     }
     db.exec(SCHEMA);
     db.exec(FTS_SCHEMA);
 
-    // If the persisted dim matches AND the virtual table already exists, leave
-    // it alone — recreating would drop all the indexed vectors for no reason.
+    // If the persisted dim AND kind both match, AND the virtual table already
+    // exists, leave it alone — recreating would drop all the indexed vectors
+    // for no reason. Either mismatching (a provider/dim switch, or a
+    // quantize flip — 2026-07-26 embedding-refresh-quantization spec,
+    // disposition C2) triggers a drop-and-recreate.
     const targetDim = expectedVecDim;
     const persistedDimRaw = getMeta(db, VEC_DIM_META_KEY);
     const persistedDim = persistedDimRaw ? Number.parseInt(persistedDimRaw, 10) : null;
+    const persistedKind = getMeta(db, VEC_KIND_META_KEY) as VecKind | null;
     const vecTableExists =
       (
         db
           .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name=?")
           .get("embeddings_vec") as { n: number }
       ).n > 0;
-    if (!vecTableExists || persistedDim !== targetDim) {
-      createVecTable(db, targetDim);
+    if (!vecTableExists || persistedDim !== targetDim || persistedKind !== expectedVecKind) {
+      createVecTable(db, targetDim, expectedVecKind);
     }
 
     setMeta(db, "schema_version", SCHEMA_VERSION);
@@ -613,6 +743,13 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   // authored value stays on disk untouched for vault_lint to name.
   const validFrom = doc.validFrom === null ? null : (normalizeIsoDate(doc.validFrom) ?? null);
   const validUntil = doc.validUntil === null ? null : (normalizeIsoDate(doc.validUntil) ?? null);
+  // Defensive default, not just a type-contract convenience: better-sqlite3
+  // throws on an `undefined` bind, and IndexedDocument is a plain interface —
+  // a construction site outside this file's own writers (test fixtures built
+  // by hand before this field existed) can supply an object shaped without
+  // `updatedBy` and TypeScript's structural check never runs on it at
+  // runtime. `?? ""` matches the column's own NOT NULL DEFAULT ''.
+  const updatedBy = doc.updatedBy ?? "";
   // ON CONFLICT(path) DO UPDATE (rather than INSERT OR REPLACE) is required
   // so the AFTER UPDATE trigger on `documents` fires and keeps
   // `documents_fts` in sync. SQLite's OR REPLACE conflict resolution does
@@ -622,8 +759,8 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   db.prepare(
     `INSERT INTO documents
        (path, title, collection, domain, status, confidence, updated, tags, content, tokens,
-        ttl_days, created, superseded_by, valid_from, valid_until)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ttl_days, created, superseded_by, valid_from, valid_until, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(path) DO UPDATE SET
        title         = excluded.title,
        collection    = excluded.collection,
@@ -638,7 +775,8 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
        created       = excluded.created,
        superseded_by = excluded.superseded_by,
        valid_from    = excluded.valid_from,
-       valid_until   = excluded.valid_until`,
+       valid_until   = excluded.valid_until,
+       updated_by    = excluded.updated_by`,
   ).run(
     doc.path,
     doc.title,
@@ -655,6 +793,7 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
     doc.supersededBy,
     validFrom,
     validUntil,
+    updatedBy,
   );
 }
 
@@ -662,6 +801,12 @@ export interface ChunkRowInput {
   path: string;
   chunkIndex: number;
   text: string;
+  // Breadcrumb context (spec 2026-07-26 Decision 2). Optional so direct
+  // low-level callers (tests exercising unrelated behavior) don't all need a
+  // real breadcrumb; defaults to '' — the same default the column carries.
+  // Every real write path (reindex.ts) supplies the real chunkDocument()
+  // context.
+  context?: string;
   contentHash: string;
 }
 
@@ -676,9 +821,9 @@ export interface ChunkRowInput {
 // instead, surfacing caller bugs loudly rather than drifting the FTS index.
 export function insertChunkRow(db: IndexDb, chunk: ChunkRowInput): void {
   db.prepare(
-    `INSERT INTO chunks (path, chunk_index, text, content_hash)
-     VALUES (?, ?, ?, ?)`,
-  ).run(chunk.path, chunk.chunkIndex, chunk.text, chunk.contentHash);
+    `INSERT INTO chunks (path, chunk_index, text, context, content_hash)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(chunk.path, chunk.chunkIndex, chunk.text, chunk.context ?? "", chunk.contentHash);
 }
 
 // Returns the set of content_hash values that already have a row for `model`
@@ -848,6 +993,7 @@ interface DocumentRow {
   ttl_days: number | null;
   created: string;
   superseded_by: string | null;
+  updated_by: string;
   valid_from: string | null;
   valid_until: string | null;
 }
@@ -869,6 +1015,7 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
     supersededBy: row.superseded_by,
     validFrom: row.valid_from,
     validUntil: row.valid_until,
+    updatedBy: row.updated_by,
   };
 }
 
@@ -959,6 +1106,7 @@ interface ChunkJoinRow {
   path: string;
   chunk_index: number;
   text: string;
+  context: string;
   content_hash: string;
   embedding: Buffer | null;
   dim: number | null;
@@ -985,6 +1133,7 @@ function rowToChunk(row: ChunkJoinRow, expectedDim: number): IndexedChunk {
     path: row.path,
     chunkIndex: row.chunk_index,
     text: row.text,
+    context: row.context,
     contentHash: row.content_hash,
     embedding,
   };
@@ -1000,7 +1149,7 @@ function rowToChunk(row: ChunkJoinRow, expectedDim: number): IndexedChunk {
 export function getAllChunks(db: IndexDb, model: string, expectedDim = 0): IndexedChunk[] {
   const rows = db
     .prepare(
-      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding, e.dim
+      `SELECT c.path, c.chunk_index, c.text, c.context, c.content_hash, e.embedding, e.dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
@@ -1018,7 +1167,7 @@ export function getChunksForPath(
 ): IndexedChunk[] {
   const rows = db
     .prepare(
-      `SELECT c.path, c.chunk_index, c.text, c.content_hash, e.embedding, e.dim
+      `SELECT c.path, c.chunk_index, c.text, c.context, c.content_hash, e.embedding, e.dim
          FROM chunks c
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model = ?
@@ -1027,6 +1176,65 @@ export function getChunksForPath(
     )
     .all(model, path) as ChunkJoinRow[];
   return rows.map((row) => rowToChunk(row, expectedDim));
+}
+
+// --- Passage lookups for the reranker (Part B, §4.2) ------------------------
+//
+// The rerank stage needs the exact (context, text) of the chunk that WON a
+// hit's ranking — the same shape the embedding pipeline hashed
+// (embeddingInput = context + "\n\n" + text). These three helpers cover the
+// three passage-reference kinds a rank-time hit can carry (PassageRef in
+// tools/search.ts): a lexical winner by rowid, a vector winner by
+// (path, content_hash), or the terminal `first` fallback. None of them join
+// against `embeddings` — the reranker never needs the vector, only the text.
+
+export interface ChunkPassage {
+  context: string;
+  text: string;
+}
+
+// Batched lookup by chunks.rowid — the lexical winner's rowid, as tracked by
+// chunkFtsRanking. Chunked under SQLite's bound-variable ceiling like every
+// other batched IN() lookup in this file.
+export function getChunkTextsByRowids(db: IndexDb, rowids: number[]): Map<number, ChunkPassage> {
+  const out = new Map<number, ChunkPassage>();
+  if (rowids.length === 0) return out;
+  const BATCH = 500;
+  for (let start = 0; start < rowids.length; start += BATCH) {
+    const slice = rowids.slice(start, start + BATCH);
+    const placeholders = slice.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT rowid AS rowid, context, text FROM chunks WHERE rowid IN (${placeholders})`)
+      .all(...slice) as { rowid: number; context: string; text: string }[];
+    for (const r of rows) out.set(r.rowid, { context: r.context, text: r.text });
+  }
+  return out;
+}
+
+// The chunk at `path` whose content_hash matches — the vector winner's best
+// KNN chunk. A hash can repeat within a path (rare, but content-addressing
+// allows it); the first match is as good as any since they're byte-identical.
+export function getChunkByPathAndHash(
+  db: IndexDb,
+  path: string,
+  contentHash: string,
+): ChunkPassage | null {
+  const row = db
+    .prepare("SELECT context, text FROM chunks WHERE path = ? AND content_hash = ? LIMIT 1")
+    .get(path, contentHash) as { context: string; text: string } | undefined;
+  return row ?? null;
+}
+
+// The terminal passage fallback for a hit with no query-matched chunk
+// (a title/tag-tier-only hit): the document's first chunk by chunk_index.
+// Total, not partial — chunkDocument() guarantees every indexed doc has
+// >=1 chunk, so this never returns null for a document that made it into
+// `chunks` at all.
+export function getFirstChunk(db: IndexDb, path: string): ChunkPassage | null {
+  const row = db
+    .prepare("SELECT context, text FROM chunks WHERE path = ? ORDER BY chunk_index ASC LIMIT 1")
+    .get(path) as { context: string; text: string } | undefined;
+  return row ?? null;
 }
 
 export function getMeta(db: IndexDb, key: string): string | null {
@@ -1086,6 +1294,16 @@ export interface StagedActionRow {
   // Trace/run id from the proposal record (#235). JSONL-only, like
   // decided_by_principal — no sqlite column.
   run_id?: string | null;
+  // 2026-07-26 risk-triaged-ratification spec, Decision 3. All four follow the
+  // decided_by_principal / run_id precedent exactly: JSONL + row type only,
+  // no DDL column, no upsert change — SQLite-backed reads always yield null.
+  staged_by_principal?: string | null; // proposal branch (C4)
+  decision_kind?: string | null; // decision branch
+  reason_category?: string | null; // decision branch
+  amended_diff?: string | null; // decision branch, JSON-encoded
+  // Non-authoritative risk snapshot (Mihir's 2026-07-27 decision) — decision
+  // branch only, never read for ordering.
+  risk_at_decision?: number | null;
 }
 
 // Inserts or replaces a staged-action row by id. Used by the jsonl→sqlite
@@ -1166,6 +1384,7 @@ export interface DerivesFromEdgeRow {
   to_path: string;
   strength: number;
   k_survived: number;
+  k_eff: number;
   first_observed: string;
   last_rederived: string;
   last_age_decay: string;
@@ -1181,13 +1400,14 @@ export interface DerivesFromEdgeRow {
 export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): void {
   db.prepare(
     `INSERT INTO derives_from_edges
-       (from_path, to_path, strength, k_survived, first_observed, last_rederived,
+       (from_path, to_path, strength, k_survived, k_eff, first_observed, last_rederived,
         last_age_decay, status, direction_verdict, observations, contested_at,
         contest_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(from_path, to_path) DO UPDATE SET
        strength       = excluded.strength,
        k_survived     = excluded.k_survived,
+       k_eff          = excluded.k_eff,
        first_observed = excluded.first_observed,
        last_rederived = excluded.last_rederived,
        last_age_decay = excluded.last_age_decay,
@@ -1201,6 +1421,7 @@ export function upsertDerivesFromEdge(db: IndexDb, row: DerivesFromEdgeRow): voi
     row.to_path,
     row.strength,
     row.k_survived,
+    row.k_eff,
     row.first_observed,
     row.last_rederived,
     row.last_age_decay,

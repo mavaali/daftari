@@ -1,7 +1,19 @@
 # Citation anchors and just-in-time verification — design
 
-2026-07-26. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-07-26. Status: **implemented (2026-07-28)**, after Jugalbandi dialectical
+review. The final plan resolved ten challenges and escalated one — C4, "no new
+disclosure surface" — to Mihir (see `.jugalbandi/citation-anchors-jit/final-
+plan.md`). Mihir's 2026-07-27 decision: gate the `anchors` annotation per
+role/collection from day one, not as a future step (see the amended Decision
+2 disclosure paragraph and the new "role gate" note below). The amendments in
+this text (the read-path batching in Decision 2, the symlink-confinement and
+CRLF/trivial-content hardening in Decision 2's classifier steps, the
+disclosure-posture correction below, and the kill-condition amendment) are
+the disposition of that review, applied in place because the spec was still
+pre-implementation when the review landed — not a silent deviation from what
+shipped. `daftari audit --pin`/`--pin --apply`, `vault_lint`'s malformedPins
+check and Decision-4 softening, and the `code_repo_visibility` role grant
+described below are all implemented.
 Predecessor specs: 2026-05-30 (coherence audit — the surface this extends),
 2026-06-09 (backfill — the plan/apply precedent Decision 5 reuses),
 2026-07-20 (self-hosted server mode — the config posture).
@@ -144,12 +156,29 @@ network:
 4. Otherwise (whole-file pin with a differing blob, or a pinned blob git
    no longer has) → **`moved`**.
 
-**Cheap by construction.** At most two git invocations plus one bounded
-file read per pin; pins per read are capped at a fixed constant (24), the
-remainder reported as skipped with a count. Any git failure degrades that
-binding's entry to absent, and the read never fails on the check (the
-recordRead best-effort contract). And the operator holds a kill-switch:
-`jit_anchors: false` removes the entire code path.
+**Cheap by construction — amended (2026-07-27 plan resolution, C1).** The
+original claim — "at most two git invocations per pin" — blows its own 50ms
+kill threshold on the hot path: 24 sequential `execFile` spawns land at or
+over budget at even ~3-5ms each, and the CI tripwire (originally 500ms) was
+10x too loose to catch it. The implemented design batches instead: existence
+(step 1) is a realpath/stat check, no subprocess; step 2 (current blob hash)
+is ONE `git hash-object` invocation per REPO REFERENCED, not per pin, via
+`hashObjects` in `src/utils/git.ts` — so the all-intact case, the common
+one, costs one subprocess per referenced repo per read. Only pins whose blob
+differs AND carry a range proceed to step 3 (`git cat-file -s` + a bounded
+`cat-file blob`), run with a small bounded concurrency (4) so several
+drifted range pins on one doc don't serialize behind each other. The
+"at most two invocations per pin" claim now holds on the hot (intact) path
+and is knowingly exceeded by one `cat-file -s` size gate on the cold
+(drift) path. Pins per read are still capped at a fixed constant (24
+— `MAX_PINS_PER_READ`), the remainder reported as skipped with a count. Any
+classifier failure (a repo's whole batch call erroring) degrades that
+repo's pending entries to `errored` (C8) rather than silently vanishing,
+and the read never fails on the check (the recordRead best-effort
+contract). The CI tripwire tightened to 24 intact pins across 2 repos
+classifying under 150ms; the live 50ms p95 measurement on a real vault
+remains the authoritative post-ship check. The operator still holds a
+kill-switch: `jit_anchors: false` removes the entire code path.
 
 **Annotation shape**, following the read path's null-when-silent contract
 (`decay`, `upstream_staleness`, `structural`):
@@ -165,15 +194,50 @@ anchors: {
   }>;
   checked: number;
   skipped: number;                      // over-cap remainder
+  errored: number;                      // classifier failures, dropped from
+                                         // entries (2026-07-27 resolution, C8:
+                                         // keeps the Decision 4 softening from
+                                         // quantifying over a censored sample)
   banner: string | null;                // the decay-banner idiom
-} | null    // no pinned bindings, no resolvable repo, or jit_anchors: false
+} | null    // no pinned bindings, no resolvable repo, jit_anchors: false, OR
+            // (2026-07-27 resolution) the caller's role lacks
+            // code_repo_visibility — see the disclosure-posture note below
 ```
 
-**No new disclosure surface.** The annotation derives solely from the
-doc's own frontmatter (already visible to any caller who can read the doc)
-plus a server-local code tree. It names no other vault document, so the
-2026-07-14 omission/existence-disclosure rules gain no new edge here; in
-serve mode the annotation is identical across sessions by construction.
+**Disclosure posture — corrected.** The original text here claimed "no new
+disclosure surface": the annotation names no other vault document, so the
+2026-07-14 omission/existence-disclosure rules gain no new edge. That claim
+is true as far as it goes but incomplete, and the Jugalbandi Challenger
+(C4) caught it: the annotation is a per-read oracle over a repo that RBAC's
+collection model has no vocabulary for at all. Any principal who can read a
+pinned doc can, via writer-controlled pins, learn path existence in a
+configured `code_repos` tree, whether a specific blob still matches the
+current file, and (via step 3) where matching content now lives — facts
+about a *filesystem outside the vault*, not about another vault document.
+The 2026-07-14 rules were written for vault-internal edges; they say
+nothing about this because this oracle didn't exist yet.
+
+Mihir's 2026-07-27 decision: gate it, from day one, not as a follow-up.
+`.daftari/config.yaml` gains a per-role `code_repo_visibility` grant
+(default **off** for every non-operator role). The `anchors` field on
+`vault_read`'s result is null unless BOTH hold: the caller's role can
+already read the pinned doc (the existing collection-scoped `read` grant),
+AND the role carries `code_repo_visibility`. The underlying git
+classification still runs regardless of the gate — kill-condition (b)
+instrumentation (`anchors_moved`/`anchors_missing`/`anchors_errored` on the
+read log) is local operator telemetry, unfiltered by role, the same posture
+`broken_upstream` already takes — but the RETURNED annotation, and the
+Decision 4 decay-banner softening derived from it, are both gated. A caller
+with no `AccessContext` at all (stdio without `--role`, or any direct
+in-process call) is unaffected by the gate, matching every other RBAC check
+in this codebase. Configuring `code_repos` at all is therefore an explicit
+operator choice with a stated cost: it makes blob-level facts about that
+repo visible to every reader the operator has granted `code_repo_visibility`
+— see `docs/architecture.md`'s "Citation anchors" section for the
+operator-facing statement of this posture. In serve mode the annotation is
+identical across sessions for the same role by construction (deterministic
+git state at query time), so no session-to-session leak exists beyond the
+role gate itself.
 
 ## Decision 3 — advisory consequences only; the batch audit gains the same classifier
 
@@ -280,3 +344,25 @@ Decision 4's softened copy dies on its own if reviewers judge
 all-pins-intact docs stale anyway in practice — copy that teaches agents
 to discount TTL would be exactly the freshness-laundering the annotate-only
 rule exists to prevent.
+
+**Amendment (2026-07-27 plan resolution, C9): condition (b) cannot be fully
+measured by the instrumentation this design builds.** A code re-read
+happens in the agent's own tool-use loop, outside Daftari entirely — the
+read log has no join key into it, and never will without instrumenting the
+agent harness. The observable subset is real and worth measuring: a doc
+update, a pin refresh, or a tension logged *within the same run* following
+a `moved`/`missing` annotation, joined from the read log
+(`anchors_moved`/`anchors_missing`, per-run via `run_id`) against
+subsequent writes and `daftari audit --auto-tension` output. But absence of
+those signals in that joined data is, on its own, **insufficient** to kill
+the read-path check — it is equally consistent with "agents re-read the
+code and said nothing else about it" (the intended, cheapest-possible
+consequence: an agent that re-reads before acting has already done the
+thing pins exist to prompt) and with "agents ignore the flag entirely."
+Before reverting on (b), the evaluation must ALSO include a spot check of
+agent transcripts, or an operator interview, specifically probing for the
+invisible consequence — code re-reads that never produced a Daftari-visible
+side effect. The read-log fields are documented, here and in code, as
+measuring exactly what they measure (the observable subset) and nothing
+more; a dashboard or report built on them must carry that caveat forward
+rather than presenting the joined count as the full picture.

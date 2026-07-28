@@ -274,9 +274,9 @@ describe("router integration", () => {
       arguments: { path: `vault-a:${TEST_READ_PATH}` },
     });
     expect(r.isError).toBeFalsy();
-    const text = (r.content?.[0] as { text: string }).text;
-    const payload = JSON.parse(text);
-    // vault_read returns { content: string (body), frontmatter: {...} }
+    // vault_read's `content` (body) rides the text channel only (C11); the
+    // typed fields — frontmatter included — are on structuredContent.
+    const payload = r.structuredContent as { frontmatter: { title: string } };
     expect(payload.frontmatter.title).toBe("Router Read Test");
   });
 });

@@ -39,6 +39,17 @@ export interface RoleConfig {
   // permission layer, not convention. YAML key: propose_only. Optional so
   // existing configs (and role literals) are unchanged; absent means false.
   proposeOnly?: boolean;
+  // Citation-anchors gate (2026-07-26 spec, "Decision from Mihir 2026-07-27"):
+  // a role sees vault_read's `anchors` annotation only when it ALSO carries
+  // this grant — read access to the pinned doc's collection is necessary but
+  // not sufficient. Distinct from `read` because the annotation discloses
+  // facts about a code repo (existence, blob-match, relocated line numbers)
+  // that RBAC's collection model has no vocabulary for. YAML key:
+  // code_repo_visibility. Optional; absent means false — off by default for
+  // every non-operator role. A caller with no AccessContext at all (direct
+  // in-process call, stdio without --role) is unaffected by this gate, the
+  // same posture every other RBAC check in this file takes.
+  codeRepoVisibility?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -62,8 +73,50 @@ export interface SchemaExtension {
 // the runtime instantiates the matching backend (see search/vector.ts
 // getProvider). Adding a third provider would mean a new id here AND a new
 // branch in getProvider AND a config-load check if it needs env vars.
-export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
+//
+// local-embeddinggemma / local-qwen3-0.6b added by the 2026-07-26 embedding-
+// refresh-quantization spec (Decision 1): Matryoshka-truncatable, fully
+// local providers run via @huggingface/transformers, same posture as
+// local-minilm. Neither is the programmatic default yet (loadConfig's
+// fallback stays local-minilm — the flip is gated on the spec's Phase 5
+// recall-bench, not landed with this PR).
+export const EMBEDDING_PROVIDERS = [
+  "local-minilm",
+  "openai-3-small",
+  "local-embeddinggemma",
+  "local-qwen3-0.6b",
+] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
+
+// Allowed `embeddings.dim` values per provider. `null` means the provider is
+// fixed-dim and `dim` must not be set for it (a hard error, same posture as
+// an unknown provider id) — local-minilm (384) and openai-3-small (1536)
+// have no Matryoshka truncation to configure. The two new providers expose
+// 512 (default) and 768 (full, untruncated).
+export const EMBEDDING_DIMS: Record<EmbeddingProviderId, readonly number[] | null> = {
+  "local-minilm": null,
+  "openai-3-small": null,
+  "local-embeddinggemma": [512, 768],
+  "local-qwen3-0.6b": [512, 768],
+};
+
+// Recognised values of `embeddings.quantize`. "int8" is the vec-INDEX
+// representation only — the durable `embeddings` cache always stays
+// float32, native-dim (spec Decision 3/9). Default is "int8" for the two new
+// providers and "none" for local-minilm/openai-3-small (existing vaults stay
+// bit-identical unless the operator opts in). "int8" is accepted for ANY
+// provider — every provider L2-normalizes, so quantization is calibration-
+// free unit-range scaling regardless of which model produced the vector.
+export const EMBEDDING_QUANTIZE_VALUES = ["int8", "none"] as const;
+export type EmbeddingQuantize = (typeof EMBEDDING_QUANTIZE_VALUES)[number];
+
+// Recognised values of `rerank.provider` (spec 2026-07-26-contextual-
+// chunking-reranker-design.md Decision 5). "none" (the default) means no
+// rerank stage at all — getRerankProvider() returns null, callers branch on
+// presence rather than a null-object provider. Adding a third provider means
+// a new id here AND a new branch in rerank-provider.ts's instantiateProvider.
+export const RERANK_PROVIDERS = ["none", "local-bge-m3"] as const;
+export type RerankProviderId = (typeof RERANK_PROVIDERS)[number];
 
 // Budgets and attribution for the sleep tension-scan dream (`daftari sleep
 // --dream tension-scan`). All values are HARD requirements on the pass:
@@ -102,6 +155,19 @@ export const TOOLS_DEFAULTS: ToolsConfig = {
   include: [],
   exclude: [],
 };
+
+// `search` block (spec 2026-07-26 fusion overhaul, Decision 2). Library-
+// level fusion options (RRF vs weighted) never get a config knob — only the
+// query router's opt-in does, because unlike fusion mode, routing changes
+// what weights a query gets based on its own shape, which an operator may
+// reasonably want to keep off even after the fusion default flips.
+export interface SearchConfig {
+  routing: boolean;
+}
+
+// Off by default; flipped to true only after the fusion-runner.mjs bench's
+// gates.routingFlip passes (PR 3 of the fusion overhaul).
+export const SEARCH_DEFAULTS: SearchConfig = { routing: false };
 
 // `server` block (#5, spec 2026-07-20): configuration for `daftari serve`.
 // Token VALUES never live here — .daftari/config.yaml sits inside the vault's
@@ -208,6 +274,21 @@ export interface DaftariConfig {
   // providers preserves both side's rows — the new provider populates a
   // fresh row set on first reindex, and switching back reuses the old.
   embeddingProvider: EmbeddingProviderId;
+  // `embeddings.dim` — optional Matryoshka truncation target. null when
+  // absent (the provider's own default applies); validated against
+  // EMBEDDING_DIMS for the active provider (spec Decision 2).
+  embeddingDim: number | null;
+  // `embeddings.quantize` — vec-index representation (spec Decision 3).
+  // Defaults to "int8" for the two new local providers, "none" otherwise;
+  // see EMBEDDING_QUANTIZE_VALUES.
+  embeddingQuantize: EmbeddingQuantize;
+  // Local cross-encoder reranker selection (`rerank` block, spec 2026-07-26-
+  // contextual-chunking-reranker-design.md Decision 5). Defaults to "none" —
+  // opt-in, unlike embeddings: the rerank stage's q8 weights are a much
+  // heavier default-install cost, and the project's own playbook (chunk-level
+  // BM25) is to ship a lever behind an option, measure it, then flip the
+  // default on evidence.
+  rerankProvider: RerankProviderId;
   // Optional git-author → identity mapping consumed by `daftari backfill`
   // (§11.1) when deriving the `updated_by` frontmatter field from a doc's git
   // history. Keys are raw git author names (`%aN`); values are Daftari
@@ -225,6 +306,13 @@ export interface DaftariConfig {
   // The consolidate loop refuses live writes (mode != scan) unless the operator
   // has made an explicit choice, so a surprising default can't spend or mutate.
   shadowModeSet: boolean;
+  // Independence-aware promotion graduation gate (2026-07-26 spec, Decision
+  // 4). Defaults to false — the shipped shadow posture: the revision loop
+  // computes and journals the would-be verdict but the live two-way decision
+  // is untouched. Opt-in only, unlike shadow_mode: absence is a valid false,
+  // no explicit-declaration tripwire, because the ungraduated behavior IS
+  // today's behavior (nothing new to silently start doing).
+  independenceGraduated: boolean;
   // Absolute path to an external git directory (git's --separate-git-dir), or
   // undefined for a normal in-vault .git. Lets a cloud-synced vault hold only a
   // static `.git` file while git's churn lives off-cloud. Always resolved
@@ -246,6 +334,21 @@ export interface DaftariConfig {
   // with no backing configured; `daftari sync` then refuses with a pointer
   // to the config block.
   storage?: StorageConfig;
+  // Query router opt-in (`search` block, spec 2026-07-26 fusion overhaul
+  // Decision 2). Always populated — routing off when the block is absent.
+  search: SearchConfig;
+  // `code_repos` (2026-07-26 citation-anchors-jit spec, Decision 2): name ->
+  // absolute path, ~ expanded and resolved against the vault root. This is
+  // the READ-PATH repo registry — distinct from the audit's own `--code-repo`
+  // / audit.yaml `repos:` declarations, which are per-invocation and not
+  // visible here. Path EXISTENCE is deliberately not checked at load
+  // (config travels with a synced vault onto machines where the code repo
+  // may simply not be checked out); an absent repo degrades silently to
+  // `anchors: null` at read time. Empty when the block is absent.
+  codeRepos: Record<string, string>;
+  // `jit_anchors` (same spec): kill-switch for the read-path pin check.
+  // Defaults to true; false removes the entire code path (zero git work).
+  jitAnchors: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -259,14 +362,21 @@ function emptyConfig(): DaftariConfig {
     watch: true,
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
+    embeddingDim: null,
+    embeddingQuantize: "none",
+    rerankProvider: "none",
     backfillIdentityMap: {},
     shadowMode: false,
     shadowModeSet: false,
+    independenceGraduated: false,
     gitDir: undefined,
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
     server: { tokens: [] },
     storage: undefined,
+    search: { ...SEARCH_DEFAULTS },
+    codeRepos: {},
+    jitAnchors: true,
   };
 }
 
@@ -322,6 +432,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     proposeOnly = obj.propose_only;
   }
 
+  let codeRepoVisibility = false;
+  if (obj.code_repo_visibility !== undefined) {
+    if (typeof obj.code_repo_visibility !== "boolean") {
+      return err(new Error(`role '${name}' code_repo_visibility must be true or false`));
+    }
+    codeRepoVisibility = obj.code_repo_visibility;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -348,6 +466,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     promote,
     ratify,
     ...(proposeOnly ? { proposeOnly } : {}),
+    ...(codeRepoVisibility ? { codeRepoVisibility } : {}),
   });
 }
 
@@ -898,6 +1017,69 @@ function validateTools(raw: unknown): Result<ToolsConfig, Error> {
   return ok({ tier, include: include.value, exclude: exclude.value });
 }
 
+const RECOGNISED_SEARCH_KEYS = ["routing"] as const;
+
+// `routing` accepts booleans AND the strings "on"/"off" — js-yaml 4's
+// YAML-1.2 core schema loads a bare `off`/`on` as the STRING "off"/"on", not
+// a boolean, so a config author writing the natural `search.routing: off`
+// (the spec's own example) must not hit a type error.
+function validateSearch(raw: unknown): Result<SearchConfig, Error> {
+  if (raw === undefined) return ok({ ...SEARCH_DEFAULTS });
+  const mapping = requireMapping(raw, "'search'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_SEARCH_KEYS, "search");
+  if (!known.ok) return known;
+
+  let routing: boolean = SEARCH_DEFAULTS.routing;
+  if (obj.routing !== undefined) {
+    if (typeof obj.routing === "boolean") {
+      routing = obj.routing;
+    } else if (obj.routing === "on" || obj.routing === "off") {
+      routing = obj.routing === "on";
+    } else {
+      return err(
+        new Error(
+          `'search.routing' must be on/off or true/false (got ${JSON.stringify(obj.routing)})`,
+        ),
+      );
+    }
+  }
+  return ok({ routing });
+}
+
+// `code_repos` (2026-07-26 citation-anchors-jit spec, Decision 2). A mapping
+// of non-empty name -> non-empty path string. Names containing `:` are
+// rejected at load — the read path resolves a `describes` binding's `repo:`
+// prefix by exact-name lookup into this map, and a colon in the name itself
+// would make that lookup ambiguous against the grammar's own delimiter.
+// Shape-only, like every block: path EXISTENCE is intentionally unchecked
+// here (see the field's doc comment on DaftariConfig).
+function validateCodeRepos(raw: unknown, vaultRoot: string): Result<Record<string, string>, Error> {
+  if (raw === undefined) return ok({});
+  const mapping = requireMapping(raw, "'code_repos'");
+  if (!mapping.ok) return mapping;
+  const out: Record<string, string> = Object.create(null);
+  for (const [name, value] of Object.entries(mapping.value)) {
+    if (name.length === 0) {
+      return err(new Error("'code_repos' keys must be non-empty"));
+    }
+    if (name.includes(":")) {
+      return err(
+        new Error(
+          `'code_repos.${name}': repo names must not contain ':' ` +
+            "(it collides with the describes grammar's own repo-prefix delimiter)",
+        ),
+      );
+    }
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'code_repos.${name}' must be a non-empty string`));
+    }
+    out[name] = resolve(vaultRoot, expandTilde(value.trim()));
+  }
+  return ok(out);
+}
+
 function dataHome(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
@@ -1105,6 +1287,22 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const storageConfig = validateStorage(root.storage);
   if (!storageConfig.ok) return err(new Error(`malformed config: ${storageConfig.error.message}`));
 
+  const searchConfig = validateSearch(root.search);
+  if (!searchConfig.ok) return err(new Error(`malformed config: ${searchConfig.error.message}`));
+
+  const codeReposConfig = validateCodeRepos(root.code_repos, vaultRoot);
+  if (!codeReposConfig.ok) {
+    return err(new Error(`malformed config: ${codeReposConfig.error.message}`));
+  }
+
+  let jitAnchors = true;
+  if (root.jit_anchors !== undefined) {
+    if (typeof root.jit_anchors !== "boolean") {
+      return err(new Error("malformed config: 'jit_anchors' must be true or false"));
+    }
+    jitAnchors = root.jit_anchors;
+  }
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -1130,13 +1328,30 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode = root.shadow_mode;
   }
 
+  // Independence-aware promotion graduation gate (2026-07-26 spec, Decision
+  // 4). Opt-in; absence is a valid false (unlike shadow_mode, no explicit-
+  // declaration requirement — the default behavior is today's behavior).
+  let independenceGraduated = false;
+  if (root.independence_graduated !== undefined) {
+    if (typeof root.independence_graduated !== "boolean") {
+      return err(new Error("malformed config: 'independence_graduated' must be true or false"));
+    }
+    independenceGraduated = root.independence_graduated;
+  }
+
   // Embedding provider selection. Defaults to local-minilm. Unknown ids fail
   // loud — the trust model is "vault owner configures the server" so a typo
   // is a config error, not a fall-through to default. The OPENAI_API_KEY
   // check happens here too: a paid provider with no key in env can't quietly
   // degrade to lexical-only after every search; the vault owner needs to
   // know at startup that the key is missing.
+  const RECOGNISED_EMBEDDINGS_KEYS = ["provider", "dim", "quantize"] as const;
   let embeddingProvider: EmbeddingProviderId = "local-minilm";
+  let embeddingDim: number | null = null;
+  // Default quantize is per-provider (int8 for the two new local providers,
+  // none for local-minilm/openai-3-small) — resolved AFTER the provider is
+  // known, below.
+  let embeddingQuantizeRaw: EmbeddingQuantize | undefined;
   if (root.embeddings !== undefined) {
     if (
       root.embeddings === null ||
@@ -1146,6 +1361,8 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       return err(new Error("malformed config: 'embeddings' must be a mapping"));
     }
     const block = root.embeddings as Record<string, unknown>;
+    const known = rejectUnknownKeys(block, RECOGNISED_EMBEDDINGS_KEYS, "embeddings");
+    if (!known.ok) return err(new Error(`malformed config: ${known.error.message}`));
     if (block.provider !== undefined) {
       if (typeof block.provider !== "string") {
         return err(new Error("malformed config: 'embeddings.provider' must be a string"));
@@ -1160,6 +1377,26 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       }
       embeddingProvider = block.provider as EmbeddingProviderId;
     }
+    if (block.dim !== undefined) {
+      if (typeof block.dim !== "number" || !Number.isInteger(block.dim) || block.dim <= 0) {
+        return err(new Error("malformed config: 'embeddings.dim' must be a positive integer"));
+      }
+      embeddingDim = block.dim;
+    }
+    if (block.quantize !== undefined) {
+      if (
+        typeof block.quantize !== "string" ||
+        !(EMBEDDING_QUANTIZE_VALUES as readonly string[]).includes(block.quantize)
+      ) {
+        return err(
+          new Error(
+            `malformed config: 'embeddings.quantize' must be one of ` +
+              `${EMBEDDING_QUANTIZE_VALUES.join(", ")} (got ${JSON.stringify(block.quantize)})`,
+          ),
+        );
+      }
+      embeddingQuantizeRaw = block.quantize as EmbeddingQuantize;
+    }
   }
   if (embeddingProvider === "openai-3-small" && !process.env.OPENAI_API_KEY) {
     return err(
@@ -1167,6 +1404,73 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
         "embeddings.provider is 'openai-3-small' but OPENAI_API_KEY is not set in the environment",
       ),
     );
+  }
+
+  // `dim` validation against the active provider's allowed set (spec
+  // Decision 2). A fixed-dim provider (EMBEDDING_DIMS[id] === null) rejects
+  // `dim` outright — setting it would silently disagree with the id's real
+  // (only) dimension. A Matryoshka provider with `dim` unset falls back to
+  // its first (default) allowed value.
+  const allowedDims = EMBEDDING_DIMS[embeddingProvider];
+  if (allowedDims === null) {
+    if (embeddingDim !== null) {
+      return err(
+        new Error(
+          `malformed config: 'embeddings.dim' is not accepted for provider '${embeddingProvider}' ` +
+            "(it has no configurable dimension)",
+        ),
+      );
+    }
+  } else {
+    if (embeddingDim === null) {
+      embeddingDim = allowedDims[0] as number;
+    } else if (!(allowedDims as readonly number[]).includes(embeddingDim)) {
+      return err(
+        new Error(
+          `malformed config: 'embeddings.dim' ${embeddingDim} is not valid for provider ` +
+            `'${embeddingProvider}' (expected one of ${allowedDims.join(", ")})`,
+        ),
+      );
+    }
+  }
+
+  // `quantize` default: "int8" for the two new local providers, "none"
+  // otherwise (existing vaults stay bit-identical unless the operator opts
+  // in). Explicit config value always wins.
+  const embeddingQuantize: EmbeddingQuantize =
+    embeddingQuantizeRaw ??
+    (embeddingProvider === "local-embeddinggemma" || embeddingProvider === "local-qwen3-0.6b"
+      ? "int8"
+      : "none");
+
+  // Rerank provider selection (spec 2026-07-26-contextual-chunking-reranker-
+  // design.md Decision 5). Defaults to "none" — opt-in, since local-bge-m3's
+  // q8 weights are an order of magnitude past local-minilm's on-disk/RAM
+  // footprint and the default install must stay light. Same posture as
+  // embeddings.provider above: an unknown id fails loud rather than silently
+  // falling back to "none" — a typo that meant to enable reranking must never
+  // silently no-op. No env-var check: local-bge-m3 is a fully local model,
+  // no API key to validate.
+  let rerankProvider: RerankProviderId = "none";
+  if (root.rerank !== undefined) {
+    if (root.rerank === null || typeof root.rerank !== "object" || Array.isArray(root.rerank)) {
+      return err(new Error("malformed config: 'rerank' must be a mapping"));
+    }
+    const block = root.rerank as Record<string, unknown>;
+    if (block.provider !== undefined) {
+      if (typeof block.provider !== "string") {
+        return err(new Error("malformed config: 'rerank.provider' must be a string"));
+      }
+      if (!(RERANK_PROVIDERS as readonly string[]).includes(block.provider)) {
+        return err(
+          new Error(
+            `malformed config: unknown rerank.provider ${JSON.stringify(block.provider)} ` +
+              `(expected one of ${RERANK_PROVIDERS.join(", ")})`,
+          ),
+        );
+      }
+      rerankProvider = block.provider as RerankProviderId;
+    }
   }
 
   return ok({
@@ -1177,13 +1481,20 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     watch,
     warmEmbeddings,
     embeddingProvider,
+    embeddingDim,
+    embeddingQuantize,
+    rerankProvider,
     backfillIdentityMap: backfillIdentityMap.value,
     shadowMode,
     shadowModeSet,
+    independenceGraduated,
     gitDir: gitDir.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,
     server: serverConfig.value,
     storage: storageConfig.value,
+    search: searchConfig.value,
+    codeRepos: codeReposConfig.value,
+    jitAnchors,
   });
 }

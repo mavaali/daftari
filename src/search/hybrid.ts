@@ -8,9 +8,21 @@
 //     virtual table, joining back to `chunks` to map content hashes onto
 //     document paths.
 //
-// Each ranker still produces raw scores on its own scale, so both are
-// min-normalised to [0, 1] (divide by the top score) before being mixed by
-// weight. Default weighting is an even 0.5 / 0.5 split.
+// Each ranker still produces raw scores on its own scale. Two fusion modes
+// combine them (spec 2026-07-26 fusion overhaul, Decision 1):
+//   - "weighted" (relatedSearch's default): both halves are min-normalised
+//     to [0, 1] (divide by the top score) and mixed by weight.
+//   - "rrf" (hybridSearch's default): each half is converted to a rank list
+//     and mixed via reciprocal rank fusion at k=60, SCALED by (k+1) so a
+//     rank-1 contribution is 1.0 rather than textbook RRF's 1/61 — ordering-
+//     identical to textbook RRF, but keeps fused scores in (0, 1] with a
+//     top≈1 scale for downstream consumers (summaryLine's toFixed(3), the
+//     rerank pool, vault hooks) that already calibrate against the weighted
+//     mode's range. `bm25Score`/`vectorScore` on each hit carry these
+//     per-ranker contributions (weighted: normalised score; rrf: scaled
+//     reciprocal rank), unweighted; `score` applies the weights on top.
+//
+// Default weighting is an even 0.5 / 0.5 split.
 //
 // Vector ranking is best-effort. If the query cannot be embedded (model
 // unavailable) or the index holds no embeddings, the search degrades to
@@ -20,17 +32,27 @@ import { computeDecay, type DecayState } from "../curation/decay.js";
 import type { ValidityReport } from "../curation/validity.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
+  blobToEmbedding,
   embeddingToBlob,
   getChunksForPath,
   getDocument,
   getDocumentsByPaths,
   type IndexDb,
+  quantizeInt8,
+  type VecKind,
 } from "../storage/index-db.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
 import type { ValidAtSource } from "./valid-at-source.js";
-import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
+import {
+  cosineSimilarity,
+  embedQuery,
+  getProvider,
+  getQuantize,
+  meanEmbedding,
+  toIndexDim,
+} from "./vector.js";
 
 export interface HybridWeights {
   bm25: number;
@@ -38,6 +60,27 @@ export interface HybridWeights {
 }
 
 export const DEFAULT_WEIGHTS: HybridWeights = { bm25: 0.5, vector: 0.5 };
+
+// Fusion mode: how the lexical and vector rank lists are combined into one
+// fused score (spec 2026-07-26 fusion overhaul, Decision 1). See the file
+// header for the score-scale rationale.
+export type FusionMode = "weighted" | "rrf";
+
+// hybridSearch's own default. Flipped to "rrf" in PR 3, gated on the
+// fusion-runner.mjs bench (docs/superpowers/specs/2026-07-26-retrieval-
+// fusion-overhaul-design.md).
+export const DEFAULT_FUSION: FusionMode = "weighted";
+
+// relatedSearch's own default. Deliberately NOT flipped alongside
+// DEFAULT_FUSION: relatedSearch is a materially different fusion problem (up
+// to 64 prefix-OR'd source tokens, document granularity) with no bench arm
+// exercising it. Callers can still opt in via `fusion: "rrf"`.
+const RELATED_DEFAULT_FUSION: FusionMode = "weighted";
+
+// RRF's rank-damping constant. Module-private and not configurable — RRF's
+// whole appeal is that it needs no tuning; k=60 is the standard literature
+// default.
+const RRF_K = 60;
 
 export interface HybridHit {
   path: string;
@@ -108,6 +151,20 @@ export interface HybridSearchResult {
   // protocol, it never calls a model (the same agent-as-judge division the
   // tier-2 protocol settled). Tool handler, not ranker.
   rerank?: { instructions: string; candidates: RerankCandidate[] };
+  // Part B (local cross-encoder reranker, spec 2026-07-26-contextual-
+  // chunking-reranker-design.md Decision 5/7). Set by the TOOL HANDLER, not
+  // this ranker — hybridSearch itself never reranks. `false` covers every
+  // degrade path uniformly: provider `none`, not-warm skip, inference
+  // Result.err, and timeout — the honest twin of `vectorUsed`. Absent from
+  // relatedSearch's result (no rerank stage there, spec exclusion).
+  rerankUsed?: boolean;
+  // Internal transport only (Part B, C2/C4): populated when the caller
+  // requested `capturePassageRefs`, one entry per hit in `hits`. The tool
+  // handler consumes this to resolve passage TEXT for exactly the rerank
+  // pool, then strips it before returning — outputSchema declares
+  // additionalProperties: false, and leaking synthesized index-layer refs
+  // would fail client-side validation anyway.
+  passageRefs?: Record<string, PassageRef>;
 }
 
 const SNIPPET_RADIUS = 140;
@@ -120,6 +177,16 @@ const SNIPPET_RADIUS = 140;
 // 64 is empirically generous for typical limit ≤ 10; bump if vault chunk
 // counts grow into the millions.
 const VEC_KNN_K = 64;
+
+// Over-fetch multiplier for the int8 scan-then-rescore path (spec 2026-07-26
+// embedding-refresh-quantization Decision 3, the Sentence Transformers
+// rescore-multiplier convention). The KNN scan asks sqlite-vec for
+// VEC_KNN_K * RESCORE_MULTIPLIER quantized-distance candidates; every
+// candidate is then rescored with exact float32 cosine against the durable
+// cache, and the final top-VEC_KNN_K comes from the RESCORED order — the
+// quantized distance is used for candidate selection only, never as a score
+// (disposition C3).
+const RESCORE_MULTIPLIER = 4;
 
 // Pulls a readable excerpt from a document body, centred on the earliest
 // occurrence of any query term. Falls back to the document head when no term
@@ -158,28 +225,64 @@ function normalize(scores: Map<string, number>): Map<string, number> {
   return new Map([...scores].map(([k, v]) => [k, v / max]));
 }
 
+// Rank-list construction for RRF. Sorts a score map descending (ties broken
+// by path ascending, for deterministic ranks) and maps each entry to its
+// scaled reciprocal-rank contribution (RRF_K + 1) / (RRF_K + rank), rank
+// 1-based. The (RRF_K + 1) numerator is a constant multiple of textbook
+// 1/(k + rank): ordering-identical, but contributions live in (0, 1] with
+// rank 1 = 1.0, so fused scores keep the top≈1 scale downstream consumers
+// (summaryLine's toFixed(3), the rerank pool, vault hooks) already
+// calibrate against. An empty map returns an empty map.
+function rrfContributions(scores: Map<string, number>): Map<string, number> {
+  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const out = new Map<string, number>();
+  ranked.forEach(([path], i) => {
+    const rank = i + 1;
+    out.set(path, (RRF_K + 1) / (RRF_K + rank));
+  });
+  return out;
+}
+
 // Wraps a prefix-OR'd FTS match string in an FTS5 column filter (e.g. "{title tags}"). Null query → null.
 function columnRestrict(matchQuery: string | null, columns: string): string | null {
   return matchQuery === null ? null : `${columns} : (${matchQuery})`;
 }
 
-// Band boundary for the chunk-mode tiered lexical combine. Documents with any
-// chunk-body match occupy the upper band (0.5, 1]; documents matched only via
-// title/tags occupy the lower band (0, 0.5]. A body match therefore always
-// outranks a title-only match by construction — no tunable weight. (Any split
-// in (0,1) gives the same strict ordering; 0.5 is the natural midpoint.)
+// Band boundary for the chunk-mode tiered lexical combine.
+//
+// Post-contextual-chunking semantics (spec 2026-07-26-contextual-chunking-
+// reranker-design.md, Decision 2 — READ THIS BEFORE CHANGING TIER_SPLIT or
+// tieredLexical): every chunk's context column now carries the document's
+// title, collection, and tags, so a title- or tag-matching query enters the
+// UPPER band via a genuine chunk match (chunkNorm), not just the lower-band
+// fallback below. The upper band's meaning has therefore shifted from "any
+// BODY match" to "any chunk match, including a context-only match" — the
+// strict "body outranks title-only" guarantee now holds only for docs with
+// NO context-column match at all. This is the mechanism the spec describes,
+// not a bug: bm25(chunks_fts) spans both columns by default weight, which
+// *is* contextual BM25.
+//
+// The `{title tags}` fallback tier below stays — it is spec Decision 2's
+// explicitly-kept "strict, harmless fallback" for a doc whose chunks are
+// somehow absent from chunks_fts (an index inconsistency, not the common
+// case) — largely redundant now that title/tag tokens flow through the
+// context column, but its retirement is deferred to the 2026-06-24
+// chunk-BM25 native/title-tag regression suites per the spec's own text.
 const TIER_SPLIT = 0.5;
 
-// Tiered combine of two normalized lexical signals. chunkNorm (body) is primary:
-// its docs land in the upper band, ordered by body score. titleTagNorm docs that
-// are NOT already body-matched land in the lower band, ordered by title/tag score
-// — a strict fallback that surfaces docs the body ranker missed (the native
-// title/tag case) without ever displacing a real body match (the RB case).
-// Both inputs are normalized to (0,1] (no zeros) by the callers, so upper band
-// is strictly >0.5 and lower band is <=0.5: strict, tie-free separation. The
-// `> 0` guards make that precondition self-enforcing rather than relying on the
-// upstream invariant — a non-positive score never creates a band entry (so it
-// can't floor a body match to exactly 0.5 and tie a title-only match).
+// Tiered combine of two normalized lexical signals. chunkNorm is primary — any
+// document with a real chunk match (body OR, since contextual chunking,
+// title/collection/tag tokens via the context column) lands in the upper band,
+// ordered by its chunk bm25 score. titleTagNorm docs that are NOT already
+// chunk-matched land in the lower band, ordered by title/tag score — a strict
+// fallback that surfaces docs the chunk ranker missed entirely (e.g. its
+// chunks are absent from chunks_fts) without ever displacing a real chunk
+// match. Both inputs are normalized to (0,1] (no zeros) by the callers, so
+// upper band is strictly >0.5 and lower band is <=0.5: strict, tie-free
+// separation. The `> 0` guards make that precondition self-enforcing rather
+// than relying on the upstream invariant — a non-positive score never creates
+// a band entry (so it can't floor a chunk match to exactly 0.5 and tie a
+// title-only match).
 function tieredLexical(
   chunkNorm: Map<string, number>,
   titleTagNorm: Map<string, number>,
@@ -236,39 +339,108 @@ function ftsRanking(db: IndexDb, query: string | null): Map<string, number> {
 // candidate set, no remainder is computed or reported, and the result is
 // shaped exactly as it would be in a vault where those collections do not
 // exist (2026-07-14 spec).
+// `bestHash` (Part B, C2/C4): the content_hash of each path's best-similarity
+// chunk — a cheap ref, not the chunk text itself. Resolving passage TEXT for
+// the whole over-fetched candidate set would pay per-candidate joins for an
+// O(collection)-sized set to use ~50 (C2); the tool handler resolves text
+// only for the top RERANK_POOL permitted hits via getChunkByPathAndHash.
+// `kind` selects the scoring path (spec Decision 3/C3):
+//   - "float32": byte-for-byte today's behaviour — sqlite-vec's own distance
+//     IS the score (1 - distance, clamped to [0, 1]).
+//   - "int8": scan-then-rescore. The KNN scan over the quantized column
+//     retrieves VEC_KNN_K * RESCORE_MULTIPLIER candidates by quantized
+//     distance (candidate SELECTION only); each candidate is then rescored
+//     with exact float32 cosine against the durable cache, joined in the
+//     same statement by content_hash + model. A candidate whose cache row
+//     is missing (a gc race between the vec mirror and the cache) is
+//     DROPPED from the ranking, not approximated with the quantized
+//     distance — the over-fetch makes dropping cheap and BM25 still carries
+//     the document. There is no distance -> score conversion on this path
+//     at all.
 function vecRanking(
   db: IndexDb,
   queryEmbedding: Float32Array,
   modelId: string,
+  kind: VecKind,
   readableCollections?: string[],
-): Map<string, number> {
-  const queryBlob = embeddingToBlob(queryEmbedding);
-  if (readableCollections !== undefined && readableCollections.length === 0) return new Map();
+): { scores: Map<string, number>; bestHash: Map<string, string> } {
+  if (readableCollections !== undefined && readableCollections.length === 0) {
+    return { scores: new Map(), bestHash: new Map() };
+  }
   const collectionFilter =
     readableCollections === undefined
       ? ""
       : ` AND v.collection IN (${readableCollections.map(() => "?").join(",")})`;
+
+  if (kind === "float32") {
+    const queryBlob = embeddingToBlob(queryEmbedding);
+    const rows = db
+      .prepare(
+        `SELECT c.path AS path, v.content_hash AS content_hash, v.distance AS distance
+           FROM embeddings_vec AS v
+           JOIN chunks AS c ON c.content_hash = v.content_hash
+          WHERE v.embedding MATCH ?
+            AND v.model = ?
+            AND v.k = ?${collectionFilter}
+          ORDER BY v.distance`,
+      )
+      .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+      path: string;
+      content_hash: string;
+      distance: number;
+    }[];
+    const scores = new Map<string, number>();
+    const bestHash = new Map<string, string>();
+    for (const r of rows) {
+      const sim = Math.max(0, 1 - r.distance);
+      const prev = scores.get(r.path) ?? -Infinity;
+      if (sim > prev) {
+        scores.set(r.path, sim);
+        bestHash.set(r.path, r.content_hash);
+      }
+    }
+    return { scores, bestHash };
+  }
+
+  // int8 path: over-fetch by RESCORE_MULTIPLIER, rescore exact-cosine
+  // against the durable cache (joined in-statement), drop orphans.
+  //
+  // `vec_int8(?)` wraps the MATCH parameter — sqlite-vec infers a bound
+  // blob's vector type from its byte layout (defaults to float32), so an
+  // unwrapped int8-byte blob against an int8[] column is rejected ("Query
+  // vector ... expected to be of type int8, but a float32 vector was
+  // provided"). Confirmed empirically against the pinned sqlite-vec build.
+  const queryBlob = quantizeInt8(queryEmbedding);
+  const overFetchK = VEC_KNN_K * RESCORE_MULTIPLIER;
   const rows = db
     .prepare(
-      `SELECT c.path AS path, v.distance AS distance
+      `SELECT c.path AS path, v.content_hash AS content_hash, e.embedding AS cache_embedding
          FROM embeddings_vec AS v
          JOIN chunks AS c ON c.content_hash = v.content_hash
-        WHERE v.embedding MATCH ?
+         LEFT JOIN embeddings AS e
+           ON e.content_hash = v.content_hash AND e.model = v.model
+        WHERE v.embedding MATCH vec_int8(?)
           AND v.model = ?
-          AND v.k = ?${collectionFilter}
-        ORDER BY v.distance`,
+          AND v.k = ?${collectionFilter}`,
     )
-    .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+    .all(queryBlob, modelId, overFetchK, ...(readableCollections ?? [])) as {
     path: string;
-    distance: number;
+    content_hash: string;
+    cache_embedding: Buffer | null;
   }[];
-  const result = new Map<string, number>();
+  const scores = new Map<string, number>();
+  const bestHash = new Map<string, string>();
   for (const r of rows) {
-    const sim = Math.max(0, 1 - r.distance);
-    const prev = result.get(r.path) ?? -Infinity;
-    if (sim > prev) result.set(r.path, sim);
+    if (!r.cache_embedding) continue; // orphan candidate — dropped, not approximated (C3)
+    const cached = toIndexDim(blobToEmbedding(r.cache_embedding), queryEmbedding.length);
+    const sim = Math.max(0, cosineSimilarity(queryEmbedding, cached));
+    const prev = scores.get(r.path) ?? -Infinity;
+    if (sim > prev) {
+      scores.set(r.path, sim);
+      bestHash.set(r.path, r.content_hash);
+    }
   }
-  return result;
+  return { scores, bestHash };
 }
 
 // snippet() excerpt budget, in tokens. ~48 stemmed tokens lands near the
@@ -294,8 +466,8 @@ const FTS_SNIPPET_TOKENS = 48;
 function chunkFtsRanking(
   db: IndexDb,
   query: string | null,
-): { scores: Map<string, number>; snippets: Map<string, string> } {
-  if (query === null) return { scores: new Map(), snippets: new Map() };
+): { scores: Map<string, number>; snippets: Map<string, string>; winners: Map<string, number> } {
+  if (query === null) return { scores: new Map(), snippets: new Map(), winners: new Map() };
   const rows = db
     .prepare(
       `SELECT c.path AS path, chunks_fts.rowid AS crowid, -bm25(chunks_fts) AS score
@@ -311,7 +483,9 @@ function chunkFtsRanking(
   // paid once per DOCUMENT, not once per matched chunk. (A ROW_NUMBER()
   // window subquery would not help here: the projected snippet() is still
   // evaluated per inner row before the window filter, and FTS5 auxiliary
-  // functions cannot move outside the MATCH cursor.)
+  // functions cannot move outside the MATCH cursor.) Also returned to the
+  // caller (Part B, C2/C4): the reranker's passage resolution reuses these
+  // same rowids via getChunkTextsByRowids instead of re-deriving a winner.
   const winners = new Map<string, number>();
   for (const r of rows) {
     // Some rows may produce a non-positive flipped score if FTS5 returned a
@@ -336,9 +510,15 @@ function chunkFtsRanking(
   if (winners.size > 0) {
     const ids = [...winners.values()];
     const placeholders = ids.map(() => "?").join(",");
+    // Column 1 (`text`) ONLY — spec Decision 4. chunks_fts is (context, text);
+    // targeting column 1 means a served snippet can never contain the
+    // synthesized breadcrumb, even when the query matched ONLY in the context
+    // column (a title/tag-only match). That case's snippet degrades to the
+    // chunk's leading body text — acceptable, and strictly better than
+    // showing invented lines.
     const snips = db
       .prepare(
-        `SELECT c.path AS path, snippet(chunks_fts, 0, '', '', '…', ?) AS snip
+        `SELECT c.path AS path, snippet(chunks_fts, 1, '', '', '…', ?) AS snip
            FROM chunks_fts
            JOIN chunks AS c ON c.rowid = chunks_fts.rowid
           WHERE chunks_fts MATCH ? AND chunks_fts.rowid IN (${placeholders})`,
@@ -349,7 +529,47 @@ function chunkFtsRanking(
       if (collapsed.length > 0) snippets.set(s.path, collapsed);
     }
   }
-  return { scores, snippets };
+  return { scores, snippets, winners };
+}
+
+// Part B (reranker) passage reference — a cheap POINTER to the chunk that
+// carried a hit's ranking, not the chunk text itself (C2: resolving text for
+// the whole over-fetched candidate set would pay per-candidate joins for a
+// set sized O(collection) to use ~50). The tool handler resolves text for
+// exactly the top RERANK_POOL permitted hits via the storage-layer lookups
+// (getChunkTextsByRowids / getChunkByPathAndHash / getFirstChunk).
+export type PassageRef =
+  | { kind: "lexical"; rowid: number }
+  | { kind: "vector"; contentHash: string }
+  | { kind: "first" };
+
+// Provenance choice (C4): a hit with both a lexical winner and a KNN-best
+// chunk presents the chunk from whichever signal contributed the higher
+// NORMALIZED score for that path — the cross-encoder judges the document on
+// the chunk that is the reason it ranked. `lexicalNorm`/`vecNorm` are the
+// within-ranker normalized (0,1] maps, independent of fusion mode (weighted
+// vs RRF is a downstream combination detail, not a provenance decision).
+// Only-one-signal-present → that one. Neither (a title/tag-tier-only hit,
+// or document-granularity search) → the terminal `first` fallback.
+function choosePassageRef(
+  path: string,
+  lexicalNorm: Map<string, number>,
+  winners: Map<string, number>,
+  vecNorm: Map<string, number>,
+  bestHash: Map<string, string>,
+): PassageRef {
+  const lex = lexicalNorm.get(path) ?? 0;
+  const vec = vecNorm.get(path) ?? 0;
+  const hasLex = lex > 0 && winners.has(path);
+  const hasVec = vec > 0 && bestHash.has(path);
+  if (hasLex && hasVec) {
+    return vec > lex
+      ? { kind: "vector", contentHash: bestHash.get(path) as string }
+      : { kind: "lexical", rowid: winners.get(path) as number };
+  }
+  if (hasLex) return { kind: "lexical", rowid: winners.get(path) as number };
+  if (hasVec) return { kind: "vector", contentHash: bestHash.get(path) as string };
+  return { kind: "first" };
 }
 
 interface RankOptions {
@@ -359,6 +579,11 @@ interface RankOptions {
   lexicalGranularity: "document" | "chunk";
   // Readable-collection allow-list pushed into the KNN scan; see vecRanking.
   readableCollections?: string[];
+  fusion: FusionMode;
+  // Part B: attach a cheap PassageRef per hit (see choosePassageRef) instead
+  // of resolving passage text here. Off by default — ref capture is wasted
+  // work when no reranker is configured (C2's "skip ref capture" revision).
+  capturePassageRefs?: boolean;
 }
 
 // Core ranker shared by query search and related-document search.
@@ -373,20 +598,30 @@ function rankDocuments(
   queryEmbedding: Float32Array | null,
   queryTokensForSnippet: string[],
   opts: RankOptions,
-): { hits: HybridHit[]; vectorUsed: boolean } {
+): { hits: HybridHit[]; vectorUsed: boolean; passageRefs: Map<string, PassageRef> } {
   let bm25Norm: Map<string, number>;
   // Best-chunk excerpts from the lexical pass (#108); empty for the
   // document-granularity path, whose hits fall back to the JS scan.
   let lexicalSnippets = new Map<string, string>();
+  // Raw (within-ranker-normalized) lexical/chunk signals, kept around ONLY
+  // for choosePassageRef — bm25Norm below is the TIERED combine that feeds
+  // the actual ranking; the passage-provenance choice wants the un-tiered
+  // chunk signal specifically (C4).
+  let chunkNormForRefs = new Map<string, number>();
+  let chunkWinners = new Map<string, number>();
   if (opts.lexicalGranularity === "chunk") {
     // Body granularity (the dilution fix) TIERED with a clean title/tag signal
     // (the native-shape fix). Each is normalized to its own max to reconcile the
-    // two FTS score scales; tieredLexical then ranks every body match above every
-    // title-only match. The title/tag signal reuses ftsRanking with a column-
-    // restricted query so it scores title+tags only (no body dilution).
+    // two FTS score scales; tieredLexical then ranks every chunk match (which,
+    // since contextual chunking, includes title/collection/tag-only matches via
+    // the context column — see the TIER_SPLIT comment) above every doc the
+    // chunk ranker missed entirely. The title/tag signal reuses ftsRanking with
+    // a column-restricted query so it scores title+tags only (no body dilution).
     const chunkRanked = chunkFtsRanking(db, matchQuery);
     lexicalSnippets = chunkRanked.snippets;
+    chunkWinners = chunkRanked.winners;
     const chunkNorm = normalize(chunkRanked.scores);
+    chunkNormForRefs = chunkNorm;
     const titleTagNorm = normalize(ftsRanking(db, columnRestrict(matchQuery, "{title tags}")));
     bm25Norm = tieredLexical(chunkNorm, titleTagNorm);
   } else {
@@ -395,17 +630,34 @@ function rankDocuments(
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
+  let vecBestHash = new Map<string, string>();
   if (queryEmbedding) {
     const provider = getProvider();
-    vectorRaw = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
+    const vecRanked = vecRanking(
+      db,
+      queryEmbedding,
+      provider.id,
+      getQuantize(),
+      opts.readableCollections,
+    );
+    vectorRaw = vecRanked.scores;
+    vecBestHash = vecRanked.bestHash;
     if (vectorRaw.size > 0) vectorUsed = true;
   }
-  const vectorNorm = normalize(vectorRaw);
 
   // With no usable vector signal, lexical ranking carries the full weight.
   const weights: HybridWeights = vectorUsed ? opts.weights : { bm25: 1, vector: 0 };
 
-  const candidates = new Set<string>([...bm25Norm.keys(), ...vectorNorm.keys()]);
+  // The two fusion modes differ only in how the lexical map (bm25Norm, built
+  // above — untouched by fusion mode) meets the vector map. "weighted" keeps
+  // today's cross-ranker normalize(); "rrf" replaces both with rank-based
+  // scaled-reciprocal-rank contributions and never normalizes across
+  // rankers. See rrfContributions and the file header.
+  const lexScores = opts.fusion === "rrf" ? rrfContributions(bm25Norm) : bm25Norm;
+  const vecNormForScore = normalize(vectorRaw);
+  const vecScores = opts.fusion === "rrf" ? rrfContributions(vectorRaw) : vecNormForScore;
+
+  const candidates = new Set<string>([...lexScores.keys(), ...vecScores.keys()]);
 
   // Fetch full rows for ONLY the candidate paths — not the whole vault. The
   // FTS + vector rankers above have already collapsed the vault to a small set
@@ -417,12 +669,13 @@ function rankDocuments(
   const byPath = new Map(getDocumentsByPaths(db, fetchPaths).map((d) => [d.path, d]));
 
   const hits: HybridHit[] = [];
+  const passageRefs = new Map<string, PassageRef>();
   for (const path of candidates) {
     if (path === opts.excludePath) continue;
     const doc = byPath.get(path);
     if (!doc) continue;
-    const bm25Score = bm25Norm.get(path) ?? 0;
-    const vectorScore = vectorNorm.get(path) ?? 0;
+    const bm25Score = lexScores.get(path) ?? 0;
+    const vectorScore = vecScores.get(path) ?? 0;
     const score = weights.bm25 * bm25Score + weights.vector * vectorScore;
     if (score <= 0) continue;
     hits.push({
@@ -446,10 +699,31 @@ function rankDocuments(
         superseded_by: doc.supersededBy,
       }),
     });
+    if (opts.capturePassageRefs) {
+      passageRefs.set(
+        path,
+        choosePassageRef(path, chunkNormForRefs, chunkWinners, vecNormForScore, vecBestHash),
+      );
+    }
   }
 
-  hits.sort((a, b) => b.score - a.score);
-  return { hits: hits.slice(0, opts.limit), vectorUsed };
+  // Deterministic tie-break in BOTH modes: exact fused-score ties are common
+  // under RRF (many candidates share the same rank-derived contribution),
+  // and insertion order otherwise descends from SQL row order with no
+  // cross-run guarantee. Benign for weighted mode too — it only reorders
+  // exact ties, which SQL row order previously broke arbitrarily.
+  hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  const sliced = hits.slice(0, opts.limit);
+  // Trim passageRefs to exactly the paths in the sliced result — the map was
+  // built over the full candidate set above.
+  const slicedRefs = new Map<string, PassageRef>();
+  if (opts.capturePassageRefs) {
+    for (const h of sliced) {
+      const ref = passageRefs.get(h.path);
+      if (ref) slicedRefs.set(h.path, ref);
+    }
+  }
+  return { hits: sliced, vectorUsed, passageRefs: slicedRefs };
 }
 
 export interface HybridSearchOptions {
@@ -470,6 +744,16 @@ export interface HybridSearchOptions {
   // the tool handler's post-rank canRead filter remains the authorization
   // boundary either way, and still covers the lexical half.
   readableCollections?: string[];
+  // Fusion mode (spec 2026-07-26 fusion overhaul, Decision 1). Library-level
+  // option — no MCP tool argument grows for it. hybridSearch defaults to
+  // DEFAULT_FUSION; relatedSearch defaults to its own RELATED_DEFAULT_FUSION.
+  fusion?: FusionMode;
+  // Part B: attach a PassageRef per hit so the tool handler can resolve
+  // rerank passage text without rankDocuments paying per-candidate joins for
+  // the whole over-fetched set (C2). Only vaultSearch sets this, and only
+  // when a reranker is actually configured — ref capture is wasted work
+  // otherwise.
+  capturePassageRefs?: boolean;
 }
 
 // Ranks vault documents against a free-text query.
@@ -480,6 +764,7 @@ export async function hybridSearch(
 ): Promise<Result<HybridSearchResult, Error>> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  const fusion = options.fusion ?? DEFAULT_FUSION;
   // Default flipped to "chunk" in v1.29.0: chunk-level BM25 recovers the
   // multi-topic-document dilution gap (RB recall + SQuAD retrieval) and produces
   // better end-to-end answers where it out-retrieves document, with no regression
@@ -500,13 +785,21 @@ export async function hybridSearch(
     queryEmbedding = embedResult.ok ? embedResult.value : null;
   }
 
-  const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, snippetTokens, {
-    weights,
-    limit: rankLimit,
-    excludePath: undefined,
-    lexicalGranularity,
-    readableCollections: options.readableCollections,
-  });
+  const { hits, vectorUsed, passageRefs } = rankDocuments(
+    db,
+    matchQuery,
+    queryEmbedding,
+    snippetTokens,
+    {
+      weights,
+      limit: rankLimit,
+      excludePath: undefined,
+      lexicalGranularity,
+      readableCollections: options.readableCollections,
+      fusion,
+      capturePassageRefs: options.capturePassageRefs,
+    },
+  );
 
   return ok({
     query,
@@ -514,6 +807,7 @@ export async function hybridSearch(
     vectorUsed,
     weights: vectorUsed ? weights : { bm25: 1, vector: 0 },
     hits,
+    ...(options.capturePassageRefs ? { passageRefs: Object.fromEntries(passageRefs) } : {}),
   });
 }
 
@@ -537,6 +831,7 @@ export function relatedSearch(
 ): Result<RelatedSearchResult, Error> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const limit = options.limit ?? 10;
+  const fusion = options.fusion ?? RELATED_DEFAULT_FUSION;
   // See hybridSearch: over-fetch lets the RBAC-filtering tool handler drop
   // restricted hits before slicing to the user-facing limit.
   const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
@@ -547,9 +842,20 @@ export function relatedSearch(
   }
 
   const provider = getProvider();
-  const chunkVectors = getChunksForPath(db, path, provider.id, provider.dim)
+  // getChunksForPath's expectedDim guard reads the DURABLE cache, which
+  // stores NATIVE-dim vectors (2026-07-26 embedding-refresh-quantization
+  // spec, disposition C9) — pass nativeDim (falling back to dim for
+  // providers with no Matryoshka gap), not the configured index dim, or
+  // every row would fail the dim guard and relatedSearch would silently see
+  // no vectors at all. Each chunk vector is then truncated to the
+  // CONFIGURED dim via toIndexDim before meanEmbedding averages them (C9:
+  // "meanEmbedding inputs pass through toIndexDim") — the mean of unit
+  // vectors stays in [-1, 1], so the later quantizeInt8 rescore path applies
+  // unchanged.
+  const chunkVectors = getChunksForPath(db, path, provider.id, provider.nativeDim ?? provider.dim)
     .map((c) => c.embedding)
-    .filter((e): e is Float32Array => e !== null);
+    .filter((e): e is Float32Array => e !== null)
+    .map((e) => toIndexDim(e, provider.dim));
   const queryEmbedding = meanEmbedding(chunkVectors);
 
   // Build the FTS5 match string from the source document's stored token
@@ -570,6 +876,7 @@ export function relatedSearch(
     excludePath: path,
     lexicalGranularity: "document",
     readableCollections: options.readableCollections,
+    fusion,
   });
 
   return ok({

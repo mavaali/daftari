@@ -14,12 +14,17 @@ import {
   vaultDeprecate,
   vaultPromote,
   vaultWrite,
+  writeTools,
 } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
 import { isGitRepo, log } from "../../src/utils/git.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
+
+const vaultWriteTool = writeTools.find((t) => t.name === "vault_write");
+if (!vaultWriteTool) throw new Error("vault_write not registered");
 
 // The write path stamps `new Date()` at write time (correct). Compare against a
 // date computed at ASSERTION time — never frozen at module load — and tolerate
@@ -76,6 +81,7 @@ describe("write tools", () => {
       if (!result.ok) return;
       expect(result.value.action).toBe("create");
       expect(result.value.commit).toMatch(/^[0-9a-f]+$/);
+      expectMatchesOutputSchema(vaultWriteTool, result.value);
 
       // The file is on disk with server-stamped updated / updated_by.
       const read = await vaultRead(vault, "pricing/new-note.md");
@@ -676,7 +682,7 @@ describe("write tools", () => {
       expect(update.value.commit).toMatch(/^[0-9a-f]+$/);
       // Indexed — the new content is searchable.
       expect(update.value.indexUpdated).toBe(true);
-      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const doc = getDocument(dbResult.value, "pricing/oc-note.md");
@@ -729,7 +735,7 @@ describe("write tools", () => {
       if (!commitsAfter.ok) return;
       expect(commitsAfter.value.length).toBe(commitsBefore.value.length);
       // Index still holds the v2 content, not the rejected v3.
-      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM);
+      const dbResult = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
       expect(dbResult.ok).toBe(true);
       if (!dbResult.ok) return;
       const doc = getDocument(dbResult.value, path);

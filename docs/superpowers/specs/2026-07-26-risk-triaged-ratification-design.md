@@ -1,7 +1,14 @@
 # Risk-triaged ratification — design
 
-2026-07-26. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-07-26. Status: **implemented (2026-07-28)**, after Jugalbandi dialectical
+review. The final plan resolved eight challenges (see
+`.jugalbandi/risk-triaged-ratification/final-plan.md`) and Mihir's 2026-07-27
+decision on the one escalated contradiction (Decision 1 vs. kill condition #1,
+below). The amendments below (C bullet, diff-size buckets, T-term
+canonicalization, W/witness keying, and the Decision 1 carve-out) are the
+disposition of that review, applied to this text per the plan's Phase 6 —
+corrected in place, not silently deviated from, because the spec was still
+"proposed" when implementation started.
 
 ## Why
 
@@ -48,6 +55,21 @@ recomputed estimate. Derivation also keeps the log honest: the JSONL remains
 a record of what was *proposed and decided*, never of what some scorer once
 thought.
 
+**Amendment (Mihir, 2026-07-27), narrow carve-out:** every decision record
+(ratify or reject) additionally carries a `risk_at_decision` field —
+JSONL-only, still never mirrored to sqlite, and **never read to influence
+queue ordering** (`rankPendingActions` does not read it; nothing does but the
+kill-condition-#1 analysis). It resolves the contradiction between this
+paragraph's ban and Kill condition #1's need for "risk quartile at decision
+time": B and T (0.40 of the total weight) are not replayable from the
+present-state log alone once the vault has moved on (a dependent gets
+written, a tension resolves), so a *frozen observation* stamped at the moment
+of decision is the only way to make that condition evaluable without
+approximation. This is a snapshot of a fact ("what the score computed to,
+right then"), not a stored authority ("what the score currently is") — the
+same distinction `ratified_at` / `ratified_by` already draw for every other
+decision field.
+
 The score is a weighted sum of six deterministic terms, no LLM anywhere:
 
 $$R(a) = \mathrm{clamp}_{[0,1]}\big(w_K K + w_D D + w_B B + w_T T + w_C C + w_W W\big)$$
@@ -61,30 +83,65 @@ $$R(a) = \mathrm{clamp}_{[0,1]}\big(w_K K + w_D D + w_B B + w_T T + w_C C + w_W 
   serialized `proposed_diff` — log-scaled so a 10 KB payload saturates and a
   one-field delta stays near zero. Large diffs are the literature's first
   routing trigger, and the size is already sitting in the record.
+  **Amendment (2026-07-27 final plan, C3):** the queue item's displayed
+  `small`/`medium`/`large` diff-size bucket is defined over **raw serialized
+  bytes** (`< 256` / `< 4096` / `≥ 4096`), decoupled from D's own formula
+  above. D<0.25 is unreachable in fewer than 9 bytes — no valid payload is
+  that small — so a bucket boundary drawn on D itself made `small`
+  mathematically unreachable and every lifecycle action read "medium." D's
+  formula is unchanged; only the display bucket moved to raw bytes.
 - **B — blast radius of the target.** Reuses the vault_tension_blast
   machinery (src/curation/tension-blast.ts): `min(1, primary/10 +
-  advisory/40)` over the target's inbound `sources` and link edges. The
-  reverse-source and reverse-link maps are already built on demand from
-  loaded docs; scoring N pending actions builds them once and probes N
-  targets — no new graph state.
+  advisory/40)` over the target's **direct (distance-1)** inbound `sources`
+  and link edges — the reverse-source and reverse-link maps are already
+  built on demand from loaded docs; scoring N pending actions builds them
+  once and probes N targets with no traversal (`computeBlast`'s BFS is not
+  called) — no new graph state.
 - **T — open tension.** 1 when the target sits in an unresolved tension
   (the `contestedDocs` set the witness already computes), else 0. Ruling on
   a contested doc is exactly the verdict that deserves a human's full
-  attention.
+  attention. **Amendment (2026-07-27 final plan, C5):** tension endpoints
+  (`sourceA`/`sourceB`) are free-form caller strings, while a staged
+  action's target is always a canonicalized relPath — raw string equality
+  between them silently understates T on aliased spellings. Endpoints are
+  canonicalized via the same link-resolution the codebase already uses for
+  aliased vault links before the comparison runs, with raw-string fallback
+  for an endpoint that resolves to nothing (it cannot match a live target
+  anyway).
 - **C — conflict / retry markers.** 1 when the proposal carries a non-empty
   `conflicts_with` (the #235 inter-proposal check in
   `stageActionWithConflictCheck`), or when the log holds a prior *rejected*
-  or *expired* proposal of the same kind against the same target — the
-  deterministic form of "the agent is retrying something a human already
-  declined." Else 0.
+  proposal of the same kind against the same target **with no later
+  *ratified* proposal for that same pair**. Else 0. **Amendment (2026-07-27
+  final plan, C1):** `expired` was removed from this clause. Decision 3's own
+  W-term rationale (below) already states "an expiry is reviewer capacity,
+  not a human declining" — counting it here too both contradicted that
+  rationale and double-counted the same record (C's flat +0.10 on top of W's
+  `expired/2`), and after one TTL-cycle backlog flush, `expired` would have
+  become a near-constant hit on exactly the vaults that most need triage. A
+  later ratified proposal on the same `(actionType, targetPath)` pair clears
+  the mark — the human approving a subsequent proposal on that target is not
+  the "retrying something already declined" signal this term exists to flag.
 - **W — proposer track record.** The witness's per-principal proposal
   tallies (src/witness/track-record.ts), Laplace-smoothed so a new principal
   defaults to the middle instead of the extremes:
   `(rejected + edited + expired/2 + 1) / (ratified + rejected + edited +
-  expired/2 + 2)`. Expiries count half — an expiry is reviewer capacity, not
-  proposer fault, but a principal whose proposals *always* expire is flooding
-  the queue and should pay some triage cost. `edited` is new; Decision 3
-  creates it.
+  expired/2 + 2)`, where `ratified` here means *plain* approvals
+  (`ratified − edited`, so an edit-then-approve is not double-counted).
+  Expiries count half — an expiry is reviewer capacity, not proposer fault,
+  but a principal whose proposals *always* expire is flooding the queue and
+  should pay some triage cost. `edited` is new; Decision 3 creates it.
+  **Amendment (2026-07-27 final plan, C4):** tallies key on the
+  **authenticated `staged_by_principal`** (the caller's `access.user` at
+  stage time) when a proposal record has one, falling back to the
+  unauthenticated, caller-claimed `proposed_by` string only for legacy
+  records or proposals staged without an access context. Keying on
+  `proposed_by` alone let a fresh claimed-agent string reset a principal's
+  history to the Laplace midpoint (laundering) and let junk staged under a
+  rival's claimed name count against the rival instead of the actual stager
+  (poisoning) — the same authenticated-identity fix already applied to the
+  decision side (`decided_by_principal`) but never to the proposal side
+  until this spec.
 
 The weights are exported constants, provisional, and to be calibrated
 against the outcome data Decision 3 starts collecting — the same "the
@@ -240,6 +297,10 @@ Three, one per load-bearing bet, checkable in the system's own numbers:
   indistinguishable from the bottom, the score is decorative — reviewers'
   judgment and the arithmetic disagree, and the arithmetic loses. Kill the
   score, keep the outcome logging (Decision 3 stands on its own).
+  **Amendment (Mihir, 2026-07-27):** "risk quartile at decision time" is read
+  from each decision record's `risk_at_decision` snapshot (the Decision 1
+  carve-out above), not approximated from present-state B/T — this condition
+  is now fully evaluable, not merely approximately so.
 - **Batch must not become the rubber stamp with better lighting.** If batch
   approvals come to dominate decisions with a near-zero in-batch reject
   rate while the arrival rate keeps climbing, enumerated-list batching

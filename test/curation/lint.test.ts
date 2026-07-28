@@ -1021,6 +1021,111 @@ ${body}
       const expired = await listStagedActions(dir, "expired");
       expect(expired.ok && expired.value.map((a) => a.id)).toEqual(["stage-001"]);
     });
+
+    // 2026-07-26 risk-triaged-ratification spec, Phase 5: risk-descending
+    // ordering (Decisions 1 + 2) and the pathVisible vantage filter closing
+    // the disclosure gap named by Decision 4 (staged-action targets used to
+    // bypass pathVisible entirely — src/curation/lint.ts:379-era).
+    describe("risk-triaged ordering and vantage filtering (2026-07-26 spec)", () => {
+      it("orders risk descending, inverting the prior expiry-only sort", async () => {
+        dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+        // Higher-risk supersede expires LATER; lower-risk confidence-up
+        // expires SOONER. An expiry-only sort would put the confidence-up
+        // first; risk-triaged ordering must not.
+        await stageAction(dir, {
+          actionType: "confidence-up",
+          targetPath: "pricing/typo-fix.md",
+          proposedBy: "agent:x",
+          rationale: "Typo fix.",
+          proposedDiff: { confidence: "high" },
+          proposedAt: "2026-06-01T00:00:00Z",
+          ttlDays: 5, // expires soonest
+        });
+        await stageAction(dir, {
+          actionType: "supersede",
+          targetPath: "pricing/big-doc.md",
+          proposedBy: "agent:x",
+          rationale: "Replaced by new analysis.",
+          proposedDiff: { superseded_by: "pricing/big-doc-v2.md" },
+          proposedAt: "2026-06-01T00:00:00Z",
+          ttlDays: 30, // expires later
+        });
+
+        const report = await runLint(dir, { now: new Date("2026-06-02T00:00:00Z") });
+        expect(report.ok).toBe(true);
+        if (!report.ok) return;
+        expect(report.value.stagedActions.map((s) => s.actionType)).toEqual([
+          "supersede",
+          "confidence-up",
+        ]);
+        expect(report.value.stagedActions[0]?.risk).toBeGreaterThan(
+          report.value.stagedActions[1]?.risk ?? 1,
+        );
+      });
+
+      it("keeps the expiry tiebreak among equally-risky items", async () => {
+        dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+        await stageAction(dir, {
+          ...base,
+          targetPath: "pricing/x.md",
+          proposedAt: "2026-06-01T00:00:00Z",
+          ttlDays: 20,
+        });
+        await stageAction(dir, {
+          ...base,
+          targetPath: "pricing/y.md",
+          proposedAt: "2026-06-01T00:00:00Z",
+          ttlDays: 5,
+        });
+
+        const report = await runLint(dir, { now: new Date("2026-06-02T00:00:00Z") });
+        expect(report.ok).toBe(true);
+        if (!report.ok) return;
+        expect(report.value.stagedActions[0]?.risk).toBeCloseTo(
+          report.value.stagedActions[1]?.risk ?? -1,
+          6,
+        );
+        // Soonest-to-expire (stage-002, ttl 5) sorts first among the tie.
+        expect(report.value.stagedActions.map((s) => s.id)).toEqual(["stage-002", "stage-001"]);
+      });
+
+      it("omits a pending item whose target is unreadable and buckets the remainder (Decision 4)", async () => {
+        dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+        await stageAction(dir, { ...base, targetPath: "pricing/visible.md" });
+        await stageAction(dir, { ...base, targetPath: "secret/hidden.md" });
+
+        const report = await runLint(dir, { pathVisible: (p) => !p.startsWith("secret/") });
+        expect(report.ok).toBe(true);
+        if (!report.ok) return;
+        expect(report.value.stagedActions.map((s) => s.targetPath)).toEqual(["pricing/visible.md"]);
+        expect(report.value.hiddenStagedActions).toBe("some");
+      });
+
+      it("an operator run (no pathVisible) shows every pending action, hiddenStagedActions 'none'", async () => {
+        dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+        await stageAction(dir, { ...base, targetPath: "pricing/visible.md" });
+        await stageAction(dir, { ...base, targetPath: "secret/hidden.md" });
+
+        const report = await runLint(dir);
+        expect(report.ok).toBe(true);
+        if (!report.ok) return;
+        expect(report.value.stagedActions).toHaveLength(2);
+        expect(report.value.hiddenStagedActions).toBe("none");
+      });
+
+      it("two vantages can produce different orderings — accepted consequence, pinned deliberately", async () => {
+        dir = mkdtempSync(join(tmpdir(), "daftari-lint-staged-"));
+        await stageAction(dir, { ...base, targetPath: "pricing/a.md" });
+        await stageAction(dir, { ...base, targetPath: "intel/b.md" });
+
+        const pricingOnly = await runLint(dir, { pathVisible: (p) => p.startsWith("pricing/") });
+        const intelOnly = await runLint(dir, { pathVisible: (p) => p.startsWith("intel/") });
+        expect(pricingOnly.ok && intelOnly.ok).toBe(true);
+        if (!pricingOnly.ok || !intelOnly.ok) return;
+        expect(pricingOnly.value.stagedActions.map((s) => s.targetPath)).toEqual(["pricing/a.md"]);
+        expect(intelOnly.value.stagedActions.map((s) => s.targetPath)).toEqual(["intel/b.md"]);
+      });
+    });
   });
 
   // ----- Task 7: coverageEquity in runLint -----------------------------------

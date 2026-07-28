@@ -426,10 +426,61 @@ const tier2VerdictSchema: Record<string, unknown> = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+// Row cap for the queue summary — a tool-specific value, distinct from the
+// shared SUMMARY_MAX_ROWS default: a tier-2 item carries a usage span and a
+// full question, so 10 rows is already a denser line budget than a bare path
+// listing.
+const TIER2_QUEUE_SUMMARY_ROWS = 10;
+
+function summarizeTier2Queue(value: unknown): string {
+  const r = value as Tier2QueueResult;
+  if (r.total === 0) return "0 pending tier-2 judgments.";
+  const shown = r.items.slice(0, TIER2_QUEUE_SUMMARY_ROWS);
+  const lines = [
+    `${r.total} pending tier-2 judgment(s):`,
+    ...shown.map((i) => `  ${i.artifact} vs ${i.unit} (${i.edge_class})`),
+  ];
+  const rest = r.total - shown.length;
+  if (rest > 0) lines.push(`  … ${rest} more in structuredContent`);
+  return lines.join("\n");
+}
+
+function docLinksTier2Queue(value: unknown): string[] {
+  const r = value as Tier2QueueResult;
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const i of r.items.slice(0, TIER2_QUEUE_SUMMARY_ROWS)) {
+    for (const p of [i.artifact, i.unit]) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      paths.push(p);
+    }
+  }
+  return paths;
+}
+
+function summarizeTier2Verdict(value: unknown): string {
+  const r = value as Tier2VerdictResult;
+  const v = r.recorded;
+  const tension = r.tension_id ? ` — tension ${r.tension_id}` : "";
+  return `${v.artifact} vs ${v.unit}: ${v.verdict}${tension}`;
+}
+
+function docLinksTier2Verdict(value: unknown): string[] {
+  const v = (value as Tier2VerdictResult).recorded;
+  return [v.artifact, v.unit];
+}
+
 export const tier2Tools: ToolDefinition[] = [
   {
     name: "vault_tier2_queue",
     title: "Semantic-review queue (tier 2)",
+    oneLine: "List pairs awaiting semantic review (tier 2).",
     annotations: { readOnlyHint: true },
     description:
       "The tier-2 semantic-review queue (#232): every declared/earned " +
@@ -467,11 +518,14 @@ export const tier2Tools: ToolDefinition[] = [
       },
       required: ["items", "total"],
     },
+    summarize: summarizeTier2Queue,
+    docLinks: docLinksTier2Queue,
     handler: (vaultRoot, args, access) => vaultTier2Queue(vaultRoot, args, access),
   },
   {
     name: "vault_tier2_verdict",
     title: "Record a tier-2 semantic verdict",
+    oneLine: "Record a tier-2 semantic-review verdict for a dependent pair.",
     annotations: { readOnlyHint: false, idempotentHint: false },
     description:
       "Record the answer to a vault_tier2_queue item (#232 tier 2). " +
@@ -529,6 +583,8 @@ export const tier2Tools: ToolDefinition[] = [
       },
       required: ["recorded", "tension_id"],
     },
+    summarize: summarizeTier2Verdict,
+    docLinks: docLinksTier2Verdict,
     handler: (vaultRoot, args, access) => vaultTier2Verdict(vaultRoot, args, access),
   },
 ];

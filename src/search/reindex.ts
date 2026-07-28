@@ -31,6 +31,7 @@ import {
   clearIndex,
   deleteDocument,
   documentCount,
+  embeddingToBlob,
   existingEmbeddingHashes,
   gcOrphanedEmbeddings,
   getEmbeddingBlob,
@@ -44,21 +45,29 @@ import {
   insertEmbeddingVec,
   openIndexDb,
   pruneStaleVecRows,
+  quantizeInt8,
   replaceDocLinks,
   setMeta,
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
-import { chunkText, embed, getProvider } from "./vector.js";
+import {
+  chunkDocument,
+  type DocumentChunk,
+  embed,
+  embeddingInput,
+  getProvider,
+  getQuantize,
+  toIndexDim,
+} from "./vector.js";
 
-// Opens the index DB with the active embedding provider's dim, so the
-// sqlite-vec virtual table is created (or rebuilt) at the right
-// dimensionality. Every reindex / index-document path opens the DB this
-// way; a caller that doesn't care about vectors (a freshness probe,
-// say) can fall back to `openIndexDb(vault)` which uses a default dim.
+// Opens the index DB with the active embedding provider's dim + the active
+// quantize kind, so the sqlite-vec virtual table is created (or rebuilt) at
+// the right dimensionality and representation. Every reindex / index-
+// document path opens the DB this way.
 function openIndexForActiveProvider(vaultRoot: string) {
-  return openIndexDb(vaultRoot, getProvider().dim);
+  return openIndexDb(vaultRoot, getProvider().dim, getQuantize());
 }
 
 // Repopulates the sqlite-vec mirror from the durable `embeddings` cache
@@ -66,7 +75,16 @@ function openIndexForActiveProvider(vaultRoot: string) {
 // table always reflects the current vault. The previous mirror contents
 // are dropped wholesale — simpler and faster than a diff for the sizes
 // this index reaches in practice.
+//
+// The durable cache stores the FULL NATIVE-dim vector (2026-07-26 embedding-
+// refresh-quantization spec, disposition C9) — `toIndexDim` truncates (+
+// re-normalizes) to the active provider's CONFIGURED dim here, the single
+// choke point where a cached vector meets the index. `quantizeInt8` then
+// applies on top when the active quantize kind is "int8" — the vec table
+// itself never sees a native-dim or float32-when-int8-configured vector.
 function rebuildEmbeddingsVec(db: IndexDb, modelId: string): void {
+  const dim = getProvider().dim;
+  const kind = getQuantize();
   const rebuild = db.transaction(() => {
     clearEmbeddingsVec(db);
     // One row per (content_hash, collection): the vec table's `collection`
@@ -85,19 +103,37 @@ function rebuildEmbeddingsVec(db: IndexDb, modelId: string): void {
           WHERE e.model = ?`,
       )
       .all(modelId) as { content_hash: string; collection: string; embedding: Buffer }[];
-    const insert = db.prepare(
+    // sqlite-vec infers a bound blob's vector type from its byte layout
+    // (defaults to float32); an int8 column needs the value wrapped in
+    // `vec_int8(?)` — see insertEmbeddingVec's comment in index-db.ts for
+    // the empirical confirmation against the pinned build. Two prepared
+    // statements, chosen once outside the loop, keep the per-row cost to a
+    // single `.run()` regardless of kind.
+    const insertFloat32 = db.prepare(
       "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, ?)",
     );
+    const insertInt8 = db.prepare(
+      "INSERT INTO embeddings_vec(content_hash, model, collection, embedding) VALUES (?, ?, ?, vec_int8(?))",
+    );
     for (const row of rows) {
-      insert.run(row.content_hash, modelId, row.collection, row.embedding);
+      const truncated = toIndexDim(blobToEmbedding(row.embedding), dim);
+      if (kind === "int8") {
+        insertInt8.run(row.content_hash, modelId, row.collection, quantizeInt8(truncated));
+      } else {
+        insertFloat32.run(row.content_hash, modelId, row.collection, embeddingToBlob(truncated));
+      }
     }
   });
   rebuild();
 }
 
-// The cached vector for a hash, as a Float32Array, or null when the durable
-// cache has no row for this model. Used by the incremental path to mirror a
-// cache-hit chunk into a collection whose vec row does not exist yet.
+// The cached vector for a hash, as a Float32Array AT NATIVE DIM (the
+// durable cache's storage width), or null when the cache has no row for
+// this model. Used by the incremental path to mirror a cache-hit chunk into
+// a collection whose vec row does not exist yet. Callers that write this
+// vector into `embeddings_vec` must apply `toIndexDim` first — this
+// function itself does no truncation, matching `getEmbeddingBlob`'s raw
+// pass-through contract.
 function readCachedVector(db: IndexDb, hash: string, modelId: string): Float32Array | null {
   const blob = getEmbeddingBlob(db, hash, modelId);
   return blob === null ? null : blobToEmbedding(blob);
@@ -156,9 +192,30 @@ function manifestsMatch(a: Record<string, number>, b: Record<string, number>): b
 }
 
 // Returns true when the persisted index already reflects every markdown file
-// on disk: doc count is non-zero, a manifest exists, and every file's mtime
-// matches the stored value. Used by `main()` to skip a 20+ minute re-embed
-// pass on every restart of a vault that hasn't changed.
+// on disk: doc count is non-zero, a manifest exists, every file's mtime
+// matches the stored value, AND the vec mirror is coherent with the active
+// provider/quantize config (below). Used by `main()` to skip a 20+ minute
+// re-embed pass on every restart of a vault that hasn't changed.
+//
+// Vec-coherence check (2026-07-26 embedding-refresh-quantization spec,
+// disposition C1 — this is what makes the "config change + background
+// reindex" migration story in the spec's Decision 4 actually real). Without
+// it, a config-only change to `provider`, `dim`, or `quantize` on an
+// unchanged vault would let `openIndexForActiveProvider`'s drop-recreate
+// (openIndexDb) empty `embeddings_vec` and then have THIS function report
+// "fresh" anyway — vector search goes silently dark until a manual
+// vault_reindex. Two checks, either failing routes through the normal
+// reindex:
+//   (a) the stored `embedding_model` meta must equal the active provider's
+//       cache id — catches a provider switch AND a `#pN` prompt-revision
+//       bump (which changes the cache id under a still-same-looking config
+//       provider name).
+//   (b) `embeddings_vec` must be non-empty whenever `chunks` is non-empty —
+//       catches a dim or quantize flip, whose drop-recreate happens under
+//       an UNCHANGED model id, so (a) alone would miss it.
+// For a dim/quantize flip this routes into a reindex that is all cache hits
+// (a vec-mirror rebuild in minutes); for a provider switch it is the
+// intended cold re-embed.
 export async function isIndexFresh(vaultRoot: string): Promise<boolean> {
   const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return false;
@@ -169,7 +226,17 @@ export async function isIndexFresh(vaultRoot: string): Promise<boolean> {
     if (!stored) return false;
     const current = await buildManifest(vaultRoot);
     if (!current) return false;
-    return manifestsMatch(stored, current);
+    if (!manifestsMatch(stored, current)) return false;
+
+    if (getMeta(db, "embedding_model") !== getProvider().id) return false;
+    const chunkRows = (db.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+    if (chunkRows > 0) {
+      const vecRows = (
+        db.prepare("SELECT COUNT(*) AS n FROM embeddings_vec").get() as { n: number }
+      ).n;
+      if (vecRows === 0) return false;
+    }
+    return true;
   } finally {
     db.close();
   }
@@ -250,7 +317,7 @@ export function reindexWarnings(result: ReindexResult): string[] {
 
 interface StagedDocument {
   doc: IndexedDocument;
-  chunks: string[];
+  chunks: DocumentChunk[];
   hashes: string[];
 }
 
@@ -298,8 +365,11 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
   // match still ranks.
   const tokens = tokenize(`${fm.title} ${fm.tags.join(" ")} ${body}`);
 
-  const chunks = chunkText(body);
-  const hashes = chunks.map((t) => sha256Hex(t));
+  // Hoisted so the document row and the chunk breadcrumbs agree on the same
+  // resolved collection (spec 2026-07-26 contextual-chunking Decision 2).
+  const collection = fm.collection || (relPath.split("/")[0] ?? "");
+  const chunks = chunkDocument({ title: fm.title, collection, tags: fm.tags, body });
+  const hashes = chunks.map((c) => sha256Hex(embeddingInput(c)));
 
   return {
     kind: "staged",
@@ -308,7 +378,7 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
       doc: {
         path: relPath,
         title: fm.title,
-        collection: fm.collection || (relPath.split("/")[0] ?? ""),
+        collection,
         domain: fm.domain,
         status: fm.status,
         confidence: fm.confidence,
@@ -321,6 +391,7 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
         supersededBy: fm.superseded_by,
         validFrom: fm.valid_from,
         validUntil: fm.valid_until,
+        updatedBy: fm.updated_by,
       },
       chunks,
       hashes,
@@ -374,11 +445,12 @@ function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
     for (const { doc, chunks, hashes } of staged) {
       insertDocument(db, doc);
       replaceDocLinks(db, doc.path, outgoingLinkTargets(doc.content, doc.path, linkIndexes));
-      chunks.forEach((text, chunkIndex) => {
+      chunks.forEach((chunk, chunkIndex) => {
         const row: ChunkRowInput = {
           path: doc.path,
           chunkIndex,
-          text,
+          text: chunk.text,
+          context: chunk.context,
           contentHash: hashes[chunkIndex] ?? "",
         };
         insertChunkRow(db, row);
@@ -416,9 +488,9 @@ export async function reindexVault(
     for (const s of staged) {
       for (let i = 0; i < s.chunks.length; i++) {
         const h = s.hashes[i] ?? "";
-        const t = s.chunks[i] ?? "";
+        const chunk = s.chunks[i];
         allHashes.push(h);
-        allTexts.push(t);
+        allTexts.push(chunk ? embeddingInput(chunk) : "");
       }
     }
 
@@ -467,7 +539,10 @@ export async function reindexVault(
             const h = sliceHashes[i] ?? "";
             const vec = embedResult.value[i];
             if (!vec) continue;
-            insertEmbedding(db, h, provider.id, vec, indexedAt, provider.dim);
+            // The durable cache stores NATIVE-dim vectors (C9) — embed()
+            // already returns them at that width; the guard here checks
+            // against nativeDim, not the (possibly smaller) configured dim.
+            insertEmbedding(db, h, provider.id, vec, indexedAt, provider.nativeDim ?? provider.dim);
           }
         });
         writeEmbeds();
@@ -593,7 +668,8 @@ export async function indexDocument(
       const h = hashes[i] ?? "";
       if (cached.has(h)) continue;
       if (missTextByHash.has(h)) continue;
-      missTextByHash.set(h, chunks[i] ?? "");
+      const chunk = chunks[i];
+      missTextByHash.set(h, chunk ? embeddingInput(chunk) : "");
     }
     const missHashes = [...missTextByHash.keys()];
     const missTexts = missHashes.map((h) => missTextByHash.get(h) ?? "");
@@ -608,7 +684,9 @@ export async function indexDocument(
             const h = missHashes[i] ?? "";
             const vec = embedResult.value[i];
             if (!vec) continue;
-            insertEmbedding(db, h, provider.id, vec, createdAt, provider.dim);
+            // Native-dim cache write (C9) — see the reindexVault call site's
+            // comment for the same rationale.
+            insertEmbedding(db, h, provider.id, vec, createdAt, provider.nativeDim ?? provider.dim);
             newlyEmbedded.push({ hash: h, vec });
           }
         });
@@ -649,11 +727,12 @@ export async function indexDocument(
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
       replaceDocLinks(db, doc.path, linkTargets);
-      chunks.forEach((text, chunkIndex) => {
+      chunks.forEach((chunk, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,
           chunkIndex,
-          text,
+          text: chunk.text,
+          context: chunk.context,
           contentHash: hashes[chunkIndex] ?? "",
         });
       });
@@ -666,7 +745,15 @@ export async function indexDocument(
       // the loop runs over every chunk hash and asks the table, rather than
       // over the newly-embedded list alone. vec0 supports neither
       // INSERT OR IGNORE nor a unique constraint, so the check is explicit.
+      //
+      // `vec` here is NATIVE-dim (freshVecs from the just-embedded batch, or
+      // readCachedVector from the durable cache — both native-dim per C9);
+      // `toIndexDim` truncates to the active provider's configured dim
+      // before the vec-table write, and `insertEmbeddingVec` quantizes on
+      // top when the active quantize kind is "int8".
       const freshVecs = new Map(newlyEmbedded.map(({ hash, vec }) => [hash, vec]));
+      const indexDim = provider.dim;
+      const quantizeKind = getQuantize();
       for (const hash of new Set(hashes)) {
         if (hash === "") continue;
         // Drop rows this hash no longer justifies before adding the new one:
@@ -678,7 +765,16 @@ export async function indexDocument(
         pruneStaleVecRows(db, hash, provider.id);
         if (hasEmbeddingVec(db, hash, provider.id, doc.collection)) continue;
         const vec = freshVecs.get(hash) ?? readCachedVector(db, hash, provider.id);
-        if (vec) insertEmbeddingVec(db, hash, provider.id, doc.collection, vec);
+        if (vec) {
+          insertEmbeddingVec(
+            db,
+            hash,
+            provider.id,
+            doc.collection,
+            toIndexDim(vec, indexDim),
+            quantizeKind,
+          );
+        }
       }
     });
     write();

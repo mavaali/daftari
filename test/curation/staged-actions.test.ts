@@ -7,9 +7,11 @@ import {
   listStagedActions,
   materializeStagedActions,
   nowISO,
+  proposalTallies,
   rebuildStagedActionsIndex,
   recordDecision,
   type StageActionInput,
+  type StagedAction,
   stageAction,
   stageActionWithConflictCheck,
   stagedActionsPath,
@@ -190,7 +192,7 @@ describe("staged-actions", () => {
       ratifiedBy: "human:mihir",
     });
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {
@@ -213,7 +215,7 @@ describe("staged-actions", () => {
     if (!result.ok) return;
     expect(result.value.count).toBe(1);
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     try {
       expect(getAllStagedActions(opened.value)).toHaveLength(1);
@@ -337,6 +339,201 @@ describe("staged-actions", () => {
       // The proposal itself landed — only the tension write failed.
       const staged = await getStagedActionById(vault, "stage-002");
       expect(staged.ok && staged.value?.status).toBe("pending");
+    });
+  });
+
+  // 2026-07-26 risk-triaged-ratification spec, Decision 3 (Phase 1): the
+  // decision-record extensions (decision_kind, reason_category, amended_diff,
+  // staged_by_principal) and Mihir's 2026-07-27 risk_at_decision addendum.
+  describe("Decision 3 fields (decision_kind, reason_category, amended_diff, staged_by_principal)", () => {
+    it("round-trips decision_kind, reason_category, amended_diff, and risk_at_decision through collapse", async () => {
+      const staged = await stageAction(vault, sampleInput);
+      if (!staged.ok) return;
+      const decided = await recordDecision(vault, staged.value.id, {
+        status: "ratified",
+        ratifiedAt: nowISO(),
+        ratifiedBy: "human:mihir",
+        decisionKind: "edit-then-approve",
+        reasonCategory: "overbroad",
+        amendedDiff: { status: { from: "draft", to: "canonical" }, note: "edited" },
+        riskAtDecision: 0.42,
+      });
+      expect(decided.ok).toBe(true);
+      if (!decided.ok) return;
+      expect(decided.value.decisionKind).toBe("edit-then-approve");
+      expect(decided.value.reasonCategory).toBe("overbroad");
+      expect(decided.value.amendedDiff).toEqual({
+        status: { from: "draft", to: "canonical" },
+        note: "edited",
+      });
+      expect(decided.value.riskAtDecision).toBe(0.42);
+
+      // Re-read from a fresh collapse (not the in-memory mirror) — the two
+      // sites the module warns about must not drift.
+      const reread = await getStagedActionById(vault, staged.value.id);
+      expect(reread.ok).toBe(true);
+      if (!reread.ok || !reread.value) return;
+      expect(reread.value.decisionKind).toBe("edit-then-approve");
+      expect(reread.value.reasonCategory).toBe("overbroad");
+      expect(reread.value.amendedDiff).toEqual({
+        status: { from: "draft", to: "canonical" },
+        note: "edited",
+      });
+      expect(reread.value.riskAtDecision).toBe(0.42);
+    });
+
+    it("an old-shaped decision record (no Decision-3 fields) still collapses, yielding nulls", async () => {
+      const staged = await stageAction(vault, sampleInput);
+      if (!staged.ok) return;
+      const decided = await recordDecision(vault, staged.value.id, {
+        status: "ratified",
+        ratifiedAt: nowISO(),
+        ratifiedBy: "human:mihir",
+      });
+      expect(decided.ok).toBe(true);
+      if (!decided.ok) return;
+      expect(decided.value.decisionKind).toBeNull();
+      expect(decided.value.reasonCategory).toBeNull();
+      expect(decided.value.amendedDiff).toBeNull();
+      expect(decided.value.riskAtDecision).toBeNull();
+      expect(decided.value.stagedByPrincipal).toBeNull();
+    });
+
+    it("records staged_by_principal on the proposal and round-trips it", async () => {
+      const staged = await stageAction(vault, { ...sampleInput, stagedByPrincipal: "human:mihir" });
+      if (!staged.ok) return;
+      const fetched = await getStagedActionById(vault, staged.value.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok || !fetched.value) return;
+      expect(fetched.value.stagedByPrincipal).toBe("human:mihir");
+    });
+
+    it("recordDecision validates decisionKind and reasonCategory enum membership", async () => {
+      const staged = await stageAction(vault, sampleInput);
+      if (!staged.ok) return;
+      const badKind = await recordDecision(vault, staged.value.id, {
+        status: "ratified",
+        ratifiedAt: nowISO(),
+        ratifiedBy: "human:mihir",
+        decisionKind: "not-a-real-kind" as never,
+      });
+      expect(badKind.ok).toBe(false);
+      const badCategory = await recordDecision(vault, staged.value.id, {
+        status: "rejected",
+        ratifiedAt: nowISO(),
+        ratifiedBy: "human:mihir",
+        reasonCategory: "not-a-real-category" as never,
+      });
+      expect(badCategory.ok).toBe(false);
+    });
+
+    it("the sweep's expiry decisions stay bare — no Decision-3 fields, no risk_at_decision", async () => {
+      await stageAction(vault, { ...sampleInput, proposedAt: "2026-01-01T00:00:00Z" });
+      const swept = await sweepExpiredActions(vault, new Date("2026-06-01T00:00:00Z"));
+      expect(swept.ok).toBe(true);
+      const expired = await getStagedActionById(vault, "stage-001");
+      expect(expired.ok).toBe(true);
+      if (!expired.ok || !expired.value) return;
+      expect(expired.value.status).toBe("expired");
+      expect(expired.value.decisionKind).toBeNull();
+      expect(expired.value.reasonCategory).toBeNull();
+      expect(expired.value.riskAtDecision).toBeNull();
+    });
+  });
+
+  describe("proposalTallies", () => {
+    function action(overrides: Partial<StagedAction> = {}): StagedAction {
+      return {
+        id: "stage-001",
+        actionType: "promote",
+        targetPath: "a.md",
+        proposedBy: "agent:x",
+        proposedAt: "2026-06-01T00:00:00Z",
+        expiresAt: "2026-06-15T00:00:00Z",
+        status: "pending",
+        rationale: "r",
+        proposedDiff: {},
+        ratifiedAt: null,
+        ratifiedBy: null,
+        ratificationReason: null,
+        decidedByPrincipal: null,
+        runId: null,
+        decisionKind: null,
+        reasonCategory: null,
+        amendedDiff: null,
+        stagedByPrincipal: null,
+        riskAtDecision: null,
+        ...overrides,
+      };
+    }
+
+    it("counts edited (a subset of ratified) and byCategory over decided rows", () => {
+      const actions: StagedAction[] = [
+        action({
+          id: "1",
+          status: "ratified",
+          decisionKind: "edit-then-approve",
+          reasonCategory: "overbroad",
+        }),
+        action({ id: "2", status: "ratified" }),
+        action({ id: "3", status: "rejected", reasonCategory: "duplicate" }),
+        action({ id: "4", status: "pending" }),
+      ];
+      const tallies = proposalTallies(actions);
+      const t = tallies.get("agent:x");
+      expect(t).toEqual({
+        total: 4,
+        ratified: 2,
+        rejected: 1,
+        expired: 0,
+        pending: 1,
+        edited: 1,
+        byCategory: { overbroad: 1, duplicate: 1 },
+      });
+    });
+
+    it("keys by stagedByPrincipal, falling back to proposedBy (anti-laundering, C4)", () => {
+      const actions: StagedAction[] = [
+        action({
+          id: "1",
+          proposedBy: "agent:rival-name-1",
+          stagedByPrincipal: "human:mihir",
+          status: "rejected",
+        }),
+        action({
+          id: "2",
+          proposedBy: "agent:rival-name-2",
+          stagedByPrincipal: "human:mihir",
+          status: "rejected",
+        }),
+      ];
+      const tallies = proposalTallies(actions);
+      // Rotating the unauthenticated proposed_by string does NOT fragment the
+      // tally — both land under the one authenticated stager.
+      expect(tallies.size).toBe(1);
+      expect(tallies.get("human:mihir")?.rejected).toBe(2);
+      expect(tallies.has("agent:rival-name-1")).toBe(false);
+      expect(tallies.has("agent:rival-name-2")).toBe(false);
+    });
+
+    it("junk staged under a rival's claimed name counts against the actual stager (anti-poisoning, C4)", () => {
+      const actions: StagedAction[] = [
+        action({
+          id: "1",
+          proposedBy: "agent:rival",
+          stagedByPrincipal: "human:attacker",
+          status: "rejected",
+        }),
+      ];
+      const tallies = proposalTallies(actions);
+      expect(tallies.get("human:attacker")?.rejected).toBe(1);
+      expect(tallies.has("agent:rival")).toBe(false);
+    });
+
+    it("falls back to proposedBy for legacy records with no stagedByPrincipal", () => {
+      const actions: StagedAction[] = [action({ id: "1", proposedBy: "agent:legacy" })];
+      const tallies = proposalTallies(actions);
+      expect(tallies.get("agent:legacy")?.total).toBe(1);
     });
   });
 });

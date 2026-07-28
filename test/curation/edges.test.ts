@@ -3,10 +3,16 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   agedStrength,
+  computeInputsFingerprint,
   contestEdge,
+  EDGE_CALIBRATION_LOOP_PRINCIPAL,
   EDGE_K_CAP,
+  edgeEvidenceClasses,
   edgesPath,
+  effectiveK,
+  evidenceClassKey,
   getEdge,
+  independenceCalibrationView,
   listEdges,
   observeEdge,
   rebuildEdgesIndex,
@@ -260,7 +266,7 @@ describe("derives_from edge store", () => {
     });
 
     mkdirSync(join(vault, ".daftari"), { recursive: true });
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -573,7 +579,7 @@ describe("derives_from direction verdict", () => {
       at: T0,
     });
     mkdirSync(join(vault, ".daftari"), { recursive: true });
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -601,7 +607,7 @@ describe("sql-authoritative edge reads", () => {
   });
 
   function withDb<T>(fn: (db: IndexDb) => T): T {
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {
@@ -740,5 +746,286 @@ describe("sql-authoritative edge reads", () => {
     expect(got.value?.observations).toBe(2);
     expect(got.value?.contestedAt).toBe(T2);
     expect(got.value?.contestReason).toBe("case-2 contradiction");
+  });
+});
+
+describe("independence-aware promotion: fingerprint + effective k (Decisions 1-2)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("effectiveK: geometric discount within a class, full credit across classes", () => {
+    // Single class of 5 (all-legacy): 1 + .5 + .25 + .125 + .0625 = 1.9375.
+    expect(effectiveK([5])).toBeCloseTo(1.9375, 6);
+    // Five distinct classes: full credit each, kEff = 5.
+    expect(effectiveK([1, 1, 1, 1, 1])).toBeCloseTo(5, 6);
+    // Empty trail.
+    expect(effectiveK([])).toBe(0);
+  });
+
+  it("evidenceClassKey: prompt is excluded; a missing component is the ∅ sentinel", () => {
+    const a = evidenceClassKey({ inputs: "h1", principal: "p1", model: "m1", prompt: "forward" });
+    const b = evidenceClassKey({ inputs: "h1", principal: "p1", model: "m1", prompt: "reverse" });
+    expect(a).toBe(b); // prompt-only variation never opens a class
+    const legacy1 = evidenceClassKey(undefined);
+    const legacy2 = evidenceClassKey({});
+    expect(legacy1).toBe(legacy2);
+    expect(legacy1).not.toBe(a);
+  });
+
+  it("computeInputsFingerprint is order-independent over the (path, content) set", () => {
+    const h1 = computeInputsFingerprint([
+      { path: "a.md", text: "alpha" },
+      { path: "b.md", text: "beta" },
+    ]);
+    const h2 = computeInputsFingerprint([
+      { path: "b.md", text: "beta" },
+      { path: "a.md", text: "alpha" },
+    ]);
+    expect(h1).toBe(h2);
+    const h3 = computeInputsFingerprint([
+      { path: "a.md", text: "ALPHA" },
+      { path: "b.md", text: "beta" },
+    ]);
+    expect(h3).not.toBe(h1);
+  });
+
+  it("seeds no evidence class (birth is not a survival)", async () => {
+    const seeded = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      at: T0,
+      fp: { inputs: "h1", principal: "human:x", model: "m1" },
+    });
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) return;
+    expect(seeded.value.kEff).toBe(0);
+    const classes = edgeEvidenceClasses(vault, "a.md", "b.md");
+    expect(classes.ok && classes.value.size).toBe(0);
+  });
+
+  it("legacy no-fp votes collapse into a single ∅ class (kEff of an all-legacy k=5 trail)", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: T0,
+    });
+    let lastAt = T0;
+    for (let i = 0; i < 5; i++) {
+      lastAt = `2026-01-0${i + 2}T00:00:00Z`;
+      const r = await observeEdge(vault, {
+        fromPath: "a.md",
+        toPath: "b.md",
+        observedBy: BY,
+        blind: true,
+        axis: "prompt",
+        at: lastAt,
+        // No fp: legacy vote.
+      });
+      if (!r.ok) throw r.error;
+    }
+    const edge = await getEdge(vault, "a.md", "b.md", new Date(lastAt));
+    expect(edge.ok).toBe(true);
+    if (!edge.ok || !edge.value) return;
+    expect(edge.value.kSurvived).toBe(5);
+    expect(edge.value.kEff).toBeCloseTo(1.9375, 6);
+    const view = independenceCalibrationView(vault, new Date(lastAt));
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    const row = view.value.find((r) => r.fromPath === "a.md" && r.toPath === "b.md");
+    expect(row?.classCount).toBe(1);
+    expect(row?.unfingerprintedCountedVotes).toBe(5);
+    expect(row?.nonLoopFingerprintedCountedVotes).toBe(0);
+  });
+
+  it("five distinct-class votes give kEff = 5 (full credit across classes)", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: T0,
+    });
+    for (let i = 0; i < 5; i++) {
+      const r = await observeEdge(vault, {
+        fromPath: "a.md",
+        toPath: "b.md",
+        observedBy: BY,
+        blind: true,
+        axis: "prompt",
+        at: `2026-01-0${i + 2}T00:00:00Z`,
+        fp: { inputs: `h${i}`, principal: "agent:curation-loop", model: "m1" },
+      });
+      if (!r.ok) throw r.error;
+    }
+    const edge = await getEdge(vault, "a.md", "b.md", new Date("2026-01-06T00:00:00Z"));
+    expect(edge.ok).toBe(true);
+    if (!edge.ok || !edge.value) return;
+    expect(edge.value.kEff).toBeCloseTo(5, 6);
+  });
+
+  it("class map resets on re-seed after a contest", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: T0,
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      at: T1,
+      fp: { inputs: "h1", principal: "human:x", model: "m1" },
+    });
+    await contestEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      contestedBy: BY,
+      reason: "no upstream change",
+      at: T2,
+    });
+    const reseeded = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: "2026-01-04T00:00:00Z",
+    });
+    expect(reseeded.ok).toBe(true);
+    if (!reseeded.ok) return;
+    expect(reseeded.value.kEff).toBe(0);
+    const classes = edgeEvidenceClasses(vault, "a.md", "b.md");
+    expect(classes.ok && classes.value.size).toBe(0);
+  });
+
+  it("rejects an fp component containing a newline", async () => {
+    const r = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      fp: { model: "line1\nline2" },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/fp\.model/);
+  });
+
+  it("nonLoopFingerprintedCountedVotes counts only non-loop fp principals", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: T0,
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      at: T1,
+      fp: { inputs: "h1", principal: EDGE_CALIBRATION_LOOP_PRINCIPAL, model: "m1" },
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "model",
+      at: T2,
+      fp: { inputs: "h2", principal: "human:mihir", model: "m1" },
+    });
+    const view = independenceCalibrationView(vault, new Date(T2));
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    const row = view.value.find((r) => r.fromPath === "a.md" && r.toPath === "b.md");
+    expect(row?.countedVotes).toBe(2);
+    expect(row?.nonLoopFingerprintedCountedVotes).toBe(1);
+    expect(row?.unfingerprintedCountedVotes).toBe(0);
+  });
+
+  it("k_eff survives the sqlite round trip and matches the degraded log path", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: T0,
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      at: T1,
+      fp: { inputs: "h1", principal: "human:x", model: "m1" },
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "model",
+      at: T2,
+      fp: { inputs: "h1", principal: "human:x", model: "m1" }, // same class, second vote
+    });
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db: IndexDb = opened.value;
+    try {
+      const rebuilt = rebuildEdgesIndex(db, vault, new Date(T2));
+      expect(rebuilt.ok).toBe(true);
+      const rows = getAllDerivesFromEdges(db);
+      const row = rows.find((r) => r.from_path === "a.md" && r.to_path === "b.md");
+      expect(row).toBeDefined();
+      expect(row?.k_eff).toBeCloseTo(1.5, 6); // 1 + 0.5 within one class of 2
+    } finally {
+      db.close();
+    }
+    const viaLog = independenceCalibrationView(vault, new Date(T2));
+    expect(viaLog.ok).toBe(true);
+    if (!viaLog.ok) return;
+    const row = viaLog.value.find((r) => r.fromPath === "a.md" && r.toPath === "b.md");
+    expect(row?.kEff).toBeCloseTo(1.5, 6);
+  });
+
+  it("strengthIndependent ages on the same clock as strength", async () => {
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: T0,
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      at: T1,
+      fp: { inputs: "h1", principal: "human:x", model: "m1" },
+    });
+    const fresh = await getEdge(vault, "a.md", "b.md", new Date(T1));
+    expect(fresh.ok && fresh.value?.strengthIndependent).toBeCloseTo(1, 5);
+    const atHalf = await getEdge(vault, "a.md", "b.md", DAYS_90);
+    expect(atHalf.ok && atHalf.value?.strengthIndependent).toBeCloseTo(0.5, 5);
   });
 });

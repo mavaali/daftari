@@ -46,10 +46,11 @@
 // one critical section with no intervening await. The guarantee is
 // per-process, which suffices under the one-daftari-per-vault process lock.
 
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { getProvider } from "../search/vector.js";
+import { getProvider, getQuantize } from "../search/vector.js";
 import {
   clearDerivesFromEdges,
   type DerivesFromEdgeRow,
@@ -95,6 +96,90 @@ export const EDGE_REPLAY_GAP_DAYS = 1;
 export const EDGE_AXES = ["prompt", "input-neighborhood", "model"] as const;
 export type EdgeAxis = (typeof EDGE_AXES)[number];
 
+// --- independence-aware promotion calibration constants (2026-07-26 spec) --
+//
+// Same posture as EDGE_K_CAP above: PROVISIONAL, exported so the shadow
+// calibration reads (src/consolidate/independence.ts,
+// src/curation/independence-calibration.ts) and the revision loop share the
+// exact values the store uses.
+
+// Correlation discount applied to the j-th vote within an evidence
+// equivalence class (Decision 2). k_eff = Σ_classes Σ_{j=1..n} ρ^(j−1).
+export const EDGE_INDEPENDENCE_RHO = 0.5;
+
+// Marginal k_eff gain floor a panel's surviving votes must clear to accrue
+// (Decision 3, spec amendment 2026-07-26 PR-2.5): survives-independent iff
+// the surviving votes' marginal gain is >= this value; correlated-only
+// survival (needs-review) iff strictly below it. A second vote landing in an
+// already-count-1 class gains exactly EDGE_INDEPENDENCE_RHO ** 1 = 0.5 — "one
+// half-fresh vote" — and so accrues (the boundary is inclusive of accrual).
+export const EDGE_NEEDS_REVIEW_MIN_GAIN = 0.5;
+
+// Sentinel for an absent fingerprint component. Matches only itself: an
+// all-legacy (no-fp) trail collapses into a single class, never accidentally
+// split from a genuinely fingerprinted one. Exported so consumers that decode
+// a class key (e.g. the needs-review tension body, src/consolidate/
+// independence.ts) share this exact literal instead of re-hardcoding it.
+export const FP_SENTINEL = "∅";
+
+// The loop's authenticated principal — mirrors CONSOLIDATE_AGENT
+// (src/consolidate/constants.ts), duplicated here as a literal rather than
+// imported: consolidate/ imports curation/ (never the reverse), so importing
+// it here would create a module cycle. A cross-check test
+// (test/curation/independence-calibration.test.ts) asserts the two stay
+// equal.
+const LOOP_PRINCIPAL = "agent:curation-loop";
+
+// One vote's evidence fingerprint (spec Decision 1). All components are
+// optional — an absent component reads as the sentinel class. `prompt`
+// travels with the record but is deliberately EXCLUDED from the class key
+// (Decision 2: the v1 decorrelation verdict measured prompt-framing lift at
+// ~0, so prompt variation alone never buys a fresh class).
+export interface EdgeFingerprint {
+  inputs?: string;
+  principal?: string;
+  model?: string;
+  prompt?: string;
+}
+
+// sha256 hex over the sorted `${path}\0${sha256(text)}` lines, joined by
+// "\n". Deterministic and independent of the caller's entry order — two
+// votes that read the same (path, bytes) set hash identically.
+export function computeInputsFingerprint(entries: Array<{ path: string; text: string }>): string {
+  const lines = entries
+    .map((e) => `${e.path}\0${createHash("sha256").update(e.text).digest("hex")}`)
+    .sort();
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+// The equivalence-class key for one fingerprint (Decision 2): two votes share
+// a class iff they agree on ALL of (inputs, principal, model). `prompt` never
+// participates. A missing component is the sentinel `∅`, and `∅` matches only
+// `∅` — an all-legacy trail collapses to one class (conservative: votes that
+// cannot demonstrate independence get no credit for it).
+export function evidenceClassKey(fp: EdgeFingerprint | undefined): string {
+  return `${fp?.inputs ?? FP_SENTINEL}\n${fp?.principal ?? FP_SENTINEL}\n${fp?.model ?? FP_SENTINEL}`;
+}
+
+// k_eff = Σ_classes Σ_{j=1..n} ρ^(j−1) — geometric discount within each class
+// (repeated votes in one class are worth geometrically less), full credit
+// across classes. Pure; shared by the store, the revision verdict
+// (independenceVerdict, src/consolidate/independence.ts), and the
+// calibration reads.
+export function effectiveK(classCounts: Iterable<number>): number {
+  let total = 0;
+  for (const n of classCounts) {
+    let classSum = 0;
+    let term = 1;
+    for (let j = 0; j < n; j++) {
+      classSum += term;
+      term *= EDGE_INDEPENDENCE_RHO;
+    }
+    total += classSum;
+  }
+  return total;
+}
+
 export const EDGE_STATUSES = ["candidate", "trigger-bearing", "revoked"] as const;
 export type EdgeStatus = (typeof EDGE_STATUSES)[number];
 
@@ -120,6 +205,12 @@ export interface DerivesFromEdge {
   toPath: string;
   strength: number;
   kSurvived: number;
+  // Independence-aware promotion (Decision 1/2, shadow-only — CLAUDE.md: live
+  // strength/status keep using raw kSurvived). kEff discounts votes that land
+  // in an already-present evidence class; strengthIndependent is the aged
+  // value agedStrength would compute from kEff instead of kSurvived.
+  kEff: number;
+  strengthIndependent: number;
   firstObserved: string;
   lastRederived: string;
   status: EdgeStatus;
@@ -142,6 +233,10 @@ export interface ObserveEdgeInput {
   // Which endpoint this observation judged the premise (foundational ordering).
   // Optional: legacy/unscored observes omit it and don't affect directionVerdict.
   premiseVote?: PremiseVote;
+  // Evidence fingerprint (Decision 1). Optional — a missing component (or a
+  // missing fp entirely) is the sentinel class `∅`. Each present component
+  // must be a non-empty string with no newline (the class-key separator).
+  fp?: EdgeFingerprint;
   // Test-only timestamp override for deterministic aging math.
   at?: string;
 }
@@ -210,6 +305,46 @@ interface RawEdgeRecord {
   note?: string;
   reason?: string;
   premiseVote?: string;
+  // Read defensively (Decision 1): a non-string / newline-bearing component
+  // is treated as absent (∅), never thrown on.
+  fp?: { inputs?: unknown; principal?: unknown; model?: unknown; prompt?: unknown };
+}
+
+// A present fp component must be a non-empty string with no newline (the
+// class-key line separator) — anything else reads as absent (∅).
+function sanitizeFpComponent(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 && !v.includes("\n") ? v : undefined;
+}
+
+function readFingerprint(raw: RawEdgeRecord["fp"]): EdgeFingerprint | undefined {
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
+  return {
+    inputs: sanitizeFpComponent(raw.inputs),
+    principal: sanitizeFpComponent(raw.principal),
+    model: sanitizeFpComponent(raw.model),
+    prompt: sanitizeFpComponent(raw.prompt),
+  };
+}
+
+// Only defined components are serialized onto the JSONL record — old lines
+// stay valid, the log stays append-only, no backfill.
+function fpForWrite(fp: EdgeFingerprint): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  if (fp.inputs !== undefined) out.inputs = fp.inputs;
+  if (fp.principal !== undefined) out.principal = fp.principal;
+  if (fp.model !== undefined) out.model = fp.model;
+  if (fp.prompt !== undefined) out.prompt = fp.prompt;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function hasAnyFpComponent(fp: EdgeFingerprint | undefined): boolean {
+  return (
+    fp !== undefined &&
+    (fp.inputs !== undefined ||
+      fp.principal !== undefined ||
+      fp.model !== undefined ||
+      fp.prompt !== undefined)
+  );
 }
 
 function readRawRecords(vaultRoot: string): RawEdgeRecord[] {
@@ -286,6 +421,17 @@ interface EdgeState {
   // verdict is derived from this set: unanimous (or empty) ⇒ directed; any
   // split, or an explicit symmetric ⇒ symmetric.
   premiseVotes: Set<PremiseVote>;
+  // Independence-aware promotion (Decision 1/2): evidence-class key → counted
+  // -vote count, accumulated ONLY for counted votes (never the seed). Reset
+  // on re-seed after a contest, like votedPairs.
+  classCounts: Map<string, number>;
+  // Counted votes whose record carried no fp component at all — the
+  // legacy-∅ lint fraction (Decision 4).
+  unfingerprintedCountedVotes: number;
+  // Counted votes whose fp.principal is present and differs from the loop's
+  // own principal — how much of the class structure is operator-attested
+  // rather than loop-computed (C3).
+  nonLoopFingerprintedCountedVotes: number;
 }
 
 // Collapse the cycle's premise votes into a direction verdict (review C1):
@@ -383,6 +529,9 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         contestReason: null,
         votedPairs: new Set(seedPair),
         premiseVotes: new Set(canonVote ? [canonVote] : []),
+        classCounts: new Map(),
+        unfingerprintedCountedVotes: 0,
+        nonLoopFingerprintedCountedVotes: 0,
       });
       continue;
     }
@@ -405,6 +554,17 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         // A counted vote at cap still refreshes the clock: it is a real
         // independent re-test even when k is saturated.
         existing.lastRederived = at;
+
+        // Independence-aware promotion (Decision 1/2): register this counted
+        // vote's evidence class. Exactly this branch, matching kSurvived's
+        // own accrual — the seed observe above never reaches here.
+        const fp = readFingerprint(rec.fp);
+        const classKey = evidenceClassKey(fp);
+        existing.classCounts.set(classKey, (existing.classCounts.get(classKey) ?? 0) + 1);
+        if (!hasAnyFpComponent(fp)) existing.unfingerprintedCountedVotes += 1;
+        if (fp?.principal !== undefined && fp.principal !== LOOP_PRINCIPAL) {
+          existing.nonLoopFingerprintedCountedVotes += 1;
+        }
       }
     }
     // Non-qualifying and same-sitting-replayed observes move nothing —
@@ -415,6 +575,11 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
 
 function deriveEdge(state: EdgeState, now: Date): DerivesFromEdge {
   const strength = state.revoked ? 0 : agedStrength(state.kSurvived, state.lastRederived, now);
+  // Independence-aware promotion (Decision 2/4, shadow-only): k_eff and its
+  // aged strength are computed alongside the live values but never gate
+  // status — status below still derives from raw `strength`.
+  const kEff = effectiveK(state.classCounts.values());
+  const strengthIndependent = state.revoked ? 0 : agedStrength(kEff, state.lastRederived, now);
   const status: EdgeStatus = state.revoked
     ? "revoked"
     : strength >= EDGE_TRIGGER_STRENGTH
@@ -445,6 +610,8 @@ function deriveEdge(state: EdgeState, now: Date): DerivesFromEdge {
     toPath,
     strength,
     kSurvived: state.kSurvived,
+    kEff,
+    strengthIndependent,
     firstObserved: state.firstObserved,
     lastRederived: state.lastRederived,
     status,
@@ -472,7 +639,7 @@ function writeThroughEdgesIndex(vaultRoot: string): Map<string, EdgeState> | nul
     // Stat BEFORE reading — same marker discipline as rebuildEdgesIndex.
     const marker = edgesLogStatMarker(vaultRoot);
     const states = collapse(readRawRecords(vaultRoot));
-    const opened = openIndexDb(vaultRoot, getProvider().dim);
+    const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
     if (opened.ok) {
       const db = opened.value;
       try {
@@ -518,7 +685,16 @@ export async function observeEdge(
   ) {
     return err(new Error(`observeEdge 'premiseVote' must be one of: ${PREMISE_VOTES.join(", ")}`));
   }
+  if (input.fp !== undefined) {
+    for (const [key, v] of Object.entries(input.fp)) {
+      if (v === undefined) continue;
+      if (typeof v !== "string" || v.length === 0 || v.includes("\n")) {
+        return err(new Error(`observeEdge 'fp.${key}' must be a non-empty string with no newline`));
+      }
+    }
+  }
 
+  const fpOut = input.fp ? fpForWrite(input.fp) : undefined;
   const record = {
     kind: "observe",
     from: input.fromPath.trim(),
@@ -529,6 +705,7 @@ export async function observeEdge(
     axis: input.axis ?? null,
     ...(input.note ? { note: input.note } : {}),
     ...(input.premiseVote ? { premiseVote: input.premiseVote } : {}),
+    ...(fpOut ? { fp: fpOut } : {}),
   };
 
   try {
@@ -609,6 +786,7 @@ export interface ListEdgesFilter {
 function deriveEdgeFromRow(row: DerivesFromEdgeRow, now: Date): DerivesFromEdge {
   const revoked = row.status === "revoked";
   const strength = revoked ? 0 : agedStrength(row.k_survived, row.last_rederived, now);
+  const strengthIndependent = revoked ? 0 : agedStrength(row.k_eff, row.last_rederived, now);
   const status: EdgeStatus = revoked
     ? "revoked"
     : strength >= EDGE_TRIGGER_STRENGTH
@@ -619,6 +797,8 @@ function deriveEdgeFromRow(row: DerivesFromEdgeRow, now: Date): DerivesFromEdge 
     toPath: row.to_path,
     strength,
     kSurvived: row.k_survived,
+    kEff: row.k_eff,
+    strengthIndependent,
     firstObserved: row.first_observed,
     lastRederived: row.last_rederived,
     status,
@@ -673,7 +853,7 @@ export async function listEdges(
   filter: ListEdgesFilter = {},
   now: Date = new Date(),
 ): Promise<Result<DerivesFromEdge[], Error>> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) return listEdgesFromLog(vaultRoot, filter, now);
   const db = opened.value;
   try {
@@ -716,7 +896,7 @@ export async function getEdge(
   toPath: string,
   now: Date = new Date(),
 ): Promise<Result<DerivesFromEdge | null, Error>> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) {
     // Same degraded posture as listEdgesFromLog: canonical store, no cache.
     try {
@@ -785,6 +965,7 @@ function rebuildEdgesIndexFromStates(
       to_path: e.toPath,
       strength: e.strength,
       k_survived: e.kSurvived,
+      k_eff: e.kEff,
       first_observed: e.firstObserved,
       last_rederived: e.lastRederived,
       last_age_decay: at,
@@ -811,7 +992,7 @@ function rebuildEdgesIndexFromStates(
 // derives_from_edges table, and closes. Startup path when no reindex is
 // otherwise running; the reindex path calls rebuildEdgesIndex directly.
 export function materializeEdges(vaultRoot: string): Result<{ count: number }, Error> {
-  const opened = openIndexDb(vaultRoot, getProvider().dim);
+  const opened = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
@@ -820,3 +1001,80 @@ export function materializeEdges(vaultRoot: string): Result<{ count: number }, E
     db.close();
   }
 }
+
+// --- independence-aware promotion: on-demand log collapse (Decision 1-4) ----
+
+// The current cycle's evidence-class counts for one edge, collapsed directly
+// from the canonical jsonl (no sqlite dependency — class detail is never
+// materialized). Empty when the edge is absent or revoked. Consumers: the
+// revision loop (src/consolidate/independence.ts) and the needs-review
+// tension body.
+export function edgeEvidenceClasses(
+  vaultRoot: string,
+  fromPath: string,
+  toPath: string,
+): Result<Map<string, number>, Error> {
+  try {
+    const state = collapse(readRawRecords(vaultRoot)).get(edgeKey(...canonPair(fromPath, toPath)));
+    if (!state || state.revoked) return ok(new Map());
+    return ok(new Map(state.classCounts));
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot read edge evidence classes: ${reason}`));
+  }
+}
+
+// Per-edge calibration row for the lint surface (src/curation/independence-
+// calibration.ts). Counts and aggregates only — class KEYS are not exported
+// here, matching the vault-global-counts-only posture the lint section takes.
+export interface EdgeIndependenceRow {
+  fromPath: string;
+  toPath: string;
+  kSurvived: number;
+  kEff: number;
+  strength: number;
+  strengthIndependent: number;
+  classCount: number;
+  countedVotes: number;
+  unfingerprintedCountedVotes: number;
+  nonLoopFingerprintedCountedVotes: number;
+  status: EdgeStatus;
+}
+
+// One collapse pass over the whole log, live-derived per edge — the
+// independenceCalibration lint section's source of truth.
+export function independenceCalibrationView(
+  vaultRoot: string,
+  now: Date = new Date(),
+): Result<EdgeIndependenceRow[], Error> {
+  try {
+    const states = collapse(readRawRecords(vaultRoot));
+    const rows: EdgeIndependenceRow[] = [];
+    for (const state of states.values()) {
+      const edge = deriveEdge(state, now);
+      let countedVotes = 0;
+      for (const n of state.classCounts.values()) countedVotes += n;
+      rows.push({
+        fromPath: edge.fromPath,
+        toPath: edge.toPath,
+        kSurvived: edge.kSurvived,
+        kEff: edge.kEff,
+        strength: edge.strength,
+        strengthIndependent: edge.strengthIndependent,
+        classCount: state.classCounts.size,
+        countedVotes,
+        unfingerprintedCountedVotes: state.unfingerprintedCountedVotes,
+        nonLoopFingerprintedCountedVotes: state.nonLoopFingerprintedCountedVotes,
+        status: edge.status,
+      });
+    }
+    return ok(rows);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`cannot compute independence calibration view: ${reason}`));
+  }
+}
+
+// Exported so a test can cross-check it against consolidate/constants.ts's
+// CONSOLIDATE_AGENT without creating a curation→consolidate import.
+export const EDGE_CALIBRATION_LOOP_PRINCIPAL = LOOP_PRINCIPAL;

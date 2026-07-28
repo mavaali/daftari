@@ -6,9 +6,12 @@ import type { AccessContext } from "../../src/access/rbac.js";
 import { addTension } from "../../src/curation/tension.js";
 import { MAX_RECEIPT_PATHS, receiptTools, vaultReceipt } from "../../src/tools/receipt.js";
 import { commit } from "../../src/utils/git.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const TODAY = new Date().toISOString().slice(0, 10);
+const receiptTool = receiptTools.find((t) => t.name === "vault_receipt");
+if (!receiptTool) throw new Error("vault_receipt not registered");
 
 function doc(
   relPath: string,
@@ -73,6 +76,7 @@ describe("vaultReceipt", () => {
     expect(r.summary.flags).toEqual([]);
     expect(r.summary.byStatus).toEqual({ canonical: 1 });
     expect(r.summary.openTensions).toBe(0);
+    expectMatchesOutputSchema(receiptTool, r);
     expect(r.summary.oldestUpdated).toBe(TODAY);
     expect(r.summary.newestUpdated).toBe(TODAY);
     // The temp vault copy strips .git, so there is no as-of anchor.

@@ -43,7 +43,7 @@ describe("reindex populates both virtual tables", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const opened = openIndexDb(vault, EMBEDDING_DIM);
+    const opened = openIndexDb(vault, EMBEDDING_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const db = opened.value;
@@ -99,7 +99,7 @@ describe("reindex populates both virtual tables", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const opened = openIndexDb(vault, EMBEDDING_DIM);
+    const opened = openIndexDb(vault, EMBEDDING_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {
@@ -122,7 +122,7 @@ describe("reindex populates both virtual tables", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const opened = openIndexDb(vault, EMBEDDING_DIM);
+    const opened = openIndexDb(vault, EMBEDDING_DIM, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {
@@ -155,7 +155,7 @@ describe("provider switch rebuilds embeddings_vec at the new dim", () => {
     if (!first.ok) return;
 
     {
-      const opened = openIndexDb(vault, 384);
+      const opened = openIndexDb(vault, 384, "float32");
       if (!opened.ok) throw opened.error;
       try {
         expect(getMeta(opened.value, "embeddings_vec_dim")).toBe("384");
@@ -179,7 +179,7 @@ describe("provider switch rebuilds embeddings_vec at the new dim", () => {
     };
     setProviderForTests(fakeProvider);
 
-    const opened = openIndexDb(vault, 1024);
+    const opened = openIndexDb(vault, 1024, "float32");
     if (!opened.ok) throw opened.error;
     const db = opened.value;
     try {
@@ -214,7 +214,7 @@ describe("provider switch rebuilds embeddings_vec at the new dim", () => {
 
     let vecBefore = 0;
     {
-      const opened = openIndexDb(vault, 384);
+      const opened = openIndexDb(vault, 384, "float32");
       if (!opened.ok) throw opened.error;
       try {
         vecBefore = (
@@ -237,7 +237,7 @@ describe("provider switch rebuilds embeddings_vec at the new dim", () => {
     };
     setProviderForTests(altProvider);
 
-    const opened = openIndexDb(vault, altProvider.dim);
+    const opened = openIndexDb(vault, altProvider.dim, "float32");
     if (!opened.ok) throw opened.error;
     try {
       const vecAfter = (

@@ -410,4 +410,68 @@ describe("createOpenRouterClient — completeWithTools", () => {
     expect(r.value.text).toBe("recovered");
     expect(r.value.tool_calls[0].output).toEqual({ tool_error: "boom" });
   });
+
+  // C5 (spec 2026-07-26-context-packs-progressive-disclosure-design.md,
+  // final plan Phase 3.3): maxToolCalls caps REALIZED calls even when a
+  // round's parallel tool_calls would overshoot it — the OpenRouter twin of
+  // the anthropic-client test in test/eval/llm.test.ts.
+  it("maxToolCalls stubs excess calls within an overshooting round and forces a final answer", async () => {
+    function multiCallBody(n: number, prefix: string) {
+      return {
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: Array.from({ length: n }, (_, i) => ({
+                id: `${prefix}-${i}`,
+                type: "function",
+                function: { name: "vault_read", arguments: "{}" },
+              })),
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 10 },
+      };
+    }
+    const bodies: any[] = [];
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async (_url: string, init: any) => {
+        bodies.push(JSON.parse(init.body));
+        return fakeRes(200, multiCallBody(5, "r1"));
+      })
+      .mockImplementationOnce(async (_url: string, init: any) => {
+        bodies.push(JSON.parse(init.body));
+        return fakeRes(200, multiCallBody(3, "r2"));
+      })
+      .mockImplementationOnce(async (_url: string, init: any) => {
+        bodies.push(JSON.parse(init.body));
+        return fakeRes(200, okBody("final answer"));
+      });
+    const handler = vi.fn().mockResolvedValue("ok");
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+
+    const r = await client.completeWithTools({
+      ...TOOL_OPTS,
+      toolHandler: handler,
+      maxToolCalls: 6,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.text).toBe("final answer");
+    expect(r.value.tool_calls).toHaveLength(6);
+    expect(handler).toHaveBeenCalledTimes(6);
+
+    // Round 3's request omitted `tools` — the cap forces a final answer.
+    expect(bodies[2]).not.toHaveProperty("tools");
+
+    // 2 of round 2's 3 calls got stubbed, never executed.
+    const round2Messages = bodies[2].messages;
+    const stubbed = round2Messages.filter(
+      (m: { content?: string }) =>
+        typeof m.content === "string" && m.content.includes("tool-call budget exhausted"),
+    );
+    expect(stubbed).toHaveLength(2);
+  });
 });

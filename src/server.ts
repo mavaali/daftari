@@ -16,20 +16,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
-import { consumesTools } from "./tools/consumes.js";
-import { curationTools } from "./tools/curation.js";
-import { edgeStalenessTools } from "./tools/edge-staleness.js";
-import { edgeTools } from "./tools/edges.js";
-import { readTools, type ToolDefinition } from "./tools/read.js";
-import { receiptTools } from "./tools/receipt.js";
-import { searchTools } from "./tools/search.js";
-import { stagedActionTools } from "./tools/staged-actions.js";
-import { themesTools } from "./tools/themes.js";
-import { tier1Tools } from "./tools/tier1.js";
-import { tier2Tools } from "./tools/tier2.js";
-import { witnessTools } from "./tools/witness.js";
-import { writeTools } from "./tools/write.js";
+import type { ToolDefinition } from "./tools/read.js";
+import { allTools, registeredToolNames, serializeToolDefinition } from "./tools/registry.js";
 import type { ToolsConfig } from "./utils/config.js";
+
+// Re-exported so existing importers (tests, docs) keep working unchanged —
+// the registry itself moved to tools/registry.ts (spec 2026-07-26
+// context-packs-progressive-disclosure, Phase 1.1) to break an import cycle
+// (vault_tools closes over the full registry; a tools file cannot import
+// server.ts back).
+export { allRegisteredTools, registeredToolNames } from "./tools/registry.js";
 
 export const SERVER_NAME = "daftari";
 
@@ -41,28 +37,6 @@ const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.
 };
 export const SERVER_VERSION = manifest.version;
 
-// The full registry. Static — assembled once at module load, shared by every
-// server instance and by the tier-exposure helpers below.
-const allTools: ToolDefinition[] = [
-  ...readTools,
-  ...receiptTools,
-  ...witnessTools,
-  ...searchTools,
-  ...themesTools,
-  ...writeTools,
-  ...curationTools,
-  ...stagedActionTools,
-  ...edgeTools,
-  ...consumesTools,
-  ...tier1Tools,
-  ...tier2Tools,
-  ...edgeStalenessTools,
-];
-
-export function registeredToolNames(): string[] {
-  return allTools.map((t) => t.name);
-}
-
 // Tool-exposure tiers (#103). Tiers are additive: standard = core + its own
 // list; full = the whole registry (never enumerated, so a new tool is
 // full-tier by default and only joins a leaner tier deliberately).
@@ -72,6 +46,12 @@ export function registeredToolNames(): string[] {
 // RBAC vaults with propose-only roles — plus index diagnostics. Everything
 // else (tensions, themes, witness/receipt epistemics, the edge graph,
 // tier-1/tier-2 dispatch, staleness) is specialist curation surface: full.
+//
+// vault_tools and vault_context join core in the same wave that ships them
+// (spec 2026-07-26 context-packs-progressive-disclosure, Phase 1.4): the
+// long-tail-behind-an-index tool and the task-brief assembler are exactly
+// what makes a core-tier session no longer an amputation — every other tool
+// stays discoverable in-band via vault_tools even when not advertised.
 export const CORE_TOOLS: readonly string[] = [
   "vault_search",
   "vault_read",
@@ -79,6 +59,8 @@ export const CORE_TOOLS: readonly string[] = [
   "vault_index",
   "vault_lint",
   "vault_status",
+  "vault_tools",
+  "vault_context",
 ];
 
 export const STANDARD_TOOLS: readonly string[] = [
@@ -130,6 +112,99 @@ export function resolveToolExposure(tools: ToolsConfig): ToolExposure {
   return { exposed, unknown: [...unknown] };
 }
 
+// Measures what ListTools actually pushes onto the wire for a resolved
+// exposure set: the same serialization ListTools ships (serializeToolDefinition),
+// JSON.stringify'd, chars/4 — the same estimator vault_context uses (spec
+// 2026-07-26 context-packs-progressive-disclosure, Phase 1.4), so the
+// startup log and a pack's budget accounting speak the same units. Not the
+// registry's cost (registeredToolNames().length worth) — the tier-resolved
+// EXPOSED set, which is the question "what does THIS session's ListTools
+// actually cost", the thing the whole spec is about.
+export function advertisedSurfaceCost(tools: ToolDefinition[]): number {
+  const serialized = tools.map(serializeToolDefinition);
+  return Math.ceil(JSON.stringify(serialized).length / 4);
+}
+
+// MCP content block shapes this module emits. Kept local (not imported from
+// the SDK) so this file's return types stay self-describing; the SDK
+// accepts a wider shape, this is the subset we ever construct.
+interface TextBlock {
+  type: "text";
+  text: string;
+}
+interface ResourceLinkBlock {
+  type: "resource_link";
+  uri: string;
+  name: string;
+  mimeType: string;
+}
+
+// The CallTool bridge's presentation step (spec 2026-07-26, Decision 3),
+// pulled out of the request handler as its own pure-ish function so it can
+// be unit-tested directly against ANY ToolDefinition — including a
+// hand-built stub with no `summarize`, or one that throws — without needing
+// a live Server/transport (test/server.test.ts, C5). Takes the tool's
+// already-successful ok-value; the caller (createServer's CallTool handler)
+// owns the RBAC/dispatch/error-branch decisions around it.
+//
+// Three channels:
+//   content           — a compact, model-facing summary, plus resource_link
+//                       entries for the docs the result references;
+//   structuredContent — the full typed result, matching outputSchema (or a
+//                       tool-projected subset — see wireValue).
+//
+// A tool with no `summarize` falls back to the pretty-printed value, so this
+// is backward compatible for any tool that has not opted in.
+//
+// Presentation hardening (C5): `summarize`/`docLinks` are pure functions
+// over an already-successful result, but a summarizer bug must never turn a
+// correct tool call into an error response — that would be worse than the
+// JSON.stringify fallback it was meant to improve on. Each runs in its own
+// try/catch with the same fallback the tool would get by not opting in.
+export function formatSuccessResult(
+  tool: ToolDefinition,
+  value: unknown,
+): { content: (TextBlock | ResourceLinkBlock)[]; structuredContent: Record<string, unknown> } {
+  let summary: string;
+  try {
+    summary = tool.summarize ? tool.summarize(value) : JSON.stringify(value, null, 2);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`daftari: warning: summarize threw for ${tool.name}: ${reason}\n`);
+    summary = JSON.stringify(value, null, 2);
+  }
+  let links: string[] = [];
+  try {
+    links = tool.docLinks ? tool.docLinks(value) : [];
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`daftari: warning: docLinks threw for ${tool.name}: ${reason}\n`);
+    links = [];
+  }
+  const wireValue = tool.wireValue ? tool.wireValue(value) : (value as Record<string, unknown>);
+  return {
+    content: [
+      { type: "text", text: summary },
+      // Links inherit read-gating: a handler only ever names docs the caller
+      // may read, so every link emitted here is readable by construction
+      // (Decision 3). Filtered to non-empty strings so a summarizer bug (or
+      // a legitimate empty-string edge case) never mints a resource_link
+      // with no uri.
+      ...links
+        .filter((path) => typeof path === "string" && path.length > 0)
+        .map(
+          (path): ResourceLinkBlock => ({
+            type: "resource_link",
+            uri: docUri(path),
+            name: path,
+            mimeType: "text/markdown",
+          }),
+        ),
+    ],
+    structuredContent: wireValue,
+  };
+}
+
 // The server runs as one access identity for its whole lifetime — the
 // --user / --role it was started with. Every tool call is enforced against it.
 // Absent an explicit context the server falls back to the deny-all guest.
@@ -151,14 +226,7 @@ export function createServer(
   const exposed = exposedNames ? allTools.filter((t) => exposedNames.has(t.name)) : allTools;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: exposed.map((t) => ({
-      name: t.name,
-      ...(t.title ? { title: t.title } : {}),
-      description: t.description,
-      inputSchema: t.inputSchema,
-      outputSchema: t.outputSchema,
-      ...(t.annotations ? { annotations: t.annotations } : {}),
-    })),
+    tools: exposed.map(serializeToolDefinition),
   }));
 
   // Resources (spec 2026-07-26, Decision 2). Every listing and read resolves
@@ -200,35 +268,9 @@ export function createServer(
           content: [{ type: "text" as const, text: `Error: ${result.error.message}` }],
         };
       }
-      // Three channels (spec 2026-07-26, Decision 3):
-      //   structuredContent — the full typed result, matching outputSchema;
-      //   content           — a compact, model-facing summary;
-      //   resource_link     — handles for the docs the result references,
-      //                       so the agent reads the two it needs at full
-      //                       fidelity instead of receiving twenty bodies it
-      //                       will truncate in context anyway.
-      //
-      // A tool with no `summarize` falls back to the pretty-printed value, so
-      // this is backward compatible for any tool that has not opted in.
-      const summary = tool.summarize
-        ? tool.summarize(result.value)
-        : JSON.stringify(result.value, null, 2);
-      const links = tool.docLinks ? tool.docLinks(result.value) : [];
-      return {
-        content: [
-          { type: "text" as const, text: summary },
-          // Links inherit read-gating: a handler only ever names docs the
-          // caller may read, so every link emitted here is readable by
-          // construction (Decision 3).
-          ...links.map((path) => ({
-            type: "resource_link" as const,
-            uri: docUri(path),
-            name: path,
-            mimeType: "text/markdown",
-          })),
-        ],
-        structuredContent: result.value as Record<string, unknown>,
-      };
+      // Presentation (spec 2026-07-26, Decision 3) is a pure function of the
+      // tool and its ok-value — see formatSuccessResult above.
+      return formatSuccessResult(tool, result.value);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       return {

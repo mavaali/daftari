@@ -63,7 +63,7 @@ describe("retrieval regression (lexical BM25, native-shape vault)", () => {
     expect(reindexed.value.skipped).toEqual([]);
     expect(reindexed.value.invalidFrontmatter).toEqual([]);
     expect(reindexed.value.documentCount).toBe(100);
-    const opened = openIndexDb(vault, STUB_DIM);
+    const opened = openIndexDb(vault, STUB_DIM, "float32");
     if (!opened.ok) throw opened.error;
     db = opened.value;
 

@@ -77,8 +77,18 @@ const principalRecordSchema: Record<string, unknown> = {
         rejected: { type: "integer" },
         expired: { type: "integer" },
         pending: { type: "integer" },
+        edited: {
+          type: "integer",
+          description:
+            "Ratified via edit-then-approve — a subset of 'ratified', not additional to it",
+        },
+        byCategory: {
+          type: "object",
+          additionalProperties: { type: "integer" },
+          description: "Decided (ratified/rejected) proposals by reason_category",
+        },
       },
-      required: ["total", "ratified", "rejected", "expired", "pending"],
+      required: ["total", "ratified", "rejected", "expired", "pending", "edited", "byCategory"],
       additionalProperties: false,
     },
     tensionsLogged: { type: "integer" },
@@ -135,10 +145,35 @@ const witnessOutputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary (spec 2026-07-26, Decision 3, PR 1 gap closure).
+// No docLinks: a principal is an identity string, not a vault document path.
+// ---------------------------------------------------------------------------
+
+interface WitnessSingle {
+  principal: WitnessResult["principals"][number];
+  concentration: WitnessResult["concentration"];
+  flatCurveWarning: boolean;
+}
+
+function summarizeWitness(value: unknown): string {
+  const v = value as WitnessResult | WitnessSingle;
+  if ("principal" in v) {
+    const p = v.principal;
+    return (
+      `${p.principal}: ${p.writes} write(s), ${p.liveClaims} live claim(s), ` +
+      `balance ${p.balance.toFixed(1)}`
+    );
+  }
+  const flat = v.flatCurveWarning ? " — flat-curve warning: one principal dominates" : "";
+  return `${v.principals.length} principal(s), ${v.unattributedDocs} unattributed doc(s)${flat}`;
+}
+
 export const witnessTools: ToolDefinition[] = [
   {
     name: "vault_witness",
     title: "Per-principal track records",
+    oneLine: "Report per-principal track records of proposals and writes.",
     annotations: { readOnlyHint: true },
     description:
       "Per-principal track records aggregated from the vault's own ledgers " +
@@ -168,6 +203,7 @@ export const witnessTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: witnessOutputSchema,
+    summarize: summarizeWitness,
     handler: (vaultRoot, args, access) => vaultWitness(vaultRoot, args, access),
   },
 ];

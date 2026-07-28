@@ -38,7 +38,7 @@ import { resolveVaultPath } from "../storage/local.js";
 import { getIndexStatus, markPathIndexing, markPathReady, onceIndexReady } from "./index-state.js";
 import { indexDocument, readManifest, writeManifest } from "./reindex.js";
 import { consumeSelfWrite } from "./self-write.js";
-import { getProvider } from "./vector.js";
+import { getProvider, getQuantize } from "./vector.js";
 
 // 500ms is the floor the design locks in: short enough for the index to feel
 // live to a human typing in their editor, long enough to coalesce an
@@ -94,7 +94,7 @@ async function defaultDeleteFn(
   vaultRoot: string,
   relPath: string,
 ): Promise<Result<unknown, Error>> {
-  const dbResult = openIndexDb(vaultRoot, getProvider().dim);
+  const dbResult = openIndexDb(vaultRoot, getProvider().dim, getQuantize());
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {

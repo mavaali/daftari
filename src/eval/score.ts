@@ -49,6 +49,7 @@ export function aggregateScore(
     const tierQuestions = questions.filter((q) => q.tier === tier);
     const perQuestionMeans: number[] = [];
     const efficiencyHits: number[] = [];
+    const tokenHits: number[] = [];
 
     for (const q of tierQuestions) {
       // Only include grades with a numeric verdict value (excludes ungraded).
@@ -70,7 +71,15 @@ export function aggregateScore(
         const val = VERDICT_VALUE[grade.verdict];
         if (val !== null && val > 0) {
           const t = opts.traces.get(`${grade.question_id}:${grade.k_index}`);
-          if (t) efficiencyHits.push(t.total_tool_calls);
+          if (t) {
+            efficiencyHits.push(t.total_tool_calls);
+            // mean_tokens (spec 2026-07-26-context-packs-progressive-
+            // disclosure-design.md, final plan Phase 3.2): the pack-condition
+            // twin of trace_efficiency — same "correct-or-partial" population,
+            // total (input + output) tokens instead of tool-call count, so
+            // "tokens per correct answer" is computable in either condition.
+            tokenHits.push(t.input_tokens + t.output_tokens);
+          }
         }
       }
     }
@@ -80,6 +89,7 @@ export function aggregateScore(
       std: perQuestionMeans.length > 0 ? stddev(perQuestionMeans) : 0,
       n: perQuestionMeans.length,
       trace_efficiency: efficiencyHits.length > 0 ? avg(efficiencyHits) : 0,
+      mean_tokens: tokenHits.length > 0 ? avg(tokenHits) : 0,
     };
   }
 
@@ -123,9 +133,9 @@ export function aggregateScore(
 
 function blankByTier(): Record<Tier, TierScore> {
   return {
-    retrieval: { mean: 0, std: 0, n: 0, trace_efficiency: 0 },
-    cross_reference: { mean: 0, std: 0, n: 0, trace_efficiency: 0 },
-    contradiction: { mean: 0, std: 0, n: 0, trace_efficiency: 0 },
+    retrieval: { mean: 0, std: 0, n: 0, trace_efficiency: 0, mean_tokens: 0 },
+    cross_reference: { mean: 0, std: 0, n: 0, trace_efficiency: 0, mean_tokens: 0 },
+    contradiction: { mean: 0, std: 0, n: 0, trace_efficiency: 0, mean_tokens: 0 },
   };
 }
 

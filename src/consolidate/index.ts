@@ -16,7 +16,7 @@
 
 import { existsSync } from "node:fs";
 import { posix, resolve } from "node:path";
-import { type DerivesFromEdge, listEdges } from "../curation/edges.js";
+import { type DerivesFromEdge, edgeEvidenceClasses, listEdges } from "../curation/edges.js";
 import { addTension, listTensions } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
@@ -50,6 +50,7 @@ import {
 } from "./constants.js";
 import { formatDecorrelationReport, loadFixture, runDecorrelation } from "./decorrelation.js";
 import { makeContest, makeObserve } from "./edge-write.js";
+import { appendIndependenceShadow } from "./independence.js";
 import { prioritize } from "./priority.js";
 import {
   appendRevisionTrace,
@@ -417,6 +418,7 @@ export async function runConsolidate(argv: string[]): Promise<number> {
           vaultRoot,
           model,
           stage2,
+          cfg.value.independenceGraduated,
         );
       }
 
@@ -433,11 +435,24 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       report += `    est_cost_usd: ${estimateCostUSD(model, stage2.inputTokens, stage2.outputTokens).toFixed(4)} (${model})${
         isModelPriced(model) ? "" : " [pricing_fallback: haiku — model unpriced]"
       }\n`;
+      // Decision 5's per-session burden honesty: needs_review_emitted counts
+      // would-be emissions while shadowed (independenceGraduated: false, the
+      // shipped default) and real emissions once graduated — the suffix
+      // makes which is which explicit in the report.
+      report += `    needs_review_emitted: ${stage2.needsReviewEmitted}${
+        cfg.value.independenceGraduated ? "" : " (shadowed — would-be)"
+      }\n`;
+      if (cfg.value.independenceGraduated) {
+        report += `    panels_skipped_needs_review: ${stage2.panelsSkippedNeedsReview}\n`;
+      }
       if (stage2.traceWriteFailures > 0) {
         report += `    trace_write_failures: ${stage2.traceWriteFailures} — recall@K evaluator input lost (exit 5)\n`;
       }
       if (stage2.journalWriteFailures > 0) {
         report += `    journal_write_failures: ${stage2.journalWriteFailures} — calibration rows lost\n`;
+      }
+      if (stage2.independenceJournalWriteFailures > 0) {
+        report += `    independence_journal_write_failures: ${stage2.independenceJournalWriteFailures} — calibration rows lost\n`;
       }
       // The envelope journals every decision (admit/gate) to shadow-actions.jsonl
       // regardless of shadow mode (makeAdmit owns this). In shadow mode the edge
@@ -518,6 +533,17 @@ interface Stage2Result {
   // returned err). Counted, not thrown — surfaced in the report, never gates.
   journalWriteFailures: number;
   shadowMode: boolean;
+  // Independence-aware promotion (Decision 5): would-be emissions while
+  // shadowed, real emissions once graduated — see the report suffix.
+  needsReviewEmitted: number;
+  // Due edges skipped pre-panel because an open needs-review tension already
+  // parks them (C1) — zero LLM calls, no trace row. Only nonzero when
+  // independenceGraduated is true.
+  panelsSkippedNeedsReview: number;
+  // Independence shadow journal rows the panel couldn't write (a failed
+  // pre-panel classes read, or a failed journal append). Counted, not
+  // thrown — mirrors journalWriteFailures.
+  independenceJournalWriteFailures: number;
 }
 function emptyStage2(): Stage2Result {
   return {
@@ -533,6 +559,9 @@ function emptyStage2(): Stage2Result {
     traceWriteFailures: 0,
     journalWriteFailures: 0,
     shadowMode: false,
+    needsReviewEmitted: 0,
+    panelsSkippedNeedsReview: 0,
+    independenceJournalWriteFailures: 0,
   };
 }
 
@@ -628,6 +657,7 @@ async function runRevisionLoop(
   vaultRoot: string,
   model: string,
   stage2: Stage2Result,
+  independenceGraduated: boolean,
 ): Promise<void> {
   const loadDoc: RevisionDeps["loadDoc"] = async (path) => {
     const d = docByPath.get(canon(path));
@@ -638,6 +668,20 @@ async function runRevisionLoop(
   };
   const recordRevisionTrace: RevisionDeps["recordRevisionTrace"] = (row) =>
     appendRevisionTrace(vaultRoot, row);
+  const getEvidenceClasses: RevisionDeps["getEvidenceClasses"] = async (fromPath, toPath) =>
+    edgeEvidenceClasses(vaultRoot, fromPath, toPath);
+  const recordIndependenceShadow: RevisionDeps["recordIndependenceShadow"] = (row) =>
+    appendIndependenceShadow(vaultRoot, row);
+  // Needs-review tensions are deduped on open title (mirrors runBirthLoop's
+  // recordTension) — an edge that keeps failing the panel across sessions
+  // must not stack a fresh tension on top of an unresolved one.
+  const recordNeedsReviewTension: RevisionDeps["recordNeedsReviewTension"] = async (input) => {
+    const existing = await listTensions(vaultRoot);
+    if (existing.ok && existing.value.some((t) => t.title === input.title && !t.resolved)) {
+      return ok(undefined);
+    }
+    return addTension(vaultRoot, input);
+  };
 
   const opts: RevisionOpts = {
     vaultRoot,
@@ -645,9 +689,28 @@ async function runRevisionLoop(
     panelSize: CONSOLIDATE_PANEL_SIZE,
     budgetRemaining: Number.POSITIVE_INFINITY,
     model,
+    independenceGraduated,
   };
+
+  // Parking (C1): when graduated, a due edge with an OPEN needs-review
+  // tension is skipped entirely — zero LLM calls, no trace row. One
+  // listTensions read for the whole loop (reused by the dedup check above
+  // too would re-read; this is the loop-level read the parking check needs).
+  // No skip in shadowed mode: shadow data should stay complete (no tensions
+  // exist to park against anyway, since needs-review only emits real
+  // tensions once graduated).
+  let openNeedsReviewTitles: Set<string> | null = null;
+  if (independenceGraduated) {
+    const tensionsRes = await listTensions(vaultRoot);
+    openNeedsReviewTitles = new Set(
+      tensionsRes.ok ? tensionsRes.value.filter((t) => !t.resolved).map((t) => t.title) : [],
+    );
+  }
+
   for (const item of edgeItems) {
-    const key = `${canon(item.fromPath)}\n${canon(item.toPath)}`;
+    const fromPath = canon(item.fromPath);
+    const toPath = canon(item.toPath);
+    const key = `${fromPath}\n${toPath}`;
     const edge = edgeByKey.get(key);
     if (!edge) continue;
     // Defensive: the clocks already exclude direction-symmetric edges from the
@@ -656,9 +719,26 @@ async function runRevisionLoop(
     // so a future due-path (e.g. the deferred TTL clock) can't feed a pending
     // edge into a directional verdict.
     if (edge.directionVerdict === "symmetric") continue;
+    if (openNeedsReviewTitles) {
+      const title = `correlated-only survival: ${fromPath} derives_from ${toPath}`;
+      if (openNeedsReviewTitles.has(title)) {
+        stage2.panelsSkippedNeedsReview++;
+        continue;
+      }
+    }
     const out = await revisionPanel(
       edge,
-      { llm, loadDoc, admit, observe, contest, recordRevisionTrace },
+      {
+        llm,
+        loadDoc,
+        admit,
+        observe,
+        contest,
+        recordRevisionTrace,
+        getEvidenceClasses,
+        recordIndependenceShadow,
+        recordNeedsReviewTension,
+      },
       opts,
     );
     if (!out.ok) {
@@ -681,6 +761,8 @@ function accumulateRevision(stage2: Stage2Result, out: RevisionOutcome): void {
   stage2.inputTokens += out.inputTokens;
   stage2.outputTokens += out.outputTokens;
   if (!out.traceWritten) stage2.traceWriteFailures++;
+  if (out.independenceWouldNeedsReview) stage2.needsReviewEmitted++;
+  if (out.independenceJournalWriteFailure) stage2.independenceJournalWriteFailures++;
 }
 
 // --- --report=decorrelation ---------------------------------------------------

@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeEdge } from "../../src/curation/edges.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog } from "../../src/curation/read-log.js";
-import { vaultStaleness } from "../../src/tools/edge-staleness.js";
+import { edgeStalenessTools, vaultStaleness } from "../../src/tools/edge-staleness.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:compiler";
+const stalenessTool = edgeStalenessTools.find((t) => t.name === "vault_staleness");
+if (!stalenessTool) throw new Error("vault_staleness not registered");
 
 function frontmatter(overrides: Record<string, unknown> = {}) {
   return {
@@ -98,6 +101,7 @@ describe("vault_staleness (#234)", () => {
     expect(artifact.value.edges[0]?.edge_class).toBe("compiled");
     expect(artifact.value.edges[0]?.staleness).toBe("pending-broken");
     expect(artifact.value.summary.pending_broken).toBe(1);
+    expectMatchesOutputSchema(stalenessTool, artifact.value);
 
     const citer = await vaultStaleness(vault, { artifact: "pricing/citer.md" });
     expect(citer.ok).toBe(true);
@@ -171,6 +175,7 @@ describe("vault_staleness (#234)", () => {
     expect(report.value.broken_serves).toBeGreaterThanOrEqual(1);
     expect(report.value.broken_read_rate).toBeGreaterThan(0);
     expect(report.value.by_tool.vault_read?.broken_serves).toBeGreaterThanOrEqual(1);
+    expectMatchesOutputSchema(stalenessTool, report.value);
   }, 60_000);
 
   it("omits edges to unreadable units and coarsens them into hidden_pending", async () => {

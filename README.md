@@ -414,6 +414,43 @@ SDK's standard environment chain, never from vault config. GCS is reached via
 its S3-interoperability endpoint. Restore refuses non-empty directories and
 reindexes when done.
 
+## Embedding providers
+
+`vault_search`'s vector half is a swappable, config-driven `EmbeddingProvider`.
+Four ship:
+
+```yaml
+# .daftari/config.yaml
+embeddings:
+  provider: local-minilm          # local-minilm | openai-3-small | local-embeddinggemma | local-qwen3-0.6b
+  # dim: 512                      # local-embeddinggemma / local-qwen3-0.6b only: 512 (default) | 768
+  # quantize: int8                # int8 (default for the two new local providers) | none
+```
+
+- **`local-minilm`** (programmatic default) — `all-MiniLM-L6-v2`, 384d,
+  fully local via `@huggingface/transformers`, free, no API key. ~100MB
+  model footprint.
+- **`local-embeddinggemma`** — `google/embeddinggemma-300m`, 768d native,
+  Matryoshka-truncatable to 512 (default) or 768, fully local. A
+  model-generation upgrade over `local-minilm`, currently opt-in — see
+  `docs/architecture.md` for the verification-honesty caveat before relying
+  on it in production. ~600MB-class footprint.
+- **`local-qwen3-0.6b`** — `Qwen/Qwen3-Embedding-0.6B`, exposes up to 768d
+  (native 1024d not yet offered), fully local, larger footprint
+  (~1.5GB-class) than EmbeddingGemma. The documented alternative, not a
+  default candidate.
+- **`openai-3-small`** — OpenAI `text-embedding-3-small`, 1536d, paid,
+  requires `OPENAI_API_KEY`. Untouched by the two entries above.
+
+`warm_embeddings: false` (default `true`) skips the background model
+warm-up at startup — the escape hatch that matters more once the default
+footprint options grow past `local-minilm`'s. Switching `provider`, `dim`,
+or `quantize` between server runs never loses data: the durable embeddings
+cache is keyed by `(content_hash, model)` and stores every provider's
+vectors side by side, so switching back is free and a `dim`/`quantize`
+change alone needs no re-embed at all (see `docs/architecture.md`,
+"Vec-index quantization").
+
 ## How it compares
 
 |                    |AGENTS.md        |RAG                          |Daftari                              |
@@ -437,9 +474,14 @@ Deliberately deferred to keep the surface tight:
   advisory boundary warnings shipped in the meantime: `vault_lint`'s
   `domainLeaks` check and write-time `domain_warnings`)
 
-(LLM reranking, deferred here originally, has since shipped as the opt-in
-agent-as-judge `rerank_candidates` on `vault_search`: the server prepares the
-fused candidate pool and the protocol; the calling agent is the judge.)
+(LLM reranking, deferred here originally, has since shipped two ways. The
+agent-as-judge `rerank_candidates` on `vault_search` is opt-in and free: the
+server prepares the fused candidate pool and the protocol; the calling agent
+is the judge. A second, local cross-encoder reranker (`rerank.provider:
+local-bge-m3` in `.daftari/config.yaml`) also ships, opt-in and default off —
+it reorders the top-50 RBAC-filtered hits with a local ONNX model before the
+`vault_search` response is sliced to `limit`; see `docs/architecture.md` for
+the config block and degradation behavior.)
 
 Each is a clean increment on a surface that already works.
 

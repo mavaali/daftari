@@ -9,6 +9,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Contextual chunking + optional local reranker.** `chunkDocument`
+  (replacing `chunkText`) splits document bodies at ATX headings (never
+  packing across a heading boundary) and gives every chunk a one-line
+  breadcrumb context (`{collection} › {title} › {headings} · tags: a, b, c`)
+  that is hashed and embedded together with the chunk's body text, and
+  stored as a second `chunks_fts` column — contextual embeddings and
+  contextual BM25 from one string-prefix change, no LLM call. Displayed
+  snippets are read from the body column only; the synthesized breadcrumb
+  never appears in served content. Schema bump `SCHEMA_VERSION` 10 → 11:
+  every chunk's hash input changed, so the first post-upgrade reindex is a
+  one-time full re-embed of the whole corpus (~25 min local-minilm / ~2 min
+  ~$0.10 openai-3-small for the 44k-chunk reference vault). Retitling a
+  document, moving it between collections, or changing its tag *set*
+  re-embeds all of that document's chunks (the breadcrumb is part of the
+  hash); tag *reorder* is a no-op (tags are sorted before hashing).
+  Also lands an optional local cross-encoder reranker: `rerank.provider:
+  local-bge-m3` (default `none`) reorders the top-50 RBAC-filtered
+  `vault_search` hits with a ~600MB ONNX q8 model
+  (`onnx-community/bge-reranker-v2-m3-ONNX` via `@huggingface/transformers`,
+  already a dependency — zero new deps), between the RBAC filter and the
+  slice to `limit`. A 1.5s per-search timeout, a not-warm skip that fires a
+  background warm instead of blocking the call, and a provider `Result.err`
+  all degrade to the fused order identically. `vault_search`'s result gains
+  `rerankUsed: boolean`, the honest twin of `vectorUsed`. Ships opt-in; the
+  default flip to `local-bge-m3` is gated on a post-merge recall
+  measurement, same playbook as chunk-level BM25's v1.29.0 default flip.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-contextual-chunking-reranker-design.md`.
+
+- **Two new local embedding providers + int8 vec-index quantization
+  (opt-in; default embedder unchanged).** `embeddings.provider` gains
+  `local-embeddinggemma` (`google/embeddinggemma-300m`, 768d native,
+  Matryoshka-truncatable to 512/768) and `local-qwen3-0.6b`
+  (`Qwen/Qwen3-Embedding-0.6B`, up to 768d exposed), both fully local via
+  the existing `@huggingface/transformers` dependency, both with
+  asymmetric document/query prompt prefixing. The durable `embeddings`
+  cache now stores the full NATIVE-dim vector under a dim-free cache id
+  (e.g. `local-embeddinggemma#p1`); a new `embeddings.dim` config key picks
+  the INDEX-time truncation. A new `embeddings.quantize: int8 | none`
+  config key (default `int8` for the two new providers, `none` — today's
+  exact behavior — for `local-minilm`/`openai-3-small`) stores the
+  sqlite-vec mirror as `int8[dim]` with scan-then-rescore: candidates are
+  selected by quantized distance, then rescored with exact float32 cosine
+  against the durable cache, so quantization never becomes the reported
+  score. Switching `provider`, `dim`, or `quantize` between server runs is
+  a config change plus a background reindex; a `dim`/`quantize` flip alone
+  needs no re-embed (`isIndexFresh` detects the change and the reindex is
+  all cache hits — a vec-mirror rebuild, not a cold re-embed). `local-
+  minilm` remains the default for `loadConfig`'s programmatic fallback;
+  the vault-init template default flip and any measured cold-reindex /
+  query-latency / RSS numbers are gated on the governing spec's Phase 0
+  smoke spike and Phase 5 recall-bench, neither of which has run against a
+  real model download as of this entry — see `docs/architecture.md`'s
+  "Vec-index quantization" section and the verification-honesty notes on
+  each new provider file.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-embedding-refresh-quantization-design.md`.
+
+- **MCP `content`-channel summaries for every remaining tool.** Every
+  registered tool now has a `summarize` (compact, model-facing text) and,
+  where it names documents, a `docLinks` (`resource_link` entries) — closing
+  the gap Decision 3 (#302) left on everything but search and lint.
+  `vault_read`'s body now rides the wire exactly once: `content[0].text`
+  carries it verbatim, `structuredContent` omits it (a `wireValue`
+  projection), with the doc resource (`daftari://doc/{path}`) as the
+  programmatic alternative. The CallTool bridge hardens presentation: a
+  throwing `summarize`/`docLinks` falls back to the pre-Decision-3
+  `JSON.stringify` behavior and logs to stderr instead of turning a
+  successful tool call into an error response.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-mcp-2026-07-28-readiness-design.md`.
+
+### Fixed
+
+- `vault_tier2_queue`'s `field_changes` could report a field with no `before`
+  key at all (dropped by JSON serialization on a document's first write),
+  violating its own declared output shape. `before` now normalizes to `null`
+  when the log has no prior value, matching the schema's documented
+  "`null` means no prior value" contract.
+
 - **Bi-temporal validity.** Two optional built-in frontmatter fields,
   `valid_from` and `valid_until`, recording when a document's claim was true
   *in the world* — as distinct from when the vault recorded it, which git

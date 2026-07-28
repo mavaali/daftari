@@ -1,6 +1,7 @@
 // src/audit/types.ts
 // Shared types for the coherence audit. Pure data shapes; no logic.
 
+import type { PinSpec } from "../anchors/pin.js";
 import type { SemanticFinding } from "./semantic.js";
 
 export type AuditConfig = {
@@ -71,7 +72,35 @@ export type DescribesEdge = {
   targetRepo: string; // resolved repo name (source repo for a bare path)
   targetPath: string; // repo-relative path of the described code file
   symbol: string | null; // `::symbol` suffix, retained but unresolved in v1
-  raw: string; // the describes entry exactly as written
+  raw: string; // the describes entry exactly as written, PIN SUFFIX INCLUDED
+  // Parsed pin suffix (2026-07-26 citation-anchors-jit spec, Decision 1),
+  // null for an unpinned binding. targetPath is always pin-stripped —
+  // checkDescribesRefs and runSemanticCheck are unaffected by this field.
+  pin: PinSpec | null;
+};
+
+// One pinned binding's classification against the audit's repo snapshots —
+// the same 4-step classifier the read path uses (src/anchors/classify.ts),
+// batched per repo (src/audit/checks/pins.ts).
+export type PinState = "intact" | "moved" | "missing";
+
+export type PinFinding = {
+  source: { repo: string; path: string };
+  target: { repo: string; path: string };
+  raw: string;
+  state: PinState;
+  relocated?: { start: number; end: number };
+};
+
+// Registry cross-check (2026-07-26 plan resolution, C2): a repo name
+// referenced by a pinned binding that resolves in exactly one of {the
+// audit's own repo registry, the docs repo's own `code_repos` config block},
+// or resolves in both to a different realpath. Silent by default — surfaced
+// as a stderr warning and a report note, never a fail_on gate.
+export type RegistryMismatch = {
+  repo: string;
+  docsRepo: string;
+  detail: string;
 };
 
 export type DescribesRefFinding = {
@@ -115,12 +144,24 @@ export type AuditReport = {
     // drifted + contradicted bindings from the opt-in --semantic check; 0 when
     // the check did not run.
     semanticDrifted: number;
+    // Pin verification totals (2026-07-26 spec, Decision 3). 0/0/0 when no
+    // pinned bindings exist — distinct from "not run"; unlike --semantic,
+    // pin classification always runs when any pin is present.
+    pinsIntact: number;
+    pinsMoved: number;
+    pinsMissing: number;
   };
   brokenRefs: BrokenRefFinding[];
   staleness: StalenessFinding[];
   describesRefs: DescribesRefFinding[];
   // Populated only when --semantic ran; [] otherwise.
   semantic: SemanticFinding[];
+  // Per-pinned-binding classification (2026-07-26 spec, Decision 3). [] when
+  // no bindings are pinned.
+  pins: PinFinding[];
+  // Registry cross-check notes (C2). [] when no pinned binding's repo name
+  // diverges between the audit registry and the docs repo's own code_repos.
+  registryMismatches: RegistryMismatch[];
 };
 
 // Tagged error union. runAudit branches on .kind to translate to exit codes

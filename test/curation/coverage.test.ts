@@ -342,4 +342,14 @@ describe("monitor-never-target invariant", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  // 2026-07-26 independence-aware-promotion spec, PR-3 2.3: the coverage
+  // monitor stays decoupled from the independence-aware-promotion loop's
+  // action-mix specifics — it does not need src/consolidate/independence.js
+  // to do its job, and importing it would blur the monitor-not-target line
+  // this describe block is named for.
+  it("coverage.ts does not import src/consolidate/independence.ts", () => {
+    const src = readFileSync(join(process.cwd(), "src", "curation", "coverage.ts"), "utf8");
+    expect(/from\s+["'][^"']*consolidate\/independence(\.js)?["']/.test(src)).toBe(false);
+  });
 });

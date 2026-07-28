@@ -33,6 +33,7 @@ import {
   type HybridSearchResult,
   type HybridWeights,
   hybridSearch,
+  type PassageRef,
   type RelatedSearchResult,
   relatedSearch,
 } from "../search/hybrid.js";
@@ -45,11 +46,24 @@ import {
   onceIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { getRerankProvider, warmRerankModel } from "../search/rerank-provider.js";
+import { classifyQuery, makeDfLookup, type RouteClass, routeWeights } from "../search/router.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
-import { getProvider } from "../search/vector.js";
-import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
+import { embeddingInput, getProvider, getQuantize } from "../search/vector.js";
+import {
+  type ChunkPassage,
+  documentCount,
+  getChunkByPathAndHash,
+  getChunkTextsByRowids,
+  getDocument,
+  getFirstChunk,
+  type IndexDb,
+  openIndexDb,
+} from "../storage/index-db.js";
+import { loadConfig } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
+import { clip } from "./summary.js";
 
 // All tool-side opens pass the active provider's dim so the sqlite-vec
 // table matches the embeddings the search will query. A read-only tool
@@ -59,7 +73,7 @@ import type { ToolDefinition } from "./read.js";
 // Exported so other index-backed tools (vault_themes) reuse the same
 // dim-aware open path.
 export function openIndexForActiveProvider(vaultRoot: string): Result<IndexDb, Error> {
-  return openIndexDb(vaultRoot, getProvider().dim);
+  return openIndexDb(vaultRoot, getProvider().dim, getQuantize());
 }
 
 // Read-only index handle for RBAC collection lookups. openIndexForActiveProvider
@@ -110,8 +124,14 @@ export async function ensureIndexReady(vaultRoot: string): Promise<Result<void, 
   return ok(undefined);
 }
 
-function parseWeights(raw: unknown): HybridWeights {
-  if (raw && typeof raw === "object") {
+// Distinguishes an ABSENT `weights` arg (null: the caller expressed no
+// preference — the router, if on, may pick) from an INVALID one (present but
+// malformed — a caller who tried to control weights and failed must never
+// silently fall through to the router; that would make a typo behave like an
+// opt-in to router-driven ranking the caller never asked for).
+function parseExplicitWeights(raw: unknown): HybridWeights | "invalid" | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     const bm25 = obj.bm25;
     const vector = obj.vector;
@@ -125,7 +145,14 @@ function parseWeights(raw: unknown): HybridWeights {
       return { bm25, vector };
     }
   }
-  return DEFAULT_WEIGHTS;
+  return "invalid";
+}
+
+// vault_search_related has no user query to classify — it is never routed,
+// so an absent or invalid `weights` arg both fall back to the static
+// default (today's exact parseWeights behaviour, unchanged).
+function staticWeightsFallback(explicit: HybridWeights | "invalid" | null): HybridWeights {
+  return explicit !== null && explicit !== "invalid" ? explicit : DEFAULT_WEIGHTS;
 }
 
 // Shared numeric-arg posture: a positive finite number floors and clamps to
@@ -165,12 +192,112 @@ const RERANK_INSTRUCTIONS =
   "candidates carry no enrichment (tensions, staleness, structural flags); " +
   "the served hits and vault_read do.";
 
+// ---------------------------------------------------------------------------
+// Part B: local cross-encoder reranker (spec 2026-07-26-contextual-chunking-
+// reranker-design.md Decisions 5-8). Unrelated to the #3 agent-as-judge pool
+// above (RERANK_CANDIDATES_MAX / RERANK_INSTRUCTIONS) despite the shared
+// vocabulary — that pool hands compact judging records to the CALLING agent;
+// this stage runs a local ONNX model, INSIDE the server, and reorders the
+// hits themselves before they are ever returned.
+// ---------------------------------------------------------------------------
+
+// How many of the fused, RBAC-and-validity-filtered hits get scored by the
+// cross-encoder. A fixed pool bounds worst-case latency regardless of vault
+// size — the reranker cannot move recall by construction (it only reorders
+// within the pool), so widening it trades latency for no recall gain past
+// what the fused order already surfaced.
+const RERANK_POOL = 50;
+
+// Wall-clock budget for one rerank call (spec C5). The in-flight ONNX
+// inference is not cancellable, but the search must never hang on it: on
+// timeout the fused order stands and `rerankUsed` stays false. One stderr
+// warning per PROCESS (not per call) — a slow model is an operational fact
+// worth one log line, not a warning storm on every subsequent search.
+const RERANK_TIMEOUT_MS = 1500;
+
+let rerankDegradeWarned = false;
+
+// Races `promise` against a timeout that resolves to Result.err — never
+// rejects, so the caller's `.ok` branch handles both a real provider error
+// and a timeout identically (fused order stands either way).
+async function withTimeout<T>(
+  promise: Promise<Result<T, Error>>,
+  ms: number,
+): Promise<Result<T, Error>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<Result<T, Error>>((resolve) => {
+    timer = setTimeout(() => resolve(err(new Error(`rerank timed out after ${ms}ms`))), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Resolves passage TEXT for exactly the top RERANK_POOL permitted hits (C2) —
+// never for the whole over-fetched candidate set. Lexical refs are batch-
+// resolved in one call via getChunkTextsByRowids; vector and `first` refs are
+// resolved per-hit (bounded at RERANK_POOL, so this is cheap). The passage
+// string is embeddingInput(chunk) — the same context+text concatenation the
+// embedding pipeline hashed, so the cross-encoder sees the exact retrieval
+// unit that earned the hit its rank (spec §4.2). Missing refs, or a resolved
+// ref whose chunk row is somehow gone, fall back to getFirstChunk and then,
+// only as a last-resort defensive guard (an index inconsistency, not a
+// passage strategy — chunkDocument guarantees >=1 chunk per indexed doc), to
+// the hit's own served snippet, logging once so the inconsistency is visible.
+function resolvePassages(
+  db: IndexDb,
+  pool: HybridHit[],
+  passageRefs: Record<string, PassageRef> | undefined,
+): string[] {
+  const refs = passageRefs ?? {};
+  const lexicalRowids = pool
+    .map((h) => refs[h.path])
+    .filter((r): r is Extract<PassageRef, { kind: "lexical" }> => r?.kind === "lexical")
+    .map((r) => r.rowid);
+  const lexicalTexts = getChunkTextsByRowids(db, lexicalRowids);
+
+  return pool.map((h) => {
+    const ref = refs[h.path];
+    let passage: ChunkPassage | null = null;
+    if (ref?.kind === "lexical") passage = lexicalTexts.get(ref.rowid) ?? null;
+    else if (ref?.kind === "vector") passage = getChunkByPathAndHash(db, h.path, ref.contentHash);
+    if (!passage) passage = getFirstChunk(db, h.path);
+    if (!passage) {
+      process.stderr.write(
+        `daftari: warning: no chunk row found for reranked hit ${h.path} — index inconsistency, ` +
+          "falling back to the served snippet\n",
+      );
+      return h.snippet;
+    }
+    return embeddingInput(passage);
+  });
+}
+
 // #234 serve instrumentation, shared by every snippet-serving tool
-// (vault_search AND vault_search_related — the broken-read rate's
-// denominator counts serves, whichever tool served them). Each SERVED hit
-// becomes one read-log entry carrying its pending-broken upstream count —
-// the TRUE count, unfiltered, because the log is local operator telemetry —
-// batched into a single append so N hits do not pay N fs writes.
+// (vault_search, vault_search_related, and vault_context — the broken-read
+// rate's denominator counts serves, whichever tool served them).
+//
+// Split in two (spec 2026-07-26-context-packs-progressive-disclosure-design.md
+// final plan, C1): the original `annotateAndLogServedHits` both computed the
+// upstream buckets AND appended the read-log entries in one pass, but
+// vault_context needs the buckets during enrichment (before the budget cut)
+// and the log write only for entries that SURVIVE the cut — logging a serve
+// that was never actually served would corrupt the read log's own broken-read
+// denominator. `annotateUpstreamHits` writes nothing; `logServedHits` is the
+// batch append. vault_search / vault_search_related call both back-to-back,
+// unchanged behavior.
+export interface PendingLogEntry {
+  file: string;
+  principal?: string;
+  broken_upstream?: number;
+}
+
+// Computes and attaches `pendingBrokenUpstream`/`hiddenPendingUpstream` to
+// each hit (mutated in place, same as before the split) and returns the
+// per-hit pending log entry — the TRUE broken count, unfiltered, because the
+// log is local operator telemetry. Never writes.
 //
 // The caller-facing hit uses the shared #217 split (splitUpstreamVisibility):
 // the "broken" (incident) classification is disclosed only for upstream
@@ -180,15 +307,14 @@ const RERANK_INSTRUCTIONS =
 // verdict derived from a hidden unit would leak that unit's change activity
 // across the ACL boundary. The visible count is bucketed for hit-payload
 // compactness, not disclosure — vault_read's exact pending_broken is the
-// drill-down. Best-effort: a telemetry failure never fails the search.
-async function annotateAndLogServedHits(
+// drill-down.
+export async function annotateUpstreamHits(
   vaultRoot: string,
   db: IndexDb,
-  tool: string,
   hits: HybridHit[],
   access?: AccessContext,
-): Promise<void> {
-  if (hits.length === 0) return;
+): Promise<PendingLogEntry[]> {
+  if (hits.length === 0) return [];
   // The newest-compile-group collapse is O(total edges); do it ONCE per
   // call, not per hit. Passing the pre-collapsed set through is sound
   // because currentConsumesEdges is idempotent. An empty consumes log
@@ -198,7 +324,7 @@ async function annotateAndLogServedHits(
   const staleCtx = loaded
     ? { consumes: currentConsumesEdges(loaded.consumes), provenance: loaded.provenance }
     : null;
-  const entries: Parameters<typeof recordReads>[1] = [];
+  const entries: PendingLogEntry[] = [];
   for (const hit of hits) {
     let broken: number | undefined;
     if (staleCtx) {
@@ -215,13 +341,40 @@ async function annotateAndLogServedHits(
       if (hiddenPending !== "none") hit.hiddenPendingUpstream = hiddenPending;
     }
     entries.push({
-      tool,
       file: hit.path,
       ...(access?.user != null ? { principal: access.user } : {}),
       ...(broken !== undefined ? { broken_upstream: broken } : {}),
     });
   }
-  await recordReads(vaultRoot, entries);
+  return entries;
+}
+
+// The batch append `annotateUpstreamHits` no longer performs. Best-effort:
+// a telemetry failure never fails the calling tool.
+export async function logServedHits(
+  vaultRoot: string,
+  tool: string,
+  entries: PendingLogEntry[],
+): Promise<void> {
+  if (entries.length === 0) return;
+  await recordReads(
+    vaultRoot,
+    entries.map((e) => ({ tool, ...e })),
+  );
+}
+
+// vault_search / vault_search_related's shared call shape: annotate then log
+// every served hit, unconditionally — behavior byte-identical to the
+// pre-split `annotateAndLogServedHits`.
+async function annotateAndLogServedHits(
+  vaultRoot: string,
+  db: IndexDb,
+  tool: string,
+  hits: HybridHit[],
+  access?: AccessContext,
+): Promise<void> {
+  const entries = await annotateUpstreamHits(vaultRoot, db, hits, access);
+  await logServedHits(vaultRoot, tool, entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -237,11 +390,18 @@ function validityForPath(db: IndexDb, path: string, at: string): ValidityReport 
   return computeValidity({ valid_from: doc.validFrom, valid_until: doc.validUntil }, at);
 }
 
+// vault_search's result shape: HybridSearchResult plus the optional `routed`
+// diagnostic the tool handler attaches when (and only when) the query router
+// chose the weights (spec 2026-07-26 fusion overhaul, Decision 2).
+export interface VaultSearchResult extends HybridSearchResult {
+  routed?: { class: RouteClass; signals: string[] };
+}
+
 export async function vaultSearch(
   vaultRoot: string,
   args: Record<string, unknown>,
   access?: AccessContext,
-): Promise<Result<HybridSearchResult, Error>> {
+): Promise<Result<VaultSearchResult, Error>> {
   const query = args.query;
   if (typeof query !== "string" || query.trim().length === 0) {
     return {
@@ -287,13 +447,52 @@ export async function vaultSearch(
   const db = dbResult.value;
   try {
     const limit = parseLimit(args.limit);
+
+    // Weight resolution precedence (spec 2026-07-26 fusion overhaul,
+    // Decision 2): an explicit VALID `weights` arg always wins. An explicit
+    // INVALID `weights` arg gets the static default — a caller who expressed
+    // intent to control weights and got the shape wrong must never silently
+    // fall through to router-driven ranking. Only a genuinely ABSENT
+    // `weights` arg considers the router, and only when `search.routing` is
+    // on; a config LOAD failure degrades to the static default rather than
+    // failing the search. `routed` stays undefined unless the router
+    // actually chose the weights — it is absent for explicit weights,
+    // routing-off, and config-load degrade alike, so its presence
+    // distinguishes "the router picked lexical-only" from "embeddings
+    // degraded" even though both can report vectorUsed: false.
+    const explicitWeights = parseExplicitWeights(args.weights);
+    const cfg = loadConfig(vaultRoot);
+    const routingOn = cfg.ok && cfg.value.search.routing;
+    let routed: { class: RouteClass; signals: string[] } | undefined;
+    let weights: HybridWeights;
+    if (explicitWeights !== null && explicitWeights !== "invalid") {
+      weights = explicitWeights;
+    } else if (explicitWeights === "invalid") {
+      weights = DEFAULT_WEIGHTS;
+    } else if (routingOn) {
+      const classified = classifyQuery(query, {
+        df: makeDfLookup(db),
+        docCount: documentCount(db),
+      });
+      routed = classified;
+      weights = routeWeights(classified.class);
+    } else {
+      weights = DEFAULT_WEIGHTS;
+    }
+
+    // Part B: resolve the reranker ONCE, before hybridSearch, so ref capture
+    // (cheap) can be requested only when a reranker is actually configured —
+    // capturing refs for a "none" search would be wasted work (C2's "skip ref
+    // capture" revision).
+    const reranker = getRerankProvider();
+
     // Over-fetch every ranked candidate so RBAC filtering happens BEFORE the
     // user-facing slice. If we sliced to `limit` first (the old behaviour),
     // restricted docs occupying the top-`limit` slots would be dropped by
     // canRead below and shrink the permitted page below `limit`, even though
     // more readable docs ranked just past the cut.
     const result = await hybridSearch(db, query, {
-      weights: parseWeights(args.weights),
+      weights,
       limit,
       overFetch: true,
       // Push the readable-collection allow-list into the vector KNN so a
@@ -301,6 +500,7 @@ export async function vaultSearch(
       // (2026-07-26 fusion spec, Decision 3). The canRead filter below stays:
       // pushdown is a recall fix, not the authorization boundary.
       readableCollections: access ? readableCollections(access.role) : undefined,
+      capturePassageRefs: reranker !== null,
     });
     if (!result.ok) return result;
 
@@ -338,7 +538,47 @@ export async function vaultSearch(
       }
     }
 
-    const ranked = permittedRanked.slice(0, limit);
+    // Part B rerank stage (spec Decision 7): between the RBAC/validity filter
+    // and the slice. `permittedRanked` is the RBAC-and-validity-filtered fused
+    // order; reranking it before the slice lets a fused-#12 hit with the top
+    // rerank score land #1 in a limit-10 page. Coverage/current-source/
+    // contested/structural and the token cap all run AFTER, over the
+    // reranked page, unchanged — they are additive recall levers, not ranking
+    // levers, and reranking after them would let a relevance model evict
+    // recall insurance.
+    let rerankUsed = false;
+    let finalRanked = permittedRanked;
+    if (reranker && !reranker.isReady()) {
+      // Never block a tool call on a cold model load (C5): fire the warm in
+      // the background and serve the fused order for THIS search.
+      void warmRerankModel();
+    }
+    if (reranker?.isReady()) {
+      const pool = permittedRanked.slice(0, RERANK_POOL);
+      if (pool.length > 0) {
+        const passages = resolvePassages(db, pool, result.value.passageRefs);
+        const scored = await withTimeout(reranker.rerank(query, passages), RERANK_TIMEOUT_MS);
+        if (scored.ok) {
+          const order = scored.value
+            .map((s, i) => ({ s, i }))
+            .sort((a, b) => b.s - a.s)
+            .map(({ i }) => pool[i])
+            .filter((h): h is HybridHit => h !== undefined);
+          finalRanked = [...order, ...permittedRanked.slice(RERANK_POOL)];
+          rerankUsed = true;
+        } else if (!rerankDegradeWarned) {
+          // Fires for BOTH a provider Result.err and a timeout — either way
+          // the fused order stands and rerankUsed stays false (Decision 8 +
+          // C5). One line per process, not per call.
+          rerankDegradeWarned = true;
+          process.stderr.write(
+            `daftari: warning: rerank degraded to fused order: ${scored.error.message}\n`,
+          );
+        }
+      }
+    }
+
+    const ranked = finalRanked.slice(0, limit);
 
     // Coverage pass: conditionally widen the ranked set with same-entity docs in
     // the seeds' date window. Quiet (returns `ranked` unchanged) when no signal
@@ -397,16 +637,18 @@ export async function vaultSearch(
 
     await annotateAndLogServedHits(vaultRoot, db, "vault_search", capped, access);
 
-    // #3: opt-in agent-as-judge rerank pool — the top-K of the SAME
-    // RBAC-filtered fused ranking the hits were sliced from (never coverage
-    // additions; those are recall, not ranking). Compact judging records
-    // only: no enrichment joins, per the protocol text.
+    // #3: opt-in agent-as-judge rerank pool — the top-K of the SAME fused
+    // ranking the hits were sliced from (never coverage additions; those are
+    // recall, not ranking). Drawn from `finalRanked` (spec Decision 7): when
+    // Part B's cross-encoder is on, the agent judges the ALREADY-reranked
+    // pool, not the pre-rerank fused order. Compact judging records only: no
+    // enrichment joins, per the protocol text.
     const rerankK = parseRerankCandidates(args.rerank_candidates);
     const rerank =
       rerankK > 0
         ? {
             instructions: RERANK_INSTRUCTIONS,
-            candidates: permittedRanked.slice(0, rerankK).map((h, i) => ({
+            candidates: finalRanked.slice(0, rerankK).map((h, i) => ({
               rank: i + 1,
               path: h.path,
               title: h.title,
@@ -420,10 +662,17 @@ export async function vaultSearch(
           }
         : undefined;
 
+    // passageRefs is internal transport (Part B) — never serialized. The
+    // outputSchema declares additionalProperties: false, and it would fail
+    // client-side validation anyway; strip it explicitly rather than rely on
+    // that alone.
+    const { passageRefs: _passageRefs, ...resultRest } = result.value;
     return ok({
-      ...result.value,
+      ...resultRest,
       count: capped.length,
       hits: capped,
+      rerankUsed,
+      ...(routed ? { routed } : {}),
       ...(rerank ? { rerank } : {}),
     });
   } finally {
@@ -459,7 +708,7 @@ export async function vaultSearchRelated(
     // Over-fetch, then RBAC-filter, then slice — same ordering as vaultSearch so
     // restricted docs in the top-`limit` slots can't shrink the permitted page.
     const result = relatedSearch(db, path, {
-      weights: parseWeights(args.weights),
+      weights: staticWeightsFallback(parseExplicitWeights(args.weights)),
       limit,
       overFetch: true,
       readableCollections: access ? readableCollections(access.role) : undefined,
@@ -632,8 +881,8 @@ const hybridHitSchema = {
     collection: { type: "string" },
     status: { type: "string" },
     score: { type: "number", description: "Fused bm25/vector score; larger is better." },
-    bm25Score: { type: "number", description: "Normalised lexical component." },
-    vectorScore: { type: "number", description: "Normalised semantic component." },
+    bm25Score: { type: "number", description: "Lexical component of the fused score." },
+    vectorScore: { type: "number", description: "Semantic component of the fused score." },
     snippet: { type: "string" },
     decay: decaySchema,
     currentSource: currentSourceSchema,
@@ -740,8 +989,7 @@ function summaryLine(rank: number, hit: HybridHit): string {
   // Snippets arrive whitespace-collapsed, so this is normally the whole
   // snippet; the split keeps the line single-line regardless.
   const head = (hit.snippet.split("\n", 1)[0] ?? "").trim();
-  const snippet =
-    head.length > SUMMARY_SNIPPET_MAX ? `${head.slice(0, SUMMARY_SNIPPET_MAX)}…` : head;
+  const snippet = clip(head, SUMMARY_SNIPPET_MAX);
   const tail = snippet.length > 0 ? ` — ${snippet}` : "";
   return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}`;
 }
@@ -783,10 +1031,23 @@ function hitDocLinks(hits: HybridHit[]): string[] {
   return paths;
 }
 
+function summarizeReindex(value: unknown): string {
+  const r = value as VaultReindexResult;
+  const warnings = r.skipped.length + r.invalidFrontmatter.length;
+  const lines = [
+    `Reindexed ${r.vault}: ${r.documentCount} doc(s), ${r.chunkCount} chunk(s), ` +
+      `vectors ${r.vectorEnabled ? "on" : "off"} — ${warnings} warning(s)`,
+  ];
+  const top = [...r.skipped, ...r.invalidFrontmatter].slice(0, 5);
+  for (const f of top) lines.push(`  ${f.path} — ${f.reason}`);
+  return lines.join("\n");
+}
+
 export const searchTools: ToolDefinition[] = [
   {
     name: "vault_search",
     title: "Search the vault",
+    oneLine: "Hybrid BM25 + vector search across the vault, with inline tension/decay flags.",
     annotations: { readOnlyHint: true },
     description:
       "Hybrid search across the vault: BM25 lexical ranking combined with " +
@@ -799,7 +1060,15 @@ export const searchTools: ToolDefinition[] = [
       "of the fused ranking as compact judging records plus instructions — " +
       "and act as the reranker yourself: fusion scores measure retrieval " +
       "proximity, not answer quality, so judging the pool against the query " +
-      "can surface candidates ranked past the returned hits.",
+      "can surface candidates ranked past the returned hits. When the " +
+      "vault's `search.routing` config is on and no explicit `weights` was " +
+      "passed, a `routed` field reports the class the query router picked " +
+      "and which signals fired — present only when the router chose the " +
+      "weights, distinguishing a routed lexical-only result from one where " +
+      "embeddings degraded. When `rerank.provider` is configured, hits are " +
+      "additionally reordered by a local cross-encoder before slicing; " +
+      "`rerankUsed` reports whether that actually happened (false covers " +
+      "provider none, a cold model, an inference error, and a timeout alike).",
     inputSchema: {
       type: "object",
       properties: {
@@ -852,6 +1121,31 @@ export const searchTools: ToolDefinition[] = [
         },
         weights: weightsResultSchema,
         hits: { type: "array", items: hybridHitSchema },
+        rerankUsed: {
+          type: "boolean",
+          description:
+            "True iff the local cross-encoder reranker (rerank.provider config) actually " +
+            "reordered the pool. False covers every degrade path uniformly: provider " +
+            "'none', not-warm (a background warm was fired for next time), inference " +
+            "error, timeout, and an empty pool.",
+        },
+        routed: {
+          type: "object",
+          description:
+            "Present only when the query router chose the weights (search.routing " +
+            "on, no explicit `weights` arg). Absent for explicit weights, " +
+            "routing-off, and embedding-degrade alike.",
+          properties: {
+            class: { type: "string", enum: ["extreme-lexical", "lexical", "balanced"] },
+            signals: {
+              type: "array",
+              description: "Every signal that fired, not just the ones that decided `class`.",
+              items: { type: "string" },
+            },
+          },
+          required: ["class", "signals"],
+          additionalProperties: false,
+        },
         rerank: {
           type: "object",
           description: "Present only when rerank_candidates was passed.",
@@ -863,30 +1157,37 @@ export const searchTools: ToolDefinition[] = [
           additionalProperties: false,
         },
       },
-      required: ["query", "count", "vectorUsed", "weights", "hits"],
+      required: ["query", "count", "vectorUsed", "weights", "hits", "rerankUsed"],
       additionalProperties: false,
     },
     summarize: (value) => {
-      const result = value as HybridSearchResult;
+      const result = value as VaultSearchResult;
       const n = result.hits.length;
       const mode = result.vectorUsed ? "bm25+vector" : "bm25 only";
       const header =
         n === 0
           ? `No hits for "${result.query}" (${mode}).`
           : `${n} hit${n === 1 ? "" : "s"} for "${result.query}" (${mode}).`;
-      const summary = summarizeHits(header, result.hits);
+      let summary = summarizeHits(header, result.hits);
+      if (result.routed) {
+        summary += `\nRouted: ${result.routed.class}${
+          result.routed.signals.length > 0 ? ` (${result.routed.signals.join(", ")})` : ""
+        }`;
+      }
+      if (result.rerankUsed) summary += "\nReranked: local cross-encoder reordered this page.";
       // The rerank pool and its protocol text live on structuredContent; a
       // caller reading only `content` would otherwise never learn it opted in.
       return result.rerank
         ? `${summary}\nRerank pool: ${result.rerank.candidates.length} candidate(s) — you are the reranker; see structuredContent.rerank.`
         : summary;
     },
-    docLinks: (value) => hitDocLinks((value as HybridSearchResult).hits),
+    docLinks: (value) => hitDocLinks((value as VaultSearchResult).hits),
     handler: (vaultRoot, args, access) => vaultSearch(vaultRoot, args, access),
   },
   {
     name: "vault_search_related",
     title: "Find related documents",
+    oneLine: "Find documents related to a given vault document.",
     annotations: { readOnlyHint: true },
     description:
       "Find documents related to a given vault document. Uses that " +
@@ -939,6 +1240,7 @@ export const searchTools: ToolDefinition[] = [
   {
     name: "vault_reindex",
     title: "Rebuild search index",
+    oneLine: "Rebuild the search index from the markdown files on disk.",
     // Not read-only — it writes the SQLite index. But it operates on a
     // rebuildable derived cache, not the markdown source of truth, so
     // destructiveHint is false.
@@ -990,6 +1292,7 @@ export const searchTools: ToolDefinition[] = [
       ],
       additionalProperties: false,
     },
+    summarize: summarizeReindex,
     handler: (vaultRoot) => vaultReindex(vaultRoot),
   },
 ];

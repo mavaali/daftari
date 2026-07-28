@@ -4,10 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  blobAtHead,
+  blobSize,
+  catBlob,
   commit,
   ensureGitRepo,
   fileGitMeta,
   gitIdentity,
+  hashObject,
+  hashObjects,
   isGitRepo,
   log,
 } from "../../src/utils/git.js";
@@ -127,6 +132,82 @@ describe("git external git-dir", () => {
     const r = await ensureGitRepo(vault3, ext3);
     expect(r.ok).toBe(true);
     expect(existsSync(join(ext3, "HEAD"))).toBe(true);
+  });
+});
+
+describe("citation-anchor plumbing (hashObjects/blobAtHead/blobSize/catBlob)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("hashObject matches a single-file hashObjects call", async () => {
+    await writeFile(join(vault, "note.md"), "hello\n", "utf-8");
+    const single = await hashObject(vault, "note.md");
+    const batch = await hashObjects(vault, ["note.md"]);
+    expect(single.ok).toBe(true);
+    expect(batch.ok).toBe(true);
+    if (!single.ok || !batch.ok) return;
+    expect(single.value).toBe(batch.value[0]);
+    expect(single.value).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("blobAtHead returns the committed blob id, independent of a dirty working tree", async () => {
+    await writeFile(join(vault, "note.md"), "committed\n", "utf-8");
+    await commit(vault, ["note.md"], "add note", "agent:tester");
+    const head = await blobAtHead(vault, "note.md");
+    expect(head.ok).toBe(true);
+
+    await writeFile(join(vault, "note.md"), "dirty uncommitted content\n", "utf-8");
+    const headAfterDirty = await blobAtHead(vault, "note.md");
+    expect(headAfterDirty.ok).toBe(true);
+    if (!head.ok || !headAfterDirty.ok) return;
+    expect(headAfterDirty.value).toBe(head.value); // HEAD unaffected by the dirty write
+
+    const workingHash = await hashObject(vault, "note.md");
+    expect(workingHash.ok && workingHash.value).not.toBe(head.value); // working tree DID change
+  });
+
+  it("blobAtHead fails for a path that has never been committed", async () => {
+    await writeFile(join(vault, "untracked.md"), "x\n", "utf-8");
+    const result = await blobAtHead(vault, "untracked.md");
+    expect(result.ok).toBe(false);
+  });
+
+  it("blobSize and catBlob round-trip a committed blob's exact content", async () => {
+    const content = "line one\nline two\nline three\n";
+    await writeFile(join(vault, "note.md"), content, "utf-8");
+    await commit(vault, ["note.md"], "add note", "agent:tester");
+    const sha = await hashObject(vault, "note.md");
+    expect(sha.ok).toBe(true);
+    if (!sha.ok) return;
+
+    const size = await blobSize(vault, sha.value);
+    expect(size.ok).toBe(true);
+    if (size.ok) expect(size.value).toBe(Buffer.byteLength(content, "utf-8"));
+
+    const blob = await catBlob(vault, sha.value);
+    expect(blob.ok).toBe(true);
+    if (blob.ok) expect(blob.value).toBe(content);
+  });
+
+  it("blobSize/catBlob fail for a sha absent from the object database", async () => {
+    const missingSha = "0000000000000000000000000000000000dead";
+    const size = await blobSize(vault, missingSha);
+    expect(size.ok).toBe(false);
+    const blob = await catBlob(vault, missingSha);
+    expect(blob.ok).toBe(false);
+  });
+
+  it("hashObjects errors the whole batch when one candidate is missing", async () => {
+    await writeFile(join(vault, "a.md"), "a\n", "utf-8");
+    const result = await hashObjects(vault, ["a.md", "does-not-exist.md"]);
+    expect(result.ok).toBe(false);
   });
 });
 

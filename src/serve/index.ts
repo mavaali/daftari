@@ -30,8 +30,15 @@ import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
+import { setRerankProvider } from "../search/rerank-provider.js";
 import { setProvider } from "../search/vector.js";
-import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
+import {
+  advertisedSurfaceCost,
+  allRegisteredTools,
+  createServer,
+  resolveToolExposure,
+  SERVER_VERSION,
+} from "../server.js";
 import { createBackend, type StorageBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
@@ -561,7 +568,11 @@ export async function runServe(argv: string[]): Promise<number> {
   });
 
   try {
-    setProvider(config.value.embeddingProvider);
+    setProvider(config.value.embeddingProvider, {
+      dim: config.value.embeddingDim ?? undefined,
+      quantize: config.value.embeddingQuantize,
+    });
+    setRerankProvider(config.value.rerankProvider);
   } catch (e) {
     process.stderr.write(`daftari serve: ${e instanceof Error ? e.message : String(e)}\n`);
     return 3;
@@ -571,6 +582,19 @@ export async function runServe(argv: string[]): Promise<number> {
   for (const name of resolveToolExposure(config.value.tools).unknown) {
     process.stderr.write(
       `daftari: warning: tools.include/exclude names unknown tool '${name}' — ignored\n`,
+    );
+  }
+
+  // Startup cost line — the same measurement stdio's main() logs (spec
+  // 2026-07-26-context-packs-progressive-disclosure-design.md, Phase 1.4).
+  {
+    const exposedNames = resolveToolExposure(config.value.tools).exposed;
+    const exposedTools = allRegisteredTools().filter((t) => exposedNames.has(t.name));
+    const cost = advertisedSurfaceCost(exposedTools);
+    process.stderr.write(
+      `daftari: advertising ${exposedTools.length} tools (~${cost} tokens of definitions; ` +
+        `tier=${config.value.tools.tier}). A future major release will default tools.tier to ` +
+        "'core' — vault_tools makes every tool discoverable in-band.\n",
     );
   }
 

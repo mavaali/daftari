@@ -7,19 +7,28 @@
 // triage. The three tier-0 checks (#232, tier0.ts) are certain rather than
 // advisory judgments, but the posture is the same: report only.
 
+import { classifyAgainstHash, resolveConfinedFile } from "../anchors/classify.js";
+import { looksLikeMalformedPin, type PinSpec, splitPin } from "../anchors/pin.js";
+import { parseDescribesEntry } from "../audit/describes.js";
+import { listIndependenceShadow } from "../consolidate/independence.js";
 import { ok, type Result } from "../frontmatter/types.js";
+import { loadConfig } from "../utils/config.js";
+import { hashObjects } from "../utils/git.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
-import { listEdges } from "./edges.js";
+import { independenceCalibrationView, listEdges } from "./edges.js";
+import {
+  emptyIndependenceCalibrationSummary,
+  type IndependenceCalibrationSummary,
+  independenceCalibrationSummaryOf,
+} from "./independence-calibration.js";
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
+import { type RankedStagedActionItem, rankPendingActions } from "./risk.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
-import {
-  listStagedActions,
-  pendingLintItems,
-  type StagedActionLintItem,
-} from "./staged-actions.js";
+import { listStagedActions } from "./staged-actions.js";
 
+export type { RankedStagedActionItem } from "./risk.js";
 export type { StagedActionLintItem } from "./staged-actions.js";
 
 import { ageInDays, computeStaleness } from "./staleness.js";
@@ -30,9 +39,15 @@ import {
   type ResolutionKind,
   STALE_TIER_LINT_COPY,
   TENSION_KINDS,
+  type TensionEntry,
   type TensionKind,
 } from "./tension.js";
-import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tension-blast.js";
+import {
+  buildReverseLinkMap,
+  buildReverseSourceMap,
+  computeBlast,
+  type HiddenDownstream,
+} from "./tension-blast.js";
 import { computeTensionClusters } from "./tension-clusters.js";
 import { tier0Findings } from "./tier0.js";
 import { validityConflicts } from "./validity.js";
@@ -59,6 +74,10 @@ export const LINT_CHECKS = [
   // Appended, not inserted: LINT_CHECKS order is presentation order, and new
   // checks go at the end so an existing reader's mental layout does not shift.
   "validityConflicts",
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: a describes entry whose
+  // pin suffix is near-miss-malformed (tightened heuristic, C11). Pure
+  // string scan — no git work.
+  "malformedPins",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -107,6 +126,13 @@ export interface TensionAging {
 export const LARGE_CLUSTER_MIN_SIZE = 5;
 export const AGED_CLUSTER_MIN_DAYS = 90;
 
+// 2026-07-26 citation-anchors-jit spec, Phase 8 / plan resolution C3: caps
+// the number of step-3 (drift-path) pin classifications a single lint run
+// performs for the Decision-4 softening pass. Beyond the budget, affected
+// docs simply don't get the softened copy — the check is advisory
+// copy-softening, so dropping it is the correct degradation, not an error.
+export const LINT_PIN_STEP3_BUDGET = 200;
+
 export interface TensionClustersHealth {
   count: number;
   maxSize: number;
@@ -136,11 +162,20 @@ export interface LintReport {
   checks: Record<LintCheckName, LintFinding[]>;
   totalFindings: number;
   tensionHealth: TensionHealth;
-  // Pending staged actions awaiting ratification (spec §11.2), soonest-to-
-  // expire first. Empty when nothing is staged. Reported, not flagged — like
-  // the rest of vault_lint. The actual expiry sweep is a side effect of the
-  // vault_lint tool, not of runLint (which stays read-only).
-  stagedActions: StagedActionLintItem[];
+  // Pending staged actions awaiting ratification (spec §11.2), risk descending
+  // with soonest-to-expire as the tiebreak (2026-07-26 risk-triaged-ratification
+  // spec, Decisions 1 + 2 — inverts the prior expiry-only sort). Empty when
+  // nothing is staged. Reported, not flagged — like the rest of vault_lint.
+  // The actual expiry sweep is a side effect of the vault_lint tool, not of
+  // runLint (which stays read-only). Filtered to the caller's vantage
+  // (Decision 4) — an item whose target the caller cannot read is omitted,
+  // never named.
+  stagedActions: RankedStagedActionItem[];
+  // Coarsened count of pending actions omitted from `stagedActions` because
+  // their target is unreadable under the caller's vantage — none/some/many,
+  // never an exact count (Decision 4). "none" under an operator run (no
+  // pathVisible) or when nothing is hidden.
+  hiddenStagedActions: HiddenDownstream;
   // Shadow-mode summary (spec §11.5): how many writes were shadow-logged and
   // which would have been gated by the trust budget — the "Would-have-gated
   // actions" surface Decision 3's calibration reads. Zeroes when the vault has
@@ -153,6 +188,19 @@ export interface LintReport {
   // vs. review throughput over the staged-actions log. Vault-global counts by
   // design, like tensionHealth — no paths or principals cross here.
   reviewThroughput: ReviewThroughputSummary;
+  // Independence-aware promotion shadow calibration (2026-07-26 spec,
+  // Decision 4): the k vs k_eff distribution, would-drop-below-trigger
+  // counts, the would-be needs-review rate, and the legacy-∅ fraction.
+  // Counts and aggregates only — no paths (matches tensionHealth's posture).
+  // Both underlying reads are error-tolerant: a failure yields the zero
+  // summary (lint stays advisory, never fails on a calibration read).
+  independenceCalibration: IndependenceCalibrationSummary;
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: how many pins the
+  // Decision-4 softening pass classified via step 3 (git cat-file + a
+  // bounded text read) this run — the budget-spend counter that makes a
+  // slowdown attributable. 0 when jit_anchors is off, code_repos is empty,
+  // or no stale doc carries a pinned range binding.
+  pinsClassified: number;
 }
 
 export interface LintOptions {
@@ -236,7 +284,22 @@ export async function runLint(
     schemaInvalid: [],
     domainLeaks: [],
     validityConflicts: [],
+    malformedPins: [],
   };
+
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: malformedPins is a pure
+  // string scan over every doc's describes entries — no git work, so it
+  // always runs regardless of jit_anchors/code_repos.
+  for (const d of docs) {
+    for (const raw of d.frontmatter.describes ?? []) {
+      if (looksLikeMalformedPin(raw)) {
+        checks.malformedPins.push({
+          path: d.path,
+          detail: `malformed pin ignored: ${raw}`,
+        });
+      }
+    }
+  }
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
   // contradictory interval: the schema layer deliberately declines to, because
@@ -357,12 +420,137 @@ export async function runLint(
     });
   }
 
+  // 2026-07-26 citation-anchors-jit spec, Decision 4 (lint side), batched
+  // and budgeted per the plan resolution (C1/C3): collect candidate pins
+  // across ALL stale docs first, dedupe the git work — one fs-confinement
+  // check per unique (repo, path), one hashObjects batch per repo for the
+  // WHOLE run — and memoise verdicts by full pin identity, so a triple
+  // recurring across docs is classified once. Soft-fails entirely: any
+  // config-load or git failure just means no docs get softened this run,
+  // never a lint failure (lint's own advisory posture).
+  let pinsClassified = 0;
+  const lintAnchorsConfig = loadConfig(vaultRoot);
+  if (
+    lintAnchorsConfig.ok &&
+    lintAnchorsConfig.value.jitAnchors &&
+    Object.keys(lintAnchorsConfig.value.codeRepos).length > 0
+  ) {
+    const codeRepos = lintAnchorsConfig.value.codeRepos;
+    const staleDocPaths = new Set(checks.staleFiles.map((f) => f.path));
+
+    type PinCandidate = { repo: string; path: string; pin: PinSpec };
+    const byDoc = new Map<string, PinCandidate[]>();
+    const pathsPerRepo = new Map<string, Set<string>>();
+
+    for (const d of docs) {
+      if (!staleDocPaths.has(d.path)) continue;
+      const cands: PinCandidate[] = [];
+      for (const raw of d.frontmatter.describes ?? []) {
+        const { binding, pin } = splitPin(raw);
+        if (!pin) continue;
+        const parsed = parseDescribesEntry(binding, "");
+        if (parsed.repo === "" || !(parsed.repo in codeRepos)) continue;
+        cands.push({ repo: parsed.repo, path: parsed.path, pin });
+        const set = pathsPerRepo.get(parsed.repo) ?? new Set<string>();
+        set.add(parsed.path);
+        pathsPerRepo.set(parsed.repo, set);
+      }
+      if (cands.length > 0) byDoc.set(d.path, cands);
+    }
+
+    // Step 1 (confinement, cheap) + step 2 (ONE hashObjects batch per repo
+    // for the whole run) — independent of how many docs/pins reference the
+    // same (repo, path).
+    const currentHash = new Map<string, string>(); // `${repo} ${path}` -> blob id
+    const confinedOf = new Map<string, { absPath: string; relPath: string }>();
+    for (const [repo, paths] of pathsPerRepo) {
+      const repoAbsPath = codeRepos[repo] as string;
+      const survivors: string[] = [];
+      for (const p of paths) {
+        const confined = resolveConfinedFile(repoAbsPath, p);
+        if (confined) {
+          confinedOf.set(`${repo} ${p}`, confined);
+          survivors.push(p);
+        }
+      }
+      if (survivors.length === 0) continue;
+      const relPaths = survivors.map(
+        (p) => (confinedOf.get(`${repo} ${p}`) as { relPath: string }).relPath,
+      );
+      const hashRes = await hashObjects(repoAbsPath, relPaths);
+      if (!hashRes.ok) continue;
+      survivors.forEach((p, i) => {
+        currentHash.set(`${repo} ${p}`, hashRes.value[i] as string);
+      });
+    }
+
+    const verdictCache = new Map<string, "intact" | "moved" | "missing">();
+    for (const [docPath, cands] of byDoc) {
+      let allIntact = true;
+      let droppedForBudget = false;
+      for (const c of cands) {
+        const hashKey = `${c.repo} ${c.path}`;
+        const hash = currentHash.get(hashKey);
+        if (hash === undefined) {
+          allIntact = false; // repo/path unresolved this run -> not softened
+          continue;
+        }
+        const verdictKey = `${hashKey} ${c.pin.sha} ${c.pin.start} ${c.pin.end}`;
+        let state = verdictCache.get(verdictKey);
+        if (state === undefined) {
+          if (hash.startsWith(c.pin.sha)) {
+            state = "intact";
+          } else if (c.pin.start === null || c.pin.end === null) {
+            state = "moved";
+          } else if (pinsClassified >= LINT_PIN_STEP3_BUDGET) {
+            droppedForBudget = true;
+            continue; // over budget: leave uncached, doc goes unsoftened
+          } else {
+            pinsClassified += 1;
+            const confined = confinedOf.get(hashKey);
+            state = confined
+              ? (
+                  await classifyAgainstHash(
+                    codeRepos[c.repo] as string,
+                    confined.absPath,
+                    c.pin,
+                    hash,
+                  )
+                ).state
+              : "missing";
+          }
+          verdictCache.set(verdictKey, state);
+        }
+        if (state !== "intact") allIntact = false;
+      }
+      if (droppedForBudget || !allIntact) continue;
+
+      const idx = checks.staleFiles.findIndex((f) => f.path === docPath);
+      if (idx === -1) continue;
+      const n = cands.length;
+      const entry = checks.staleFiles[idx] as LintFinding;
+      checks.staleFiles[idx] = {
+        ...entry,
+        detail:
+          `${entry.detail}; past TTL, but its ${n} code pin${n === 1 ? "" : "s"} are intact — ` +
+          "the code it describes has not changed since the pins were written",
+      };
+    }
+  }
+
   const totalFindings = LINT_CHECKS.reduce((n, name) => n + checks[name].length, 0);
+
+  // Hoisted (Phase 5, 2026-07-26 risk-triaged-ratification spec): tensions.md
+  // is read ONCE here and fed into both computeTensionHealth (vault-global,
+  // unfiltered — #216 rider / #217 decision C) and rankPendingActions (which
+  // applies pathVisible internally, per-item, for the risk queue).
+  const tensionsRes = await listTensions(vaultRoot);
+  if (!tensionsRes.ok) return tensionsRes;
 
   // Vault-global by design (#216 rider / #217 decision C): tension health is
   // the operator's whole-vault view, so it aggregates over ALL docs and
   // tensions regardless of pathVisible. Counts only — no paths cross here.
-  const tensionHealth = await computeTensionHealth(vaultRoot, allDocs, now);
+  const tensionHealth = computeTensionHealth(tensionsRes.value, allDocs, now);
   if (!tensionHealth.ok) return tensionHealth;
 
   // Each JSONL log is read ONCE; the lint summaries and the coverage view
@@ -376,7 +564,18 @@ export async function runLint(
   const edgesRes = await listEdges(vaultRoot, {}, now);
   if (!edgesRes.ok) return edgesRes;
 
-  const stagedActions = pendingLintItems(stagedRes.value, now);
+  // Risk-triaged queue (Decisions 1 + 2 + 4): risk descending, expiry
+  // ascending tiebreak, filtered to the caller's vantage with the hidden
+  // remainder coarsened. `docs` here is the FULL, unfiltered set — B and T
+  // read the whole graph and apply pathVisible internally per item, per the
+  // spec's per-vantage scoring rule (never subtract-the-visible-terms leakage).
+  const { items: stagedActions, hiddenPending: hiddenStagedActions } = rankPendingActions({
+    actions: stagedRes.value,
+    docs: allDocs,
+    tensions: tensionsRes.value,
+    now,
+    pathVisible,
+  });
   const shadowActions = shadowLintSummaryOf(shadowRecordsRes.value);
   const coverageEquityRes = coverageEquitySummary({
     docs,
@@ -387,15 +586,28 @@ export async function runLint(
   });
   if (!coverageEquityRes.ok) return coverageEquityRes;
 
+  // Independence-aware promotion calibration (Decision 4). Error-tolerant on
+  // both reads: a failure here must never fail vault_lint (advisory posture),
+  // so it degrades to the zero summary rather than propagating the error.
+  const independenceViewRes = independenceCalibrationView(vaultRoot, now);
+  const independenceJournalRes = await listIndependenceShadow(vaultRoot);
+  const independenceCalibration =
+    independenceViewRes.ok && independenceJournalRes.ok
+      ? independenceCalibrationSummaryOf(independenceViewRes.value, independenceJournalRes.value)
+      : emptyIndependenceCalibrationSummary();
+
   return ok({
     generatedAt: now.toISOString(),
     checks,
     totalFindings,
     tensionHealth: tensionHealth.value,
     stagedActions,
+    hiddenStagedActions,
     shadowActions,
     coverageEquity: coverageEquityRes.value,
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
+    independenceCalibration,
+    pinsClassified,
   });
 }
 
@@ -408,14 +620,11 @@ export async function runLint(
 // entries — including `resolution.kind: accepted` — do not appear in any
 // aging tier; they show up in the Phase 1 stable-acknowledged and resolved
 // totals instead.
-async function computeTensionHealth(
-  vaultRoot: string,
+function computeTensionHealth(
+  tensions: TensionEntry[],
   docs: LoadedDoc[],
   now: Date,
-): Promise<Result<TensionHealth, Error>> {
-  const tensions = await listTensions(vaultRoot);
-  if (!tensions.ok) return tensions;
-
+): Result<TensionHealth, Error> {
   const byKind = Object.fromEntries(TENSION_KINDS.map((k) => [k, 0])) as Record<
     TensionKind,
     number
@@ -436,7 +645,7 @@ async function computeTensionHealth(
   let aging = 0;
   let stale = 0;
 
-  for (const t of tensions.value) {
+  for (const t of tensions) {
     total += 1;
     byKind[t.kind] += 1;
     if (t.kind === "unspecified") unspecifiedLegacy += 1;
@@ -469,7 +678,7 @@ async function computeTensionHealth(
   // Cluster surface (Phase 2). computeTensionClusters applies the same scope
   // filter the cluster tool does — unresolved AND non-accepted — so the lint
   // metrics line up exactly with what `vault_tension_clusters` reports.
-  const clusterResult = computeTensionClusters(tensions.value, now);
+  const clusterResult = computeTensionClusters(tensions, now);
   let maxSize = 0;
   let large = 0;
   let aged = 0;
@@ -495,7 +704,7 @@ async function computeTensionHealth(
   // source edge), but the published metric is the primary count only — the
   // top-level lint metric stays disciplined against advisory inflation.
   const staleSeeds = new Set<string>();
-  for (const t of tensions.value) {
+  for (const t of tensions) {
     if (t.resolved) continue;
     if (agingTier(t, now) !== "stale") continue;
     if (t.sourceA) staleSeeds.add(t.sourceA);

@@ -23,6 +23,7 @@
 
 import { err, ok, type Result } from "../../frontmatter/types.js";
 import type { EmbeddingProvider } from "../embedding-provider.js";
+import { l2Normalize } from "../vector.js";
 
 export const OPENAI_3_SMALL_ID = "openai-3-small";
 export const OPENAI_3_SMALL_DIM = 1536;
@@ -53,25 +54,14 @@ async function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Normalise a vector to unit length in place. OpenAI's text-embedding-3-small
-// returns L2-normalized vectors by default, so this is a defense-in-depth
-// no-op for the happy path. We still do it because cosine similarity is
-// stable iff inputs are normalized, and "the API silently returns un-
-// normalized vectors" is exactly the class of upstream change we'd rather
-// not be caught by.
-function l2Normalize(vec: Float32Array): Float32Array {
-  let norm = 0;
-  for (let i = 0; i < vec.length; i++) {
-    const x = vec[i] as number;
-    norm += x * x;
-  }
-  if (norm === 0) return vec;
-  const inv = 1 / Math.sqrt(norm);
-  for (let i = 0; i < vec.length; i++) {
-    vec[i] = (vec[i] as number) * inv;
-  }
-  return vec;
-}
+// l2Normalize moved to vector.ts (2026-07-26 embedding-refresh-quantization
+// spec, Phase 1c) — the new local providers' embedQuery() needs it too, so
+// it lives at the shared home the other vector primitives use. OpenAI's
+// text-embedding-3-small returns L2-normalized vectors by default, so
+// calling it here is a defense-in-depth no-op for the happy path. We still
+// do it because cosine similarity is stable iff inputs are normalized, and
+// "the API silently returns un-normalized vectors" is exactly the class of
+// upstream change we'd rather not be caught by.
 
 // One HTTP call to /v1/embeddings for a single batch. Retries on 429/5xx
 // with exponential backoff; surfaces a definitive failure as Result.err.

@@ -33,9 +33,16 @@ import {
   reindexVault,
   reindexWarnings,
 } from "./search/reindex.js";
+import { getRerankProvider, setRerankProvider, warmRerankModel } from "./search/rerank-provider.js";
 import { setProvider, warmModel } from "./search/vector.js";
 import { startWatcher, type VaultWatcher } from "./search/watcher.js";
-import { createServer, resolveToolExposure, SERVER_VERSION } from "./server.js";
+import {
+  advertisedSurfaceCost,
+  allRegisteredTools,
+  createServer,
+  resolveToolExposure,
+  SERVER_VERSION,
+} from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig, TOOL_TIERS, type ToolTier } from "./utils/config.js";
 
@@ -102,9 +109,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // validated the id and (for openai-3-small) the OPENAI_API_KEY env var,
   // so setProvider should never throw here — but if it does (race-y env
   // var stripping by a wrapper, say), fail loud rather than serving with
-  // a broken provider.
+  // a broken provider. setRerankProvider (spec 2026-07-26-contextual-
+  // chunking-reranker-design.md Decision 5) is installed in the same
+  // fail-loud block — "none" is a no-op, so this never throws in practice,
+  // but a future provider that DOES validate at construction time gets the
+  // same startup-refusal posture as the embedding provider.
   try {
-    setProvider(config.value.embeddingProvider);
+    setProvider(config.value.embeddingProvider, {
+      dim: config.value.embeddingDim ?? undefined,
+      quantize: config.value.embeddingQuantize,
+    });
+    setRerankProvider(config.value.rerankProvider);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     process.stderr.write(`daftari: ${reason}\n`);
@@ -142,6 +157,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   for (const name of resolveToolExposure(toolsConfig).unknown) {
     process.stderr.write(
       `daftari: warning: tools.include/exclude names unknown tool '${name}' — ignored\n`,
+    );
+  }
+
+  // Startup cost line (spec 2026-07-26-context-packs-progressive-disclosure-
+  // design.md, Phase 1.4): measures what THIS session's ListTools actually
+  // advertises, in the same chars/4 units vault_context budgets against.
+  // `tools.tier` stays `full` by default this wave — the log is the notice
+  // that a future major release changes that default, not a config change.
+  {
+    const exposedNames = resolveToolExposure(toolsConfig).exposed;
+    const exposedTools = allRegisteredTools().filter((t) => exposedNames.has(t.name));
+    const cost = advertisedSurfaceCost(exposedTools);
+    process.stderr.write(
+      `daftari: advertising ${exposedTools.length} tools (~${cost} tokens of definitions; ` +
+        `tier=${toolsConfig.tier}). A future major release will default tools.tier to 'core' — ` +
+        "vault_tools makes every tool discoverable in-band.\n",
     );
   }
 
@@ -298,6 +329,21 @@ async function runBackgroundWarm(): Promise<void> {
     process.stderr.write(`daftari: embedding model warm — ready for search\n`);
   } else {
     process.stderr.write(`daftari: warning: embedding warm-up failed: ${result.error.message}\n`);
+  }
+  // After the embedder warms, warm the reranker too (spec Decision 8): the
+  // existing warmEmbeddings gate covers both models — "pay model cold-starts
+  // at startup, not on the first query" applies equally to either. A no-op
+  // when rerank.provider is "none". Never runs when the search path itself
+  // would trigger it lazily instead (C5) — this IS the eager path.
+  if (getRerankProvider() !== null) {
+    const rerankResult = await warmRerankModel();
+    if (rerankResult.ok) {
+      process.stderr.write(`daftari: reranker model warm — ready for search\n`);
+    } else {
+      process.stderr.write(
+        `daftari: warning: reranker warm-up failed: ${rerankResult.error.message}\n`,
+      );
+    }
   }
 }
 

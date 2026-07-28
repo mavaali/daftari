@@ -29,6 +29,11 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/tier2-verdicts.jsonl
 .daftari/shadow-actions.jsonl
 .daftari/consolidate-state.json
+# Cortex loop traces + the independence-aware-promotion shadow calibration
+# journal (2026-07-26 spec) — advisory calibration data, same posture as
+# shadow-actions.jsonl above.
+.daftari/revision-trace.jsonl
+.daftari/independence-shadow.jsonl
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl
@@ -42,8 +47,11 @@ const MARKER = ".daftari/index.db";
 
 // Ensures the vault's .gitignore carries the Daftari ignore block. Idempotent:
 //   "created"  — no .gitignore existed; wrote VAULT_GITIGNORE.
-//   "appended" — a .gitignore existed without the block; appended it.
-//   "present"  — the block was already there; left the file untouched.
+//   "appended" — a .gitignore existed without the block, OR carried the block
+//                but was missing pattern lines added to the constant since
+//                (C7, 2026-07-26 spec): appended what was missing.
+//   "present"  — every `.daftari/` pattern line was already there; left the
+//                file untouched.
 export async function ensureVaultGitignore(
   vaultRoot: string,
 ): Promise<"created" | "appended" | "present"> {
@@ -60,11 +68,25 @@ export async function ensureVaultGitignore(
     throw e;
   }
 
-  if (existing.includes(MARKER)) return "present";
+  if (!existing.includes(MARKER)) {
+    // No Daftari block at all yet — separate the user's content from ours so
+    // it doesn't glue onto their last line. A leading "\n" guarantees a clean
+    // break whether or not the file ends in a newline.
+    await appendFile(path, `\n${VAULT_GITIGNORE}`);
+    return "appended";
+  }
 
-  // Separate the user's content from our block so it doesn't glue onto their
-  // last line. A leading "\n" guarantees a clean break whether or not the file
-  // ends in a newline.
-  await appendFile(path, `\n${VAULT_GITIGNORE}`);
+  // The block's marker is present, but the constant may have grown new
+  // `.daftari/` pattern lines since this vault's .gitignore was first
+  // scaffolded (or last reconciled) — a retrofit gap the block-marker check
+  // alone can't see (C7). Per-line reconciliation: diff the constant's
+  // pattern lines against what the file already has, and append only what's
+  // missing.
+  const existingLines = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+  const patternLines = VAULT_GITIGNORE.split("\n").filter((l) => l.startsWith(".daftari/"));
+  const missing = patternLines.filter((l) => !existingLines.has(l));
+  if (missing.length === 0) return "present";
+
+  await appendFile(path, `\n${missing.join("\n")}\n`);
   return "appended";
 }

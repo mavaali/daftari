@@ -26,6 +26,22 @@ provided Daftari tools. Do not use training knowledge. Do not guess. If the
 vault does not contain the answer, say "Vault does not contain the answer."
 Cite source paths in your final answer using the format [path/to/doc.md].`;
 
+// Pack condition (spec 2026-07-26-context-packs-progressive-disclosure-
+// design.md, Decision 4 / final plan Phase 3.1). No tools: the answerer's
+// ONLY context is the vault_context brief handed to it as the user message.
+// A prompt addition does not bump PROMPT_VERSION — the freeze rule covers
+// EDITS to an existing prompt an already-scored run depends on; a new,
+// separate prompt for a new condition is not an edit. Comparability across
+// conditions is carried by EvalRun.condition, not by prompt identity.
+export const PACK_ANSWERER_SYSTEM_PROMPT = `You will answer a question about a Markdown knowledge vault using ONLY the
+context brief provided below — no tools are available. The brief was
+assembled by selecting and annotating the most relevant documents; it is not
+synthesized, so treat every line as a direct fact from the vault, never as a
+conclusion someone drew for you. Do not use training knowledge. Do not guess.
+If the brief does not contain the answer, say "Vault does not contain the
+answer." Cite source paths in your final answer using the format
+[path/to/doc.md].`;
+
 export const GRADER_PROMPT = `You are grading an answer to a question about a Markdown knowledge vault.
 
 Question:           {{QUESTION}}

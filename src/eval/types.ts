@@ -63,6 +63,11 @@ export interface Trace {
   output_tokens: number;
   wall_ms: number;
   stop_reason: string;
+  // Present only for a pack-condition trace (spec 2026-07-26-context-packs-
+  // progressive-disclosure-design.md, final plan Phase 3.2): the pack the
+  // answerer was handed as its ONLY context — no tools. `included_paths`
+  // mirrors the pack's own manifest.included paths, in order.
+  pack?: { budget: number; estimated_tokens: number; included_paths: string[] };
 }
 
 export interface ToolCall {
@@ -96,6 +101,14 @@ export interface EvalRun {
   k: number;
   // Keyed by `"${question_index}:${k_index}"`. See spec §6.5 for rationale.
   runs: Record<string, PerRunResult>;
+  // Run condition parameters (spec 2026-07-26-context-packs-progressive-
+  // disclosure-design.md, final plan Phase 3.2/C8). All three absent on a
+  // legacy artifact, which loads and scores as an uncapped `tools` run —
+  // never inferred, never silently defaulted on `--resume` (C8's config-error
+  // posture).
+  condition?: "tools" | "pack";
+  pack_budget?: number;
+  max_tool_calls?: number;
 }
 
 // --- Grade and score shapes ---
@@ -116,6 +129,11 @@ export interface TierScore {
   std: number;
   n: number;
   trace_efficiency: number; // mean tool calls per correct-or-partial answer
+  // Mean total tokens (input + output) per graded run in the tier — the
+  // pack-condition twin of trace_efficiency's tool-call count, so "tokens
+  // per correct answer" (final plan Phase 3.2) is computable in EITHER
+  // condition, tools or pack.
+  mean_tokens: number;
 }
 
 export interface Score {
@@ -131,6 +149,12 @@ export interface Score {
   k: number;
   n: number;
   timestamp: string;
+  // Carried from the scored EvalRun (spec final plan Phase 3.2/C8) so the
+  // score artifact is self-describing without cross-referencing the results
+  // file. Absent for a legacy uncapped `tools` run.
+  condition?: "tools" | "pack";
+  pack_budget?: number;
+  max_tool_calls?: number;
 }
 
 // --- History ---
@@ -147,6 +171,9 @@ export interface HistoryEntry {
   models: { generator: string; answerer: string; grader: string };
   prompt_version: number;
   spec_version: number;
+  // Carried from Score (spec 2026-07-26-context-packs-progressive-disclosure-
+  // design.md, final plan Phase 3.2) — absent for a legacy uncapped run.
+  condition?: string;
 }
 
 export interface HistoryFile {

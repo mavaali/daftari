@@ -133,16 +133,36 @@ S      =  min(k_eff, K_max) × (1/2)^(Δt / 90d)
 ## Decision 3 — three-way verdict in `--mode revision`: the needs-review outcome
 
 Today the panel aggregates to `survives | fails | tie | no-vote | gated`
-(`RevisionDecision`, revision.ts:70). This spec splits *survives* on independence:
+(`RevisionDecision`, revision.ts:70). This spec splits *survives* on independence.
 
-- **survives-independent** — the panel's majority survives **and** at least one surviving
-  vote opens a new equivalence class against the edge's existing cycle trail (its class
-  key is not already present). → accrue: apply the observes, exactly today's path.
+**Operative rule (amended 2026-07-26, PR-2 of the resolved plan):** apply the surviving
+votes' evidence-class keys, in order, against the edge's existing cycle trail and sum the
+marginal `k_eff` gain (`independenceVerdict`, src/consolidate/independence.ts) —
+
+- **survives-independent** — the surviving votes' marginal `k_eff` gain is **≥
+  `EDGE_NEEDS_REVIEW_MIN_GAIN = 0.5`**. → accrue: apply the observes, exactly today's path.
 - **fails** — unchanged: majority-fails → one `vault_edge_contest`, revoke + tension.
-- **correlated-only survival** — the majority survives but **every** surviving vote lands
-  in an already-present class (marginal `k_eff` gain below
-  `EDGE_NEEDS_REVIEW_MIN_GAIN = 0.5`, i.e. not even one half-fresh vote). → **needs-review**:
-  apply **no observes**, and surface for human adjudication.
+- **correlated-only survival** — the majority survives but the marginal gain is
+  **strictly below** `EDGE_NEEDS_REVIEW_MIN_GAIN`. → **needs-review**: apply **no
+  observes**, and surface for human adjudication.
+
+"Opens a new equivalence class against the edge's existing cycle trail" is the intuition,
+not the literal test — the literal test is the marginal-gain threshold above, because a
+*second* vote landing in an already-present class is not "no new class" but still carries
+real (discounted) evidential weight. Boundary case: a second vote in a count-1 class gains
+exactly `EDGE_INDEPENDENCE_RHO ** 1 = 0.5` — "one half-fresh vote" — which is **not** below
+the floor, so it accrues (survives-independent), matching this spec's own parenthetical
+above ("not even one half-fresh vote" describes what needs-review requires: strictly less
+than half a fresh vote's worth of marginal gain).
+
+**Parking (added 2026-07-26, PR-2, disposition C1):** while a `correlated-only survival`
+tension is open on an edge, the revision loop does not re-panel that edge — it reported
+its doubt once and waits. The edge continues to age under Decision 2's normal clock
+(decay-pending-adjudication is the conservative failure mode: the edge is a `derives_from`
+claim currently underwritten only by correlated evidence, so letting it coast
+trigger-bearing while the tension sits unresolved is exactly the risk this spec exists to
+close). Resolution — a genuinely independent re-derivation, or a contest — unparks the
+edge for the next due cycle.
 
 How needs-review surfaces — argued, not defaulted: the staged-action kinds
 (`promote | deprecate | supersede | merge | confidence-up | write`,

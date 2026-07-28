@@ -87,7 +87,7 @@ let db: IndexDb;
 
 beforeEach(() => {
   vault = makeTempVault();
-  const opened = openIndexDb(vault, DIM);
+  const opened = openIndexDb(vault, DIM, "float32");
   if (!opened.ok) throw opened.error;
   db = opened.value;
 });
@@ -242,7 +242,7 @@ describe("reindex writes one vec row per (hash, collection)", () => {
     const result = await reindexVault(writeVault);
     expect(result.ok).toBe(true);
 
-    const opened = openIndexDb(writeVault, DIM);
+    const opened = openIndexDb(writeVault, DIM, "float32");
     if (!opened.ok) throw opened.error;
     try {
       const rows = opened.value

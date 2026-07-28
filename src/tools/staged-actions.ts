@@ -12,16 +12,35 @@
 // vault_supersede, confidence-up → vault_set_confidence, merge → vault_merge
 // (the §11.4 write tools). A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
+//
+// 2026-07-26 risk-triaged-ratification spec (Decisions 2 + 3) extended
+// vault_ratify with: a batch `ids` alternative to `id` (Decision 2); a
+// required-on-reject `reason_category` and an optional `amended_diff` that
+// dispatches an edit-then-approve instead of the staged diff (Decision 3);
+// and — per Mihir's 2026-07-27 decision resolving the spec's Decision-1 /
+// kill-condition-#1 contradiction — a non-authoritative `risk_at_decision`
+// snapshot on every decision record. The single-action approve/reject path is
+// extracted into approveOneAction/rejectOneAction so the batch path and the
+// single-`id` path share one implementation; a batch is N independent verdicts
+// processed sequentially, never a transactional compound one.
 
 import { type AccessContext, canRatify, canRead, canWrite, isProposeOnly } from "../access/rbac.js";
+import { BATCH_RATIFY_MAX, rankPendingActions } from "../curation/risk.js";
 import {
+  DECISION_KINDS,
+  type DecisionKind,
   getStagedActionById,
+  listStagedActions,
   nowISO,
+  REASON_CATEGORIES,
+  type ReasonCategory,
   recordDecision,
   STAGED_ACTION_TYPES,
+  type StagedAction,
   type StagedActionType,
   stageActionWithConflictCheck,
 } from "../curation/staged-actions.js";
+import { listTensions } from "../curation/tension.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { tier0DeprecateGate, tier0PromoteGate } from "../curation/tier0.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
@@ -182,6 +201,11 @@ export async function vaultStageAction(
     proposedDiff: args.proposed_diff,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     ...(ttlDays !== undefined ? { ttlDays } : {}),
+    // C4 disposition (risk-triaged-ratification spec): the authenticated
+    // identity, when present, is the tally key the witness and the risk
+    // scorer's W term read — `proposed_by` remains claimed-agent display
+    // metadata only. Absent under operator context (no AccessContext).
+    ...(access?.user != null ? { stagedByPrincipal: access.user } : {}),
   });
 }
 
@@ -197,6 +221,31 @@ export interface RatifyResult {
   // True when the vault runs shadow_mode (§11.5): the dispatch was computed
   // and shadow-logged but nothing was written, so the action stays pending.
   shadow?: boolean;
+  // Derived server-side, never an input: 'reject' on reject; 'approve' for a
+  // plain approval; 'edit-then-approve' when the caller supplied amended_diff.
+  // Absent on a shadow-mode approve (no decision was recorded).
+  decision_kind?: DecisionKind;
+}
+
+// One id's outcome within a batch `ids` call. `ok` is false for anything that
+// kept the action pending: unknown id, not-pending, a blocked tier-0 gate, or
+// a dispatch failure — the same per-id failure modes the single-id path
+// returns as an err, just captured instead of short-circuiting the batch.
+export interface BatchRatifyOutcome {
+  action_id: string;
+  ok: boolean;
+  applied: boolean;
+  shadow?: boolean;
+  commit?: string;
+  decision_kind?: DecisionKind;
+  error?: string;
+}
+
+export interface BatchRatifyResult {
+  decision: "approve" | "reject";
+  results: BatchRatifyOutcome[];
+  succeeded: number;
+  failed: number;
 }
 
 // The two tier-0 gate problem assemblies, shared by the four ratify gate
@@ -223,108 +272,33 @@ function deprecateGateProblems(gate: ReturnType<typeof tier0DeprecateGate>): str
   return problems.length > 0 ? problems.join("; ") : null;
 }
 
-export async function vaultRatify(
+// Approves ONE action: validates the (possibly amended) payload shape, runs
+// the tier-0 gates against it, and dispatches to the matching write tool. No
+// decision record is written here — the caller (vaultRatify) records the
+// decision only after a live (non-shadow) dispatch succeeds, exactly the
+// original single-action contract. `docs` is the caller's already-loaded doc
+// set — batch callers pass a hoisted, invalidate-on-write snapshot (2026-07-26
+// spec, C2 disposition); the single-id path (docs === undefined) loads fresh,
+// matching pre-refactor behavior exactly.
+async function approveOneAction(
   vaultRoot: string,
-  args: Record<string, unknown>,
-  access?: AccessContext,
-): Promise<Result<RatifyResult, Error>> {
-  // Ratifying is the curation-verdict tier (§11.6): it needs the explicit
-  // `ratify` grant, not merely any read grant. The inner write tools still
-  // re-check their own canWrite/canPromote on dispatch.
-  if (access && !canRatify(access.role)) {
-    return err(new Error(`access denied: role '${access.roleName}' cannot ratify staged actions`));
-  }
-  // A propose-only role must never ratify, even if a hand-built role grants
-  // both (config load rejects the combination, but AccessContexts constructed
-  // in code bypass that). Without this, approving a `write` action would be
-  // coerced by vaultWrite's propose-only path into staging a NEW proposal
-  // while the original got marked ratified/applied — a silent no-op.
-  if (access && isProposeOnly(access.role)) {
-    return err(
-      new Error(
-        `access denied: role '${access.roleName}' is propose-only — it cannot ` +
-          `ratify staged actions`,
-      ),
-    );
-  }
+  action: StagedAction,
+  diffRaw: unknown,
+  principal: string,
+  access: AccessContext | undefined,
+  docs: LoadedDoc[] | undefined,
+): Promise<Result<WriteResult, Error>> {
+  const diff = diffRaw && typeof diffRaw === "object" ? (diffRaw as Record<string, unknown>) : {};
 
-  const id = requireString(args, "id", "vault_ratify");
-  if (!id.ok) return id;
-  const decisionRaw = requireString(args, "decision", "vault_ratify");
-  if (!decisionRaw.ok) return decisionRaw;
-  if (decisionRaw.value !== "approve" && decisionRaw.value !== "reject") {
-    return err(new Error("vault_ratify 'decision' must be 'approve' or 'reject'"));
-  }
-  const decision = decisionRaw.value;
-  const principal = requireString(args, "principal", "vault_ratify");
-  if (!principal.ok) return principal;
-
-  let reason: string | undefined;
-  if (args.reason !== undefined && args.reason !== null) {
-    if (typeof args.reason !== "string") {
-      return err(new Error("vault_ratify 'reason' must be a string"));
-    }
-    const trimmed = args.reason.trim();
-    if (trimmed.length > 0) reason = trimmed;
-  }
-
-  // Validate the action exists and is still open.
-  const found = await getStagedActionById(vaultRoot, id.value);
-  if (!found.ok) return found;
-  const action = found.value;
-  if (!action) return err(new Error(`vault_ratify: unknown staged action: ${id.value}`));
-  if (action.status !== "pending") {
-    return err(
-      new Error(
-        `vault_ratify: staged action ${id.value} is '${action.status}', not 'pending' — ` +
-          "it cannot be ratified",
-      ),
-    );
-  }
-
-  const decidedAt = nowISO();
-
-  // --- reject: record and apply nothing ---
-  if (decision === "reject") {
-    const recorded = await recordDecision(vaultRoot, id.value, {
-      status: "rejected",
-      ratifiedAt: decidedAt,
-      ratifiedBy: principal.value,
-      ...(reason ? { reason } : {}),
-      ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
-    });
-    if (!recorded.ok) return recorded;
-    return ok({ action_id: id.value, decision, applied: false });
-  }
-
-  // --- approve: dispatch by action type to the matching write tool ---
-  // A dispatch failure — including a malformed proposed_diff — leaves the action
-  // pending so it can be retried; no decision record is written until a write
-  // lands. The proposed_diff carries the per-action payload set at stage time.
-  const diff =
-    action.proposedDiff && typeof action.proposedDiff === "object"
-      ? (action.proposedDiff as Record<string, unknown>)
-      : {};
-
-  // Tier 0 ratify gate (#232; quick win 1 of #236). Ratification is already a
-  // gate, so blocking here does not violate the advisory-curation rule — the
-  // direct write tools stay unblocked. A blocked approval is an error, which
-  // leaves the action pending (same contract as a dispatch failure): fix the
-  // underlying state and re-approve, or reject. Under RBAC the error names
-  // only docs the ratifier can read; a hidden remainder is coarsened
-  // (#217 B′), never reported as an exact count.
-  // A `write` proposal's payload shape is needed by both the gate and the
-  // dispatch — validate it once, up front. A malformed payload errors and
-  // leaves the action pending, same contract as a malformed supersede diff.
   let writePayload: { frontmatter: Record<string, unknown>; body: string } | null = null;
   if (action.actionType === "write") {
     if (diff.frontmatter === null || typeof diff.frontmatter !== "object") {
       return err(
-        new Error(`vault_ratify: write action ${id.value} needs proposed_diff.frontmatter`),
+        new Error(`vault_ratify: write action ${action.id} needs proposed_diff.frontmatter`),
       );
     }
     if (typeof diff.body !== "string") {
-      return err(new Error(`vault_ratify: write action ${id.value} needs proposed_diff.body`));
+      return err(new Error(`vault_ratify: write action ${action.id} needs proposed_diff.body`));
     }
     writePayload = { frontmatter: diff.frontmatter as Record<string, unknown>, body: diff.body };
   }
@@ -334,9 +308,15 @@ export async function vaultRatify(
     action.actionType === "deprecate" ||
     action.actionType === "write"
   ) {
-    const loaded = await loadDocuments(vaultRoot);
-    // Fail closed: without the doc set there is no gate, so no dispatch.
-    if (!loaded.ok) return loaded;
+    let loadedDocs: LoadedDoc[];
+    if (docs) {
+      loadedDocs = docs;
+    } else {
+      const loaded = await loadDocuments(vaultRoot);
+      // Fail closed: without the doc set there is no gate, so no dispatch.
+      if (!loaded.ok) return loaded;
+      loadedDocs = loaded.value;
+    }
     const visible = access
       ? (d: LoadedDoc) => canRead(access.role, d.frontmatter.collection)
       : undefined;
@@ -350,7 +330,7 @@ export async function vaultRatify(
       // alone has two bypasses: omitted `sources` inherit the on-disk value
       // unseen, and an omitted `status` on an already-canonical doc keeps it
       // canonical while dodging a payload-declared-status check.
-      const existing = loaded.value.find((d) => d.path === action.targetPath);
+      const existing = loadedDocs.find((d) => d.path === action.targetPath);
       const mergedRaw: Record<string, unknown> = existing
         ? { ...(existing.frontmatter as Record<string, unknown>) }
         : {};
@@ -377,8 +357,8 @@ export async function vaultRatify(
           content: writePayload.body,
           validation: report,
         };
-        const docs = [...loaded.value.filter((d) => d.path !== action.targetPath), synthetic];
-        const problems = promoteGateProblems(tier0PromoteGate(docs, action.targetPath, visible));
+        const spliced = [...loadedDocs.filter((d) => d.path !== action.targetPath), synthetic];
+        const problems = promoteGateProblems(tier0PromoteGate(spliced, action.targetPath, visible));
         if (problems !== null) {
           return err(
             new Error(
@@ -398,7 +378,7 @@ export async function vaultRatify(
         // gets the same gate. A merged superseded_by provides the
         // resolution path and passes, same as a forwarded deprecate.
         const problems = deprecateGateProblems(
-          tier0DeprecateGate(loaded.value, action.targetPath, visible),
+          tier0DeprecateGate(loadedDocs, action.targetPath, visible),
         );
         if (problems !== null) {
           return err(
@@ -412,7 +392,7 @@ export async function vaultRatify(
       }
     } else if (action.actionType === "promote") {
       const problems = promoteGateProblems(
-        tier0PromoteGate(loaded.value, action.targetPath, visible),
+        tier0PromoteGate(loadedDocs, action.targetPath, visible),
       );
       if (problems !== null) {
         return err(
@@ -427,7 +407,7 @@ export async function vaultRatify(
       // successor (same as supersede) — only an unforwarded deprecate can
       // strand canonical dependents on a retired source.
       const problems = deprecateGateProblems(
-        tier0DeprecateGate(loaded.value, action.targetPath, visible),
+        tier0DeprecateGate(loadedDocs, action.targetPath, visible),
       );
       if (problems !== null) {
         return err(
@@ -441,7 +421,6 @@ export async function vaultRatify(
     }
   }
 
-  let dispatched: Result<WriteResult, Error>;
   switch (action.actionType as StagedActionType) {
     case "write": {
       // Payload validated above (writePayload is always set for this type).
@@ -449,59 +428,53 @@ export async function vaultRatify(
       // write so provenance correlates the landed content with the run that
       // proposed it (#235 → #233).
       if (!writePayload) {
-        return err(new Error(`vault_ratify: write action ${id.value} lost its payload`));
+        return err(new Error(`vault_ratify: write action ${action.id} lost its payload`));
       }
-      dispatched = await vaultWrite(
+      return vaultWrite(
         vaultRoot,
         {
           path: action.targetPath,
           frontmatter: writePayload.frontmatter,
           body: writePayload.body,
-          agent: principal.value,
+          agent: principal,
           ...(action.runId ? { run_id: action.runId } : {}),
         },
         access,
       );
-      break;
     }
     case "promote":
-      dispatched = await vaultPromote(
-        vaultRoot,
-        { path: action.targetPath, agent: principal.value },
-        access,
-      );
-      break;
+      return vaultPromote(vaultRoot, { path: action.targetPath, agent: principal }, access);
     case "deprecate": {
       const deprecateArgs: Record<string, unknown> = {
         path: action.targetPath,
-        agent: principal.value,
+        agent: principal,
         reason: action.rationale,
       };
       // Carry through a superseded_by hint from the proposed diff if present.
       if (typeof diff.superseded_by === "string") {
         deprecateArgs.superseded_by = diff.superseded_by;
       }
-      dispatched = await vaultDeprecate(vaultRoot, deprecateArgs, access);
-      break;
+      return vaultDeprecate(vaultRoot, deprecateArgs, access);
     }
     case "supersede": {
       // proposed_diff = { superseded_by: "<new_path>" }
       if (typeof diff.superseded_by !== "string" || diff.superseded_by.trim().length === 0) {
         return err(
-          new Error(`vault_ratify: supersede action ${id.value} needs proposed_diff.superseded_by`),
+          new Error(
+            `vault_ratify: supersede action ${action.id} needs proposed_diff.superseded_by`,
+          ),
         );
       }
-      dispatched = await vaultSupersede(
+      return vaultSupersede(
         vaultRoot,
         {
           old_path: action.targetPath,
           new_path: diff.superseded_by,
           reason: action.rationale,
-          agent: principal.value,
+          agent: principal,
         },
         access,
       );
-      break;
     }
     case "confidence-up": {
       // proposed_diff = { confidence: "<low|medium|high>" }. The enum name is
@@ -509,21 +482,20 @@ export async function vaultRatify(
       if (typeof diff.confidence !== "string") {
         return err(
           new Error(
-            `vault_ratify: confidence-up action ${id.value} needs proposed_diff.confidence`,
+            `vault_ratify: confidence-up action ${action.id} needs proposed_diff.confidence`,
           ),
         );
       }
-      dispatched = await vaultSetConfidence(
+      return vaultSetConfidence(
         vaultRoot,
         {
           path: action.targetPath,
           confidence: diff.confidence,
           reason: action.rationale,
-          agent: principal.value,
+          agent: principal,
         },
         access,
       );
-      break;
     }
     case "merge": {
       // proposed_diff = { merge_from: [path_a, path_b], body, frontmatter? };
@@ -537,7 +509,7 @@ export async function vaultRatify(
       ) {
         return err(
           new Error(
-            `vault_ratify: merge action ${id.value} needs proposed_diff.merge_from ` +
+            `vault_ratify: merge action ${action.id} needs proposed_diff.merge_from ` +
               "(two paths) and proposed_diff.body",
           ),
         );
@@ -547,43 +519,370 @@ export async function vaultRatify(
         path_b: mergeFrom[1],
         target_path: action.targetPath,
         body: diff.body,
-        agent: principal.value,
+        agent: principal,
       };
       if (diff.frontmatter && typeof diff.frontmatter === "object") {
         mergeArgs.frontmatter = diff.frontmatter;
       }
-      dispatched = await vaultMerge(vaultRoot, mergeArgs, access);
-      break;
+      return vaultMerge(vaultRoot, mergeArgs, access);
     }
     default:
       return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
   }
+}
 
-  if (!dispatched.ok) return dispatched;
-
-  // Shadow mode (§11.5): the dispatch computed and shadow-logged the write but
-  // applied nothing. Recording a `ratified` decision over a write that never
-  // landed would be false history — leave the action pending so a live-mode
-  // ratification can really apply it later.
-  if (dispatched.value.shadow) {
-    return ok({ action_id: id.value, decision, applied: false, shadow: true });
-  }
-
-  const recorded = await recordDecision(vaultRoot, id.value, {
-    status: "ratified",
+// Rejects ONE action: records the decision, applies nothing. Thin wrapper
+// kept separate from approveOneAction per the plan's refactor (C2) — the
+// reject path has no gate/dispatch, only bookkeeping.
+async function rejectOneAction(
+  vaultRoot: string,
+  actionId: string,
+  principal: string,
+  reason: string | undefined,
+  reasonCategory: ReasonCategory | undefined,
+  riskAtDecision: number | null,
+  decidedAt: string,
+  access: AccessContext | undefined,
+): Promise<Result<StagedAction, Error>> {
+  return recordDecision(vaultRoot, actionId, {
+    status: "rejected",
     ratifiedAt: decidedAt,
-    ratifiedBy: principal.value,
+    ratifiedBy: principal,
+    decisionKind: "reject",
     ...(reason ? { reason } : {}),
+    ...(reasonCategory ? { reasonCategory } : {}),
+    ...(riskAtDecision !== null ? { riskAtDecision } : {}),
     ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
   });
-  if (!recorded.ok) return recorded;
+}
 
-  return ok({
-    action_id: id.value,
-    decision,
-    applied: true,
-    ...(dispatched.value.commit ? { commit: dispatched.value.commit } : {}),
+export async function vaultRatify(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<RatifyResult | BatchRatifyResult, Error>> {
+  // Ratifying is the curation-verdict tier (§11.6): it needs the explicit
+  // `ratify` grant, not merely any read grant. The inner write tools still
+  // re-check their own canWrite/canPromote on dispatch.
+  if (access && !canRatify(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot ratify staged actions`));
+  }
+  // A propose-only role must never ratify, even if a hand-built role grants
+  // both (config load rejects the combination, but AccessContexts constructed
+  // in code bypass that). Without this, approving a `write` action would be
+  // coerced by vaultWrite's propose-only path into staging a NEW proposal
+  // while the original got marked ratified/applied — a silent no-op.
+  if (access && isProposeOnly(access.role)) {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' is propose-only — it cannot ` +
+          `ratify staged actions`,
+      ),
+    );
+  }
+
+  // --- id / ids: exactly one, batch shape validated up front (Decision 2) ---
+  const hasId = typeof args.id === "string" && args.id.trim().length > 0;
+  const hasIds = args.ids !== undefined && args.ids !== null;
+  if (hasId && hasIds) {
+    return err(new Error("vault_ratify accepts exactly one of 'id' or 'ids', not both"));
+  }
+  if (!hasId && !hasIds) {
+    return err(new Error("vault_ratify requires exactly one of 'id' or 'ids'"));
+  }
+
+  let ids: string[];
+  if (hasIds) {
+    if (!Array.isArray(args.ids)) {
+      return err(new Error("vault_ratify 'ids' must be an array of strings"));
+    }
+    if (args.ids.length === 0) {
+      return err(new Error("vault_ratify 'ids' must not be empty"));
+    }
+    if (args.ids.length > BATCH_RATIFY_MAX) {
+      return err(
+        new Error(`vault_ratify 'ids' must not exceed ${BATCH_RATIFY_MAX} — the batch cap`),
+      );
+    }
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+    for (const raw of args.ids) {
+      if (typeof raw !== "string" || raw.trim().length === 0) {
+        return err(new Error("vault_ratify 'ids' must be an array of non-empty strings"));
+      }
+      const v = raw.trim();
+      if (seen.has(v)) {
+        return err(new Error(`vault_ratify 'ids' contains a duplicate id: ${v}`));
+      }
+      seen.add(v);
+      cleaned.push(v);
+    }
+    ids = cleaned;
+  } else {
+    ids = [(args.id as string).trim()];
+  }
+
+  const decisionRaw = requireString(args, "decision", "vault_ratify");
+  if (!decisionRaw.ok) return decisionRaw;
+  if (decisionRaw.value !== "approve" && decisionRaw.value !== "reject") {
+    return err(new Error("vault_ratify 'decision' must be 'approve' or 'reject'"));
+  }
+  const decision = decisionRaw.value;
+  const principal = requireString(args, "principal", "vault_ratify");
+  if (!principal.ok) return principal;
+
+  let reason: string | undefined;
+  if (args.reason !== undefined && args.reason !== null) {
+    if (typeof args.reason !== "string") {
+      return err(new Error("vault_ratify 'reason' must be a string"));
+    }
+    const trimmed = args.reason.trim();
+    if (trimmed.length > 0) reason = trimmed;
+  }
+
+  // --- reason_category (Decision 3 / C6): required on reject, optional on
+  // plain approve, required alongside amended_diff. No silent default — an
+  // un-chosen 'other' would gut the calibration signal the category exists
+  // to collect. ---
+  let reasonCategory: ReasonCategory | undefined;
+  if (args.reason_category !== undefined && args.reason_category !== null) {
+    if (
+      typeof args.reason_category !== "string" ||
+      !(REASON_CATEGORIES as readonly string[]).includes(args.reason_category)
+    ) {
+      return err(
+        new Error(`vault_ratify 'reason_category' must be one of: ${REASON_CATEGORIES.join(", ")}`),
+      );
+    }
+    reasonCategory = args.reason_category as ReasonCategory;
+  }
+
+  // --- amended_diff (Decision 3): single-id, approve-only ---
+  const hasAmendedDiff = args.amended_diff !== undefined && args.amended_diff !== null;
+  let amendedDiff: unknown;
+  if (hasAmendedDiff) {
+    if (hasIds) {
+      return err(
+        new Error(
+          "vault_ratify 'amended_diff' is single-id only — an amendment is per-action " +
+            "deliberation, incompatible with 'ids'",
+        ),
+      );
+    }
+    if (decision !== "approve") {
+      return err(new Error("vault_ratify 'amended_diff' is only valid with decision 'approve'"));
+    }
+    if (typeof args.amended_diff !== "object") {
+      return err(new Error("vault_ratify 'amended_diff' must be an object"));
+    }
+    amendedDiff = args.amended_diff;
+  }
+
+  // This is an INTENTIONAL, spec-mandated contract break for reject callers
+  // (C6 disposition): the `decision` enum and every approve-path caller are
+  // untouched; reject now requires reason_category. The error enumerates the
+  // categories so an agent caller self-corrects in one round trip.
+  if (decision === "reject" && reasonCategory === undefined) {
+    return err(
+      new Error(
+        `vault_ratify: 'reason_category' is required on reject — one of: ` +
+          `${REASON_CATEGORIES.join(", ")}`,
+      ),
+    );
+  }
+  if (hasAmendedDiff && reasonCategory === undefined) {
+    return err(
+      new Error(
+        `vault_ratify: 'reason_category' is required with 'amended_diff' — one of: ` +
+          `${REASON_CATEGORIES.join(", ")}`,
+      ),
+    );
+  }
+
+  // Shadow mode + amended_diff (C7): silently discarding an operator-authored
+  // amendment is the one option this must never do. Shadow mode records no
+  // decisions of any kind today (that recording surface belongs to the
+  // shadow-mode graduation story, out of scope here per the spec's own
+  // boundaries) — so an amendment under shadow is an explicit error instead.
+  if (hasAmendedDiff) {
+    const shadowConfig = loadConfig(vaultRoot);
+    if (!shadowConfig.ok) return shadowConfig;
+    if (shadowConfig.value.shadowMode) {
+      return err(
+        new Error(
+          "vault_ratify: shadow mode is active for this action type; the amendment would be " +
+            "discarded — re-issue without amended_diff, or ratify after shadow mode is lifted",
+        ),
+      );
+    }
+  }
+
+  // --- hoist: collapse the log once, load tensions and docs once (C2) ---
+  const actionsRes = await listStagedActions(vaultRoot);
+  if (!actionsRes.ok) return actionsRes;
+  const tensionsRes = await listTensions(vaultRoot);
+  if (!tensionsRes.ok) return tensionsRes;
+  const docsRes = await loadDocuments(vaultRoot);
+  if (!docsRes.ok) return docsRes;
+  let docs = docsRes.value;
+
+  const actionsById = new Map(actionsRes.value.map((a) => [a.id, a] as const));
+  const now = new Date();
+
+  // The non-authoritative risk_at_decision snapshot (Mihir's 2026-07-27
+  // decision): computed ONCE from this hoisted, pre-decision snapshot and
+  // reused for every id in the call (single or batch) — consistent with the
+  // batch's cost discipline and with the field's own "frozen observation,
+  // never re-read for ordering" framing. Full-graph (no pathVisible).
+  const { items: rankedAtStart } = rankPendingActions({
+    actions: actionsRes.value,
+    docs,
+    tensions: tensionsRes.value,
+    now,
   });
+  const riskById = new Map(rankedAtStart.map((i) => [i.id, i.risk] as const));
+
+  const decidedAt = nowISO();
+  const results: BatchRatifyOutcome[] = [];
+
+  for (const id of ids) {
+    const action = actionsById.get(id);
+    if (!action) {
+      results.push({
+        action_id: id,
+        ok: false,
+        applied: false,
+        error: `vault_ratify: unknown staged action: ${id}`,
+      });
+      continue;
+    }
+    if (action.status !== "pending") {
+      results.push({
+        action_id: id,
+        ok: false,
+        applied: false,
+        error:
+          `vault_ratify: staged action ${id} is '${action.status}', not 'pending' — ` +
+          "it cannot be ratified",
+      });
+      continue;
+    }
+
+    // action.status === "pending" here (checked above), so it was necessarily
+    // scored into rankedAtStart / riskById above — the fallback is defensive
+    // only (e.g. a future refactor that filters riskById).
+    const riskAtDecision = riskById.get(id) ?? null;
+
+    if (decision === "reject") {
+      const recorded = await rejectOneAction(
+        vaultRoot,
+        id,
+        principal.value,
+        reason,
+        reasonCategory,
+        riskAtDecision,
+        decidedAt,
+        access,
+      );
+      if (!recorded.ok) {
+        results.push({ action_id: id, ok: false, applied: false, error: recorded.error.message });
+        continue;
+      }
+      results.push({ action_id: id, ok: true, applied: false, decision_kind: "reject" });
+      continue;
+    }
+
+    // --- approve ---
+    const isAmending = !hasIds && hasAmendedDiff;
+    const effectiveDiffRaw = isAmending ? amendedDiff : action.proposedDiff;
+    const decisionKind: DecisionKind = isAmending ? "edit-then-approve" : "approve";
+
+    const dispatched = await approveOneAction(
+      vaultRoot,
+      action,
+      effectiveDiffRaw,
+      principal.value,
+      access,
+      docs,
+    );
+    if (!dispatched.ok) {
+      results.push({ action_id: id, ok: false, applied: false, error: dispatched.error.message });
+      continue;
+    }
+
+    // Shadow mode (§11.5): the dispatch computed and shadow-logged the write
+    // but applied nothing. Recording a `ratified` decision over a write that
+    // never landed would be false history — leave the action pending so a
+    // live-mode ratification can really apply it later.
+    if (dispatched.value.shadow) {
+      results.push({ action_id: id, ok: true, applied: false, shadow: true });
+      continue;
+    }
+
+    const recorded = await recordDecision(vaultRoot, id, {
+      status: "ratified",
+      ratifiedAt: decidedAt,
+      ratifiedBy: principal.value,
+      decisionKind,
+      ...(reason ? { reason } : {}),
+      ...(reasonCategory ? { reasonCategory } : {}),
+      ...(isAmending ? { amendedDiff: effectiveDiffRaw } : {}),
+      ...(riskAtDecision !== null ? { riskAtDecision } : {}),
+      ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
+    });
+    if (!recorded.ok) {
+      // The write LANDED but the decision record failed to append — surface
+      // loudly rather than silently losing the outcome; `applied` is still
+      // true because the mutation and its commit are real.
+      results.push({
+        action_id: id,
+        ok: false,
+        applied: true,
+        ...(dispatched.value.commit ? { commit: dispatched.value.commit } : {}),
+        error: recorded.error.message,
+      });
+      continue;
+    }
+
+    results.push({
+      action_id: id,
+      ok: true,
+      applied: true,
+      decision_kind: decisionKind,
+      ...(dispatched.value.commit ? { commit: dispatched.value.commit } : {}),
+    });
+
+    // Invalidate-on-write (C2): this dispatch mutated the vault, so later
+    // ids' tier-0 gates must see the mutated state. Reloading only here keeps
+    // the common cases (batch reject, gate-blocked batches, shadow) to one
+    // load total. A reload failure means the vault is now in an unknown
+    // state relative to what later gates would check — fail the whole call
+    // rather than gate the rest against stale docs; every id decided so far
+    // is already durably recorded (recordDecision/rejectOneAction already
+    // landed), so this is safe to surface as an error and re-issue.
+    const reloaded = await loadDocuments(vaultRoot);
+    if (!reloaded.ok) return reloaded;
+    docs = reloaded.value;
+  }
+
+  if (!hasIds) {
+    const single = results[0];
+    if (!single) return err(new Error(`vault_ratify: no outcome recorded for ${ids[0]}`));
+    if (!single.ok)
+      return err(new Error(single.error ?? `vault_ratify: ${single.action_id} failed`));
+    return ok({
+      action_id: single.action_id,
+      decision,
+      applied: single.applied,
+      ...(single.commit ? { commit: single.commit } : {}),
+      ...(single.shadow ? { shadow: true } : {}),
+      ...(single.decision_kind ? { decision_kind: single.decision_kind } : {}),
+    });
+  }
+
+  const succeeded = results.filter((r) => r.ok).length;
+  const failed = results.length - succeeded;
+  return ok({ decision, results, succeeded, failed });
 }
 
 // ---------------------------------------------------------------------------
@@ -614,7 +913,7 @@ const stageActionOutputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-const ratifyOutputSchema: Record<string, unknown> = {
+const ratifySingleOutputSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     action_id: { type: "string" },
@@ -627,10 +926,102 @@ const ratifyOutputSchema: Record<string, unknown> = {
     // §11.5: computed and shadow-logged but not written — the action stays
     // pending for a live ratification later.
     shadow: { type: "boolean" },
+    decision_kind: {
+      type: "string",
+      enum: [...DECISION_KINDS],
+      description:
+        "Present on approve: 'approve', or 'edit-then-approve' when amended_diff was used",
+    },
   },
   required: ["action_id", "decision", "applied"],
   additionalProperties: false,
 };
+
+const ratifyBatchOutcomeSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    action_id: { type: "string" },
+    ok: { type: "boolean", description: "False for anything that left the action pending" },
+    applied: { type: "boolean" },
+    shadow: { type: "boolean" },
+    commit: { type: "string" },
+    decision_kind: { type: "string", enum: [...DECISION_KINDS] },
+    error: { type: "string" },
+  },
+  required: ["action_id", "ok", "applied"],
+  additionalProperties: false,
+};
+
+const ratifyBatchOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    decision: { type: "string", enum: ["approve", "reject"] },
+    results: { type: "array", items: ratifyBatchOutcomeSchema },
+    succeeded: { type: "integer" },
+    failed: { type: "integer" },
+  },
+  required: ["decision", "results", "succeeded", "failed"],
+  additionalProperties: false,
+};
+
+// Decision 2: a single-`id` call keeps today's RatifyResult shape (plus the
+// optional decision_kind); a batch `ids` call returns the aggregate shape.
+// The two are structurally disjoint (results/succeeded/failed vs
+// action_id/applied), so anyOf is unambiguous for a validator. MCP requires
+// `type: 'object'` at the outputSchema root (Tool.outputSchema in the SDK's
+// types.ts) — harmless here since both anyOf branches are themselves object
+// schemas, so the extra top-level constraint is redundant, never conflicting.
+const ratifyOutputSchema: Record<string, unknown> = {
+  type: "object",
+  anyOf: [ratifySingleOutputSchema, ratifyBatchOutputSchema],
+};
+
+// ---------------------------------------------------------------------------
+// Compact `content` summaries (spec 2026-07-26, Decision 3, PR 1 gap
+// closure). Neither tool's docLinks names a path: the target document
+// itself is not part of either result value (StageActionResult carries only
+// the proposal's own id/expiry; RatifyResult carries only the decision),
+// and the docLinks hard rule forbids inventing one from args.
+// ---------------------------------------------------------------------------
+
+function summarizeStageAction(value: unknown): string {
+  const r = value as StageActionResult;
+  const conflicts =
+    r.conflicts_with.length > 0
+      ? `conflicts with ${r.conflicts_with.length}: ${r.conflicts_with.join(", ")}`
+      : "uncontested";
+  const lines = [`staged ${r.id}, expires ${r.expires_at} — ${conflicts}`];
+  if (r.tension_id) lines.push(`tension: ${r.tension_id}`);
+  if (r.tension_error) lines.push(`tension error: ${r.tension_error}`);
+  return lines.join("\n");
+}
+
+function isBatchRatifyResult(value: unknown): value is BatchRatifyResult {
+  return typeof value === "object" && value !== null && "results" in value;
+}
+
+function summarizeRatify(value: unknown): string {
+  if (isBatchRatifyResult(value)) {
+    const lines = [
+      `batch ${value.decision}: ${value.succeeded} succeeded, ${value.failed} failed ` +
+        `(${value.results.length} total)`,
+    ];
+    for (const r of value.results) {
+      const outcome = !r.ok
+        ? `error: ${r.error ?? "unknown"}`
+        : r.shadow
+          ? "shadow"
+          : r.applied
+            ? (r.commit ?? "applied")
+            : "not applied";
+      lines.push(`  ${r.action_id} — ${outcome}`);
+    }
+    return lines.join("\n");
+  }
+  const r = value as RatifyResult;
+  const outcome = r.shadow ? "shadow" : r.applied ? (r.commit ?? "applied") : "not applied";
+  return `${r.action_id} ${r.decision} — ${outcome}`;
+}
 
 // ---------------------------------------------------------------------------
 // MCP tool definitions
@@ -640,6 +1031,7 @@ export const stagedActionTools: ToolDefinition[] = [
   {
     name: "vault_stage_action",
     title: "Stage an action for ratification",
+    oneLine: "Stage a proposed action for later ratification.",
     annotations: { destructiveHint: false },
     description:
       "Record a proposed change to the vault for later human ratification via " +
@@ -697,41 +1089,73 @@ export const stagedActionTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: stageActionOutputSchema,
+    summarize: summarizeStageAction,
     handler: (vaultRoot, args, access) => vaultStageAction(vaultRoot, args, access),
   },
   {
     name: "vault_ratify",
-    title: "Approve or reject a staged action",
+    title: "Approve or reject staged action(s)",
+    oneLine: "Approve or reject one or more staged actions.",
     annotations: { destructiveHint: true },
     description:
-      "Approve or reject a single pending staged action. On approve, dispatches " +
-      "to the matching write tool (promote → vault_promote, deprecate → " +
-      "vault_deprecate, supersede → vault_supersede, confidence-up → " +
-      "vault_set_confidence, merge → vault_merge, write → vault_write) and " +
-      "auto-commits. On reject, " +
-      "records the rejection and applies nothing. A dispatch failure leaves the " +
-      "action pending. Approving a promote, an unforwarded deprecate, or a " +
-      "write that declares status canonical runs the " +
-      "tier-0 gate first (#232): if applying would create a certain structural " +
-      "violation (broken source refs, canonical citing draft/deprecated/archived, " +
-      "schema-invalid frontmatter, stranded canonical dependents), the approval " +
-      "errors and the action stays pending — fix the state and re-approve, or " +
-      "reject. Errors if the id is unknown or the action is not pending " +
-      "(already decided or expired). Requires the role's 'ratify' grant. If " +
-      "the vault runs shadow_mode, an approved dispatch is computed and " +
-      "shadow-logged but NOT applied — the result carries shadow: true and " +
-      "the action stays pending for a live ratification later.",
+      "Approve or reject one pending staged action ('id'), or up to " +
+      `${BATCH_RATIFY_MAX} at once ('ids', an explicit list — never a threshold ` +
+      "or an 'all pending' sentinel: the parameter shape cannot express one). " +
+      "Each id is processed independently in caller order — RBAC, the " +
+      "pending-status check, and the tier-0 gates run per action exactly as a " +
+      "single call would; one gate-blocked or failing id leaves THAT action " +
+      "pending and the batch continues with per-id outcomes, never a rollback " +
+      "of the rest. Durability: each id's decision record and git commit land " +
+      "before the next id is processed, so an interrupted batch leaves a " +
+      "complete record of what landed — re-issuing the same batch is the " +
+      "recovery path (already-decided ids report a 'not pending' outcome; the " +
+      "remainder applies). On approve, dispatches to the matching write tool " +
+      "(promote → vault_promote, deprecate → vault_deprecate, supersede → " +
+      "vault_supersede, confidence-up → vault_set_confidence, merge → " +
+      "vault_merge, write → vault_write) and auto-commits. On reject, records " +
+      "the rejection and applies nothing; 'reason_category' is REQUIRED on " +
+      "reject — a spec-mandated, intentional break from the prior optional " +
+      "contract — one of: wrong-conclusion, wrong-target, overbroad, " +
+      "stale-evidence, duplicate, formatting, policy, other. Approve-path " +
+      "callers are unaffected: 'reason_category' stays optional there, unless " +
+      "'amended_diff' is present, where it is also required. 'amended_diff' " +
+      "(single-'id' + approve only) dispatches an edited payload instead of " +
+      "the staged one — the tier-0 gates run against the amendment too — and " +
+      "the decision record keeps both what was proposed and what actually " +
+      "landed (decision_kind: 'edit-then-approve'). If shadow_mode is active, " +
+      "'amended_diff' errors rather than silently discarding the amendment: " +
+      "re-issue without it, or ratify after shadow mode is lifted. Approving " +
+      "a promote, an unforwarded deprecate, or a write that declares status " +
+      "canonical runs the tier-0 gate first (#232): a certain structural " +
+      "violation (broken source refs, canonical citing draft/deprecated/" +
+      "archived, schema-invalid frontmatter, stranded canonical dependents) " +
+      "errors and the action stays pending. Errors if an id is unknown or not " +
+      "pending. Requires the role's 'ratify' grant. If the vault runs " +
+      "shadow_mode, an approved dispatch is computed and shadow-logged but NOT " +
+      "applied — the outcome carries shadow: true and the action stays " +
+      "pending for a live ratification later.",
     inputSchema: {
       type: "object",
       properties: {
         id: {
           type: "string",
-          description: "Id of the staged action to decide, e.g. 'stage-042'",
+          description:
+            "Id of a single staged action to decide, e.g. 'stage-042'. Exactly one of id/ids.",
+        },
+        ids: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: BATCH_RATIFY_MAX,
+          description:
+            `Explicit list of staged-action ids to decide together, 1-${BATCH_RATIFY_MAX}, ` +
+            "no duplicates. Exactly one of id/ids. One shared decision/reason/" +
+            "reason_category applies to every id.",
         },
         decision: {
           type: "string",
           enum: ["approve", "reject"],
-          description: "Whether to approve (apply) or reject the action",
+          description: "Whether to approve (apply) or reject the action(s)",
         },
         principal: {
           type: "string",
@@ -741,11 +1165,27 @@ export const stagedActionTools: ToolDefinition[] = [
           type: "string",
           description: "Optional free-text reason recorded with the decision",
         },
+        reason_category: {
+          type: "string",
+          enum: [...REASON_CATEGORIES],
+          description:
+            "Machine-readable correction category. Required on reject and when " +
+            "amended_diff is present; optional on a plain approve.",
+        },
+        amended_diff: {
+          type: "object",
+          description:
+            "Single-'id' + decision:'approve' only. An edited payload dispatched " +
+            "instead of the staged proposed_diff; same shape rules as proposed_diff " +
+            "for the action's type. Errors under shadow_mode instead of discarding it.",
+          additionalProperties: true,
+        },
       },
-      required: ["id", "decision", "principal"],
+      required: ["decision", "principal"],
       additionalProperties: false,
     },
     outputSchema: ratifyOutputSchema,
+    summarize: summarizeRatify,
     handler: (vaultRoot, args, access) => vaultRatify(vaultRoot, args, access),
   },
 ];

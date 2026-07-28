@@ -895,4 +895,171 @@ describe("malformed-comment hint on YAML parse errors (#26)", () => {
     expect(malformedCommentHint(text, 3)).toBeNull();
     expect(malformedCommentHint(text, null)).toBeNull();
   });
+
+  describe("search.routing (spec 2026-07-26 fusion overhaul, Decision 2)", () => {
+    it("defaults to routing: false when the block is absent", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search).toEqual({ routing: false });
+    });
+
+    it("parses search.routing: true", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(true);
+    });
+
+    it("parses search.routing: false", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(false);
+    });
+
+    it('parses search.routing: "on" (quoted string)', () => {
+      writeConfig('version: 1\nvault_name: v\nsearch:\n  routing: "on"\n');
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(true);
+    });
+
+    it('parses search.routing: off (bare word — js-yaml 4\'s YAML-1.2 core schema loads it as the string "off", not a boolean)', () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: off\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.search.routing).toBe(false);
+    });
+
+    it("rejects an invalid routing value", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routing: sometimes\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("search.routing");
+      expect(result.error.message).toContain("on/off or true/false");
+    });
+
+    it("rejects an unknown child key", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch:\n  routnig: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'search.routnig' is not a recognised setting");
+    });
+
+    it("rejects a non-mapping search block", () => {
+      writeConfig("version: 1\nvault_name: v\nsearch: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'search' must be a mapping");
+    });
+  });
+
+  describe("code_repos / jit_anchors (2026-07-26 citation-anchors-jit spec)", () => {
+    it("defaults to an empty map and jit_anchors: true when absent", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.codeRepos).toEqual({});
+      expect(result.value.jitAnchors).toBe(true);
+    });
+
+    it("resolves a relative path against the vault root", () => {
+      writeConfig("code_repos:\n  api: ../code/api\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.codeRepos.api).toBe(resolve(dir, "../code/api"));
+    });
+
+    it("expands a leading ~ against the home directory", () => {
+      writeConfig("code_repos:\n  api: ~/code/api\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.codeRepos.api).toBe(join(homedir(), "code", "api"));
+    });
+
+    it("does NOT check path existence at load — an absent repo loads fine", () => {
+      writeConfig("code_repos:\n  ghost: /nowhere/does/not/exist\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.codeRepos.ghost).toBe("/nowhere/does/not/exist");
+    });
+
+    it("rejects a repo name containing ':' (collides with the describes grammar)", () => {
+      writeConfig("code_repos:\n  'weird:name': ../code\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("must not contain ':'");
+    });
+
+    it("rejects an empty path value", () => {
+      writeConfig("code_repos:\n  api: ''\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects a non-mapping code_repos block", () => {
+      writeConfig("code_repos: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'code_repos' must be a mapping");
+    });
+
+    it("parses jit_anchors: false", () => {
+      writeConfig("jit_anchors: false\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.jitAnchors).toBe(false);
+    });
+
+    it("rejects a non-boolean jit_anchors", () => {
+      writeConfig("jit_anchors: 'yes'\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'jit_anchors' must be true or false");
+    });
+  });
+
+  describe("code_repo_visibility role flag (2026-07-27 resolution)", () => {
+    it("parses code_repo_visibility: true onto the role", () => {
+      writeConfig(
+        "roles:\n  operator:\n    read: ['*']\n    write: ['*']\n    code_repo_visibility: true\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.codeRepoVisibility).toBe(true);
+    });
+
+    it("defaults to absent/false when omitted — off by default for non-operator roles", () => {
+      writeConfig("roles:\n  analyst:\n    read: ['*']\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.analyst?.codeRepoVisibility).toBeUndefined();
+    });
+
+    it("rejects a non-boolean code_repo_visibility", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    code_repo_visibility: 'yes'\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("code_repo_visibility");
+    });
+  });
 });

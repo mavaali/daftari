@@ -12,12 +12,13 @@
 import { type AccessContext, canRatify, canRead, hasAnyRead } from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import type { CoverageEquitySummary } from "../curation/coverage.js";
+import type { IndependenceCalibrationSummary } from "../curation/independence-calibration.js";
 import {
   LINT_CHECKS,
   type LintCheckName,
   type LintFinding,
+  type RankedStagedActionItem,
   runLint,
-  type StagedActionLintItem,
   type TensionHealth,
 } from "../curation/lint.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
@@ -39,6 +40,7 @@ import { canSeeTension, sourceReadable, visibleTensions } from "../curation/tens
 import {
   bucketHiddenDownstream,
   computeTensionBlast,
+  type HiddenDownstream,
   type TensionBlastResult,
 } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
@@ -47,6 +49,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { clip, SUMMARY_DETAIL_CHARS } from "./summary.js";
 
 // Curation tools are open to any role with at least one read grant. A guest
 // (or any role with no read access) is denied.
@@ -350,10 +353,15 @@ export interface VaultLintResult {
   checks: Partial<Record<LintCheckName, LintFinding[]>>;
   totalFindings: number;
   tensionHealth: TensionHealth;
-  stagedActions: StagedActionLintItem[];
+  stagedActions: RankedStagedActionItem[];
+  hiddenStagedActions: HiddenDownstream;
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
   reviewThroughput: ReviewThroughputSummary;
+  independenceCalibration: IndependenceCalibrationSummary;
+  // 2026-07-26 citation-anchors-jit spec, Phase 8: step-3 pin classifications
+  // spent this run by the Decision-4 softening pass (budget-spend counter).
+  pinsClassified: number;
 }
 
 export async function vaultLint(
@@ -410,9 +418,12 @@ export async function vaultLint(
       totalFindings: findings.length,
       tensionHealth: report.value.tensionHealth,
       stagedActions: report.value.stagedActions,
+      hiddenStagedActions: report.value.hiddenStagedActions,
       shadowActions: report.value.shadowActions,
       coverageEquity: report.value.coverageEquity,
       reviewThroughput: report.value.reviewThroughput,
+      independenceCalibration: report.value.independenceCalibration,
+      pinsClassified: report.value.pinsClassified,
     });
   }
 
@@ -423,9 +434,12 @@ export async function vaultLint(
     totalFindings: report.value.totalFindings,
     tensionHealth: report.value.tensionHealth,
     stagedActions: report.value.stagedActions,
+    hiddenStagedActions: report.value.hiddenStagedActions,
     shadowActions: report.value.shadowActions,
     coverageEquity: report.value.coverageEquity,
     reviewThroughput: report.value.reviewThroughput,
+    independenceCalibration: report.value.independenceCalibration,
+    pinsClassified: report.value.pinsClassified,
   });
 }
 
@@ -756,7 +770,10 @@ const lintOutputSchema: Record<string, unknown> = {
     },
     stagedActions: {
       type: "array",
-      description: "Pending staged actions awaiting ratification, soonest-to-expire first",
+      description:
+        "Pending staged actions awaiting ratification, risk descending, soonest-to-expire " +
+        "tiebreak (2026-07-26 risk-triaged-ratification spec). Filtered to the caller's " +
+        "vantage — see hiddenStagedActions for the coarsened remainder.",
       items: {
         type: "object",
         properties: {
@@ -766,10 +783,48 @@ const lintOutputSchema: Record<string, unknown> = {
           ageDays: { type: "integer" },
           expiresInDays: { type: "integer" },
           rationale: { type: "string", description: "First sentence of the staged rationale" },
+          risk: { type: "number", description: "Ordinal risk score in [0,1], recomputed on read" },
+          proposedBy: { type: "string" },
+          proposerTrackRecord: {
+            type: "number",
+            description: "The risk score's W term: proposer's Laplace-smoothed correction rate",
+          },
+          diffBucket: { type: "string", enum: ["small", "medium", "large"] },
+          blast: {
+            type: "object",
+            properties: {
+              primary: { type: "integer" },
+              advisory: { type: "integer" },
+              hidden: { type: "string", enum: ["none", "some", "many"] },
+            },
+            required: ["primary", "advisory", "hidden"],
+            additionalProperties: false,
+          },
+          openTension: { type: "boolean" },
+          conflict: { type: "boolean" },
         },
-        required: ["id", "actionType", "targetPath", "ageDays", "expiresInDays", "rationale"],
+        required: [
+          "id",
+          "actionType",
+          "targetPath",
+          "ageDays",
+          "expiresInDays",
+          "rationale",
+          "risk",
+          "proposedBy",
+          "proposerTrackRecord",
+          "diffBucket",
+          "blast",
+          "openTension",
+          "conflict",
+        ],
         additionalProperties: false,
       },
+    },
+    hiddenStagedActions: {
+      type: "string",
+      enum: ["none", "some", "many"],
+      description: "Coarsened count of pending actions omitted from stagedActions — never exact",
     },
     shadowActions: {
       type: "object",
@@ -884,6 +939,68 @@ const lintOutputSchema: Record<string, unknown> = {
       required: ["lifetime", "last7d", "last30d", "timeToDecisionDays", "oldestPendingDays"],
       additionalProperties: false,
     },
+    // Independence-aware promotion shadow calibration (2026-07-26 spec,
+    // Decision 4). Vault-global counts/aggregates only — no paths, matching
+    // tensionHealth's posture.
+    independenceCalibration: {
+      type: "object",
+      properties: {
+        kVsKEff: {
+          type: "object",
+          properties: {
+            edgesWithVotes: { type: "integer" },
+            meanK: { type: "number" },
+            meanKEff: { type: "number" },
+            medianKEff: { type: "number" },
+            kEffBelowKCount: { type: "integer" },
+          },
+          required: ["edgesWithVotes", "meanK", "meanKEff", "medianKEff", "kEffBelowKCount"],
+          additionalProperties: false,
+        },
+        wouldDropBelowTrigger: {
+          type: "object",
+          properties: {
+            count: { type: "integer" },
+            legacyOnlyCount: { type: "integer" },
+          },
+          required: ["count", "legacyOnlyCount"],
+          additionalProperties: false,
+        },
+        wouldNeedsReviewRate: {
+          type: "object",
+          properties: {
+            rate: { type: "number" },
+            needsReviewCount: { type: "integer" },
+            decidedCount: { type: "integer" },
+            informativePanels: { type: "integer" },
+            informativeNeedsReviewCount: { type: "integer" },
+            rateInformative: { type: "number" },
+          },
+          required: [
+            "rate",
+            "needsReviewCount",
+            "decidedCount",
+            "informativePanels",
+            "informativeNeedsReviewCount",
+            "rateInformative",
+          ],
+          additionalProperties: false,
+        },
+        legacyUnfingerprintedFraction: { type: "number" },
+        nonLoopFingerprintedCountedVotes: { type: "integer" },
+      },
+      required: [
+        "kVsKEff",
+        "wouldDropBelowTrigger",
+        "wouldNeedsReviewRate",
+        "legacyUnfingerprintedFraction",
+        "nonLoopFingerprintedCountedVotes",
+      ],
+      additionalProperties: false,
+    },
+    // 2026-07-26 citation-anchors-jit spec, Phase 8: step-3 pin
+    // classifications spent this run by the Decision-4 softening pass.
+    pinsClassified: { type: "integer", minimum: 0 },
   },
   required: [
     "generatedAt",
@@ -892,9 +1009,12 @@ const lintOutputSchema: Record<string, unknown> = {
     "totalFindings",
     "tensionHealth",
     "stagedActions",
+    "hiddenStagedActions",
     "shadowActions",
     "coverageEquity",
     "reviewThroughput",
+    "independenceCalibration",
+    "pinsClassified",
   ],
   additionalProperties: false,
 };
@@ -950,12 +1070,6 @@ const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
 ];
 
 const LINT_SUMMARY_TOP_FINDINGS = 6;
-const LINT_SUMMARY_DETAIL_CHARS = 110;
-
-function clip(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 function summarizeLint(value: unknown): string {
   const report = value as VaultLintResult;
@@ -989,8 +1103,10 @@ function summarizeLint(value: unknown): string {
       `${health.aging.stale} fresh/aging/stale; ${health.clusters.count} cluster(s) ` +
       `(${health.clusters.large} large, ${health.clusters.aged} aged); ` +
       `stale blast ${health.blastRadiusOfStaleTensions}`,
-    `staged: ${report.stagedActions.length} pending, ` +
-      `${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
+    `staged: ${report.stagedActions.length} pending` +
+      (report.stagedActions[0] ? ` (top risk ${report.stagedActions[0].risk.toFixed(2)})` : "") +
+      (report.hiddenStagedActions !== "none" ? `, ${report.hiddenStagedActions} hidden` : "") +
+      `, ${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
       `shadow: ${report.shadowActions.total} logged, ${report.shadowActions.gated} would-gate; ` +
       `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s)`,
   ];
@@ -999,11 +1115,69 @@ function summarizeLint(value: unknown): string {
   if (top.length > 0) {
     lines.push(`top ${top.length} of ${flat.length} finding(s):`);
     for (const { check, finding } of top) {
-      lines.push(
-        `  [${check}] ${finding.path} — ${clip(finding.detail, LINT_SUMMARY_DETAIL_CHARS)}`,
-      );
+      lines.push(`  [${check}] ${finding.path} — ${clip(finding.detail, SUMMARY_DETAIL_CHARS)}`);
     }
   }
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links for the remaining curation
+// tools (spec 2026-07-26, Decision 3, PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function summarizeTensionEntry(value: unknown): string {
+  const t = value as TensionEntry;
+  return `${t.id ?? "(legacy, no id)"} [${t.kind}] ${t.status}`;
+}
+
+// sourceA/sourceB are already present in the (already visible) result value
+// — the hard rule that docLinks never re-derives or re-queries anything.
+function docLinksTensionEntry(value: unknown): string[] {
+  const t = value as TensionEntry;
+  return [t.sourceA, t.sourceB];
+}
+
+function summarizeTensionClusters(value: unknown): string {
+  const r = value as TensionClustersResult;
+  if (r.cluster_count === 0) return "0 tension clusters.";
+  const lines = [`${r.cluster_count} tension cluster(s):`];
+  for (const c of r.clusters) {
+    lines.push(
+      `  ${c.id}: ${c.size} doc(s), ${c.tension_count} tension(s), ` +
+        `${c.oldest_tension_age_days}-${c.newest_tension_age_days}d old`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function summarizeTensionBlast(value: unknown): string {
+  const r = value as TensionBlastResult;
+  const anchor = r.contested_document ?? r.cluster_id ?? "(unknown anchor)";
+  return (
+    `blast from ${anchor}: ${r.downstream.length} downstream ` +
+    `(${r.primary_blast} primary / ${r.advisory_blast} advisory), ` +
+    `depth ${r.max_depth}, hidden: ${r.hidden_downstream}`
+  );
+}
+
+// Every path the (already RBAC-filtered) value names: the contested anchor
+// (when a single document was queried), the cluster's members, and the
+// visible downstream set.
+function docLinksTensionBlast(value: unknown): string[] {
+  const r = value as TensionBlastResult;
+  const paths: string[] = [];
+  if (r.contested_document) paths.push(r.contested_document);
+  paths.push(...r.cluster_documents);
+  paths.push(...r.downstream.map((d) => d.path));
+  return paths;
+}
+
+function summarizeProvenance(value: unknown): string {
+  const r = value as VaultProvenanceResult;
+  if (r.count === 0) return `${r.path}: no write history.`;
+  const lines = [`${r.path}: ${r.count} entry(ies)`];
+  for (const e of r.history.slice(-5)) lines.push(`  ${e.timestamp} ${e.agent} ${e.action}`);
   return lines.join("\n");
 }
 
@@ -1015,6 +1189,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_tension_log",
     title: "Log a contradiction",
+    oneLine: "Log a contradiction between two documents' claims.",
     annotations: { destructiveHint: true },
     description:
       "Record a tension — a contradiction or unresolved pull between two " +
@@ -1064,11 +1239,14 @@ export const curationTools: ToolDefinition[] = [
     },
     // The entry as logged: id assigned, status 'unresolved', no resolution.
     outputSchema: tensionEntrySchema(LOGGABLE_TENSION_KINDS),
+    summarize: summarizeTensionEntry,
+    docLinks: docLinksTensionEntry,
     handler: (vaultRoot, args, access) => vaultTensionLog(vaultRoot, args, access),
   },
   {
     name: "vault_tension_resolve",
     title: "Resolve a logged tension",
+    oneLine: "Resolve a logged tension with an outcome and rationale.",
     annotations: { destructiveHint: true },
     description:
       "Record the closure of a previously logged tension. The 'kind' parameter " +
@@ -1109,11 +1287,14 @@ export const curationTools: ToolDefinition[] = [
     },
     // The updated entry: status 'resolved' with the resolution block attached.
     outputSchema: tensionEntrySchema(TENSION_KINDS),
+    summarize: summarizeTensionEntry,
+    docLinks: docLinksTensionEntry,
     handler: (vaultRoot, args, access) => vaultTensionResolve(vaultRoot, args, access),
   },
   {
     name: "vault_tension_clusters",
     title: "Compute tension clusters",
+    oneLine: "Compute connected components of the tension graph.",
     annotations: { readOnlyHint: true },
     description:
       "Compute connected components of the tension graph: groups of vault " +
@@ -1130,11 +1311,13 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: tensionClustersOutputSchema,
+    summarize: summarizeTensionClusters,
     handler: (vaultRoot, args, access) => vaultTensionClusters(vaultRoot, args, access),
   },
   {
     name: "vault_tension_blast",
     title: "Compute tension blast radius",
+    oneLine: "Compute the downstream blast radius of a contested document or cluster.",
     annotations: { readOnlyHint: true },
     description:
       "Compute the transitive closure of downstream documents that cite or " +
@@ -1170,10 +1353,13 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: tensionBlastOutputSchema,
+    summarize: summarizeTensionBlast,
+    docLinks: docLinksTensionBlast,
     handler: (vaultRoot, args, access) => vaultTensionBlast(vaultRoot, args, access),
   },
   {
     name: "vault_lint",
+    oneLine: "Run advisory curation checks: staleness, orphans, drafts, tensions, and more.",
     // Not read-only: the staged-action sweep (§11.2) expires actions past
     // their TTL, appending expiry records to .daftari/staged-actions.jsonl.
     // It never edits vault content — only the staging queue's own lifecycle.
@@ -1189,7 +1375,15 @@ export const curationTools: ToolDefinition[] = [
       "stable acknowledged persistent disagreements, and legacy unspecified " +
       "entries) — tension-health counts are deliberately VAULT-GLOBAL, not " +
       "RBAC-filtered: counts only, no paths, so vault health reads the same " +
-      "for every role. Lists pending staged actions awaiting ratification, and — " +
+      "for every role. Lists pending staged actions awaiting ratification, ordered " +
+      "risk descending with soonest-to-expire as the tiebreak (2026-07-26 " +
+      "risk-triaged-ratification spec) — each item carries an ordinal risk " +
+      "score in [0,1] (recomputed on read, never stored), the diff-size " +
+      "bucket, the proposer's smoothed track record, visible blast counts, " +
+      "and open-tension / conflict flags. Filtered to the caller's vantage: " +
+      "an item whose target is unreadable is omitted, and the hidden " +
+      "remainder is reported coarsened (hiddenStagedActions: none/some/many), " +
+      "never as an exact count. And — " +
       "when the vault has run shadow_mode — summarizes shadow-logged writes " +
       "with the ones the trust budget would have gated. " +
       "Never auto-fixes vault content; it does, as housekeeping, expire " +
@@ -1212,6 +1406,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_provenance",
     title: "View document write history",
+    oneLine: "View a document's write history.",
     annotations: { readOnlyHint: true },
     description:
       "Return the write history of a single document from the provenance " +
@@ -1229,6 +1424,8 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: provenanceOutputSchema,
+    summarize: summarizeProvenance,
+    docLinks: (value) => [(value as VaultProvenanceResult).path],
     handler: (vaultRoot, args, access) => vaultProvenance(vaultRoot, args, access),
   },
 ];

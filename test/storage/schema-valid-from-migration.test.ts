@@ -81,7 +81,7 @@ describe("upgrading an index built before the valid-time columns", () => {
     writePreValidityIndex(path, "10");
     expect(columns(path, "documents")).not.toContain("valid_from");
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     // Before the bump to "11" this returned `no such column: valid_from` on the
     // first write, leaving the vault unable to serve.
     expect(opened.ok).toBe(true);
@@ -92,7 +92,7 @@ describe("upgrading an index built before the valid-time columns", () => {
     const path = indexDbPath(vault);
     writePreValidityIndex(path, "10");
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (opened.ok) opened.value.close();
 
@@ -110,7 +110,7 @@ describe("upgrading an index built before the valid-time columns", () => {
       .run("vault_manifest", '{"stale":"entry"}');
     seed.close();
 
-    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(opened.ok).toBe(true);
     if (opened.ok) opened.value.close();
 
@@ -128,7 +128,7 @@ describe("upgrading an index built before the valid-time columns", () => {
     const path = indexDbPath(vault);
     writePreValidityIndex(path, "10");
 
-    const first = openIndexDb(vault, LOCAL_MINILM_DIM);
+    const first = openIndexDb(vault, LOCAL_MINILM_DIM, "float32");
     expect(first.ok).toBe(true);
     if (first.ok) first.value.close();
 

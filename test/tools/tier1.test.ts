@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeEdge } from "../../src/curation/edges.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { vaultRead } from "../../src/tools/read.js";
-import { vaultTier1 } from "../../src/tools/tier1.js";
+import { tier1Tools, vaultTier1 } from "../../src/tools/tier1.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { expectMatchesOutputSchema } from "../helpers/output-schema.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:compiler";
+const tier1Tool = tier1Tools.find((t) => t.name === "vault_tier1");
+if (!tier1Tool) throw new Error("vault_tier1 not registered");
 
 function frontmatter(overrides: Record<string, unknown> = {}) {
   return {
@@ -92,6 +95,7 @@ describe("vault_tier1 (#232)", () => {
 
     expect(result.value.change_source).toBe("provenance");
     expect(result.value.changed_fields).toEqual(["tags"]);
+    expectMatchesOutputSchema(tier1Tool, result.value);
 
     const byArtifact = new Map(result.value.verdicts.map((v) => [v.artifact, v]));
     // Compiled whole-doc edge: certain hit (the run consumed everything).
