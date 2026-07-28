@@ -710,10 +710,16 @@ Additional filler content for padding the vault retrieval set.
     expect(res.value.hits[0]?.path).toBe("tagdoc.md");
   });
 
-  // bodywin.md has "tiebreak" in its body → upper band (>0.5). titlecoincidence.md
-  // has it title-only → lower band (<=0.5). The tier boundary guarantees body wins;
-  // titlecoincidence is still retrieved, just ranked below.
-  it("body match wins a tie against a coincidental title-only match", async () => {
+  // Post-contextual-chunking (spec 2026-07-26 Decision 2, plan C1):
+  // titlecoincidence.md's title token now flows into EVERY chunk's context
+  // column, so it is no longer confined to the lower title/tag-fallback band
+  // — it enters the upper band via a genuine (context-column) chunk match,
+  // same as bodywin.md's real body match. bodywin.md still ranks first here,
+  // but that is BM25's own length-normalization math (bodywin's chunk row is
+  // much shorter than titlecoincidence's context+body row), not an a-priori
+  // tier guarantee — see the two new tests below, which pin the actual
+  // guarantee directly instead of relying on this ordering.
+  it("body match still ranks first against a coincidental title-only match", async () => {
     const res = await hybridSearch(ttDb, "tiebreak", {
       weights: { bm25: 1, vector: 0 },
       lexicalGranularity: "chunk",
@@ -724,11 +730,87 @@ Additional filler content for padding the vault retrieval set.
     expect(res.value.hits.some((h) => h.path === "titlecoincidence.md")).toBe(true);
   });
 
+  // C1: the tier invariant this test used to pin ("title-only stays below
+  // 0.5") no longer holds — asserted directly here rather than inferred from
+  // ranking order.
+  it("a title-only match now enters the upper band via its context chunk (C1)", async () => {
+    const res = await hybridSearch(ttDb, "tiebreak", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const titleHit = res.value.hits.find((h) => h.path === "titlecoincidence.md");
+    expect(titleHit).toBeDefined();
+    // TIER_SPLIT (hybrid.ts) is 0.5 — the upper-band boundary.
+    expect(titleHit?.bm25Score).toBeGreaterThan(0.5);
+  });
+
+  // C1: a pure-body match and a context-only match now co-rank by bm25 score
+  // WITHIN the same upper band, not by the old strict tier rule — both docs
+  // clear TIER_SPLIT, and their relative order is bm25's business, not the
+  // tier's.
+  it("a pure-body match and a context-only match co-rank by bm25, not the old tier rule (C1)", async () => {
+    const res = await hybridSearch(ttDb, "tiebreak", {
+      weights: { bm25: 1, vector: 0 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const bodyHit = res.value.hits.find((h) => h.path === "bodywin.md");
+    const titleHit = res.value.hits.find((h) => h.path === "titlecoincidence.md");
+    expect(bodyHit?.bm25Score).toBeGreaterThan(0.5);
+    expect(titleHit?.bm25Score).toBeGreaterThan(0.5);
+  });
+
+  // The {title tags} fallback tier (spec Decision 2's "stays — a strict,
+  // harmless fallback") still fires for a document whose CHUNKS are absent
+  // from chunks_fts — the index-inconsistency case the fallback exists for.
+  // Simulated directly: insert a document row (with its own documents_fts
+  // trigger firing normally) but never insert a chunk row for it, so
+  // chunkFtsRanking has nothing to find and only the column-restricted
+  // title/tag ftsRanking can surface it.
+  it("the title/tag fallback still fires when a document has no chunks at all (C1)", async () => {
+    indexDb.insertDocument(ttDb, {
+      path: "no-chunks-doc.md",
+      title: "Zzznoveltermxyz Reference",
+      collection: "general",
+      domain: "product",
+      status: "canonical",
+      confidence: "high",
+      updated: "2026-01-01",
+      tags: [],
+      content: "irrelevant — no chunk row is ever written for this path",
+      tokens: ["zzznoveltermxyz", "reference"],
+      ttlDays: null,
+      created: "2026-01-01",
+      supersededBy: null,
+      validFrom: null,
+      validUntil: null,
+    });
+    // No insertChunkRow call — this path has zero rows in `chunks`/`chunks_fts`.
+    try {
+      const res = await hybridSearch(ttDb, "zzznoveltermxyz", {
+        weights: { bm25: 1, vector: 0 },
+        lexicalGranularity: "chunk",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const hit = res.value.hits.find((h) => h.path === "no-chunks-doc.md");
+      expect(hit).toBeDefined();
+      // Lower band: the chunk ranker never saw this doc at all.
+      expect(hit?.bm25Score).toBeLessThanOrEqual(0.5);
+    } finally {
+      indexDb.deleteDocument(ttDb, "no-chunks-doc.md");
+    }
+  });
+
   // Under RRF, the tier invariant (every body match precedes every
   // title-only match) is preserved at the lexical-LIST layer by
   // construction: tieredLexical's output is strict and tie-free, so its
-  // sorted order feeds rrfContributions unchanged.
-  it("preserves the body-before-title tier invariant under RRF", async () => {
+  // sorted order feeds rrfContributions unchanged. This pins the ORDERING
+  // consequence of bodywin's higher bm25Score, not a tier guarantee (C1).
+  it("preserves bodywin's bm25 lead over titlecoincidence under RRF", async () => {
     const res = await hybridSearch(ttDb, "tiebreak", {
       weights: { bm25: 1, vector: 0 },
       lexicalGranularity: "chunk",

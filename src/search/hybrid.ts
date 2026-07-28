@@ -141,6 +141,20 @@ export interface HybridSearchResult {
   // protocol, it never calls a model (the same agent-as-judge division the
   // tier-2 protocol settled). Tool handler, not ranker.
   rerank?: { instructions: string; candidates: RerankCandidate[] };
+  // Part B (local cross-encoder reranker, spec 2026-07-26-contextual-
+  // chunking-reranker-design.md Decision 5/7). Set by the TOOL HANDLER, not
+  // this ranker — hybridSearch itself never reranks. `false` covers every
+  // degrade path uniformly: provider `none`, not-warm skip, inference
+  // Result.err, and timeout — the honest twin of `vectorUsed`. Absent from
+  // relatedSearch's result (no rerank stage there, spec exclusion).
+  rerankUsed?: boolean;
+  // Internal transport only (Part B, C2/C4): populated when the caller
+  // requested `capturePassageRefs`, one entry per hit in `hits`. The tool
+  // handler consumes this to resolve passage TEXT for exactly the rerank
+  // pool, then strips it before returning — outputSchema declares
+  // additionalProperties: false, and leaking synthesized index-layer refs
+  // would fail client-side validation anyway.
+  passageRefs?: Record<string, PassageRef>;
 }
 
 const SNIPPET_RADIUS = 140;
@@ -214,23 +228,41 @@ function columnRestrict(matchQuery: string | null, columns: string): string | nu
   return matchQuery === null ? null : `${columns} : (${matchQuery})`;
 }
 
-// Band boundary for the chunk-mode tiered lexical combine. Documents with any
-// chunk-body match occupy the upper band (0.5, 1]; documents matched only via
-// title/tags occupy the lower band (0, 0.5]. A body match therefore always
-// outranks a title-only match by construction — no tunable weight. (Any split
-// in (0,1) gives the same strict ordering; 0.5 is the natural midpoint.)
+// Band boundary for the chunk-mode tiered lexical combine.
+//
+// Post-contextual-chunking semantics (spec 2026-07-26-contextual-chunking-
+// reranker-design.md, Decision 2 — READ THIS BEFORE CHANGING TIER_SPLIT or
+// tieredLexical): every chunk's context column now carries the document's
+// title, collection, and tags, so a title- or tag-matching query enters the
+// UPPER band via a genuine chunk match (chunkNorm), not just the lower-band
+// fallback below. The upper band's meaning has therefore shifted from "any
+// BODY match" to "any chunk match, including a context-only match" — the
+// strict "body outranks title-only" guarantee now holds only for docs with
+// NO context-column match at all. This is the mechanism the spec describes,
+// not a bug: bm25(chunks_fts) spans both columns by default weight, which
+// *is* contextual BM25.
+//
+// The `{title tags}` fallback tier below stays — it is spec Decision 2's
+// explicitly-kept "strict, harmless fallback" for a doc whose chunks are
+// somehow absent from chunks_fts (an index inconsistency, not the common
+// case) — largely redundant now that title/tag tokens flow through the
+// context column, but its retirement is deferred to the 2026-06-24
+// chunk-BM25 native/title-tag regression suites per the spec's own text.
 const TIER_SPLIT = 0.5;
 
-// Tiered combine of two normalized lexical signals. chunkNorm (body) is primary:
-// its docs land in the upper band, ordered by body score. titleTagNorm docs that
-// are NOT already body-matched land in the lower band, ordered by title/tag score
-// — a strict fallback that surfaces docs the body ranker missed (the native
-// title/tag case) without ever displacing a real body match (the RB case).
-// Both inputs are normalized to (0,1] (no zeros) by the callers, so upper band
-// is strictly >0.5 and lower band is <=0.5: strict, tie-free separation. The
-// `> 0` guards make that precondition self-enforcing rather than relying on the
-// upstream invariant — a non-positive score never creates a band entry (so it
-// can't floor a body match to exactly 0.5 and tie a title-only match).
+// Tiered combine of two normalized lexical signals. chunkNorm is primary — any
+// document with a real chunk match (body OR, since contextual chunking,
+// title/collection/tag tokens via the context column) lands in the upper band,
+// ordered by its chunk bm25 score. titleTagNorm docs that are NOT already
+// chunk-matched land in the lower band, ordered by title/tag score — a strict
+// fallback that surfaces docs the chunk ranker missed entirely (e.g. its
+// chunks are absent from chunks_fts) without ever displacing a real chunk
+// match. Both inputs are normalized to (0,1] (no zeros) by the callers, so
+// upper band is strictly >0.5 and lower band is <=0.5: strict, tie-free
+// separation. The `> 0` guards make that precondition self-enforcing rather
+// than relying on the upstream invariant — a non-positive score never creates
+// a band entry (so it can't floor a chunk match to exactly 0.5 and tie a
+// title-only match).
 function tieredLexical(
   chunkNorm: Map<string, number>,
   titleTagNorm: Map<string, number>,
@@ -287,21 +319,28 @@ function ftsRanking(db: IndexDb, query: string | null): Map<string, number> {
 // candidate set, no remainder is computed or reported, and the result is
 // shaped exactly as it would be in a vault where those collections do not
 // exist (2026-07-14 spec).
+// `bestHash` (Part B, C2/C4): the content_hash of each path's best-similarity
+// chunk — a cheap ref, not the chunk text itself. Resolving passage TEXT for
+// the whole over-fetched candidate set would pay per-candidate joins for an
+// O(collection)-sized set to use ~50 (C2); the tool handler resolves text
+// only for the top RERANK_POOL permitted hits via getChunkByPathAndHash.
 function vecRanking(
   db: IndexDb,
   queryEmbedding: Float32Array,
   modelId: string,
   readableCollections?: string[],
-): Map<string, number> {
+): { scores: Map<string, number>; bestHash: Map<string, string> } {
   const queryBlob = embeddingToBlob(queryEmbedding);
-  if (readableCollections !== undefined && readableCollections.length === 0) return new Map();
+  if (readableCollections !== undefined && readableCollections.length === 0) {
+    return { scores: new Map(), bestHash: new Map() };
+  }
   const collectionFilter =
     readableCollections === undefined
       ? ""
       : ` AND v.collection IN (${readableCollections.map(() => "?").join(",")})`;
   const rows = db
     .prepare(
-      `SELECT c.path AS path, v.distance AS distance
+      `SELECT c.path AS path, v.content_hash AS content_hash, v.distance AS distance
          FROM embeddings_vec AS v
          JOIN chunks AS c ON c.content_hash = v.content_hash
         WHERE v.embedding MATCH ?
@@ -311,15 +350,20 @@ function vecRanking(
     )
     .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
     path: string;
+    content_hash: string;
     distance: number;
   }[];
-  const result = new Map<string, number>();
+  const scores = new Map<string, number>();
+  const bestHash = new Map<string, string>();
   for (const r of rows) {
     const sim = Math.max(0, 1 - r.distance);
-    const prev = result.get(r.path) ?? -Infinity;
-    if (sim > prev) result.set(r.path, sim);
+    const prev = scores.get(r.path) ?? -Infinity;
+    if (sim > prev) {
+      scores.set(r.path, sim);
+      bestHash.set(r.path, r.content_hash);
+    }
   }
-  return result;
+  return { scores, bestHash };
 }
 
 // snippet() excerpt budget, in tokens. ~48 stemmed tokens lands near the
@@ -345,8 +389,8 @@ const FTS_SNIPPET_TOKENS = 48;
 function chunkFtsRanking(
   db: IndexDb,
   query: string | null,
-): { scores: Map<string, number>; snippets: Map<string, string> } {
-  if (query === null) return { scores: new Map(), snippets: new Map() };
+): { scores: Map<string, number>; snippets: Map<string, string>; winners: Map<string, number> } {
+  if (query === null) return { scores: new Map(), snippets: new Map(), winners: new Map() };
   const rows = db
     .prepare(
       `SELECT c.path AS path, chunks_fts.rowid AS crowid, -bm25(chunks_fts) AS score
@@ -362,7 +406,9 @@ function chunkFtsRanking(
   // paid once per DOCUMENT, not once per matched chunk. (A ROW_NUMBER()
   // window subquery would not help here: the projected snippet() is still
   // evaluated per inner row before the window filter, and FTS5 auxiliary
-  // functions cannot move outside the MATCH cursor.)
+  // functions cannot move outside the MATCH cursor.) Also returned to the
+  // caller (Part B, C2/C4): the reranker's passage resolution reuses these
+  // same rowids via getChunkTextsByRowids instead of re-deriving a winner.
   const winners = new Map<string, number>();
   for (const r of rows) {
     // Some rows may produce a non-positive flipped score if FTS5 returned a
@@ -387,9 +433,15 @@ function chunkFtsRanking(
   if (winners.size > 0) {
     const ids = [...winners.values()];
     const placeholders = ids.map(() => "?").join(",");
+    // Column 1 (`text`) ONLY — spec Decision 4. chunks_fts is (context, text);
+    // targeting column 1 means a served snippet can never contain the
+    // synthesized breadcrumb, even when the query matched ONLY in the context
+    // column (a title/tag-only match). That case's snippet degrades to the
+    // chunk's leading body text — acceptable, and strictly better than
+    // showing invented lines.
     const snips = db
       .prepare(
-        `SELECT c.path AS path, snippet(chunks_fts, 0, '', '', '…', ?) AS snip
+        `SELECT c.path AS path, snippet(chunks_fts, 1, '', '', '…', ?) AS snip
            FROM chunks_fts
            JOIN chunks AS c ON c.rowid = chunks_fts.rowid
           WHERE chunks_fts MATCH ? AND chunks_fts.rowid IN (${placeholders})`,
@@ -400,7 +452,47 @@ function chunkFtsRanking(
       if (collapsed.length > 0) snippets.set(s.path, collapsed);
     }
   }
-  return { scores, snippets };
+  return { scores, snippets, winners };
+}
+
+// Part B (reranker) passage reference — a cheap POINTER to the chunk that
+// carried a hit's ranking, not the chunk text itself (C2: resolving text for
+// the whole over-fetched candidate set would pay per-candidate joins for a
+// set sized O(collection) to use ~50). The tool handler resolves text for
+// exactly the top RERANK_POOL permitted hits via the storage-layer lookups
+// (getChunkTextsByRowids / getChunkByPathAndHash / getFirstChunk).
+export type PassageRef =
+  | { kind: "lexical"; rowid: number }
+  | { kind: "vector"; contentHash: string }
+  | { kind: "first" };
+
+// Provenance choice (C4): a hit with both a lexical winner and a KNN-best
+// chunk presents the chunk from whichever signal contributed the higher
+// NORMALIZED score for that path — the cross-encoder judges the document on
+// the chunk that is the reason it ranked. `lexicalNorm`/`vecNorm` are the
+// within-ranker normalized (0,1] maps, independent of fusion mode (weighted
+// vs RRF is a downstream combination detail, not a provenance decision).
+// Only-one-signal-present → that one. Neither (a title/tag-tier-only hit,
+// or document-granularity search) → the terminal `first` fallback.
+function choosePassageRef(
+  path: string,
+  lexicalNorm: Map<string, number>,
+  winners: Map<string, number>,
+  vecNorm: Map<string, number>,
+  bestHash: Map<string, string>,
+): PassageRef {
+  const lex = lexicalNorm.get(path) ?? 0;
+  const vec = vecNorm.get(path) ?? 0;
+  const hasLex = lex > 0 && winners.has(path);
+  const hasVec = vec > 0 && bestHash.has(path);
+  if (hasLex && hasVec) {
+    return vec > lex
+      ? { kind: "vector", contentHash: bestHash.get(path) as string }
+      : { kind: "lexical", rowid: winners.get(path) as number };
+  }
+  if (hasLex) return { kind: "lexical", rowid: winners.get(path) as number };
+  if (hasVec) return { kind: "vector", contentHash: bestHash.get(path) as string };
+  return { kind: "first" };
 }
 
 interface RankOptions {
@@ -411,6 +503,10 @@ interface RankOptions {
   // Readable-collection allow-list pushed into the KNN scan; see vecRanking.
   readableCollections?: string[];
   fusion: FusionMode;
+  // Part B: attach a cheap PassageRef per hit (see choosePassageRef) instead
+  // of resolving passage text here. Off by default — ref capture is wasted
+  // work when no reranker is configured (C2's "skip ref capture" revision).
+  capturePassageRefs?: boolean;
 }
 
 // Core ranker shared by query search and related-document search.
@@ -425,20 +521,30 @@ function rankDocuments(
   queryEmbedding: Float32Array | null,
   queryTokensForSnippet: string[],
   opts: RankOptions,
-): { hits: HybridHit[]; vectorUsed: boolean } {
+): { hits: HybridHit[]; vectorUsed: boolean; passageRefs: Map<string, PassageRef> } {
   let bm25Norm: Map<string, number>;
   // Best-chunk excerpts from the lexical pass (#108); empty for the
   // document-granularity path, whose hits fall back to the JS scan.
   let lexicalSnippets = new Map<string, string>();
+  // Raw (within-ranker-normalized) lexical/chunk signals, kept around ONLY
+  // for choosePassageRef — bm25Norm below is the TIERED combine that feeds
+  // the actual ranking; the passage-provenance choice wants the un-tiered
+  // chunk signal specifically (C4).
+  let chunkNormForRefs = new Map<string, number>();
+  let chunkWinners = new Map<string, number>();
   if (opts.lexicalGranularity === "chunk") {
     // Body granularity (the dilution fix) TIERED with a clean title/tag signal
     // (the native-shape fix). Each is normalized to its own max to reconcile the
-    // two FTS score scales; tieredLexical then ranks every body match above every
-    // title-only match. The title/tag signal reuses ftsRanking with a column-
-    // restricted query so it scores title+tags only (no body dilution).
+    // two FTS score scales; tieredLexical then ranks every chunk match (which,
+    // since contextual chunking, includes title/collection/tag-only matches via
+    // the context column — see the TIER_SPLIT comment) above every doc the
+    // chunk ranker missed entirely. The title/tag signal reuses ftsRanking with
+    // a column-restricted query so it scores title+tags only (no body dilution).
     const chunkRanked = chunkFtsRanking(db, matchQuery);
     lexicalSnippets = chunkRanked.snippets;
+    chunkWinners = chunkRanked.winners;
     const chunkNorm = normalize(chunkRanked.scores);
+    chunkNormForRefs = chunkNorm;
     const titleTagNorm = normalize(ftsRanking(db, columnRestrict(matchQuery, "{title tags}")));
     bm25Norm = tieredLexical(chunkNorm, titleTagNorm);
   } else {
@@ -447,9 +553,12 @@ function rankDocuments(
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
+  let vecBestHash = new Map<string, string>();
   if (queryEmbedding) {
     const provider = getProvider();
-    vectorRaw = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
+    const vecRanked = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
+    vectorRaw = vecRanked.scores;
+    vecBestHash = vecRanked.bestHash;
     if (vectorRaw.size > 0) vectorUsed = true;
   }
 
@@ -462,7 +571,8 @@ function rankDocuments(
   // scaled-reciprocal-rank contributions and never normalizes across
   // rankers. See rrfContributions and the file header.
   const lexScores = opts.fusion === "rrf" ? rrfContributions(bm25Norm) : bm25Norm;
-  const vecScores = opts.fusion === "rrf" ? rrfContributions(vectorRaw) : normalize(vectorRaw);
+  const vecNormForScore = normalize(vectorRaw);
+  const vecScores = opts.fusion === "rrf" ? rrfContributions(vectorRaw) : vecNormForScore;
 
   const candidates = new Set<string>([...lexScores.keys(), ...vecScores.keys()]);
 
@@ -476,6 +586,7 @@ function rankDocuments(
   const byPath = new Map(getDocumentsByPaths(db, fetchPaths).map((d) => [d.path, d]));
 
   const hits: HybridHit[] = [];
+  const passageRefs = new Map<string, PassageRef>();
   for (const path of candidates) {
     if (path === opts.excludePath) continue;
     const doc = byPath.get(path);
@@ -505,6 +616,12 @@ function rankDocuments(
         superseded_by: doc.supersededBy,
       }),
     });
+    if (opts.capturePassageRefs) {
+      passageRefs.set(
+        path,
+        choosePassageRef(path, chunkNormForRefs, chunkWinners, vecNormForScore, vecBestHash),
+      );
+    }
   }
 
   // Deterministic tie-break in BOTH modes: exact fused-score ties are common
@@ -513,7 +630,17 @@ function rankDocuments(
   // cross-run guarantee. Benign for weighted mode too — it only reorders
   // exact ties, which SQL row order previously broke arbitrarily.
   hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-  return { hits: hits.slice(0, opts.limit), vectorUsed };
+  const sliced = hits.slice(0, opts.limit);
+  // Trim passageRefs to exactly the paths in the sliced result — the map was
+  // built over the full candidate set above.
+  const slicedRefs = new Map<string, PassageRef>();
+  if (opts.capturePassageRefs) {
+    for (const h of sliced) {
+      const ref = passageRefs.get(h.path);
+      if (ref) slicedRefs.set(h.path, ref);
+    }
+  }
+  return { hits: sliced, vectorUsed, passageRefs: slicedRefs };
 }
 
 export interface HybridSearchOptions {
@@ -538,6 +665,12 @@ export interface HybridSearchOptions {
   // option — no MCP tool argument grows for it. hybridSearch defaults to
   // DEFAULT_FUSION; relatedSearch defaults to its own RELATED_DEFAULT_FUSION.
   fusion?: FusionMode;
+  // Part B: attach a PassageRef per hit so the tool handler can resolve
+  // rerank passage text without rankDocuments paying per-candidate joins for
+  // the whole over-fetched set (C2). Only vaultSearch sets this, and only
+  // when a reranker is actually configured — ref capture is wasted work
+  // otherwise.
+  capturePassageRefs?: boolean;
 }
 
 // Ranks vault documents against a free-text query.
@@ -569,14 +702,21 @@ export async function hybridSearch(
     queryEmbedding = embedResult.ok ? embedResult.value : null;
   }
 
-  const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, snippetTokens, {
-    weights,
-    limit: rankLimit,
-    excludePath: undefined,
-    lexicalGranularity,
-    readableCollections: options.readableCollections,
-    fusion,
-  });
+  const { hits, vectorUsed, passageRefs } = rankDocuments(
+    db,
+    matchQuery,
+    queryEmbedding,
+    snippetTokens,
+    {
+      weights,
+      limit: rankLimit,
+      excludePath: undefined,
+      lexicalGranularity,
+      readableCollections: options.readableCollections,
+      fusion,
+      capturePassageRefs: options.capturePassageRefs,
+    },
+  );
 
   return ok({
     query,
@@ -584,6 +724,7 @@ export async function hybridSearch(
     vectorUsed,
     weights: vectorUsed ? weights : { bm25: 1, vector: 0 },
     hits,
+    ...(options.capturePassageRefs ? { passageRefs: Object.fromEntries(passageRefs) } : {}),
   });
 }
 
