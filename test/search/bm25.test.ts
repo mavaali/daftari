@@ -51,3 +51,54 @@ describe("buildMatchQuery", () => {
     expect(buildMatchQuery(`"cirrus" AND "pricing"`)).toBe("cirrus* OR pricing*");
   });
 });
+
+describe("buildMatchQuery — phrase emission (Decision 2)", () => {
+  it("adds a phrase branch for a quoted span of >= 2 usable tokens", () => {
+    // The prefix-OR branches for the individual tokens survive UNCHANGED —
+    // the phrase branch is an ADDITION, not a replacement (recall-non-shrinking).
+    expect(buildMatchQuery(`"cirrus pricing"`)).toBe('cirrus* OR pricing* OR "cirrus pricing"');
+  });
+
+  it("tokenizes the phrase's contents the same way as the rest of the query", () => {
+    // Stopwords/punctuation inside the quotes are dropped before the phrase
+    // is assembled, exactly like the prefix-token path.
+    expect(buildMatchQuery(`"the Cirrus-Pricing, model!"`)).toBe(
+      'cirrus* OR pricing* OR model* OR "cirrus pricing model"',
+    );
+  });
+
+  it("degrades to today's behaviour for a single-token quoted span", () => {
+    expect(buildMatchQuery(`"cirrus"`)).toBe("cirrus*");
+  });
+
+  it("degrades to today's behaviour for an empty or stopword-only quoted span", () => {
+    expect(buildMatchQuery(`""`)).toBe(null);
+    expect(buildMatchQuery(`"the of"`)).toBe(null);
+  });
+
+  it("degrades to today's behaviour for a stray unmatched quote", () => {
+    expect(buildMatchQuery(`cirrus "pricing`)).toBe("cirrus* OR pricing*");
+  });
+
+  it("handles multiple quoted phrases in one query, each its own branch", () => {
+    expect(buildMatchQuery(`"cirrus pricing" and "capacity tiers"`)).toBe(
+      'cirrus* OR pricing* OR capacity* OR tiers* OR "cirrus pricing" OR "capacity tiers"',
+    );
+  });
+
+  it("deduplicates an identical phrase branch", () => {
+    expect(buildMatchQuery(`"cirrus pricing" "cirrus pricing"`)).toBe(
+      'cirrus* OR pricing* OR "cirrus pricing"',
+    );
+  });
+
+  it("recall superset property: every document matching the old prefix-only query still matches", () => {
+    // The phrase branch is OR'd in alongside every prefix branch the
+    // pre-Decision-2 query produced — so the new MATCH string is a strict
+    // superset match, never a subset.
+    const withPhrase = buildMatchQuery(`"cirrus pricing"`);
+    const prefixOnly = "cirrus* OR pricing*";
+    expect(withPhrase).not.toBeNull();
+    expect(withPhrase?.startsWith(prefixOnly)).toBe(true);
+  });
+});
