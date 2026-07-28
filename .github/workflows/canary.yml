@@ -11,6 +11,12 @@ name: Fence canary
 #
 # Requires the ANTHROPIC_API_KEY repo secret.
 
+# Read-only. This job checks out, builds, and calls an external API; it writes
+# nothing back to the repository. The report leaves as an upload-artifact,
+# which does not need repo write.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
