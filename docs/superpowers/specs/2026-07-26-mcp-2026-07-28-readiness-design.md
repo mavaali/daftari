@@ -1,10 +1,31 @@
 # MCP 2026-07-28 readiness — design
 
-2026-07-26. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-07-26. Status: **partially landed.** Decision 2 (resources), Decision 3
+core (the three-channel bridge, `outputSchema` on every tool), and Decision 6
+(never-sample guard) shipped in `8a1db89` (#302). Decision 3's remaining gap
+— `summarize`/`docLinks` on every tool that still fell through to
+`JSON.stringify`, bridge presentation hardening, the `vault_read` wire
+projection, and ajv-backed output-schema tests — shipped as PR 1 of
+`.jugalbandi/mcp-readiness-remainder/final-plan.md`.
+Decisions 1, 4, and 5 (stateless `daftari serve`, maintenance passes as MCP
+Tasks, `vault_ratify` form-mode elicitation) remain **not started**: the
+final plan's SDK preflight gate was run against the latest published
+`@modelcontextprotocol/sdk` (1.30.0, 2026-07-27) and **failed** —
+`LATEST_PROTOCOL_VERSION` in the SDK's stable types is still `2025-11-25`;
+the schema matching this spec's "2026-07-28 revision" exists only under the
+SDK's own `spec.types.d.ts`, itself pulled from a branch whose
+`LATEST_PROTOCOL_VERSION` constant is literally `DRAFT-2026-v1`; Tasks ship
+only under an `experimental` namespace carrying an explicit "may change
+without notice" warning; and no `InputRequiredResult` type exists anywhere
+in the package — the stateless elicitation rework Decision 5 depends on is
+not present. Per this spec's kill condition and the final plan's gate
+disposition, PRs 2–4 wait for a release that actually implements the
+revision; today's world (stdio + session-based `daftari serve`, no Tasks, no
+elicitation) is unchanged for those three decisions.
+
 The final "stateless MCP" protocol revision (2026-07-28, RC published
-2026-05-21) lands two days after this spec's date. This document settles
-what daftari adopts, what it defers, and what it will never adopt.
+2026-05-21) was expected two days after this spec's date. This document
+settles what daftari adopts, what it defers, and what it will never adopt.
 
 ## Why
 

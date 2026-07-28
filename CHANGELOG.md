@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP `content`-channel summaries for every remaining tool.** Every
+  registered tool now has a `summarize` (compact, model-facing text) and,
+  where it names documents, a `docLinks` (`resource_link` entries) — closing
+  the gap Decision 3 (#302) left on everything but search and lint.
+  `vault_read`'s body now rides the wire exactly once: `content[0].text`
+  carries it verbatim, `structuredContent` omits it (a `wireValue`
+  projection), with the doc resource (`daftari://doc/{path}`) as the
+  programmatic alternative. The CallTool bridge hardens presentation: a
+  throwing `summarize`/`docLinks` falls back to the pre-Decision-3
+  `JSON.stringify` behavior and logs to stderr instead of turning a
+  successful tool call into an error response.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-mcp-2026-07-28-readiness-design.md`.
+
+### Fixed
+
+- `vault_tier2_queue`'s `field_changes` could report a field with no `before`
+  key at all (dropped by JSON serialization on a document's first write),
+  violating its own declared output shape. `before` now normalizes to `null`
+  when the log has no prior value, matching the schema's documented
+  "`null` means no prior value" contract.
+
 - **Bi-temporal validity.** Two optional built-in frontmatter fields,
   `valid_from` and `valid_until`, recording when a document's claim was true
   *in the world* — as distinct from when the vault recorded it, which git
