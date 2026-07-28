@@ -1150,6 +1150,45 @@ The cortex quality sampler (`daftari eval`) follows the same edge kind:
 vault-resident code loads as a separate, non-citable context node, so the
 answerer is never asked to retrieve code on the agent's behalf.
 
+### Citation anchors — just-in-time verification at read time
+
+`daftari audit` is a batch sweep the operator has to run; between audits, a
+`describes` binding is inert. Citation anchors close that gap. A binding may
+carry a **pin** — `repo:path[#L<start>-<end>]@<sha>`, the git blob id (and
+optional line range) the author looked at when the binding was written —
+and `vault_read` verifies every pin against the locally checked-out
+`code_repos` at read time, the exact moment an agent is about to act on the
+doc's account of the code. See docs/superpowers/specs/2026-07-26-citation-
+anchors-jit-verification-design.md for the full grammar and the four-step
+git-plumbing classifier (`intact` / `moved` / `missing`).
+
+The pin grammar's suffix pattern is end-anchored and sha-strict, so it is
+backward compatible by construction — but a path that itself *ends* in text
+matching the pin shape (`#L<n>[-<n>]@<7-40 lowercase hex>`) is a known,
+accepted ambiguity: **the pin wins**, the trailing text is parsed as a pin
+rather than as part of the path. This is pathological, not silent: the
+stripped path no longer resolves against the code repo, and a real
+collision surfaces as a `broken_describes` finding at audit time, exactly
+like any other missing target.
+
+Verification is advisory always (the curation house rule): a `moved` or
+`missing` pin never auto-invalidates, demotes, or rewrites the doc — it
+tells the reading agent to re-verify before trusting the doc's account of
+the code. An intact pin on a past-TTL doc softens the decay banner's copy
+(annotate, never extend — the TTL clock itself never moves) because the one
+thing the pin actually verified — this code — has not changed, even though
+the doc as a whole is stale by the clock.
+
+Configuring `code_repos` makes blob-level facts about those repos — path
+existence, whether a pinned blob still matches the current file, and
+relocated line numbers for a moved pin — visible to a reader. That
+visibility is gated per role: a principal sees the `anchors` annotation only
+where their role can already read the pinned doc **and** the role carries
+the `code_repo_visibility` grant in `.daftari/config.yaml` (default off for
+every non-operator role). A server run without an access context (stdio,
+no `--role`) is unaffected by the gate — the operator posture the rest of
+this document assumes throughout.
+
 ## A fact's life — the request path
 
 Everything above is the machinery at rest. Watch it move, and the four layers
