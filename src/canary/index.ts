@@ -13,7 +13,14 @@ import { formatReport, parseCanaryArgs, runCanary } from "./run.js";
 
 // Exit codes are a contract, so they are declared once and derived from the
 // verdict's structured status rather than from its prose.
-export const EXIT = { survived: 0, killed: 1, void: 2, usage: 1 } as const;
+//
+// `usage` is deliberately NOT 1. A CI job gating on "exit 1 means the fence is
+// dead" would otherwise fire identically for a typo'd flag or an unset API key
+// — the same conflation `void` exists to prevent for a broken instrument.
+// Every code here means a different thing happened:
+//   0 the fence survived   1 kill condition 1 fired
+//   2 the run was void     3 it never ran (bad arguments, no key)
+export const EXIT = { survived: 0, killed: 1, void: 2, usage: 3 } as const;
 
 const USAGE = `daftari canary — does the read-path fence change consumer behaviour?
 
@@ -30,8 +37,13 @@ Options:
   --repetitions <n>    Trials per item per arm (default: 5)
   --seed <n>           Bootstrap seed, for a reproducible interval (default: 1)
 
-Requires ANTHROPIC_API_KEY. Exits 1 if the kill condition fires, 2 if the run
-is void (positive control failed), 0 if the fence survives.
+Requires ANTHROPIC_API_KEY.
+
+Exit codes:
+  0  the fence survived — fencing reduced compliance
+  1  kill condition 1 fired — fencing did not change compliance
+  2  the run was void — the positive control failed, so nothing is concluded
+  3  it never ran — bad arguments or no API key
 
 Running from a working copy (this package is not published under this name for
 local use — \`npx daftari\` would fetch the registry version, not your build):

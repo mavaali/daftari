@@ -153,6 +153,13 @@ describe("verdict to exit code", () => {
     expect(out.join("")).toContain("VOID");
   });
 
+  it("keeps every outcome on a distinct code", async () => {
+    // A CI job gating on "exit 1 means the fence is dead" must not fire for a
+    // typo'd flag or an unset key. Four outcomes, four codes.
+    expect(new Set(Object.values(EXIT)).size).toBe(Object.keys(EXIT).length);
+    expect(EXIT.usage).not.toBe(EXIT.killed);
+  });
+
   it("derives the code from the structured status, not the prose", async () => {
     // Guards the contract the reason string used to carry: if verdict()'s
     // wording changes, these codes must not move.

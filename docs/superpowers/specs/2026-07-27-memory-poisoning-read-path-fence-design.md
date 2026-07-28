@@ -1,7 +1,13 @@
 # Memory-poisoning defenses, read-path fence — design
 
-2026-07-27. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-07-27. Status: **proposed — awaiting Mihir's review. PR 1 of the
+implementation sequence has landed** (`src/fence/`: the trigger, the detector,
+the preambles, and the corpus-precision test for kill condition 2), **along with
+`daftari canary`** (`src/canary/`), the kill-condition-1 harness this document
+scopes out of the sequence. Neither is wired to any surface: no call site
+references `fenceReason` or `fenceBody`, so no read path behaves differently
+yet. PRs 2–7 — the index migration, the predicate flip, the surfaces, lint, the
+`vault_status` coverage report, and the config key — are not started.
 Supersedes `2026-07-26-memory-poisoning-defenses-design.md`, whose central
 mechanism (a fourth `TIERS` member, `untrusted`, plus a promotion gate) did not
 survive adversarial review. Predecessor threads: #141 (write-protection tiers),

@@ -12,6 +12,8 @@ Concepts and layer boundaries: docs/architecture.md. Where things live:
 - `src/curation/` — lint, decay, the edge graph, staleness, staged actions
 - `src/access/` — RBAC and file-level write locks
 - `src/lifecycle/` — the per-vault process lock
+- `src/fence/` — read-path fence: nonce-delimited framing for ingested material, plus the instruction-shaped-text detector (no call sites yet)
+- `src/canary/` — three-arm falsification harness for the fence (`daftari canary`)
 - `src/court/` — Tension Court docket (operator-only, no access context)
 - `src/sleep/` — circadian maintenance cycle (`daftari sleep`)
 - `src/consolidate/` — cortex consolidation loop (`daftari consolidate`)
