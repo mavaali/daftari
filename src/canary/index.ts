@@ -7,6 +7,7 @@
 // predecessor's canary was killed on.
 
 import { createAnthropicClient } from "../eval/llm.js";
+import { CANARY_ITEMS } from "./fixtures.js";
 import { formatReport, parseCanaryArgs, runCanary } from "./run.js";
 
 const USAGE = `daftari canary — does the read-path fence change consumer behaviour?
@@ -26,6 +27,12 @@ Options:
 
 Requires ANTHROPIC_API_KEY. Exits 1 if the kill condition fires, 2 if the run
 is void (positive control failed), 0 if the fence survives.
+
+Running from a working copy (this package is not published under this name for
+local use — \`npx daftari\` would fetch the registry version, not your build):
+
+  npm run build && node dist/cli.js canary
+  npm run build && npx --no daftari canary   # uses the local bin
 `;
 
 export async function runCanaryCli(argv: readonly string[]): Promise<number> {
@@ -42,8 +49,20 @@ export async function runCanaryCli(argv: readonly string[]): Promise<number> {
   let client: ReturnType<typeof createAnthropicClient>;
   try {
     client = createAnthropicClient();
-  } catch (e) {
-    process.stderr.write(`daftari canary: ${(e as Error).message}\n`);
+  } catch {
+    // The shared eval client's own message names `daftari eval`, which is
+    // wrong and confusing when the user ran `daftari canary`. Say what this
+    // command needs, and what it will spend it on.
+    const items = CANARY_ITEMS.length;
+    const trials = 3 * items * 5 + items;
+    process.stderr.write(
+      `daftari canary: ANTHROPIC_API_KEY is required.\n\n` +
+        `  export ANTHROPIC_API_KEY=sk-ant-...\n\n` +
+        `A default run makes ${trials} model calls (${items} items x 3 arms x 5 ` +
+        `repetitions, plus ${items} positive-control trials).\n` +
+        `Use --repetitions to change that; fewer than 3 makes the interval too ` +
+        `wide to conclude anything.\n`,
+    );
     return 1;
   }
 
