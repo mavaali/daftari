@@ -222,4 +222,40 @@ describe("parseCanaryArgs", () => {
     expect(parseCanaryArgs(["--repetitions", "x"]).ok).toBe(false);
     expect(parseCanaryArgs(["--nope"]).ok).toBe(false);
   });
+
+  it("rejects a flag with no value instead of keeping the default", () => {
+    // This spends real API calls. Silently testing a model the operator did
+    // not choose is worse than refusing to start.
+    for (const flag of ["--model", "--repetitions", "--seed"]) {
+      const r = parseCanaryArgs([flag]);
+      expect(r.ok, flag).toBe(false);
+      if (!r.ok) expect(r.error.message).toContain("requires a value");
+    }
+  });
+
+  it("does not swallow the next flag as a value", () => {
+    // `--model --repetitions 5` used to take "--repetitions" as the model name
+    // and then report `unknown argument: 5`, blaming the wrong token.
+    const r = parseCanaryArgs(["--model", "--repetitions", "5"]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.message).toContain("--model requires a value");
+      expect(r.error.message).toContain("--repetitions");
+      expect(r.error.message).not.toContain("unknown argument");
+    }
+  });
+
+  it("still accepts values that merely look unusual", () => {
+    // Only a leading `--` disqualifies a value; a model id with dashes inside
+    // it is fine.
+    const r = parseCanaryArgs(["--model", "claude-sonnet-4-5-20250929"]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.model).toBe("claude-sonnet-4-5-20250929");
+  });
+
+  it("accepts a negative seed, which is a number and not a flag", () => {
+    const r = parseCanaryArgs(["--seed", "-3"]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.seed).toBe(-3);
+  });
 });

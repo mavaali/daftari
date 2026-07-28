@@ -211,12 +211,38 @@ export function parseCanaryArgs(argv: readonly string[]): Result<CanaryOpts, Err
   let model = process.env.DAFTARI_CANARY_MODEL ?? "claude-sonnet-4-5-20250929";
   let repetitions = 5;
   let seed = 1;
+  // Every flag takes its value through here. A missing or flag-shaped value is
+  // rejected rather than absorbed: this harness spends real API calls, so an
+  // invocation slip that quietly changes what was tested is worse than an
+  // error. `--model` with nothing after it used to keep the default silently,
+  // and `--model --repetitions 5` used to take "--repetitions" as the model
+  // name and then blame "5".
+  let bad: Error | null = null;
+  const value = (i: number, flag: string): string | null => {
+    const v = argv[i];
+    if (v === undefined) {
+      bad = new Error(`${flag} requires a value`);
+      return null;
+    }
+    if (v.startsWith("--")) {
+      bad = new Error(`${flag} requires a value, but the next argument is ${v}`);
+      return null;
+    }
+    return v;
+  };
+
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === "--model") model = argv[++i] ?? model;
-    else if (a === "--repetitions") repetitions = Number(argv[++i]);
-    else if (a === "--seed") seed = Number(argv[++i]);
-    else return err(new Error(`unknown argument: ${a}`));
+    if (a === "--model" || a === "--repetitions" || a === "--seed") {
+      const v = value(i + 1, a);
+      if (v === null) return err(bad ?? new Error(`${a} requires a value`));
+      i += 1;
+      if (a === "--model") model = v;
+      else if (a === "--repetitions") repetitions = Number(v);
+      else seed = Number(v);
+    } else {
+      return err(new Error(`unknown argument: ${a}`));
+    }
   }
   // Integer-ness is checked because the loop truncates: --repetitions 2.5 would
   // silently run 3 trials, and the report would then name a repetition count
