@@ -34,8 +34,17 @@ const PATTERNS: Record<InjectionClass, readonly RegExp[]> = {
     /\b(ignore|disregard|forget|override)\b[^.\n]{0,40}\b(previous|prior|above|earlier|all|any)\b[^.\n]{0,40}\b(instruction|prompt|rule|direction|guidance)/gi,
   ],
   "role-impersonation": [/^[ \t]*(system|assistant)[ \t]*:/gim, /<\/?(system|assistant)>/gi],
+  // Every tool carrying destructiveHint, plus stage_action — a staged write is
+  // a mutation request even though its own annotation is not destructive.
+  //
+  // This list is duplicated from the tool definitions rather than imported:
+  // this module is pure and has no dependency on the tool layer, and pulling
+  // the registry in to read four field values would invert that. The
+  // duplication is guarded instead — test/fence/detect.test.ts derives the
+  // expected set from the real ToolDefinition arrays and fails if a
+  // destructive tool is added without appearing here.
   "tool-solicitation": [
-    /\bvault_(write|append|merge|set_tier|supersede|deprecate|ratify|stage_action)\s*\(/gi,
+    /\bvault_(write|append|merge|set_tier|set_confidence|supersede|deprecate|promote|ratify|stage_action|tension_log|tension_resolve|edge_contest)\s*\(/gi,
   ],
   exfiltration: [/\b(send|post|upload|exfiltrate|forward)\b[^.\n]{0,60}https?:\/\//gi],
 };

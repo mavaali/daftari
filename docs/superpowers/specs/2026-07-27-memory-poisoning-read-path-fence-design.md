@@ -455,9 +455,18 @@ path. Post-write, advisory, blocks nothing.**
    length-matched placebo arm, and a positive control.
 2. **[HYPOTHESIS] The detector's false-positive rate is tolerable on real
    prose.** Kill: precision below the threshold on the checked-in corpus test.
-   Note that the predecessor's 0.32% figure had a denominator inflated by ~134
-   stub files; on the prose sub-corpus the rate is roughly double, and any
-   threshold must be calibrated to that number.
+   [DATA] Measured against `docs/` — 147 prose files, excluding the three whose
+   subject is prompt injection and which therefore fire correctly — **5.44%**,
+   of which `tool-solicitation` is 4.76% and `exfiltration` 0.68%. The
+   predecessor cited 0.32%, a figure whose denominator was inflated by stub
+   files.
+
+   `docs/` is an unrepresentative corpus for `tool-solicitation` specifically:
+   it is documentation *of the tools being detected*, so `vault_promote(`
+   appears in it as ordinary prose. A vault that is not about daftari would
+   essentially never trip that class. The measurement is therefore an upper
+   bound on this class, not a typical rate — and it is worth re-measuring
+   against a real user vault before treating the threshold as calibrated.
 3. **[HYPOTHESIS] Operators leave the heuristic leg on.** Kill: `fence.heuristic:
    off` in the majority of vaults that report configuration.
 

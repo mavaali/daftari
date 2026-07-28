@@ -11,8 +11,13 @@ import { type InjectionClass, injectionClasses } from "../../src/fence/detect.js
 //
 // The predecessor design cited 0.32%. That figure's denominator was inflated by
 // stub files; measured here on prose it is an order of magnitude higher. The
-// number below is a MEASUREMENT, not a target. If a change moves it, the right
-// response is to look at what newly fired, not to raise the ceiling.
+// numbers below are MEASUREMENTS, not targets.
+//
+// When a change moves the rate, look at what newly fired before touching a
+// ceiling. Raising one is defensible only with a stated reason that survives
+// that look — the ceiling was raised once, and the reason is recorded at the
+// constant. A raise with no such note is the failure this test exists to catch,
+// performed on the test instead of the detector.
 
 const DOCS = resolve("docs");
 
@@ -26,9 +31,21 @@ const ABOUT_INJECTION = [
   "2026-07-27-memory-poisoning-read-path-fence-design.md",
 ];
 
-// Ceiling for ordinary technical prose. Set from the measured rate with room
-// for corpus growth, not from an aspiration.
-const MAX_FLAGGED_RATIO = 0.05;
+// Ceilings for ordinary technical prose. Set from measured rates with modest
+// headroom, not from aspirations.
+//
+// The total moved from 3.4% to 5.44% when `tool-solicitation` was widened to
+// cover every destructive tool rather than the eight it originally named. That
+// is a deliberate coverage increase bought with precision, and the number is
+// raised here to record the trade rather than to make a failure go away.
+//
+// `docs/` is an unrepresentative corpus for this one class: it is documentation
+// OF the tools being detected, so `vault_promote(` appears in it constantly as
+// prose. A vault that is not about daftari would essentially never trip it. The
+// per-class ceiling is deliberately left where it was, so that class cannot
+// quietly grow to dominate.
+const MAX_FLAGGED_RATIO = 0.06;
+const MAX_PER_CLASS_RATIO = 0.05;
 
 function markdownFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -56,7 +73,7 @@ describe("detector precision on a real prose corpus", () => {
     expect(ordinary.length).toBeGreaterThan(100);
   });
 
-  it("flags at most 5% of ordinary technical prose", () => {
+  it("flags at most 6% of ordinary technical prose", () => {
     const flagged = ordinary
       .map((p) => ({ path: p, classes: injectionClasses(body(p)) }))
       .filter((r) => r.classes.length > 0);
@@ -94,7 +111,7 @@ describe("detector precision on a real prose corpus", () => {
     // No class should be quietly responsible for most of the corpus.
     for (const [cls, n] of counts) {
       expect(n / ordinary.length, `${cls} flags too much prose`).toBeLessThanOrEqual(
-        MAX_FLAGGED_RATIO,
+        MAX_PER_CLASS_RATIO,
       );
     }
   });
