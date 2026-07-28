@@ -288,6 +288,8 @@ describe("edges.ts summarizers — degenerate values", () => {
     toPath: "b.md",
     strength: 0,
     kSurvived: 0,
+    kEff: 0,
+    strengthIndependent: 0,
     firstObserved: "2026-01-01T00:00:00Z",
     lastRederived: "2026-01-01T00:00:00Z",
     status: "candidate",

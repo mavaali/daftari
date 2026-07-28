@@ -7,10 +7,16 @@
 // triage. The three tier-0 checks (#232, tier0.ts) are certain rather than
 // advisory judgments, but the posture is the same: report only.
 
+import { listIndependenceShadow } from "../consolidate/independence.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
-import { listEdges } from "./edges.js";
+import { independenceCalibrationView, listEdges } from "./edges.js";
+import {
+  emptyIndependenceCalibrationSummary,
+  type IndependenceCalibrationSummary,
+  independenceCalibrationSummaryOf,
+} from "./independence-calibration.js";
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { type RankedStagedActionItem, rankPendingActions } from "./risk.js";
@@ -166,6 +172,13 @@ export interface LintReport {
   // vs. review throughput over the staged-actions log. Vault-global counts by
   // design, like tensionHealth — no paths or principals cross here.
   reviewThroughput: ReviewThroughputSummary;
+  // Independence-aware promotion shadow calibration (2026-07-26 spec,
+  // Decision 4): the k vs k_eff distribution, would-drop-below-trigger
+  // counts, the would-be needs-review rate, and the legacy-∅ fraction.
+  // Counts and aggregates only — no paths (matches tensionHealth's posture).
+  // Both underlying reads are error-tolerant: a failure yields the zero
+  // summary (lint stays advisory, never fails on a calibration read).
+  independenceCalibration: IndependenceCalibrationSummary;
 }
 
 export interface LintOptions {
@@ -418,6 +431,16 @@ export async function runLint(
   });
   if (!coverageEquityRes.ok) return coverageEquityRes;
 
+  // Independence-aware promotion calibration (Decision 4). Error-tolerant on
+  // both reads: a failure here must never fail vault_lint (advisory posture),
+  // so it degrades to the zero summary rather than propagating the error.
+  const independenceViewRes = independenceCalibrationView(vaultRoot, now);
+  const independenceJournalRes = await listIndependenceShadow(vaultRoot);
+  const independenceCalibration =
+    independenceViewRes.ok && independenceJournalRes.ok
+      ? independenceCalibrationSummaryOf(independenceViewRes.value, independenceJournalRes.value)
+      : emptyIndependenceCalibrationSummary();
+
   return ok({
     generatedAt: now.toISOString(),
     checks,
@@ -428,6 +451,7 @@ export async function runLint(
     shadowActions,
     coverageEquity: coverageEquityRes.value,
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
+    independenceCalibration,
   });
 }
 

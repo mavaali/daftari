@@ -954,6 +954,74 @@ ratification-queue depth), and `vault_ratify` returns
 This is the calibration posture the cortex loop runs in until
 coverage/equity ratchets clear and the auto-write tier graduates.
 
+#### Independence-aware promotion (shadow calibration)
+
+`k_survived` counts *attestations*, not *independent evidence* — a panel of M
+votes from the same loop pass, same model, same principal, over the same two
+truncated endpoint texts, differs only in which prompt template ran, and the
+decorrelation verdict already measured that axis's lift at ~0. The
+independence-aware-promotion spec
+(`docs/superpowers/specs/2026-07-26-independence-aware-promotion-design.md`)
+closes that gap: every `observe` may now carry an evidence fingerprint
+`fp: { inputs, principal, model, prompt }`, `inputs` a mechanical hash over the
+bytes actually read; the store partitions each edge's COUNTED votes into
+equivalence classes (agree on inputs+principal+model, `prompt` excluded) and
+computes a geometrically-discounted `k_eff` alongside the untouched raw
+`k_survived`. `k_eff` and its aged `strengthIndependent` are shadow-only —
+materialized, exported, and journaled, but live `strength`/`status` still key
+on `k_survived` exclusively.
+
+The revision loop journals one row per panel to
+`.daftari/independence-shadow.jsonl` (`would_accrue | would_needs_review |
+null`, the last for fails/tie/no-vote/gated panels) and, only once graduated
+(`independence_graduated: true`, default false), a correlated-only
+survives-majority panel becomes `needs-review` instead of `survives`: no
+observes, an interpretive tension instead
+(`correlated-only survival: <from> derives_from <to>`), and the loop parks
+that edge — it does not re-panel it — while the tension stays open. The edge
+keeps aging under Decision 2's normal clock throughout the parked window:
+decay-pending-adjudication is the deliberately conservative default, since the
+alternative (refreshing the clock on correlated evidence) lets a suspect edge
+coast trigger-bearing indefinitely under an ignored tension.
+
+`vault_lint`'s `independenceCalibration` section is the graduation dashboard:
+the k-vs-k_eff distribution, would-drop-below-trigger counts (split
+legacy-only vs signal), and the would-be needs-review rate. Graduate only
+after a full quarterly shadow window and only if (a) the would-be
+needs-review rate is stable and the risk-triaged queue can drain it, (b) a
+hand audit of 20 would-be-demoted edges finds a majority genuinely
+correlated, and (c) `ρ`, the class-key component set, and
+`EDGE_NEEDS_REVIEW_MIN_GAIN` survived the window without retuning. **Warm-up
+rule:** criterion (a) is judged on `wouldNeedsReviewRateInformative`
+(`informativePanels` restricted to rows whose pre-panel classes already carry
+a non-∅ key), not the raw rate — a fingerprinted class key can never equal
+`∅`, so every legacy edge's *first* fingerprinted panel reads `would_accrue`
+by construction, and the raw rate is degenerate for at least the first
+post-ship revision cycle. Two independent kill conditions, evaluated
+separately: if the hand audit finds the discount isn't discriminating (the
+class key too coarse), recalibrate the component set once and re-shadow, or
+if a second window still fails, delete the `k_eff` scoring + Decision-3
+machinery and keep only the `fp` recording (the fingerprint trail stays
+valuable as provenance even if the scoring dies); if the would-be
+needs-review rate exceeds what the triage queue demonstrably drains, fold
+correlated-only survival into a lint counter and drop the needs-review
+outcome, keeping Decisions 1-2.
+
+Two caveats the Decision-4 hand audit must read the sample through. **Byte-
+stability, not independence:** `fp.inputs` hashes the endpoint bytes at
+observe time, so it detects "did the text change", not "was this derivation
+independent" — any edit mints a fresh class, so an actively-edited edge reads
+`k_eff ≈ k_survived` regardless of true correlation, and the flagged
+population skews toward byte-frozen docs. A frozen-doc-only sample is
+evidence toward the first kill condition (the class-key design may be wrong),
+not clean validation. **Attestation, not verification (C3):** `fp.inputs` is
+server-computed and `fp.principal` is server-derived from the RBAC access
+context, but `fp.model`/`fp.prompt` are caller-attested — the same trust
+class `blind`/`varied_axis` already occupy. `nonLoopFingerprintedCountedVotes`
+(view + lint section) reports how much of the class structure this attested,
+not verified, component set rests on; the graduation reading treats it
+accordingly.
+
 Advisory-by-design is the point: an agent maintains the vault, but no automated
 process silently rewrites or deletes knowledge. Every change is a deliberate,
 attributable act. The staged-action queue is the same principle pushed one step

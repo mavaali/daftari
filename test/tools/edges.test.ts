@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
-import { observeEdge } from "../../src/curation/edges.js";
+import {
+  computeInputsFingerprint,
+  edgeEvidenceClasses,
+  observeEdge,
+} from "../../src/curation/edges.js";
 import { listTensions } from "../../src/curation/tension.js";
+import { readFile, resolveVaultPath } from "../../src/storage/local.js";
 import {
   edgeTools,
   vaultEdgeContest,
@@ -173,6 +178,159 @@ describe("vault_edge_observe", () => {
     );
     expect(result.ok).toBe(false);
   });
+});
+
+describe("vault_edge_observe — evidence fingerprint (2026-07-26 spec, Decision 1)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("evidence_paths → the server-computed inputs hash matches a test-side recomputation", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    // Seed the edge (blind:false — never registers a class), THEN the
+    // fingerprinted qualifying vote, so the vote's class is inspectable via
+    // edgeEvidenceClasses.
+    await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: false,
+    });
+    const result = await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: true,
+      varied_axis: "prompt",
+      evidence_paths: ["pricing/a.md", "pricing/b.md"],
+      model: "claude-haiku-test",
+      prompt_id: "manual/spot-check",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.kEff).toBeCloseTo(1, 6); // one fresh class
+
+    // Recompute the expected hash the same way the tool does: over the
+    // CURRENT full bytes of the two evidence paths (the MCP path hashes full
+    // file content, unlike the loop's prompt-truncated form).
+    const aAbs = resolveVaultPath(vault, "pricing/a.md");
+    const bAbs = resolveVaultPath(vault, "pricing/b.md");
+    if (!aAbs.ok || !bAbs.ok) throw new Error("resolve failed");
+    const aText = await readFile(aAbs.value.absPath);
+    const bText = await readFile(bAbs.value.absPath);
+    if (!aText.ok || !bText.ok) throw new Error("read failed");
+    const expected = computeInputsFingerprint([
+      { path: "pricing/a.md", text: aText.value },
+      { path: "pricing/b.md", text: bText.value },
+    ]);
+
+    const classesRes = edgeEvidenceClasses(vault, "pricing/a.md", "pricing/b.md");
+    expect(classesRes.ok).toBe(true);
+    if (!classesRes.ok) return;
+    const [classKey] = [...classesRes.value.keys()];
+    expect(classKey).toBeDefined();
+    const [inputsComponent] = (classKey as string).split("\n");
+    expect(inputsComponent).toBe(expected);
+  }, 60_000);
+
+  it("a nonexistent evidence path errors", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    const result = await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: true,
+      evidence_paths: ["pricing/does-not-exist.md"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toMatch(/evidence path not found/);
+  }, 60_000);
+
+  it("fp.principal is taken from the access context, never from args or observed_by", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    // Seed the edge first (k=0, no class), then cast the fingerprinted vote
+    // under an access context — its class should reflect the AUTHENTICATED
+    // principal, not the caller-claimed observed_by.
+    await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: false,
+    });
+    const access: AccessContext = {
+      user: "human:mihir",
+      roleName: "curator",
+      role: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    };
+    const voted = await vaultEdgeObserve(
+      vault,
+      {
+        from_path: "pricing/a.md",
+        to_path: "pricing/b.md",
+        // A caller-claimed observed_by that must NOT leak into fp.principal.
+        observed_by: "agent:someone-else-entirely",
+        blind: true,
+        varied_axis: "prompt",
+        evidence_paths: ["pricing/a.md", "pricing/b.md"],
+      },
+      access,
+    );
+    expect(voted.ok).toBe(true);
+    if (!voted.ok) return;
+    // One counted vote, one class (the seed contributes none) → kEff = 1.
+    expect(voted.value.kEff).toBeCloseTo(1, 6);
+
+    // Independently: the SAME class, re-voted with a different claimed
+    // observed_by but the SAME access principal, must land in the SAME
+    // class (proving the class key used the access principal, not
+    // observed_by) — a second counted vote in that class gains 0.5.
+    const voted2 = await vaultEdgeObserve(
+      vault,
+      {
+        from_path: "pricing/a.md",
+        to_path: "pricing/b.md",
+        observed_by: "agent:yet-another-claimed-identity",
+        blind: true,
+        varied_axis: "model",
+        evidence_paths: ["pricing/a.md", "pricing/b.md"],
+      },
+      access,
+    );
+    expect(voted2.ok).toBe(true);
+    if (!voted2.ok) return;
+    expect(voted2.value.kEff).toBeCloseTo(1.5, 6);
+  }, 60_000);
+
+  it("an observe with no fp-related args carries no fp (legacy/unfingerprinted)", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: false,
+    });
+    const result = await vaultEdgeObserve(vault, {
+      from_path: "pricing/a.md",
+      to_path: "pricing/b.md",
+      observed_by: AGENT,
+      blind: true,
+      varied_axis: "prompt",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // No fp anywhere: this counted vote collapses into the single ∅ class,
+    // same as the pre-fingerprint behavior — kEff equals kSurvived for k=1.
+    expect(result.value.kEff).toBeCloseTo(1, 6);
+    expect(result.value.kSurvived).toBe(1);
+  }, 60_000);
 });
 
 describe("vault_edge_contest", () => {

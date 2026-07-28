@@ -12,6 +12,7 @@
 import { type AccessContext, canRatify, canRead, hasAnyRead } from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import type { CoverageEquitySummary } from "../curation/coverage.js";
+import type { IndependenceCalibrationSummary } from "../curation/independence-calibration.js";
 import {
   LINT_CHECKS,
   type LintCheckName,
@@ -357,6 +358,7 @@ export interface VaultLintResult {
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
   reviewThroughput: ReviewThroughputSummary;
+  independenceCalibration: IndependenceCalibrationSummary;
 }
 
 export async function vaultLint(
@@ -417,6 +419,7 @@ export async function vaultLint(
       shadowActions: report.value.shadowActions,
       coverageEquity: report.value.coverageEquity,
       reviewThroughput: report.value.reviewThroughput,
+      independenceCalibration: report.value.independenceCalibration,
     });
   }
 
@@ -431,6 +434,7 @@ export async function vaultLint(
     shadowActions: report.value.shadowActions,
     coverageEquity: report.value.coverageEquity,
     reviewThroughput: report.value.reviewThroughput,
+    independenceCalibration: report.value.independenceCalibration,
   });
 }
 
@@ -930,6 +934,65 @@ const lintOutputSchema: Record<string, unknown> = {
       required: ["lifetime", "last7d", "last30d", "timeToDecisionDays", "oldestPendingDays"],
       additionalProperties: false,
     },
+    // Independence-aware promotion shadow calibration (2026-07-26 spec,
+    // Decision 4). Vault-global counts/aggregates only — no paths, matching
+    // tensionHealth's posture.
+    independenceCalibration: {
+      type: "object",
+      properties: {
+        kVsKEff: {
+          type: "object",
+          properties: {
+            edgesWithVotes: { type: "integer" },
+            meanK: { type: "number" },
+            meanKEff: { type: "number" },
+            medianKEff: { type: "number" },
+            kEffBelowKCount: { type: "integer" },
+          },
+          required: ["edgesWithVotes", "meanK", "meanKEff", "medianKEff", "kEffBelowKCount"],
+          additionalProperties: false,
+        },
+        wouldDropBelowTrigger: {
+          type: "object",
+          properties: {
+            count: { type: "integer" },
+            legacyOnlyCount: { type: "integer" },
+          },
+          required: ["count", "legacyOnlyCount"],
+          additionalProperties: false,
+        },
+        wouldNeedsReviewRate: {
+          type: "object",
+          properties: {
+            rate: { type: "number" },
+            needsReviewCount: { type: "integer" },
+            decidedCount: { type: "integer" },
+            informativePanels: { type: "integer" },
+            informativeNeedsReviewCount: { type: "integer" },
+            rateInformative: { type: "number" },
+          },
+          required: [
+            "rate",
+            "needsReviewCount",
+            "decidedCount",
+            "informativePanels",
+            "informativeNeedsReviewCount",
+            "rateInformative",
+          ],
+          additionalProperties: false,
+        },
+        legacyUnfingerprintedFraction: { type: "number" },
+        nonLoopFingerprintedCountedVotes: { type: "integer" },
+      },
+      required: [
+        "kVsKEff",
+        "wouldDropBelowTrigger",
+        "wouldNeedsReviewRate",
+        "legacyUnfingerprintedFraction",
+        "nonLoopFingerprintedCountedVotes",
+      ],
+      additionalProperties: false,
+    },
   },
   required: [
     "generatedAt",
@@ -942,6 +1005,7 @@ const lintOutputSchema: Record<string, unknown> = {
     "shadowActions",
     "coverageEquity",
     "reviewThroughput",
+    "independenceCalibration",
   ],
   additionalProperties: false,
 };
