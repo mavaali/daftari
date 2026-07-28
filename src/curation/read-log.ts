@@ -41,6 +41,16 @@ export interface ReadLogEntry {
   // (or when the classification errored) — consumers must treat absent as
   // uninstrumented, not as zero.
   broken_upstream?: number;
+  // Citation-anchors kill-condition (b) instrumentation (2026-07-26 spec):
+  // counts from the SAME classification vault_read computed, uncensored by
+  // the caller's role (the returned `anchors` field may be null for a role
+  // without code_repo_visibility even though these counts are populated).
+  // All three are present together or all absent — absent means no anchors
+  // classification ran (no pins, no code_repos, jit_anchors: false, or a
+  // config-load failure), not "zero drift".
+  anchors_moved?: number;
+  anchors_missing?: number;
+  anchors_errored?: number;
 }
 
 export function readLogPath(vaultRoot: string): string {
@@ -61,6 +71,9 @@ export async function recordRead(
     ...(entry.run_id ? { run_id: entry.run_id } : {}),
     ...(entry.principal ? { principal: entry.principal } : {}),
     ...(entry.broken_upstream !== undefined ? { broken_upstream: entry.broken_upstream } : {}),
+    ...(entry.anchors_moved !== undefined ? { anchors_moved: entry.anchors_moved } : {}),
+    ...(entry.anchors_missing !== undefined ? { anchors_missing: entry.anchors_missing } : {}),
+    ...(entry.anchors_errored !== undefined ? { anchors_errored: entry.anchors_errored } : {}),
   };
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });

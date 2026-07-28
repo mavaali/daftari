@@ -221,6 +221,77 @@ export async function log(
   return ok(commits);
 }
 
+// --- citation-anchor plumbing (2026-07-26 spec, Decisions 1-2, C1) --------
+//
+// The read-path latency budget (kill condition: <=50ms p95 even at the pin
+// cap) rules out one `execFile` per pin. Batching `hash-object` into ONE
+// invocation per repo — regardless of how many pins reference it — is what
+// keeps the all-intact (common) case to one subprocess per referenced repo
+// per read/lint-run/audit, instead of one per pin. blobAtHead/blobSize/
+// catBlob stay per-call: they only run on the drift (cold) path, where the
+// spec knowingly exceeds its own "two invocations per pin" budget by one
+// `cat-file -s` size gate ahead of the (bounded) blob read.
+
+// Batches `git hash-object` for many working-tree files in ONE invocation,
+// mapped back to `relPaths` by position. Callers `fs.stat` (or otherwise
+// confirm existence of) every path first — hash-object fails the WHOLE batch
+// on a single missing file, so a missing candidate must never reach here.
+export async function hashObjects(
+  repoRoot: string,
+  relPaths: string[],
+): Promise<Result<string[], Error>> {
+  if (relPaths.length === 0) return ok([]);
+  const result = await git(repoRoot, ["hash-object", "--", ...relPaths]);
+  if (!result.ok) return result;
+  const lines = result.value.split("\n").filter((l) => l.length > 0);
+  if (lines.length !== relPaths.length) {
+    return err(
+      new Error(`git hash-object: expected ${relPaths.length} blob id(s), got ${lines.length}`),
+    );
+  }
+  return ok(lines);
+}
+
+// Single-path wrapper over the batch primitive above.
+export async function hashObject(
+  repoRoot: string,
+  relPath: string,
+): Promise<Result<string, Error>> {
+  const batch = await hashObjects(repoRoot, [relPath]);
+  if (!batch.ok) return batch;
+  return ok(batch.value[0] as string);
+}
+
+// The blob id `relPath` had at HEAD — the committed blob `daftari audit
+// --pin` always pins (never the working tree), because a committed blob
+// stays retrievable from the object database.
+export async function blobAtHead(
+  repoRoot: string,
+  relPath: string,
+): Promise<Result<string, Error>> {
+  const result = await git(repoRoot, ["rev-parse", `HEAD:${relPath}`]);
+  if (!result.ok) return result;
+  return ok(result.value.trim());
+}
+
+// Size (bytes) of a blob, checked BEFORE catBlob so a huge pinned blob is
+// never pulled into memory — the same stat-before-read guard readtext.ts
+// uses for working-tree files.
+export async function blobSize(repoRoot: string, sha: string): Promise<Result<number, Error>> {
+  const result = await git(repoRoot, ["cat-file", "-s", sha]);
+  if (!result.ok) return result;
+  const n = Number.parseInt(result.value.trim(), 10);
+  if (!Number.isFinite(n)) return err(new Error(`git cat-file -s ${sha}: unparseable size`));
+  return ok(n);
+}
+
+// Retrieves a blob's raw content. Callers gate on blobSize first (the size
+// cap is a caller concern, not enforced here); git()'s 16 MiB maxBuffer is
+// the backstop.
+export async function catBlob(repoRoot: string, sha: string): Promise<Result<string, Error>> {
+  return git(repoRoot, ["cat-file", "blob", sha]);
+}
+
 // Vault-relative .md paths changed between `sinceCommit` and HEAD. Used by the
 // consolidate event clock (spec §3.1). A bad/unknown commit is an error, not [] —
 // the caller treats that as the nil baseline path (skip the event clock), so the

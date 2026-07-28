@@ -5,6 +5,7 @@
 // definitions; tests call the logic functions directly.
 
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import { type AnchorsAnnotation, computeAnchors } from "../anchors/read.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   compiledUpstreamStaleness,
@@ -37,6 +38,7 @@ import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider, getQuantize } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
 import { openIndexForAccessOrNull } from "./search.js";
@@ -134,6 +136,15 @@ export interface VaultReadResult {
   // none are visible.
   contested?: ContestedTension[];
   contestedCount?: number;
+  // Citation-anchors JIT verification (2026-07-26 spec, Decisions 1-2): per
+  // pinned `describes` binding, whether the code the doc cites still matches
+  // what the pin recorded. Null when there is nothing to say — no pinned
+  // bindings, no resolvable code_repos, jit_anchors: false, OR (2026-07-27
+  // resolution) the caller's role lacks the code_repo_visibility grant even
+  // though the underlying check ran (see the recordRead call below — the
+  // read-log counts are unfiltered local telemetry; this field is the
+  // caller-facing, role-gated surface).
+  anchors: AnchorsAnnotation | null;
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -168,6 +179,30 @@ export async function vaultRead(
     }
   }
 
+  // Citation anchors (2026-07-26 spec, Decisions 1-2): JIT-verify this doc's
+  // pinned `describes` bindings against the locally checked-out code_repos.
+  // Placed AFTER the RBAC gate; independent of the index-db handle below.
+  // Computed regardless of the caller's role — recordRead's anchors_* counts
+  // are local operator telemetry (kill-condition (b) instrumentation),
+  // unfiltered by design, the same posture broken_upstream already takes.
+  // The RETURNED `anchors` field is separately role-gated just before the
+  // final return (2026-07-27 resolution): the check runs either way, but a
+  // role without code_repo_visibility never sees its result. Config-load
+  // failure, jit_anchors: false, an empty code_repos map, or a doc with no
+  // describes entries all short-circuit before any git work.
+  const config = loadConfig(vaultRoot);
+  let rawAnchors: AnchorsAnnotation | null = null;
+  if (
+    config.ok &&
+    config.value.jitAnchors &&
+    Object.keys(config.value.codeRepos).length > 0 &&
+    parsed.value.frontmatter.describes.length > 0
+  ) {
+    rawAnchors = await computeAnchors(parsed.value.frontmatter.describes, config.value.codeRepos);
+  }
+  const anchorsVisible = !access || access.role?.codeRepoVisibility === true;
+  const anchors = anchorsVisible ? rawAnchors : null;
+
   // #234: classify this document's compiled upstream edges as of the serve.
   // Best-effort — the read never fails on telemetry; on a log-read error the
   // serve is still recorded, just uninstrumented (broken_upstream absent).
@@ -201,6 +236,13 @@ export async function vaultRead(
     ...(access?.user != null ? { principal: access.user } : {}),
     ...(rows
       ? { broken_upstream: rows.filter((r) => r.staleness === "pending-broken").length }
+      : {}),
+    ...(rawAnchors
+      ? {
+          anchors_moved: rawAnchors.entries.filter((e) => e.state === "moved").length,
+          anchors_missing: rawAnchors.entries.filter((e) => e.state === "missing").length,
+          anchors_errored: rawAnchors.errored,
+        }
       : {}),
   });
 
@@ -260,6 +302,35 @@ export async function vaultRead(
     db?.close();
   }
 
+  // Decision 4: an intact pin is evidence of freshness — annotate, never
+  // extend. computeDecay stays pure and byte-identical (vault_status's
+  // distribution is unaffected); this only appends to the ALREADY-non-null
+  // banner a past-TTL doc gets, and only when every classified pin is
+  // intact with nothing dropped (skipped/errored) — a censored or partial
+  // sample must never license an "unchanged" claim (C8).
+  let decay = computeDecay(parsed.value.frontmatter);
+  if (decay?.banner) {
+    const staleness = computeStaleness(
+      { updated: parsed.value.frontmatter.updated, ttl_days: parsed.value.frontmatter.ttl_days },
+      new Date(),
+    );
+    const allIntact =
+      anchors !== null &&
+      anchors.entries.length >= 1 &&
+      anchors.skipped === 0 &&
+      anchors.errored === 0 &&
+      anchors.entries.every((e) => e.state === "intact");
+    if (staleness.expired && allIntact) {
+      const n = (anchors as AnchorsAnnotation).entries.length;
+      decay = {
+        ...decay,
+        banner:
+          `${decay.banner}\n— past TTL, but its ${n} code pin${n === 1 ? "" : "s"} are intact: ` +
+          "the code it describes has not changed since the pins were written.",
+      };
+    }
+  }
+
   return ok({
     path,
     content: parsed.value.content,
@@ -267,7 +338,7 @@ export async function vaultRead(
     raw: parsed.value.raw,
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
-    decay: computeDecay(parsed.value.frontmatter),
+    decay,
     // Evaluated against today. No index access and no RBAC branch — these
     // fields belong to a document the caller has already been permitted to
     // read.
@@ -277,6 +348,7 @@ export async function vaultRead(
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
+    anchors,
     version: sha256Hex(file.value),
   });
 }
@@ -680,6 +752,55 @@ export const DECAY_SCHEMA: Record<string, unknown> = {
   required: ["level", "reasons", "banner"],
 };
 
+// One classified citation-anchor pin (2026-07-26 spec, Decisions 1-2).
+// `relocated` is present only for a range pin that classified `intact` via
+// step 3's substring search.
+const ANCHOR_ENTRY_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    raw: { type: "string", description: "The describes entry exactly as written" },
+    repo: { type: "string" },
+    path: { type: "string" },
+    symbol: { type: ["string", "null"] },
+    pin: {
+      type: "object",
+      properties: {
+        start: { type: ["integer", "null"] },
+        end: { type: ["integer", "null"] },
+        sha: { type: "string" },
+      },
+      required: ["start", "end", "sha"],
+    },
+    state: { type: "string", enum: ["intact", "moved", "missing"] },
+    relocated: {
+      type: "object",
+      properties: {
+        start: { type: "integer" },
+        end: { type: "integer" },
+      },
+      required: ["start", "end"],
+    },
+  },
+  required: ["raw", "repo", "path", "symbol", "pin", "state"],
+};
+
+// Null when there is nothing to say — no pinned bindings, no resolvable
+// code_repos, jit_anchors: false, or (2026-07-27 resolution) the caller's
+// role lacks code_repo_visibility. `errored` (C8) counts classifier
+// failures dropped from `entries`, so the Decision-4 "all intact" softening
+// never quantifies over a silently-censored sample.
+export const ANCHORS_SCHEMA: Record<string, unknown> = {
+  type: ["object", "null"],
+  properties: {
+    entries: { type: "array", items: ANCHOR_ENTRY_SCHEMA },
+    checked: { type: "integer", minimum: 0 },
+    skipped: { type: "integer", minimum: 0, description: "Over-cap remainder (MAX_PINS_PER_READ)" },
+    errored: { type: "integer", minimum: 0 },
+    banner: { type: ["string", "null"] },
+  },
+  required: ["entries", "checked", "skipped", "errored", "banner"],
+};
+
 // One classified upstream edge (#234). Only compiled edges can reach
 // pending-broken; the other classes park in pending-unchecked.
 const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
@@ -790,6 +911,7 @@ function summarizeRead(value: unknown): string {
   if (r.validity?.banner) lines.push(`validity: ${r.validity.banner}`);
   if (r.upstream_staleness?.banner) lines.push(`upstream: ${r.upstream_staleness.banner}`);
   if (r.structural?.banner) lines.push(`structural: ${r.structural.banner}`);
+  if (r.anchors?.banner) lines.push(`anchors: ${r.anchors.banner}`);
   if (r.contestedCount !== undefined && r.contestedCount > 0) {
     lines.push(`contested: ${r.contestedCount} unresolved tension(s)`);
   }
@@ -861,9 +983,14 @@ export const readTools: ToolDefinition[] = [
       "orphan: nothing you can read links here; deprecated_still_linked: " +
       "canonical docs still lean on this deprecated one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
-      "shape as search hits), and a 'version' token (SHA-256 of the file) " +
-      "that can be passed back to a write tool as 'base_version' for " +
-      "optimistic-concurrency checking. Path is relative to the vault root.",
+      "shape as search hits), an anchors report (citation-anchors JIT " +
+      "verification — per pinned `describes` binding, whether the code it " +
+      "cites still matches what was pinned: intact/moved/missing; null when " +
+      "there are no pins, no configured code_repos, jit_anchors is off, or " +
+      "the caller's role lacks code-repo visibility), and a 'version' token " +
+      "(SHA-256 of the file) that can be passed back to a write tool as " +
+      "'base_version' for optimistic-concurrency checking. Path is relative " +
+      "to the vault root.",
     inputSchema: {
       type: "object",
       properties: {
@@ -968,6 +1095,7 @@ export const readTools: ToolDefinition[] = [
           },
         },
         contestedCount: { type: "integer", minimum: 0 },
+        anchors: ANCHORS_SCHEMA,
         version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
       },
       required: [
@@ -979,6 +1107,7 @@ export const readTools: ToolDefinition[] = [
         "decay",
         "upstream_staleness",
         "structural",
+        "anchors",
         "version",
       ],
     },

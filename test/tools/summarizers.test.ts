@@ -86,6 +86,7 @@ describe("read.ts summarizers — degenerate values", () => {
       validity: null,
       upstream_staleness: null,
       structural: null,
+      anchors: null,
       version: "abc123",
     });
   });

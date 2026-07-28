@@ -39,6 +39,17 @@ export interface RoleConfig {
   // permission layer, not convention. YAML key: propose_only. Optional so
   // existing configs (and role literals) are unchanged; absent means false.
   proposeOnly?: boolean;
+  // Citation-anchors gate (2026-07-26 spec, "Decision from Mihir 2026-07-27"):
+  // a role sees vault_read's `anchors` annotation only when it ALSO carries
+  // this grant — read access to the pinned doc's collection is necessary but
+  // not sufficient. Distinct from `read` because the annotation discloses
+  // facts about a code repo (existence, blob-match, relocated line numbers)
+  // that RBAC's collection model has no vocabulary for. YAML key:
+  // code_repo_visibility. Optional; absent means false — off by default for
+  // every non-operator role. A caller with no AccessContext at all (direct
+  // in-process call, stdio without --role) is unaffected by this gate, the
+  // same posture every other RBAC check in this file takes.
+  codeRepoVisibility?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -326,6 +337,18 @@ export interface DaftariConfig {
   // Query router opt-in (`search` block, spec 2026-07-26 fusion overhaul
   // Decision 2). Always populated — routing off when the block is absent.
   search: SearchConfig;
+  // `code_repos` (2026-07-26 citation-anchors-jit spec, Decision 2): name ->
+  // absolute path, ~ expanded and resolved against the vault root. This is
+  // the READ-PATH repo registry — distinct from the audit's own `--code-repo`
+  // / audit.yaml `repos:` declarations, which are per-invocation and not
+  // visible here. Path EXISTENCE is deliberately not checked at load
+  // (config travels with a synced vault onto machines where the code repo
+  // may simply not be checked out); an absent repo degrades silently to
+  // `anchors: null` at read time. Empty when the block is absent.
+  codeRepos: Record<string, string>;
+  // `jit_anchors` (same spec): kill-switch for the read-path pin check.
+  // Defaults to true; false removes the entire code path (zero git work).
+  jitAnchors: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -352,6 +375,8 @@ function emptyConfig(): DaftariConfig {
     server: { tokens: [] },
     storage: undefined,
     search: { ...SEARCH_DEFAULTS },
+    codeRepos: {},
+    jitAnchors: true,
   };
 }
 
@@ -407,6 +432,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     proposeOnly = obj.propose_only;
   }
 
+  let codeRepoVisibility = false;
+  if (obj.code_repo_visibility !== undefined) {
+    if (typeof obj.code_repo_visibility !== "boolean") {
+      return err(new Error(`role '${name}' code_repo_visibility must be true or false`));
+    }
+    codeRepoVisibility = obj.code_repo_visibility;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -433,6 +466,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     promote,
     ratify,
     ...(proposeOnly ? { proposeOnly } : {}),
+    ...(codeRepoVisibility ? { codeRepoVisibility } : {}),
   });
 }
 
@@ -1014,6 +1048,38 @@ function validateSearch(raw: unknown): Result<SearchConfig, Error> {
   return ok({ routing });
 }
 
+// `code_repos` (2026-07-26 citation-anchors-jit spec, Decision 2). A mapping
+// of non-empty name -> non-empty path string. Names containing `:` are
+// rejected at load — the read path resolves a `describes` binding's `repo:`
+// prefix by exact-name lookup into this map, and a colon in the name itself
+// would make that lookup ambiguous against the grammar's own delimiter.
+// Shape-only, like every block: path EXISTENCE is intentionally unchecked
+// here (see the field's doc comment on DaftariConfig).
+function validateCodeRepos(raw: unknown, vaultRoot: string): Result<Record<string, string>, Error> {
+  if (raw === undefined) return ok({});
+  const mapping = requireMapping(raw, "'code_repos'");
+  if (!mapping.ok) return mapping;
+  const out: Record<string, string> = Object.create(null);
+  for (const [name, value] of Object.entries(mapping.value)) {
+    if (name.length === 0) {
+      return err(new Error("'code_repos' keys must be non-empty"));
+    }
+    if (name.includes(":")) {
+      return err(
+        new Error(
+          `'code_repos.${name}': repo names must not contain ':' ` +
+            "(it collides with the describes grammar's own repo-prefix delimiter)",
+        ),
+      );
+    }
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'code_repos.${name}' must be a non-empty string`));
+    }
+    out[name] = resolve(vaultRoot, expandTilde(value.trim()));
+  }
+  return ok(out);
+}
+
 function dataHome(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
@@ -1224,6 +1290,19 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const searchConfig = validateSearch(root.search);
   if (!searchConfig.ok) return err(new Error(`malformed config: ${searchConfig.error.message}`));
 
+  const codeReposConfig = validateCodeRepos(root.code_repos, vaultRoot);
+  if (!codeReposConfig.ok) {
+    return err(new Error(`malformed config: ${codeReposConfig.error.message}`));
+  }
+
+  let jitAnchors = true;
+  if (root.jit_anchors !== undefined) {
+    if (typeof root.jit_anchors !== "boolean") {
+      return err(new Error("malformed config: 'jit_anchors' must be true or false"));
+    }
+    jitAnchors = root.jit_anchors;
+  }
+
   let watch = true;
   if (root.watch !== undefined) {
     if (typeof root.watch !== "boolean") {
@@ -1415,5 +1494,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     server: serverConfig.value,
     storage: storageConfig.value,
     search: searchConfig.value,
+    codeRepos: codeReposConfig.value,
+    jitAnchors,
   });
 }
