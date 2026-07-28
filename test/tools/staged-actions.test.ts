@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { BATCH_RATIFY_MAX } from "../../src/curation/risk.js";
 import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
 import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
@@ -201,6 +202,49 @@ describe("vault_stage_action", () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  it("records the authenticated caller as staged_by_principal (C4)", async () => {
+    await seedDraft(vault, "pricing/foo.md");
+    const access = {
+      user: "human:mihir",
+      roleName: "curator",
+      role: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    };
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "promote",
+        target_path: "pricing/foo.md",
+        proposed_by: AGENT,
+        rationale: "Matured.",
+        proposed_diff: {},
+      },
+      access,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const staged = await getStagedActionById(vault, result.value.id);
+    expect(staged.ok).toBe(true);
+    if (!staged.ok || !staged.value) return;
+    expect(staged.value.stagedByPrincipal).toBe("human:mihir");
+    // proposed_by remains the claimed-agent display string, untouched.
+    expect(staged.value.proposedBy).toBe(AGENT);
+  });
+
+  it("omits staged_by_principal when there is no access context (operator use)", async () => {
+    await seedDraft(vault, "pricing/foo.md");
+    const result = await vaultStageAction(vault, {
+      action_type: "promote",
+      target_path: "pricing/foo.md",
+      proposed_by: AGENT,
+      rationale: "Matured.",
+      proposed_diff: {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const staged = await getStagedActionById(vault, result.value.id);
+    expect(staged.ok && staged.value?.stagedByPrincipal).toBeNull();
+  });
 });
 
 describe("vault_ratify", () => {
@@ -259,13 +303,61 @@ describe("vault_ratify", () => {
       decision: "reject",
       principal: HUMAN,
       reason: "not ready",
+      reason_category: "stale-evidence",
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.applied).toBe(false);
+    expect((result.value as { decision_kind?: string }).decision_kind).toBe("reject");
 
     const action = await getStagedActionById(vault, staged.value.id);
     expect(action.ok && action.value?.status).toBe("rejected");
+    expect(action.ok && action.value?.reasonCategory).toBe("stale-evidence");
+  });
+
+  it("errors on reject without a reason_category, enumerating the categories (C6)", async () => {
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/federation.md",
+      proposedBy: AGENT,
+      rationale: "Matured.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "reject",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("reason_category");
+    expect(result.error.message).toContain("wrong-conclusion");
+    expect(result.error.message).toContain("other");
+
+    // The action is untouched — still pending.
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  });
+
+  it("rejects an unknown reason_category", async () => {
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/federation.md",
+      proposedBy: AGENT,
+      rationale: "Matured.",
+      proposedDiff: {},
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "reject",
+      principal: HUMAN,
+      reason_category: "not-a-real-category",
+    });
+    expect(result.ok).toBe(false);
   });
 
   it("approves a supersede: dispatches vault_supersede, marks ratified (§11.4)", async () => {
@@ -475,7 +567,12 @@ describe("vault_ratify", () => {
 
     const result = await vaultRatify(
       vault,
-      { id: staged.value.id, decision: "reject", principal: "human:mihir" },
+      {
+        id: staged.value.id,
+        decision: "reject",
+        principal: "human:mihir",
+        reason_category: "wrong-conclusion",
+      },
       access,
     );
     expect(result.ok).toBe(true);
@@ -1025,12 +1122,376 @@ describe("vault_ratify", () => {
       proposedDiff: {},
     });
     if (!staged.ok) return;
-    await vaultRatify(vault, { id: staged.value.id, decision: "reject", principal: HUMAN });
+    await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "reject",
+      principal: HUMAN,
+      reason_category: "wrong-conclusion",
+    });
     const again = await vaultRatify(vault, {
       id: staged.value.id,
       decision: "approve",
       principal: HUMAN,
     });
     expect(again.ok).toBe(false);
+  });
+
+  // 2026-07-26 risk-triaged-ratification spec, Decision 3: edit-then-approve.
+  describe("edit-then-approve (amended_diff)", () => {
+    it("dispatches the amendment instead of the staged diff; the decision record keeps both", async () => {
+      const staged = await vaultStageAction(vault, {
+        action_type: "write",
+        target_path: "pricing/edited-analysis.md",
+        proposed_by: AGENT,
+        rationale: "Initial draft synthesis.",
+        proposed_diff: {
+          frontmatter: draftFrontmatter({ title: "Original" }),
+          body: "# Original\n\nOriginal content.\n",
+        },
+      });
+      expect(staged.ok).toBe(true);
+      if (!staged.ok) throw staged.error;
+
+      const amendedDiff = {
+        frontmatter: draftFrontmatter({ title: "Amended" }),
+        body: "# Amended\n\nCorrected content.\n",
+      };
+      const ratified = await vaultRatify(vault, {
+        id: staged.value.id,
+        decision: "approve",
+        principal: HUMAN,
+        reason_category: "wrong-conclusion",
+        amended_diff: amendedDiff,
+      });
+      expect(ratified.ok).toBe(true);
+      if (!ratified.ok) throw ratified.error;
+      expect((ratified.value as { decision_kind?: string }).decision_kind).toBe(
+        "edit-then-approve",
+      );
+      expectMatchesOutputSchema(ratifyTool, ratified.value);
+
+      const read = await vaultRead(vault, "pricing/edited-analysis.md");
+      expect(read.ok && read.value.content).toContain("Corrected content.");
+      expect(read.ok && read.value.content).not.toContain("Original content.");
+
+      const action = await getStagedActionById(vault, staged.value.id);
+      expect(action.ok && action.value?.status).toBe("ratified");
+      expect(action.ok && action.value?.decisionKind).toBe("edit-then-approve");
+      expect(action.ok && action.value?.amendedDiff).toEqual(amendedDiff);
+      // proposedDiff still records the ORIGINAL proposal — history preserved.
+      const proposed = action.ok
+        ? (action.value?.proposedDiff as { frontmatter?: { title?: string } })
+        : undefined;
+      expect(proposed?.frontmatter?.title).toBe("Original");
+    }, 60_000);
+
+    it("amended_diff requires reason_category (C6)", async () => {
+      const staged = await vaultStageAction(vault, {
+        action_type: "write",
+        target_path: "pricing/edited-2.md",
+        proposed_by: AGENT,
+        rationale: "Initial.",
+        proposed_diff: { frontmatter: draftFrontmatter(), body: "# X\n" },
+      });
+      if (!staged.ok) throw staged.error;
+      const result = await vaultRatify(vault, {
+        id: staged.value.id,
+        decision: "approve",
+        principal: HUMAN,
+        amended_diff: { frontmatter: draftFrontmatter(), body: "# Y\n" },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("reason_category");
+    });
+
+    it("an amended write payload still hits the tier-0 canonical-write gate", async () => {
+      await seedDraft(vault, "pricing/wip-source.md");
+      const staged = await vaultStageAction(vault, {
+        action_type: "write",
+        target_path: "pricing/amend-target.md",
+        proposed_by: AGENT,
+        rationale: "Innocuous draft proposal.",
+        proposed_diff: { frontmatter: draftFrontmatter({ title: "Draft" }), body: "# Draft\n" },
+      });
+      if (!staged.ok) throw staged.error;
+
+      const result = await vaultRatify(vault, {
+        id: staged.value.id,
+        decision: "approve",
+        principal: HUMAN,
+        reason_category: "overbroad",
+        amended_diff: {
+          frontmatter: draftFrontmatter({
+            title: "Bold Claim",
+            status: "canonical",
+            sources: ["pricing/wip-source.md"],
+          }),
+          body: "# Bold Claim\n",
+        },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("tier-0 gate blocked canonical write");
+
+      const action = await getStagedActionById(vault, staged.value.id);
+      expect(action.ok && action.value?.status).toBe("pending");
+    }, 60_000);
+
+    it("errors under shadow_mode instead of discarding the amendment (C7)", async () => {
+      await seedDraft(vault, "pricing/shadow-target.md");
+      const staged = await stageAction(vault, {
+        actionType: "confidence-up",
+        targetPath: "pricing/shadow-target.md",
+        proposedBy: AGENT,
+        rationale: "Survived re-derivation.",
+        proposedDiff: { confidence: "high" },
+      });
+      if (!staged.ok) throw staged.error;
+
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      writeFileSync(join(vault, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
+
+      const result = await vaultRatify(vault, {
+        id: staged.value.id,
+        decision: "approve",
+        principal: HUMAN,
+        reason_category: "wrong-conclusion",
+        amended_diff: { confidence: "medium" },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("shadow mode");
+
+      const action = await getStagedActionById(vault, staged.value.id);
+      expect(action.ok && action.value?.status).toBe("pending");
+      expect(action.ok && action.value?.decisionKind).toBeNull();
+      expect(action.ok && action.value?.ratifiedAt).toBeNull();
+
+      // The plain-approve shadow path is unaffected: no amended_diff, no error.
+      const plain = await vaultRatify(vault, {
+        id: staged.value.id,
+        decision: "approve",
+        principal: HUMAN,
+      });
+      expect(plain.ok).toBe(true);
+      if (!plain.ok) return;
+      expect((plain.value as { shadow?: boolean }).shadow).toBe(true);
+    });
+  });
+
+  // Decision 2: batch ratify — an explicit id list, never a threshold.
+  describe("batch ratify (ids)", () => {
+    it("processes ids independently: a gate-blocked id stays pending, the rest land", async () => {
+      await seedDraft(vault, "pricing/batch-a.md");
+      await seedDraft(vault, "pricing/batch-b.md");
+      await seedDraft(vault, "pricing/wip.md");
+      await seedDraft(vault, "pricing/batch-c.md", { sources: ["pricing/wip.md"] });
+
+      const a = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/batch-a.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      const b = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/batch-b.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      const c = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/batch-c.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      if (!a.ok || !b.ok || !c.ok) throw new Error("staging failed");
+
+      const result = await vaultRatify(vault, {
+        ids: [a.value.id, b.value.id, c.value.id],
+        decision: "approve",
+        principal: HUMAN,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expectMatchesOutputSchema(ratifyTool, result.value);
+      const batch = result.value as {
+        decision: string;
+        results: Array<{ action_id: string; ok: boolean; applied: boolean; error?: string }>;
+        succeeded: number;
+        failed: number;
+      };
+      expect(batch.succeeded).toBe(2);
+      expect(batch.failed).toBe(1);
+      const cOutcome = batch.results.find((r) => r.action_id === c.value.id);
+      expect(cOutcome?.ok).toBe(false);
+      expect(cOutcome?.error).toContain("tier-0 gate blocked promote");
+
+      const aAction = await getStagedActionById(vault, a.value.id);
+      expect(aAction.ok && aAction.value?.status).toBe("ratified");
+      const cAction = await getStagedActionById(vault, c.value.id);
+      expect(cAction.ok && cAction.value?.status).toBe("pending");
+    }, 60_000);
+
+    it("batch reject: one shared reason_category applies to every id", async () => {
+      await seedDraft(vault, "pricing/rej-a.md");
+      await seedDraft(vault, "pricing/rej-b.md");
+      const a = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/rej-a.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      const b = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/rej-b.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      if (!a.ok || !b.ok) throw new Error("staging failed");
+
+      const result = await vaultRatify(vault, {
+        ids: [a.value.id, b.value.id],
+        decision: "reject",
+        principal: HUMAN,
+        reason_category: "duplicate",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const batch = result.value as { succeeded: number; failed: number };
+      expect(batch.succeeded).toBe(2);
+      expect(batch.failed).toBe(0);
+
+      const aAction = await getStagedActionById(vault, a.value.id);
+      expect(aAction.ok && aAction.value?.reasonCategory).toBe("duplicate");
+      const bAction = await getStagedActionById(vault, b.value.id);
+      expect(bAction.ok && bAction.value?.reasonCategory).toBe("duplicate");
+    });
+
+    it("interrupted-batch recovery: re-issuing pins landed ids as not-pending and applies the rest", async () => {
+      await seedDraft(vault, "pricing/rec-a.md");
+      await seedDraft(vault, "pricing/rec-b.md");
+      await seedDraft(vault, "pricing/rec-c.md");
+      const a = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/rec-a.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      const b = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/rec-b.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      const c = await stageAction(vault, {
+        actionType: "promote",
+        targetPath: "pricing/rec-c.md",
+        proposedBy: AGENT,
+        rationale: "r",
+        proposedDiff: {},
+      });
+      if (!a.ok || !b.ok || !c.ok) throw new Error("staging failed");
+
+      // Simulate "already landed before the interruption": decide `a` out of
+      // band, as if an earlier call to this same batch had already processed it.
+      const preDecided = await vaultRatify(vault, {
+        id: a.value.id,
+        decision: "approve",
+        principal: HUMAN,
+      });
+      expect(preDecided.ok).toBe(true);
+
+      // Re-issue the FULL original batch — the documented recovery path.
+      const result = await vaultRatify(vault, {
+        ids: [a.value.id, b.value.id, c.value.id],
+        decision: "approve",
+        principal: HUMAN,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const batch = result.value as {
+        results: Array<{ action_id: string; ok: boolean; error?: string }>;
+        succeeded: number;
+        failed: number;
+      };
+      expect(batch.failed).toBe(1);
+      expect(batch.succeeded).toBe(2);
+      const aOutcome = batch.results.find((r) => r.action_id === a.value.id);
+      expect(aOutcome?.ok).toBe(false);
+      expect(aOutcome?.error).toContain("not 'pending'");
+    }, 60_000);
+
+    it("caps the batch at BATCH_RATIFY_MAX ids", async () => {
+      const ids = Array.from({ length: BATCH_RATIFY_MAX + 1 }, (_, i) => `stage-${i}`);
+      const result = await vaultRatify(vault, { ids, decision: "approve", principal: HUMAN });
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects an empty ids array", async () => {
+      const result = await vaultRatify(vault, { ids: [], decision: "approve", principal: HUMAN });
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects a duplicate id within ids", async () => {
+      const result = await vaultRatify(vault, {
+        ids: ["stage-001", "stage-001"],
+        decision: "approve",
+        principal: HUMAN,
+      });
+      expect(result.ok).toBe(false);
+    });
+
+    it("errors when both id and ids are supplied", async () => {
+      const result = await vaultRatify(vault, {
+        id: "stage-001",
+        ids: ["stage-002"],
+        decision: "approve",
+        principal: HUMAN,
+      });
+      expect(result.ok).toBe(false);
+    });
+
+    it("errors when neither id nor ids is supplied", async () => {
+      const result = await vaultRatify(vault, { decision: "approve", principal: HUMAN });
+      expect(result.ok).toBe(false);
+    });
+
+    it("errors when amended_diff is combined with ids — single-id only", async () => {
+      const result = await vaultRatify(vault, {
+        ids: ["stage-001", "stage-002"],
+        decision: "approve",
+        principal: HUMAN,
+        reason_category: "overbroad",
+        amended_diff: { confidence: "high" },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("single-id only");
+    });
+
+    it("denies a batch under a propose-only role", async () => {
+      const proposeOnly = {
+        user: "agent:proposer",
+        roleName: "proposer",
+        role: { read: ["*"], write: ["*"], promote: false, ratify: true, proposeOnly: true },
+      };
+      const result = await vaultRatify(
+        vault,
+        { ids: ["stage-001", "stage-002"], decision: "approve", principal: HUMAN },
+        proposeOnly,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("propose-only");
+    });
   });
 });
