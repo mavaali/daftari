@@ -219,6 +219,29 @@ export function validateFrontmatter(
     return null;
   };
 
+  // Optional dates (valid_from / valid_until) deliberately do NOT flag a
+  // malformed date string, unlike requireDate. `ValidationReport` carries no
+  // severity tier, and `report.valid === false` is a hard blocker in
+  // vault_write, vault_promote, vault_merge, consolidate/admit.ts, and
+  // curation/tier0.ts — so an issue here would make a typo in an OPTIONAL
+  // field render the document unwritable. Malformed endpoints and inverted
+  // intervals are reported by vault_lint's validityConflicts check instead,
+  // which is where the advisory contract lives. The author's raw string is
+  // preserved verbatim either way (#113). Only a type error flags, matching
+  // optionalString/optionalNumber: a number or an array cannot be preserved
+  // as a date string at all.
+  const optionalDate = (field: string): string | null => {
+    const v = data[field];
+    if (v === undefined || v === null) return null;
+    // js-yaml parses unquoted ISO dates into Date objects.
+    if (v instanceof Date && !Number.isNaN(v.getTime())) {
+      return v.toISOString().slice(0, 10);
+    }
+    if (typeof v === "string") return v;
+    issues.push({ field, message: `expected date string or null, got ${typeof v}` });
+    return null;
+  };
+
   const optionalNumber = (field: string): number | null => {
     const v = data[field];
     if (v === undefined || v === null) return null;
@@ -241,6 +264,8 @@ export function validateFrontmatter(
     sources: optionalStringArray("sources"),
     superseded_by: optionalString("superseded_by"),
     ttl_days: optionalNumber("ttl_days"),
+    valid_from: optionalDate("valid_from"),
+    valid_until: optionalDate("valid_until"),
     tags: optionalStringArray("tags"),
     describes: optionalStringArray("describes"),
     questions_answered: optionalStringArray("questions_answered"),

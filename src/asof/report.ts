@@ -43,6 +43,36 @@ export function renderMarkdown(report: AsofReport): string {
   lines.push(`- by collection: ${countLine(snapshot.byCollection)}`);
   lines.push("");
 
+  // The second temporal axis, only when asked for. Rendered BEFORE drift
+  // because drift is transaction time and this is valid time — keeping them
+  // visually separate is the whole point of having two axes.
+  const va = snapshot.validity;
+  if (va) {
+    lines.push(`## Valid at ${va.date}`);
+    if (va.unwindowed === snapshot.docCount) {
+      // A bare "0 in-window" would read as "nothing was true then". It is not
+      // a finding about the world; it is the absence of a record.
+      lines.push(
+        `- no document at this ref carries authored validity, so the vault ` +
+          `cannot say what held on ${va.date}. Valid time is authored, never ` +
+          `inferred, so this is permanent for this ref — not something a ` +
+          `later reindex fills in.`,
+      );
+    } else {
+      lines.push(
+        `- asserted valid then: **${va.inWindow}** · outside their window: ` +
+          `**${va.outOfWindow}** · no window asserted: **${va.unwindowed}**`,
+      );
+      if (va.unwindowed > 0) {
+        lines.push(
+          `- the **${va.unwindowed}** unwindowed are not counted either way: ` +
+            "the vault was never told when their claims held.",
+        );
+      }
+    }
+    lines.push("");
+  }
+
   lines.push(`## Drift since (${short}..now)`);
   const d = snapshot.drift;
   lines.push(

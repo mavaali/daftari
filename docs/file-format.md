@@ -18,6 +18,8 @@ sources:
   - helios-pricing-page-2026-05
 superseded_by: null
 ttl_days: 45
+valid_from: 2026-05-01
+valid_until: null
 tags: [helios, pricing, consumption]
 ---
 
@@ -60,6 +62,8 @@ always valid even though you never typed those two fields.
 | `sources` | list of strings | `[]` | Source identifiers the document was built from. |
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
+| `valid_from` | date or `null` | `null` | First date the document's claim was true **in the world**. Valid time, not transaction time — see [below](#valid_from--valid_until--valid-time). |
+| `valid_until` | date or `null` | `null` | First date the claim was **no longer** true — the window is half-open, so this day is excluded. `null` with a `valid_from` means open-ended, not unknown. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
 | `describes` | list of strings | `[]` | Code paths this document documents — doc-to-code bindings. See [below](#describes--doc-to-code-bindings). |
 | `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
@@ -146,6 +150,81 @@ Each entry is one of:
 file that does not exist is never an error at write time. The coherence audit is
 what surfaces broken or drifted bindings. The relationship is one-directional —
 docs describe code; code carries no Daftari frontmatter.
+
+### `valid_from` / `valid_until` — valid time
+
+Daftari records **transaction time** in several places: git history, and the
+`created` / `updated` fields. That axis answers "when did the vault come to
+believe this?" These two fields add the other axis — **valid time** — which
+answers "when was this true in the world?"
+
+The two are genuinely different, and the difference matters. A document edited
+this morning can describe a price that stopped applying in March. Nothing in
+transaction time can tell you that.
+
+```yaml
+valid_from: 2026-01-01
+valid_until: 2026-04-01   # first day it no longer held
+```
+
+**The window is half-open: `[valid_from, valid_until)`.** A day is in-window
+iff `valid_from <= day < valid_until`. The example above covers 2026-03-31 and
+does *not* cover 2026-04-01.
+
+That reads slightly against how people speak — "valid through March" is written
+`valid_until: 2026-04-01` — and it is worth the friction, because it makes a
+handoff exact instead of arithmetic:
+
+```yaml
+# q1-pricing.md          # q2-pricing.md
+valid_from:  2026-01-01  # valid_from:  2026-04-01
+valid_until: 2026-04-01  # valid_until: null
+```
+
+The successor's `valid_from` is the predecessor's `valid_until`. Exactly one of
+them covers any given day — no shared day, no gap, and no off-by-one for a tool
+to get wrong. `vault_supersede`'s `predecessor_valid_until` writes that date
+verbatim for the same reason.
+
+| Shape | Meaning |
+|-------|---------|
+| both set | The claim held from `valid_from` up to but **not including** `valid_until`. |
+| `valid_from` set, `valid_until: null` | Open-ended — still true as far as the vault knows. **Not** "unknown end". |
+| `valid_from: null`, `valid_until` set | Open-start: the vault does not know when it began, but knows when it ended. |
+| `valid_until <= valid_from` | A contradiction — an empty or inverted window. Read as **unknown** everywhere, never as "expired", and reported by `vault_lint`. |
+| both `null` | **Valid-time-unknown.** The default, and the state of every document written before this feature existed. Never read as "always true". |
+
+Three rules govern them.
+
+**Authored, never inferred.** `daftari backfill` will not propose a value,
+`daftari import` will not synthesize one, and no LLM pass extracts them. Dates
+from git, mtime, or `created`/`updated` are transaction time; laundering them
+into valid time would manufacture a claim nobody made. The one assisted path is
+the `predecessor_valid_until` argument on `vault_supersede`,
+`vault_deprecate`, and `vault_merge`,
+and that date comes from the caller.
+
+**Not the same as `ttl_days`.** `ttl_days: 45` is a promise to re-review in 45
+days. It says nothing about how long the fact held. Collapsing the two is the
+most common way to get this wrong.
+
+**Absence is not evidence.** A document with no interval is never filtered out
+of `vault_search --valid-only`, never counted as invalid, and never counted as
+valid. It goes in its own `unknown` bucket everywhere.
+
+A malformed date here will **not** block a write — these are optional fields,
+and an optional field must never make a document unwritable. `vault_lint`'s
+`validityConflicts` check reports malformed endpoints, inverted intervals, and
+supersession overlaps and gaps.
+
+#### Upgrading from a `valid_from` schema extension
+
+If your `.daftari/config.yaml` declares `valid_from` or `valid_until` under
+`schema_extensions`, config load will now fail with an actionable error. Remove
+the declaration: existing values in your documents are read as-is by the
+built-in field, which means a closed, day-granular valid-time interval. If your
+field meant something else, rename the extension (for example
+`effective_from`) and the vault will load.
 
 ## Markdown body conventions
 
@@ -235,6 +314,8 @@ sources:
   - internal-aurora-comparison-doc
 superseded_by: null
 ttl_days: 90
+valid_from: null
+valid_until: null
 tags: [aurora, helios, ingestion, competitive]
 questions_answered:
   - "Where does each product draw the ingestion/transformation boundary?"

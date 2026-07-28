@@ -14,7 +14,9 @@ import { getDocument, type IndexDb } from "../storage/index-db.js";
 // necessarily match the query, so there are no query terms to centre on.
 // Mirrors hybrid.ts's no-hit snippet (collapse whitespace, cap length).
 const PREVIEW_MAX = 280;
-function previewSnippet(content: string): string {
+// Exported for valid-at-source.ts, which foregrounds a chain member the same
+// way and must produce an identical snippet shape.
+export function previewSnippet(content: string): string {
   const collapsed = content.replace(/\s+/g, " ").trim();
   return collapsed.length > PREVIEW_MAX ? `${collapsed.slice(0, PREVIEW_MAX)}…` : collapsed;
 }

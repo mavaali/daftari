@@ -605,9 +605,13 @@ Three of its concerns are simple enough to state in a line:
 - **Staleness.** Each document has a `ttl_days`. Past it, the document is
   flagged stale with a decay score. Stale does not mean deleted — it means "a
   human or agent should re-verify this."
-- **Lint.** `vault_lint` runs six cross-vault checks (stale files, orphans,
-  old drafts, stagnant low-confidence files, deprecated-but-still-linked, and
-  questions raised but unanswered anywhere in the vault) and produces a report.
+- **Lint.** `vault_lint` runs twelve cross-vault checks and produces a report.
+  The originals: stale files, orphans, old drafts, stagnant low-confidence
+  files, deprecated-but-still-linked, and questions raised but unanswered
+  anywhere in the vault. Since joined by tier demotions, the tier 0 referential
+  checks (broken source refs, lifecycle conflicts, schema conformance, domain
+  leaks), and valid-time conflicts. The authoritative list is `LINT_CHECKS` in
+  `src/curation/lint.ts`; the tool's `filter` enum reads it directly.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
@@ -802,6 +806,59 @@ process silently rewrites or deletes knowledge. Every change is a deliberate,
 attributable act. The staged-action queue is the same principle pushed one step
 further — even an autonomous curation loop only ever *proposes*; a human ratifies
 before anything is written.
+
+## Bi-temporal validity
+
+Daftari records **transaction time** twice over — git history, and the
+`created` / `updated` frontmatter fields. `daftari asof` reconstructs the vault
+as of a transaction time: *what did we believe on that date?*
+
+Until recently it recorded **valid time** — when a fact is true in the world —
+nowhere. `ttl_days` looks like it fills the gap and does not. `computeStaleness`
+measures `now - updated` against a review promise; `ttl_days: 45` says "re-check
+me in 45 days", not "this price held for 45 days". Collapsing the two would be
+the same collapse-to-a-convenient-answer the rest of this architecture refuses.
+
+`valid_from` / `valid_until` are the second axis: an optional, half-open,
+day-granular window on every document — `[valid_from, valid_until)`, so
+`valid_until` names the first day the claim did *not* hold. That makes a
+handoff exact rather than arithmetic: a successor's `valid_from` is its
+predecessor's `valid_until`, sharing no day. Three properties define the rest
+of the design.
+
+**Authored, never inferred.** Nothing derives a value. Not backfill, not
+import, not the consolidation loop, not an LLM pass. The one assisted path is
+the `predecessor_valid_until` argument on the three supersession-writing tools,
+and that date
+comes from the caller — the supersession *event* is the interval boundary, so
+nothing is invented.
+
+**Absence is `unknown`, never "always valid."** Both-null documents — which is
+every document written before the feature existed — go in a dedicated bucket
+that is never counted valid, never counted invalid, and never filtered out of
+search. Treating absent validity as "true forever" would invent exactly the
+claim the axis exists to stop the vault inventing.
+
+**It makes supersession auditable.** A `superseded_by` edge asserts that A
+replaced B, and until there was a second axis that assertion was unfalsifiable.
+With intervals it becomes checkable: if A supersedes B while B claims validity
+through December and A claims validity from April, the vault is asserting two
+contradictory things — a deterministic lint finding rather than invisible
+incoherence.
+
+Retrieval follows the same discipline. `vault_search valid_at` annotates each
+hit with its state at a date and can foreground the chain member whose interval
+covers it. That walk is **direction-monotone**: supersession reachability is not
+fact identity, and since `vault_merge` points two sources at one successor, a
+walk that turned around at a merge node would foreground a sibling lineage that
+never made the claim. Two covering members at the same depth return `ambiguous`
+rather than a tiebreak.
+
+The honest limitation: valid time only answers questions about facts whose
+intervals someone authored *before* the question was asked. Every commit
+predating adoption returns `unknown`, permanently, because nothing may recover
+it. The axis buys future auditability, not retroactive recall. Design record:
+`docs/superpowers/specs/2026-07-26-bitemporal-validity-design.md`.
 
 ## Accumulation vs. generative domains
 

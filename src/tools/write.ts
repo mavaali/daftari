@@ -51,6 +51,7 @@ import { noteSelfWrite } from "../search/self-write.js";
 import { allDocumentPaths, getDocumentsByPaths } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { type DaftariConfig, loadConfig, type SchemaExtension } from "../utils/config.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
@@ -63,6 +64,78 @@ import { openIndexForAccessOrNull } from "./search.js";
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+// --- supersession boundary (valid time) ------------------------------------
+//
+// `predecessor_valid_until` is the date the successor takes over. Supplying it
+// lets one call record both the supersession event and the valid-time handoff,
+// since the event IS the window boundary — derived from an authored relation
+// plus a caller-supplied date, never inferred from statistics.
+//
+// Because the window is half-open, the supplied date is written VERBATIM: the
+// predecessor's window ends exactly where the successor's begins, sharing no
+// day and needing no arithmetic. That is what half-open buys, and it is worth
+// the slightly less natural authoring precisely here — this is the path an
+// agent drives, and an off-by-one would silently open a one-day hole in, or
+// double-claim a day of, the vault's account of when a fact held.
+//
+// It only ever writes the PREDECESSOR. vault_supersede gates RBAC on the
+// predecessor's collection alone, so touching the successor would be a write
+// the caller may not be authorized for, on top of a second lock, a second
+// provenance entry, and a multi-file commit. The successor's valid_from is
+// surfaced as a hint for a separate, deliberate call.
+
+// Reads and validates the optional `predecessor_valid_until` argument.
+// Null when absent.
+function readBoundary(args: Record<string, unknown>, tool: string): Result<string | null, Error> {
+  const raw = args.predecessor_valid_until;
+  if (raw === undefined || raw === null) return ok(null);
+  if (typeof raw !== "string") {
+    return err(new Error(`${tool}: 'predecessor_valid_until' must be a YYYY-MM-DD date string`));
+  }
+  const normalized = normalizeIsoDate(raw);
+  if (normalized === null) {
+    return err(
+      new Error(`${tool}: 'predecessor_valid_until' must be a YYYY-MM-DD date, got "${raw}"`),
+    );
+  }
+  return ok(normalized);
+}
+
+// Validates the predecessor's new valid_until, or refuses. An existing
+// non-null valid_until that disagrees is an authored claim, and a convenience
+// argument does not get to overwrite one — the caller reconciles the two dates
+// themselves. An agreeing value passes through idempotently.
+function closingUntil(
+  fm: Frontmatter,
+  boundary: string,
+  tool: string,
+  path: string,
+): Result<string, Error> {
+  const existing = fm.valid_until ?? null;
+  if (existing !== null && existing !== boundary) {
+    return err(
+      new Error(
+        `${tool}: ${path} already declares valid_until ${existing}, but ` +
+          `predecessor_valid_until ${boundary} was supplied. Refusing to overwrite an ` +
+          "authored value — reconcile the two dates, or omit the argument and set " +
+          "valid_until directly.",
+      ),
+    );
+  }
+  return ok(boundary);
+}
+
+// The successor-side follow-up the caller should make deliberately, through
+// the tool that carries the successor's own RBAC gate. Under a half-open
+// window the successor's valid_from is the SAME date — that is the point.
+function boundaryHint(successorPath: string, boundary: string): string {
+  return (
+    `valid_until was set on the predecessor. The successor ${successorPath} was NOT ` +
+    `modified — set 'valid_from: ${boundary}' on it with vault_write if that is the ` +
+    "date its claim starts holding (the two windows meet exactly, sharing no day)."
+  );
 }
 
 // Refuses writes while the index is being (re)built. The write path ends in
@@ -167,6 +240,10 @@ export function serializeDocument(
     sources: fm.sources,
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
+    // `?? null` for the same reason as tier: a hand-built Frontmatter that
+    // predates these fields carries undefined, which js-yaml refuses to dump.
+    valid_from: fm.valid_from ?? null,
+    valid_until: fm.valid_until ?? null,
     tags: fm.tags,
     describes: fm.describes,
     questions_answered: fm.questions_answered,
@@ -221,6 +298,11 @@ export interface WriteResult {
   updated: string;
   validation: ValidationReport;
   indexUpdated: boolean;
+  // Set when a `predecessor_valid_until` write closed a predecessor's window:
+  // names the successor and the valid_from the caller probably wants on it,
+  // which under a half-open window is the same date. A hint, not an action —
+  // the successor is deliberately never written here.
+  hint?: string;
   // True when the vault runs shadow_mode (spec §11.5): the write was computed
   // and logged to .daftari/shadow-actions.jsonl but NOTHING was written —
   // no file, no commit, no index update, no provenance entry.
@@ -1231,6 +1313,8 @@ export async function vaultDeprecate(
   if (!reason.ok) return reason;
   const baseVersion = readBaseVersion(args, "vault_deprecate");
   if (!baseVersion.ok) return baseVersion;
+  const boundary = readBoundary(args, "vault_deprecate");
+  if (!boundary.ok) return boundary;
 
   let supersededBy: string | null = null;
   if (args.superseded_by !== undefined && args.superseded_by !== null) {
@@ -1247,7 +1331,16 @@ export async function vaultDeprecate(
   const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
   if (!rbac.ok) return rbac;
 
-  return performFrontmatterWrite({
+  // Same predecessor-only handoff as vault_supersede: this writes exactly the
+  // document being deprecated, which it already locks and commits.
+  let validUntil: string | null = null;
+  if (boundary.value !== null) {
+    const closing = closingUntil(oldFrontmatter, boundary.value, "vault_deprecate", path.value);
+    if (!closing.ok) return closing;
+    validUntil = closing.value;
+  }
+
+  const written = await performFrontmatterWrite({
     vaultRoot,
     target: target.value,
     agent: agent.value,
@@ -1257,6 +1350,7 @@ export async function vaultDeprecate(
       ...oldFrontmatter,
       status: "deprecated",
       superseded_by: supersededBy,
+      ...(validUntil !== null ? { valid_until: validUntil } : {}),
       updated: todayISO(),
       updated_by: agent.value,
     },
@@ -1266,6 +1360,9 @@ export async function vaultDeprecate(
     baseVersion: baseVersion.value,
     access,
   });
+  // A deprecation without a successor has nothing to hint at.
+  if (!written.ok || boundary.value === null || supersededBy === null) return written;
+  return ok({ ...written.value, hint: boundaryHint(supersededBy, boundary.value) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1460,6 +1557,8 @@ export async function vaultSupersede(
   if (!agent.ok) return agent;
   const baseVersion = readBaseVersion(args, "vault_supersede");
   if (!baseVersion.ok) return baseVersion;
+  const boundary = readBoundary(args, "vault_supersede");
+  if (!boundary.ok) return boundary;
 
   let reason: string | undefined;
   if (args.reason !== undefined && args.reason !== null) {
@@ -1498,7 +1597,15 @@ export async function vaultSupersede(
   const rbac = requireWriteAccess(access, collectionOf(oldPath.value, oldFrontmatter));
   if (!rbac.ok) return rbac;
 
-  return performFrontmatterWrite({
+  // Valid-time handoff, opt-in. Predecessor only — see the boundary helpers.
+  let validUntil: string | null = null;
+  if (boundary.value !== null) {
+    const closing = closingUntil(oldFrontmatter, boundary.value, "vault_supersede", oldPath.value);
+    if (!closing.ok) return closing;
+    validUntil = closing.value;
+  }
+
+  const written = await performFrontmatterWrite({
     vaultRoot,
     // Canonical relPath keys the lock/provenance/commit (#127/#128).
     target: {
@@ -1514,6 +1621,7 @@ export async function vaultSupersede(
       ...oldFrontmatter,
       status: "superseded",
       superseded_by: newPath.value,
+      ...(validUntil !== null ? { valid_until: validUntil } : {}),
       updated: todayISO(),
       updated_by: agent.value,
     },
@@ -1523,6 +1631,8 @@ export async function vaultSupersede(
     baseVersion: baseVersion.value,
     access,
   });
+  if (!written.ok || boundary.value === null) return written;
+  return ok({ ...written.value, hint: boundaryHint(newPath.value, boundary.value) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,6 +1677,8 @@ export async function vaultMerge(
   if (!targetPath.ok) return targetPath;
   const agent = requireString(args, "agent", "vault_merge");
   if (!agent.ok) return agent;
+  const boundary = readBoundary(args, "vault_merge");
+  if (!boundary.ok) return boundary;
   const body = args.body;
   if (typeof body !== "string" || body.trim().length === 0) {
     return err(new Error("vault_merge requires a non-empty string 'body' argument"));
@@ -1724,10 +1836,25 @@ export async function vaultMerge(
     // it. A symlink alias has a distinct absPath, so an absPath compare would
     // miss it and clobber the merged body with the superseded write (#127/#128).
     if (source.rel === resolvedTarget.value.relPath) continue;
+    // Valid-time handoff on BOTH sources. A conflict on either one refuses the
+    // whole merge: a merge is already all-or-nothing, and a partial validity
+    // write would leave the vault in a state no single call could produce.
+    let sourceUntil: string | null = null;
+    if (boundary.value !== null) {
+      const closing = closingUntil(
+        source.parsed.frontmatter,
+        boundary.value,
+        "vault_merge",
+        source.path,
+      );
+      if (!closing.ok) return closing;
+      sourceUntil = closing.value;
+    }
     const supersededFm: Frontmatter = {
       ...source.parsed.frontmatter,
       status: "superseded",
       superseded_by: targetPath.value,
+      ...(sourceUntil !== null ? { valid_until: sourceUntil } : {}),
       updated: todayISO(),
       updated_by: agent.value,
     };
@@ -1886,6 +2013,26 @@ const baseVersionProperty = {
     "last-write-wins behavior.",
 };
 
+// Shared by vault_supersede, vault_deprecate, and vault_merge — the three
+// tools that create a superseded_by edge. vault_write deliberately has no
+// equivalent: it is the raw authoring surface, and a write-time cross-check
+// between superseded_by and the validity fields would make an optional field
+// able to block a write. vault_lint's validityConflicts is the safety net for
+// edges created that way.
+const boundaryProperty = {
+  type: "string",
+  description:
+    "Optional YYYY-MM-DD: the date the successor takes over — i.e. the first " +
+    "day the PREDECESSOR's claim no longer held. Written verbatim to the " +
+    "predecessor's valid_until, recording the valid-time handoff alongside " +
+    "the supersession. This is about when the fact changed IN THE WORLD, not " +
+    "when you are writing. Validity windows are half-open, so the successor's " +
+    "valid_from is this same date — the two windows meet exactly and share no " +
+    "day. The successor is NOT modified; the result carries a hint for setting " +
+    "its valid_from in a separate call. Refuses rather than overwriting an " +
+    "existing conflicting valid_until.",
+};
+
 const runIdProperty = {
   type: "string",
   description:
@@ -1957,6 +2104,25 @@ const frontmatterProperty = {
       description:
         "Number of days after which this document is considered stale and " +
         "should be reviewed. null = no TTL.",
+    },
+    valid_from: {
+      type: ["string", "null"],
+      description:
+        "First date (YYYY-MM-DD) on which this document's claim was true IN " +
+        "THE WORLD. This is valid time, NOT the date the document was written " +
+        "or edited — do not copy it from 'created' or 'updated', which are " +
+        "transaction time. Set it only when you actually know when the fact " +
+        "started holding; null means unknown, which is never the same as " +
+        "'always true'. Inclusive.",
+    },
+    valid_until: {
+      type: ["string", "null"],
+      description:
+        "Last date (YYYY-MM-DD) on which this document's claim was true IN " +
+        "THE WORLD, inclusive. null with a valid_from means open-ended — still " +
+        "true as far as the vault knows — NOT 'unknown end'. Distinct from " +
+        "ttl_days, which is a promise to re-review, not a claim about when a " +
+        "fact stopped holding.",
     },
     tags: {
       type: "array",
@@ -2279,6 +2445,7 @@ export const writeTools: ToolDefinition[] = [
           type: "string",
           description: "Optional vault-relative path of the document that replaces this one",
         },
+        predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
         base_version: baseVersionProperty,
       },
@@ -2400,6 +2567,7 @@ export const writeTools: ToolDefinition[] = [
           type: "string",
           description: "Optional reason recorded in the commit message",
         },
+        predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
         base_version: baseVersionProperty,
       },
@@ -2452,6 +2620,7 @@ export const writeTools: ToolDefinition[] = [
             "frontmatter with provenance set to 'synthesized'.",
           additionalProperties: true,
         },
+        predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
       },
       required: ["path_a", "path_b", "target_path", "body", "agent"],

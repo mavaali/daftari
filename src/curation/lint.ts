@@ -35,6 +35,7 @@ import {
 import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tension-blast.js";
 import { computeTensionClusters } from "./tension-clusters.js";
 import { tier0Findings } from "./tier0.js";
+import { validityConflicts } from "./validity.js";
 import {
   buildPathIndexes,
   extractLinks,
@@ -55,6 +56,9 @@ export const LINT_CHECKS = [
   "lifecycleConflicts",
   "schemaInvalid",
   "domainLeaks",
+  // Appended, not inserted: LINT_CHECKS order is presentation order, and new
+  // checks go at the end so an existing reader's mental layout does not shift.
+  "validityConflicts",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -231,7 +235,18 @@ export async function runLint(
     lifecycleConflicts: [],
     schemaInvalid: [],
     domainLeaks: [],
+    validityConflicts: [],
   };
+
+  // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
+  // contradictory interval: the schema layer deliberately declines to, because
+  // `report.valid === false` is a hard write blocker and these fields are
+  // optional. Runs over the same already-loaded, already-visibility-filtered
+  // doc set as everything else — no second vault sweep.
+  checks.validityConflicts = validityConflicts(docs, now).map((c) => ({
+    path: c.path,
+    detail: `${c.kind}: ${c.detail}`,
+  }));
 
   // 8-10. Tier 0 (#232; quick win 1 of #236): referential integrity over the
   // typed dependency channels (sources / superseded_by), lifecycle

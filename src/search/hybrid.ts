@@ -17,6 +17,7 @@
 // lexical-only and reports vectorUsed: false rather than failing.
 
 import { computeDecay, type DecayState } from "../curation/decay.js";
+import type { ValidityReport } from "../curation/validity.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   embeddingToBlob,
@@ -28,6 +29,7 @@ import {
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
+import type { ValidAtSource } from "./valid-at-source.js";
 import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
 
 export interface HybridWeights {
@@ -47,6 +49,14 @@ export interface HybridHit {
   vectorScore: number;
   snippet: string;
   decay: DecayState | null;
+  // Valid time, evaluated against the caller's `valid_at`. Absent unless
+  // `valid_at` was supplied; null when the document authors no interval.
+  // Tool handler, not ranker — NEVER a score input: whether a fact held on a
+  // date is a filter, not a relevance signal.
+  validity?: ValidityReport | null;
+  // The chain member whose interval covers `valid_at`, when this hit's does
+  // not. Tool handler, not ranker.
+  validAtSource?: ValidAtSource;
   currentSource?: CurrentSource; // populated by the tool handler, not the ranker
   contested?: ContestedTension[]; // unresolved tensions, capped at 3 — tool handler, not ranker
   contestedCount?: number; // TOTAL visible tensions (may exceed the cap)

@@ -50,6 +50,24 @@ export interface BuiltinFrontmatter {
   sources: string[];
   superseded_by: string | null;
   ttl_days: number | null;
+  // Valid time — when the fact is true IN THE WORLD, as distinct from the
+  // transaction time carried by created/updated and git history.
+  //
+  // HALF-OPEN and day-granular: [valid_from, valid_until). valid_from
+  // 2026-01-01 / valid_until 2026-04-01 covers 2026-03-31 but NOT 2026-04-01,
+  // so valid_until names the first day the claim did not hold. That makes a
+  // handoff exact — a successor's valid_from is its predecessor's valid_until,
+  // sharing no day and needing no arithmetic.
+  //
+  // A null valid_until with a valid_from means open-ended (still true as far
+  // as the vault knows), NOT "unknown end"; a null valid_from with a
+  // valid_until means open-start. Both null means valid-time-unknown, which is
+  // the state of every document that predates the feature — never "always
+  // valid". Authored, never inferred: ttl_days is a review promise ("re-check
+  // me in 45 days"), not a claim that a fact held for 45 days, and the two
+  // must not be collapsed.
+  valid_from: string | null; // YYYY-MM-DD
+  valid_until: string | null; // YYYY-MM-DD
   tags: string[];
   // Doc-to-code bindings: code paths this doc describes, each `repo:path` or
   // `repo:path::symbol` (a bare `path` resolves against the doc's own repo).
@@ -79,6 +97,8 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "sources",
   "superseded_by",
   "ttl_days",
+  "valid_from",
+  "valid_until",
   "tags",
   "describes",
   "questions_answered",

@@ -25,6 +25,8 @@ const BUILTIN_KEYS = [
   "sources",
   "superseded_by",
   "ttl_days",
+  "valid_from",
+  "valid_until",
   "tags",
   "describes",
   "questions_answered",
