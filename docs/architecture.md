@@ -788,22 +788,55 @@ suggest changes without ever enacting them.
 
 The queue has two ends. `vault_stage_action` is the producer (normally the loop,
 exposed for testing and future callers): it records a proposed `promote` /
-`deprecate` / `supersede` / `merge` / `confidence-up` with a rationale, a
-proposed diff, and a TTL (default 14 days). `vault_ratify` is the consumer: a
-human `approve`s or `reject`s one pending action. On approve it dispatches to the
-matching write tool, which auto-commits — `promote` → `vault_promote`,
-`deprecate` → `vault_deprecate`, `supersede` → `vault_supersede`,
-`confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
-write tools). A dispatch failure, including a malformed proposed diff, leaves the
-action pending so it can be retried. (The legacy `ratified-pending-tool` status,
-from before §11.4 wired up the last three tools, is no longer produced.)
+`deprecate` / `supersede` / `merge` / `confidence-up` / `write` with a
+rationale, a proposed diff, and a TTL (default 14 days). `vault_ratify` is the
+consumer: a human `approve`s or `reject`s one pending action, or up to
+`BATCH_RATIFY_MAX` (20) at once via an explicit `ids` list — never a threshold
+or an "all pending" sentinel; each id is processed independently, so a
+gate-blocked or failing id leaves only that action pending while the rest land
+(2026-07-26 risk-triaged-ratification spec, Decision 2). On approve it
+dispatches to the matching write tool, which auto-commits — `promote` →
+`vault_promote`, `deprecate` → `vault_deprecate`, `supersede` →
+`vault_supersede`, `confidence-up` → `vault_set_confidence`, `merge` →
+`vault_merge`, `write` → `vault_write` (the §11.4 / #235 write tools). A
+dispatch failure, including a malformed proposed diff, leaves the action
+pending so it can be retried. (The legacy `ratified-pending-tool` status, from
+before §11.4 wired up the last three tools, is no longer produced.)
+
+Every verdict carries a machine-readable `decision_kind`
+(`approve` | `edit-then-approve` | `reject`, derived server-side) and, on
+reject or `edit-then-approve`, a closed `reason_category` — **reject now
+REQUIRES a category; this is an intentional, spec-mandated break from the
+prior optional contract for reject callers only** (approve-path callers are
+untouched). `vault_ratify` also accepts an optional `amended_diff` on a
+single-id approve: the tier-0 gates and the dispatch run against the amendment
+instead of the staged diff, and the decision record keeps both what was
+proposed and what actually landed. Under `shadow_mode`, `amended_diff` errors
+rather than silently discarding the amendment — shadow mode records no
+decisions of any kind. The witness (below) folds `edited` and per-category
+counts into each principal's proposal record.
 
 Storage mirrors the rest of Daftari: an append-only canonical log at
 `.daftari/staged-actions.jsonl` is the source of truth, with a derived
 `staged_actions` table in the ephemeral index rebuilt from it. `vault_lint`
-surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
-housekeeping sweep on each run — the queue can grow stale, but it never grows
-unbounded.
+surfaces pending actions **risk descending, soonest-to-expire as the
+tiebreak** (inverted from the prior expiry-only sort by the 2026-07-26
+risk-triaged-ratification spec) and expires past-TTL ones as a housekeeping
+sweep on each run — the queue can grow stale, but it never grows unbounded.
+The risk score — a weighted sum of six deterministic terms (action-kind
+severity, diff size, blast radius, open tension, conflict/retry markers,
+proposer track record) — is **derived on every read, never stored**: no
+`risk` field is appended to the jsonl and no column lands in the sqlite
+table, the same posture `derives_from` strength takes. Like every other
+queue listing, it is filtered to the caller's vantage: an item whose target
+is unreadable is omitted, and the hidden remainder is reported coarsened
+(none/some/many), never as an exact count. Each ratify/reject decision
+additionally carries a **non-authoritative `risk_at_decision`** snapshot
+(jsonl-only, never mirrored to sqlite, never read for ordering) — a frozen
+observation of the score at decision time, so the spec's first kill
+condition (partition decisions by risk quartile, compare correction rates)
+can be evaluated without reconstructing blast radius or tension state as of
+a past instant.
 
 #### derives_from edges
 
@@ -1173,6 +1206,23 @@ layer is decorative. The kill signal is visible in the system's own numbers: the
 staged-action queue and the unresolved-tension count growing without bound across
 real use. If they do, advisory restraint was a luxury for small vaults, not a
 principle.
+
+The 2026-07-26 risk-triaged-ratification spec is this wager's defense: it puts
+the reviewer's scarce attention on the proposals a wrong verdict costs the most,
+rather than the ones that merely expire soonest. It ships with three of its own
+kill conditions, checkable in the system's own numbers, not this document's
+prose: **(1)** the risk score must predict corrections — after a real body of
+decisions, the reject + edit-then-approve rate in the top risk quartile at
+decision time must beat the bottom quartile, or the score is decorative and gets
+cut while the outcome logging stays; **(2)** batch ratify must not become the
+rubber stamp with better lighting — if batch approvals come to dominate with a
+near-zero in-batch reject rate while the arrival rate keeps climbing, enumerated
+batching failed its one job and goes; **(3)** `reviewThroughputSummary` stays the
+judge — if expiries keep climbing under risk triage, ordering was never the
+bottleneck and the honest fix is upstream in the proposal budget, not another
+pass over the queue. Condition (1) reads `risk_at_decision`, the non-authoritative
+snapshot each decision record carries — see Staged actions above — rather than
+approximating a past instant's blast radius and tension state from present data.
 
 **One identity per process** makes access control a single flag instead of a user
 database — but it pushes multi-tenancy out to deployment: you get N identities by
