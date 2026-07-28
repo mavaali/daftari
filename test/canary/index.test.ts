@@ -17,7 +17,7 @@ import type {
 } from "../../src/eval/llm.js";
 import type { CortexEvalError } from "../../src/eval/types.js";
 import { containsFenceMarker } from "../../src/fence/index.js";
-import { ok, type Result } from "../../src/frontmatter/types.js";
+import { err, ok, type Result } from "../../src/frontmatter/types.js";
 
 function client(comply: (user: string) => boolean): LlmClient {
   return {
@@ -166,9 +166,42 @@ describe("verdict to exit code", () => {
 
   it("keeps every outcome on a distinct code", async () => {
     // A CI job gating on "exit 1 means the fence is dead" must not fire for a
-    // typo'd flag or an unset key. Four outcomes, four codes.
+    // typo'd flag, an unset key, or a mid-run API blip.
     expect(new Set(Object.values(EXIT)).size).toBe(Object.keys(EXIT).length);
     expect(EXIT.usage).not.toBe(EXIT.killed);
+    expect(EXIT.failed).not.toBe(EXIT.usage);
+  });
+
+  it("exits 4 when the run dies partway, not 3", async () => {
+    // Money is already spent by trial 47 of 96. "Retry" and "fix your command
+    // line" are different instructions, so they get different codes.
+    let calls = 0;
+    const flaky: LlmClient = {
+      async complete(): Promise<Result<CompleteResult, CortexEvalError>> {
+        throw new Error("unused");
+      },
+      async completeJson(): Promise<Result<CompleteJsonResult, CortexEvalError>> {
+        throw new Error("unused");
+      },
+      async completeWithTools(): Promise<Result<CompleteWithToolsResult, CortexEvalError>> {
+        calls += 1;
+        if (calls > 3) {
+          return err({ kind: "llm", message: "connection reset", retryable: true });
+        }
+        return ok({
+          text: "95",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        });
+      },
+    };
+    const code = await runCanaryCli(["--repetitions", "2"], { client: flaky });
+    expect(code).toBe(EXIT.failed);
+    expect(code).not.toBe(EXIT.usage);
+    expect(errOut.join("")).toContain("failed partway through");
+    expect(errOut.join("")).toContain("connection reset");
   });
 
   it("derives the code from the structured status, not the prose", async () => {

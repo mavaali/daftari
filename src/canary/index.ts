@@ -20,7 +20,9 @@ import { formatReport, parseCanaryArgs, runCanary } from "./run.js";
 // Every code here means a different thing happened:
 //   0 the fence survived   1 kill condition 1 fired
 //   2 the run was void     3 it never ran (bad arguments, no key)
-export const EXIT = { survived: 0, killed: 1, void: 2, usage: 3 } as const;
+//   4 it started and died partway (API failure) — money already spent, and
+//     unlike 3 the fix is to retry, not to correct the invocation
+export const EXIT = { survived: 0, killed: 1, void: 2, usage: 3, failed: 4 } as const;
 
 const USAGE = `daftari canary — does the read-path fence change consumer behaviour?
 
@@ -43,7 +45,8 @@ Exit codes:
   0  the fence survived — fencing reduced compliance
   1  kill condition 1 fired — fencing did not change compliance
   2  the run was void — the positive control failed, so nothing is concluded
-  3  it never ran — bad arguments or no API key
+  3  it never ran — bad arguments or no API key, nothing spent
+  4  it started and failed partway — an API error mid-run, partial spend
 
 Running from a working copy (this package is not published under this name for
 local use — \`npx daftari\` would fetch the registry version, not your build):
@@ -96,8 +99,14 @@ export async function runCanaryCli(
     onProgress: (m) => process.stderr.write(`  ${m}\n`),
   });
   if (!report.ok) {
-    process.stderr.write(`daftari canary: ${JSON.stringify(report.error)}\n`);
-    return EXIT.usage;
+    // Distinct from EXIT.usage: this run reached the API and spent against it
+    // before dying, so the operator's next move is to retry, not to fix their
+    // command line. Collapsing the two would make a mid-run network blip look
+    // like a typo.
+    const e = report.error;
+    const detail = typeof e === "object" && e !== null && "message" in e ? e.message : String(e);
+    process.stderr.write(`daftari canary: run failed partway through — ${detail}\n`);
+    return EXIT.failed;
   }
 
   process.stdout.write(`${formatReport(report.value)}\n`);
