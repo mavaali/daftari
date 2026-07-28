@@ -38,6 +38,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Design record:
   `docs/superpowers/specs/2026-07-26-contextual-chunking-reranker-design.md`.
 
+- **Two new local embedding providers + int8 vec-index quantization
+  (opt-in; default embedder unchanged).** `embeddings.provider` gains
+  `local-embeddinggemma` (`google/embeddinggemma-300m`, 768d native,
+  Matryoshka-truncatable to 512/768) and `local-qwen3-0.6b`
+  (`Qwen/Qwen3-Embedding-0.6B`, up to 768d exposed), both fully local via
+  the existing `@huggingface/transformers` dependency, both with
+  asymmetric document/query prompt prefixing. The durable `embeddings`
+  cache now stores the full NATIVE-dim vector under a dim-free cache id
+  (e.g. `local-embeddinggemma#p1`); a new `embeddings.dim` config key picks
+  the INDEX-time truncation. A new `embeddings.quantize: int8 | none`
+  config key (default `int8` for the two new providers, `none` — today's
+  exact behavior — for `local-minilm`/`openai-3-small`) stores the
+  sqlite-vec mirror as `int8[dim]` with scan-then-rescore: candidates are
+  selected by quantized distance, then rescored with exact float32 cosine
+  against the durable cache, so quantization never becomes the reported
+  score. Switching `provider`, `dim`, or `quantize` between server runs is
+  a config change plus a background reindex; a `dim`/`quantize` flip alone
+  needs no re-embed (`isIndexFresh` detects the change and the reindex is
+  all cache hits — a vec-mirror rebuild, not a cold re-embed). `local-
+  minilm` remains the default for `loadConfig`'s programmatic fallback;
+  the vault-init template default flip and any measured cold-reindex /
+  query-latency / RSS numbers are gated on the governing spec's Phase 0
+  smoke spike and Phase 5 recall-bench, neither of which has run against a
+  real model download as of this entry — see `docs/architecture.md`'s
+  "Vec-index quantization" section and the verification-honesty notes on
+  each new provider file.
+  Design record:
+  `docs/superpowers/specs/2026-07-26-embedding-refresh-quantization-design.md`.
+
 - **MCP `content`-channel summaries for every remaining tool.** Every
   registered tool now has a `summarize` (compact, model-facing text) and,
   where it names documents, a `docLinks` (`resource_link` entries) — closing

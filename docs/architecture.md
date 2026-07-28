@@ -196,40 +196,100 @@ Three things sit alongside the markdown:
   tokens — contextual BM25, the other half. Displayed snippets are read from
   the `text` column only; the synthesized context never appears in served
   content (Markdown is truth). Every chunk is then embedded into a
-  fixed-dimension vector by the active provider. Two providers ship with
-  v1.9:
+  fixed-dimension vector by the active provider. Four providers ship as of
+  the 2026-07-26 embedding-refresh-quantization spec:
 
-  - **`local-minilm`** (default) — runs `all-MiniLM-L6-v2` in-process via
-    `@huggingface/transformers` (Transformers.js). 384-dimension vectors,
-    fully local, no embedding API call. The only network access is the
-    one-time download of the model weights to the Hugging Face cache on
-    first use. Slow on cold-start (multi-minute on large vaults) but free.
+  - **`local-minilm`** (programmatic default) — runs `all-MiniLM-L6-v2`
+    in-process via `@huggingface/transformers` (Transformers.js).
+    384-dimension vectors, fully local, no embedding API call. The only
+    network access is the one-time download of the model weights to the
+    Hugging Face cache on first use. Slow on cold-start (multi-minute on
+    large vaults) but free. `all-MiniLM-L6-v2` is a 2021-era model; the two
+    entries below are the model-generation replacement, currently opt-in.
+
+  - **`local-embeddinggemma`** — runs `google/embeddinggemma-300m`
+    in-process via the same Transformers.js runtime. 768-dimension native
+    output, Matryoshka-truncatable; the configured index dim defaults to
+    512 (`embeddings.dim: 512 | 768`). Asymmetric prompt prefixes (document
+    vs. query form) are applied internally by the provider. ~600MB-class
+    model footprint (less with the q8 ONNX variant this provider defaults
+    to). **Verification honesty:** the exact prompt-prefix strings and the
+    Transformers.js compatibility of this model are [TRAINING] hypotheses
+    from the governing spec, pending a smoke-spike verification that has
+    not been run against a real model download as of this writing — see
+    `src/search/providers/local-embeddinggemma.ts`'s header and the spec's
+    Phase 0. Cold-reindex, query-latency, and RSS numbers are therefore not
+    yet measured; this section will carry real figures once that spike and
+    the Phase 5 recall-bench (`integrations/recall-bench/embedrefresh-
+    runner.mjs`) have run.
+
+  - **`local-qwen3-0.6b`** — runs `Qwen/Qwen3-Embedding-0.6B`, same
+    runtime, last-token pooling instead of mean pooling. Exposes up to
+    768d (the model's native 1024d is deliberately not offered yet).
+    ~1.5GB-class model footprint — larger than EmbeddingGemma, which is
+    why it ships as the documented alternative rather than a default
+    candidate. Same verification-honesty caveat as `local-embeddinggemma`
+    above; additionally, its last-token-pooling implementation path is a
+    [HYPOTHESIS] pending the same unrun spike (see the file header of
+    `src/search/providers/local-transformers.ts` for the specific kill
+    condition).
 
   - **`openai-3-small`** — calls OpenAI's `text-embedding-3-small`
     (1536-dim) over HTTPS. Fast (~2 min for a 44k-chunk vault vs ~25 min
     locally) but paid. Requires `OPENAI_API_KEY` in the server's
     environment; the key is never read from config files. Batched at 96
     inputs per request, with exponential backoff on 429 / 5xx (up to 3
-    retries).
+    retries). Untouched by the embedding-refresh spec — no dim/quantize
+    options, 1536d float32 rows behave exactly as before.
 
-  The active provider is set in `.daftari/config.yaml`:
+  The active provider, its dim, and its vec-index quantization are set in
+  `.daftari/config.yaml`:
 
   ```yaml
   embeddings:
-    provider: local-minilm   # or: openai-3-small
+    provider: local-minilm   # local-minilm | openai-3-small | local-embeddinggemma | local-qwen3-0.6b
+    # dim: 512               # local-embeddinggemma / local-qwen3-0.6b only: 512 (default) | 768
+    # quantize: int8         # int8 (default for the two new providers) | none
   ```
 
-  An unknown provider id, or `openai-3-small` with no `OPENAI_API_KEY`
-  in env, is a hard config error — the server refuses to start. Embedding
-  is best-effort at runtime: if the model cannot load (local) or the API
-  is unreachable (paid), a reindex still builds the FTS5 lexical index and chunks
-  land with no embedding row, so search degrades to lexical-only rather
-  than failing.
+  An unknown provider id, an out-of-range `dim` for the active provider (or
+  any `dim` at all for `local-minilm`/`openai-3-small`, which have none to
+  configure), an unrecognised `quantize` value, or `openai-3-small` with no
+  `OPENAI_API_KEY` in env, is a hard config error — the server refuses to
+  start. Embedding is best-effort at runtime: if the model cannot load
+  (local) or the API is unreachable (paid), a reindex still builds the
+  FTS5 lexical index and chunks land with no embedding row, so search
+  degrades to lexical-only rather than failing.
 
-  Switching providers between server runs is safe: the `embeddings` table
-  is keyed by `(content_hash, model)`, so the new provider populates a
-  fresh row set on first reindex while the previous provider's rows stay
-  in the cache as cheap insurance for switching back.
+  Switching providers, `dim`, or `quantize` between server runs is safe.
+  The durable `embeddings` cache is keyed by `(content_hash, model)` and
+  ALWAYS stores the FULL NATIVE-dim, float32 vector regardless of the
+  active provider's configured dim or quantize setting — truncation to the
+  configured dim happens at a single choke point (`toIndexDim`,
+  `src/search/vector.ts`) wherever a cached vector meets the sqlite-vec
+  index or a query. A provider switch populates a fresh row set on first
+  reindex while the previous provider's rows stay in the cache as cheap
+  insurance for switching back; a `dim` or `quantize` flip on an UNCHANGED
+  provider needs no re-embed at all — it is purely a vec-index-mirror
+  rebuild from the existing cache (`isIndexFresh` detects the staleness and
+  the next reindex is all cache hits, typically minutes not hours).
+
+  **Vec-index quantization.** `embeddings.quantize: int8` (the default for
+  the two new local providers) stores the sqlite-vec `embeddings_vec`
+  mirror as `int8[dim]` instead of `FLOAT[dim]` — a calibration-free
+  `round(x * 127)` clamped to `[-127, 127]`, valid because every provider
+  L2-normalizes its output (components live in `[-1, 1]`). Search becomes
+  scan-then-rescore: the KNN scan over the quantized column selects
+  candidates by quantized distance ONLY (4x over-fetch); each candidate is
+  then rescored with exact float32 cosine similarity against the durable
+  cache, joined in the same query — the quantized distance never becomes a
+  score. A candidate whose cache row is unexpectedly missing (a GC race) is
+  dropped from the ranking rather than approximated. `quantize: none` (the
+  default for `local-minilm`/`openai-3-small`) keeps today's exact float32
+  index, byte-for-byte. sqlite-vec's `vec_int8(?)` SQL wrapper is required
+  around both inserted and queried int8 vectors — a raw int8-byte blob
+  bound directly against an `int8[]` column is rejected by the pinned
+  sqlite-vec build.
 
   The model loads **lazily**: `getExtractor()` is invoked only when
   `embed()` actually has texts to embed, not at startup. With the
@@ -242,8 +302,11 @@ Three things sit alongside the markdown:
   finished, so that search does not pay the ~500ms cold start. The warm-up
   is gated by the optional `warm_embeddings` flag in `.daftari/config.yaml`
   (default `true`); set it to `false` for read-only roles that never embed,
-  or for low-memory deployments where the ~100MB model footprint is
-  unwelcome. A warm-up failure (no network on first run, model download
+  or for low-memory deployments where the model footprint is unwelcome —
+  ~100MB-class for `local-minilm`, ~600MB-class for `local-embeddinggemma`,
+  ~1.5GB-class for `local-qwen3-0.6b` (all q8-ONNX-variant estimates,
+  pending real measurement — see the provider list above). A warm-up
+  failure (no network on first run, model download
   blocked) is logged but never crashes the server — the next `embed()` call
   retries. The same flag covers the optional reranker below: once the
   embedder warms, the server warms `rerank.provider` too when one is
@@ -283,9 +346,11 @@ Three things sit alongside the markdown:
   chunks, the reindex runs an internal `vault_gc` step that drops embeddings
   rows whose `content_hash` is no longer referenced by any chunk, so orphans
   don't accumulate across edits. And the composite primary key on
-  `(content_hash, model)` is deliberate: a future model migration can keep
-  both the old and new model's embeddings present under the same hash, so a
-  roll-forward never has to clear the cache first.
+  `(content_hash, model)` is deliberate: a model migration keeps both the
+  old and new model's embeddings present under the same hash, so a
+  roll-forward never has to clear the cache first — this is exactly the
+  mechanism the `local-embeddinggemma`/`local-qwen3-0.6b` migration above
+  rides, not a new one.
 
   **Optional local reranker.** A `RerankProvider` seam
   (`src/search/rerank-provider.ts`) mirrors `EmbeddingProvider`: config-
