@@ -63,6 +63,14 @@ export function registeredToolNames(): string[] {
   return allTools.map((t) => t.name);
 }
 
+// The full ToolDefinition registry, for tests that need more than the name
+// (output-schema compilation, summarize/docLinks presence checks). Not used
+// by createServer itself — that closes over the module-local `allTools`
+// directly — this exists purely as a read-only test seam.
+export function allRegisteredTools(): ToolDefinition[] {
+  return allTools;
+}
+
 // Tool-exposure tiers (#103). Tiers are additive: standard = core + its own
 // list; full = the whole registry (never enumerated, so a new tool is
 // full-tier by default and only joins a leaner tier deliberately).
@@ -128,6 +136,86 @@ export function resolveToolExposure(tools: ToolsConfig): ToolExposure {
     else unknown.add(name);
   }
   return { exposed, unknown: [...unknown] };
+}
+
+// MCP content block shapes this module emits. Kept local (not imported from
+// the SDK) so this file's return types stay self-describing; the SDK
+// accepts a wider shape, this is the subset we ever construct.
+interface TextBlock {
+  type: "text";
+  text: string;
+}
+interface ResourceLinkBlock {
+  type: "resource_link";
+  uri: string;
+  name: string;
+  mimeType: string;
+}
+
+// The CallTool bridge's presentation step (spec 2026-07-26, Decision 3),
+// pulled out of the request handler as its own pure-ish function so it can
+// be unit-tested directly against ANY ToolDefinition — including a
+// hand-built stub with no `summarize`, or one that throws — without needing
+// a live Server/transport (test/server.test.ts, C5). Takes the tool's
+// already-successful ok-value; the caller (createServer's CallTool handler)
+// owns the RBAC/dispatch/error-branch decisions around it.
+//
+// Three channels:
+//   content           — a compact, model-facing summary, plus resource_link
+//                       entries for the docs the result references;
+//   structuredContent — the full typed result, matching outputSchema (or a
+//                       tool-projected subset — see wireValue).
+//
+// A tool with no `summarize` falls back to the pretty-printed value, so this
+// is backward compatible for any tool that has not opted in.
+//
+// Presentation hardening (C5): `summarize`/`docLinks` are pure functions
+// over an already-successful result, but a summarizer bug must never turn a
+// correct tool call into an error response — that would be worse than the
+// JSON.stringify fallback it was meant to improve on. Each runs in its own
+// try/catch with the same fallback the tool would get by not opting in.
+export function formatSuccessResult(
+  tool: ToolDefinition,
+  value: unknown,
+): { content: (TextBlock | ResourceLinkBlock)[]; structuredContent: Record<string, unknown> } {
+  let summary: string;
+  try {
+    summary = tool.summarize ? tool.summarize(value) : JSON.stringify(value, null, 2);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`daftari: warning: summarize threw for ${tool.name}: ${reason}\n`);
+    summary = JSON.stringify(value, null, 2);
+  }
+  let links: string[] = [];
+  try {
+    links = tool.docLinks ? tool.docLinks(value) : [];
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`daftari: warning: docLinks threw for ${tool.name}: ${reason}\n`);
+    links = [];
+  }
+  const wireValue = tool.wireValue ? tool.wireValue(value) : (value as Record<string, unknown>);
+  return {
+    content: [
+      { type: "text", text: summary },
+      // Links inherit read-gating: a handler only ever names docs the caller
+      // may read, so every link emitted here is readable by construction
+      // (Decision 3). Filtered to non-empty strings so a summarizer bug (or
+      // a legitimate empty-string edge case) never mints a resource_link
+      // with no uri.
+      ...links
+        .filter((path) => typeof path === "string" && path.length > 0)
+        .map(
+          (path): ResourceLinkBlock => ({
+            type: "resource_link",
+            uri: docUri(path),
+            name: path,
+            mimeType: "text/markdown",
+          }),
+        ),
+    ],
+    structuredContent: wireValue,
+  };
 }
 
 // The server runs as one access identity for its whole lifetime — the
@@ -200,35 +288,9 @@ export function createServer(
           content: [{ type: "text" as const, text: `Error: ${result.error.message}` }],
         };
       }
-      // Three channels (spec 2026-07-26, Decision 3):
-      //   structuredContent — the full typed result, matching outputSchema;
-      //   content           — a compact, model-facing summary;
-      //   resource_link     — handles for the docs the result references,
-      //                       so the agent reads the two it needs at full
-      //                       fidelity instead of receiving twenty bodies it
-      //                       will truncate in context anyway.
-      //
-      // A tool with no `summarize` falls back to the pretty-printed value, so
-      // this is backward compatible for any tool that has not opted in.
-      const summary = tool.summarize
-        ? tool.summarize(result.value)
-        : JSON.stringify(result.value, null, 2);
-      const links = tool.docLinks ? tool.docLinks(result.value) : [];
-      return {
-        content: [
-          { type: "text" as const, text: summary },
-          // Links inherit read-gating: a handler only ever names docs the
-          // caller may read, so every link emitted here is readable by
-          // construction (Decision 3).
-          ...links.map((path) => ({
-            type: "resource_link" as const,
-            uri: docUri(path),
-            name: path,
-            mimeType: "text/markdown",
-          })),
-        ],
-        structuredContent: result.value as Record<string, unknown>,
-      };
+      // Presentation (spec 2026-07-26, Decision 3) is a pure function of the
+      // tool and its ok-value — see formatSuccessResult above.
+      return formatSuccessResult(tool, result.value);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       return {

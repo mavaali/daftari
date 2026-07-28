@@ -40,6 +40,7 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { SUMMARY_MAX_ROWS } from "./summary.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
 // *hints* — clients must not gate behavior on them — but directory reviewers
@@ -70,6 +71,14 @@ export interface ToolDefinition {
   // daftari://doc/{path} resource_link per entry. Paths must already be
   // read-gated by the handler (links inherit read-gating by construction).
   docLinks?: (value: unknown) => string[];
+  // Projects the full ok-value down to what rides `structuredContent`
+  // (spec 2026-07-26, Decision 3 / C11). Absent, the bridge ships the value
+  // verbatim. Exists so a tool whose body-shaped payload already rides
+  // `content` in full (vault_read) does not ship it a second time on
+  // structuredContent — the wire's worst token offender, doubled, in the PR
+  // whose purpose is cutting waste. `summarize`/`docLinks` still see the
+  // FULL value; only the wire projection is narrowed.
+  wireValue?: (value: unknown) => Record<string, unknown>;
   annotations?: ToolAnnotations;
   // `access` is supplied by the server transport on every call. When omitted
   // (a direct in-process call, e.g. from a test) RBAC is not enforced.
@@ -758,6 +767,72 @@ function asStringArray(v: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+// vault_read: header line, then every advisory banner that is non-null, then
+// the contested count, then the body VERBATIM — this is the one and only
+// channel the body crosses the wire on (see `wireValue` below / C11).
+function summarizeRead(value: unknown): string {
+  const r = value as VaultReadResult;
+  const fm = r.frontmatter;
+  const lines = [`${r.path} — ${fm.status} / ${fm.confidence} confidence / ${fm.collection}`];
+  if (r.decay?.banner) lines.push(`decay: ${r.decay.banner}`);
+  if (r.validity?.banner) lines.push(`validity: ${r.validity.banner}`);
+  if (r.upstream_staleness?.banner) lines.push(`upstream: ${r.upstream_staleness.banner}`);
+  if (r.structural?.banner) lines.push(`structural: ${r.structural.banner}`);
+  if (r.contestedCount !== undefined && r.contestedCount > 0) {
+    lines.push(`contested: ${r.contestedCount} unresolved tension(s)`);
+  }
+  lines.push("", r.content);
+  return lines.join("\n");
+}
+
+// Every upstream unit the caller can see, plus the document itself — all
+// already RBAC-filtered by vaultRead (omission, #217), so every path here is
+// readable by construction.
+function docLinksRead(value: unknown): string[] {
+  const r = value as VaultReadResult;
+  const paths = [r.path];
+  for (const edge of r.upstream_staleness?.edges ?? []) paths.push(edge.unit);
+  return paths;
+}
+
+// C11: the body ships once, in `content` (summarizeRead, above) — never
+// doubled onto `structuredContent`. Delivered via the doc resource too
+// (Decision 2), for a programmatic consumer that wants it without the
+// summary text around it.
+function wireValueRead(value: unknown): Record<string, unknown> {
+  const { content: _content, ...rest } = value as VaultReadResult;
+  return rest;
+}
+
+function summarizeIndex(value: unknown): string {
+  const r = value as VaultIndexResult;
+  if (r.count === 0) return "0 documents match.";
+  const shown = r.entries.slice(0, SUMMARY_MAX_ROWS);
+  const lines = [`${r.count} document(s):`, ...shown.map((e) => `  ${e.path} (${e.status})`)];
+  const rest = r.count - shown.length;
+  if (rest > 0) lines.push(`  … ${rest} more in structuredContent`);
+  return lines.join("\n");
+}
+
+function summarizeStatus(value: unknown): string {
+  const r = value as VaultStatusResult;
+  const sd = r.stalenessDistribution;
+  const vc = r.validityCoverage;
+  return [
+    `${r.vault}: ${r.fileCount} doc(s), ${r.invalidCount} invalid — ${r.generatedAt}`,
+    `index health: ${r.embeddingDimMismatches} embedding dim mismatch(es)`,
+    `staleness: ${sd.fresh} fresh / ${sd.aging} aging / ${sd.stale} stale (of ${sd.total})`,
+    `validity: ${vc.authored} authored / ${vc.unknown} unknown (of ${vc.total})`,
+    `tensions: ${r.unresolvedTensions.count} unresolved`,
+    `recent writes: ${r.recentWrites.count}`,
+  ].join("\n");
+}
+
 export const readTools: ToolDefinition[] = [
   {
     name: "vault_read",
@@ -804,7 +879,14 @@ export const readTools: ToolDefinition[] = [
       type: "object",
       properties: {
         path: { type: "string", description: "The path as requested by the caller" },
-        content: { type: "string", description: "Markdown body, frontmatter block stripped" },
+        content: {
+          type: "string",
+          description:
+            "Markdown body, frontmatter block stripped. Delivered in the `content` " +
+            "channel (verbatim, alongside the header/banners) and via the doc " +
+            "resource (daftari://doc/{path}) — never duplicated onto " +
+            "structuredContent, so this field is absent there (C11).",
+        },
         frontmatter: FRONTMATTER_SCHEMA,
         raw: {
           type: "object",
@@ -883,7 +965,6 @@ export const readTools: ToolDefinition[] = [
       },
       required: [
         "path",
-        "content",
         "frontmatter",
         "raw",
         "validation",
@@ -894,6 +975,9 @@ export const readTools: ToolDefinition[] = [
         "version",
       ],
     },
+    summarize: summarizeRead,
+    docLinks: docLinksRead,
+    wireValue: wireValueRead,
     handler: (vaultRoot, args, access) => {
       const runId = readRunId(args, "vault_read");
       if (!runId.ok) return Promise.resolve(runId);
@@ -948,6 +1032,7 @@ export const readTools: ToolDefinition[] = [
       },
       required: ["count", "entries"],
     },
+    summarize: summarizeIndex,
     handler: (vaultRoot, args, access) =>
       vaultIndex(
         vaultRoot,
@@ -1059,6 +1144,7 @@ export const readTools: ToolDefinition[] = [
         "embeddingDimMismatches",
       ],
     },
+    summarize: summarizeStatus,
     handler: (vaultRoot, _args, access) => vaultStatus(vaultRoot, access),
   },
 ];

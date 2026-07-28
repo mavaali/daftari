@@ -50,6 +50,7 @@ import { getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
+import { clip } from "./summary.js";
 
 // All tool-side opens pass the active provider's dim so the sqlite-vec
 // table matches the embeddings the search will query. A read-only tool
@@ -740,8 +741,7 @@ function summaryLine(rank: number, hit: HybridHit): string {
   // Snippets arrive whitespace-collapsed, so this is normally the whole
   // snippet; the split keeps the line single-line regardless.
   const head = (hit.snippet.split("\n", 1)[0] ?? "").trim();
-  const snippet =
-    head.length > SUMMARY_SNIPPET_MAX ? `${head.slice(0, SUMMARY_SNIPPET_MAX)}…` : head;
+  const snippet = clip(head, SUMMARY_SNIPPET_MAX);
   const tail = snippet.length > 0 ? ` — ${snippet}` : "";
   return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}`;
 }
@@ -781,6 +781,18 @@ function hitDocLinks(hits: HybridHit[]): string[] {
     if (hit.currentSource?.kind === "resolved") push(hit.currentSource.path);
   }
   return paths;
+}
+
+function summarizeReindex(value: unknown): string {
+  const r = value as VaultReindexResult;
+  const warnings = r.skipped.length + r.invalidFrontmatter.length;
+  const lines = [
+    `Reindexed ${r.vault}: ${r.documentCount} doc(s), ${r.chunkCount} chunk(s), ` +
+      `vectors ${r.vectorEnabled ? "on" : "off"} — ${warnings} warning(s)`,
+  ];
+  const top = [...r.skipped, ...r.invalidFrontmatter].slice(0, 5);
+  for (const f of top) lines.push(`  ${f.path} — ${f.reason}`);
+  return lines.join("\n");
 }
 
 export const searchTools: ToolDefinition[] = [
@@ -990,6 +1002,7 @@ export const searchTools: ToolDefinition[] = [
       ],
       additionalProperties: false,
     },
+    summarize: summarizeReindex,
     handler: (vaultRoot) => vaultReindex(vaultRoot),
   },
 ];
