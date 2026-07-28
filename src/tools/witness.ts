@@ -77,8 +77,18 @@ const principalRecordSchema: Record<string, unknown> = {
         rejected: { type: "integer" },
         expired: { type: "integer" },
         pending: { type: "integer" },
+        edited: {
+          type: "integer",
+          description:
+            "Ratified via edit-then-approve — a subset of 'ratified', not additional to it",
+        },
+        byCategory: {
+          type: "object",
+          additionalProperties: { type: "integer" },
+          description: "Decided (ratified/rejected) proposals by reason_category",
+        },
       },
-      required: ["total", "ratified", "rejected", "expired", "pending"],
+      required: ["total", "ratified", "rejected", "expired", "pending", "edited", "byCategory"],
       additionalProperties: false,
     },
     tensionsLogged: { type: "integer" },

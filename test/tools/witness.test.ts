@@ -181,7 +181,15 @@ describe("buildWitness", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const loop = r.value.principals.find((p) => p.principal === "agent:loop");
-    expect(loop?.proposals).toEqual({ total: 2, ratified: 0, rejected: 1, expired: 0, pending: 1 });
+    expect(loop?.proposals).toEqual({
+      total: 2,
+      ratified: 0,
+      rejected: 1,
+      expired: 0,
+      pending: 1,
+      edited: 0,
+      byCategory: {},
+    });
   });
 
   it("raises the flat-curve warning when one principal holds ≥95% of writes", async () => {
@@ -202,6 +210,67 @@ describe("buildWitness", () => {
     if (!r.ok) return;
     expect(r.value.unattributedDocs).toBe(1);
     expect(r.value.principals).toEqual([]);
+  });
+
+  it("counts an edit-then-approve decision as edited, with its category (Decision 3)", async () => {
+    writeDoc("pricing/doc.md");
+    const staged = await stageAction(vault, {
+      actionType: "confidence-up",
+      targetPath: "pricing/doc.md",
+      proposedBy: "agent:loop",
+      rationale: "r",
+      proposedDiff: { confidence: "high" },
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const dec = await recordDecision(vault, staged.value.id, {
+      status: "ratified",
+      ratifiedAt: new Date().toISOString(),
+      ratifiedBy: "human:test",
+      decisionKind: "edit-then-approve",
+      reasonCategory: "overbroad",
+    });
+    expect(dec.ok).toBe(true);
+
+    const r = await buildWitness(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const loop = r.value.principals.find((p) => p.principal === "agent:loop");
+    // Status is authoritative: the edit still counts as ratified. edited is a
+    // SUBSET, not an addition.
+    expect(loop?.proposals.ratified).toBe(1);
+    expect(loop?.proposals.edited).toBe(1);
+    expect(loop?.proposals.byCategory).toEqual({ overbroad: 1 });
+  });
+
+  it("does not fragment a principal's record when proposed_by rotates under one staged_by_principal (C4)", async () => {
+    writeDoc("pricing/x.md");
+    writeDoc("pricing/y.md");
+    const a = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/x.md",
+      proposedBy: "agent:rotating-1",
+      stagedByPrincipal: "human:mihir",
+      rationale: "r",
+      proposedDiff: {},
+    });
+    const b = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/y.md",
+      proposedBy: "agent:rotating-2",
+      stagedByPrincipal: "human:mihir",
+      rationale: "r",
+      proposedDiff: {},
+    });
+    expect(a.ok && b.ok).toBe(true);
+
+    const r = await buildWitness(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const mihir = r.value.principals.find((p) => p.principal === "human:mihir");
+    expect(mihir?.proposals.total).toBe(2);
+    expect(r.value.principals.find((p) => p.principal === "agent:rotating-1")).toBeUndefined();
+    expect(r.value.principals.find((p) => p.principal === "agent:rotating-2")).toBeUndefined();
   });
 
   it("scopes everything to readable collections under RBAC", async () => {

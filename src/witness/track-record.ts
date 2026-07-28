@@ -22,7 +22,7 @@
 
 import { type AccessContext, canRead } from "../access/rbac.js";
 import { readProvenanceLog } from "../curation/provenance.js";
-import { listStagedActions } from "../curation/staged-actions.js";
+import { listStagedActions, proposalTallies } from "../curation/staged-actions.js";
 import { ageInDays, computeStaleness } from "../curation/staleness.js";
 import { listTensions } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
@@ -63,13 +63,19 @@ export interface PrincipalRecord {
   survived: number; // authored docs maintained through ≥1 full TTL cycle, still canonical
   creditEarned: number;
   balance: number; // creditEarned − burnedStake (advisory; provisional constants)
-  // Proposal record (staged actions).
+  // Proposal record (staged actions). `edited` and `byCategory` are the
+  // 2026-07-26 risk-triaged-ratification spec's Decision 3 additions — sourced
+  // from the same proposalTallies implementation the risk scorer's W term
+  // reads, keyed on the authenticated stager (C4 disposition) so the tallies
+  // cannot be laundered by rotating the unauthenticated proposed_by string.
   proposals: {
     total: number;
     ratified: number;
     rejected: number;
     expired: number;
     pending: number;
+    edited: number;
+    byCategory: Record<string, number>;
   };
   tensionsLogged: number;
 }
@@ -151,7 +157,15 @@ export async function buildWitness(
         survived: 0,
         creditEarned: 0,
         balance: 0,
-        proposals: { total: 0, ratified: 0, rejected: 0, expired: 0, pending: 0 },
+        proposals: {
+          total: 0,
+          ratified: 0,
+          rejected: 0,
+          expired: 0,
+          pending: 0,
+          edited: 0,
+          byCategory: {},
+        },
         tensionsLogged: 0,
       };
       records.set(principal, r);
@@ -203,13 +217,22 @@ export async function buildWitness(
     }
   }
 
-  for (const a of visibleActions) {
-    const r = recordFor(a.proposedBy);
-    r.proposals.total += 1;
-    if (a.status === "ratified" || a.status === "ratified-pending-tool") r.proposals.ratified += 1;
-    else if (a.status === "rejected") r.proposals.rejected += 1;
-    else if (a.status === "expired") r.proposals.expired += 1;
-    else r.proposals.pending += 1;
+  // proposalTallies keys on stagedByPrincipal ?? proposedBy (C4) — the
+  // authenticated identity that staged the proposal when the record has one,
+  // the caller-claimed proposedBy string otherwise. One shared implementation
+  // with the risk scorer's W term (src/curation/risk.ts) so the two numbers
+  // can never drift apart.
+  for (const [principal, tallies] of proposalTallies(visibleActions)) {
+    const r = recordFor(principal);
+    r.proposals = {
+      total: tallies.total,
+      ratified: tallies.ratified,
+      rejected: tallies.rejected,
+      expired: tallies.expired,
+      pending: tallies.pending,
+      edited: tallies.edited,
+      byCategory: tallies.byCategory,
+    };
   }
 
   for (const t of visibleTensions) {
