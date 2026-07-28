@@ -30,6 +30,7 @@ import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
+import { setRerankProvider } from "../search/rerank-provider.js";
 import { setProvider } from "../search/vector.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
 import { createBackend, type StorageBackend } from "../storage/backend.js";
@@ -562,6 +563,7 @@ export async function runServe(argv: string[]): Promise<number> {
 
   try {
     setProvider(config.value.embeddingProvider);
+    setRerankProvider(config.value.rerankProvider);
   } catch (e) {
     process.stderr.write(`daftari serve: ${e instanceof Error ? e.message : String(e)}\n`);
     return 3;
