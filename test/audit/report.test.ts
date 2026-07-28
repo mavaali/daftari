@@ -20,6 +20,9 @@ const REPORT: AuditReport = {
     transitivelyStale: 1,
     brokenDescribes: 1,
     semanticDrifted: 0,
+    pinsIntact: 0,
+    pinsMoved: 0,
+    pinsMissing: 0,
   },
   brokenRefs: [
     {
@@ -50,6 +53,8 @@ const REPORT: AuditReport = {
     },
   ],
   semantic: [],
+  pins: [],
+  registryMismatches: [],
 };
 
 describe("renderMarkdown", () => {
@@ -82,6 +87,43 @@ describe("renderMarkdown", () => {
       describesRefs: [],
     });
     expect(md).toContain("no findings");
+  });
+});
+
+describe("renderMarkdown — pin verification", () => {
+  it("renders the pin verification table and totals line", () => {
+    const md = renderMarkdown({
+      ...REPORT,
+      totals: { ...REPORT.totals, pinsIntact: 1, pinsMoved: 1, pinsMissing: 0 },
+      pins: [
+        {
+          source: { repo: "a", path: "auth.md" },
+          target: { repo: "svc", path: "src/login.ts" },
+          raw: "svc:src/login.ts@abc1234",
+          state: "intact",
+        },
+        {
+          source: { repo: "a", path: "retry.md" },
+          target: { repo: "svc", path: "src/retry.ts" },
+          raw: "svc:src/retry.ts#L1-5@abc1234",
+          state: "moved",
+        },
+      ],
+    });
+    expect(md).toContain("code pins intact / moved / missing: **1 / 1 / 0**");
+    expect(md).toContain("## Pin verification");
+    expect(md).toContain("svc/src/login.ts");
+    expect(md).toContain("intact");
+    expect(md).toContain("moved");
+  });
+
+  it("renders registry mismatch notes", () => {
+    const md = renderMarkdown({
+      ...REPORT,
+      registryMismatches: [{ repo: "svc", docsRepo: "a", detail: "resolves to different paths" }],
+    });
+    expect(md).toContain("## Registry mismatches");
+    expect(md).toContain("'svc' referenced from a: resolves to different paths");
   });
 });
 
