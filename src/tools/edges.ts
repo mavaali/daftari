@@ -524,6 +524,7 @@ export const edgeTools: ToolDefinition[] = [
   {
     name: "vault_edge_observe",
     title: "Record a derives_from observation",
+    oneLine: "Record a derives_from observation between two documents.",
     annotations: { destructiveHint: false },
     description:
       "Record that a (re-)derivation observed a derives_from edge between two " +
@@ -604,6 +605,7 @@ export const edgeTools: ToolDefinition[] = [
   {
     name: "vault_edge_contest",
     title: "Contest and revoke a derives_from edge",
+    oneLine: "Contest and revoke a derives_from edge.",
     annotations: { destructiveHint: true },
     description:
       "Record a case-2 contradiction: a re-derivation failed with no upstream " +
@@ -654,6 +656,7 @@ export const edgeTools: ToolDefinition[] = [
   {
     name: "vault_edges",
     title: "List derives_from edges",
+    oneLine: "List derives_from edges, optionally filtered by document or status.",
     annotations: { readOnlyHint: true },
     description:
       "List derives_from edges with their live aged strength, strongest " +

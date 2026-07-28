@@ -16,20 +16,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
-import { consumesTools } from "./tools/consumes.js";
-import { curationTools } from "./tools/curation.js";
-import { edgeStalenessTools } from "./tools/edge-staleness.js";
-import { edgeTools } from "./tools/edges.js";
-import { readTools, type ToolDefinition } from "./tools/read.js";
-import { receiptTools } from "./tools/receipt.js";
-import { searchTools } from "./tools/search.js";
-import { stagedActionTools } from "./tools/staged-actions.js";
-import { themesTools } from "./tools/themes.js";
-import { tier1Tools } from "./tools/tier1.js";
-import { tier2Tools } from "./tools/tier2.js";
-import { witnessTools } from "./tools/witness.js";
-import { writeTools } from "./tools/write.js";
+import type { ToolDefinition } from "./tools/read.js";
+import { allTools, registeredToolNames, serializeToolDefinition } from "./tools/registry.js";
 import type { ToolsConfig } from "./utils/config.js";
+
+// Re-exported so existing importers (tests, docs) keep working unchanged —
+// the registry itself moved to tools/registry.ts (spec 2026-07-26
+// context-packs-progressive-disclosure, Phase 1.1) to break an import cycle
+// (vault_tools closes over the full registry; a tools file cannot import
+// server.ts back).
+export { allRegisteredTools, registeredToolNames } from "./tools/registry.js";
 
 export const SERVER_NAME = "daftari";
 
@@ -41,36 +37,6 @@ const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.
 };
 export const SERVER_VERSION = manifest.version;
 
-// The full registry. Static — assembled once at module load, shared by every
-// server instance and by the tier-exposure helpers below.
-const allTools: ToolDefinition[] = [
-  ...readTools,
-  ...receiptTools,
-  ...witnessTools,
-  ...searchTools,
-  ...themesTools,
-  ...writeTools,
-  ...curationTools,
-  ...stagedActionTools,
-  ...edgeTools,
-  ...consumesTools,
-  ...tier1Tools,
-  ...tier2Tools,
-  ...edgeStalenessTools,
-];
-
-export function registeredToolNames(): string[] {
-  return allTools.map((t) => t.name);
-}
-
-// The full ToolDefinition registry, for tests that need more than the name
-// (output-schema compilation, summarize/docLinks presence checks). Not used
-// by createServer itself — that closes over the module-local `allTools`
-// directly — this exists purely as a read-only test seam.
-export function allRegisteredTools(): ToolDefinition[] {
-  return allTools;
-}
-
 // Tool-exposure tiers (#103). Tiers are additive: standard = core + its own
 // list; full = the whole registry (never enumerated, so a new tool is
 // full-tier by default and only joins a leaner tier deliberately).
@@ -80,6 +46,12 @@ export function allRegisteredTools(): ToolDefinition[] {
 // RBAC vaults with propose-only roles — plus index diagnostics. Everything
 // else (tensions, themes, witness/receipt epistemics, the edge graph,
 // tier-1/tier-2 dispatch, staleness) is specialist curation surface: full.
+//
+// vault_tools and vault_context join core in the same wave that ships them
+// (spec 2026-07-26 context-packs-progressive-disclosure, Phase 1.4): the
+// long-tail-behind-an-index tool and the task-brief assembler are exactly
+// what makes a core-tier session no longer an amputation — every other tool
+// stays discoverable in-band via vault_tools even when not advertised.
 export const CORE_TOOLS: readonly string[] = [
   "vault_search",
   "vault_read",
@@ -87,6 +59,8 @@ export const CORE_TOOLS: readonly string[] = [
   "vault_index",
   "vault_lint",
   "vault_status",
+  "vault_tools",
+  "vault_context",
 ];
 
 export const STANDARD_TOOLS: readonly string[] = [
@@ -136,6 +110,19 @@ export function resolveToolExposure(tools: ToolsConfig): ToolExposure {
     else unknown.add(name);
   }
   return { exposed, unknown: [...unknown] };
+}
+
+// Measures what ListTools actually pushes onto the wire for a resolved
+// exposure set: the same serialization ListTools ships (serializeToolDefinition),
+// JSON.stringify'd, chars/4 — the same estimator vault_context uses (spec
+// 2026-07-26 context-packs-progressive-disclosure, Phase 1.4), so the
+// startup log and a pack's budget accounting speak the same units. Not the
+// registry's cost (registeredToolNames().length worth) — the tier-resolved
+// EXPOSED set, which is the question "what does THIS session's ListTools
+// actually cost", the thing the whole spec is about.
+export function advertisedSurfaceCost(tools: ToolDefinition[]): number {
+  const serialized = tools.map(serializeToolDefinition);
+  return Math.ceil(JSON.stringify(serialized).length / 4);
 }
 
 // MCP content block shapes this module emits. Kept local (not imported from
@@ -239,14 +226,7 @@ export function createServer(
   const exposed = exposedNames ? allTools.filter((t) => exposedNames.has(t.name)) : allTools;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: exposed.map((t) => ({
-      name: t.name,
-      ...(t.title ? { title: t.title } : {}),
-      description: t.description,
-      inputSchema: t.inputSchema,
-      outputSchema: t.outputSchema,
-      ...(t.annotations ? { annotations: t.annotations } : {}),
-    })),
+    tools: exposed.map(serializeToolDefinition),
   }));
 
   // Resources (spec 2026-07-26, Decision 2). Every listing and read resolves

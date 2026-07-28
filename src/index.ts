@@ -36,7 +36,13 @@ import {
 import { getRerankProvider, setRerankProvider, warmRerankModel } from "./search/rerank-provider.js";
 import { setProvider, warmModel } from "./search/vector.js";
 import { startWatcher, type VaultWatcher } from "./search/watcher.js";
-import { createServer, resolveToolExposure, SERVER_VERSION } from "./server.js";
+import {
+  advertisedSurfaceCost,
+  allRegisteredTools,
+  createServer,
+  resolveToolExposure,
+  SERVER_VERSION,
+} from "./server.js";
 import { directoryExists } from "./storage/local.js";
 import { loadConfig, TOOL_TIERS, type ToolTier } from "./utils/config.js";
 
@@ -151,6 +157,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   for (const name of resolveToolExposure(toolsConfig).unknown) {
     process.stderr.write(
       `daftari: warning: tools.include/exclude names unknown tool '${name}' — ignored\n`,
+    );
+  }
+
+  // Startup cost line (spec 2026-07-26-context-packs-progressive-disclosure-
+  // design.md, Phase 1.4): measures what THIS session's ListTools actually
+  // advertises, in the same chars/4 units vault_context budgets against.
+  // `tools.tier` stays `full` by default this wave — the log is the notice
+  // that a future major release changes that default, not a config change.
+  {
+    const exposedNames = resolveToolExposure(toolsConfig).exposed;
+    const exposedTools = allRegisteredTools().filter((t) => exposedNames.has(t.name));
+    const cost = advertisedSurfaceCost(exposedTools);
+    process.stderr.write(
+      `daftari: advertising ${exposedTools.length} tools (~${cost} tokens of definitions; ` +
+        `tier=${toolsConfig.tier}). A future major release will default tools.tier to 'core' — ` +
+        "vault_tools makes every tool discoverable in-band.\n",
     );
   }
 

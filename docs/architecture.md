@@ -1189,6 +1189,37 @@ every non-operator role). A server run without an access context (stdio,
 no `--role`) is unaffected by the gate — the operator posture the rest of
 this document assumes throughout.
 
+## Progressive tool disclosure and task briefs
+
+Two coupled tools attack the context cost of a daftari session before the
+first document is ever read (spec 2026-07-26-context-packs-progressive-
+disclosure-design.md).
+
+`vault_tools` is a pure advertisement seam over the registry `src/tools/
+registry.ts` assembles from every `src/tools/*.ts` file's exports. Index mode
+returns a `{name, oneLine}` line per registered tool; expand mode returns full
+schemas for named tools. It reads the FULL registry minus the vault's
+`exclude` config list — exclude always wins (#104) — but tier and `include`
+never narrow it, because making tiered-out tools discoverable in-band is the
+tool's entire purpose. `CallTool` is unaffected either way: every registered
+name stays callable regardless of what any tool advertises (#103).
+
+`vault_context(task, budget?)` is the assembly layer over the search stack:
+hybrid retrieval, RBAC filtered BEFORE any budgeting, supersession dedup (a
+collapsed chain's flags are all keyed on the head's OWN index row — never a
+stale member's), then a greedy budget cut at `budget * 0.9` estimated tokens
+(chars/4, no tokenizer — `src/context/estimate.ts`), then markdown
+templating (`src/context/assemble.ts`, pure and deterministic — no I/O, no
+LLM call). The pack selects and points; it never synthesizes: an open tension
+renders both claims verbatim, never a blended verdict, and a supersession
+prints only the pointer and hop count, the chain head's own content carrying
+the snippet. `hidden_remainder` is a LOWER-BOUND signal over observable
+withholding (RBAC-dropped BM25-side pool candidates, dropped coverage
+additions, restricted supersession hops) — "none" means "no withholding
+observed," never "nothing withheld," because the vector half of retrieval is
+already RBAC-pushdown-scrubbed (Decision 3 of the retrieval-fusion-overhaul
+spec) and structurally invisible to this count.
+
 ## A fact's life — the request path
 
 Everything above is the machinery at rest. Watch it move, and the four layers

@@ -2313,6 +2313,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_write",
     title: "Create or update a document",
+    oneLine: "Create or update a vault document.",
     annotations: { destructiveHint: true },
     description:
       "Create a new vault document or overwrite an existing one. Supply the " +
@@ -2408,6 +2409,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_append",
     title: "Append to a document",
+    oneLine: "Append markdown text to a document's body.",
     annotations: { destructiveHint: true },
     description:
       "Append a markdown section to an existing vault document. Frontmatter " +
@@ -2448,6 +2450,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_promote",
     title: "Promote draft to canonical",
+    oneLine: "Promote a draft document to canonical.",
     annotations: { destructiveHint: true },
     description:
       "Promote a draft document to canonical status. Refuses unless the " +
@@ -2479,6 +2482,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_deprecate",
     title: "Deprecate a document",
+    oneLine: "Deprecate a document, optionally pointing at its replacement.",
     annotations: { destructiveHint: true },
     description:
       "Mark a document deprecated. A reason is required; optionally record " +
@@ -2518,6 +2522,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_set_confidence",
     title: "Set a document's confidence",
+    oneLine: "Set a document's confidence level.",
     annotations: { destructiveHint: true },
     description:
       "Change only a document's confidence level (low | medium | high), leaving " +
@@ -2559,6 +2564,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_set_tier",
     title: "Set a document's write-protection tier",
+    oneLine: "Set a document's write-protection tier.",
     annotations: { destructiveHint: true },
     description:
       "Change only a document's write-protection tier (source | compiled | " +
@@ -2605,6 +2611,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_supersede",
     title: "Supersede a document",
+    oneLine: "Mark a document as superseded by another.",
     annotations: { destructiveHint: true },
     description:
       "Mark a document superseded by a named successor. Sets status=superseded " +
@@ -2648,6 +2655,7 @@ export const writeTools: ToolDefinition[] = [
   {
     name: "vault_merge",
     title: "Merge two documents into one",
+    oneLine: "Merge two documents into one, pointing both at a successor.",
     annotations: { destructiveHint: true },
     description:
       "Combine two source documents into a target and supersede both sources to " +

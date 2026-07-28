@@ -480,6 +480,7 @@ export const tier2Tools: ToolDefinition[] = [
   {
     name: "vault_tier2_queue",
     title: "Semantic-review queue (tier 2)",
+    oneLine: "List pairs awaiting semantic review (tier 2).",
     annotations: { readOnlyHint: true },
     description:
       "The tier-2 semantic-review queue (#232): every declared/earned " +
@@ -524,6 +525,7 @@ export const tier2Tools: ToolDefinition[] = [
   {
     name: "vault_tier2_verdict",
     title: "Record a tier-2 semantic verdict",
+    oneLine: "Record a tier-2 semantic-review verdict for a dependent pair.",
     annotations: { readOnlyHint: false, idempotentHint: false },
     description:
       "Record the answer to a vault_tier2_queue item (#232 tier 2). " +

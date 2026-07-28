@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  advertisedSurfaceCost,
   allRegisteredTools,
   CORE_TOOLS,
   formatSuccessResult,
@@ -8,8 +9,10 @@ import {
   STANDARD_TOOLS,
 } from "../src/server.js";
 import type { ToolDefinition } from "../src/tools/read.js";
+import { serializeToolDefinition } from "../src/tools/registry.js";
 import type { ToolsConfig } from "../src/utils/config.js";
 import { compileToolSchema } from "./helpers/output-schema.js";
+import { cleanupVault, makeTempVault } from "./helpers/temp-vault.js";
 
 function exposure(overrides: Partial<ToolsConfig>): ReturnType<typeof resolveToolExposure> {
   return resolveToolExposure({ tier: "full", include: [], exclude: [], ...overrides });
@@ -99,6 +102,7 @@ describe("outputSchema — registry-wide strict compile (Decision 3, C6)", () =>
 describe("formatSuccessResult — CallTool bridge presentation (Decision 3, C5)", () => {
   const stubTool = (overrides: Partial<ToolDefinition>): ToolDefinition => ({
     name: "stub_tool",
+    oneLine: "test stub",
     description: "test stub",
     inputSchema: { type: "object", properties: {} },
     outputSchema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] },
@@ -225,5 +229,53 @@ describe("vault_read wire projection (Decision 3, C11)", () => {
     expect(out.structuredContent).toMatchObject({ path: "a.md", version: "deadbeef" });
     const text = (out.content[0] as { text: string }).text;
     expect(text).toContain("the body text");
+  });
+});
+
+// spec 2026-07-26-context-packs-progressive-disclosure-design.md, final plan
+// Phase 1.5.
+describe("vault_tools / vault_context tier membership (Phase 1.4)", () => {
+  it("both new tools are advertised under tier: core", () => {
+    const { exposed } = exposure({ tier: "core" });
+    expect(exposed.has("vault_tools")).toBe(true);
+    expect(exposed.has("vault_context")).toBe(true);
+  });
+});
+
+describe("advertisedSurfaceCost", () => {
+  it("counts only the exposed set, not the whole registry", () => {
+    const core = allRegisteredTools().filter((t) => CORE_TOOLS.includes(t.name));
+    const full = allRegisteredTools();
+    expect(core.length).toBeLessThan(full.length);
+    expect(advertisedSurfaceCost(core)).toBeLessThan(advertisedSurfaceCost(full));
+  });
+
+  it("is the chars/4 estimate of the exact ListTools serialization", () => {
+    const core = allRegisteredTools().filter((t) => CORE_TOOLS.includes(t.name));
+    const serialized = core.map(serializeToolDefinition);
+    expect(advertisedSurfaceCost(core)).toBe(Math.ceil(JSON.stringify(serialized).length / 4));
+  });
+});
+
+describe("vault_tools expand output matches the ListTools wire shape (drift test)", () => {
+  it("serializeToolDefinition is what both vault_tools' expand mode and ListTools ship", async () => {
+    const searchDef = allRegisteredTools().find((t) => t.name === "vault_search");
+    expect(searchDef).toBeTruthy();
+    if (!searchDef) return;
+    const viaListTools = serializeToolDefinition(searchDef);
+
+    const vaultToolsDef = allRegisteredTools().find((t) => t.name === "vault_tools");
+    expect(vaultToolsDef).toBeTruthy();
+    if (!vaultToolsDef) return;
+    const vault = makeTempVault();
+    try {
+      const result = await vaultToolsDef.handler(vault, { expand: ["vault_search"] }, undefined);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const expanded = (result.value as { tools: unknown[] }).tools[0];
+      expect(expanded).toEqual(viaListTools);
+    } finally {
+      cleanupVault(vault);
+    }
   });
 });

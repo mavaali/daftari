@@ -379,6 +379,7 @@ export const edgeStalenessTools: ToolDefinition[] = [
   {
     name: "vault_staleness",
     title: "Edge staleness — pending upstream changes and the broken-read rate",
+    oneLine: "Report pending upstream changes and the vault's broken-read rate.",
     annotations: { readOnlyHint: true },
     description:
       "Edge staleness (#234): is a document stale WITH RESPECT TO its " +

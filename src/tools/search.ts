@@ -276,11 +276,28 @@ function resolvePassages(
 }
 
 // #234 serve instrumentation, shared by every snippet-serving tool
-// (vault_search AND vault_search_related — the broken-read rate's
-// denominator counts serves, whichever tool served them). Each SERVED hit
-// becomes one read-log entry carrying its pending-broken upstream count —
-// the TRUE count, unfiltered, because the log is local operator telemetry —
-// batched into a single append so N hits do not pay N fs writes.
+// (vault_search, vault_search_related, and vault_context — the broken-read
+// rate's denominator counts serves, whichever tool served them).
+//
+// Split in two (spec 2026-07-26-context-packs-progressive-disclosure-design.md
+// final plan, C1): the original `annotateAndLogServedHits` both computed the
+// upstream buckets AND appended the read-log entries in one pass, but
+// vault_context needs the buckets during enrichment (before the budget cut)
+// and the log write only for entries that SURVIVE the cut — logging a serve
+// that was never actually served would corrupt the read log's own broken-read
+// denominator. `annotateUpstreamHits` writes nothing; `logServedHits` is the
+// batch append. vault_search / vault_search_related call both back-to-back,
+// unchanged behavior.
+export interface PendingLogEntry {
+  file: string;
+  principal?: string;
+  broken_upstream?: number;
+}
+
+// Computes and attaches `pendingBrokenUpstream`/`hiddenPendingUpstream` to
+// each hit (mutated in place, same as before the split) and returns the
+// per-hit pending log entry — the TRUE broken count, unfiltered, because the
+// log is local operator telemetry. Never writes.
 //
 // The caller-facing hit uses the shared #217 split (splitUpstreamVisibility):
 // the "broken" (incident) classification is disclosed only for upstream
@@ -290,15 +307,14 @@ function resolvePassages(
 // verdict derived from a hidden unit would leak that unit's change activity
 // across the ACL boundary. The visible count is bucketed for hit-payload
 // compactness, not disclosure — vault_read's exact pending_broken is the
-// drill-down. Best-effort: a telemetry failure never fails the search.
-async function annotateAndLogServedHits(
+// drill-down.
+export async function annotateUpstreamHits(
   vaultRoot: string,
   db: IndexDb,
-  tool: string,
   hits: HybridHit[],
   access?: AccessContext,
-): Promise<void> {
-  if (hits.length === 0) return;
+): Promise<PendingLogEntry[]> {
+  if (hits.length === 0) return [];
   // The newest-compile-group collapse is O(total edges); do it ONCE per
   // call, not per hit. Passing the pre-collapsed set through is sound
   // because currentConsumesEdges is idempotent. An empty consumes log
@@ -308,7 +324,7 @@ async function annotateAndLogServedHits(
   const staleCtx = loaded
     ? { consumes: currentConsumesEdges(loaded.consumes), provenance: loaded.provenance }
     : null;
-  const entries: Parameters<typeof recordReads>[1] = [];
+  const entries: PendingLogEntry[] = [];
   for (const hit of hits) {
     let broken: number | undefined;
     if (staleCtx) {
@@ -325,13 +341,40 @@ async function annotateAndLogServedHits(
       if (hiddenPending !== "none") hit.hiddenPendingUpstream = hiddenPending;
     }
     entries.push({
-      tool,
       file: hit.path,
       ...(access?.user != null ? { principal: access.user } : {}),
       ...(broken !== undefined ? { broken_upstream: broken } : {}),
     });
   }
-  await recordReads(vaultRoot, entries);
+  return entries;
+}
+
+// The batch append `annotateUpstreamHits` no longer performs. Best-effort:
+// a telemetry failure never fails the calling tool.
+export async function logServedHits(
+  vaultRoot: string,
+  tool: string,
+  entries: PendingLogEntry[],
+): Promise<void> {
+  if (entries.length === 0) return;
+  await recordReads(
+    vaultRoot,
+    entries.map((e) => ({ tool, ...e })),
+  );
+}
+
+// vault_search / vault_search_related's shared call shape: annotate then log
+// every served hit, unconditionally — behavior byte-identical to the
+// pre-split `annotateAndLogServedHits`.
+async function annotateAndLogServedHits(
+  vaultRoot: string,
+  db: IndexDb,
+  tool: string,
+  hits: HybridHit[],
+  access?: AccessContext,
+): Promise<void> {
+  const entries = await annotateUpstreamHits(vaultRoot, db, hits, access);
+  await logServedHits(vaultRoot, tool, entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1047,7 @@ export const searchTools: ToolDefinition[] = [
   {
     name: "vault_search",
     title: "Search the vault",
+    oneLine: "Hybrid BM25 + vector search across the vault, with inline tension/decay flags.",
     annotations: { readOnlyHint: true },
     description:
       "Hybrid search across the vault: BM25 lexical ranking combined with " +
@@ -1143,6 +1187,7 @@ export const searchTools: ToolDefinition[] = [
   {
     name: "vault_search_related",
     title: "Find related documents",
+    oneLine: "Find documents related to a given vault document.",
     annotations: { readOnlyHint: true },
     description:
       "Find documents related to a given vault document. Uses that " +
@@ -1195,6 +1240,7 @@ export const searchTools: ToolDefinition[] = [
   {
     name: "vault_reindex",
     title: "Rebuild search index",
+    oneLine: "Rebuild the search index from the markdown files on disk.",
     // Not read-only — it writes the SQLite index. But it operates on a
     // rebuildable derived cache, not the markdown source of truth, so
     // destructiveHint is false.

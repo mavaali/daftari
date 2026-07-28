@@ -1031,6 +1031,7 @@ export const stagedActionTools: ToolDefinition[] = [
   {
     name: "vault_stage_action",
     title: "Stage an action for ratification",
+    oneLine: "Stage a proposed action for later ratification.",
     annotations: { destructiveHint: false },
     description:
       "Record a proposed change to the vault for later human ratification via " +
@@ -1094,6 +1095,7 @@ export const stagedActionTools: ToolDefinition[] = [
   {
     name: "vault_ratify",
     title: "Approve or reject staged action(s)",
+    oneLine: "Approve or reject one or more staged actions.",
     annotations: { destructiveHint: true },
     description:
       "Approve or reject one pending staged action ('id'), or up to " +

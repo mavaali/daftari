@@ -173,6 +173,7 @@ export const witnessTools: ToolDefinition[] = [
   {
     name: "vault_witness",
     title: "Per-principal track records",
+    oneLine: "Report per-principal track records of proposals and writes.",
     annotations: { readOnlyHint: true },
     description:
       "Per-principal track records aggregated from the vault's own ledgers " +

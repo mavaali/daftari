@@ -184,6 +184,7 @@ export const tier1Tools: ToolDefinition[] = [
   {
     name: "vault_tier1",
     title: "Type-directed change dispatch (tier 1)",
+    oneLine: "Classify a change's effect on dependents by type (tier 1).",
     annotations: { readOnlyHint: true },
     description:
       "Deterministic, LLM-free compatibility dispatch for a changed document " +

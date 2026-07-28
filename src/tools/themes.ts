@@ -591,6 +591,7 @@ export async function vaultThemes(
         supersededBy: null,
         validFrom: null,
         validUntil: null,
+        updatedBy: "",
       });
     }
 
@@ -875,6 +876,7 @@ export const themesTools: ToolDefinition[] = [
   {
     name: "vault_themes",
     title: "Cluster vault themes",
+    oneLine: "Cluster vault documents into thematic groups via k-means over embeddings.",
     annotations: { readOnlyHint: true },
     description:
       "Surface thematic clusters across the vault using k-means over CHUNK " +

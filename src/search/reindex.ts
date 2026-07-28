@@ -391,6 +391,7 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
         supersededBy: fm.superseded_by,
         validFrom: fm.valid_from,
         validUntil: fm.valid_until,
+        updatedBy: fm.updated_by,
       },
       chunks,
       hashes,

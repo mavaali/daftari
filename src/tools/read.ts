@@ -60,6 +60,14 @@ export interface ToolDefinition {
   // Human-readable title surfaced in UIs (Claude Desktop, the connectors
   // directory). `name` stays machine-style; `title` is for humans.
   title?: string;
+  // One-line index entry for vault_tools' index mode (spec 2026-07-26
+  // context-packs-progressive-disclosure, Decision 1 / Phase 1.2): imperative,
+  // no schema talk, capped at 120 chars (enforced by a test, not a runtime
+  // truncation — a tool whose one-liner needs more than 120 chars needs a
+  // shorter one-liner, not a truncated one). Required so every tool the
+  // registry ever gains is forced to declare one; there is no back-compat
+  // fallback because vault_tools ships alongside this field, not before it.
+  oneLine: string;
   description: string;
   inputSchema: Record<string, unknown>;
   // JSON Schema (2020-12) for the handler's ok-value. Required: handlers
@@ -966,6 +974,7 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_read",
     title: "Read a vault document",
+    oneLine: "Read a single vault document, with decay, validity, and staleness annotations.",
     annotations: { readOnlyHint: true },
     description:
       "Read a single vault document. Returns its markdown body, parsed " +
@@ -1123,6 +1132,7 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_index",
     title: "List vault documents",
+    oneLine: "List vault documents with metadata, optionally filtered.",
     annotations: { readOnlyHint: true },
     description:
       "List vault documents with their metadata, including each document's " +
@@ -1185,6 +1195,7 @@ export const readTools: ToolDefinition[] = [
   {
     name: "vault_status",
     title: "Vault health dashboard",
+    oneLine: "Vault health dashboard: staleness, tensions, and recent writes.",
     annotations: { readOnlyHint: true },
     description:
       "Vault health dashboard: total file count, per-collection counts, " +

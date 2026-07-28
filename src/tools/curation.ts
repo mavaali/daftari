@@ -1189,6 +1189,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_tension_log",
     title: "Log a contradiction",
+    oneLine: "Log a contradiction between two documents' claims.",
     annotations: { destructiveHint: true },
     description:
       "Record a tension — a contradiction or unresolved pull between two " +
@@ -1245,6 +1246,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_tension_resolve",
     title: "Resolve a logged tension",
+    oneLine: "Resolve a logged tension with an outcome and rationale.",
     annotations: { destructiveHint: true },
     description:
       "Record the closure of a previously logged tension. The 'kind' parameter " +
@@ -1292,6 +1294,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_tension_clusters",
     title: "Compute tension clusters",
+    oneLine: "Compute connected components of the tension graph.",
     annotations: { readOnlyHint: true },
     description:
       "Compute connected components of the tension graph: groups of vault " +
@@ -1314,6 +1317,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_tension_blast",
     title: "Compute tension blast radius",
+    oneLine: "Compute the downstream blast radius of a contested document or cluster.",
     annotations: { readOnlyHint: true },
     description:
       "Compute the transitive closure of downstream documents that cite or " +
@@ -1355,6 +1359,7 @@ export const curationTools: ToolDefinition[] = [
   },
   {
     name: "vault_lint",
+    oneLine: "Run advisory curation checks: staleness, orphans, drafts, tensions, and more.",
     // Not read-only: the staged-action sweep (§11.2) expires actions past
     // their TTL, appending expiry records to .daftari/staged-actions.jsonl.
     // It never edits vault content — only the staging queue's own lifecycle.
@@ -1401,6 +1406,7 @@ export const curationTools: ToolDefinition[] = [
   {
     name: "vault_provenance",
     title: "View document write history",
+    oneLine: "View a document's write history.",
     annotations: { readOnlyHint: true },
     description:
       "Return the write history of a single document from the provenance " +

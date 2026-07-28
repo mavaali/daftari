@@ -74,7 +74,15 @@ export type IndexDb = Database.Database;
 // promotion-design.md, Decisions 1-2/4). A column addition to a jsonl-derived
 // table, so the version-mismatch path's existing drop-and-rebuild of
 // derives_from_edges covers it; no migration to write.
-const SCHEMA_VERSION = "12";
+// 12 -> 13: documents.updated_by — the context-packs spec's provenance line
+// (2026-07-26-context-packs-progressive-disclosure-design.md, final plan
+// 2.5): vault_context's per-entry "updated N by M" flag reads this column
+// instead of re-parsing frontmatter. Populated from `frontmatter.updated_by`
+// on every write path (stageOne, src/search/reindex.ts); NOT NULL DEFAULT ''
+// so the version-mismatch path's full rebuild backfills every existing row
+// and no migration statement is needed for a mid-version upgrade — the index
+// is an ephemeral cache, rebuilt wholesale on a version bump.
+const SCHEMA_VERSION = "13";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -116,6 +124,11 @@ export interface IndexedDocument {
   supersededBy: string | null;
   validFrom: string | null;
   validUntil: string | null;
+  // Frontmatter `updated_by` (spec 2026-07-26-context-packs-progressive-
+  // disclosure-design.md, final plan 2.5) — vault_context's provenance flag
+  // reads this instead of a second frontmatter parse. '' when the document
+  // authors no updated_by (schema default).
+  updatedBy: string;
 }
 
 export interface IndexedChunk {
@@ -151,6 +164,11 @@ CREATE TABLE IF NOT EXISTS documents (
   ttl_days      INTEGER,
   created       TEXT NOT NULL DEFAULT '',
   superseded_by TEXT,
+  -- Frontmatter updated_by (spec 2026-07-26-context-packs-progressive-
+  -- disclosure-design.md, final plan 2.5). NOT NULL DEFAULT '' matching the
+  -- created column's convention: an "undateable"-shaped sibling for
+  -- "unattributed".
+  updated_by    TEXT NOT NULL DEFAULT '',
   -- Valid time. Nullable with no default: NULL is the unknown sentinel, and
   -- unlike created (required, so "" means undateable) these fields are
   -- optional, so NULL carries the meaning directly.
@@ -720,6 +738,13 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   // authored value stays on disk untouched for vault_lint to name.
   const validFrom = doc.validFrom === null ? null : (normalizeIsoDate(doc.validFrom) ?? null);
   const validUntil = doc.validUntil === null ? null : (normalizeIsoDate(doc.validUntil) ?? null);
+  // Defensive default, not just a type-contract convenience: better-sqlite3
+  // throws on an `undefined` bind, and IndexedDocument is a plain interface —
+  // a construction site outside this file's own writers (test fixtures built
+  // by hand before this field existed) can supply an object shaped without
+  // `updatedBy` and TypeScript's structural check never runs on it at
+  // runtime. `?? ""` matches the column's own NOT NULL DEFAULT ''.
+  const updatedBy = doc.updatedBy ?? "";
   // ON CONFLICT(path) DO UPDATE (rather than INSERT OR REPLACE) is required
   // so the AFTER UPDATE trigger on `documents` fires and keeps
   // `documents_fts` in sync. SQLite's OR REPLACE conflict resolution does
@@ -729,8 +754,8 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
   db.prepare(
     `INSERT INTO documents
        (path, title, collection, domain, status, confidence, updated, tags, content, tokens,
-        ttl_days, created, superseded_by, valid_from, valid_until)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ttl_days, created, superseded_by, valid_from, valid_until, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(path) DO UPDATE SET
        title         = excluded.title,
        collection    = excluded.collection,
@@ -745,7 +770,8 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
        created       = excluded.created,
        superseded_by = excluded.superseded_by,
        valid_from    = excluded.valid_from,
-       valid_until   = excluded.valid_until`,
+       valid_until   = excluded.valid_until,
+       updated_by    = excluded.updated_by`,
   ).run(
     doc.path,
     doc.title,
@@ -762,6 +788,7 @@ export function insertDocument(db: IndexDb, doc: IndexedDocument): void {
     doc.supersededBy,
     validFrom,
     validUntil,
+    updatedBy,
   );
 }
 
@@ -961,6 +988,7 @@ interface DocumentRow {
   ttl_days: number | null;
   created: string;
   superseded_by: string | null;
+  updated_by: string;
   valid_from: string | null;
   valid_until: string | null;
 }
@@ -982,6 +1010,7 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
     supersededBy: row.superseded_by,
     validFrom: row.valid_from,
     validUntil: row.valid_until,
+    updatedBy: row.updated_by,
   };
 }
 

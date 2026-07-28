@@ -334,6 +334,7 @@ export const receiptTools: ToolDefinition[] = [
   {
     name: "vault_receipt",
     title: "Compile an epistemic receipt",
+    oneLine: "Compile a signed receipt over cited sources: status, decay, and tensions.",
     annotations: { readOnlyHint: true },
     description:
       "Compile an epistemic receipt for the vault documents an answer relies " +

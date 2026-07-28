@@ -156,6 +156,7 @@ export const consumesTools: ToolDefinition[] = [
   {
     name: "vault_consumes",
     title: "Query the compiled dependency graph",
+    oneLine: "Query the compiled consumes graph: what a document read, or what reads it.",
     annotations: { readOnlyHint: true },
     description:
       "Query the compiled consumes graph (#233): edges minted mechanically " +
