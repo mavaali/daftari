@@ -16,7 +16,7 @@
 
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 import { materializeEdges } from "./curation/edges.js";
 import { materializeStagedActions } from "./curation/staged-actions.js";
@@ -204,13 +204,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
-  // Open MCP transport first so the client can answer `initialize` and
-  // `tools/list` immediately. Indexing — if needed — runs as a background
+  // Open MCP transport first so the client can open the connection and
+  // list tools immediately. Indexing — if needed — runs as a background
   // task; tools that depend on the index will respond "still indexing" until
   // it completes.
-  const server = createServer(vaultRoot, access, toolsConfig);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  //
+  // serveStdio owns the era decision per connection: a 2026-07-28 client is
+  // served the modern envelope; a 2025-era `initialize` pins a legacy-era
+  // instance from the same factory (the default `legacy: 'serve'`). Lagging
+  // clients use stdio — that promise (spec 2026-07-26, Decision 1) is kept
+  // HERE, which is why serve can refuse them.
+  serveStdio(() => createServer(vaultRoot, access, toolsConfig));
   process.stderr.write(
     `daftari: serving vault at ${vaultRoot} (stdio) — ` +
       `user=${access.user} role=${access.roleName}\n`,

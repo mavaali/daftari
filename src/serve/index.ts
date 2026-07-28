@@ -1,30 +1,37 @@
-// `daftari serve` (#5, spec 2026-07-20) — server mode over Streamable HTTP.
+// `daftari serve` (#5, spec 2026-07-20; stateless per spec 2026-07-26
+// Decision 1) — server mode over the 2026-07-28 MCP revision.
 //
-// One always-on instance, many MCP clients. The mechanical core: createServer
-// already parameterizes the access context, so each MCP session gets its own
-// Server bound to the identity resolved when the session opened — no tool
-// handler changes, and every RBAC/existence-disclosure invariant applies
-// per session, transport-independently.
+// One always-on instance, many MCP clients, NO sessions: the 2026-07-28
+// revision removed the initialize handshake and the Mcp-Session-Id header, so
+// identity is per REQUEST, resolved on every request against the same
+// config-declared map. createServer already parameterizes the access context,
+// so each request gets an instance bound to the identity its own bearer
+// resolved to — no tool handler changes, and every RBAC/existence-disclosure
+// invariant applies per request, transport-independently.
 //
-// Fail-loud rules (all from the spec, all startup or session-open errors,
+// Serve speaks the 2026-07-28 revision only (`legacy: "reject"`): no
+// dual-stacking, the precedent set by refusing the deprecated HTTP+SSE
+// transport. Lagging clients use stdio, which serves both eras.
+//
+// Fail-loud rules (all from the spec, all startup or request-time errors,
 // never silent downgrades):
 //   - non-loopback bind requires auth configured AND
 //     server.transport_security: external declared;
 //   - a token entry whose env var is unset, or whose role is not declared,
 //     refuses to start;
 //   - once auth is configured, a missing/unmatched bearer token is rejected
-//     at session open (401) on every bind — never downgraded to guest;
+//     (401) on EVERY request on every bind — never downgraded to guest;
 //   - the deny-all guest exists only in the no-auth loopback configuration.
 
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
 import { resolve } from "node:path";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
 import { ok, type Result } from "../frontmatter/types.js";
@@ -60,24 +67,26 @@ Defaults:
   --takeover      deliberately replace a LIVE daftari holding this vault
                   (a plain serve refuses against any live holder)
 
-Endpoint: http://<bind>:<port>/mcp   (MCP Streamable HTTP)
+Endpoint: http://<bind>:<port>/mcp   (MCP 2026-07-28, stateless — lagging
+                                     clients use stdio)
 
-Auth: clients send "Authorization: Bearer <token>". Two composable schemes:
+Auth: clients send "Authorization: Bearer <token>" on EVERY request. Two
+composable schemes:
   server.auth.tokens — static tokens; values come from the env vars named in
     config, never from config itself.
   server.auth.oauth  — OAuth 2.1 resource-server validation: bearer JWTs are
     verified against the IdP's JWKS (issuer + audience + expiry) and the
     subject claim maps through the declared subjects table. A valid token
     with an unmapped subject is 403 (authenticated, not authorized).
-With any auth configured, a missing/invalid credential is a 401 at session
-open — never a guest downgrade; with no auth (loopback only), sessions run
+With any auth configured, a missing/invalid credential is a 401 on every
+request — never a guest downgrade; with no auth (loopback only), requests run
 as the deny-all guest.
 
 Exit codes: 2 config/usage error, 3 runtime error.
 `;
 
 // A resolved phase-1 credential: the secret bytes and the identity a match
-// binds the session to.
+// binds the request to.
 interface ResolvedToken {
   secret: Buffer;
   user: string;
@@ -206,39 +215,12 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolveBody, rejectBody) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf-8");
-      if (raw.length === 0) {
-        resolveBody(undefined);
-        return;
-      }
-      try {
-        resolveBody(JSON.parse(raw));
-      } catch (e) {
-        rejectBody(e);
-      }
-    });
-    req.on("error", rejectBody);
-  });
-}
-
-interface LiveSession {
-  transport: StreamableHTTPServerTransport;
-  // Identity bound at session open. Later requests must present a credential
-  // resolving to the SAME user — a session id is not a bearer credential.
-  user: string;
-}
-
 export interface ServeHandle {
   port: number;
   close: () => Promise<void>;
 }
 
-// Starts the HTTP listener and session router. Exported separately from
+// Starts the HTTP listener and per-request router. Exported separately from
 // runServe so tests can drive a live server in-process on an ephemeral port
 // without argv parsing, lock acquisition, or process-global side effects.
 // DNS-rebinding guard for LOOPBACK binds (MCP Streamable HTTP security
@@ -283,7 +265,6 @@ export function startHttpServer(
   bind: string,
   port: number,
 ): Promise<ServeHandle> {
-  const sessions = new Map<string, LiveSession>();
   const oauth = config.server.oauth;
   const authConfigured = tokens.length > 0 || oauth !== undefined;
   // JWKS key set, created lazily on the first OAuth verification: jose
@@ -294,15 +275,16 @@ export function startHttpServer(
   // port); no request can arrive before listen resolves.
   let loopbackGuard: LoopbackGuard | null = null;
 
-  // Resolves the request's identity under the spec's session rules, or
-  // writes the rejection and returns null. With auth configured:
+  // Resolves the request's identity — the first line of EVERY request
+  // (spec 2026-07-26, Decision 1) — or writes the rejection and returns
+  // null. With auth configured:
   //   - a static-token match binds its declared identity;
   //   - else, with oauth declared, a bearer that verifies against the IdP's
   //     JWKS (issuer + audience + signature + expiry) maps its subject claim
   //     through the declared table — a valid-but-unmapped subject is 403
   //     (authenticated, not authorized), NEVER guest;
   //   - anything else is 401. With no auth at all (startup gating
-  //     guarantees loopback) every session is the deny-all guest.
+  //     guarantees loopback) every request runs as the deny-all guest.
   const authenticate = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -352,6 +334,28 @@ export function startHttpServer(
     return null;
   };
 
+  // The MCP handler: per-request, stateless, 2026-07-28 only. The factory
+  // runs once per request with the identity our authenticate() resolved and
+  // stashed in the pass-through authInfo — createServer parameterizes the
+  // access context, which is what makes this migration (like 2026-07-20's)
+  // cheap. `legacy: "reject"` answers 2025-era traffic with the
+  // unsupported-protocol-version error: no dual-stacking; lagging clients
+  // use stdio.
+  //
+  // Single-holder stays the process lock's job, not the transport's: two
+  // daftari processes on one vault is what .daftari/process.lock refuses
+  // (2026-07-20 Decision 4), stateless wire or not.
+  const mcpHandler = createMcpHandler(
+    ({ authInfo }) => {
+      const access =
+        (authInfo?.extra as { access?: AccessContext } | undefined)?.access ??
+        resolveAccess(config, "guest", GUEST_ROLE);
+      return createServer(vaultRoot, access, config.tools);
+    },
+    { legacy: "reject" },
+  );
+  const nodeHandler = toNodeHandler(mcpHandler);
+
   const httpServer = createHttpServer((req, res) => {
     void handle(req, res).catch((e) => {
       const reason = e instanceof Error ? e.message : String(e);
@@ -388,56 +392,16 @@ export function startHttpServer(
     const access = await authenticate(req, res);
     if (access === null) return;
 
-    const sessionId = req.headers["mcp-session-id"];
-    const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
-
-    if (existing) {
-      // A session id is routing state, not a credential: the request's own
-      // bearer must resolve to the identity the session was opened with.
-      if (existing.user !== access.user) {
-        writeJson(res, 401, {
-          error: "unauthorized",
-          message: "credential does not match the session's identity",
-        });
-        return;
-      }
-      const body = req.method === "POST" ? await readBody(req) : undefined;
-      await existing.transport.handleRequest(req, res, body);
-      return;
-    }
-
-    if (req.method !== "POST") {
-      writeJson(res, 400, { error: "bad_request", message: "unknown or missing session" });
-      return;
-    }
-    const body = await readBody(req);
-    if (!isInitializeRequest(body)) {
-      writeJson(res, 400, {
-        error: "bad_request",
-        message: "expected an initialize request to open a session",
-      });
-      return;
-    }
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => {
-        sessions.set(id, { transport, user: access.user });
-      },
-      onsessionclosed: (id) => {
-        sessions.delete(id);
-      },
-    });
-    transport.onclose = () => {
-      const id = transport.sessionId;
-      if (id) sessions.delete(id);
+    // toNodeHandler forwards req.auth as the handler's pass-through authInfo
+    // (it performs no verification of its own — ours ran above). The bearer
+    // is the credential; `_meta` client info is diagnostics, never identity.
+    (req as IncomingMessage & { auth?: AuthInfo }).auth = {
+      token: bearerFrom(req) ?? "",
+      clientId: access.user,
+      scopes: [],
+      extra: { access },
     };
-
-    // One Server per session, bound to the session's identity — the whole
-    // point of Decision 2.
-    const server = createServer(vaultRoot, access, config.tools);
-    await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await nodeHandler(req, res);
   }
 
   return new Promise((resolveStart, rejectStart) => {
@@ -450,10 +414,10 @@ export function startHttpServer(
       resolveStart({
         port: boundPort,
         close: async () => {
-          // Sessions close concurrently — shutdown latency must not scale
-          // with the number of live clients.
-          await Promise.all([...sessions.values()].map((s) => s.transport.close().catch(() => {})));
-          sessions.clear();
+          // close() aborts in-flight exchanges and resolves once every
+          // per-request instance has terminated — there is no session table
+          // to drain.
+          await mcpHandler.close();
           await new Promise<void>((r) => httpServer.close(() => r()));
         },
       });

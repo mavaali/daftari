@@ -49,6 +49,7 @@ import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
+import { log as gitLog } from "../utils/git.js";
 import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 import {
@@ -212,6 +213,67 @@ export async function vaultStageAction(
 // ---------------------------------------------------------------------------
 // vault_ratify
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// vault_ratify form-mode elicitation (spec 2026-07-26, Decision 5)
+// ---------------------------------------------------------------------------
+
+// What one elicitation round needs: the form prompt, the action it decides,
+// and the vault HEAD at proposal time — the payload server.ts seals into the
+// signed opaque request state. The MCP wiring (inputRequired, the state
+// codec) stays in server.ts; this function is the tool layer's share: the
+// same gates vaultRatify runs, so a role that could not ratify never sees a
+// form, and an unknown/decided action errors before any round-trip starts.
+// Single-id only — server.ts only enters this path when the call has no
+// `ids` (see createServer's CallTool handler).
+export interface RatifyElicitationSpec {
+  actionId: string;
+  message: string;
+  head: string | null;
+}
+
+export async function describeRatifyElicitation(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<RatifyElicitationSpec, Error>> {
+  if (access && !canRatify(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot ratify staged actions`));
+  }
+  if (access && isProposeOnly(access.role)) {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' is propose-only — it cannot ` +
+          `ratify staged actions`,
+      ),
+    );
+  }
+  const id = requireString(args, "id", "vault_ratify");
+  if (!id.ok) return id;
+  const found = await getStagedActionById(vaultRoot, id.value);
+  if (!found.ok) return found;
+  const action = found.value;
+  if (!action) return err(new Error(`vault_ratify: unknown staged action: ${id.value}`));
+  if (action.status !== "pending") {
+    return err(
+      new Error(
+        `vault_ratify: staged action ${id.value} is '${action.status}', not 'pending' — ` +
+          "it cannot be ratified",
+      ),
+    );
+  }
+  // HEAD at proposal time rides the signed state for the audit trail; the
+  // dispatch path re-validates pending/conflict-free on resubmit regardless,
+  // so a missing HEAD (no git yet) degrades to null rather than blocking.
+  const head = await gitLog(vaultRoot, { limit: 1 });
+  return ok({
+    actionId: id.value,
+    message:
+      `Ratify staged action ${id.value}: ${action.actionType} ${action.targetPath}?` +
+      (action.rationale ? ` Rationale: ${action.rationale}` : ""),
+    head: head.ok ? (head.value[0]?.hash ?? null) : null,
+  });
+}
 
 export interface RatifyResult {
   action_id: string;
@@ -1101,7 +1163,11 @@ export const stagedActionTools: ToolDefinition[] = [
       "Approve or reject one pending staged action ('id'), or up to " +
       `${BATCH_RATIFY_MAX} at once ('ids', an explicit list — never a threshold ` +
       "or an 'all pending' sentinel: the parameter shape cannot express one). " +
-      "Each id is processed independently in caller order — RBAC, the " +
+      "With a single 'id', 'decision' may be omitted to have the server elicit " +
+      "it from the human as a form (spec 2026-07-26, Decision 5) — the server " +
+      "proposes, the human disposes; a batch 'ids' call always requires an " +
+      "explicit 'decision'. Each id is processed independently in caller order " +
+      "— RBAC, the " +
       "pending-status check, and the tier-0 gates run per action exactly as a " +
       "single call would; one gate-blocked or failing id leaves THAT action " +
       "pending and the batch continues with per-id outcomes, never a rollback " +
@@ -1155,7 +1221,13 @@ export const stagedActionTools: ToolDefinition[] = [
         decision: {
           type: "string",
           enum: ["approve", "reject"],
-          description: "Whether to approve (apply) or reject the action(s)",
+          description:
+            "Whether to approve (apply) or reject the action(s). With a single " +
+            "'id' (no 'ids'), omit it to have the server elicit the decision " +
+            "from the human as a form (spec 2026-07-26, Decision 5): the server " +
+            "proposes, the human disposes, and the form's preselected answer is " +
+            "the safe 'reject'. Required when 'ids' is present — a batch has no " +
+            "single-action form to elicit.",
         },
         principal: {
           type: "string",
@@ -1181,7 +1253,7 @@ export const stagedActionTools: ToolDefinition[] = [
           additionalProperties: true,
         },
       },
-      required: ["decision", "principal"],
+      required: ["principal"],
       additionalProperties: false,
     },
     outputSchema: ratifyOutputSchema,

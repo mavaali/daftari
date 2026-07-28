@@ -1,31 +1,13 @@
 # MCP 2026-07-28 readiness — design
 
-2026-07-26. Status: **partially landed.** Decision 2 (resources), Decision 3
-core (the three-channel bridge, `outputSchema` on every tool), and Decision 6
-(never-sample guard) shipped in `8a1db89` (#302). Decision 3's remaining gap
-— `summarize`/`docLinks` on every tool that still fell through to
-`JSON.stringify`, bridge presentation hardening, the `vault_read` wire
-projection, and ajv-backed output-schema tests — shipped as PR 1 of
-`.jugalbandi/mcp-readiness-remainder/final-plan.md`.
-Decisions 1, 4, and 5 (stateless `daftari serve`, maintenance passes as MCP
-Tasks, `vault_ratify` form-mode elicitation) remain **not started**: the
-final plan's SDK preflight gate was run against the latest published
-`@modelcontextprotocol/sdk` (1.30.0, 2026-07-27) and **failed** —
-`LATEST_PROTOCOL_VERSION` in the SDK's stable types is still `2025-11-25`;
-the schema matching this spec's "2026-07-28 revision" exists only under the
-SDK's own `spec.types.d.ts`, itself pulled from a branch whose
-`LATEST_PROTOCOL_VERSION` constant is literally `DRAFT-2026-v1`; Tasks ship
-only under an `experimental` namespace carrying an explicit "may change
-without notice" warning; and no `InputRequiredResult` type exists anywhere
-in the package — the stateless elicitation rework Decision 5 depends on is
-not present. Per this spec's kill condition and the final plan's gate
-disposition, PRs 2–4 wait for a release that actually implements the
-revision; today's world (stdio + session-based `daftari serve`, no Tasks, no
-elicitation) is unchanged for those three decisions.
-
+2026-07-26. Status: **implemented except Decision 4 — see the kill-condition
+outcomes at the bottom.** Decisions 2, 3, and 6 landed 2026-07-26 (#302);
+Decisions 1 and 5 landed 2026-07-28 against the final revision on the v2 SDK
+line (`@modelcontextprotocol/server` 2.0). Decision 4's kill condition fired
+— the passes remain CLI-only.
 The final "stateless MCP" protocol revision (2026-07-28, RC published
-2026-05-21) was expected two days after this spec's date. This document
-settles what daftari adopts, what it defers, and what it will never adopt.
+2026-05-21) lands two days after this spec's date. This document settles
+what daftari adopts, what it defers, and what it will never adopt.
 
 ## Why
 
@@ -270,7 +252,9 @@ posture: **the server proposes, the human disposes**, and now the wire
 format itself says so. RBAC is unchanged — the resubmitted decision is
 enforced against the requester's `ratify` grant exactly as today, and a
 direct call with the decision inline keeps working for clients that don't
-do elicitation.
+do elicitation. This form-mode path is single-`id` only: the risk-triaged
+ratification spec's batch `ids` call always requires an explicit `decision`
+— a batch has no single action's rationale to put in a form.
 
 ## Decision 6 — sampling: never. Stated once, here, so it stops being implicit
 
@@ -322,3 +306,38 @@ go direct — the transport never carries inference in either direction.
 
 Each decision lands as its own PR, in the order written; Decision 1 gates
 only Decision 4 (tasks ride the new transport's types).
+
+## Kill-condition outcomes (2026-07-28, checked against the final revision)
+
+- **Decision 1 — survived.** [DATA] The final revision matches the RC in the
+  load-bearing places: `initialize` and `Mcp-Session-Id` are gone, client
+  info rides `_meta`, `server/discover` replaces the upfront capability
+  exchange. Implemented on `@modelcontextprotocol/server` 2.0 +
+  `@modelcontextprotocol/node` 2.0 (the stable line published with the final
+  revision; the monolithic 1.x SDK survives only as a devDependency so the
+  e2e suite keeps proving a lagging stdio client works). Serve is
+  `legacy: "reject"`; stdio serves both eras from one factory.
+- **Decision 4 — KILLED, for now.** [DATA] Two independent hits:
+  (a) the final revision moved Tasks to a standalone extension and **removed
+  `tasks/list` outright** (unsafe without sessions — only `tasks/get`,
+  `tasks/update`, `tasks/cancel` remain), so this spec's task-list
+  RBAC posture is moot until re-specified; (b) the v2 TypeScript SDK ships
+  the task types as "2025-11-25 wire vocabulary with no SDK runtime; kept
+  importable for interoperability only" — `execution.taskSupport` and
+  `capabilities.tasks` are deleted fields in the 2026 wire shape, and no
+  tasks-extension runtime package exists on npm. Exactly the spec's named
+  outcome: the four task tools do not ship; `sleep`, `consolidate`, `audit`,
+  and `eval` remain CLI-only — today's world, costing the wait. Revisit when
+  the TS SDK line ships the extension runtime; note the `tasks/list` removal
+  simplifies the omission-over-redaction bullet (handle-holders only).
+- **Decision 5 — survived.** [DATA] Stateless elicitation landed as
+  `InputRequiredResult` with opaque client-resubmitted `requestState`
+  (field names differ from the RC-era sketch — `inputRequests` /
+  `requestState` / `inputResponses` — but the model is materially the one
+  specified: the server remembers nothing between rounds). Implemented with
+  the SDK's HMAC request-state codec; the state binds action id + vault HEAD
+  + deciding user. Landed alongside the risk-triaged-ratification spec's
+  batch `ids` extension to `vault_ratify` — elicitation only ever applies to
+  a single-`id` call; a batch call always carries an explicit `decision`.
+- **Decisions 2, 3, 6 — no protocol risk materialized**, as predicted
+  (#302, 2026-07-26).
