@@ -68,6 +68,110 @@ describe("temperature passthrough", () => {
   });
 });
 
+// C5 (spec 2026-07-26-context-packs-progressive-disclosure-design.md, final
+// plan Phase 3.3): maxToolCalls caps REALIZED tool calls, not requested
+// ones — a round's parallel tool_use blocks can overshoot a naive
+// "check-then-execute" cap, so the loop must enforce it call-by-call.
+describe("completeWithTools — maxToolCalls cap (C5)", () => {
+  function makeClientWith(create: ReturnType<typeof vi.fn>) {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    // biome-ignore lint/suspicious/noExplicitAny: minimal SDK stand-in
+    const client = createAnthropicClient({ messages: { create } } as any);
+    if (prev) process.env.ANTHROPIC_API_KEY = prev;
+    else delete process.env.ANTHROPIC_API_KEY;
+    return client;
+  }
+
+  function toolUseBlock(id: string) {
+    return { type: "tool_use", id, name: "probe", input: {} };
+  }
+
+  it("a round whose parallel calls would overshoot the cap executes only the remaining slots, stubs the rest, and still reaches a final answer", async () => {
+    // Round 1: 5 parallel calls, cap=6 (0 used so far) — all 5 execute.
+    // Round 2: 3 MORE parallel calls, remaining = 6-5 = 1 — only 1 executes,
+    //   2 are stubbed. Realized total hits the cap (6).
+    // Round 3: tools omitted (budget exhausted) — the mock still answers
+    //   with plain text, proving the loop forces a final answer rather than
+    //   looping forever or erroring.
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: Array.from({ length: 5 }, (_, i) => toolUseBlock(`r1-${i}`)),
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "tool_use",
+      })
+      .mockResolvedValueOnce({
+        content: Array.from({ length: 3 }, (_, i) => toolUseBlock(`r2-${i}`)),
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "tool_use",
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: "text", text: "final answer", citations: null }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "end_turn",
+      });
+    const client = makeClientWith(create);
+
+    const toolHandler = vi.fn(async () => "ok");
+    const r = await client.completeWithTools({
+      model: "m",
+      system: "s",
+      user: "u",
+      tools: [{ name: "probe", description: "d", input_schema: { type: "object" } }],
+      toolHandler,
+      maxToolCalls: 6,
+    });
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.tool_calls).toHaveLength(6); // realized calls, never more than the cap
+    expect(r.value.text).toBe("final answer");
+    expect(toolHandler).toHaveBeenCalledTimes(6);
+
+    // Round 3's request must have omitted `tools` — the cap forces the
+    // final answer rather than merely hoping the model stops asking.
+    expect(create.mock.calls[2][0]).not.toHaveProperty("tools");
+
+    // The 2 stubbed calls from round 2 got a tool_result each (the API
+    // requires one per tool_use id) carrying the budget-exhausted marker,
+    // and were never counted.
+    const round2ToolResults = create.mock.calls[2][0].messages.at(-1).content;
+    const stubbed = round2ToolResults.filter((m: { content: string }) =>
+      m.content.includes("tool-call budget exhausted"),
+    );
+    expect(stubbed).toHaveLength(2);
+  });
+
+  it("uncapped (maxToolCalls unset) behaves exactly as before — every requested call executes", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: [toolUseBlock("a"), toolUseBlock("b")],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "tool_use",
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: "text", text: "done", citations: null }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "end_turn",
+      });
+    const client = makeClientWith(create);
+    const toolHandler = vi.fn(async () => "ok");
+    const r = await client.completeWithTools({
+      model: "m",
+      system: "s",
+      user: "u",
+      tools: [{ name: "probe", description: "d", input_schema: { type: "object" } }],
+      toolHandler,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.tool_calls).toHaveLength(2);
+    expect(toolHandler).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("stripCodeFence", () => {
   it("strips a ```json fenced block", () => {
     expect(stripCodeFence('```json\n{"a":1}\n```')).toBe('{"a":1}');

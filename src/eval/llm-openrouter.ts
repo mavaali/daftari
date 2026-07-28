@@ -22,6 +22,7 @@ import {
   type LlmClient,
   retry,
   stripCodeFence,
+  TOOL_BUDGET_EXHAUSTED_MESSAGE,
 } from "./llm.js";
 import type { CortexEvalError } from "./types.js";
 
@@ -231,6 +232,10 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
     }));
     let totalIn = 0;
     let totalOut = 0;
+    // Mirrors the anthropic client's exhaustion flag (C5): once the budget
+    // is spent, the next request omits `tools` entirely, forcing a final
+    // answer.
+    let toolsExhausted = false;
 
     for (let round = 0; round < maxRounds; round++) {
       const res = await retry(async () =>
@@ -238,7 +243,7 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
           model: o.model,
           max_tokens: o.maxTokens ?? 4096,
           ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
-          tools,
+          ...(toolsExhausted ? {} : { tools }),
           messages,
         }),
       );
@@ -272,8 +277,26 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
         tool_calls: message?.tool_calls,
       });
 
+      // C5: cap REALIZED calls, not requested ones — same contract as the
+      // anthropic client. Every rawCalls[i] past `remaining` still gets a
+      // tool_result (the wire requires one per tool_call_id) but is
+      // stubbed, never executed, never counted.
+      const remaining =
+        o.maxToolCalls === undefined
+          ? rawCalls.length
+          : Math.max(0, o.maxToolCalls - toolCalls.length);
+
       for (let i = 0; i < rawCalls.length; i++) {
         const tc = rawCalls[i] as OpenRouterToolCall & { function: { name: string } };
+        const toolCallId = tc.id ?? `call_${round}_${i}`;
+        if (i >= remaining) {
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCallId,
+            content: JSON.stringify({ tool_error: TOOL_BUDGET_EXHAUSTED_MESSAGE }),
+          });
+          continue;
+        }
         const rawArgs = tc.function.arguments ?? "";
         let input: unknown;
         try {
@@ -298,9 +321,13 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
           role: "tool",
           // Some providers omit ids on single calls; synthesize a stable one
           // so the echo-back stays well-formed.
-          tool_call_id: tc.id ?? `call_${round}_${i}`,
+          tool_call_id: toolCallId,
           content: typeof output === "string" ? output : JSON.stringify(output),
         });
+      }
+
+      if (o.maxToolCalls !== undefined && toolCalls.length >= o.maxToolCalls) {
+        toolsExhausted = true;
       }
     }
     return err({

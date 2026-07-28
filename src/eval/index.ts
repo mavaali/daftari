@@ -9,6 +9,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { generateQuestions } from "./generate.js";
 import { createAnthropicClient, type LlmClient } from "./llm.js";
 import { createOpenRouterClient, resolveTransport } from "./llm-openrouter.js";
+import { runPackAnswerer } from "./pack-condition.js";
 import { PROMPT_VERSION } from "./prompts.js";
 import { type DirPruneResult, type PruneRules, parseOlderThan, prune } from "./prune.js";
 import { runAnswerer } from "./run.js";
@@ -37,7 +38,8 @@ const HELP = `daftari eval — cortex quality metric.
 Usage:
   daftari eval [--vault <path>] [--n <count>] [--k <count>] [--seed <str>] [--max-nodes <count>] [--transport <t>]
   daftari eval generate [--vault <path>] [--n <count>] [--seed <str>] [--max-nodes <count>] [--transport <t>]
-  daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>] [--transport <t>]
+  daftari eval run      [--questions <id>] [--vault <path>] [--model <id>] [--k <count>] [--resume <results-id>]
+                        [--condition tools|pack] [--budget <count>] [--max-tool-calls <count>] [--transport <t>]
   daftari eval score    [--results <id>] [--vault <path>] [--grader-model <id>] [--transport <t>]
   daftari eval prune    [--vault <path>] [--keep <count>] [--older-than <age>] [--dry-run]
 
@@ -54,6 +56,21 @@ Defaults:
   --transport    anthropic (default, ANTHROPIC_API_KEY) or openrouter
                  (OPENROUTER_API_KEY); env fallback DAFTARI_LLM_TRANSPORT —
                  the same selection rules as daftari sleep/consolidate
+  --condition tools   'tools' (default, the in-process tool-loop answerer) or
+                      'pack' (build a vault_context brief and hand it to the
+                      answerer as its ONLY context — no tools). Spec
+                      2026-07-26-context-packs-progressive-disclosure-design.md,
+                      Decision 4.
+  --budget 4000       pack condition only: token budget passed to
+                      vault_context (same defaults/clamps).
+  --max-tool-calls    tools condition only: hard cap on REALIZED tool calls
+                      per (question, k) run — parallel calls past the cap
+                      are stubbed, never executed (C5). Default uncapped.
+                      Results ids record a capped run as '-tools-c{N}'; a
+                      pack run as '-pack-b{budget}'. --resume checks the
+                      persisted condition/budget/cap against the flags and
+                      refuses (exit 2) on any mismatch — never a silent
+                      override.
 
 Environment:
   ANTHROPIC_API_KEY    required for LLM-mediated stages on the anthropic transport
@@ -119,6 +136,36 @@ function intFlag(argv: string[], name: string, def: number): number {
 function maxNodesFlag(argv: string[]): number {
   const n = intFlag(argv, "max-nodes", 5);
   if (n <= 0) throw new Error("--max-nodes must be a positive integer");
+  return n;
+}
+
+// --condition tools|pack (spec 2026-07-26-context-packs-progressive-
+// disclosure-design.md, final plan Phase 3.4). Default 'tools' — every
+// existing invocation keeps its behavior. An invalid value is a config error
+// (exit 2 via runEval's catch), same posture as a bad --transport.
+function conditionFlag(argv: string[]): "tools" | "pack" {
+  const raw = flag(argv, "condition");
+  if (raw === undefined) return "tools";
+  if (raw === "tools" || raw === "pack") return raw;
+  throw new Error(`--condition must be 'tools' or 'pack' (got ${JSON.stringify(raw)})`);
+}
+
+// --budget for the pack condition (default 4000, matching vault_context's
+// own default). vault_context re-validates/clamps on every call (C9); the
+// CLI does not duplicate that logic, so a bad value surfaces as a runtime
+// error (exit 3) from the first vaultContext call in the run, not here.
+function budgetFlag(argv: string[]): number {
+  return intFlag(argv, "budget", 4000);
+}
+
+// --max-tool-calls (C5): default undefined = uncapped, today's behavior.
+function maxToolCallsFlag(argv: string[]): number | undefined {
+  const raw = flag(argv, "max-tool-calls");
+  if (raw === undefined) return undefined;
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) {
+    throw new Error("--max-tool-calls must be a non-negative integer");
+  }
   return n;
 }
 
@@ -226,6 +273,52 @@ async function runGenerate(argv: string[]): Promise<number> {
   return 0;
 }
 
+// Mints the results id (spec 2026-07-26-context-packs-progressive-disclosure-
+// design.md, final plan Phase 3.4/C8): `-pack-b{budget}` for a pack run,
+// `-tools-c{cap}` for a capped tools run, and the historical shape for an
+// uncapped tools run — every existing id keeps its exact form.
+function mintRunId(
+  questionsId: string,
+  model: string,
+  timestamp: string,
+  condition: "tools" | "pack",
+  budget: number,
+  maxToolCalls: number | undefined,
+): string {
+  const modelPart = modelIdSlug(model);
+  if (condition === "pack") return `${questionsId}-${modelPart}-pack-b${budget}-${timestamp}`;
+  if (maxToolCalls !== undefined) {
+    return `${questionsId}-${modelPart}-tools-c${maxToolCalls}-${timestamp}`;
+  }
+  return `${questionsId}-${modelPart}-${timestamp}`;
+}
+
+// On --resume, the persisted condition/pack_budget/max_tool_calls are
+// checked against the CLI flags; any mismatch is a config error (exit 2),
+// never a silent override (C8). A legacy artifact with no `condition` field
+// loads as an uncapped `tools` run.
+function resumeMismatch(
+  resumeFrom: EvalRun,
+  condition: "tools" | "pack",
+  budget: number,
+  maxToolCalls: number | undefined,
+): string | null {
+  const persistedCondition = resumeFrom.condition ?? "tools";
+  if (persistedCondition !== condition) {
+    return `persisted condition '${persistedCondition}' does not match --condition '${condition}'`;
+  }
+  if (condition === "pack" && resumeFrom.pack_budget !== budget) {
+    return `persisted pack_budget ${resumeFrom.pack_budget} does not match --budget ${budget}`;
+  }
+  if (condition === "tools" && resumeFrom.max_tool_calls !== maxToolCalls) {
+    return (
+      `persisted max_tool_calls ${resumeFrom.max_tool_calls} does not match ` +
+      `--max-tool-calls ${maxToolCalls}`
+    );
+  }
+  return null;
+}
+
 async function runRun(argv: string[]): Promise<number> {
   const llm = resolveEvalLlm(argv);
   if (!llm.ok) {
@@ -240,6 +333,9 @@ async function runRun(argv: string[]): Promise<number> {
   }
   const k = intFlag(argv, "k", 2);
   const model = flag(argv, "model") ?? llm.value.defaultModel;
+  const condition = conditionFlag(argv);
+  const budget = budgetFlag(argv);
+  const maxToolCalls = maxToolCallsFlag(argv);
 
   const qsRead = await readQuestionSet(vault, questionsId);
   if (!qsRead.ok) {
@@ -266,23 +362,39 @@ async function runRun(argv: string[]): Promise<number> {
       return 3;
     }
     resumeFrom = r.value;
+    const mismatch = resumeMismatch(resumeFrom, condition, budget, maxToolCalls);
+    if (mismatch) {
+      process.stderr.write(`--resume ${resumeId}: ${mismatch}\n`);
+      return 2;
+    }
   }
 
   // Mint the stable id + timestamp up front so the on-disk file path is stable
   // across the run and any later --resume; persist incrementally so a mid-run
   // failure leaves a resumable partial file.
   const timestamp = new Date().toISOString();
-  const runId = resumeFrom
-    ? resumeFrom.id
-    : `${qsRead.value.id}-${modelIdSlug(model)}-${timestamp}`;
-  const run = await runAnswerer(qsRead.value, vault, llm.value.client, {
-    k,
-    model,
-    resumeFrom,
-    runId,
-    timestamp,
-    persist: makeBestEffortPersist(vault),
-  });
+  const runId =
+    resumeFrom?.id ?? mintRunId(qsRead.value.id, model, timestamp, condition, budget, maxToolCalls);
+  const run =
+    condition === "pack"
+      ? await runPackAnswerer(qsRead.value, vault, llm.value.client, {
+          k,
+          model,
+          budget,
+          resumeFrom,
+          runId,
+          timestamp,
+          persist: makeBestEffortPersist(vault),
+        })
+      : await runAnswerer(qsRead.value, vault, llm.value.client, {
+          k,
+          model,
+          resumeFrom,
+          runId,
+          timestamp,
+          persist: makeBestEffortPersist(vault),
+          ...(maxToolCalls !== undefined ? { maxToolCalls } : {}),
+        });
   if (!run.ok) {
     process.stderr.write(`${run.error.message}\n`);
     process.stderr.write(
@@ -393,6 +505,12 @@ async function runScore(argv: string[]): Promise<number> {
   score.k = run.k;
   score.n = qs.questions.length;
   score.timestamp = new Date().toISOString();
+  // Carried from the run (spec 2026-07-26-context-packs-progressive-
+  // disclosure-design.md, final plan Phase 3.2/C8) so the score artifact is
+  // self-describing. Absent on a legacy uncapped `tools` run.
+  if (run.condition !== undefined) score.condition = run.condition;
+  if (run.pack_budget !== undefined) score.pack_budget = run.pack_budget;
+  if (run.max_tool_calls !== undefined) score.max_tool_calls = run.max_tool_calls;
   const wroteScore = await persistOrRuntimeExit("score", () => writeScore(vault, score));
   if (wroteScore) return wroteScore;
 
@@ -412,17 +530,28 @@ async function runScore(argv: string[]): Promise<number> {
     models: score.models,
     prompt_version: score.prompt_version,
     spec_version: score.spec_version,
+    ...(score.condition !== undefined ? { condition: score.condition } : {}),
   };
   const wroteHistory = await persistOrRuntimeExit("history", () => appendHistory(vault, histEntry));
   if (wroteHistory) return wroteHistory;
 
   // Pretty-print headline + per-tier means, and the coverage line (#102):
-  // how many answerer runs the score actually stands on.
-  process.stdout.write(`score: ${score.score.toFixed(3)} ± ${score.score_std.toFixed(3)}\n`);
+  // how many answerer runs the score actually stands on. The header line is
+  // self-describing (spec 2026-07-26-context-packs-progressive-disclosure-
+  // design.md, final plan Phase 3.2/C8): the run's condition parameters
+  // travel with the printed artifact, not just the JSON file.
+  const conditionParts = [`condition=${score.condition ?? "tools"}`];
+  if (score.pack_budget !== undefined) conditionParts.push(`budget=${score.pack_budget}`);
+  if (score.max_tool_calls !== undefined)
+    conditionParts.push(`max-tool-calls=${score.max_tool_calls}`);
+  process.stdout.write(
+    `score: ${score.score.toFixed(3)} ± ${score.score_std.toFixed(3)} (${conditionParts.join(", ")})\n`,
+  );
   for (const t of TIERS) {
     const ts = score.by_tier[t];
     process.stdout.write(
-      `  ${t.padEnd(16)}: ${ts.mean.toFixed(3)} (n=${ts.n}, efficiency=${ts.trace_efficiency.toFixed(1)} calls)\n`,
+      `  ${t.padEnd(16)}: ${ts.mean.toFixed(3)} (n=${ts.n}, efficiency=${ts.trace_efficiency.toFixed(1)} calls, ` +
+        `${ts.mean_tokens.toFixed(0)} tokens/correct)\n`,
     );
   }
   const neverAttempted = Math.max(0, plannedRuns - presentRuns);

@@ -191,4 +191,47 @@ describe("runAnswerer", () => {
     expect(last.runs["0:0"].status).toBe("complete");
     expect(last.runs["0:1"].status).toBe("incomplete");
   });
+
+  // spec 2026-07-26-context-packs-progressive-disclosure-design.md, final
+  // plan Phase 3.3/C8.
+  it("stamps condition: 'tools' and threads maxToolCalls through to completeWithTools", async () => {
+    let seenMaxToolCalls: number | undefined;
+    const client: LlmClient = {
+      ...mockClient(),
+      completeWithTools: async (opts) => {
+        seenMaxToolCalls = opts.maxToolCalls;
+        return {
+          ok: true,
+          value: {
+            text: "X is foo [a.md]",
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        };
+      },
+    };
+    const r = await runAnswerer(sampleQs, "/tmp/fake-vault", client, {
+      k: 1,
+      model: "claude-sonnet-fake",
+      maxToolCalls: 6,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.condition).toBe("tools");
+    expect(r.value.max_tool_calls).toBe(6);
+    expect(seenMaxToolCalls).toBe(6);
+  });
+
+  it("max_tool_calls is absent (not just undefined-valued) when unset", async () => {
+    const r = await runAnswerer(sampleQs, "/tmp/fake-vault", mockClient(), {
+      k: 1,
+      model: "claude-sonnet-fake",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect("max_tool_calls" in r.value).toBe(false);
+    expect(r.value.condition).toBe("tools");
+  });
 });

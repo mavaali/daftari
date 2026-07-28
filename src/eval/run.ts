@@ -17,6 +17,11 @@ export interface RunOptions {
   runId?: string; // stable id the caller controls (so the on-disk file path is stable across the run and resume)
   timestamp?: string; // real timestamp for EvalRun metadata
   persist?: (run: EvalRun) => Promise<void>; // called after every (q,k) status change, enabling --resume
+  // Hard cap on realized tool calls per (question, k) run (spec 2026-07-26-
+  // context-packs-progressive-disclosure-design.md, final plan Phase 3.3 /
+  // C5). Threaded straight through to completeWithTools. Default unset —
+  // uncapped, today's behavior.
+  maxToolCalls?: number;
 }
 
 export async function runAnswerer(
@@ -40,6 +45,8 @@ export async function runAnswerer(
     timestamp: ts,
     k: opts.k,
     runs,
+    condition: "tools",
+    ...(opts.maxToolCalls !== undefined ? { max_tool_calls: opts.maxToolCalls } : {}),
   });
 
   const tools = buildToolSurface(vaultRoot);
@@ -58,6 +65,7 @@ export async function runAnswerer(
         user: q.question,
         tools: toolDefs,
         toolHandler: tools.handler,
+        ...(opts.maxToolCalls !== undefined ? { maxToolCalls: opts.maxToolCalls } : {}),
       });
       const wall_ms = Date.now() - t0;
       if (!r.ok) {

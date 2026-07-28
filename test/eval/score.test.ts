@@ -23,13 +23,13 @@ function g(question: Question, k: number, v: "yes" | "partial" | "no" | "ungrade
     grader_model: "claude-sonnet-fake",
   };
 }
-function tr(totalToolCalls: number): Trace {
+function tr(totalToolCalls: number, inputTokens = 0, outputTokens = 0): Trace {
   return {
     tool_calls: [],
     final_answer: "",
     total_tool_calls: totalToolCalls,
-    input_tokens: 0,
-    output_tokens: 0,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
     wall_ms: 0,
     stop_reason: "end_turn",
   };
@@ -104,6 +104,22 @@ describe("aggregateScore", () => {
     ]);
     const s = aggregateScore(grades, qs, { traces });
     expect(s.by_tier.retrieval.trace_efficiency).toBeCloseTo(3);
+  });
+
+  // mean_tokens (spec 2026-07-26-context-packs-progressive-disclosure-
+  // design.md, final plan Phase 3.2): the pack-condition twin of
+  // trace_efficiency — same correct/partial-only population, total
+  // (input+output) tokens instead of tool-call count.
+  it("mean_tokens averages total tokens over correct/partial runs only", () => {
+    const qs = [q("retrieval", 0)];
+    const grades = [g(qs[0], 0, "yes"), g(qs[0], 1, "partial"), g(qs[0], 2, "no")];
+    const traces = new Map<string, Trace>([
+      [`${qs[0].id}:0`, tr(0, 100, 50)], // 150 total
+      [`${qs[0].id}:1`, tr(0, 40, 10)], // 50 total
+      [`${qs[0].id}:2`, tr(0, 9999, 9999)], // a 'no' run — excluded
+    ]);
+    const s = aggregateScore(grades, qs, { traces });
+    expect(s.by_tier.retrieval.mean_tokens).toBeCloseTo((150 + 50) / 2);
   });
 });
 

@@ -54,7 +54,7 @@ vi.mock("../../src/eval/subgraph.js", () => ({
 }));
 
 import { runEval } from "../../src/eval/index.js";
-import { writeQuestionSet, writeResults } from "../../src/eval/storage.js";
+import { readResults, writeQuestionSet, writeResults } from "../../src/eval/storage.js";
 import type { EvalRun, QuestionSet } from "../../src/eval/types.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -252,6 +252,287 @@ describe("daftari eval --transport", () => {
     const code = await runEval(["score", "--results", "r-x"]);
     expect(code).toBe(2);
     expect(stderrText()).toContain("OPENROUTER_API_KEY required");
+  });
+});
+
+// spec 2026-07-26-context-packs-progressive-disclosure-design.md, final plan
+// Phase 3.4/3.5/C8: --condition/--budget/--max-tool-calls CLI wiring, run-id
+// minting, and the --resume mismatch guard. Every run here uses an empty
+// question set, so runAnswerer/runPackAnswerer's loop bodies never execute —
+// these tests exercise only the CLI's flag parsing, id minting, and metadata
+// persistence, not the answerer loops themselves (covered in
+// test/eval/{run,pack-condition}.test.ts).
+describe("daftari eval run --condition / --max-tool-calls (Phase 3.4)", () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let dir: string;
+
+  beforeEach(async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    outSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    dir = mkdtempSync(join(tmpdir(), "daftari-eval-condition-"));
+    await writeQuestionSet(dir, minimalQuestionSet("qs-cond"));
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    errSpy.mockRestore();
+    outSpy.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function stdoutText(): string {
+    return outSpy.mock.calls.map((c) => String(c[0])).join("");
+  }
+  function stderrText(): string {
+    return errSpy.mock.calls.map((c) => String(c[0])).join("");
+  }
+
+  it("rejects an invalid --condition value (exit 2)", async () => {
+    const code = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--condition",
+      "bogus",
+    ]);
+    expect(code).toBe(2);
+    expect(stderrText()).toContain("--condition must be 'tools' or 'pack'");
+  });
+
+  it("default (uncapped tools) mints the historical id shape and persists condition: 'tools'", async () => {
+    const code = await runEval(["run", "--vault", dir, "--questions", "qs-cond"]);
+    expect(code).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1];
+    expect(id).toBeTruthy();
+    expect(id).not.toContain("-tools-c");
+    expect(id).not.toContain("-pack-b");
+    const read = await readResults(dir, id as string);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.value.condition).toBe("tools");
+    expect(read.value.max_tool_calls).toBeUndefined();
+  });
+
+  it("--max-tool-calls mints a '-tools-c{N}' id and persists max_tool_calls", async () => {
+    const code = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--max-tool-calls",
+      "6",
+    ]);
+    expect(code).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1];
+    expect(id).toContain("-tools-c6-");
+    const read = await readResults(dir, id as string);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.value.condition).toBe("tools");
+    expect(read.value.max_tool_calls).toBe(6);
+  });
+
+  it("--condition pack mints a '-pack-b{budget}' id and persists condition/pack_budget", async () => {
+    const code = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--condition",
+      "pack",
+      "--budget",
+      "3000",
+    ]);
+    expect(code).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1];
+    expect(id).toContain("-pack-b3000-");
+    const read = await readResults(dir, id as string);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.value.condition).toBe("pack");
+    expect(read.value.pack_budget).toBe(3000);
+  });
+
+  it("--resume refuses (exit 2) when the persisted condition does not match --condition", async () => {
+    const first = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--condition",
+      "pack",
+    ]);
+    expect(first).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1] as string;
+    errSpy.mockClear();
+    outSpy.mockClear();
+    const second = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--condition",
+      "tools",
+      "--resume",
+      id,
+    ]);
+    expect(second).toBe(2);
+    expect(stderrText()).toContain("persisted condition 'pack' does not match --condition 'tools'");
+  });
+
+  it("--resume refuses (exit 2) when the persisted --max-tool-calls does not match", async () => {
+    const first = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--max-tool-calls",
+      "6",
+    ]);
+    expect(first).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1] as string;
+    errSpy.mockClear();
+    outSpy.mockClear();
+    const second = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--max-tool-calls",
+      "3",
+      "--resume",
+      id,
+    ]);
+    expect(second).toBe(2);
+    expect(stderrText()).toContain("does not match --max-tool-calls 3");
+  });
+
+  it("--resume refuses (exit 2) when the persisted pack budget does not match", async () => {
+    const first = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--condition",
+      "pack",
+      "--budget",
+      "3000",
+    ]);
+    expect(first).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1] as string;
+    errSpy.mockClear();
+    outSpy.mockClear();
+    const second = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--condition",
+      "pack",
+      "--budget",
+      "5000",
+      "--resume",
+      id,
+    ]);
+    expect(second).toBe(2);
+    expect(stderrText()).toContain("does not match --budget 5000");
+  });
+
+  it("--resume with matching condition/budget/cap proceeds (no mismatch error)", async () => {
+    const first = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--max-tool-calls",
+      "6",
+    ]);
+    expect(first).toBe(0);
+    const id = stdoutText().match(/wrote results (\S+)/)?.[1] as string;
+    errSpy.mockClear();
+    outSpy.mockClear();
+    const second = await runEval([
+      "run",
+      "--vault",
+      dir,
+      "--questions",
+      "qs-cond",
+      "--max-tool-calls",
+      "6",
+      "--resume",
+      id,
+    ]);
+    expect(second).toBe(0);
+    expect(stderrText()).not.toContain("does not match");
+  });
+});
+
+// C8: a legacy artifact minted before condition/pack_budget/max_tool_calls
+// existed carries none of the three fields — it must still load and score
+// as an uncapped `tools` run, never fail to parse.
+describe("daftari eval score — legacy artifacts (C8)", () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    outSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    errSpy.mockRestore();
+    outSpy.mockRestore();
+  });
+
+  it("a results file with no condition/pack_budget/max_tool_calls fields still scores", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "daftari-eval-legacy-"));
+    try {
+      const qs = minimalQuestionSet("qs-legacy");
+      qs.questions = [
+        {
+          id: "q1",
+          tier: "retrieval",
+          question: "how many tiers?",
+          expected_answer: "3",
+          expected_sources: ["a.md"],
+          origin: "generated",
+        },
+      ];
+      await writeQuestionSet(dir, qs);
+      // Deliberately no `condition` / `pack_budget` / `max_tool_calls` keys —
+      // the exact shape a pre-this-wave artifact has.
+      const legacyRun: EvalRun = {
+        id: "legacy-run-1",
+        questions_id: "qs-legacy",
+        answerer_model: "m",
+        prompt_version: 1,
+        timestamp: "2026-01-01T00:00:00Z",
+        k: 1,
+        runs: {},
+      };
+      await writeResults(dir, legacyRun);
+      const code = await runEval(["score", "--vault", dir, "--results", "legacy-run-1"]);
+      expect(code).toBe(0);
+      const out = outSpy.mock.calls.map((c) => String(c[0])).join("");
+      expect(out).toContain("condition=tools");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
