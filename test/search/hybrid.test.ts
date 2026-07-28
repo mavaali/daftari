@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { err } from "../../src/frontmatter/types.js";
 import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
@@ -1048,5 +1048,134 @@ describe("relatedSearch — fusion default (Decision 1)", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.hits.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part B passage-ref provenance (spec 2026-07-26-contextual-chunking-
+// reranker-design.md, plan C4). Hand-built rows (no reindex, no real
+// embedding model) so the lexical and vector signals for one document are
+// independently controllable — a real reindex could never guarantee one
+// path's vector similarity beats its own lexical score deterministically.
+// ---------------------------------------------------------------------------
+describe("hybridSearch — passage ref provenance (capturePassageRefs, C4)", () => {
+  const DIM = 4;
+
+  function vec(axis: number): Float32Array {
+    const v = new Float32Array(DIM);
+    v[axis % DIM] = 1;
+    return v;
+  }
+
+  function doc(path: string, collection: string): indexDb.IndexedDocument {
+    return {
+      path,
+      title: path,
+      collection,
+      domain: "accumulation",
+      status: "canonical",
+      confidence: "high",
+      updated: "2026-05-01",
+      tags: [],
+      content: `body of ${path}`,
+      tokens: ["body"],
+      ttlDays: null,
+      created: "2026-01-01",
+      supersededBy: null,
+      validFrom: null,
+      validUntil: null,
+    };
+  }
+
+  let vault: string;
+  let db: IndexDb;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+    const opened = openIndexDb(vault, DIM);
+    if (!opened.ok) throw opened.error;
+    db = opened.value;
+
+    // A fake embedding provider so the QUERY embeds to a fixed, known vector
+    // (vec(1)) without loading a real model — the chunk-side vectors are
+    // written directly into embeddings_vec below, never through embed().
+    vectorMod.setProviderForTests({
+      id: "fake-provenance",
+      dim: DIM,
+      warm: async () => ({ ok: true, value: undefined }) as const,
+      embed: async (texts) => ({ ok: true, value: texts.map(() => vec(1)) }) as const,
+    });
+
+    const model = vectorMod.getProvider().id;
+
+    // strong-lexical.md: the query term repeated many times (strong bm25),
+    // but its vector is orthogonal to the query embedding (weak similarity).
+    indexDb.insertDocument(db, doc("strong-lexical.md", "general"));
+    indexDb.insertChunkRow(db, {
+      path: "strong-lexical.md",
+      chunkIndex: 0,
+      text: "provenance provenance provenance provenance provenance provenance",
+      context: "general › strong-lexical.md",
+      contentHash: "hash-strong-lexical",
+    });
+    indexDb.insertEmbedding(db, "hash-strong-lexical", model, vec(1), "2026-05-01", DIM);
+    indexDb.insertEmbeddingVec(db, "hash-strong-lexical", model, "general", vec(2)); // orthogonal
+
+    // target.md: the query term appears once, diluted by filler (weak bm25
+    // relative to strong-lexical.md's chunk) in chunk 0; chunk 1 carries no
+    // lexical signal at all but an embeddings_vec row at vec(1) — a PERFECT
+    // match to the query embedding (the best, and only meaningful, vector hit).
+    indexDb.insertDocument(db, doc("target.md", "general"));
+    indexDb.insertChunkRow(db, {
+      path: "target.md",
+      chunkIndex: 0,
+      text: "filler filler filler filler filler filler filler filler provenance filler filler filler filler",
+      context: "general › target.md",
+      contentHash: "hash-target-lexical",
+    });
+    indexDb.insertEmbedding(db, "hash-target-lexical", model, vec(3), "2026-05-01", DIM);
+    indexDb.insertEmbeddingVec(db, "hash-target-lexical", model, "general", vec(3)); // far from query
+    indexDb.insertChunkRow(db, {
+      path: "target.md",
+      chunkIndex: 1,
+      text: "no lexical signal here whatsoever",
+      context: "general › target.md",
+      contentHash: "hash-target-vector",
+    });
+    indexDb.insertEmbedding(db, "hash-target-vector", model, vec(1), "2026-05-01", DIM);
+    indexDb.insertEmbeddingVec(db, "hash-target-vector", model, "general", vec(1)); // perfect match
+  });
+
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+    vectorMod.resetProviderForTests();
+  });
+
+  it("a hit whose vector signal outscores its lexical signal presents its KNN chunk (C4)", async () => {
+    const res = await hybridSearch(db, "provenance", {
+      weights: { bm25: 0.5, vector: 0.5 },
+      lexicalGranularity: "chunk",
+      capturePassageRefs: true,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Sanity: target.md's lexical score is real but weak relative to
+    // strong-lexical.md's — and its vector score is the strongest in the
+    // corpus (a perfect match), so vector must win the provenance choice.
+    const targetHit = res.value.hits.find((h) => h.path === "target.md");
+    expect(targetHit).toBeDefined();
+    const ref = res.value.passageRefs?.["target.md"];
+    expect(ref).toEqual({ kind: "vector", contentHash: "hash-target-vector" });
+  });
+
+  it("passageRefs is absent unless capturePassageRefs was requested", async () => {
+    const res = await hybridSearch(db, "provenance", {
+      weights: { bm25: 0.5, vector: 0.5 },
+      lexicalGranularity: "chunk",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.passageRefs).toBeUndefined();
   });
 });

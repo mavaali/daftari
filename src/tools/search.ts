@@ -33,6 +33,7 @@ import {
   type HybridSearchResult,
   type HybridWeights,
   hybridSearch,
+  type PassageRef,
   type RelatedSearchResult,
   relatedSearch,
 } from "../search/hybrid.js";
@@ -45,10 +46,20 @@ import {
   onceIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { getRerankProvider, warmRerankModel } from "../search/rerank-provider.js";
 import { classifyQuery, makeDfLookup, type RouteClass, routeWeights } from "../search/router.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
-import { getProvider } from "../search/vector.js";
-import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
+import { embeddingInput, getProvider } from "../search/vector.js";
+import {
+  type ChunkPassage,
+  documentCount,
+  getChunkByPathAndHash,
+  getChunkTextsByRowids,
+  getDocument,
+  getFirstChunk,
+  type IndexDb,
+  openIndexDb,
+} from "../storage/index-db.js";
 import { loadConfig } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
@@ -180,6 +191,89 @@ const RERANK_INSTRUCTIONS =
   "Read any candidate you promote with vault_read before relying on it: " +
   "candidates carry no enrichment (tensions, staleness, structural flags); " +
   "the served hits and vault_read do.";
+
+// ---------------------------------------------------------------------------
+// Part B: local cross-encoder reranker (spec 2026-07-26-contextual-chunking-
+// reranker-design.md Decisions 5-8). Unrelated to the #3 agent-as-judge pool
+// above (RERANK_CANDIDATES_MAX / RERANK_INSTRUCTIONS) despite the shared
+// vocabulary — that pool hands compact judging records to the CALLING agent;
+// this stage runs a local ONNX model, INSIDE the server, and reorders the
+// hits themselves before they are ever returned.
+// ---------------------------------------------------------------------------
+
+// How many of the fused, RBAC-and-validity-filtered hits get scored by the
+// cross-encoder. A fixed pool bounds worst-case latency regardless of vault
+// size — the reranker cannot move recall by construction (it only reorders
+// within the pool), so widening it trades latency for no recall gain past
+// what the fused order already surfaced.
+const RERANK_POOL = 50;
+
+// Wall-clock budget for one rerank call (spec C5). The in-flight ONNX
+// inference is not cancellable, but the search must never hang on it: on
+// timeout the fused order stands and `rerankUsed` stays false. One stderr
+// warning per PROCESS (not per call) — a slow model is an operational fact
+// worth one log line, not a warning storm on every subsequent search.
+const RERANK_TIMEOUT_MS = 1500;
+
+let rerankDegradeWarned = false;
+
+// Races `promise` against a timeout that resolves to Result.err — never
+// rejects, so the caller's `.ok` branch handles both a real provider error
+// and a timeout identically (fused order stands either way).
+async function withTimeout<T>(
+  promise: Promise<Result<T, Error>>,
+  ms: number,
+): Promise<Result<T, Error>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<Result<T, Error>>((resolve) => {
+    timer = setTimeout(() => resolve(err(new Error(`rerank timed out after ${ms}ms`))), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Resolves passage TEXT for exactly the top RERANK_POOL permitted hits (C2) —
+// never for the whole over-fetched candidate set. Lexical refs are batch-
+// resolved in one call via getChunkTextsByRowids; vector and `first` refs are
+// resolved per-hit (bounded at RERANK_POOL, so this is cheap). The passage
+// string is embeddingInput(chunk) — the same context+text concatenation the
+// embedding pipeline hashed, so the cross-encoder sees the exact retrieval
+// unit that earned the hit its rank (spec §4.2). Missing refs, or a resolved
+// ref whose chunk row is somehow gone, fall back to getFirstChunk and then,
+// only as a last-resort defensive guard (an index inconsistency, not a
+// passage strategy — chunkDocument guarantees >=1 chunk per indexed doc), to
+// the hit's own served snippet, logging once so the inconsistency is visible.
+function resolvePassages(
+  db: IndexDb,
+  pool: HybridHit[],
+  passageRefs: Record<string, PassageRef> | undefined,
+): string[] {
+  const refs = passageRefs ?? {};
+  const lexicalRowids = pool
+    .map((h) => refs[h.path])
+    .filter((r): r is Extract<PassageRef, { kind: "lexical" }> => r?.kind === "lexical")
+    .map((r) => r.rowid);
+  const lexicalTexts = getChunkTextsByRowids(db, lexicalRowids);
+
+  return pool.map((h) => {
+    const ref = refs[h.path];
+    let passage: ChunkPassage | null = null;
+    if (ref?.kind === "lexical") passage = lexicalTexts.get(ref.rowid) ?? null;
+    else if (ref?.kind === "vector") passage = getChunkByPathAndHash(db, h.path, ref.contentHash);
+    if (!passage) passage = getFirstChunk(db, h.path);
+    if (!passage) {
+      process.stderr.write(
+        `daftari: warning: no chunk row found for reranked hit ${h.path} — index inconsistency, ` +
+          "falling back to the served snippet\n",
+      );
+      return h.snippet;
+    }
+    return embeddingInput(passage);
+  });
+}
 
 // #234 serve instrumentation, shared by every snippet-serving tool
 // (vault_search AND vault_search_related — the broken-read rate's
@@ -343,6 +437,12 @@ export async function vaultSearch(
       weights = DEFAULT_WEIGHTS;
     }
 
+    // Part B: resolve the reranker ONCE, before hybridSearch, so ref capture
+    // (cheap) can be requested only when a reranker is actually configured —
+    // capturing refs for a "none" search would be wasted work (C2's "skip ref
+    // capture" revision).
+    const reranker = getRerankProvider();
+
     // Over-fetch every ranked candidate so RBAC filtering happens BEFORE the
     // user-facing slice. If we sliced to `limit` first (the old behaviour),
     // restricted docs occupying the top-`limit` slots would be dropped by
@@ -357,6 +457,7 @@ export async function vaultSearch(
       // (2026-07-26 fusion spec, Decision 3). The canRead filter below stays:
       // pushdown is a recall fix, not the authorization boundary.
       readableCollections: access ? readableCollections(access.role) : undefined,
+      capturePassageRefs: reranker !== null,
     });
     if (!result.ok) return result;
 
@@ -394,7 +495,47 @@ export async function vaultSearch(
       }
     }
 
-    const ranked = permittedRanked.slice(0, limit);
+    // Part B rerank stage (spec Decision 7): between the RBAC/validity filter
+    // and the slice. `permittedRanked` is the RBAC-and-validity-filtered fused
+    // order; reranking it before the slice lets a fused-#12 hit with the top
+    // rerank score land #1 in a limit-10 page. Coverage/current-source/
+    // contested/structural and the token cap all run AFTER, over the
+    // reranked page, unchanged — they are additive recall levers, not ranking
+    // levers, and reranking after them would let a relevance model evict
+    // recall insurance.
+    let rerankUsed = false;
+    let finalRanked = permittedRanked;
+    if (reranker && !reranker.isReady()) {
+      // Never block a tool call on a cold model load (C5): fire the warm in
+      // the background and serve the fused order for THIS search.
+      void warmRerankModel();
+    }
+    if (reranker?.isReady()) {
+      const pool = permittedRanked.slice(0, RERANK_POOL);
+      if (pool.length > 0) {
+        const passages = resolvePassages(db, pool, result.value.passageRefs);
+        const scored = await withTimeout(reranker.rerank(query, passages), RERANK_TIMEOUT_MS);
+        if (scored.ok) {
+          const order = scored.value
+            .map((s, i) => ({ s, i }))
+            .sort((a, b) => b.s - a.s)
+            .map(({ i }) => pool[i])
+            .filter((h): h is HybridHit => h !== undefined);
+          finalRanked = [...order, ...permittedRanked.slice(RERANK_POOL)];
+          rerankUsed = true;
+        } else if (!rerankDegradeWarned) {
+          // Fires for BOTH a provider Result.err and a timeout — either way
+          // the fused order stands and rerankUsed stays false (Decision 8 +
+          // C5). One line per process, not per call.
+          rerankDegradeWarned = true;
+          process.stderr.write(
+            `daftari: warning: rerank degraded to fused order: ${scored.error.message}\n`,
+          );
+        }
+      }
+    }
+
+    const ranked = finalRanked.slice(0, limit);
 
     // Coverage pass: conditionally widen the ranked set with same-entity docs in
     // the seeds' date window. Quiet (returns `ranked` unchanged) when no signal
@@ -453,16 +594,18 @@ export async function vaultSearch(
 
     await annotateAndLogServedHits(vaultRoot, db, "vault_search", capped, access);
 
-    // #3: opt-in agent-as-judge rerank pool — the top-K of the SAME
-    // RBAC-filtered fused ranking the hits were sliced from (never coverage
-    // additions; those are recall, not ranking). Compact judging records
-    // only: no enrichment joins, per the protocol text.
+    // #3: opt-in agent-as-judge rerank pool — the top-K of the SAME fused
+    // ranking the hits were sliced from (never coverage additions; those are
+    // recall, not ranking). Drawn from `finalRanked` (spec Decision 7): when
+    // Part B's cross-encoder is on, the agent judges the ALREADY-reranked
+    // pool, not the pre-rerank fused order. Compact judging records only: no
+    // enrichment joins, per the protocol text.
     const rerankK = parseRerankCandidates(args.rerank_candidates);
     const rerank =
       rerankK > 0
         ? {
             instructions: RERANK_INSTRUCTIONS,
-            candidates: permittedRanked.slice(0, rerankK).map((h, i) => ({
+            candidates: finalRanked.slice(0, rerankK).map((h, i) => ({
               rank: i + 1,
               path: h.path,
               title: h.title,
@@ -476,10 +619,16 @@ export async function vaultSearch(
           }
         : undefined;
 
+    // passageRefs is internal transport (Part B) — never serialized. The
+    // outputSchema declares additionalProperties: false, and it would fail
+    // client-side validation anyway; strip it explicitly rather than rely on
+    // that alone.
+    const { passageRefs: _passageRefs, ...resultRest } = result.value;
     return ok({
-      ...result.value,
+      ...resultRest,
       count: capped.length,
       hits: capped,
+      rerankUsed,
       ...(routed ? { routed } : {}),
       ...(rerank ? { rerank } : {}),
     });
@@ -872,7 +1021,10 @@ export const searchTools: ToolDefinition[] = [
       "passed, a `routed` field reports the class the query router picked " +
       "and which signals fired — present only when the router chose the " +
       "weights, distinguishing a routed lexical-only result from one where " +
-      "embeddings degraded.",
+      "embeddings degraded. When `rerank.provider` is configured, hits are " +
+      "additionally reordered by a local cross-encoder before slicing; " +
+      "`rerankUsed` reports whether that actually happened (false covers " +
+      "provider none, a cold model, an inference error, and a timeout alike).",
     inputSchema: {
       type: "object",
       properties: {
@@ -925,6 +1077,14 @@ export const searchTools: ToolDefinition[] = [
         },
         weights: weightsResultSchema,
         hits: { type: "array", items: hybridHitSchema },
+        rerankUsed: {
+          type: "boolean",
+          description:
+            "True iff the local cross-encoder reranker (rerank.provider config) actually " +
+            "reordered the pool. False covers every degrade path uniformly: provider " +
+            "'none', not-warm (a background warm was fired for next time), inference " +
+            "error, timeout, and an empty pool.",
+        },
         routed: {
           type: "object",
           description:
@@ -953,7 +1113,7 @@ export const searchTools: ToolDefinition[] = [
           additionalProperties: false,
         },
       },
-      required: ["query", "count", "vectorUsed", "weights", "hits"],
+      required: ["query", "count", "vectorUsed", "weights", "hits", "rerankUsed"],
       additionalProperties: false,
     },
     summarize: (value) => {
@@ -970,6 +1130,7 @@ export const searchTools: ToolDefinition[] = [
           result.routed.signals.length > 0 ? ` (${result.routed.signals.join(", ")})` : ""
         }`;
       }
+      if (result.rerankUsed) summary += "\nReranked: local cross-encoder reordered this page.";
       // The rerank pool and its protocol text live on structuredContent; a
       // caller reading only `content` would otherwise never learn it opted in.
       return result.rerank
