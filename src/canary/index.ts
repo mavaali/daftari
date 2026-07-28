@@ -6,9 +6,14 @@
 // instruction compliance at all — that was one of the four grounds the
 // predecessor's canary was killed on.
 
+import type { LlmClient } from "../eval/llm.js";
 import { createAnthropicClient } from "../eval/llm.js";
 import { CANARY_ITEMS } from "./fixtures.js";
 import { formatReport, parseCanaryArgs, runCanary } from "./run.js";
+
+// Exit codes are a contract, so they are declared once and derived from the
+// verdict's structured status rather than from its prose.
+export const EXIT = { survived: 0, killed: 1, void: 2, usage: 1 } as const;
 
 const USAGE = `daftari canary — does the read-path fence change consumer behaviour?
 
@@ -35,7 +40,12 @@ local use — \`npx daftari\` would fetch the registry version, not your build):
   npm run build && npx --no daftari canary   # uses the local bin
 `;
 
-export async function runCanaryCli(argv: readonly string[]): Promise<number> {
+// `deps.client` lets tests drive the exit-code contract without a network call
+// or an API key, following the `createAnthropicClient(injected?)` precedent.
+export async function runCanaryCli(
+  argv: readonly string[],
+  deps: { client?: LlmClient } = {},
+): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(USAGE);
     return 0;
@@ -43,12 +53,12 @@ export async function runCanaryCli(argv: readonly string[]): Promise<number> {
   const opts = parseCanaryArgs(argv);
   if (!opts.ok) {
     process.stderr.write(`daftari canary: ${opts.error.message}\n\n${USAGE}`);
-    return 1;
+    return EXIT.usage;
   }
 
-  let client: ReturnType<typeof createAnthropicClient>;
+  let client: LlmClient;
   try {
-    client = createAnthropicClient();
+    client = deps.client ?? createAnthropicClient();
   } catch {
     // The shared eval client's own message names `daftari eval`, which is
     // wrong and confusing when the user ran `daftari canary`. Say what this
@@ -63,7 +73,7 @@ export async function runCanaryCli(argv: readonly string[]): Promise<number> {
         `Use --repetitions to change that; fewer than 3 makes the interval too ` +
         `wide to conclude anything.\n`,
     );
-    return 1;
+    return EXIT.usage;
   }
 
   const report = await runCanary(client, {
@@ -72,12 +82,11 @@ export async function runCanaryCli(argv: readonly string[]): Promise<number> {
   });
   if (!report.ok) {
     process.stderr.write(`daftari canary: ${JSON.stringify(report.error)}\n`);
-    return 1;
+    return EXIT.usage;
   }
 
   process.stdout.write(`${formatReport(report.value)}\n`);
-  if (report.value.verdict.reason.startsWith("VOID")) return 2;
-  return report.value.verdict.killed ? 1 : 0;
+  return EXIT[report.value.verdict.status];
 }
 
 export type { CanaryItem } from "./fixtures.js";

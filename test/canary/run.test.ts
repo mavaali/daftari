@@ -91,7 +91,7 @@ describe("runCanary", () => {
     ).then((res) => {
       expect(res.ok).toBe(true);
       if (!res.ok) return;
-      expect(res.value.verdict.killed).toBe(true);
+      expect(res.value.verdict.status).toBe("killed");
       expect(res.value.fencedVsUnfenced.meanDiff).toBe(0);
       for (const arm of res.value.arms) expect(arm.rate).toBe(1);
     });
@@ -107,7 +107,7 @@ describe("runCanary", () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.value.verdict.killed).toBe(false);
+    expect(res.value.verdict.status).not.toBe("killed");
     expect(res.value.fencedVsUnfenced.meanDiff).toBe(-1);
     expect(res.value.verdict.reason).toMatch(/^SURVIVES/);
   });
@@ -124,7 +124,7 @@ describe("runCanary", () => {
     if (!res.ok) return;
     expect(res.value.positiveControlRate).toBe(0);
     expect(res.value.verdict.reason).toMatch(/^VOID/);
-    expect(res.value.verdict.killed).toBe(false);
+    expect(res.value.verdict.status).not.toBe("killed");
   });
 
   it("separates server chrome from the fence's claims via the placebo arm", async () => {

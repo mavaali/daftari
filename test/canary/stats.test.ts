@@ -149,26 +149,26 @@ describe("verdict", () => {
     // A broken instrument reporting "no difference" is how a defense gets built
     // on a null result. Void must win over KILLED.
     const v = verdict(diff(0, -0.1, 0.1), 0.2);
-    expect(v.killed).toBe(false);
+    expect(v.status).not.toBe("killed");
     expect(v.reason).toMatch(/^VOID/);
   });
 
   it("kills the hypothesis when the interval contains zero", () => {
     const v = verdict(diff(-0.02, -0.15, 0.11), 1);
-    expect(v.killed).toBe(true);
+    expect(v.status).toBe("killed");
     expect(v.reason).toMatch(/^KILLED/);
     expect(v.reason).toContain("contains zero");
   });
 
   it("kills it when fencing makes compliance worse", () => {
     const v = verdict(diff(0.3, 0.1, 0.5), 1);
-    expect(v.killed).toBe(true);
+    expect(v.status).toBe("killed");
     expect(v.reason).toContain("INCREASED");
   });
 
   it("survives only on a significant reduction", () => {
     const v = verdict(diff(-0.4, -0.6, -0.2), 1);
-    expect(v.killed).toBe(false);
+    expect(v.status).not.toBe("killed");
     expect(v.reason).toMatch(/^SURVIVES/);
   });
 
