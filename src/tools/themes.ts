@@ -833,6 +833,37 @@ const themeSchema = {
   additionalProperties: false,
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function summarizeThemes(value: unknown): string {
+  const r = value as VaultThemesResult;
+  if (r.themes.length === 0) return `0 themes over ${r.totalDocuments} document(s).`;
+  const lines = [
+    `${r.themes.length} theme(s) over ${r.totalDocuments} document(s) (k=${r.selectedK}):`,
+  ];
+  for (const t of r.themes) {
+    const exemplar = t.representativeDocs[0];
+    lines.push(`  ${t.label} — ${t.documentCount} doc(s)` + (exemplar ? `, e.g. ${exemplar}` : ""));
+  }
+  return lines.join("\n");
+}
+
+// One exemplar per theme — the primary member ranked first by membership
+// weight. A theme with no retained primary member (all visitors) contributes
+// nothing rather than guessing.
+function docLinksThemes(value: unknown): string[] {
+  const r = value as VaultThemesResult;
+  const paths: string[] = [];
+  for (const t of r.themes) {
+    const exemplar = t.representativeDocs[0];
+    if (exemplar) paths.push(exemplar);
+  }
+  return paths;
+}
+
 export const themesTools: ToolDefinition[] = [
   {
     name: "vault_themes",
@@ -935,6 +966,8 @@ export const themesTools: ToolDefinition[] = [
       ],
       additionalProperties: false,
     },
+    summarize: summarizeThemes,
+    docLinks: docLinksThemes,
     handler: (vaultRoot, args, access) => vaultThemes(vaultRoot, args, access),
   },
 ];

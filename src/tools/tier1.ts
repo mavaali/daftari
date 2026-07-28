@@ -164,6 +164,22 @@ export async function vaultTier1(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary + resource link (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function summarizeTier1(value: unknown): string {
+  const r = value as Tier1Result;
+  const s = r.summary;
+  return (
+    `${r.unit} (${r.change_source}, fields: ${r.changed_fields.join(", ") || "none"}) — ` +
+    `${r.verdicts.length} dependent(s): ${s.unaffected} unaffected, ${s.affected} affected, ` +
+    `${s.possibly_affected} possibly-affected, ${s.semantic_review} semantic-review ` +
+    `(resolved_at_tier1: ${s.resolved_at_tier1})`
+  );
+}
+
 export const tier1Tools: ToolDefinition[] = [
   {
     name: "vault_tier1",
@@ -258,6 +274,8 @@ export const tier1Tools: ToolDefinition[] = [
       },
       required: ["unit", "changed_fields", "change_source", "verdicts", "summary"],
     },
+    summarize: summarizeTier1,
+    docLinks: (value) => [(value as Tier1Result).unit],
     handler: (vaultRoot, args, access) => vaultTier1(vaultRoot, args, access),
   },
 ];

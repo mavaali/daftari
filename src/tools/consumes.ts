@@ -22,6 +22,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { canonicalVaultRelPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { SUMMARY_MAX_ROWS } from "./summary.js";
 
 export interface ConsumesResult {
   direction: "forward" | "reverse";
@@ -118,6 +119,39 @@ const consumesEdgeSchema: Record<string, unknown> = {
   required: ["artifact", "unit", "edge_type", "fields", "run_id", "compile_ts"],
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function summarizeConsumes(value: unknown): string {
+  const r = value as ConsumesResult;
+  if (r.total === 0) return `0 ${r.direction} edges for ${r.anchor}.`;
+  const shown = r.edges.slice(0, SUMMARY_MAX_ROWS);
+  const lines = [
+    `${r.total} ${r.direction} edge(s) for ${r.anchor}` +
+      (r.include_history ? " (history included):" : ":"),
+    ...shown.map((e) => `  ${e.artifact} ← ${e.unit} (${e.edge_type})`),
+  ];
+  const rest = r.total - shown.length;
+  if (rest > 0) lines.push(`  … ${rest} more in structuredContent`);
+  return lines.join("\n");
+}
+
+function docLinksConsumes(value: unknown): string[] {
+  const r = value as ConsumesResult;
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const e of r.edges.slice(0, SUMMARY_MAX_ROWS)) {
+    for (const p of [e.artifact, e.unit]) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      paths.push(p);
+    }
+  }
+  return paths;
+}
+
 export const consumesTools: ToolDefinition[] = [
   {
     name: "vault_consumes",
@@ -175,6 +209,8 @@ export const consumesTools: ToolDefinition[] = [
       },
       required: ["direction", "anchor", "edges", "total", "include_history"],
     },
+    summarize: summarizeConsumes,
+    docLinks: docLinksConsumes,
     handler: (vaultRoot, args, access) => vaultConsumes(vaultRoot, args, access),
   },
 ];

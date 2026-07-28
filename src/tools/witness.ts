@@ -135,6 +135,30 @@ const witnessOutputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summary (spec 2026-07-26, Decision 3, PR 1 gap closure).
+// No docLinks: a principal is an identity string, not a vault document path.
+// ---------------------------------------------------------------------------
+
+interface WitnessSingle {
+  principal: WitnessResult["principals"][number];
+  concentration: WitnessResult["concentration"];
+  flatCurveWarning: boolean;
+}
+
+function summarizeWitness(value: unknown): string {
+  const v = value as WitnessResult | WitnessSingle;
+  if ("principal" in v) {
+    const p = v.principal;
+    return (
+      `${p.principal}: ${p.writes} write(s), ${p.liveClaims} live claim(s), ` +
+      `balance ${p.balance.toFixed(1)}`
+    );
+  }
+  const flat = v.flatCurveWarning ? " — flat-curve warning: one principal dominates" : "";
+  return `${v.principals.length} principal(s), ${v.unattributedDocs} unattributed doc(s)${flat}`;
+}
+
 export const witnessTools: ToolDefinition[] = [
   {
     name: "vault_witness",
@@ -168,6 +192,7 @@ export const witnessTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: witnessOutputSchema,
+    summarize: summarizeWitness,
     handler: (vaultRoot, args, access) => vaultWitness(vaultRoot, args, access),
   },
 ];

@@ -36,6 +36,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { canonicalVaultRelPath, readFile, resolveVaultPath } from "../storage/local.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
+import { SUMMARY_MAX_ROWS } from "./summary.js";
 
 function requireReadAccess(tool: string, access?: AccessContext): Result<void, Error> {
   if (access && !hasAnyRead(access.role)) {
@@ -374,6 +375,58 @@ const derivesFromEdgeSchema: Record<string, unknown> = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// Compact `content` summaries + resource links (spec 2026-07-26, Decision 3,
+// PR 1 gap closure)
+// ---------------------------------------------------------------------------
+
+function edgeLine(e: DerivesFromEdge): string {
+  return `${e.fromPath} → ${e.toPath} (k=${e.kSurvived}, strength=${e.strength.toFixed(2)}, ${e.status})`;
+}
+
+function summarizeEdgeObserve(value: unknown): string {
+  return `observed: ${edgeLine(value as DerivesFromEdge)}`;
+}
+
+function docLinksEdge(value: unknown): string[] {
+  const e = value as DerivesFromEdge;
+  return [e.fromPath, e.toPath];
+}
+
+function summarizeEdgeContest(value: unknown): string {
+  const r = value as ContestResult;
+  const tension = r.tension_id ? ` — tension ${r.tension_id}` : "";
+  return `contested (revoked): ${edgeLine(r.edge)}${tension}`;
+}
+
+function docLinksEdgeContest(value: unknown): string[] {
+  return docLinksEdge((value as ContestResult).edge);
+}
+
+function summarizeEdges(value: unknown): string {
+  const r = value as EdgesResult;
+  if (r.total === 0) return "0 edges match.";
+  const shown = r.edges.slice(0, SUMMARY_MAX_ROWS);
+  const lines = [`${r.total} edge(s):`, ...shown.map((e) => `  ${edgeLine(e)}`)];
+  const rest = r.total - shown.length;
+  if (rest > 0) lines.push(`  … ${rest} more in structuredContent`);
+  return lines.join("\n");
+}
+
+function docLinksEdges(value: unknown): string[] {
+  const r = value as EdgesResult;
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const e of r.edges.slice(0, SUMMARY_MAX_ROWS)) {
+    for (const p of [e.fromPath, e.toPath]) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      paths.push(p);
+    }
+  }
+  return paths;
+}
+
 export const edgeTools: ToolDefinition[] = [
   {
     name: "vault_edge_observe",
@@ -423,6 +476,8 @@ export const edgeTools: ToolDefinition[] = [
     },
     // The edge's state AFTER this observation collapsed into it.
     outputSchema: derivesFromEdgeSchema,
+    summarize: summarizeEdgeObserve,
+    docLinks: docLinksEdge,
     handler: (vaultRoot, args, access) => vaultEdgeObserve(vaultRoot, args, access),
   },
   {
@@ -471,6 +526,8 @@ export const edgeTools: ToolDefinition[] = [
       },
       required: ["edge"],
     },
+    summarize: summarizeEdgeContest,
+    docLinks: docLinksEdgeContest,
     handler: (vaultRoot, args, access) => vaultEdgeContest(vaultRoot, args, access),
   },
   {
@@ -521,6 +578,8 @@ export const edgeTools: ToolDefinition[] = [
       },
       required: ["edges", "total"],
     },
+    summarize: summarizeEdges,
+    docLinks: docLinksEdges,
     handler: (vaultRoot, args, access) => vaultEdges(vaultRoot, args, access),
   },
 ];
