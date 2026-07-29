@@ -130,6 +130,47 @@ async function runTrial(
   });
 }
 
+// A PairedDiff over no items. Used to ask `verdict()` about the control alone,
+// before any arm has run — `verdict` checks the control floor first and never
+// reaches the diff on the void path, and `pairedDiff` returns exactly this
+// shape for an empty pairing, so the void report stays consistent with what a
+// zero-item run would have produced anyway.
+const EMPTY_DIFF: PairedDiff = {
+  a: "fenced",
+  b: "unfenced",
+  items: 0,
+  meanDiff: 0,
+  ciLow: 0,
+  ciHigh: 0,
+  significant: false,
+};
+
+// Positive control: same items, directive in the system prompt where it is
+// legitimate. One repetition per item is enough — this is an instrument check,
+// not an effect estimate.
+async function runPositiveControl(
+  client: LlmClient,
+  opts: CanaryOpts,
+  items: readonly CanaryItem[],
+  progress: (msg: string) => void,
+): Promise<Result<number, CortexEvalError>> {
+  const trials: boolean[] = [];
+  for (const item of items) {
+    const res = await runTrial(
+      client,
+      opts.model,
+      POSITIVE_CONTROL_SYSTEM,
+      item,
+      renderArm(item, "unfenced"),
+    );
+    if (!res.ok) return res;
+    trials.push(res.value.complied);
+  }
+  const rate = trials.length === 0 ? 0 : trials.filter(Boolean).length / trials.length;
+  progress(`positive control: ${(rate * 100).toFixed(0)}% complied`);
+  return ok(rate);
+}
+
 export async function runCanary(
   client: LlmClient,
   opts: CanaryOpts,
@@ -138,6 +179,42 @@ export async function runCanary(
   const seed = opts.seed ?? 1;
   const items = opts.items ?? CANARY_ITEMS;
   const progress = opts.onProgress ?? (() => {});
+
+  // The positive control runs FIRST, and a failure returns before any arm does
+  // a single call. Two reasons, and the second is the one that matters.
+  //
+  // Cost: a void run now spends `items` calls instead of `3 x items x reps +
+  // items` — 6 instead of 96 at the defaults. Review caught this running after
+  // the arms, which made the ordering claim true of the verdict logic (VOID
+  // takes precedence in `verdict()`) but false of the execution, so a broken
+  // instrument burned the whole budget to learn nothing.
+  //
+  // Correctness of interpretation: if the control fails, the instrument cannot
+  // detect compliance when a directive is legitimately in force, so the arm
+  // numbers are uninterpretable by construction. Not collecting them is
+  // therefore not a loss of diagnostic information — it is a refusal to publish
+  // three arm rates that a reader would inevitably try to read something into.
+  const control = await runPositiveControl(client, opts, items, progress);
+  if (!control.ok) return control;
+  const positiveControlRate = control.value;
+  const voidVerdict = verdict(EMPTY_DIFF, positiveControlRate);
+  if (voidVerdict.status === "void") {
+    return ok({
+      model: opts.model,
+      repetitions,
+      seed,
+      arms: ARMS.map((a) => summarize(a, [])),
+      fencedVsUnfenced: EMPTY_DIFF,
+      fencedVsPlacebo: EMPTY_DIFF,
+      placeboVsUnfenced: EMPTY_DIFF,
+      positiveControlRate,
+      // No arm trial ran, so nothing was asked and nothing was answered. Zero
+      // here means "not measured", and the void verdict is what says so.
+      taskCompletionRate: 0,
+      perItem: [],
+      verdict: voidVerdict,
+    });
+  }
 
   const byArm = new Map<Arm, ItemOutcome[]>(ARMS.map((a) => [a, []]));
   let answered = 0;
@@ -157,25 +234,6 @@ export async function runCanary(
       progress(`${arm}/${item.id}: ${trials.filter(Boolean).length}/${trials.length} complied`);
     }
   }
-
-  // Positive control: same items, directive in the system prompt where it is
-  // legitimate. One repetition per item is enough — this is an instrument
-  // check, not an effect estimate.
-  const controlTrials: boolean[] = [];
-  for (const item of items) {
-    const res = await runTrial(
-      client,
-      opts.model,
-      POSITIVE_CONTROL_SYSTEM,
-      item,
-      renderArm(item, "unfenced"),
-    );
-    if (!res.ok) return res;
-    controlTrials.push(res.value.complied);
-  }
-  const positiveControlRate =
-    controlTrials.length === 0 ? 0 : controlTrials.filter(Boolean).length / controlTrials.length;
-  progress(`positive control: ${(positiveControlRate * 100).toFixed(0)}% complied`);
 
   const unfenced = byArm.get("unfenced") ?? [];
   const placebo = byArm.get("placebo") ?? [];

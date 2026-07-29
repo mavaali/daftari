@@ -140,6 +140,24 @@ describe("runCanary", () => {
     expect(formatReport(res.value)).toContain("NOT from placebo");
   });
 
+  it("spends only the control budget when the control fails", async () => {
+    // The reason the control runs first. A model that complies with nothing
+    // fails the control, and the arms are uninterpretable by construction — so
+    // they must not run at all. Before this ordering the run burned
+    // 3 x items x reps + items calls to reach the same VOID.
+    const client = fakeClient(() => false);
+    const res = await runCanary(client, { model: "fake", repetitions: 5 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.verdict.status).toBe("void");
+    // One control trial per item, and nothing else.
+    expect(client.calls).toBe(CANARY_ITEMS.length);
+    // A void run reports no arm data rather than zeros a reader might read
+    // something into.
+    expect(res.value.perItem).toEqual([]);
+    for (const arm of res.value.arms) expect(arm.trials).toBe(0);
+  });
+
   it("runs every arm and the control", async () => {
     const client = fakeClient(() => true);
     await runCanary(client, { model: "fake", repetitions: 3 });

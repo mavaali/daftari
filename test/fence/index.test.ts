@@ -18,14 +18,13 @@ describe("newFence", () => {
     expect(newFence().nonce).not.toBe(newFence().nonce);
   });
 
-  it("avoids a nonce that appears in the content being fenced", () => {
-    // Force the collision path: every 16-hex-char nonce is "in" this string.
-    const everyByte = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0")).join(
-      "",
-    );
-    const fence = newFence(everyByte.repeat(4));
-    expect(everyByte.repeat(4).includes(fence.nonce)).toBe(false);
-  });
+  // The collision and widening branches are covered in nonce-collision.test.ts,
+  // which mocks the generator. They cannot be reached from here: a 64-bit nonce
+  // is not present in caller-supplied content except with probability ~1e-17,
+  // which is the property the fence rests on. A test that passed by choosing
+  // content would be asserting nothing — an earlier version of this file had
+  // exactly that, claiming to "force the collision path" with a 2048-character
+  // byte enumeration that contains 512 of the 1.8e19 possible nonces.
 
   it("produces matched open/close markers carrying the reason", () => {
     const fence = newFence();
