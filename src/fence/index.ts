@@ -109,9 +109,15 @@ export function fenceSpan(text: string, fence: Fence, reason: FenceReason): stri
   return `${fence.open(reason)} ${text} ${fence.close(reason)}`;
 }
 
-// True if `text` contains anything shaped like a daftari fence marker. Used by
-// the fenceForgery lint check to find markers that round-tripped back into the
-// vault — a sign that fenced output was pasted in as content.
+// True if `text` contains anything shaped like a daftari fence marker.
+//
+// Nothing in src/ calls this yet. It exists for the `fenceForgery` lint check
+// specified in Decision 6 of the 2026-07-27 read-path fence design, which will
+// use it to find markers that round-tripped back into the vault — a sign that
+// fenced output was pasted in as content. Until that lands the only consumers
+// are tests. Stated in the future tense deliberately: this PR ships no call
+// sites at all, and a comment implying otherwise sends a reader hunting for
+// wiring that does not exist.
 export function containsFenceMarker(text: string): boolean {
   return text.includes(FENCE_PREFIX) || text.includes("⟦/daftari:");
 }
