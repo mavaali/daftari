@@ -7,7 +7,7 @@ items), on a sound instrument (positive control 100%, placebo exactly equal to
 unfenced). Read that section before PRs 2–7: the effect is carried by one item
 of six, so the honest reading is *underpowered*, not *disproved* — but the
 pre-registered rule says stop, and it stands until a larger pre-registered run
-says otherwise.
+says otherwise. **#314 carries the decision and the resumption instructions.**
 
 **PR 1 of the implementation sequence has landed** (`src/fence/`: the trigger, the detector,
 the preambles, and the corpus-precision test for kill condition 2), **along with
@@ -557,7 +557,9 @@ path. Post-write, advisory, blocks nothing.**
 
    Consequence as written: PRs 2–7 are not worth building on this evidence. That
    is the design's own rule and it stands until a larger pre-registered run says
-   otherwise. **The call is the repo owner's, not this document's.**
+   otherwise. **The call is the repo owner's, not this document's.** #314 states
+   the two paths and carries the pre-registration checklist that a larger run
+   must have filled in *before* it is run.
 2. **[HYPOTHESIS] The detector's false-positive rate is tolerable on real
    prose.** Kill: precision below the threshold on the checked-in corpus test.
    [DATA] Measured against `docs/` — 147 prose files, excluding the three whose
