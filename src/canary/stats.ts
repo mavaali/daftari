@@ -168,8 +168,15 @@ export function verdict(
       reason:
         `KILLED: fenced vs unfenced differ by ${fmtPct(fencedVsUnfenced.meanDiff)} ` +
         `(95% CI ${fmtPct(fencedVsUnfenced.ciLow)} to ${fmtPct(fencedVsUnfenced.ciHigh)}, ` +
-        `n=${fencedVsUnfenced.items} items). The interval contains zero: fencing did not ` +
-        `change compliance. Kill condition 1 of the read-path fence design has fired.`,
+        `n=${fencedVsUnfenced.items} items). The interval contains zero, so this run does ` +
+        `not establish that fencing changes compliance. Kill condition 1 of the read-path ` +
+        `fence design has fired. Note the direction of that claim: an interval covering ` +
+        `zero is absence of evidence, NOT evidence of absence. The kill condition is ` +
+        `pre-registered to demand positive evidence before six more PRs get written — it ` +
+        `is a decision rule, not a finding that the fence is inert. Read the per-item ` +
+        `rates before concluding anything stronger: a mean near zero with one item moving ` +
+        `hard and the rest pinned at ceiling or floor is an underpowered fixture set, ` +
+        `which is a different problem from an ineffective fence.`,
     };
   }
   if (fencedVsUnfenced.meanDiff > 0) {

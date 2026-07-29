@@ -22,7 +22,14 @@ import {
   POSITIVE_CONTROL_SYSTEM,
 } from "./fixtures.js";
 import type { ArmSummary, CanaryVerdict } from "./stats.js";
-import { type ItemOutcome, type PairedDiff, pairedDiff, summarize, verdict } from "./stats.js";
+import {
+  type ItemOutcome,
+  itemRate,
+  type PairedDiff,
+  pairedDiff,
+  summarize,
+  verdict,
+} from "./stats.js";
 
 export const ARMS = ["unfenced", "placebo", "fenced"] as const;
 export type Arm = (typeof ARMS)[number];
@@ -75,7 +82,22 @@ export interface CanaryReport {
   // Share of trials where the model actually answered the retrieval question.
   // A run where the model stopped answering is not evidence about fencing.
   taskCompletionRate: number;
+  // Per-item compliance rate in each arm, keyed by item id. The first real run
+  // (2026-07-29) returned a mean of -13.3pp that was carried entirely by ONE of
+  // six items while four sat at 100% in every arm — a fact the arm aggregates
+  // and the interval both hide. Without this table a reader cannot tell an
+  // underpowered fixture set from an inert fence, and those call for opposite
+  // responses. Reported, never scored: the verdict must not depend on which
+  // items an operator finds interesting after the fact.
+  perItem: PerItemRate[];
   verdict: CanaryVerdict;
+}
+
+export interface PerItemRate {
+  itemId: string;
+  unfenced: number;
+  placebo: number;
+  fenced: number;
 }
 
 interface TrialResult {
@@ -170,8 +192,30 @@ export async function runCanary(
     placeboVsUnfenced: pairedDiff("placebo", "unfenced", placebo, unfenced, { seed }),
     positiveControlRate,
     taskCompletionRate: total === 0 ? 0 : answered / total,
+    perItem: perItemRates(unfenced, placebo, fenced),
     verdict: verdict(fencedVsUnfenced, positiveControlRate),
   });
+}
+
+// Item order follows the unfenced arm, so the table reads the same way across
+// runs regardless of which arm happened to be summarized first. An item missing
+// from an arm scores 0 there rather than being dropped — a silently absent row
+// would make the table disagree with the arm aggregates it exists to explain.
+function perItemRates(
+  unfenced: readonly ItemOutcome[],
+  placebo: readonly ItemOutcome[],
+  fenced: readonly ItemOutcome[],
+): PerItemRate[] {
+  const rateIn = (arm: readonly ItemOutcome[], id: string): number => {
+    const found = arm.find((o) => o.itemId === id);
+    return found ? itemRate(found) : 0;
+  };
+  return unfenced.map((o) => ({
+    itemId: o.itemId,
+    unfenced: itemRate(o),
+    placebo: rateIn(placebo, o.itemId),
+    fenced: rateIn(fenced, o.itemId),
+  }));
 }
 
 export function formatReport(r: CanaryReport): string {
@@ -193,6 +237,16 @@ export function formatReport(r: CanaryReport): string {
     "",
     `Positive control: ${pct(r.positiveControlRate)} complied`,
     `Task completion:  ${pct(r.taskCompletionRate)} of trials answered the question`,
+    "",
+    // The aggregates above are a mean over these rows. Print the rows: a mean
+    // near zero can mean every item was unmoved, or one item moved hard and the
+    // rest had no room to move, and only this table separates those.
+    "Per-item compliance (unfenced / placebo / fenced):",
+    ...r.perItem.map(
+      (p) =>
+        `  ${p.itemId.padEnd(24)} ${pct(p.unfenced)} / ${pct(p.placebo)} / ${pct(p.fenced)}` +
+        (p.fenced === p.unfenced ? "   (unmoved)" : ""),
+    ),
     "",
     r.verdict.reason,
   ];

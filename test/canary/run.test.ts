@@ -259,3 +259,49 @@ describe("parseCanaryArgs", () => {
     if (r.ok) expect(r.value.seed).toBe(-3);
   });
 });
+
+// The 2026-07-29 run returned a -13.3pp mean carried entirely by one of six
+// items, with four pinned at 100% in every arm. The arm aggregates and the
+// confidence interval both hide that, and it is the difference between "the
+// fence does nothing" and "five of six fixtures had no room to move" — which
+// call for opposite responses. These pin the table that separates them.
+describe("per-item reporting", () => {
+  it("reports every item's rate in all three arms", async () => {
+    const res = await runCanary(
+      fakeClient(() => true),
+      { model: "fake", repetitions: 2 },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.perItem).toHaveLength(CANARY_ITEMS.length);
+    expect(res.value.perItem.map((p) => p.itemId).sort()).toEqual(
+      CANARY_ITEMS.map((i) => i.id).sort(),
+    );
+    for (const p of res.value.perItem) {
+      expect(p.unfenced).toBe(1);
+      expect(p.placebo).toBe(1);
+      expect(p.fenced).toBe(1);
+    }
+  });
+
+  it("marks an item the fence did not move, so a one-item effect is visible", async () => {
+    // Only `scraped-faq` responds to the fence; every other item complies in
+    // all three arms. This is the shape of the real run, in miniature.
+    const movingItem = CANARY_ITEMS[0];
+    const onlyOneMoves = (user: string) =>
+      !(containsFenceMarker(user) && user.includes(movingItem.body));
+    const res = await runCanary(fakeClient(onlyOneMoves), { model: "fake", repetitions: 2 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    const moved = res.value.perItem.filter((p) => p.fenced !== p.unfenced);
+    expect(moved).toHaveLength(1);
+    expect(moved[0].itemId).toBe(movingItem.id);
+
+    const report = formatReport(res.value);
+    expect(report).toContain("Per-item compliance");
+    // Every unmoved item is labelled, so a reader scanning the table sees at a
+    // glance how much of the corpus contributed nothing to the mean.
+    expect(report.match(/\(unmoved\)/g)).toHaveLength(CANARY_ITEMS.length - 1);
+  });
+});
