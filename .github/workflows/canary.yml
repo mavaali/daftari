@@ -47,6 +47,18 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      # This workflow can land before the CLI it drives. `daftari canary` ships
+      # with the read-path fence work; on a checkout without it, the subcommand
+      # falls through to the CLI's usage path and the run would fail somewhere
+      # less obvious, after the job already looked like it was working. Say so
+      # here instead.
+      - name: Check the canary subcommand exists
+        run: |
+          if ! node dist/cli.js canary --help >/dev/null 2>&1; then
+            echo "::error::This build has no 'daftari canary' subcommand. It ships with the read-path fence work; this workflow is inert until that lands."
+            exit 1
+          fi
+
       # Fail with a legible reason rather than letting the CLI report a missing
       # key after the workflow has already looked like it started work.
       - name: Check the API key is present
