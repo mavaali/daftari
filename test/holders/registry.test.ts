@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildRegistry, isRegistered, resolveHolder } from "../../src/holders/registry.js";
 
 describe("holder registry", () => {
+  // Shared: the registry is immutable once built.
   const reg = buildRegistry({ "mavaali-v1": "agent:mavaali", mavaali: "agent:mavaali" });
 
   it("maps many historical strings to one canonical holder", () => {

@@ -651,10 +651,14 @@ function validateBackfillIdentityMap(raw: unknown): Result<Record<string, string
 // string→string record. A missing block yields an empty map. The block, the
 // map, and every entry must be the right shape — a malformed declaration fails
 // config load, mirroring the loud-failure contract of backfillIdentityMap.
+const RECOGNISED_HOLDER_KEYS = ["aliases"] as const;
+
 function validateHolderAliases(raw: unknown): Result<Record<string, string>, Error> {
   if (raw === undefined) return ok({});
   const block = requireMapping(raw, "'holders'");
   if (!block.ok) return block;
+  const known = rejectUnknownKeys(block.value, RECOGNISED_HOLDER_KEYS, "holders");
+  if (!known.ok) return known;
   const rawMap = block.value.aliases;
   if (rawMap === undefined) return ok({});
   const map = requireMapping(rawMap, "'holders.aliases'");

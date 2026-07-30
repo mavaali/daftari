@@ -5,6 +5,7 @@ export interface HolderRegistry {
   aliases: Map<string, HolderId>;
 }
 
+// Populated by the canon resolver (Task 3) and surfaced in CanonFlags.
 export interface GhostHolderWarning {
   count: number;
   strings: string[]; // unregistered identity strings encountered
