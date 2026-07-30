@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`vault_canon` — settled vs. contested belief over an emergent topic.**
+  Read-only. Given a seed document path and optional holder list, `vault_canon` walks
+  the depth-2 belief graph and classifies each claim as settled (no
+  contradiction recorded) or contested, attaching a `vault_receipt` as the
+  epistemic anchor. Honest-relational: `graph_completeness` is always
+  `"curated"`, `partial_visibility`, `unindexed`, and `ghost_holder_warning`
+  flags are surfaced when the graph is incomplete. Never auto-resolves.
+
 - **Bi-temporal validity.** Two optional built-in frontmatter fields,
   `valid_from` and `valid_until`, recording when a document's claim was true
   *in the world* — as distinct from when the vault recorded it, which git
