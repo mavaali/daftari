@@ -735,6 +735,19 @@ describe("loadConfig — schema extensions", () => {
       if (result.ok) return;
       expect(result.error.message).toContain("holders.typo_key");
     });
+
+    it("populates holderAliases from a well-formed holders.aliases block", () => {
+      writeConfig(
+        "version: 1\nholders:\n  aliases:\n    mavaali-v1: agent:mavaali\n    old-agent: agent:legacy\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.holderAliases).toEqual({
+        "mavaali-v1": "agent:mavaali",
+        "old-agent": "agent:legacy",
+      });
+    });
   });
 
   describe("tension_scan block", () => {

@@ -2,9 +2,45 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { topicEgoGraph } from "../../src/canon/topic.js";
+import { topicEgoGraph, topicEgoGraphFrom } from "../../src/canon/topic.js";
 import { contestEdge, observeEdge } from "../../src/curation/edges.js";
 import { addTension } from "../../src/curation/tension.js";
+
+describe("topicEgoGraphFrom (pure, no vault)", () => {
+  it("includes seed + tension neighbor and active edge neighbor", () => {
+    // Tensions: A–B. Active edge: A→C. Revoked edge: A→D.
+    // Seed A, depth 1 → {A, B, C}. D must be excluded (revoked).
+    const tensions = [{ sourceA: "A.md", sourceB: "B.md" }];
+    const edges = [
+      { fromPath: "A.md", toPath: "C.md", status: "observed" },
+      { fromPath: "A.md", toPath: "D.md", status: "revoked" },
+    ];
+
+    const result = topicEgoGraphFrom(tensions, edges, "A.md", 1);
+    const set = new Set(result);
+
+    expect(set.has("A.md")).toBe(true);
+    expect(set.has("B.md")).toBe(true);
+    expect(set.has("C.md")).toBe(true);
+    // Revoked edge must not create a link.
+    expect(set.has("D.md")).toBe(false);
+  });
+
+  it("does not traverse beyond the given depth", () => {
+    // Chain: A–B–C (via tensions). Seed A, depth 1 → {A, B}; C is two hops away.
+    const tensions = [
+      { sourceA: "A.md", sourceB: "B.md" },
+      { sourceA: "B.md", sourceB: "C.md" },
+    ];
+
+    const result = topicEgoGraphFrom(tensions, [], "A.md", 1);
+    const set = new Set(result);
+
+    expect(set.has("A.md")).toBe(true);
+    expect(set.has("B.md")).toBe(true);
+    expect(set.has("C.md")).toBe(false);
+  });
+});
 
 describe("topicEgoGraph", () => {
   let vault: string;

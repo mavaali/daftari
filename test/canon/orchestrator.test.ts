@@ -98,6 +98,90 @@ describe("computeCanon — RBAC blind-spot flag", () => {
   });
 });
 
+describe("computeCanon — both-sides-hidden tension", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-canon-both-hidden-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("counts both one-side-hidden and both-sides-hidden tensions in hidden_tension_count", async () => {
+    // Three docs: open/a.md (readable), secret/b.md (unreadable), secret/c.md (unreadable).
+    // Tension a–b: one-side-hidden (a is readable, b is not).
+    // Tension b–c: both-sides-hidden (neither b nor c is readable).
+    // Seed: open/a.md, depth 2 → topic {a, b, c} (a–b–c chain).
+    //
+    // Pre-fix: touchingTensions filtered on visiblePaths = {open/a.md} only.
+    //   - a–b touches (a ∈ visiblePaths) → classified hidden (b unreadable) → count 1
+    //   - b–c does NOT touch (neither b nor c ∈ visiblePaths) → skipped
+    //   Result: hidden_tension_count = 1, partial_visibility = true (correct but incomplete).
+    //
+    // Post-fix: touchingTensions filtered on existingCandidatePaths = {a, b, c}.
+    //   - a–b touches → hidden (b unreadable) → count 1
+    //   - b–c touches (b ∈ existingCandidatePaths) → hidden (both unreadable) → count 2
+    //   Result: hidden_tension_count = 2, partial_visibility = true.
+
+    makeDoc("open", "a", "human:alice", vault);
+    makeDoc("secret", "b", "human:bob", vault);
+    makeDoc("secret", "c", "human:carol", vault);
+
+    const t1 = await addTension(vault, {
+      title: "a vs b",
+      kind: "factual",
+      sourceA: "open/a.md",
+      claimA: "open claim",
+      sourceB: "secret/b.md",
+      claimB: "secret claim b",
+      loggedBy: "test",
+    });
+    expect(t1.ok).toBe(true);
+
+    const t2 = await addTension(vault, {
+      title: "b vs c",
+      kind: "factual",
+      sourceA: "secret/b.md",
+      claimA: "secret claim b2",
+      sourceB: "secret/c.md",
+      claimB: "secret claim c",
+      loggedBy: "test",
+    });
+    expect(t2.ok).toBe(true);
+
+    // Role reads "open" only — cannot read "secret".
+    const restrictedRole: RoleConfig = {
+      read: ["open"],
+      write: [],
+      promote: false,
+      ratify: false,
+    };
+    const access: AccessContext = {
+      user: "test-user",
+      roleName: "restricted",
+      role: restrictedRole,
+    };
+
+    const result = await computeCanon(
+      vault,
+      { seed: "open/a.md", depth: 2, asOf: "2026-07-01" },
+      access,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { flags } = result.value;
+
+    // Both the one-side-hidden (a–b) and the both-sides-hidden (b–c) tension
+    // must be counted — hidden_tension_count must be 2.
+    expect(flags.partial_visibility).toBe(true);
+    expect(flags.hidden_tension_count).toBe(2);
+  });
+});
+
 describe("computeCanon — unindexed flag", () => {
   let vault: string;
 

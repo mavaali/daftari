@@ -158,7 +158,9 @@ export const canonTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     docLinks: (value) => {
+      if (!value || typeof value !== "object") return [];
       const r = value as ComputeCanonResult;
+      if (!Array.isArray(r.settled) || !Array.isArray(r.contested)) return [];
       const paths = new Set<string>();
       for (const s of r.settled) for (const c of s.citations) paths.add(c);
       for (const t of r.contested) for (const n of t.trajectory) paths.add(n.path);

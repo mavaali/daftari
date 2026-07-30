@@ -66,15 +66,6 @@ export async function computeCanon(
   const candidateSet = new Set(topicEgoGraphFrom(allTensions, allEdges, args.seed, depth));
   const allDocsMap = new Map(allDocsRes.value.map((d) => [d.path, d]));
 
-  // Collection resolver: frontmatter field preferred, falls back to top dir.
-  function docCollection(relPath: string): string {
-    const doc = allDocsMap.get(relPath);
-    if (doc) {
-      return doc.frontmatter.collection || topCollection(relPath);
-    }
-    return topCollection(relPath);
-  }
-
   // Step 3: build CanonDoc[] for candidate paths present in the vault.
   const candidateDocs: CanonDoc[] = [];
   for (const path of candidateSet) {
@@ -82,7 +73,7 @@ export async function computeCanon(
     if (!doc) continue;
     candidateDocs.push({
       path,
-      holder: doc.frontmatter.updated_by,
+      holder: doc.frontmatter.updated_by || "unknown:unattributed",
       valid_from: doc.frontmatter.valid_from,
       valid_until: doc.frontmatter.valid_until,
       updated: doc.frontmatter.updated,
@@ -90,29 +81,46 @@ export async function computeCanon(
     });
   }
 
+  // Pre-RBAC set: all topic candidate paths that exist in the vault.
+  // Used for tension filtering — a tension is "touching" the topic if
+  // either endpoint is a vault-resident candidate doc (regardless of
+  // whether that doc's collection is readable by the current caller).
+  const existingCandidatePaths = new Set(candidateDocs.map((d) => d.path));
+
   // Step 4: RBAC — filter candidate docs to those whose collection is readable.
   // If access is undefined, treat as full access (no filtering).
   const visibleCandidates = access
     ? candidateDocs.filter((d) => canRead(access.role, d.collection))
     : candidateDocs;
-  const visiblePaths = new Set(visibleCandidates.map((d) => d.path));
+
+  // Helper: is a given vault path readable under the current access context?
+  // A path not present in allDocsMap is treated as unreadable.
+  function readable(path: string): boolean {
+    if (!access) return true;
+    const doc = allDocsMap.get(path);
+    if (!doc) return false;
+    const collection = doc.frontmatter.collection || topCollection(path);
+    return canRead(access.role, collection);
+  }
 
   // Step 5: compute visibility flags using the already-loaded tensions.
-  // Tensions touching at least one visible candidate doc.
+  // A tension touches the topic if either endpoint is a vault-resident
+  // candidate doc — tested against the PRE-RBAC existingCandidatePaths set
+  // so that tensions between two hidden docs are not silently omitted.
   const touchingTensions = allTensions.filter(
-    (t) => visiblePaths.has(t.sourceA) || visiblePaths.has(t.sourceB),
+    (t) => existingCandidatePaths.has(t.sourceA) || existingCandidatePaths.has(t.sourceB),
   );
 
   const visibleTensions: { sourceA: string; sourceB: string }[] = [];
   let hiddenTensionCount = 0;
 
   for (const t of touchingTensions) {
-    const aReadable = access ? canRead(access.role, docCollection(t.sourceA)) : true;
-    const bReadable = access ? canRead(access.role, docCollection(t.sourceB)) : true;
-    if (aReadable && bReadable) {
+    const bothVisible = readable(t.sourceA) && readable(t.sourceB);
+    if (bothVisible) {
       visibleTensions.push({ sourceA: t.sourceA, sourceB: t.sourceB });
     } else {
-      // One side is unreadable: this tension is hidden from the visible candidate.
+      // At least one side is unreadable (covers one-side-hidden AND both-sides-hidden).
+      // We only COUNT the tension; we never expose its claims or paths in output.
       hiddenTensionCount += 1;
     }
   }
