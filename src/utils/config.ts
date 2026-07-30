@@ -215,6 +215,12 @@ export interface DaftariConfig {
   // back to a slugified `human:<author>` default. Empty when the optional
   // `backfill.identity_map` block is absent.
   backfillIdentityMap: Record<string, string>;
+  // Many historical identity strings (e.g. renamed agents) → one canonical
+  // holder id. Keys are raw stamped strings (`updated_by`, `principal`, git
+  // author); values are canonical holder ids (e.g. `agent:mavaali`). A string
+  // absent from the map passes through as its own holder id. Empty when the
+  // optional `holders.aliases` block is absent.
+  holderAliases: Record<string, string>;
   // Shadow-mode execution path (spec §11.5). When true, every doc-write tool
   // computes the do(), its impact I, and the proposed diff, logs them to
   // .daftari/shadow-actions.jsonl, and writes NOTHING — the calibration
@@ -260,6 +266,7 @@ function emptyConfig(): DaftariConfig {
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
     backfillIdentityMap: {},
+    holderAliases: {},
     shadowMode: false,
     shadowModeSet: false,
     gitDir: undefined,
@@ -636,6 +643,28 @@ function validateBackfillIdentityMap(raw: unknown): Result<Record<string, string
       return err(new Error(`'backfill.identity_map.${author}' must be a non-empty string`));
     }
     out[author] = identity;
+  }
+  return ok(out);
+}
+
+// Parses the optional `holders` block, returning its `aliases` as a flat
+// string→string record. A missing block yields an empty map. The block, the
+// map, and every entry must be the right shape — a malformed declaration fails
+// config load, mirroring the loud-failure contract of backfillIdentityMap.
+function validateHolderAliases(raw: unknown): Result<Record<string, string>, Error> {
+  if (raw === undefined) return ok({});
+  const block = requireMapping(raw, "'holders'");
+  if (!block.ok) return block;
+  const rawMap = block.value.aliases;
+  if (rawMap === undefined) return ok({});
+  const map = requireMapping(rawMap, "'holders.aliases'");
+  if (!map.ok) return map;
+  const out: Record<string, string> = {};
+  for (const [alias, canonical] of Object.entries(map.value)) {
+    if (typeof canonical !== "string" || canonical.length === 0) {
+      return err(new Error(`'holders.aliases.${alias}' must be a non-empty string`));
+    }
+    out[alias] = canonical;
   }
   return ok(out);
 }
@@ -1082,6 +1111,11 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     return err(new Error(`malformed config: ${backfillIdentityMap.error.message}`));
   }
 
+  const holderAliases = validateHolderAliases(root.holders);
+  if (!holderAliases.ok) {
+    return err(new Error(`malformed config: ${holderAliases.error.message}`));
+  }
+
   let autoCommit = true;
   if (root.auto_commit !== undefined) {
     if (typeof root.auto_commit !== "boolean") {
@@ -1178,6 +1212,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     warmEmbeddings,
     embeddingProvider,
     backfillIdentityMap: backfillIdentityMap.value,
+    holderAliases: holderAliases.value,
     shadowMode,
     shadowModeSet,
     gitDir: gitDir.value,
