@@ -93,6 +93,14 @@ deterministic summary flags, the vault's git HEAD as an as-of anchor, and a
 recomputable hash over the whole receipt. Attach it to the answer so any
 consumer can see what the answer stands on.
 
+**Believe:** `vault_canon` — compute settled vs. contested belief across
+holders over an emergent topic (params: `seed`, `holders?`, `as_of?`,
+`depth?`). Returns a per-claim settled/contested classification, integrity
+flags (`graph_completeness: "curated"`, `partial_visibility`, `unindexed`,
+`ghost_holder_warning`), and an attached `vault_receipt` as the epistemic
+anchor. Recorded, not omniscient: settled means no contradiction is on record,
+not that none exists. Never auto-resolves.
+
 **Witness:** `vault_witness` — per-principal track records from the vault's
 own ledgers, priced by the wager schedule: write volume, live claims with
 open exposure, contested claims with stake at risk, the settled book
