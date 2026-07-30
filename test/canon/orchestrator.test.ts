@@ -1,9 +1,12 @@
-// Orchestrator integration test: RBAC blind-spot flag.
+// Orchestrator integration tests.
 //
-// Verifies that when an access context can read collection "open" but NOT
-// "secret", a tension between open/a.md and secret/b.md is hidden from the
-// resolved canon — the tension is not contested — but the partial_visibility
-// flag is true and hidden_tension_count is 1.
+// 1. RBAC blind-spot flag — when one tension side is unreadable, the tension
+//    is hidden from the resolved canon but partial_visibility is flagged.
+// 2. Unindexed flag — a visible candidate doc with no tension and no edge
+//    gets flags.unindexed === true and its path in flags.unindexed_paths.
+// 3. Holders default — two visible docs from different holders, tensioned
+//    together, called without an explicit holders arg → the contested
+//    trajectory surfaces (default holder-set derived from visible candidates).
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -92,5 +95,79 @@ describe("computeCanon — RBAC blind-spot flag", () => {
     // The blind-spot flags must be set.
     expect(flags.partial_visibility).toBe(true);
     expect(flags.hidden_tension_count).toBe(1);
+  });
+});
+
+describe("computeCanon — unindexed flag", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-canon-unindexed-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("sets flags.unindexed=true for a visible seed doc with no tension and no edge", async () => {
+    // A single doc with no tensions and no derives_from edges. It is its own
+    // topic (trivial one-node graph), visible, and unindexed by definition.
+    makeDoc("open", "solo", "human:alice", vault);
+
+    const result = await computeCanon(vault, { seed: "open/solo.md", asOf: "2026-07-01" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { flags } = result.value;
+
+    expect(flags.unindexed).toBe(true);
+    expect(flags.unindexed_paths).toContain("open/solo.md");
+  });
+});
+
+describe("computeCanon — holders default", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-canon-holders-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("derives holder-set from visible candidates and surfaces contested trajectory", async () => {
+    // Two docs in the same collection, owned by different holders, tensioned
+    // together so they form one topic. Called without explicit holders arg —
+    // the orchestrator must derive both holders from the visible candidates.
+    makeDoc("open", "alpha", "human:alice", vault);
+    makeDoc("open", "beta", "human:bob", vault);
+
+    const tensionRes = await addTension(vault, {
+      title: "alice vs bob",
+      kind: "factual",
+      sourceA: "open/alpha.md",
+      claimA: "alice claim",
+      sourceB: "open/beta.md",
+      claimB: "bob claim",
+      loggedBy: "test",
+    });
+    expect(tensionRes.ok).toBe(true);
+
+    // No explicit holders argument — orchestrator derives them.
+    const result = await computeCanon(vault, { seed: "open/alpha.md", asOf: "2026-07-01" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { contested } = result.value;
+
+    // Both docs have no valid_from restriction, are in-scope for both derived
+    // holders, and are tensioned — so they must appear in a contested trajectory.
+    expect(contested.length).toBeGreaterThan(0);
+    const trajectoryPaths = contested.flatMap((c) => c.trajectory.map((n) => n.path));
+    expect(trajectoryPaths).toContain("open/alpha.md");
+    expect(trajectoryPaths).toContain("open/beta.md");
   });
 });

@@ -7,6 +7,10 @@
 // if building it fails (e.g. in a bare temp vault without git), the canon
 // result is still returned with receipt: null rather than propagating the
 // failure.
+//
+// v1 known limitation: the receipt's git anchor is pinned inside vaultReceipt
+// at call end, not captured up front; acceptable under the working-tree read
+// strategy for a quiet vault; revisit if used in a concurrently-written vault.
 
 import type { AccessContext } from "../access/rbac.js";
 import { canRead } from "../access/rbac.js";
@@ -15,10 +19,10 @@ import { listTensions } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { buildRegistry, resolveHolder } from "../holders/registry.js";
-import { vaultReceipt } from "../tools/receipt.js";
+import { type VaultReceiptResult, vaultReceipt } from "../tools/receipt.js";
 import { loadConfig } from "../utils/config.js";
 import { resolveCanon } from "./resolve.js";
-import { topicEgoGraph } from "./topic.js";
+import { topicEgoGraphFrom } from "./topic.js";
 import type { CanonDoc, CanonResult } from "./types.js";
 
 export interface ComputeCanonArgs {
@@ -28,7 +32,7 @@ export interface ComputeCanonArgs {
   depth?: number;
 }
 
-export type ComputeCanonResult = CanonResult & { receipt: unknown };
+export type ComputeCanonResult = CanonResult & { receipt: VaultReceiptResult | null };
 
 // Top-level directory of a vault-relative path — used for RBAC when a doc's
 // collection frontmatter is absent (mirrors receipt.ts's topCollection).
@@ -44,14 +48,22 @@ export async function computeCanon(
   const asOf = args.asOf ?? new Date().toISOString().slice(0, 10);
   const depth = args.depth ?? 2;
 
-  // Step 1: topic ego-graph — candidate paths.
-  const topicRes = await topicEgoGraph(vaultRoot, args.seed, depth);
-  if (!topicRes.ok) return topicRes;
-  const candidateSet = new Set(topicRes.value);
-
-  // Step 2: load all docs once (consistent snapshot).
+  // Step 1: load documents, tensions, and edges — one consistent snapshot.
+  // All three are loaded here and reused throughout; no subsequent listTensions
+  // or listEdges calls are made, eliminating write-window inconsistency.
   const allDocsRes = await loadDocuments(vaultRoot);
   if (!allDocsRes.ok) return allDocsRes;
+
+  const tensionsRes = await listTensions(vaultRoot);
+  if (!tensionsRes.ok) return tensionsRes;
+  const allTensions = tensionsRes.value;
+
+  const edgesRes = await listEdges(vaultRoot, {});
+  if (!edgesRes.ok) return edgesRes;
+  const allEdges = edgesRes.value;
+
+  // Step 2: topic ego-graph — candidate paths, using pre-loaded data.
+  const candidateSet = new Set(topicEgoGraphFrom(allTensions, allEdges, args.seed, depth));
   const allDocsMap = new Map(allDocsRes.value.map((d) => [d.path, d]));
 
   // Collection resolver: frontmatter field preferred, falls back to top dir.
@@ -85,11 +97,7 @@ export async function computeCanon(
     : candidateDocs;
   const visiblePaths = new Set(visibleCandidates.map((d) => d.path));
 
-  // Step 5: load tensions and compute visibility flags.
-  const tensionsRes = await listTensions(vaultRoot);
-  if (!tensionsRes.ok) return tensionsRes;
-  const allTensions = tensionsRes.value;
-
+  // Step 5: compute visibility flags using the already-loaded tensions.
   // Tensions touching at least one visible candidate doc.
   const touchingTensions = allTensions.filter(
     (t) => visiblePaths.has(t.sourceA) || visiblePaths.has(t.sourceB),
@@ -111,11 +119,8 @@ export async function computeCanon(
 
   const partialVisibility = hiddenTensionCount > 0;
 
-  // Step 6: unindexed paths — visible candidates appearing in NO tension and NO edge.
-  const edgesRes = await listEdges(vaultRoot);
-  if (!edgesRes.ok) return edgesRes;
-  const allEdges = edgesRes.value;
-
+  // Step 6: unindexed paths — visible candidates that appear in NO tension and NO edge
+  // (vault-wide, never consolidated anywhere), using the already-loaded allTensions and allEdges.
   const consolidatedPaths = new Set<string>();
   for (const t of allTensions) {
     consolidatedPaths.add(t.sourceA);
@@ -181,7 +186,7 @@ export async function computeCanon(
 
   // Receipt is resilient: failures (e.g. bare vault with no git or missing
   // files) do not propagate — canon result is returned with receipt: null.
-  let receipt: unknown = null;
+  let receipt: VaultReceiptResult | null = null;
   if (citedPaths.length > 0) {
     const receiptRes = await vaultReceipt(vaultRoot, { paths: citedPaths }, access);
     if (receiptRes.ok) {

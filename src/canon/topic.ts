@@ -15,8 +15,11 @@ import { listEdges } from "../curation/edges.js";
 import { listTensions } from "../curation/tension.js";
 import type { Result } from "../frontmatter/types.js";
 
-/** Adjacency over the union of tension pairs and derives_from edges (undirected). */
-async function buildAdjacency(vaultRoot: string): Promise<Result<Map<string, Set<string>>, Error>> {
+/** Build an undirected adjacency map from already-loaded tensions and edges. */
+function buildAdjacencyFrom(
+  tensions: { sourceA: string; sourceB: string }[],
+  edges: { fromPath: string; toPath: string; status: string }[],
+): Map<string, Set<string>> {
   const adj = new Map<string, Set<string>>();
 
   const link = (a: string, b: string): void => {
@@ -29,13 +32,9 @@ async function buildAdjacency(vaultRoot: string): Promise<Result<Map<string, Set
   };
 
   // All statuses: a resolved tension is still a topic link.
-  const tensions = await listTensions(vaultRoot);
-  if (!tensions.ok) return tensions;
-  for (const t of tensions.value) link(t.sourceA, t.sourceB);
+  for (const t of tensions) link(t.sourceA, t.sourceB);
 
-  const edges = await listEdges(vaultRoot, {});
-  if (!edges.ok) return edges;
-  for (const e of edges.value) {
+  for (const e of edges) {
     // Revoked edges are excluded: revocation means the derivation was invalidated,
     // so it no longer constitutes a topical connection. Resolved tensions are still
     // included above — the disagreement is topically real even after resolution.
@@ -43,19 +42,11 @@ async function buildAdjacency(vaultRoot: string): Promise<Result<Map<string, Set
     link(e.fromPath, e.toPath);
   }
 
-  return { ok: true, value: adj };
+  return adj;
 }
 
-/** Doc paths within `depth` hops of `seed` over tension+derives_from. Includes the seed. */
-export async function topicEgoGraph(
-  vaultRoot: string,
-  seed: string,
-  depth = 2,
-): Promise<Result<string[], Error>> {
-  const adjRes = await buildAdjacency(vaultRoot);
-  if (!adjRes.ok) return adjRes;
-  const adj = adjRes.value;
-
+/** BFS over a pre-built adjacency map. Shared logic for both variants below. */
+function bfsFromAdj(adj: Map<string, Set<string>>, seed: string, depth: number): string[] {
   const visited = new Set<string>([seed]);
   let frontier: string[] = [seed];
   for (let d = 0; d < depth; d++) {
@@ -71,5 +62,38 @@ export async function topicEgoGraph(
     frontier = next;
     if (frontier.length === 0) break;
   }
-  return { ok: true, value: [...visited] };
+  return [...visited];
+}
+
+/**
+ * Pure variant — works from already-loaded data. Use this when tensions and
+ * edges have already been fetched (e.g. in computeCanon) to avoid a second
+ * round-trip to the store.
+ *
+ * Builds the same undirected adjacency as topicEgoGraph (union of all tension
+ * pairs + non-revoked derives_from edges) and runs BFS to `depth`.
+ */
+export function topicEgoGraphFrom(
+  tensions: { sourceA: string; sourceB: string }[],
+  edges: { fromPath: string; toPath: string; status: string }[],
+  seed: string,
+  depth = 2,
+): string[] {
+  const adj = buildAdjacencyFrom(tensions, edges);
+  return bfsFromAdj(adj, seed, depth);
+}
+
+/** Doc paths within `depth` hops of `seed` over tension+derives_from. Includes the seed. */
+export async function topicEgoGraph(
+  vaultRoot: string,
+  seed: string,
+  depth = 2,
+): Promise<Result<string[], Error>> {
+  const tensionsRes = await listTensions(vaultRoot);
+  if (!tensionsRes.ok) return tensionsRes;
+
+  const edgesRes = await listEdges(vaultRoot, {});
+  if (!edgesRes.ok) return edgesRes;
+
+  return { ok: true, value: topicEgoGraphFrom(tensionsRes.value, edgesRes.value, seed, depth) };
 }
