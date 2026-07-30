@@ -725,6 +725,18 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("holders block", () => {
+    it("rejects an unknown key under holders so a typo cannot silently be ignored", () => {
+      writeConfig(
+        "version: 1\nholders:\n  aliases:\n    mavaali-v1: agent:mavaali\n  typo_key: bad\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("holders.typo_key");
+    });
+  });
+
   describe("tension_scan block", () => {
     it("defaults when the block is absent", () => {
       writeConfig("auto_commit: true\n");
