@@ -1,3 +1,9 @@
+// Holder registry — maps stamped identity strings to canonical holder ids.
+// Many historical strings can point to one holder, so a rename does not forge a
+// ghost: "agent:luo-ji" and "agent:luoji" both resolve to the same id without
+// creating two competing belief-holders. Unknown strings pass through as their
+// own id (identity function), making an empty registry a safe zero-config baseline.
+
 import type { HolderId, HolderRegistry } from "./types.js";
 
 /** Build a registry from config's holderAliases (alias → canonical id). */

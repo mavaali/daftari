@@ -43,6 +43,16 @@ describe("resolveCanon", () => {
     expect(r.contested).toHaveLength(0);
   });
 
+  it("v1 contract: two non-contested valid docs with the same holder string produce two SettledClaims", () => {
+    const docs = [
+      doc("A.md", "human:alice", "2026-01-01", null),
+      doc("B.md", "human:alice", "2026-01-01", null),
+    ];
+    const r = resolveCanon(docs, ["human:alice"], "2026-07-01", reg, []);
+    expect(r.contested).toHaveLength(0);
+    expect(r.settled).toHaveLength(2); // one per doc, not grouped
+  });
+
   it("flags ghost holders when registry is non-empty and holder is unregistered", () => {
     const regWithEntries = buildRegistry({ x: "agent:x" });
     const docs = [doc("G.md", "human:ghost", "2026-01-01", null)];

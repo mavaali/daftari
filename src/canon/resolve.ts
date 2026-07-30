@@ -69,6 +69,10 @@ export function resolveCanon(
     contestedPaths.add(b.path);
   }
 
+  // Settled is one claim per doc (citations: [d.path]). Two non-contested docs
+  // from the same resolved holder therefore produce two SettledClaims rather
+  // than one grouped claim. Grouping multiple same-holder docs into a single
+  // multi-citation claim is intentionally deferred to a later iteration.
   const settled = inScope
     .filter((d) => !contestedPaths.has(d.path))
     .map((d) => ({ holder: resolveHolder(registry, d.holder), citations: [d.path] }));
