@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { topicEgoGraph } from "../../src/canon/topic.js";
+import { contestEdge, observeEdge } from "../../src/curation/edges.js";
 import { addTension } from "../../src/curation/tension.js";
 
 describe("topicEgoGraph", () => {
@@ -49,5 +50,33 @@ describe("topicEgoGraph", () => {
     const set = res.ok ? new Set(res.value) : new Set();
     expect(set).toEqual(new Set(["A.md", "B.md", "C.md"]));
     expect(set.has("D.md")).toBe(false);
+  });
+
+  it("traverses derives_from edges and excludes revoked ones", async () => {
+    // Seed X→Y (active) and X→Z (then revoked). Seed X, depth 1 ⇒ {X,Y}, not Z.
+    await observeEdge(vault, {
+      fromPath: "X.md",
+      toPath: "Y.md",
+      observedBy: "test",
+      blind: false,
+    });
+    await observeEdge(vault, {
+      fromPath: "X.md",
+      toPath: "Z.md",
+      observedBy: "test",
+      blind: false,
+    });
+    await contestEdge(vault, {
+      fromPath: "X.md",
+      toPath: "Z.md",
+      contestedBy: "test",
+      reason: "re-derivation failed",
+    });
+
+    const res = await topicEgoGraph(vault, "X.md", 1);
+    expect(res.ok).toBe(true);
+    const set = res.ok ? new Set(res.value) : new Set();
+    expect(set.has("Y.md")).toBe(true);
+    expect(set.has("Z.md")).toBe(false);
   });
 });

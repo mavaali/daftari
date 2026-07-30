@@ -1,3 +1,16 @@
+// Topic ego-graph — breadth-first neighborhood over the tension + derives_from graph.
+//
+// A "topic" for a seed document is the set of docs reachable within `depth` hops
+// across an undirected union of two edge kinds: tension pairs (sourceA ↔ sourceB)
+// and derives_from edges (from ↔ to). Both kinds are treated as undirected —
+// "near in the knowledge graph" is what matters, not causal direction.
+//
+// Inclusion rule for edge status:
+//   - Resolved tensions ARE still topic links: the disagreement is topically real
+//     regardless of how it was closed.
+//   - Revoked derives_from edges are NOT topic links: revocation means the
+//     derivation was contested and invalidated, so the topical connection is gone.
+
 import { listEdges } from "../curation/edges.js";
 import { listTensions } from "../curation/tension.js";
 import type { Result } from "../frontmatter/types.js";
@@ -22,7 +35,13 @@ async function buildAdjacency(vaultRoot: string): Promise<Result<Map<string, Set
 
   const edges = await listEdges(vaultRoot, {});
   if (!edges.ok) return edges;
-  for (const e of edges.value) link(e.fromPath, e.toPath);
+  for (const e of edges.value) {
+    // Revoked edges are excluded: revocation means the derivation was invalidated,
+    // so it no longer constitutes a topical connection. Resolved tensions are still
+    // included above — the disagreement is topically real even after resolution.
+    if (e.status === "revoked") continue;
+    link(e.fromPath, e.toPath);
+  }
 
   return { ok: true, value: adj };
 }
