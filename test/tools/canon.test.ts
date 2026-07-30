@@ -130,6 +130,18 @@ describe("vault_canon tool", () => {
     expect(summary).toContain("0");
   });
 
+  it("returns ok with empty settled and contested when seed does not exist", async () => {
+    // topicEgoGraphFrom always seeds BFS with the seed path (visited starts as
+    // new Set([seed])), but if that path isn't present in allDocsMap the
+    // candidate CanonDoc[] is empty. resolveCanon then returns empty settled and
+    // contested — ok: true with no data.
+    const res = await tool?.handler(vault, { seed: "x/does-not-exist.md" });
+    expect(res.ok).toBe(true);
+    const v = res.ok ? res.value : null;
+    expect((v as { settled: unknown[] }).settled).toHaveLength(0);
+    expect((v as { contested: unknown[] }).contested).toHaveLength(0);
+  });
+
   it("summarize flags partial visibility", () => {
     expect(tool?.summarize).toBeDefined();
     const value = {

@@ -154,8 +154,15 @@ export const canonTools: ToolDefinition[] = [
           additionalProperties: true,
         },
       },
-      required: ["settled", "contested", "flags"],
-      additionalProperties: true,
+      required: ["settled", "contested", "flags", "receipt"],
+      additionalProperties: false,
+    },
+    docLinks: (value) => {
+      const r = value as ComputeCanonResult;
+      const paths = new Set<string>();
+      for (const s of r.settled) for (const c of s.citations) paths.add(c);
+      for (const t of r.contested) for (const n of t.trajectory) paths.add(n.path);
+      return [...paths];
     },
     summarize: (value: unknown): string => {
       const v = value as ComputeCanonResult;
