@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ledger-keeper voice for `vault_lint`.** An optional `lint_voice` config key
+  (`plain` default, or `ledger_keeper`) re-renders the `content`-channel lint
+  summary in the dry margin-note register of a three-centuries-old ledger-keeper.
+  Presentation only: it is a deterministic, templated re-wording (no LLM) of the
+  same findings the plain summary reports, selecting and capping them identically,
+  and the structured output channel is byte-for-byte unchanged. Default-on
+  discoverability is gated on a real-user read (the spec's kill condition). Spec:
+  `docs/superpowers/specs/2026-07-30-ledger-keeper-voice-design.md`.
+
 - **`vault_canon` — settled vs. contested belief over an emergent topic.**
   Read-only. Given a seed document path and optional holder list, `vault_canon` walks
   the depth-2 belief graph and classifies each claim as settled (no

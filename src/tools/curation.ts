@@ -13,13 +13,18 @@ import { type AccessContext, canRatify, canRead, hasAnyRead } from "../access/rb
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import type { CoverageEquitySummary } from "../curation/coverage.js";
 import {
+  clip,
   LINT_CHECKS,
+  LINT_SUMMARY_DETAIL_CHARS,
+  LINT_SUMMARY_TOP_FINDINGS,
   type LintCheckName,
   type LintFinding,
   runLint,
   type StagedActionLintItem,
   type TensionHealth,
+  TIER0_LINT_CHECKS,
 } from "../curation/lint.js";
+import { renderLedgerKeeper } from "../curation/lint-voice.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import type { ReviewThroughputSummary } from "../curation/review-throughput.js";
 import type { ShadowLintSummary } from "../curation/shadow.js";
@@ -45,6 +50,7 @@ import { loadTensionClusters, type TensionClustersResult } from "../curation/ten
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -940,24 +946,7 @@ const provenanceOutputSchema: Record<string, unknown> = {
 // report is a wall. The `content` channel gets counts plus a handful of
 // findings, one line each; the full report still rides the structured channel.
 
-// The tier-0 checks (#232) are certain structural failures rather than
-// advisory judgments — they lead the summary and its top-findings list.
-const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
-  "brokenSourceRefs",
-  "lifecycleConflicts",
-  "schemaInvalid",
-  "domainLeaks",
-];
-
-const LINT_SUMMARY_TOP_FINDINGS = 6;
-const LINT_SUMMARY_DETAIL_CHARS = 110;
-
-function clip(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
-
-function summarizeLint(value: unknown): string {
+export function summarizeLint(value: unknown): string {
   const report = value as VaultLintResult;
 
   const perCheck: string[] = [];
@@ -1005,6 +994,18 @@ function summarizeLint(value: unknown): string {
     }
   }
   return lines.join("\n");
+}
+
+// The vault_lint `content`-channel summary, choosing the voice from the vault's
+// `lint_voice` config. Default (or on any config error) is the plain summary;
+// `ledger_keeper` re-renders the SAME findings in the ledger-keeper register.
+// The structured channel (the VaultLintResult itself) is untouched either way.
+export function lintContentSummary(value: unknown, vaultRoot: string): string {
+  const config = loadConfig(vaultRoot);
+  const voice = config.ok ? config.value.lintVoice : "plain";
+  return voice === "ledger_keeper"
+    ? renderLedgerKeeper(value as VaultLintResult)
+    : summarizeLint(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,7 +1207,7 @@ export const curationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     outputSchema: lintOutputSchema,
-    summarize: summarizeLint,
+    summarize: lintContentSummary,
     handler: (vaultRoot, args, access) => vaultLint(vaultRoot, args, access),
   },
   {

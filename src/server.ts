@@ -342,7 +342,7 @@ export function createServer(
       // A tool with no `summarize` falls back to the pretty-printed value, so
       // this is backward compatible for any tool that has not opted in.
       const summary = tool.summarize
-        ? tool.summarize(result.value)
+        ? tool.summarize(result.value, vaultRoot)
         : JSON.stringify(result.value, null, 2);
       const links = tool.docLinks ? tool.docLinks(result.value) : [];
       return {
