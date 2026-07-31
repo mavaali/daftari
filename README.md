@@ -115,6 +115,9 @@ open exposure, contested claims with stake at risk, the settled book
 deterministic; includes the flat-curve monitor so a single-author vault is
 reported as uninformative rather than as signal.
 
+<details>
+<summary><b>The full per-category tool registry and the tool-tier config (▸ expand for full reference)</b></summary>
+
 **Search:** `vault_search` (hybrid BM25 + vector; hits carry their unresolved
 tensions inline and foreground the current source of superseded documents),
 `vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
@@ -156,6 +159,8 @@ so an agent holding a cached tool name keeps working across a tier change.
 Unknown names in `include`/`exclude` warn at startup and are ignored, so a
 config written for a newer daftari still loads.
 
+</details>
+
 **Evaluate (opt-in, requires an Anthropic API key):** `daftari eval` — scores how
 well an LLM can use the curation surface to answer multi-hop questions about the
 vault. See the [design spec](docs/superpowers/specs/2026-05-31-cortex-quality-metric-design.md)
@@ -179,7 +184,13 @@ hold each to the right standard.
 
 ## Access control
 
-No user-management system. Roles live in config, the server starts with one:
+No user-management system. Roles live in config, the server starts with one.
+No `--role` or an unknown name falls back to deny-all. An agent identity is
+just a role too — e.g. a `curation-loop` role that reads and writes but leaves
+`ratify` off: the agent proposes, humans ratify.
+
+<details>
+<summary><b>Roles config example (▸ expand for full reference)</b></summary>
 
 ```yaml
 roles:
@@ -196,9 +207,7 @@ roles:
     ratify: true   # may approve/reject staged actions and contest edges
 ```
 
-No `--role` or an unknown name falls back to deny-all. An agent identity is
-just a role too — e.g. a `curation-loop` role that reads and writes but leaves
-`ratify` off: the agent proposes, humans ratify.
+</details>
 
 ## File format
 
@@ -237,7 +246,17 @@ later agents can take as settled, `questions_raised` is where to build next.
 the file records **transaction time** — when the vault came to believe
 something; these record **valid time** — when the claim was true in the world. A
 document edited this morning can describe a price that stopped applying in
-March, and only the second axis can tell you so.
+March, and only the second axis can tell you so. That makes supersession
+checkable rather than merely asserted:
+
+```bash
+daftari asof 2026-04-01 --valid 2026-01-15
+```
+
+"On April 1st, what did the vault believe was true on January 15th?"
+
+<details>
+<summary><b>Half-open valid-time intervals and the authoring rules (▸ expand for full reference)</b></summary>
 
 The window is half-open — `[valid_from, valid_until)` — so `valid_until` is the
 first day the claim no longer held, and a successor's `valid_from` is exactly
@@ -246,15 +265,9 @@ fields are optional and always authored: nothing derives them from git dates or
 mtime, because that would manufacture a claim nobody made. Both null means
 unknown, which is never read as "always true".
 
-That makes supersession checkable rather than merely asserted:
-
-```bash
-daftari asof 2026-04-01 --valid 2026-01-15
-```
-
-"On April 1st, what did the vault believe was true on January 15th?"
-
 Full field reference in <docs/file-format.md>.
+
+</details>
 
 ## Adopting an existing vault
 
@@ -318,6 +331,9 @@ adds opt-in **trust signals** — raw credibility indicators (provenance,
 verification, lifecycle, freshness), never computed scores — and Daftari maps
 them from/to its native metadata.
 
+<details>
+<summary><b>OKF export / import field-mapping and the <code>daftari okf</code> commands (▸ expand for full reference)</b></summary>
+
 **Export** renders the vault as a portable OKF bundle — every doc becomes an OKF
 concept doc (the core `type` / `title` / `description` / `resource` / `tags`
 fields, plus a verbatim `daftari` sidecar for lossless round-trip), with
@@ -354,6 +370,8 @@ daftari okf import ./okf-bundle --into ./my-vault --dry-run
 daftari okf import ./okf-bundle --into ./my-vault
 ```
 
+</details>
+
 ## Server mode (self-hosted)
 
 By default daftari is a per-user stdio process. `daftari serve` starts the
@@ -367,7 +385,10 @@ daftari serve --vault ./my-vault --bind 0.0.0.0 --port 9000
 
 Identity is **per MCP session**, resolved when the session opens, so every
 RBAC and existence-disclosure rule applies per connection with zero tool
-changes. Two composable auth schemes, both declared in config:
+changes. Two composable auth schemes, both declared in config.
+
+<details>
+<summary><b>Auth config (bearer tokens + OAuth 2.1) and the fail-loud posture (▸ expand for full reference)</b></summary>
 
 ```yaml
 server:
@@ -395,11 +416,16 @@ loopback configuration. A running server also refuses to be silently killed:
 stray stdio invocations against the same vault refuse to start, and replacing
 a live holder requires a deliberate `daftari serve --takeover`.
 
+</details>
+
 ## Storage backing
 
 A self-hosted vault can push to durable object storage (#6). The local git
 working copy stays canonical — reads, writes, auto-commits, locks, and the
-index all stay exactly as above — and the backing is a dumb sync target:
+index all stay exactly as above — and the backing is a dumb sync target.
+
+<details>
+<summary><b>Storage config, <code>daftari sync</code> commands, and sync semantics (▸ expand for full reference)</b></summary>
 
 ```yaml
 # .daftari/config.yaml
@@ -428,6 +454,8 @@ as optional dependencies — install the one you use; credentials come from the
 SDK's standard environment chain, never from vault config. GCS is reached via
 its S3-interoperability endpoint. Restore refuses non-empty directories and
 reindexes when done.
+
+</details>
 
 ## How it compares
 
@@ -541,6 +569,9 @@ staleness check still runs over the in-repo link graph.
   Catches the case where you keep touching an index page while the docs it
   links to are rotting.
 
+<details>
+<summary><b>Sample output, CI integration, exit codes, CLI flags, and the full <code>audit.yaml</code> schema (▸ expand for full reference)</b></summary>
+
 ### Sample output
 
 ```markdown
@@ -635,6 +666,8 @@ fail_on:
   transitive_staleness: 100          # default: generous; teams tune
 ```
 
+</details>
+
 ## The vault as witness — and the wager layer
 
 Every write already carries an identity, every proposal an outcome, every
@@ -648,10 +681,15 @@ The balance is arithmetic on recorded facts — advisory, provisional
 constants, nothing enforced: routing a high-stakes write to the agent with
 the earned balance is your policy, not the vault's.
 
+<details>
+<summary><b>The two kill conditions that travel with the tool (▸ expand for full reference)</b></summary>
+
 Both kill conditions from the design travel with the tool: the flat-curve
 monitor (one author ≥95% of writes → curves declared uninformative) and the
 longitudinal write-volume series (if stake-fear suppresses honest claims, it
 shows up here first).
+
+</details>
 
 ## Circadian memory
 
