@@ -54,6 +54,13 @@ It resolves only by discovery — a real edge — never by invention. The agent
 compiles; the vault preserves; *you* keep the judgment. See
 [the manifesto](docs/manifesto.md) for the full argument.
 
+```mermaid
+flowchart TD
+    A[Two docs disagree] --> B{Is there a real edge?<br/>source / supersession link}
+    B -- yes --> C[Supersede: one current,<br/>lineage preserved]
+    B -- no --> D[Tension: both held open, live]
+```
+
 ## What it is
 
 A directory of markdown files with YAML frontmatter, exposed to agents as 27
@@ -166,8 +173,8 @@ Going stale is a problem to fix.
 **Generative** documents speculate. A moonshot sketch, a brainstorm, a “what
 if.” Going stale is expected, not a defect.
 
-The same curation rules applied uniformly would either nag about every
-brainstorm or quietly trust every stale fact. The domain split lets the system
+Applied uniformly, the same curation rules would either nag about every
+brainstorm or wave through every stale fact. The domain split lets the system
 hold each to the right standard.
 
 ## Access control
@@ -228,7 +235,7 @@ later agents can take as settled, `questions_raised` is where to build next.
 
 `valid_from` / `valid_until` are the second temporal axis. Everything else in
 the file records **transaction time** — when the vault came to believe
-something. These record **valid time**: when the claim was true in the world. A
+something; these record **valid time** — when the claim was true in the world. A
 document edited this morning can describe a price that stopped applying in
 March, and only the second axis can tell you so.
 
@@ -621,10 +628,12 @@ never taxed). A claim later corrected by a ruling or retired by someone else
 burns the stake; a claim maintained through a full TTL cycle earns credit.
 The balance is arithmetic on recorded facts — advisory, provisional
 constants, nothing enforced: routing a high-stakes write to the agent with
-the earned balance is your policy, not the vault's. Both kill conditions
-from the design travel with the tool: the flat-curve monitor (one author ≥95%
-of writes → curves declared uninformative) and the longitudinal write-volume
-series (if stake-fear suppresses honest claims, it shows up here first).
+the earned balance is your policy, not the vault's.
+
+Both kill conditions from the design travel with the tool: the flat-curve
+monitor (one author ≥95% of writes → curves declared uninformative) and the
+longitudinal write-volume series (if stake-fear suppresses honest claims, it
+shows up here first).
 
 ## Circadian memory
 
