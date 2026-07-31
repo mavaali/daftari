@@ -69,6 +69,15 @@ export function registeredToolNames(): string[] {
   return allTools.map((t) => t.name);
 }
 
+// The full registry, for callers that need a tool's annotations rather than
+// just its name — the fence detector's coverage guard reads destructiveHint
+// from here. Exposed as a function so `allTools` stays the single place a tool
+// is registered: a guard that re-lists the arrays itself can silently miss one,
+// which is exactly how tier1Tools and tier2Tools were once left out.
+export function registeredTools(): readonly ToolDefinition[] {
+  return allTools;
+}
+
 // Tool-exposure tiers (#103). Tiers are additive: standard = core + its own
 // list; full = the whole registry (never enumerated, so a new tool is
 // full-tier by default and only joins a leaner tier deliberately).

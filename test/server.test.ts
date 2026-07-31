@@ -66,3 +66,20 @@ describe("tool exposure tiers (#103/#104)", () => {
     expect(exposed.size).toBe(CORE_TOOLS.length);
   });
 });
+
+// docs/architecture.md states the stdio tool count in two places: the opening
+// paragraph and the layered-model diagram. Both went stale at #240 — the number
+// said 25 while the registry had grown to 33 — because nothing tied the prose to
+// the registry. A reader who trusts the number to decide whether a tool exists
+// is misled by exactly the drift this pins.
+describe("architecture.md's tool count", () => {
+  it("matches the registry, in both places it is stated", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const doc = await readFile(new URL("../docs/architecture.md", import.meta.url), "utf8");
+    const stated = [...doc.matchAll(/(\d+) tools/g)].map((m) => Number(m[1]));
+
+    // Two sites, so a future edit that fixes one and forgets the other fails.
+    expect(stated).toHaveLength(2);
+    for (const n of stated) expect(n).toBe(registeredToolNames().length);
+  });
+});
