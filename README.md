@@ -431,13 +431,31 @@ reindexes when done.
 
 ## How it compares
 
-|                    |AGENTS.md        |RAG                          |Daftari                              |
-|--------------------|-----------------|-----------------------------|-------------------------------------|
-|Who writes?         |Humans           |Nobody (retrieval only)      |Agents + humans                      |
-|Scales?             |One file, doesn’t|Scales storage, not coherence|Structured collections with lifecycle|
-|Knowledge compounds?|No               |No                           |Yes, draft → canonical → deprecated  |
-|Contradictions?     |Invisible        |Invisible                    |Tension log surfaces them            |
-|Staleness?          |Silent           |Silent                       |TTL-based decay with advisory lint   |
+The real question a memory layer has to answer: **what happens when two facts
+contradict?**
+
+| What happens to a contradiction? | Systems |
+|---|---|
+| Invisible | AGENTS.md, RAG |
+| Synthesis-overwrite (association only) | Mem0 (OSS), ChatGPT / Claude memory, Glean |
+| New wins, old tagged-invalid | Zep / Graphiti, Sentra |
+| Resolved by graph / majority-vote | Cognee, ElephantBroker |
+| **Held open, live & queryable** | **Daftari** |
+
+And the honest cost, since compounding isn't free:
+
+| Who has to do the curation work? | |
+|---|---|
+| RAG | Nobody — retrieval only, zero authoring cost |
+| AGENTS.md | One file, hand-maintained |
+| **Daftari** | **An agent (or human) curates — the heaviest of the three, and the reason knowledge compounds** |
+
+> The nearest formal prior art is **TOKI** ([arXiv 2606.06240](https://arxiv.org/abs/2606.06240),
+> with a [reference implementation](https://github.com/ZenAlexa/toki-bitemporal-memory)):
+> a bitemporal operator algebra whose opt-in `await-confirmation` operator can hold a
+> contradiction open. The line: TOKI resolves at write time (hold-open is one of four
+> operators) and keeps the loser in an *archival* audit row; Daftari makes non-resolution
+> the *default* and keeps both facts *live and queryable* in retrieval.
 
 ## What’s not in v1
 
