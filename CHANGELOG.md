@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-07-30
 
 ### Changed
 
@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field. If your field meant something other than a closed valid-time interval,
   rename the extension (e.g. `effective_from`). The error message states the
   fix.
+
+### Security
+
+- `npm audit fix` across root and `packages/router`: bumped
+  `@modelcontextprotocol/sdk` (1.29.0 → 1.30.0) and `@hono/node-server`
+  (1.19.15 → 1.19.17), clearing the router's two moderate advisories. The
+  remaining root advisories (sharp/libvips, and the
+  `@huggingface/transformers` → `onnxruntime-node` → `adm-zip` chain) have no
+  non-breaking fix available and are left for a dependency swap.
 
 ## [1.32.0] - 2026-07-25
 
