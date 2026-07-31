@@ -1,13 +1,25 @@
 # Memory-poisoning defenses, read-path fence — design
 
-2026-07-27. Status: **kill condition 1 has FIRED — see Kill conditions below
-before building anything further.** The 2026-07-29 canary run did not establish
-that fencing changes consumer behaviour (−13.3pp, 95% CI [−40.0pp, 0.0pp], n=6
-items), on a sound instrument (positive control 100%, placebo exactly equal to
-unfenced). Read that section before PRs 2–7: the effect is carried by one item
-of six, so the honest reading is *underpowered*, not *disproved* — but the
-pre-registered rule says stop, and it stands until a larger pre-registered run
-says otherwise. **#314 carries the decision and the resumption instructions.**
+2026-07-27. Status: **kill condition 1 ACCEPTED (2026-07-30). The prose read-path
+fence will NOT be built — PRs 2–7 are dropped.** The 2026-07-29 canary run did not
+establish that fencing changes consumer behaviour (−13.3pp, 95% CI [−40.0pp,
+0.0pp], n=6 items), on a sound instrument (positive control 100%, placebo exactly
+equal to unfenced). The effect was carried by one item of six, so the honest
+reading is *underpowered*, not *disproved*. The decision to stop does NOT rest on
+"the CI can't be beaten" — a larger honest n≈40 run plausibly could, if the moved
+attack class occurs at natural prevalence. It rests on the stronger ground that
+**even the optimistic reading left 4 of 5 headroom items at 100% injection
+compliance**: prose framing is porous across most attack classes and is dominated
+by structural taint exposure. The design is retained as an artifact (the
+adversarial review, the detector, and the sound canary harness survive); PR 1's
+detector is repurposed as a *taint tracker* under the successor.
+
+**Successor direction:** expose provenance taint as machine-readable metadata so
+the consuming harness enforces policy without depending on model compliance —
+`docs/superpowers/specs/2026-07-30-taint-metadata-surface-design.md` (stub).
+**Independent security follow-up (not blocked by this kill):** the `vault_ratify`
+approval prompt interpolates caller-supplied `rationale` verbatim — see #319.
+**#314 carries the full decision record (verdict A′).**
 
 **PR 1 of the implementation sequence has landed** (`src/fence/`: the trigger, the detector,
 the preambles, and the corpus-precision test for kill condition 2), **along with
