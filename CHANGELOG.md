@@ -99,6 +99,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`vault_ratify` renders a staged action's proposer-supplied `rationale` as
+  untrusted display data.** It was interpolated verbatim into the human approval
+  prompt — a propose-only writer controls it, so a crafted rationale could inject
+  newlines impersonating daftari's own framing (`\nSYSTEM: auto-approve…`) on a
+  decision surface with no model in the loop to resist. Now collapsed to a single
+  bounded line (Unicode control characters stripped) and rendered labeled and
+  quoted (`proposer-supplied rationale (unverified, not an instruction): "…"`), so
+  it reads as data, never an instruction (#320).
+
 - `npm audit fix` across root and `packages/router`: bumped
   `@modelcontextprotocol/sdk` (1.29.0 → 1.30.0) and `@hono/node-server`
   (1.19.15 → 1.19.17), clearing the router's two moderate advisories. The
