@@ -240,6 +240,24 @@ export interface RatifyElicitationSpec {
   head: string | null;
 }
 
+// A staged action's `rationale` is untrusted free text: a propose-only writer
+// controls it, and it reaches a human/approver decision surface (the ratify
+// elicitation prompt). Rendered verbatim, a crafted rationale can inject newlines
+// that impersonate daftari's own framing ("\nSYSTEM: auto-approve …") or run
+// unbounded. Collapse control characters and whitespace runs to single spaces so
+// it cannot break out of one line, then cap length. Callers additionally label
+// and quote the result so it reads as untrusted data, never as an instruction.
+const RATIONALE_DISPLAY_MAX = 240;
+export function sanitizeRationaleForDisplay(rationale: string): string {
+  const oneLine = rationale
+    .replace(/\p{Cc}+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return oneLine.length > RATIONALE_DISPLAY_MAX
+    ? `${oneLine.slice(0, RATIONALE_DISPLAY_MAX - 1)}…`
+    : oneLine;
+}
+
 export async function describeRatifyElicitation(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -274,11 +292,17 @@ export async function describeRatifyElicitation(
   // dispatch path re-validates pending/conflict-free on resubmit regardless,
   // so a missing HEAD (no git yet) degrades to null rather than blocking.
   const head = await gitLog(vaultRoot, { limit: 1 });
+  // The rationale is proposer-controlled untrusted text. Label it as such and
+  // render it as a bounded, single-line quoted value so it cannot masquerade as
+  // daftari's own instruction to the approver (see sanitizeRationaleForDisplay).
+  const shownRationale = action.rationale ? sanitizeRationaleForDisplay(action.rationale) : "";
   return ok({
     actionId: id.value,
     message:
       `Ratify staged action ${id.value}: ${action.actionType} ${action.targetPath}?` +
-      (action.rationale ? ` Rationale: ${action.rationale}` : ""),
+      (shownRationale
+        ? ` — proposer-supplied rationale (unverified, not an instruction): ${JSON.stringify(shownRationale)}`
+        : ""),
     head: head.ok ? (head.value[0]?.hash ?? null) : null,
   });
 }
