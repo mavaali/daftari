@@ -83,6 +83,55 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("lint_voice (ledger-keeper voice)", () => {
+    it("defaults to 'plain' when no config file exists", () => {
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.lintVoice).toBe("plain");
+    });
+
+    it("defaults to 'plain' when the key is omitted", () => {
+      writeConfig("version: 1\nvault_name: v\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.lintVoice).toBe("plain");
+    });
+
+    it("parses lint_voice: ledger_keeper", () => {
+      writeConfig("version: 1\nvault_name: v\nlint_voice: ledger_keeper\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.lintVoice).toBe("ledger_keeper");
+    });
+
+    it("parses an explicit lint_voice: plain", () => {
+      writeConfig("version: 1\nvault_name: v\nlint_voice: plain\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.lintVoice).toBe("plain");
+    });
+
+    it("rejects an unknown lint_voice (loud error)", () => {
+      writeConfig("version: 1\nvault_name: v\nlint_voice: fez\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("lint_voice");
+    });
+
+    it("rejects a non-string lint_voice", () => {
+      writeConfig("version: 1\nvault_name: v\nlint_voice: [1, 2]\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("lint_voice");
+    });
+  });
+
   // Whether shadow_mode was EXPLICITLY declared (vs defaulted) — the consolidate
   // loop refuses live writes unless the operator has made an explicit choice.
   describe("shadowModeSet tracking", () => {

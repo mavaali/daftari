@@ -612,7 +612,11 @@ Three of its concerns are simple enough to state in a line:
   anywhere in the vault. Since joined by tier demotions, the tier 0 referential
   checks (broken source refs, lifecycle conflicts, schema conformance, domain
   leaks), and valid-time conflicts. The authoritative list is `LINT_CHECKS` in
-  `src/curation/lint.ts`; the tool's `filter` enum reads it directly.
+  `src/curation/lint.ts`; the tool's `filter` enum reads it directly. The
+  `content`-channel summary honors an optional `lint_voice` key in
+  `.daftari/config.yaml` (`plain`, the default, or `ledger_keeper` for the
+  ledger-keeper register); it re-words the same findings without touching the
+  structured output.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.

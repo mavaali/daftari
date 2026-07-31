@@ -236,6 +236,11 @@ export interface DaftariConfig {
   // static `.git` file while git's churn lives off-cloud. Always resolved
   // outside the vault.
   gitDir?: string;
+  // Human-facing voice for vault_lint's `content` channel. "plain" (default) is
+  // the compact summary; "ledger_keeper" re-renders the same findings in the
+  // ledger-keeper register. Presentation only — the structured lint payload is
+  // identical under either voice.
+  lintVoice: "plain" | "ledger_keeper";
   // Sleep tension-scan budgets/attribution (`tension_scan` block). Always
   // populated — defaults when the block is absent.
   tensionScan: TensionScanConfig;
@@ -270,6 +275,7 @@ function emptyConfig(): DaftariConfig {
     shadowMode: false,
     shadowModeSet: false,
     gitDir: undefined,
+    lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
     server: { tokens: [] },
@@ -966,6 +972,25 @@ function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefin
   return ok(gitDirAbs);
 }
 
+// The permitted values for the `lint_voice` config key. "plain" is the default
+// compact vault_lint summary; "ledger_keeper" re-renders the same findings in
+// the ledger-keeper register. Voice is presentation only.
+const LINT_VOICES = ["plain", "ledger_keeper"] as const;
+type LintVoice = (typeof LINT_VOICES)[number];
+
+// Resolves the optional `lint_voice` value to a concrete voice, defaulting to
+// "plain" when absent. An unknown string or a non-string is a loud config error
+// rather than a silent fall-through — the vault owner picks the voice explicitly.
+function resolveLintVoice(raw: unknown): Result<LintVoice, Error> {
+  if (raw === undefined || raw === null) return ok("plain");
+  if (typeof raw !== "string" || !(LINT_VOICES as readonly string[]).includes(raw)) {
+    return err(
+      new Error(`malformed config: 'lint_voice' must be one of: ${LINT_VOICES.join(", ")}`),
+    );
+  }
+  return ok(raw as LintVoice);
+}
+
 // mtime-keyed cache for loadConfig (finding E2). loadConfig sits on the write
 // hot path — 7 call sites in tools/write.ts invoke it per handler while the
 // write lock is held, each doing a readFileSync + full YAML parse + full
@@ -1131,6 +1156,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const gitDir = resolveGitDir(root.git_dir, vaultRoot);
   if (!gitDir.ok) return gitDir;
 
+  const lintVoice = resolveLintVoice(root.lint_voice);
+  if (!lintVoice.ok) return lintVoice;
+
   const tensionScan = validateTensionScan(root.tension_scan);
   if (!tensionScan.ok) return err(new Error(`malformed config: ${tensionScan.error.message}`));
 
@@ -1220,6 +1248,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode,
     shadowModeSet,
     gitDir: gitDir.value,
+    lintVoice: lintVoice.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,
     server: serverConfig.value,

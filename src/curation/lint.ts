@@ -67,6 +67,31 @@ export interface LintFinding {
   detail: string;
 }
 
+// The tier-0 checks (#232) are certain structural failures rather than advisory
+// judgments — they lead the content-channel summary and its top-findings list.
+// Shared by every content-channel renderer (the plain summary and the
+// ledger-keeper voice) so they select and order the same findings.
+export const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
+  "brokenSourceRefs",
+  "lifecycleConflicts",
+  "schemaInvalid",
+  "domainLeaks",
+];
+
+// Content-channel budget (Decision 3): the compact `content` summary shows counts
+// plus a capped handful of findings, one line each; the full report still rides
+// the structured channel. Both the plain and ledger-keeper renderers honor these.
+export const LINT_SUMMARY_TOP_FINDINGS = 6;
+export const LINT_SUMMARY_DETAIL_CHARS = 110;
+
+// Collapses whitespace and truncates to `max` chars with an ellipsis. Shared by
+// the content-channel renderers so a finding's detail clips identically regardless
+// of voice.
+export function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 // Tension health: aggregate counts for the curation engine's tension log.
 // Added in Phase 1 of the tension graph plan (2026-05-31). Surfaces the
 // taxonomy and resolution distribution without flagging anything as a

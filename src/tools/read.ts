@@ -64,8 +64,10 @@ export interface ToolDefinition {
   // were too lazy to write down (spec 2026-07-26, Decision 3).
   outputSchema: Record<string, unknown>;
   // Compact model-facing summary for the `content` channel. Absent, the
-  // bridge falls back to pretty-printed JSON of the full value.
-  summarize?: (value: unknown) => string;
+  // bridge falls back to pretty-printed JSON of the full value. `vaultRoot` is
+  // supplied so a summary can consult per-vault config (e.g. vault_lint's
+  // `lint_voice`); summaries that don't need it simply ignore the argument.
+  summarize?: (value: unknown, vaultRoot: string) => string;
   // Vault-relative doc paths the result references; the bridge emits a
   // daftari://doc/{path} resource_link per entry. Paths must already be
   // read-gated by the handler (links inherit read-gating by construction).
