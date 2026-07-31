@@ -14,6 +14,18 @@ Daftari is the **long-term memory cortex for your LLM agents** — a persistent,
 structured vault they read, write, and curate over time, **portable across any
 model.** A cortex, not a clipboard.
 
+## Contents
+
+**Why Daftari** — [Rent the brain, own the memory](#rent-the-brain-own-the-memory) · [Not a second brain](#not-a-second-brain) · [It remembers, it doesn't resolve](#it-remembers--it-doesnt-resolve-for-you) · [How it compares](#how-it-compares)
+
+**Concepts** — [What it is](#what-it-is) · [The four layers](#the-four-layers) · [Two kinds of knowledge](#two-kinds-of-knowledge) · [File format](#file-format)
+
+**The rituals** — [The tools](#the-tools) · [Circadian memory](#circadian-memory) · [Tension Court](#tension-court) · [The principal interview](#the-principal-interview) · [Belief archaeology](#belief-archaeology) · [The vault as witness](#the-vault-as-witness--and-the-wager-layer) · [Coherence audit](#coherence-audit)
+
+**Running it** — [Access control](#access-control) · [Server mode](#server-mode-self-hosted) · [Storage backing](#storage-backing) · [Adopting a vault + OKF](#adopting-an-existing-vault)
+
+**Reference** — [What's not in v1](#whats-not-in-v1) · [Development](#development) · [Documentation](#documentation) · [Integrations](#integrations) · [Privacy](#privacy) · [License](#license)
+
 <!-- Why Daftari -->
 
 ## Rent the brain, own the memory
