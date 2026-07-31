@@ -1,0 +1,33 @@
+name: langchain-daftari tests
+
+on:
+  push:
+    paths:
+      - 'integrations/langchain/**'
+      - '.github/workflows/langchain-daftari-tests.yml'
+  pull_request:
+    paths:
+      - 'integrations/langchain/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        langchain-core: ['>=0.3,<0.4', '>=1,<2']
+    defaults:
+      run:
+        working-directory: integrations/langchain
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install with pinned langchain-core
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[dev]" "langchain-core${{ matrix.langchain-core }}"
+      - name: Run mock suite
+        # Invoke the venv python directly. Do NOT use `uv run` here — it
+        # re-resolves from pyproject.toml and silently drops the matrix pin
+        # installed above, collapsing both cells to the same langchain-core.
+        run: .venv/bin/python -m pytest -m "not integration" -v
