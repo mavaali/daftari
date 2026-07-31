@@ -203,11 +203,16 @@ themselves cleanly if `npx` isn't on PATH.
 
 This is **phase 1** — a thin LangChain tool wrapper over the daftari MCP
 surface. `DaftariClient` is deliberately LangChain-free so the same transport
-primitive can carry phase 2:
+primitive can serve future integrations.
 
-- **Phase 2** — `DaftariStore(BaseStore)` for LangGraph long-term memory, so
-  daftari can sit behind the `store=` arg on `create_react_agent` and behind
-  `MemorySaver` for thread-scoped state.
+**What's next — read-side LangMem audit:** The decided direction for phase 2 is
+a read-side audit layer that productizes the existing `langgraph-store-demo`.
+Rather than acting as a write-back store, daftari reads whatever store LangMem
+already writes (e.g. Postgres), imports those memories read-only, runs tension
+detection against the vault, and compiles claim notes. `BaseStore`'s flat
+`put()` seam can't carry daftari's compiled-note / provenance / tension value at
+write time, so being a store backend would deliver none of daftari's
+differentiation.
 
 Out of scope for this release: an async-first user surface, LangServe deployers,
 and any opinionated retriever / chain abstractions on top of the raw tools.

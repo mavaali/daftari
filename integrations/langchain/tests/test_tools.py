@@ -256,3 +256,32 @@ def test_annotations_become_tool_metadata():
     assert md.get("readOnlyHint") is True
     assert md.get("destructiveHint") is False
     assert md.get("openWorldHint") is True
+
+
+def test_tool_converts_to_wellformed_model_facing_schema():
+    """The model-facing function schema (what bind_tools emits) must preserve
+    the raw MCP inputSchema. This is the langchain-core version-sensitive path."""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "vault-relative file path"},
+            "limit": {"type": "integer", "default": 10},
+        },
+        "required": ["path"],
+    }
+    client = _FakeClient(
+        [_FakeTool("vault_search", "search the vault", input_schema=schema)]
+    )
+    [tool] = create_daftari_tools(client)
+
+    oai = convert_to_openai_tool(tool)
+
+    assert oai["type"] == "function"
+    fn = oai["function"]
+    assert fn["name"] == "vault_search"
+    params = fn["parameters"]
+    assert params["properties"]["path"]["type"] == "string"
+    assert params["properties"]["limit"]["type"] == "integer"
+    assert "path" in params["required"]

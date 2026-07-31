@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-daftari"
-version = "0.1.0"
+version = "0.1.1"
 description = "LangChain integration for Daftari — wrap a Daftari MCP vault as LangChain tools."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,6 @@ classifiers = [
 ]
 dependencies = [
     "langchain-core>=0.3.0",
-    "langchain-mcp-adapters>=0.1.0",
     "mcp>=1.0.0",
     "pydantic>=2.0",
 ]
