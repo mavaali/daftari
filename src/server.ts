@@ -20,6 +20,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
+import { canonTools } from "./tools/canon.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
 import { edgeStalenessTools } from "./tools/edge-staleness.js";
@@ -50,6 +51,7 @@ export const SERVER_VERSION = manifest.version;
 const allTools: ToolDefinition[] = [
   ...readTools,
   ...receiptTools,
+  ...canonTools,
   ...witnessTools,
   ...searchTools,
   ...themesTools,
