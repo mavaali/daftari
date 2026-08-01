@@ -11,6 +11,8 @@ describe("parseConfig", () => {
       agentMaxIterations: 6,
       timestamps: "on",
       answererTransport: "anthropic",
+      compile: "raw",
+      authoringModel: "claude-opus-4-8",
     });
   });
 
@@ -27,6 +29,8 @@ describe("parseConfig", () => {
       agentMaxIterations: 10,
       timestamps: "on",
       answererTransport: "anthropic",
+      compile: "raw",
+      authoringModel: "claude-sonnet-4-5",
     });
   });
 
@@ -85,5 +89,42 @@ describe("parseConfig", () => {
     expect(parseConfig({ answererModel: model, maxSearchResults: 1.5 }).ok).toBe(false);
     expect(parseConfig({ answererModel: model, maxSearchResults: "15" }).ok).toBe(false);
     expect(parseConfig({ answererModel: model, agentMaxIterations: 0 }).ok).toBe(false);
+  });
+
+  it("defaults compile to raw", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.compile).toBe("raw");
+  });
+
+  it("honors explicit compile: write", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8", compile: "write" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.compile).toBe("write");
+  });
+
+  it("honors explicit compile: write+consolidate", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8", compile: "write+consolidate" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.compile).toBe("write+consolidate");
+  });
+
+  it("errors on an invalid compile value", () => {
+    expect(parseConfig({ answererModel: "claude-opus-4-8", compile: "nope" }).ok).toBe(false);
+  });
+
+  it("defaults authoringModel to answererModel when omitted", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.authoringModel).toBe("claude-opus-4-8");
+  });
+
+  it("honors an explicit authoringModel", () => {
+    const result = parseConfig({
+      answererModel: "claude-opus-4-8",
+      authoringModel: "claude-sonnet-5",
+    });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.authoringModel).toBe("claude-sonnet-5");
   });
 });
