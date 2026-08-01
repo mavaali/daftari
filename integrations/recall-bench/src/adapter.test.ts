@@ -18,9 +18,57 @@ import type {
   LlmClient,
   CompleteWithToolsOpts,
 } from "../../../dist/eval/llm.js";
-import { createDaftariAdapter, assertCleanReindex, isUnderTmpdir } from "./adapter.js";
+import {
+  createDaftariAdapter,
+  assertCleanReindex,
+  isUnderTmpdir,
+  resolveAnswererClient,
+} from "./adapter.js";
+import { parseConfig } from "./config.js";
 
 const RUN = !!process.env.RB_INTEGRATION;
+
+// A no-op LlmClient stub — enough to assert identity selection without network.
+const stubLlm = {
+  completeWithTools: async () => ok({ text: "", tool_calls: [] }),
+} as unknown as LlmClient;
+
+function cfgWith(over: Record<string, unknown>) {
+  const r = parseConfig({ answererModel: "x", ...over });
+  if (!r.ok) throw new Error(r.error.message);
+  return r.value;
+}
+
+describe("resolveAnswererClient", () => {
+  it("returns an injected client verbatim, ignoring transport", () => {
+    const cfg = cfgWith({ answererTransport: "openrouter" });
+    expect(resolveAnswererClient(cfg, { llm: stubLlm })).toBe(stubLlm);
+  });
+
+  it("builds an openrouter client (completeWithTools present) when the key is set", () => {
+    const prev = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    try {
+      const client = resolveAnswererClient(cfgWith({ answererTransport: "openrouter" }), {});
+      expect(typeof client.completeWithTools).toBe("function");
+    } finally {
+      if (prev === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = prev;
+    }
+  });
+
+  it("throws a clear error for the openrouter transport with no key", () => {
+    const prev = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    try {
+      expect(() => resolveAnswererClient(cfgWith({ answererTransport: "openrouter" }), {})).toThrow(
+        /OPENROUTER_API_KEY/,
+      );
+    } finally {
+      if (prev !== undefined) process.env.OPENROUTER_API_KEY = prev;
+    }
+  });
+});
 
 // A clean baseline ReindexResult: every confound guard passes.
 function cleanResult(over: Partial<ReindexResult> = {}): ReindexResult {

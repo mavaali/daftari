@@ -7,6 +7,12 @@ import { ok, err, type Result } from "../../../dist/frontmatter/types.js";
 
 export type TimestampsAxis = "on" | "off";
 
+// Which LLM the answerer talks to. "anthropic" uses the native @anthropic-ai/sdk
+// client (needs ANTHROPIC_API_KEY); "openrouter" routes through OpenRouter
+// (needs OPENROUTER_API_KEY) — the escape hatch when no billed Anthropic key is
+// exposed. answererModel must be a slug the chosen transport understands.
+export type AnswererTransport = "anthropic" | "openrouter";
+
 export interface AdapterConfig {
   answererModel: string;
   maxSearchResults: number;
@@ -14,11 +20,13 @@ export interface AdapterConfig {
   // The timestamps axis: when "off", calendar dates are scrubbed from the tool
   // output the answerer sees. Defaults to "on" (production-faithful).
   timestamps: TimestampsAxis;
+  answererTransport: AnswererTransport;
 }
 
 const DEFAULT_MAX_SEARCH_RESULTS = 15;
 const DEFAULT_AGENT_MAX_ITERATIONS = 6;
 const DEFAULT_TIMESTAMPS: TimestampsAxis = "on";
+const DEFAULT_ANSWERER_TRANSPORT: AnswererTransport = "anthropic";
 
 function asPositiveInt(value: unknown, fallback: number): number {
   if (value === undefined || value === null) return fallback;
@@ -48,10 +56,18 @@ export function parseConfig(raw: Record<string, unknown>): Result<AdapterConfig,
   }
   const timestamps: TimestampsAxis = rawTimestamps === undefined ? DEFAULT_TIMESTAMPS : rawTimestamps;
 
+  const rawTransport = raw.answererTransport;
+  if (rawTransport !== undefined && rawTransport !== "anthropic" && rawTransport !== "openrouter") {
+    return err(new Error('config.answererTransport must be "anthropic" or "openrouter"'));
+  }
+  const answererTransport: AnswererTransport =
+    rawTransport === undefined ? DEFAULT_ANSWERER_TRANSPORT : rawTransport;
+
   return ok({
     answererModel: model,
     maxSearchResults,
     agentMaxIterations,
     timestamps,
+    answererTransport,
   });
 }

@@ -1,0 +1,32 @@
+# Timestamp-baseline SMOKE — ARM B (timestamps ON).
+# Production-faithful: the answerer sees calendar dates in tool output.
+# Identical to arm A except `timestamps: "on"` — so B minus A isolates the
+# timestamps-in-context effect.
+persona:
+  id: executive-assistant
+  dir: /Users/mihirwagle/projects/recall-review/packages/recall-bench/personas/executive-assistant
+  arcs: arcs-180d.yaml
+env:
+  file: /Users/mihirwagle/projects/daftari/.worktrees/timestamp-baseline/integrations/recall-bench/.env
+models:
+  judge: openai:openai/gpt-5.4-mini
+harness:
+  adapter: /Users/mihirwagle/projects/daftari/.worktrees/timestamp-baseline/integrations/recall-bench/dist/index.js
+  factory: createDaftariAdapter
+  config:
+    answererModel: anthropic/claude-haiku-4.5
+    answererTransport: "openrouter"
+    maxSearchResults: 6
+    agentMaxIterations: 4
+    timestamps: "on"
+run:
+  ranges:
+    start: 30
+    end: 180
+    step: 30
+  seed: 42
+  sample: 50
+  parallelism: 4
+  timeout: 120000
+  judgeMemoryWindow: 1
+  groupsEnabled: false
