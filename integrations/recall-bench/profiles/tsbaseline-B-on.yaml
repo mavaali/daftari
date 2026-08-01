@@ -16,8 +16,8 @@ harness:
   config:
     answererModel: anthropic/claude-haiku-4.5
     answererTransport: "openrouter"
-    maxSearchResults: 15
-    agentMaxIterations: 6
+    maxSearchResults: 6
+    agentMaxIterations: 4
     timestamps: "on"
 run:
   ranges:
