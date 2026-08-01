@@ -9,9 +9,9 @@
 // stubbed; the search index is real.
 
 import { describe, it, expect } from "vitest";
-import { stat } from "node:fs/promises";
+import { stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { ok } from "../../../dist/frontmatter/types.js";
 import type { ReindexResult } from "../../../dist/search/reindex.js";
 import type {
@@ -239,4 +239,151 @@ describe.skipIf(!RUN)("createDaftariAdapter (integration)", () => {
     await adapter.teardown();
     await expect(stat(vaultRoot)).rejects.toThrow();
   }, 60_000);
+});
+
+// --- compile axis tests ---
+
+// A stub LlmClient for the COMPILER that:
+//   - records all calls made to it (day number embedded in user message)
+//   - on each call, emits a single vault_write tool call for a deterministic path
+//   - captures the user message so tests can assert priorDayPaths growth
+//
+// The stub drives completeWithTools synchronously: it inspects the user prompt,
+// derives a path from the day number, and returns a vault_write tool_call record.
+// We DO NOT call the real toolHandler (no vault I/O needed for hermetic tests) —
+// the adapter only needs the returned tool_calls list to populate notesWritten.
+// The compiler's notesWritten logic reads tool_calls from the LLM response, NOT
+// from real vault writes, so this is sufficient for priorDayPaths-growth assertions.
+function makeCompilerStubLlm(): {
+  llm: LlmClient;
+  calls: Array<{ userMessage: string; returnedPath: string }>;
+} {
+  const calls: Array<{ userMessage: string; returnedPath: string }> = [];
+
+  const llm: LlmClient = {
+    async complete() {
+      return ok({ text: "stub", input_tokens: 1, output_tokens: 1, stop_reason: "end_turn" });
+    },
+    async completeJson() {
+      return ok({
+        text: "stub",
+        parsed: {},
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn",
+      });
+    },
+    async completeWithTools(opts: CompleteWithToolsOpts) {
+      // Extract day number from "## Day N —" in the user message.
+      const match = opts.user.match(/## Day (\d+)/);
+      const dayNum = match ? match[1] : "0";
+      const returnedPath = `topics/day-${dayNum.padStart(4, "0")}-topic.md`;
+
+      calls.push({ userMessage: opts.user, returnedPath });
+
+      // Return a vault_write tool call with the deterministic path.
+      // output must NOT contain tool_error so the compiler includes it in notesWritten.
+      return ok({
+        text: "done",
+        tool_calls: [
+          {
+            tool: "vault_write" as const,
+            input: { path: returnedPath, content: `# Day ${dayNum}` },
+            output: { ok: true },
+            latency_ms: 1,
+          },
+        ],
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn" as const,
+      });
+    },
+  };
+
+  return { llm, calls };
+}
+
+describe("compile axis — hermetic (no MiniLM)", () => {
+  it("compile:write — setup writes WIKI.md into the vault with EA page types", async () => {
+    const { llm } = makeCompilerStubLlm();
+    const adapter = await createDaftariAdapter(
+      { answererModel: "stub-model", compile: "write" },
+      { llm },
+    );
+    const vaultRoot = await adapter.setup();
+
+    const wikiPath = join(vaultRoot, "WIKI.md");
+    const wikiContent = await readFile(wikiPath, "utf8");
+
+    expect(wikiContent).toContain("topics/");
+    expect(wikiContent).toContain("decisions/");
+    expect(wikiContent).toContain("entities/");
+    expect(wikiContent).toContain("tasks/");
+    expect(wikiContent).toContain("tensions/");
+
+    await adapter.teardown();
+  });
+
+  it("compile:write — compiler invoked once per day, priorDayPaths grows across days", async () => {
+    const { llm, calls } = makeCompilerStubLlm();
+    const adapter = await createDaftariAdapter(
+      { answererModel: "stub-model", compile: "write" },
+      { llm },
+    );
+    await adapter.setup();
+
+    const META1 = { dayNumber: 1, date: "2026-01-01", personaId: "persona-a", activeArcs: ["arc1"] };
+    const META2 = { dayNumber: 2, date: "2026-01-02", personaId: "persona-a", activeArcs: ["arc1"] };
+
+    await adapter.ingestDay(1, "Day one content.", META1);
+    await adapter.ingestDay(2, "Day two content.", META2);
+
+    // Compiler was called exactly once per day.
+    expect(calls.length).toBe(2);
+
+    // Day 1 call: no prior paths yet — user message should say "No prior-day pages exist yet."
+    expect(calls[0].userMessage).toContain("No prior-day pages exist yet");
+
+    // Day 2 call: priorDayPaths must include the path written on day 1.
+    const day1Path = calls[0].returnedPath; // e.g. "topics/day-0001-topic.md"
+    expect(calls[1].userMessage).toContain(day1Path);
+
+    await adapter.teardown();
+  });
+
+  it("compile:write+consolidate — ingestDay throws Phase 2 error immediately", async () => {
+    const { llm } = makeCompilerStubLlm();
+    const adapter = await createDaftariAdapter(
+      { answererModel: "stub-model", compile: "write+consolidate" },
+      { llm },
+    );
+    await adapter.setup();
+
+    const META1 = { dayNumber: 1, date: "2026-01-01", personaId: "persona-a", activeArcs: ["arc1"] };
+    await expect(adapter.ingestDay(1, "content", META1)).rejects.toThrow(/Phase 2/);
+
+    await adapter.teardown();
+  });
+
+  it("compile:raw — existing raw behavior is unchanged (no compiler invoked)", async () => {
+    const { llm, calls } = makeCompilerStubLlm();
+    // compile defaults to "raw"; pass llm as the answerer stub only
+    const adapter = await createDaftariAdapter(
+      { answererModel: "stub-model" },
+      { llm },
+    );
+    const vaultRoot = await adapter.setup();
+
+    // WIKI.md should NOT exist for raw mode
+    const wikiPath = join(vaultRoot, "WIKI.md");
+    await expect(stat(wikiPath)).rejects.toThrow();
+
+    const META1 = { dayNumber: 1, date: "2026-01-01", personaId: "persona-a", activeArcs: ["arc1"] };
+    await adapter.ingestDay(1, "Day one content.", META1);
+
+    // Compiler LLM (completeWithTools for authoring) must NOT have been called
+    expect(calls.length).toBe(0);
+
+    await adapter.teardown();
+  });
 });

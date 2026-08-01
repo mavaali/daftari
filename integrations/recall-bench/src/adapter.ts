@@ -26,6 +26,8 @@ import { createAnthropicClient, type LlmClient } from "../../../dist/eval/llm.js
 import { createOpenRouterClient } from "../../../dist/eval/llm-openrouter.js";
 import { parseConfig, type AdapterConfig } from "./config.js";
 import { makeAnswerer, type RetrievalEntry, type ToolCallRecord } from "./answerer.js";
+import { makeCompiler } from "./compiler.js";
+import { EA_WIKI_MD } from "./wiki-schema.js";
 import { mapDay } from "./corpus-map.js";
 import type { DayMetadata } from "./types.js";
 
@@ -105,6 +107,8 @@ export async function createDaftariAdapter(
 
   let vaultRoot: string | null = null;
   let answer: ((q: string) => Promise<QueryDetail>) | null = null;
+  let compiler: ReturnType<typeof makeCompiler> | null = null;
+  let priorDayPaths: string[] = [];
 
   // Single source of truth for question handling. Both query() and queryDetail()
   // delegate here (NOT via this.queryDetail) so the error envelope is identical
@@ -131,15 +135,28 @@ export async function createDaftariAdapter(
     async setup(): Promise<string> {
       vaultRoot = await mkdtemp(join(tmpdir(), "rb-daftari-"));
       answer = makeAnswerer(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
+      if (cfg.compile !== "raw") {
+        await writeFile(join(vaultRoot, "WIKI.md"), EA_WIKI_MD, "utf8");
+        compiler = makeCompiler(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
+      }
+      priorDayPaths = [];
       return vaultRoot;
     },
 
     async ingestDay(day: number, content: string, meta: DayMetadata): Promise<void> {
       if (vaultRoot === null) throw new Error("recall-bench: ingestDay before setup()");
-      const daily = mapDay(day, content, meta);
-      const abs = join(vaultRoot, daily.relPath);
-      await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, daily.markdown, "utf8");
+      if (cfg.compile === "raw") {
+        const daily = mapDay(day, content, meta);
+        const abs = join(vaultRoot, daily.relPath);
+        await mkdir(dirname(abs), { recursive: true });
+        await writeFile(abs, daily.markdown, "utf8");
+      } else if (cfg.compile === "write") {
+        const r = await compiler!(day, content, meta, priorDayPaths);
+        priorDayPaths = priorDayPaths.concat(r.notesWritten);
+      } else {
+        // write+consolidate — Phase 2, not yet implemented.
+        throw new Error("recall-bench: compile:write+consolidate is Phase 2 — not yet wired");
+      }
     },
 
     async finalizeIngestion(): Promise<void> {
@@ -169,6 +186,8 @@ export async function createDaftariAdapter(
       await rm(resolve(vaultRoot), { recursive: true, force: true });
       vaultRoot = null;
       answer = null;
+      compiler = null;
+      priorDayPaths = [];
     },
   };
 }
