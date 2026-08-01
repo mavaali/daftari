@@ -131,10 +131,7 @@ export function makeCompiler(
       model: cfg.authoringModel,
       system: AUTHORING_SYSTEM_PROMPT,
       user: userMessage,
-      // WriteSurface.defs is typed as ToolDefinition[] but the runtime objects
-      // satisfy ToolDef (input_schema is mapped by buildToolSurface under the
-      // hood). Cast to align the two type worlds without modifying write-tools.ts.
-      tools: surface.defs as unknown as ToolDef[],
+      tools: surface.defs,
       toolHandler: guardedHandler,
       maxRounds: cfg.agentMaxIterations,
     });

@@ -15,6 +15,7 @@ import {
   vaultTensionClusters,
   curationTools,
 } from "../../../dist/tools/curation.js";
+import type { ToolDef } from "../../../dist/eval/llm.js";
 import type { ToolDefinition } from "../../../dist/tools/read.js";
 
 // Tool names added by this surface (beyond the read surface).
@@ -27,16 +28,23 @@ const WRITE_TOOL_NAMES = new Set([
 
 // Pull the ToolDefinition entries for the four write tools from the canonical
 // arrays, so the defs stay in sync with the implementation automatically.
+// Maps ToolDefinition (rich: inputSchema camelCase + handler) → ToolDef (lean:
+// input_schema snake_case, no handler) which is what completeWithTools consumes.
 function selectDefs(
   pool: ToolDefinition[],
   names: string[],
-): ToolDefinition[] {
+): ToolDef[] {
   return names
     .map((n) => pool.find((d) => d.name === n))
-    .filter((d): d is ToolDefinition => d !== undefined);
+    .filter((d): d is ToolDefinition => d !== undefined)
+    .map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      input_schema: inputSchema,
+    }));
 }
 
-const writeSurfaceDefs: ToolDefinition[] = [
+const writeSurfaceDefs: ToolDef[] = [
   ...selectDefs(writeTools, ["vault_write", "vault_supersede"]),
   ...selectDefs(curationTools, ["vault_tension_log", "vault_tension_clusters"]),
 ];
@@ -49,14 +57,14 @@ function unwrapResult<T>(result: { ok: true; value: T } | { ok: false; error: Er
 }
 
 export interface WriteSurface {
-  defs: ToolDefinition[];
+  defs: ToolDef[];
   handler: (name: string, input: unknown) => Promise<unknown>;
 }
 
 export function buildWriteToolSurface(vaultRoot: string): WriteSurface {
   const readSurface = buildToolSurface(vaultRoot);
 
-  const defs: ToolDefinition[] = [...readSurface.defs, ...writeSurfaceDefs];
+  const defs: ToolDef[] = [...readSurface.defs, ...writeSurfaceDefs];
 
   const handler = async (name: string, input: unknown): Promise<unknown> => {
     // biome-ignore lint/suspicious/noExplicitAny: tool inputs are structural JSON from the LLM
