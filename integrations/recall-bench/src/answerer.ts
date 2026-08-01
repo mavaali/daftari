@@ -19,6 +19,7 @@ import {
 } from "../../../dist/eval/llm.js";
 import { ANSWERER_SYSTEM_PROMPT } from "../../../dist/eval/prompts.js";
 import type { AdapterConfig } from "./config.js";
+import { wrapHandlerWithDateScrub } from "./timestamps.js";
 
 export interface RetrievalEntry {
   path: string;
@@ -116,7 +117,12 @@ export function makeAnswerer(
   llm: LlmClient = createAnthropicClient(),
 ): (question: string) => Promise<AnswerResult> {
   const surface = buildToolSurface(vaultRoot);
-  const handler = wrapHandlerWithLimit(surface.handler, cfg.maxSearchResults);
+  // Bound search results first, then (arm-gated) scrub dates from tool output so
+  // an answerer running with timestamps OFF never sees a calendar date.
+  const handler = wrapHandlerWithDateScrub(
+    wrapHandlerWithLimit(surface.handler, cfg.maxSearchResults),
+    cfg.timestamps,
+  );
 
   return async (question: string): Promise<AnswerResult> => {
     const res = await llm.completeWithTools({
