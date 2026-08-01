@@ -101,3 +101,18 @@ a `factual` tension — one side must be wrong. Operation `amber-signal` is on h
 arbitration, not for a coin flip.
 
 This is what daftari is for.
+
+## Seeding the showcase tension
+
+The markdown is static; to see the tension live in daftari's graph, run the seed
+(requires `npm run build` at the repo root first so `dist/` exists):
+
+```bash
+node examples/berlin-bureau/seed.mjs            # seeds a throwaway temp copy
+node examples/berlin-bureau/seed.mjs /my/vault  # seeds an existing vault
+```
+
+It reindexes the vault, then logs the AMBER `genuine vs dangle` tension
+(`factual`, unresolved) naming both field reports as sources — write → index →
+log, in that order. Then inspect `.daftari/tensions.md`, or query
+`vault_tension_clusters` / `vault_lint` to see it held open for arbitration.
