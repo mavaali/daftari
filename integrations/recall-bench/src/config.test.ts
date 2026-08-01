@@ -10,6 +10,7 @@ describe("parseConfig", () => {
       maxSearchResults: 15,
       agentMaxIterations: 6,
       timestamps: "on",
+      answererTransport: "anthropic",
     });
   });
 
@@ -25,6 +26,7 @@ describe("parseConfig", () => {
       maxSearchResults: 30,
       agentMaxIterations: 10,
       timestamps: "on",
+      answererTransport: "anthropic",
     });
   });
 
@@ -42,6 +44,27 @@ describe("parseConfig", () => {
 
   it("errors on an invalid timestamps value", () => {
     expect(parseConfig({ answererModel: "claude-opus-4-8", timestamps: "maybe" }).ok).toBe(false);
+  });
+
+  it("defaults answererTransport to anthropic", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.answererTransport).toBe("anthropic");
+  });
+
+  it("honors an explicit answererTransport: openrouter", () => {
+    const result = parseConfig({
+      answererModel: "anthropic/claude-haiku-4.5",
+      answererTransport: "openrouter",
+    });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.answererTransport).toBe("openrouter");
+  });
+
+  it("errors on an invalid answererTransport value", () => {
+    expect(
+      parseConfig({ answererModel: "claude-opus-4-8", answererTransport: "grok" }).ok,
+    ).toBe(false);
   });
 
   it("errors when answererModel is missing", () => {

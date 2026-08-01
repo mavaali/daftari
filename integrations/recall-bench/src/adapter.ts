@@ -22,7 +22,8 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
 import { reindexVault, type ReindexResult } from "../../../dist/search/reindex.js";
-import type { LlmClient } from "../../../dist/eval/llm.js";
+import { createAnthropicClient, type LlmClient } from "../../../dist/eval/llm.js";
+import { createOpenRouterClient } from "../../../dist/eval/llm-openrouter.js";
 import { parseConfig, type AdapterConfig } from "./config.js";
 import { makeAnswerer, type RetrievalEntry, type ToolCallRecord } from "./answerer.js";
 import { mapDay } from "./corpus-map.js";
@@ -83,6 +84,17 @@ export function assertCleanReindex(r: ReindexResult): void {
   }
 }
 
+// Pick the LlmClient for the answerer. An injected client (deps.llm, used by
+// tests) always wins; otherwise the transport axis decides — openrouter routes
+// through OPENROUTER_API_KEY (the no-Anthropic-key escape hatch), anthropic uses
+// the native SDK. Exported so the selection is unit-testable without a run.
+export function resolveAnswererClient(cfg: AdapterConfig, deps: AdapterDeps): LlmClient {
+  if (deps.llm) return deps.llm;
+  return cfg.answererTransport === "openrouter"
+    ? createOpenRouterClient()
+    : createAnthropicClient();
+}
+
 export async function createDaftariAdapter(
   rawConfig: Record<string, unknown>,
   deps: AdapterDeps = {},
@@ -118,7 +130,7 @@ export async function createDaftariAdapter(
 
     async setup(): Promise<string> {
       vaultRoot = await mkdtemp(join(tmpdir(), "rb-daftari-"));
-      answer = makeAnswerer(vaultRoot, cfg, deps.llm);
+      answer = makeAnswerer(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
       return vaultRoot;
     },
 
