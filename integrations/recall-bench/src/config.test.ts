@@ -9,6 +9,7 @@ describe("parseConfig", () => {
       answererModel: "claude-opus-4-8",
       maxSearchResults: 15,
       agentMaxIterations: 6,
+      timestamps: "on",
     });
   });
 
@@ -23,7 +24,24 @@ describe("parseConfig", () => {
       answererModel: "claude-sonnet-4-5",
       maxSearchResults: 30,
       agentMaxIterations: 10,
+      timestamps: "on",
     });
+  });
+
+  it("defaults the timestamps axis to on", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.timestamps).toBe("on");
+  });
+
+  it("honors an explicit timestamps: off", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8", timestamps: "off" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.timestamps).toBe("off");
+  });
+
+  it("errors on an invalid timestamps value", () => {
+    expect(parseConfig({ answererModel: "claude-opus-4-8", timestamps: "maybe" }).ok).toBe(false);
   });
 
   it("errors when answererModel is missing", () => {

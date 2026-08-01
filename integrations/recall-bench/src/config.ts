@@ -5,14 +5,20 @@
 
 import { ok, err, type Result } from "../../../dist/frontmatter/types.js";
 
+export type TimestampsAxis = "on" | "off";
+
 export interface AdapterConfig {
   answererModel: string;
   maxSearchResults: number;
   agentMaxIterations: number;
+  // The timestamps axis: when "off", calendar dates are scrubbed from the tool
+  // output the answerer sees. Defaults to "on" (production-faithful).
+  timestamps: TimestampsAxis;
 }
 
 const DEFAULT_MAX_SEARCH_RESULTS = 15;
 const DEFAULT_AGENT_MAX_ITERATIONS = 6;
+const DEFAULT_TIMESTAMPS: TimestampsAxis = "on";
 
 function asPositiveInt(value: unknown, fallback: number): number {
   if (value === undefined || value === null) return fallback;
@@ -36,9 +42,16 @@ export function parseConfig(raw: Record<string, unknown>): Result<AdapterConfig,
     return err(new Error("config.agentMaxIterations must be a positive integer"));
   }
 
+  const rawTimestamps = raw.timestamps;
+  if (rawTimestamps !== undefined && rawTimestamps !== "on" && rawTimestamps !== "off") {
+    return err(new Error('config.timestamps must be "on" or "off"'));
+  }
+  const timestamps: TimestampsAxis = rawTimestamps === undefined ? DEFAULT_TIMESTAMPS : rawTimestamps;
+
   return ok({
     answererModel: model,
     maxSearchResults,
     agentMaxIterations,
+    timestamps,
   });
 }
