@@ -45,6 +45,11 @@ describe("buildWriteToolSurface — defs", () => {
   it("exposes a handler function", () => {
     expect(typeof surface.handler).toBe("function");
   });
+
+  it("has no duplicate tool names (LLM API requires unique names)", () => {
+    const names = surface.defs.map((d) => d.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 // Write-capable tool surface for authoring agent loops.
 //
-// Composes the existing read-only buildToolSurface with four write tools:
+// Composes the existing read-only buildToolSurface with three write tools:
 //   vault_write, vault_supersede  — from dist/tools/write.js
 //   vault_tension_log             — from dist/tools/curation.js
-//   vault_tension_clusters        — from dist/tools/curation.js
+// (vault_tension_clusters is read-only and already in the read surface.)
 //
 // The handler throws on a Result error so the agent loop surfaces failures
 // rather than silently swallowing them.
@@ -12,18 +12,19 @@ import { buildToolSurface } from "../../../dist/eval/tool-surface.js";
 import { vaultWrite, vaultSupersede, writeTools } from "../../../dist/tools/write.js";
 import {
   vaultTensionLog,
-  vaultTensionClusters,
   curationTools,
 } from "../../../dist/tools/curation.js";
 import type { ToolDef } from "../../../dist/eval/llm.js";
 import type { ToolDefinition } from "../../../dist/tools/read.js";
 
 // Tool names added by this surface (beyond the read surface).
+// NOTE: vault_tension_clusters is intentionally excluded — it is already in the
+// read surface (buildToolSurface). Including it here would produce a duplicate
+// tool name that the LLM API rejects (HTTP 400 "Tool names must be unique").
 const WRITE_TOOL_NAMES = new Set([
   "vault_write",
   "vault_supersede",
   "vault_tension_log",
-  "vault_tension_clusters",
 ]);
 
 // Pull the ToolDefinition entries for the four write tools from the canonical
@@ -46,7 +47,7 @@ function selectDefs(
 
 const writeSurfaceDefs: ToolDef[] = [
   ...selectDefs(writeTools, ["vault_write", "vault_supersede"]),
-  ...selectDefs(curationTools, ["vault_tension_log", "vault_tension_clusters"]),
+  ...selectDefs(curationTools, ["vault_tension_log"]),
 ];
 
 // Unwrap a Result, throwing on error. Mirrors the unwrap pattern in
@@ -79,9 +80,6 @@ export function buildWriteToolSurface(vaultRoot: string): WriteSurface {
 
       case "vault_tension_log":
         return unwrapResult(await vaultTensionLog(vaultRoot, inp, undefined));
-
-      case "vault_tension_clusters":
-        return unwrapResult(await vaultTensionClusters(vaultRoot, inp, undefined));
 
       default:
         return readSurface.handler(name, input);
