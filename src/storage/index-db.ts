@@ -931,6 +931,7 @@ export function collectionForPath(db: IndexDb | null, path: string): string {
   return path.split("/")[0] ?? "";
 }
 
+
 // Fetches the full document rows for a specific set of paths in one chunked
 // pass, instead of loading the whole `documents` table. The search hot path
 // uses this to scope the full-row read (content blob + JSON tag/token parse)
