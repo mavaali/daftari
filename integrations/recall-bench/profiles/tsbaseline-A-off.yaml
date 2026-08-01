@@ -22,10 +22,10 @@ harness:
 run:
   ranges:
     start: 30
-    end: 30
+    end: 180
     step: 30
   seed: 42
-  sample: 8
+  sample: 50
   parallelism: 4
   timeout: 120000
   judgeMemoryWindow: 1
