@@ -19,6 +19,7 @@ export interface AdapterConfig {
   answererModel: string;
   maxSearchResults: number;
   agentMaxIterations: number;
+  maxLlmCalls: number;
   // The timestamps axis: when "off", calendar dates are scrubbed from the tool
   // output the answerer sees. Defaults to "on" (production-faithful).
   timestamps: TimestampsAxis;
@@ -31,6 +32,7 @@ export interface AdapterConfig {
 
 const DEFAULT_MAX_SEARCH_RESULTS = 15;
 const DEFAULT_AGENT_MAX_ITERATIONS = 6;
+const DEFAULT_MAX_LLM_CALLS = 40;
 const DEFAULT_TIMESTAMPS: TimestampsAxis = "on";
 const DEFAULT_ANSWERER_TRANSPORT: AnswererTransport = "anthropic";
 const DEFAULT_COMPILE: CompileAxis = "raw";
@@ -55,6 +57,11 @@ export function parseConfig(raw: Record<string, unknown>): Result<AdapterConfig,
   const agentMaxIterations = asPositiveInt(raw.agentMaxIterations, DEFAULT_AGENT_MAX_ITERATIONS);
   if (Number.isNaN(agentMaxIterations)) {
     return err(new Error("config.agentMaxIterations must be a positive integer"));
+  }
+
+  const maxLlmCalls = asPositiveInt(raw.maxLlmCalls, DEFAULT_MAX_LLM_CALLS);
+  if (Number.isNaN(maxLlmCalls)) {
+    return err(new Error("config.maxLlmCalls must be a positive integer"));
   }
 
   const rawTimestamps = raw.timestamps;
@@ -91,6 +98,7 @@ export function parseConfig(raw: Record<string, unknown>): Result<AdapterConfig,
     answererModel: model,
     maxSearchResults,
     agentMaxIterations,
+    maxLlmCalls,
     timestamps,
     answererTransport,
     compile,

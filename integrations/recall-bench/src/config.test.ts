@@ -9,6 +9,7 @@ describe("parseConfig", () => {
       answererModel: "claude-opus-4-8",
       maxSearchResults: 15,
       agentMaxIterations: 6,
+      maxLlmCalls: 40,
       timestamps: "on",
       answererTransport: "anthropic",
       compile: "raw",
@@ -27,6 +28,7 @@ describe("parseConfig", () => {
       answererModel: "claude-sonnet-4-5",
       maxSearchResults: 30,
       agentMaxIterations: 10,
+      maxLlmCalls: 40,
       timestamps: "on",
       answererTransport: "anthropic",
       compile: "raw",
@@ -126,5 +128,25 @@ describe("parseConfig", () => {
     });
     if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
     expect(result.value.authoringModel).toBe("claude-sonnet-5");
+  });
+
+  it("defaults maxLlmCalls to 40", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8" });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.maxLlmCalls).toBe(40);
+  });
+
+  it("honors an explicit maxLlmCalls override", () => {
+    const result = parseConfig({ answererModel: "claude-opus-4-8", maxLlmCalls: 100 });
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error.message}`);
+    expect(result.value.maxLlmCalls).toBe(100);
+  });
+
+  it("rejects non-positive-integer maxLlmCalls", () => {
+    const model = "claude-opus-4-8";
+    expect(parseConfig({ answererModel: model, maxLlmCalls: 0 }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, maxLlmCalls: -1 }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, maxLlmCalls: 1.5 }).ok).toBe(false);
+    expect(parseConfig({ answererModel: model, maxLlmCalls: "40" }).ok).toBe(false);
   });
 });
