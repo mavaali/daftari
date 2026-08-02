@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history — the sweep runs `git log --since`
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
