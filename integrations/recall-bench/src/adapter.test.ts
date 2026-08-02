@@ -111,6 +111,40 @@ describe("assertCleanReindex", () => {
     const r = cleanResult({ vectorEnabled: false });
     expect(() => assertCleanReindex(r)).toThrow(/MiniLM vectors disabled/);
   });
+
+  it("does not throw for wiki scaffolding files in invalidFrontmatter when ignored", () => {
+    const r = cleanResult({
+      invalidFrontmatter: [{ path: "some/dir/WIKI.md", reason: "no frontmatter" }],
+    });
+    const ignore = new Set(["WIKI.md", "index.md", "log.md"]);
+    expect(() => assertCleanReindex(r, ignore)).not.toThrow();
+  });
+
+  it("does not throw for wiki scaffolding files in skipped when ignored", () => {
+    const r = cleanResult({
+      skipped: [{ path: "index.md", reason: "no frontmatter" }],
+    });
+    const ignore = new Set(["WIKI.md", "index.md", "log.md"]);
+    expect(() => assertCleanReindex(r, ignore)).not.toThrow();
+  });
+
+  it("still throws for a real content note even when wiki scaffolding is ignored", () => {
+    const r = cleanResult({
+      invalidFrontmatter: [{ path: "topics/note.md", reason: "bad enum" }],
+    });
+    const ignore = new Set(["WIKI.md", "index.md", "log.md"]);
+    expect(() => assertCleanReindex(r, ignore)).toThrow(/COERCED frontmatter/);
+    expect(() => assertCleanReindex(r, ignore)).toThrow(/topics\/note\.md: bad enum/);
+  });
+
+  it("no-arg call is identical to today (existing default behavior unchanged)", () => {
+    // A result with only a scaffolding file in invalidFrontmatter SHOULD still
+    // throw when called with no ignoreBasenames arg (raw mode, no tolerance).
+    const r = cleanResult({
+      invalidFrontmatter: [{ path: "WIKI.md", reason: "no frontmatter" }],
+    });
+    expect(() => assertCleanReindex(r)).toThrow(/COERCED frontmatter/);
+  });
 });
 
 describe("isUnderTmpdir (teardown guard decision)", () => {

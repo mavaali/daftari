@@ -62,21 +62,37 @@ export function isUnderTmpdir(path: string): boolean {
   return target === root || target.startsWith(root + sep);
 }
 
+// Known wiki scaffolding files written by compile:write setup — these carry no
+// daftari frontmatter by design and must not trigger the confound guard.
+const WIKI_SCAFFOLDING = new Set(["WIKI.md", "index.md", "log.md"]);
+
 // The three runtime confound guards on a reindex result. Factored out as a pure
 // function so the throw branches can be unit-tested on hand-built results
 // without a real (MiniLM-loading) reindex. A coerced or dropped daily silently
 // corrupts the baseline; BM25-only (vectors off) would too.
-export function assertCleanReindex(r: ReindexResult): void {
-  if (r.invalidFrontmatter.length > 0) {
+//
+// ignoreBasenames: basenames to exclude from invalidFrontmatter/skipped checks.
+// Default is an empty set (raw mode — identical behavior to before this param).
+export function assertCleanReindex(
+  r: ReindexResult,
+  ignoreBasenames: Set<string> = new Set(),
+): void {
+  const invalidFiltered = r.invalidFrontmatter.filter(
+    (f) => !ignoreBasenames.has(f.path.split("/").pop() ?? f.path),
+  );
+  if (invalidFiltered.length > 0) {
     throw new Error(
-      `recall-bench: ${r.invalidFrontmatter.length} daily(ies) indexed with COERCED frontmatter — baseline invalid: ` +
-        r.invalidFrontmatter.map((f) => `${f.path}: ${f.reason}`).join("; "),
+      `recall-bench: ${invalidFiltered.length} daily(ies) indexed with COERCED frontmatter — baseline invalid: ` +
+        invalidFiltered.map((f) => `${f.path}: ${f.reason}`).join("; "),
     );
   }
-  if (r.skipped.length > 0) {
+  const skippedFiltered = r.skipped.filter(
+    (f) => !ignoreBasenames.has(f.path.split("/").pop() ?? f.path),
+  );
+  if (skippedFiltered.length > 0) {
     throw new Error(
-      `recall-bench: ${r.skipped.length} daily(ies) NOT indexed: ` +
-        r.skipped.map((f) => `${f.path}: ${f.reason}`).join("; "),
+      `recall-bench: ${skippedFiltered.length} daily(ies) NOT indexed: ` +
+        skippedFiltered.map((f) => `${f.path}: ${f.reason}`).join("; "),
     );
   }
   if (!r.vectorEnabled) {
@@ -165,7 +181,7 @@ export async function createDaftariAdapter(
       // design; calling finalize after each ingest batch is expected.
       const res = await reindexVault(vaultRoot);
       if (!res.ok) throw res.error;
-      assertCleanReindex(res.value);
+      assertCleanReindex(res.value, cfg.compile === "raw" ? new Set() : WIKI_SCAFFOLDING);
     },
 
     async query(question: string): Promise<string> {
