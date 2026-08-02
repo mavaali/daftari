@@ -3,9 +3,12 @@
 // Gating: the entire describe block runs ONLY when both RB_INTEGRATION and
 // OPENROUTER_API_KEY are set. Otherwise it is skipped automatically.
 //
-// Cost note: each day runs up to agentMaxIterations=6 rounds of haiku via
-// OpenRouter. Observed approximate spend: ~$0.01–0.03 for the full 3-day run
-// at haiku pricing (~$0.80/M in, $4/M out). Well within the authorized budget.
+// Cost note: each day runs up to agentMaxIterations=24 rounds of haiku via
+// OpenRouter. The multi-step authoring procedure (read WIKI.md → read index →
+// vault_search → vault_write → update index → update log → final) legitimately
+// needs more than 6 rounds per day. Observed approximate spend: ~$0.02–0.08
+// for the full 3-day run at haiku pricing (~$0.80/M in, $4/M out).
+// Well within the authorized budget.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -160,7 +163,7 @@ describe.skipIf(!RUN)(
             answererModel: "anthropic/claude-haiku-4.5",
             answererTransport: "openrouter",
             compile: "write",
-            agentMaxIterations: 6,
+            agentMaxIterations: 24,
           },
           {}, // no injected llm — real OpenRouter
         );
@@ -269,9 +272,9 @@ describe.skipIf(!RUN)(
         // ------------------------------------------------------------------
         // ASSERTION 4: Run stayed bounded — finalizeIngestion completed
         //              without hitting the agentMaxIterations hard stop in a
-        //              way that produced zero notes. (The per-day bound of 6
-        //              rounds × 3 days = 18 max LLM round-trips total.
-        //              Observed typical cost: ~$0.01–0.03.)
+        //              way that produced zero notes. (The per-day bound of 24
+        //              rounds × 3 days = 72 max LLM round-trips total.
+        //              Observed typical cost: ~$0.02–0.08.)
         // ------------------------------------------------------------------
         // We already asserted noteFiles.length > 0 above. Additionally assert
         // the vault root still exists (teardown not prematurely called).
