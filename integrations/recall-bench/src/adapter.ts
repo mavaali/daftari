@@ -26,6 +26,8 @@ import { createAnthropicClient, type LlmClient } from "../../../dist/eval/llm.js
 import { createOpenRouterClient } from "../../../dist/eval/llm-openrouter.js";
 import { parseConfig, type AdapterConfig } from "./config.js";
 import { makeAnswerer, type RetrievalEntry, type ToolCallRecord } from "./answerer.js";
+import { makeCompiler } from "./compiler.js";
+import { EA_WIKI_MD } from "./wiki-schema.js";
 import { mapDay } from "./corpus-map.js";
 import type { DayMetadata } from "./types.js";
 
@@ -60,21 +62,37 @@ export function isUnderTmpdir(path: string): boolean {
   return target === root || target.startsWith(root + sep);
 }
 
+// Known wiki scaffolding files written by compile:write setup — these carry no
+// daftari frontmatter by design and must not trigger the confound guard.
+const WIKI_SCAFFOLDING = new Set(["WIKI.md", "index.md", "log.md"]);
+
 // The three runtime confound guards on a reindex result. Factored out as a pure
 // function so the throw branches can be unit-tested on hand-built results
 // without a real (MiniLM-loading) reindex. A coerced or dropped daily silently
 // corrupts the baseline; BM25-only (vectors off) would too.
-export function assertCleanReindex(r: ReindexResult): void {
-  if (r.invalidFrontmatter.length > 0) {
+//
+// ignoreBasenames: basenames to exclude from invalidFrontmatter/skipped checks.
+// Default is an empty set (raw mode — identical behavior to before this param).
+export function assertCleanReindex(
+  r: ReindexResult,
+  ignoreBasenames: Set<string> = new Set(),
+): void {
+  const invalidFiltered = r.invalidFrontmatter.filter(
+    (f) => !ignoreBasenames.has(f.path.split("/").pop() ?? f.path),
+  );
+  if (invalidFiltered.length > 0) {
     throw new Error(
-      `recall-bench: ${r.invalidFrontmatter.length} daily(ies) indexed with COERCED frontmatter — baseline invalid: ` +
-        r.invalidFrontmatter.map((f) => `${f.path}: ${f.reason}`).join("; "),
+      `recall-bench: ${invalidFiltered.length} daily(ies) indexed with COERCED frontmatter — baseline invalid: ` +
+        invalidFiltered.map((f) => `${f.path}: ${f.reason}`).join("; "),
     );
   }
-  if (r.skipped.length > 0) {
+  const skippedFiltered = r.skipped.filter(
+    (f) => !ignoreBasenames.has(f.path.split("/").pop() ?? f.path),
+  );
+  if (skippedFiltered.length > 0) {
     throw new Error(
-      `recall-bench: ${r.skipped.length} daily(ies) NOT indexed: ` +
-        r.skipped.map((f) => `${f.path}: ${f.reason}`).join("; "),
+      `recall-bench: ${skippedFiltered.length} daily(ies) NOT indexed: ` +
+        skippedFiltered.map((f) => `${f.path}: ${f.reason}`).join("; "),
     );
   }
   if (!r.vectorEnabled) {
@@ -105,6 +123,8 @@ export async function createDaftariAdapter(
 
   let vaultRoot: string | null = null;
   let answer: ((q: string) => Promise<QueryDetail>) | null = null;
+  let compiler: ReturnType<typeof makeCompiler> | null = null;
+  let priorDayPaths: string[] = [];
 
   // Single source of truth for question handling. Both query() and queryDetail()
   // delegate here (NOT via this.queryDetail) so the error envelope is identical
@@ -131,15 +151,28 @@ export async function createDaftariAdapter(
     async setup(): Promise<string> {
       vaultRoot = await mkdtemp(join(tmpdir(), "rb-daftari-"));
       answer = makeAnswerer(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
+      if (cfg.compile !== "raw") {
+        await writeFile(join(vaultRoot, "WIKI.md"), EA_WIKI_MD, "utf8");
+        compiler = makeCompiler(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
+      }
+      priorDayPaths = [];
       return vaultRoot;
     },
 
     async ingestDay(day: number, content: string, meta: DayMetadata): Promise<void> {
       if (vaultRoot === null) throw new Error("recall-bench: ingestDay before setup()");
-      const daily = mapDay(day, content, meta);
-      const abs = join(vaultRoot, daily.relPath);
-      await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, daily.markdown, "utf8");
+      if (cfg.compile === "raw") {
+        const daily = mapDay(day, content, meta);
+        const abs = join(vaultRoot, daily.relPath);
+        await mkdir(dirname(abs), { recursive: true });
+        await writeFile(abs, daily.markdown, "utf8");
+      } else if (cfg.compile === "write") {
+        const r = await compiler!(day, content, meta, priorDayPaths);
+        priorDayPaths = priorDayPaths.concat(r.notesWritten);
+      } else {
+        // write+consolidate — Phase 2, not yet implemented.
+        throw new Error("recall-bench: compile:write+consolidate is Phase 2 — not yet wired");
+      }
     },
 
     async finalizeIngestion(): Promise<void> {
@@ -148,7 +181,7 @@ export async function createDaftariAdapter(
       // design; calling finalize after each ingest batch is expected.
       const res = await reindexVault(vaultRoot);
       if (!res.ok) throw res.error;
-      assertCleanReindex(res.value);
+      assertCleanReindex(res.value, cfg.compile === "raw" ? new Set() : WIKI_SCAFFOLDING);
     },
 
     async query(question: string): Promise<string> {
@@ -169,6 +202,8 @@ export async function createDaftariAdapter(
       await rm(resolve(vaultRoot), { recursive: true, force: true });
       vaultRoot = null;
       answer = null;
+      compiler = null;
+      priorDayPaths = [];
     },
   };
 }

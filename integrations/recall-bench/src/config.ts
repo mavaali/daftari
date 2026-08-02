@@ -13,6 +13,8 @@ export type TimestampsAxis = "on" | "off";
 // exposed. answererModel must be a slug the chosen transport understands.
 export type AnswererTransport = "anthropic" | "openrouter";
 
+export type CompileAxis = "raw" | "write" | "write+consolidate";
+
 export interface AdapterConfig {
   answererModel: string;
   maxSearchResults: number;
@@ -21,12 +23,17 @@ export interface AdapterConfig {
   // output the answerer sees. Defaults to "on" (production-faithful).
   timestamps: TimestampsAxis;
   answererTransport: AnswererTransport;
+  // Compiler pipeline stage. Defaults to "raw" (no write step).
+  compile: CompileAxis;
+  // Model used for the authoring/compile step. Defaults to answererModel.
+  authoringModel: string;
 }
 
 const DEFAULT_MAX_SEARCH_RESULTS = 15;
 const DEFAULT_AGENT_MAX_ITERATIONS = 6;
 const DEFAULT_TIMESTAMPS: TimestampsAxis = "on";
 const DEFAULT_ANSWERER_TRANSPORT: AnswererTransport = "anthropic";
+const DEFAULT_COMPILE: CompileAxis = "raw";
 
 function asPositiveInt(value: unknown, fallback: number): number {
   if (value === undefined || value === null) return fallback;
@@ -63,11 +70,30 @@ export function parseConfig(raw: Record<string, unknown>): Result<AdapterConfig,
   const answererTransport: AnswererTransport =
     rawTransport === undefined ? DEFAULT_ANSWERER_TRANSPORT : rawTransport;
 
+  const rawCompile = raw.compile;
+  if (
+    rawCompile !== undefined &&
+    rawCompile !== "raw" &&
+    rawCompile !== "write" &&
+    rawCompile !== "write+consolidate"
+  ) {
+    return err(new Error('config.compile must be "raw", "write", or "write+consolidate"'));
+  }
+  const compile: CompileAxis = rawCompile === undefined ? DEFAULT_COMPILE : rawCompile;
+
+  const rawAuthoringModel = raw.authoringModel;
+  const authoringModel =
+    typeof rawAuthoringModel === "string" && rawAuthoringModel.trim().length > 0
+      ? rawAuthoringModel
+      : model;
+
   return ok({
     answererModel: model,
     maxSearchResults,
     agentMaxIterations,
     timestamps,
     answererTransport,
+    compile,
+    authoringModel,
   });
 }
