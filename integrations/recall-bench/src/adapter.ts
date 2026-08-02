@@ -24,9 +24,11 @@ import { join, resolve, dirname, sep } from "node:path";
 import { reindexVault, type ReindexResult } from "../../../dist/search/reindex.js";
 import { createAnthropicClient, type LlmClient } from "../../../dist/eval/llm.js";
 import { createOpenRouterClient } from "../../../dist/eval/llm-openrouter.js";
+import { runConsolidate } from "../../../dist/consolidate/index.js";
 import { parseConfig, type AdapterConfig } from "./config.js";
 import { makeAnswerer, type RetrievalEntry, type ToolCallRecord } from "./answerer.js";
 import { makeCompiler } from "./compiler.js";
+import { enableRealConsolidation } from "./consolidate-config.js";
 import { EA_WIKI_MD } from "./wiki-schema.js";
 import { mapDay } from "./corpus-map.js";
 import type { DayMetadata } from "./types.js";
@@ -50,6 +52,17 @@ export interface DaftariAdapter {
 
 export interface AdapterDeps {
   llm?: LlmClient;
+  // Test seam: injected instead of the real runConsolidate so hermetic tests
+  // can assert call shape without network/LLM spend.
+  runConsolidateFn?: (argv: string[]) => Promise<number>;
+}
+
+// Projected total Stage-2 LLM calls for a consolidation pass over `noteCount`
+// notes. Each birth item fans out to ~40 LLM calls per the consolidate help
+// text ("each birth item fans out to ~40 LLM calls, so real calls ~= items x
+// fan-out"). Used to log a projected-spend warning before the real pass runs.
+export function projectedConsolidateCalls(noteCount: number): number {
+  return noteCount * 40;
 }
 
 // True iff `path` resolves to a location inside os.tmpdir(). teardown() gates
@@ -166,12 +179,11 @@ export async function createDaftariAdapter(
         const abs = join(vaultRoot, daily.relPath);
         await mkdir(dirname(abs), { recursive: true });
         await writeFile(abs, daily.markdown, "utf8");
-      } else if (cfg.compile === "write") {
+      } else {
+        // Both "write" and "write+consolidate" use the per-day compiler.
+        // The consolidation pass runs later in finalizeIngestion for write+consolidate.
         const r = await compiler!(day, content, meta, priorDayPaths);
         priorDayPaths = priorDayPaths.concat(r.notesWritten);
-      } else {
-        // write+consolidate — Phase 2, not yet implemented.
-        throw new Error("recall-bench: compile:write+consolidate is Phase 2 — not yet wired");
       }
     },
 
@@ -182,6 +194,40 @@ export async function createDaftariAdapter(
       const res = await reindexVault(vaultRoot);
       if (!res.ok) throw res.error;
       assertCleanReindex(res.value, cfg.compile === "raw" ? new Set() : WIKI_SCAFFOLDING);
+
+      if (cfg.compile === "write+consolidate") {
+        // Enable real (non-shadow) consolidation in the tmpdir vault.
+        enableRealConsolidation(vaultRoot);
+
+        const projected = projectedConsolidateCalls(priorDayPaths.length);
+        console.error(
+          "recall-bench: projected consolidate LLM calls (cap " +
+            cfg.maxLlmCalls +
+            "): ~" +
+            projected,
+        );
+
+        // Use injected fn (test seam) or the real runConsolidate.
+        const consolidateFn = deps.runConsolidateFn ?? runConsolidate;
+        const rc = await consolidateFn([
+          "--vault",
+          vaultRoot,
+          "--mode",
+          "both",
+          "--max-llm-calls",
+          String(cfg.maxLlmCalls),
+          "--transport",
+          "openrouter",
+        ]);
+        if (rc !== 0) {
+          throw new Error(`recall-bench: consolidate exited with code ${rc}`);
+        }
+
+        // Re-index so consolidation's edge/tension writes are picked up.
+        const res2 = await reindexVault(vaultRoot);
+        if (!res2.ok) throw res2.error;
+        assertCleanReindex(res2.value, WIKI_SCAFFOLDING);
+      }
     },
 
     async query(question: string): Promise<string> {
