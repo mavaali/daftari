@@ -1,0 +1,77 @@
+# Machine-readable encoding of Case 1 (HOLLOW KING) for case_lint.py.
+# Literals reference the axes; "=" asserts a value, "!=" eliminates one.
+case:
+  id: hollow-king
+  title: "Case 1 — HOLLOW KING (the mole hunt)"
+  verdict_axis: who          # the axis that decides BURNED vs win (Clue's "who")
+  axes:
+    who:  [WEATHERVANE, CARTOGRAPHER, IRONWOOD]
+    how:  [route-survey-cover, dead-drop-7, comms-cipher]
+    what: [FOXTROT-corridor, asset-roster, amber-go-order]
+  ground_truth: { who: CARTOGRAPHER, how: route-survey-cover, what: FOXTROT-corridor }
+  frame:        { who: WEATHERVANE,  how: comms-cipher,       what: asset-roster }
+  sacred_tensions: [amber-genuine-vs-dangle]   # must remain open; solving only re-weights it
+
+  clues:
+    # --- corroborated true clues: the deductive spine (drive invariant A) ---
+    - id: fr-030            # station duty roster
+      grade: A1
+      truth: true
+      corroborated: true
+      asserts: ["who!=WEATHERVANE"]     # WEATHERVANE absent for leak #2 -> not sole leaker
+      contradicts: [fr-028]
+
+    - id: fr-034            # defector debrief / SIGINT, independent
+      grade: A2
+      truth: true
+      corroborated: true                # corroborated by fr-030 (independent)
+      asserts: ["who=CARTOGRAPHER", "how=route-survey-cover", "what=FOXTROT-corridor"]
+
+    - id: fr-031            # NIGHTINGALE: unscheduled meeting at FOXTROT approach
+      grade: B2
+      truth: true
+      corroborated: true                # corroborates fr-034's channel/location
+      asserts: ["who!=IRONWOOD", "how=route-survey-cover"]   # IRONWOOD has no field/FOXTROT access
+
+    - id: fr-033            # MAGPIE: dangle wants a specific crossing burned
+      grade: C3
+      truth: true
+      corroborated: true                # corroborated by fr-034 on the target
+      asserts: ["what=FOXTROT-corridor"]
+
+    # --- planted disinformation: the frame (drives invariants B & C) ---
+    - id: fr-028            # forged "second" CI data point framing WEATHERVANE
+      grade: C4
+      truth: false
+      corroborated: false
+      planted_by: CARTOGRAPHER
+      asserts: ["who=WEATHERVANE"]
+      contradicts: [fr-030]             # the A1 roster breaks the frame -> catchable
+
+    # --- circumstantial true (the seed the mole exploited; not proof) ---
+    - id: fr-018            # internal anomaly: WEATHERVANE has access + timing correlation
+      grade: D4
+      truth: true
+      corroborated: false               # circumstantial, uncorroborated -> excluded from spine
+      circumstantial: true
+      asserts: ["who=WEATHERVANE"]      # counts at face value (invariant C), not in spine (A)
+
+    # --- exculpatory, single-source until corroborated (teaches the verification gate) ---
+    - id: fr-029            # WEATHERVANE's own alibi
+      grade: C3
+      truth: true
+      corroborated: false               # self-interested; credible only once fr-030 confirms it
+      asserts: ["who!=WEATHERVANE"]
+
+    # --- true-but-motivated: the mole's own steering (texture; not corroborated) ---
+    - id: fr-022            # CARTOGRAPHER pushes FOXTROT as primary
+      grade: A2
+      truth: true
+      corroborated: false               # self-serving, single-source overstatement of fr-009
+      asserts: ["what=FOXTROT-corridor"]
+
+    - id: fr-032            # CARTOGRAPHER urges immediate FOXTROT activation
+      grade: A2
+      truth: true
+      corroborated: false               # motive tell; overstates fr-009 (B3) again
+      asserts: ["what=FOXTROT-corridor"]
