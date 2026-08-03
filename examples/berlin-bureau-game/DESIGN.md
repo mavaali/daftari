@@ -1,7 +1,7 @@
 # Berlin Bureau — the serial (design)
 
 > Roadmap for turning the Berlin Bureau adoption game from a single case into a **beloved,
-> recurring world** — a Cold War *Slow Horses*. This is a design/creative doc, not an
+> recurring world** — a character-driven Cold War spy serial. This is a design/creative doc, not an
 > implementation plan. It sets the cast, tone, and the case menu; each episode is still built and
 > gated the same way (`case_lint` PASS + a playtest — see `framework.md`).
 >
@@ -12,10 +12,11 @@
 
 ## 1. North star
 
-**Slow Horses.** Nobody comes back for the plot mechanics — they come back for Jackson Lamb, for
-Slough House being the dustbin where the Service exiles its screw-ups, for the dark comedy and the
-misfits who are better than the people who threw them away. The operation is just the engine; the
-**people and the tone** are why you love it.
+**Character-driven spy fiction.** In the best of the genre, nobody comes back for the plot
+mechanics — they come back for the cast: the burned-out boss, the desk that's become the dustbin
+where the Service exiles its screw-ups, the dark comedy, and the misfits who turn out to be better
+than the people who threw them away. The operation is just the engine; the **people and the tone**
+are why you love it.
 
 The Berlin Bureau already has a recurring set of names (CARTOGRAPHER, WEATHERVANE, NIGHTINGALE,
 MAGPIE, the Station Chief). They are not yet *characters*. Making them characters — and building a
@@ -40,17 +41,17 @@ The joke, and the heart: Left Luggage is where the real tradecraft still happens
 here can afford to be sloppy and nobody here is trying to impress anyone anymore. They have nothing
 left but the work.
 
-**Tone:** *Slow Horses* — darkly comic, cynical on the surface, human and warm underneath. Cold War
-grime, gallows humour, small dignities. Never grim for its own sake; the comedy is the delivery
-system for the discipline.
+**Tone:** darkly comic, cynical on the surface, human and warm underneath. Cold War grime, gallows
+humour, small dignities. Never grim for its own sake; the comedy is the delivery system for the
+discipline.
 
 ---
 
 ## 3. The cast
 
 ### The anchor — Station Chief **Otto Kessler** ("the Bear")
-The Jackson Lamb. Once the legendary runner of the GLASS CURTAIN network; now a slovenly, cynical
-wreck who runs the dumping ground — and *chose* to. Outwardly he can't be bothered; actually he is
+The world-weary chief archetype. Once the legendary runner of the GLASS CURTAIN network; now a
+slovenly, cynical wreck who runs the dumping ground — and *chose* to. Outwardly he can't be bothered; actually he is
 the sharpest tradecraft mind in the Service and he protects his misfits like a bear its cubs, while
 insulting them constantly. In Case 1 he is the "Station Chief" who put AMBER SIGNAL on hold and
 tasked the mole hunt — the one adult in the room. He is never the puzzle; he is the reason you feel
@@ -78,7 +79,7 @@ in the others as texture.
 supersession/lineage savant. See §7.)*
 
 ### The antagonist — First Desk deputy **Sabine Kroll**
-The Diana Taverner. Head Office polish, no tradecraft. She wants Left Luggage shut and its budget
+The Head-Office climber archetype. All polish, no tradecraft. She wants Left Luggage shut and its budget
 folded into hers, takes credit for the Bureau's saves, and keeps feeding them "dead" cases to
 justify closing the desk. The season villain — and, maybe, the season's rot (§6).
 
@@ -122,7 +123,7 @@ shown, never told — §8), a GM rubric, and a playtest that splits rushed→fra
 
 ## 6. Serial structure
 
-**Standalone episodes + a season arc** (the Slow Horses model). Each case is self-contained and
+**Standalone episodes + a season arc** (the episodic-with-serial-arc model). Each case is self-contained and
 crackable cold — a stranger can start on any episode (Kusto "case N is public" hook). But a running
 thread rewards the returning player:
 
@@ -195,11 +196,11 @@ Each is a candidate episode; each needs the §7 engine work first.
 ## 10. Open questions for Mihir
 
 1. **Cast names/voices** — Kessler / Brandt / Nowak / Vogel / Kroll and the "Left Luggage" conceit are
-   my proposals. Keep, rename, or recast? (Especially the anchor — the Lamb is load-bearing.)
+   my proposals. Keep, rename, or recast? (Especially the anchor — the chief is load-bearing.)
 2. **Season length + arc payoff** — is ~5–6 episodes/season right, and is "the rot traces to Head
    Office, but the tension stays open" the arc you want, or something less conspiratorial?
 3. **Player identity** — fixed continuous character (the newest exile, my recommendation for
-   Slow-Horses attachment) vs. a fresh seat per case?
+   character attachment across episodes) vs. a fresh seat per case?
 4. **Build order** — which muscle is Case 2: staleness (**The Confirmed Corpse**, my pick — most
    viscerally "aha" for a newcomer), provenance, or ratification?
 5. **Engine appetite** — are you happy for each new muscle to get a small `case_lint` extension
