@@ -1,0 +1,31 @@
+# Tutorial Case 0 — "The Dead Drop". Teaches the loop (grade -> contradiction ->
+# tension -> corroborate -> verification gate -> deduce) with NO disinformation trap.
+case:
+  id: dead-drop
+  title: "Case 0 — The Dead Drop (tutorial)"
+  mode: tutorial            # relaxes invariant C (a tutorial has no frame/trap by design)
+  verdict_axis: location
+  axes:
+    location: [site-4, site-7, site-9]
+  ground_truth: { location: site-7 }
+  sacred_tensions: []
+
+  clues:
+    - id: courier-alpha     # first courier report
+      grade: B2
+      truth: true
+      corroborated: true    # corroborated by the A2 confirmation below
+      asserts: ["location=site-7"]
+
+    - id: courier-beta      # second courier, low grade, contradicts alpha
+      grade: D4
+      truth: true           # not a plant — a genuine but weak, mistaken report
+      corroborated: false   # single-source, low grade -> hold as a tension, don't credit
+      asserts: ["location=site-4"]
+      contradicts: [courier-alpha]
+
+    - id: confirm-gamma     # independent third report
+      grade: A2
+      truth: true
+      corroborated: true    # the independent corroborator that promotes working -> evergreen
+      asserts: ["location=site-7"]
