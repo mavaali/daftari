@@ -15,6 +15,7 @@ import {
   vaultTensionClusters,
   vaultTensionLog,
   vaultTensionResolve,
+  vaultTensionTriage,
 } from "../../src/tools/curation.js";
 
 const LINT_VAULT = resolve("test/fixtures/lint-vault");
@@ -227,6 +228,69 @@ describe("curation tools", () => {
       // Neither argument is required at the schema level — the exactly-one-of
       // constraint is enforced in the handler so the error message stays
       // consolidated and informative.
+      expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
+    });
+  });
+
+  describe("vault_tension_triage", () => {
+    it("returns an empty card when nothing has been logged", async () => {
+      const result = await vaultTensionTriage(vault, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.cluster_count).toBe(0);
+      expect(result.value.tension_count).toBe(0);
+      expect(result.value.clusters).toEqual([]);
+    });
+
+    it("composes a live tension into a cluster-grouped card", async () => {
+      await vaultTensionLog(vault, {
+        title: "a/b disagreement",
+        sourceA: "a.md",
+        claimA: "A",
+        sourceB: "b.md",
+        claimB: "B",
+        agent: "agent:claude-code",
+        kind: "factual",
+      });
+
+      const result = await vaultTensionTriage(vault, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tension_count).toBe(1);
+      const t = result.value.clusters[0]?.tensions[0];
+      expect(t?.kind).toBe("factual");
+      expect(t?.a.path).toBe("a.md");
+      expect(t?.b.path).toBe("b.md");
+    });
+
+    it("drops accepted-resolution tensions from the card", async () => {
+      const logged = await vaultTensionLog(vault, {
+        title: "stable",
+        sourceA: "a.md",
+        claimA: "A",
+        sourceB: "b.md",
+        claimB: "B",
+        agent: "agent:claude-code",
+        kind: "interpretive",
+      });
+      expect(logged.ok).toBe(true);
+      if (!logged.ok) return;
+      await resolveTension(vault, logged.value.id as string, {
+        resolved_at: "2026-05-15T00:00:00Z",
+        resolved_by: "human:mihir",
+        kind: "accepted",
+      });
+
+      const result = await vaultTensionTriage(vault, {});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.tension_count).toBe(0);
+    });
+
+    it("registers vault_tension_triage as a read-only MCP tool", () => {
+      const def = curationTools.find((t) => t.name === "vault_tension_triage");
+      expect(def).toBeDefined();
+      expect(def?.annotations?.readOnlyHint).toBe(true);
       expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
     });
   });

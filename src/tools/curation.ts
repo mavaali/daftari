@@ -47,6 +47,7 @@ import {
   type TensionBlastResult,
 } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
+import { loadTensionTriage, type TensionTriageResult } from "../curation/tension-triage.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
@@ -347,6 +348,41 @@ export async function vaultTensionBlast(
 }
 
 // ---------------------------------------------------------------------------
+// vault_tension_triage
+// ---------------------------------------------------------------------------
+
+// The Tension Triage Card (v0): composes the LIVE tensions into a
+// human-legible, cluster-grouped queue — each tension annotated with its
+// blast and, per contested side, tier, confidence, and read-heat. Read-only,
+// and deliberately computes NO composite severity score: ranking is the
+// curator's job in v0 (legibility before automation).
+//
+// RBAC v0: the injected visibleTensions filter scopes which tensions appear;
+// blast is the loader's count and hidden_downstream stays "none". The
+// per-tension #217 kept/hidden recompute that vault_tension_blast performs is
+// intentionally NOT replicated here — the triage card surfaces a coarse blast
+// magnitude for legibility, not the full downstream list, so the exact-count
+// disclosure the recompute guards against does not apply. (If parity is later
+// wanted, filter the loaded docs to readable ones before blast.)
+export async function vaultTensionTriage(
+  vaultRoot: string,
+  _args: Record<string, unknown> = {},
+  access?: AccessContext,
+): Promise<Result<TensionTriageResult, Error>> {
+  const allowed = requireReadAccess("vault_tension_triage", access);
+  if (!allowed.ok) return allowed;
+
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    return await loadTensionTriage(vaultRoot, new Date(), (entries) =>
+      visibleTensions(db, entries, access),
+    );
+  } finally {
+    db?.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // vault_lint
 // ---------------------------------------------------------------------------
 
@@ -638,6 +674,91 @@ const tensionBlastOutputSchema: Record<string, unknown> = {
     "max_depth",
     "hidden_downstream",
   ],
+  additionalProperties: false,
+};
+
+const triageReadHeatSchema: Record<string, unknown> = {
+  type: ["object", "null"],
+  properties: {
+    count: { type: "integer", description: "reads served within the window" },
+    last_read: {
+      type: ["string", "null"],
+      description: "ISO timestamp of the most recent in-window read",
+    },
+    instrumented: {
+      type: "boolean",
+      description:
+        "false when the doc may predate the read log — its count is not trustworthy as coldness",
+    },
+  },
+  required: ["count", "last_read", "instrumented"],
+  additionalProperties: false,
+};
+
+const triageSideSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    claim: { type: "string" },
+    tier: { type: ["integer", "null"], description: "null when the doc is unknown or untiered" },
+    confidence: { type: ["string", "null"], enum: ["low", "medium", "high", null] },
+    read_heat: triageReadHeatSchema,
+  },
+  required: ["path", "claim", "tier", "confidence", "read_heat"],
+  additionalProperties: false,
+};
+
+const tensionTriageOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    cluster_count: { type: "integer" },
+    tension_count: { type: "integer" },
+    clusters: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          cluster_id: { type: "string", description: "cluster:<8 hex chars>" },
+          documents: { type: "array", items: { type: "string" } },
+          tensions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                title: { type: "string" },
+                kind: { type: "string", enum: [...TENSION_KINDS] },
+                age_days: { type: "number" },
+                a: triageSideSchema,
+                b: triageSideSchema,
+                primary_blast: { type: ["integer", "null"] },
+                advisory_blast: { type: ["integer", "null"] },
+                hidden_downstream: {
+                  type: ["string", "null"],
+                  enum: ["none", "some", "many", null],
+                },
+              },
+              required: [
+                "id",
+                "title",
+                "kind",
+                "age_days",
+                "a",
+                "b",
+                "primary_blast",
+                "advisory_blast",
+                "hidden_downstream",
+              ],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["cluster_id", "documents", "tensions"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["cluster_count", "tension_count", "clusters"],
   additionalProperties: false,
 };
 
@@ -1172,6 +1293,32 @@ export const curationTools: ToolDefinition[] = [
     },
     outputSchema: tensionBlastOutputSchema,
     handler: (vaultRoot, args, access) => vaultTensionBlast(vaultRoot, args, access),
+  },
+  {
+    name: "vault_tension_triage",
+    title: "Tension triage card",
+    annotations: { readOnlyHint: true },
+    description:
+      "Compose the vault's LIVE tensions into a human-legible triage card: " +
+      "every unresolved, non-accepted tension grouped by cluster and " +
+      "annotated for a curator deciding what to resolve. Each tension carries " +
+      "its kind, age in days, and blast (primary_blast via 'sources' edges, " +
+      "advisory_blast via markdown links); each contested side carries its " +
+      "tier, confidence, and read-heat (in-window read count + recency, with " +
+      "an 'instrumented' flag that distinguishes a genuinely cold doc from one " +
+      "that predates the read log). Clusters are ordered by size descending, " +
+      "tensions within a cluster by age descending. There is deliberately NO " +
+      "composite severity score or ranking — legibility is the point; ranking " +
+      "the queue is the human's call. Null tier/confidence/read-heat means the " +
+      "doc is unknown; null blast means none was computed for that tension. " +
+      "Read-only; never edits the tension log or any document.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    outputSchema: tensionTriageOutputSchema,
+    handler: (vaultRoot, args, access) => vaultTensionTriage(vaultRoot, args, access),
   },
   {
     name: "vault_lint",
