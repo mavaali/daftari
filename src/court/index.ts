@@ -26,13 +26,16 @@ import {
   resolveTension,
   type TensionResolution,
 } from "../curation/tension.js";
+import { loadTensionTriage } from "../curation/tension-triage.js";
 import { buildDocket } from "./docket.js";
 import { type CourtReport, renderJson, renderMarkdown } from "./report.js";
+import { renderTriageCard, TRIAGE_DEFAULT_LIMIT, TRIAGE_DEFAULT_WINDOW_DAYS } from "./triage.js";
 
 const HELP = `daftari court — the docket of open tensions, and the bench to rule on them.
 
 Usage:
   daftari court [--vault <path>] [--tension <id>] [--output <md>] [--output-json <json>]
+  daftari court --triage [--vault <path>] [--limit <n>] [--window <days>]
   daftari court rule <id> --kind <kind> [--rationale <text>] [--references <a,b>] [--by <identity>]
   daftari court --help
 
@@ -41,6 +44,12 @@ blast radius): both sides' claims and the present state of their documents,
 the downstream stakes, cluster membership, and precedents — past rulings on
 disputes that shared a document, a collection pair, or a kind. The court
 retrieves precedent; it never decides.
+
+Triage mode (--triage) is the UNRANKED view: every live tension grouped by
+cluster, enriched with blast radius and per-side tier, confidence, and
+read-heat (reads within --window days + recency), in a deliberately neutral
+order (clusters by size, tensions by age). No priority score — ranking what to
+resolve first is your call. --limit caps the clusters printed.
 
 Ruling:
   daftari court rule <id> --kind superseded|corrected|accepted|invalid
@@ -79,7 +88,44 @@ const VALUE_FLAGS = [
   "--rationale",
   "--references",
   "--by",
+  "--limit",
+  "--window",
 ];
+
+// Parses a positive-integer flag. Returns the default when absent, or NaN when
+// present but not a positive integer (the caller turns NaN into a usage error).
+function readPositiveIntArg(argv: string[], flag: string, fallback: number): number {
+  const raw = readStringArg(argv, flag);
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return Number.NaN;
+  const n = Number.parseInt(trimmed, 10);
+  return n > 0 ? n : Number.NaN;
+}
+
+// `daftari court --triage` — the UNRANKED mode. Renders the enriched triage
+// card (blast + per-side tier/confidence/read-heat, grouped by cluster) with
+// no priority ordering. Read-only.
+async function runTriage(argv: string[], vaultRoot: string): Promise<number> {
+  const limit = readPositiveIntArg(argv, "--limit", TRIAGE_DEFAULT_LIMIT);
+  if (Number.isNaN(limit)) {
+    process.stderr.write("daftari court: --limit must be a positive integer\n");
+    return 2;
+  }
+  const windowDays = readPositiveIntArg(argv, "--window", TRIAGE_DEFAULT_WINDOW_DAYS);
+  if (Number.isNaN(windowDays)) {
+    process.stderr.write("daftari court: --window must be a positive integer\n");
+    return 2;
+  }
+
+  const result = await loadTensionTriage(vaultRoot, new Date(), (e) => e, windowDays);
+  if (!result.ok) {
+    process.stderr.write(`daftari court: ${result.error.message}\n`);
+    return 3;
+  }
+  process.stdout.write(renderTriageCard(result.value, limit));
+  return 0;
+}
 
 function findPositionals(argv: string[]): string[] {
   const out: string[] = [];
@@ -146,6 +192,10 @@ export async function runCourt(argv: string[]): Promise<number> {
   }
 
   const vaultRoot = resolve(readStringArg(argv, "--vault") ?? ".");
+
+  if (argv.includes("--triage")) {
+    return runTriage(argv, vaultRoot);
+  }
 
   if (findPositionals(argv)[0] === "rule") {
     return runRule(argv, vaultRoot);
