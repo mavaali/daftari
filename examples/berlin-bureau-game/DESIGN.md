@@ -7,6 +7,11 @@
 >
 > Status: design approved in principle (2026-08-03). Cases 0–1 shipped; Cases 2+ are the roadmap
 > below. Nothing here is built yet.
+>
+> **Accepted (2026-08-04):** the game's job is **awareness / felt-need**, not one-session install-
+> conversion — so the debrief is optimized for *attribution to daftari*, and **authoring Cases 2+ is
+> gated on the T1-on-Case-1 signal**. See `conversion-hypothesis.md`. De-risking work tracked in
+> beads epic `mavaali-beads-inz`.
 
 ---
 

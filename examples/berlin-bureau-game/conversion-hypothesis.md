@@ -22,12 +22,14 @@ The bead (and DESIGN.md) assume the game's job is **install-conversion**: play �
    *intersection*, which is small, and wastes the *entertainment* reach, which is the game's actual
    superpower.
 
-**Position (opinion, not options):** the game's realistic, high-leverage job is **comprehension +
-felt-need + a low-friction next step** — make daftari *legible* and make the player *feel the cost of
-sloppy epistemics*, so that when they later hit a real memory/knowledge problem, daftari is the tool
-they remember and understand. That is an **awareness/activation** job, not a direct-install job.
-Measure that, not installs. (If Mihir wants install-conversion as the goal anyway, §4 still applies —
-just swap the primary metric — but I'd be betting against it.)
+**Position — ACCEPTED (Mihir, 2026-08-04):** the game's job is **comprehension + felt-need + a
+low-friction next step** — make daftari *legible* and make the player *feel the cost of sloppy
+epistemics*, so that when they later hit a real memory/knowledge problem, daftari is the tool they
+remember and understand. This is an **awareness/activation** job, not a direct-install job. **We
+measure T1 (named felt-need), not installs.** Two consequences now locked:
+- the **debrief's job is attribution to daftari (L2)**, not teaching generic carefulness — that is the
+  primary design lever;
+- **authoring Cases 2+ is gated on the T1-on-Case-1 signal** (§4), not run in parallel.
 
 ---
 
@@ -123,10 +125,9 @@ can actually falsify the bet. Mihir sets the final numbers.)*
 
 ---
 
-## 6. Open decisions for Mihir
+## 6. Decisions
 
-1. **Accept the reframe?** Awareness/felt-need as the game's job (my position), or hold install-conversion
-   as the target?
-2. **Who supplies the 5–8 naive ICP players?** This is the actual blocker to running the test — I can
-   design/administer it, I can't summon the sample. (Tracked as follow-up bead.)
-3. **Set the go/kill thresholds** (§4) before the run.
+1. **Reframe — DECIDED (2026-08-04):** awareness/felt-need is the game's job, not install-conversion. See §0.
+2. **Who supplies the 5–8 naive ICP players?** Still open — the actual blocker to running the test. I can
+   design/administer it, I can't summon the sample. (Tracked: `inz.10`.)
+3. **Set the go/kill thresholds** (§4) before the run. Still open — Mihir sets the numbers.
