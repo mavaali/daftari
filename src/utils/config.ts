@@ -257,6 +257,16 @@ export interface DaftariConfig {
   // with no backing configured; `daftari sync` then refuses with a pointer
   // to the config block.
   storage?: StorageConfig;
+  // JIT anchor pins (citation-anchors spec, Decision 2): maps a `describes`
+  // `repo:` prefix → a local code checkout so the read path can resolve pinned
+  // bindings. Paths are ~/relative/absolute-expanded at load; existence is
+  // deliberately NOT checked (a synced vault may lack the checkout — the read
+  // path then degrades to no anchors). Empty when the `code_repos` block is
+  // absent.
+  codeRepos: Record<string, string>;
+  // Kill-switch for the read-time pin check (`jit_anchors` key). Defaults true;
+  // false removes the entire read-path code path.
+  jitAnchors: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -280,6 +290,8 @@ function emptyConfig(): DaftariConfig {
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
     server: { tokens: [] },
     storage: undefined,
+    codeRepos: {},
+    jitAnchors: true,
   };
 }
 
@@ -972,6 +984,28 @@ function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefin
   return ok(gitDirAbs);
 }
 
+// Resolves the optional `code_repos` block (JIT anchor pins). A mapping of
+// describes-`repo:`-prefix → local checkout path, each ~/relative/absolute
+// expanded like `git_dir` (reusing expandTilde + resolve-against-vault). Unlike
+// `resolveGitDir` this deliberately does NOT check existence: a synced vault may
+// reach a machine without the checkout, where the read path just yields no
+// anchors. A non-mapping, or a non-string value, is a loud config error.
+function resolveCodeRepos(raw: unknown, vaultRoot: string): Result<Record<string, string>, Error> {
+  if (raw === undefined || raw === null) return ok({});
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return err(new Error("'code_repos' must be a mapping"));
+  }
+  const vaultAbs = resolve(vaultRoot);
+  const repos: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`code_repos['${name}'] must be a non-empty string path`));
+    }
+    repos[name] = resolve(vaultAbs, expandTilde(value));
+  }
+  return ok(repos);
+}
+
 // The permitted values for the `lint_voice` config key. "plain" is the default
 // compact vault_lint summary; "ledger_keeper" re-renders the same findings in
 // the ledger-keeper register. Voice is presentation only.
@@ -1159,6 +1193,17 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const lintVoice = resolveLintVoice(root.lint_voice);
   if (!lintVoice.ok) return lintVoice;
 
+  const codeRepos = resolveCodeRepos(root.code_repos, vaultRoot);
+  if (!codeRepos.ok) return err(new Error(`malformed config: ${codeRepos.error.message}`));
+
+  let jitAnchors = true;
+  if (root.jit_anchors !== undefined) {
+    if (typeof root.jit_anchors !== "boolean") {
+      return err(new Error("malformed config: 'jit_anchors' must be true or false"));
+    }
+    jitAnchors = root.jit_anchors;
+  }
+
   const tensionScan = validateTensionScan(root.tension_scan);
   if (!tensionScan.ok) return err(new Error(`malformed config: ${tensionScan.error.message}`));
 
@@ -1253,5 +1298,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     tools: toolsConfig.value,
     server: serverConfig.value,
     storage: storageConfig.value,
+    codeRepos: codeRepos.value,
+    jitAnchors,
   });
 }

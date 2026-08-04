@@ -54,6 +54,74 @@ describe("parseDescribesEntry", () => {
       symbol: "login",
     });
   });
+
+  // --- pin suffix (JIT anchor grammar, U1) ---------------------------------
+
+  it("parses a range pin #L<start>-<end>@<sha>", () => {
+    expect(parseDescribesEntry("api:src/retry.ts#L40-58@9f3c2ab", "docs")).toEqual({
+      repo: "api",
+      path: "src/retry.ts",
+      symbol: null,
+      pin: { start: 40, end: 58, sha: "9f3c2ab" },
+    });
+  });
+
+  it("parses a whole-file pin @<sha> (null range)", () => {
+    expect(parseDescribesEntry("api:src/retry.ts@9f3c2ab", "docs")).toEqual({
+      repo: "api",
+      path: "src/retry.ts",
+      symbol: null,
+      pin: { start: null, end: null, sha: "9f3c2ab" },
+    });
+  });
+
+  it("treats a bare #L<n> pin as the single line n (end defaults to start)", () => {
+    expect(parseDescribesEntry("api:src/retry.ts#L40@9f3c2ab", "docs")).toEqual({
+      repo: "api",
+      path: "src/retry.ts",
+      symbol: null,
+      pin: { start: 40, end: 40, sha: "9f3c2ab" },
+    });
+  });
+
+  it("carries a symbol alongside a pin", () => {
+    expect(parseDescribesEntry("api:src/retry.ts::withRetry#L40-58@9f3c2ab", "docs")).toEqual({
+      repo: "api",
+      path: "src/retry.ts",
+      symbol: "withRetry",
+      pin: { start: 40, end: 58, sha: "9f3c2ab" },
+    });
+  });
+
+  it("leaves a bare binding untouched — no pin field", () => {
+    expect(parseDescribesEntry("api:src/retry.ts", "docs")).toEqual({
+      repo: "api",
+      path: "src/retry.ts",
+      symbol: null,
+    });
+  });
+
+  it("does not treat a non-hex @ tail as a pin (indistinguishable from a path)", () => {
+    // 'notasha' is not 7-40 lowercase hex → the suffix is part of the path,
+    // parsed byte-identically to a bare binding, and NOT flagged malformed.
+    expect(parseDescribesEntry("api:src/build@notasha.ts", "docs")).toEqual({
+      repo: "api",
+      path: "src/build@notasha.ts",
+      symbol: null,
+    });
+  });
+
+  it("flags end<start as a malformed pin and degrades to a bare binding", () => {
+    // Structurally a valid pin, semantically invalid (58..40). The pin is
+    // dropped, the binding degrades to bare, and malformedPin is set for the
+    // lint check (U6) — never a throw, never a rejected entry.
+    expect(parseDescribesEntry("api:src/retry.ts#L58-40@9f3c2ab", "docs")).toEqual({
+      repo: "api",
+      path: "src/retry.ts",
+      symbol: null,
+      malformedPin: true,
+    });
+  });
 });
 
 describe("classifyDescribesEdges", () => {
