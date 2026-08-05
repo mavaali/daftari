@@ -234,6 +234,7 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     provenance: resolve("provenance", "direct", "default"),
     sources: sourcesValue,
     tier: resolve("tier", null, "null"),
+    criticality: null,
     superseded_by: resolve("superseded_by", null, "null"),
     ttl_days: resolve("ttl_days", null, "null"),
     // Valid time is authored, never inferred (D2): backfill preserves an
