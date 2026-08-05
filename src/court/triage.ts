@@ -30,7 +30,9 @@ function renderSide(label: string, side: TriageSide): string[] {
   const tier = side.tier === null ? "—" : String(side.tier);
   const conf = side.confidence === null ? "—" : side.confidence;
   const crit = side.criticality === null ? "—" : side.criticality;
-  const head = `    ${label}  ${side.path}  ·  tier ${tier} · conf ${conf} · crit ${crit} · ${renderReadHeat(side)}`;
+  const prov = side.provenance === null ? "—" : side.provenance;
+  const by = side.updated_by === null ? "—" : side.updated_by;
+  const head = `    ${label}  ${side.path}  ·  tier ${tier} · conf ${conf} · crit ${crit} · prov ${prov} · by ${by} · ${renderReadHeat(side)}`;
   const claim = `       "${truncate(side.claim, CLAIM_WIDTH)}"`;
   return [head, claim];
 }

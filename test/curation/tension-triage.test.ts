@@ -48,6 +48,9 @@ const meta = (
 ): TriageDocMeta => ({
   tier,
   confidence,
+  criticality: null,
+  provenance: null,
+  updated_by: null,
   created: "2026-01-01",
 });
 
@@ -210,8 +213,26 @@ describe("computeTensionTriage", () => {
       },
     ];
     const docMeta = new Map([
-      ["a.md", { tier: null, confidence: "high" as const, criticality: "high" as const }],
-      ["b.md", { tier: null, confidence: "low" as const, criticality: null }],
+      [
+        "a.md",
+        {
+          tier: null,
+          confidence: "high" as const,
+          criticality: "high" as const,
+          provenance: "direct" as const,
+          updated_by: "agent:x",
+        },
+      ],
+      [
+        "b.md",
+        {
+          tier: null,
+          confidence: "low" as const,
+          criticality: null,
+          provenance: "direct" as const,
+          updated_by: "agent:x",
+        },
+      ],
     ]);
     const result = computeTensionTriage(
       tensions as never,
@@ -221,5 +242,46 @@ describe("computeTensionTriage", () => {
     const t = result.clusters.flatMap((c) => c.tensions)[0];
     expect(t.a.criticality).toBe("high");
     expect(t.b.criticality).toBeNull();
+  });
+
+  it("surfaces per-side provenance and updated_by from doc metadata", () => {
+    const tensions = [
+      {
+        id: "tension-001",
+        date: "2026-01-01",
+        title: "t",
+        kind: "factual" as const,
+        sourceA: "a.md",
+        claimA: "A",
+        sourceB: "b.md",
+        claimB: "B",
+        status: "unresolved",
+        loggedBy: "agent:x",
+        resolved: false,
+      },
+    ];
+    const docMeta = new Map([
+      [
+        "a.md",
+        {
+          tier: null,
+          confidence: "high" as const,
+          criticality: null,
+          provenance: "direct" as const,
+          updated_by: "human:mihir",
+        },
+      ],
+      // b.md intentionally absent: unknown doc -> null provenance/updated_by
+    ]);
+    const result = computeTensionTriage(
+      tensions as never,
+      { docMeta, readHeat: new Map(), blastByTension: new Map() },
+      new Date("2026-02-01"),
+    );
+    const t = result.clusters.flatMap((c) => c.tensions)[0];
+    expect(t.a.provenance).toBe("direct");
+    expect(t.a.updated_by).toBe("human:mihir");
+    expect(t.b.provenance).toBeNull();
+    expect(t.b.updated_by).toBeNull();
   });
 });

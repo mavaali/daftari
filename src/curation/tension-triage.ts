@@ -11,7 +11,7 @@
 // data and never touches the filesystem or the RBAC layer. The async loader in
 // the tool wires the real vault reads.
 
-import type { Confidence, Criticality, Tier } from "../frontmatter/types.js";
+import type { Confidence, Criticality, Provenance, Tier } from "../frontmatter/types.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { computeReadHeat, type ReadHeat, type ReadHeatDoc } from "./read-heat.js";
 import { readReadLog } from "./read-log.js";
@@ -33,6 +33,8 @@ export interface TriageDocMeta {
   tier: Tier | null;
   confidence: Confidence;
   criticality: Criticality | null;
+  provenance: Provenance | null;
+  updated_by: string | null;
   // Earliest-known date; forwarded to read-heat's instrumented check upstream.
   created?: string;
 }
@@ -53,6 +55,8 @@ export interface TriageSide {
   confidence: Confidence | null;
   read_heat: ReadHeat | null;
   criticality: Criticality | null;
+  provenance: Provenance | null;
+  updated_by: string | null;
 }
 
 // A single tension, enriched. Blast fields are null when unavailable (no blast
@@ -97,6 +101,8 @@ function sideFor(path: string, claim: string, inputs: TriageInputs): TriageSide 
     confidence: m ? m.confidence : null,
     read_heat: inputs.readHeat.get(path) ?? null,
     criticality: m ? m.criticality : null,
+    provenance: m ? m.provenance : null,
+    updated_by: m ? m.updated_by : null,
   };
 }
 
@@ -197,6 +203,8 @@ export async function loadTensionTriage(
       tier: d.frontmatter.tier,
       confidence: d.frontmatter.confidence,
       criticality: d.frontmatter.criticality,
+      provenance: d.frontmatter.provenance,
+      updated_by: d.frontmatter.updated_by,
       created: d.frontmatter.created,
     });
     readHeatDocs.push({ file: d.path, created: d.frontmatter.created });

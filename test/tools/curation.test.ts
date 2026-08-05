@@ -306,6 +306,19 @@ describe("curation tools", () => {
       const sideAProps = tensionItems.items.properties.a as { properties: Record<string, unknown> };
       expect(sideAProps.properties).toHaveProperty("criticality");
     });
+
+    it("declares provenance and updated_by on triageSideSchema in the outputSchema", () => {
+      const def = curationTools.find((t) => t.name === "vault_tension_triage");
+      expect(def).toBeDefined();
+      const clusters = (def?.outputSchema as { properties: Record<string, unknown> }).properties
+        .clusters as { items: { properties: Record<string, unknown> } };
+      const tensionItems = clusters.items.properties.tensions as {
+        items: { properties: Record<string, unknown> };
+      };
+      const sideAProps = tensionItems.items.properties.a as { properties: Record<string, unknown> };
+      expect(sideAProps.properties).toHaveProperty("provenance");
+      expect(sideAProps.properties).toHaveProperty("updated_by");
+    });
   });
 
   describe("vault_provenance", () => {
