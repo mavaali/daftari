@@ -3,7 +3,8 @@
 // #2 shipped TEMPORAL decay inline (TTL, old drafts, stagnant confidence):
 // arithmetic over the document's own frontmatter, free at read time. The
 // structural signals deliberately left out — orphanhood and
-// deprecated-still-linked — need the whole-vault inbound-link graph, which
+// retired-still-linked (deprecated or superseded) — need the whole-vault
+// inbound-link graph, which
 // is exactly what a read must NOT recompute per query. That graph is now
 // materialized into the ephemeral index at (re)index time (index-db.ts
 // doc_links, fed by the same extraction/resolution lint uses), so this
