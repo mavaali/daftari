@@ -1229,6 +1229,7 @@ describe("write tools", () => {
         "updated",
         "updated_by",
         "provenance",
+        "criticality",
         "tier",
         "sources",
         "superseded_by",

@@ -237,6 +237,7 @@ export function serializeDocument(
     // undefined here, which js-yaml refuses to dump (null it serializes fine,
     // matching the superseded_by convention).
     tier: fm.tier ?? null,
+    criticality: fm.criticality ?? null,
     sources: fm.sources,
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,

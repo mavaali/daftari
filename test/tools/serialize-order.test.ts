@@ -17,6 +17,7 @@ function fm(): Frontmatter {
     updated_by: "agent:claude-code",
     provenance: "direct",
     tier: null,
+    criticality: null,
     sources: [],
     superseded_by: null,
     ttl_days: 90,
@@ -45,6 +46,7 @@ const BUILTIN_KEYS = [
   "updated_by",
   "provenance",
   "tier",
+  "criticality",
   "sources",
   "superseded_by",
   "ttl_days",
@@ -147,6 +149,11 @@ describe("serializeDocument — extension ordering", () => {
     const text = serializeDocument(fm(), "# Body\n", [], { stray: "kept" });
     expect(frontmatterKeys(text)).toEqual([...BUILTIN_KEYS, "stray"]);
     expect(text).toContain("stray: kept");
+  });
+
+  it("round-trips criticality through serialize", () => {
+    const text = serializeDocument({ ...fm(), criticality: "high" }, "body");
+    expect(text).toContain("criticality: high");
   });
 });
 

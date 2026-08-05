@@ -28,6 +28,13 @@ export type Provenance = (typeof PROVENANCES)[number];
 export const TIERS = ["source", "compiled", "manual"] as const;
 export type Tier = (typeof TIERS)[number];
 
+// Cost-of-being-wrong for a document — the one triage signal the graph cannot
+// infer (a pricing/legal/security doc is load-bearing; a scratch note is not).
+// Optional and display-only: it enforces nothing on the write path, it makes a
+// tension's stakes legible. Null = unstated (every pre-feature doc), never "low".
+export const CRITICALITIES = ["low", "medium", "high"] as const;
+export type Criticality = (typeof CRITICALITIES)[number];
+
 // The runtime value of a config-declared schema-extension field. `date` and
 // `enum` fields are carried as strings; `array` fields as string[]. A core
 // type so config.ts and the frontmatter layer agree on the shape.
@@ -47,6 +54,7 @@ export interface BuiltinFrontmatter {
   updated_by: string; // agent:<id> | human:<username>
   provenance: Provenance;
   tier: Tier | null;
+  criticality: Criticality | null;
   sources: string[];
   superseded_by: string | null;
   ttl_days: number | null;
@@ -94,6 +102,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "updated_by",
   "provenance",
   "tier",
+  "criticality",
   "sources",
   "superseded_by",
   "ttl_days",

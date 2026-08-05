@@ -116,3 +116,21 @@ describe("tier validation (optional enum, defaults to null)", () => {
     expect(issuesFor("tier", { tier: "raw" })).toHaveLength(1);
   });
 });
+
+describe("criticality validation", () => {
+  it("accepts a valid level", () => {
+    const { frontmatter, report } = validateFrontmatter(data({ criticality: "high" }));
+    expect(frontmatter.criticality).toBe("high");
+    expect(report.valid).toBe(true);
+  });
+  it("defaults to null when absent", () => {
+    const { frontmatter } = validateFrontmatter(data({}));
+    expect(frontmatter.criticality).toBeNull();
+  });
+  it("flags a malformed value and blocks (mirrors tier)", () => {
+    const { frontmatter, report } = validateFrontmatter(data({ criticality: "urgent" }));
+    expect(frontmatter.criticality).toBeNull();
+    expect(report.issues.some((i) => i.field === "criticality")).toBe(true);
+    expect(report.valid).toBe(false);
+  });
+});

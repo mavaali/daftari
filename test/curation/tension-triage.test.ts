@@ -192,4 +192,34 @@ describe("computeTensionTriage", () => {
     expect(t?.b.path).toBe("b.md");
     expect(t?.b.claim).toBe("B says");
   });
+
+  it("surfaces per-side criticality from doc metadata", () => {
+    const tensions = [
+      {
+        id: "tension-001",
+        date: "2026-01-01",
+        title: "t",
+        kind: "factual" as const,
+        sourceA: "a.md",
+        claimA: "A",
+        sourceB: "b.md",
+        claimB: "B",
+        status: "unresolved",
+        loggedBy: "agent:x",
+        resolved: false,
+      },
+    ];
+    const docMeta = new Map([
+      ["a.md", { tier: null, confidence: "high" as const, criticality: "high" as const }],
+      ["b.md", { tier: null, confidence: "low" as const, criticality: null }],
+    ]);
+    const result = computeTensionTriage(
+      tensions as never,
+      { docMeta, readHeat: new Map(), blastByTension: new Map() },
+      new Date("2026-02-01"),
+    );
+    const t = result.clusters.flatMap((c) => c.tensions)[0];
+    expect(t.a.criticality).toBe("high");
+    expect(t.b.criticality).toBeNull();
+  });
 });
