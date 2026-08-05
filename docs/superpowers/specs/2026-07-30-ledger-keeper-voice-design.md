@@ -99,7 +99,7 @@ Illustrative templates (final copy to be reviewed against the kill condition):
 
 | check | plain detail | ledger-keeper line |
 |---|---|---|
-| `deprecatedStillLinked` | `still linked from canonical: X` | "Entry {path} is retired, yet {X} still lean on it. I do not move the dead." |
+| `retiredStillLinked` | `still linked from canonical: X` | "Entry {path} is retired, yet {X} still lean on it. I do not move the dead." |
 | `staleFiles` | `{n}d since update, ttl {t}d` | "{path}: {n} days unattended, its warranty being {t}. I record the lapse." |
 | `orphanFiles` | `no inbound links` | "{path} speaks to no one and no one to it. Noted, and left where it lies." |
 | `unansweredQuestions` | `{n} question(s) raised but not answered` | "{path} asks {n} things this house cannot yet answer. The questions stand." |

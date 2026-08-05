@@ -30,7 +30,7 @@ const LEDGER_CLAUSE: Record<LintCheckName, string> = {
   orphanFiles: "speaks to no one, and no one to it",
   oldDrafts: "has lingered in draft past all reason",
   stagnantLowConfidence: "sits uncertain and untouched",
-  deprecatedStillLinked: "is retired, yet the canon still leans upon it",
+  retiredStillLinked: "is retired, yet the canon still leans upon it",
   unansweredQuestions: "poses questions this house has not answered",
   tierDemotions: "has been put down from its tier",
   brokenSourceRefs: "cites a source that cannot be found",

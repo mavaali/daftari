@@ -22,7 +22,7 @@ import {
   computeBlast,
 } from "../curation/tension-blast.js";
 import { computeValidity } from "../curation/validity.js";
-import { loadDocuments } from "../curation/vault-docs.js";
+import { buildPathIndexes, loadDocuments, resolveLink } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 
 // A load-bearing decayed document: canonical, accumulation-domain, past its
@@ -86,6 +86,13 @@ export async function runSleepCycle(
   const reverseSource = buildReverseSourceMap(docs.value);
   const reverseLink = buildReverseLinkMap(docs.value);
 
+  const { byPath, byBasename } = buildPathIndexes(docs.value);
+  const retracted = new Set(
+    docs.value
+      .filter((d) => d.frontmatter.status === "deprecated" || d.frontmatter.status === "superseded")
+      .map((d) => d.path),
+  );
+
   const staleness = { fresh: 0, aging: 0, stale: 0, total: 0 };
   const wake: WakeTask[] = [];
   const decayedQuiet: QuietDecay[] = [];
@@ -116,7 +123,16 @@ export async function runSleepCycle(
     const validityEnded =
       validity?.state === "expired" && (doc.frontmatter.superseded_by ?? null) === null;
 
-    if (!s.expired && !validityEnded) continue;
+    // Third reason to wake: this doc (even if fresh by TTL and validity-valid)
+    // cites a deprecated or superseded source in its `sources` frontmatter.
+    // Scope is intentionally locked to the sources frontmatter edge only — not
+    // markdown body links. Self-terminating once the source is re-pointed.
+    const citedRetracted = (doc.frontmatter.sources ?? [])
+      .map((raw) => resolveLink(raw, doc.path, byPath, byBasename))
+      .filter((t): t is string => t !== null && retracted.has(t));
+    const citesRetracted = citedRetracted.length > 0;
+
+    if (!s.expired && !validityEnded && !citesRetracted) continue;
     if (doc.frontmatter.domain === "generative") {
       generativeStale += 1;
       continue;
@@ -124,7 +140,7 @@ export async function runSleepCycle(
     if (doc.frontmatter.status !== "canonical") continue;
 
     const blast = computeBlast({ seeds: [doc.path], reverseSource, reverseLink });
-    if (blast.downstream.length === 0) {
+    if (blast.downstream.length === 0 && !citesRetracted) {
       decayedQuiet.push({ path: doc.path, ageDays: s.ageDays });
       continue;
     }
@@ -138,14 +154,18 @@ export async function runSleepCycle(
       blastAdvisory: blast.advisory_blast,
       blastTotal: blast.downstream.length,
       sources: doc.frontmatter.sources,
-      reason: validityEnded
-        ? `canonical, but its validity ended ${validity?.until} and nothing ` +
-          `supersedes it; ${blast.downstream.length} downstream document(s) ` +
-          "depend on it — find what replaced the claim and stage the diff for " +
-          "ratification"
-        : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
-          `${blast.downstream.length} downstream document(s) depend on it — ` +
-          `re-verify against its sources and stage the diff for ratification`,
+      reason: citesRetracted
+        ? `canonical, cites retracted source(s): ${citedRetracted.join(", ")} — ` +
+          `re-verify grounding, re-point to the successor if one exists, and ` +
+          `stage the diff for ratification`
+        : validityEnded
+          ? `canonical, but its validity ended ${validity?.until} and nothing ` +
+            `supersedes it; ${blast.downstream.length} downstream document(s) ` +
+            "depend on it — find what replaced the claim and stage the diff for " +
+            "ratification"
+          : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
+            `${blast.downstream.length} downstream document(s) depend on it — ` +
+            `re-verify against its sources and stage the diff for ratification`,
     });
   }
 

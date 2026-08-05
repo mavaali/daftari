@@ -778,8 +778,8 @@ export const readTools: ToolDefinition[] = [
       "changed since this document was compiled and what tier 1 says about " +
       "the pending change: current / pending-compatible / pending-broken; " +
       "null when there is nothing to report), a structural report (#8 — " +
-      "orphan: nothing you can read links here; deprecated_still_linked: " +
-      "canonical docs still lean on this deprecated one; null when healthy), " +
+      "orphan: nothing you can read links here; retired_still_linked: " +
+      "canonical docs still lean on this retired (deprecated/superseded) one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
       "shape as search hits), and a 'version' token (SHA-256 of the file) " +
       "that can be passed back to a write tool as 'base_version' for " +
@@ -849,7 +849,7 @@ export const readTools: ToolDefinition[] = [
               type: "boolean",
               description: "No document the caller can read links here",
             },
-            deprecated_still_linked: {
+            retired_still_linked: {
               type: ["object", "null"],
               properties: {
                 canonical_linkers: { type: "array", items: { type: "string" } },
@@ -858,7 +858,7 @@ export const readTools: ToolDefinition[] = [
             },
             banner: { type: "string" },
           },
-          required: ["orphan", "deprecated_still_linked", "banner"],
+          required: ["orphan", "retired_still_linked", "banner"],
         },
         // Absent (both fields) when no visible unresolved tension touches the
         // document. `contested` is capped; `contestedCount` is the true total.

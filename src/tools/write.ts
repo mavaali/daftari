@@ -18,10 +18,19 @@ import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { sourceReadable } from "../curation/tension-access.js";
+import {
+  type BlastDownstreamEntry,
+  bucketHiddenDownstream,
+  buildReverseLinkMap,
+  buildReverseSourceMap,
+  computeBlast,
+  type HiddenDownstream,
+} from "../curation/tension-blast.js";
 import { EXTERNAL_REF } from "../curation/tier0.js";
 import {
   buildPathIndexes,
   extractLinks,
+  loadDocuments,
   outgoingLinkTargets,
   resolveLink,
 } from "../curation/vault-docs.js";
@@ -331,6 +340,17 @@ export interface WriteResult {
   conflicts_with?: string[];
   tension_id?: string | null;
   tension_error?: string;
+  // Downstream dependents advisory — set on vault_deprecate and
+  // vault_supersede to surface which docs transitively depend on the
+  // retracted doc (the full blast closure, matching vault_tension_blast).
+  // Advisory only; no dependent is ever edited. Omitted on load failure.
+  // (max_depth from the blast is intentionally not surfaced in this shape.)
+  dependents?: {
+    downstream: BlastDownstreamEntry[];
+    primary_blast: number;
+    advisory_blast: number;
+    hidden_downstream: HiddenDownstream;
+  };
 }
 
 // First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
@@ -1291,6 +1311,60 @@ export async function vaultPromote(
 }
 
 // ---------------------------------------------------------------------------
+// downstream dependents advisory helper
+// ---------------------------------------------------------------------------
+
+// Builds the downstream dependents advisory for a retracted doc (deprecated
+// or superseded). Best-effort: returns null when docs can't be loaded so the
+// caller can omit `dependents` without failing the write.
+//
+// When `access` is provided, filters the downstream set to docs the role can
+// read and coarsens the hidden remainder via bucketHiddenDownstream. Without
+// access, all downstream docs are returned and hidden_downstream is "none".
+async function buildDependentsAdvisory(
+  vaultRoot: string,
+  retractedPath: string,
+  access?: AccessContext,
+): Promise<WriteResult["dependents"]> {
+  const docsResult = await loadDocuments(vaultRoot);
+  if (!docsResult.ok) return undefined;
+  const docs = docsResult.value;
+
+  const reverseSource = buildReverseSourceMap(docs);
+  const reverseLink = buildReverseLinkMap(docs);
+  const blast = computeBlast({ seeds: [retractedPath], reverseSource, reverseLink });
+
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      const kept = blast.downstream.filter((e) => sourceReadable(db, access, e.path));
+      const hidden = blast.downstream.length - kept.length;
+      let primary_blast = 0;
+      let advisory_blast = 0;
+      for (const e of kept) {
+        if (e.dependency_type === "source") primary_blast += 1;
+        else advisory_blast += 1;
+      }
+      return {
+        downstream: kept,
+        primary_blast,
+        advisory_blast,
+        hidden_downstream: bucketHiddenDownstream(hidden),
+      };
+    } finally {
+      db?.close();
+    }
+  }
+
+  return {
+    downstream: blast.downstream,
+    primary_blast: blast.primary_blast,
+    advisory_blast: blast.advisory_blast,
+    hidden_downstream: "none",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // vault_deprecate
 // ---------------------------------------------------------------------------
 
@@ -1361,9 +1435,14 @@ export async function vaultDeprecate(
     baseVersion: baseVersion.value,
     access,
   });
+  if (!written.ok) return written;
+  // Build the downstream dependents advisory (best-effort, never fails the write).
+  const dependents = await buildDependentsAdvisory(vaultRoot, path.value, access);
   // A deprecation without a successor has nothing to hint at.
-  if (!written.ok || boundary.value === null || supersededBy === null) return written;
-  return ok({ ...written.value, hint: boundaryHint(supersededBy, boundary.value) });
+  if (boundary.value === null || supersededBy === null) {
+    return ok({ ...written.value, dependents });
+  }
+  return ok({ ...written.value, hint: boundaryHint(supersededBy, boundary.value), dependents });
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,8 +1711,13 @@ export async function vaultSupersede(
     baseVersion: baseVersion.value,
     access,
   });
-  if (!written.ok || boundary.value === null) return written;
-  return ok({ ...written.value, hint: boundaryHint(newPath.value, boundary.value) });
+  if (!written.ok) return written;
+  // Build the downstream dependents advisory (best-effort, never fails the write).
+  const dependents = await buildDependentsAdvisory(vaultRoot, oldPath.value, access);
+  if (boundary.value === null) {
+    return ok({ ...written.value, dependents });
+  }
+  return ok({ ...written.value, hint: boundaryHint(newPath.value, boundary.value), dependents });
 }
 
 // ---------------------------------------------------------------------------

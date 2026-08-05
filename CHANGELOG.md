@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Retracted-source detection now covers `superseded`, not just `deprecated`, and is renamed.** The read-time structural advisory field `deprecated_still_linked` is now `retired_still_linked`, and the `vault_lint` check `deprecatedStillLinked` is now `retiredStillLinked`. Both now flag canonical documents that still link to a **deprecated _or_ superseded** source (previously only `deprecated`). **Breaking:** consumers keying on the old field/check names must update.
+
+### Added
+
+- `vault_deprecate` and `vault_supersede` now return a best-effort `dependents` advisory — the RBAC-filtered downstream blast of the retracted document — so the caller immediately sees which documents' grounding just weakened. Advisory only; omitted when the index/docs are unavailable.
+- The nightly `sleep` cycle now wakes a canonical, accumulation-domain document whose frontmatter `sources` cite a deprecated/superseded document, even when the citing document is itself fresh — so a retracted source proactively surfaces its dependents for re-pointing. Self-terminating once the citation is dropped or re-pointed.
+
 ## [2.0.0] - 2026-07-30
 
 ### Changed

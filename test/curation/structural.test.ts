@@ -25,10 +25,11 @@ function frontmatter(overrides: Record<string, unknown> = {}) {
 }
 
 // The link neighborhood the assertions run against:
-//   pricing/hub.md (canonical)     → links to linked.md and retired.md
-//   pricing/linked.md              ← linked, healthy
-//   pricing/retired.md (deprecated)← linked from a CANONICAL doc
-//   pricing/xylotheque.md          ← nothing links here (orphan)
+//   pricing/hub.md (canonical)      → links to linked.md, retired.md, and overtaken.md
+//   pricing/linked.md               ← linked, healthy
+//   pricing/retired.md (deprecated) ← linked from a CANONICAL doc
+//   pricing/overtaken.md (superseded)← linked from a CANONICAL doc — same hazard
+//   pricing/xylotheque.md           ← nothing links here (orphan)
 //   competitive-intel/secret-hub.md (canonical) → sole linker of
 //   pricing/shadowed.md (deprecated)            ← hidden-vantage cases
 describe("structural decay (#8)", () => {
@@ -47,13 +48,18 @@ describe("structural decay (#8)", () => {
         fm: { title: "Retired", status: "deprecated" },
       },
       {
+        path: "pricing/overtaken.md",
+        body: "# Overtaken\n\nThis view was overtaken by events.\n",
+        fm: { title: "Overtaken", status: "superseded" },
+      },
+      {
         path: "pricing/xylotheque.md",
         body: "# Xylotheque\n\nNobody links to the xylotheque inventory.\n",
         fm: { title: "Xylotheque" },
       },
       {
         path: "pricing/hub.md",
-        body: "# Hub\n\nSee [linked](linked.md) and [retired](retired.md).\n",
+        body: "# Hub\n\nSee [linked](linked.md), [retired](retired.md), and [overtaken](overtaken.md).\n",
         fm: { title: "Hub", status: "canonical", confidence: "high" },
       },
       {
@@ -101,15 +107,26 @@ describe("structural decay (#8)", () => {
     expect(linked.value.structural).toBeNull();
   });
 
-  it("flags deprecated-still-linked with the canonical linkers named", async () => {
+  it("flags retired (deprecated) still-linked with the canonical linkers named", async () => {
     const retired = await vaultRead(vault, "pricing/retired.md");
     expect(retired.ok).toBe(true);
     if (!retired.ok) return;
     expect(retired.value.structural?.orphan).toBe(false);
-    expect(retired.value.structural?.deprecated_still_linked?.canonical_linkers).toEqual([
+    expect(retired.value.structural?.retired_still_linked?.canonical_linkers).toEqual([
       "pricing/hub.md",
     ]);
     expect(retired.value.structural?.banner).toContain("pricing/hub.md");
+  });
+
+  it("flags retired (superseded) still-linked — same hazard as deprecated", async () => {
+    const overtaken = await vaultRead(vault, "pricing/overtaken.md");
+    expect(overtaken.ok).toBe(true);
+    if (!overtaken.ok) return;
+    expect(overtaken.value.structural?.orphan).toBe(false);
+    expect(overtaken.value.structural?.retired_still_linked?.canonical_linkers).toEqual([
+      "pricing/hub.md",
+    ]);
+    expect(overtaken.value.structural?.banner).toContain("pricing/hub.md");
   });
 
   it("computes from the caller's vantage — hidden linkers neither count nor leak", async () => {
@@ -119,7 +136,7 @@ describe("structural decay (#8)", () => {
     expect(full.ok).toBe(true);
     if (!full.ok) return;
     expect(full.value.structural?.orphan).toBe(false);
-    expect(full.value.structural?.deprecated_still_linked?.canonical_linkers).toEqual([
+    expect(full.value.structural?.retired_still_linked?.canonical_linkers).toEqual([
       "competitive-intel/secret-hub.md",
     ]);
 
@@ -134,7 +151,7 @@ describe("structural decay (#8)", () => {
     expect(gated.ok).toBe(true);
     if (!gated.ok) return;
     expect(gated.value.structural?.orphan).toBe(true);
-    expect(gated.value.structural?.deprecated_still_linked).toBeNull();
+    expect(gated.value.structural?.retired_still_linked).toBeNull();
     expect(JSON.stringify(gated.value.structural)).not.toContain("secret-hub");
   });
 
@@ -166,7 +183,7 @@ describe("structural decay (#8)", () => {
     if (!orphanHit.ok) return;
     const hit = orphanHit.value.hits.find((h) => h.path === "pricing/xylotheque.md");
     expect(hit?.orphan).toBe(true);
-    expect(hit?.deprecatedStillLinked).toBeUndefined();
+    expect(hit?.retiredStillLinked).toBeUndefined();
 
     const retiredHit = await vaultSearch(vault, {
       query: "retired superseded thinking",
@@ -175,8 +192,19 @@ describe("structural decay (#8)", () => {
     expect(retiredHit.ok).toBe(true);
     if (!retiredHit.ok) return;
     const rh = retiredHit.value.hits.find((h) => h.path === "pricing/retired.md");
-    expect(rh?.deprecatedStillLinked).toBe(true);
+    expect(rh?.retiredStillLinked).toBe(true);
     expect(rh?.orphan).toBeUndefined();
+
+    // superseded-still-linked: same flag as deprecated
+    const overtakenHit = await vaultSearch(vault, {
+      query: "overtaken events",
+      weights: { bm25: 1, vector: 0 },
+    });
+    expect(overtakenHit.ok).toBe(true);
+    if (!overtakenHit.ok) return;
+    const oh = overtakenHit.value.hits.find((h) => h.path === "pricing/overtaken.md");
+    expect(oh?.retiredStillLinked).toBe(true);
+    expect(oh?.orphan).toBeUndefined();
   });
 
   it("a write refreshes the link graph — an orphan stops being one immediately", async () => {

@@ -3,7 +3,8 @@
 // #2 shipped TEMPORAL decay inline (TTL, old drafts, stagnant confidence):
 // arithmetic over the document's own frontmatter, free at read time. The
 // structural signals deliberately left out — orphanhood and
-// deprecated-still-linked — need the whole-vault inbound-link graph, which
+// retired-still-linked (deprecated or superseded) — need the whole-vault
+// inbound-link graph, which
 // is exactly what a read must NOT recompute per query. That graph is now
 // materialized into the ephemeral index at (re)index time (index-db.ts
 // doc_links, fed by the same extraction/resolution lint uses), so this
@@ -28,10 +29,10 @@ import { sourceReadable } from "./tension-access.js";
 export interface StructuralDecay {
   // No document the caller can read links here.
   orphan: boolean;
-  // Set when THIS doc is deprecated and canonical docs still link to it —
-  // the "settled docs keep leaning on a retired one" hazard. Linker paths
-  // are caller-visible by construction (vantage rule above).
-  deprecated_still_linked: { canonical_linkers: string[] } | null;
+  // Set when THIS doc is deprecated or superseded and canonical docs still
+  // link to it — the "settled docs keep leaning on a retired one" hazard.
+  // Linker paths are caller-visible by construction (vantage rule above).
+  retired_still_linked: { canonical_linkers: string[] } | null;
   banner: string;
 }
 
@@ -60,27 +61,27 @@ export function structuralDecay(input: {
 
   const orphan = visible.length === 0;
   const canonicalLinkers =
-    status === "deprecated"
+    status === "deprecated" || status === "superseded"
       ? visible.filter((l) => l.status === "canonical").map((l) => l.path)
       : [];
-  const deprecatedStillLinked =
+  const retiredStillLinked =
     canonicalLinkers.length > 0 ? { canonical_linkers: canonicalLinkers } : null;
 
-  if (!orphan && deprecatedStillLinked === null) return null;
+  if (!orphan && retiredStillLinked === null) return null;
 
   const notes: string[] = [];
   if (orphan) {
     notes.push("no vault document you can read links here — connect it or consider archiving");
   }
-  if (deprecatedStillLinked) {
+  if (retiredStillLinked) {
     notes.push(
-      `deprecated but still linked from canonical doc${canonicalLinkers.length === 1 ? "" : "s"}: ` +
+      `retired (deprecated/superseded) but still linked from canonical doc${canonicalLinkers.length === 1 ? "" : "s"}: ` +
         canonicalLinkers.join(", "),
     );
   }
   return {
     orphan,
-    deprecated_still_linked: deprecatedStillLinked,
+    retired_still_linked: retiredStillLinked,
     banner: `Structural decay: ${notes.join("; ")}.`,
   };
 }
