@@ -48,6 +48,9 @@ const meta = (
 ): TriageDocMeta => ({
   tier,
   confidence,
+  criticality: null,
+  provenance: null,
+  updated_by: null,
   created: "2026-01-01",
 });
 
