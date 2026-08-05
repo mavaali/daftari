@@ -59,6 +59,7 @@ always valid even though you never typed those two fields.
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `tier` | enum or `null` | `null` | Write-protection tier: `source`, `compiled`, or `manual`. Unset means no enforcement. See [below](#tier--write-protection). |
+| `criticality` | enum or `null` | `null` | Cost-of-being-wrong signal: `low`, `medium`, or `high`. Display-only — surfaced on the tension-triage card; enforces nothing. |
 | `sources` | list of strings | `[]` | Source identifiers the document was built from. |
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
