@@ -132,7 +132,7 @@ Output is a single markdown brief plus a machine-readable manifest
    `HybridHit`s — the enrichment this tool needs is *already on that
    shape*: `decay`, `currentSource`, `contested`/`contestedCount`, the
    coarsened `pendingBrokenUpstream`/`hiddenPendingUpstream` buckets,
-   `orphan`/`deprecatedStillLinked`. vault_context composes existing
+   `orphan`/`retiredStillLinked`. vault_context composes existing
    signals; it computes no new ones.
 2. **RBAC-filter first, before any budgeting.** The caller's readable set
    is applied at the top of the pipeline, exactly as the tension surfaces

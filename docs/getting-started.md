@@ -130,7 +130,7 @@ It reports — never fixes:
 - **orphanFiles** — no inbound links from any other document
 - **oldDrafts** — drafts that have sat unpromoted too long
 - **stagnantLowConfidence** — low-confidence documents that have not improved
-- **deprecatedStillLinked** — deprecated documents still cited by canonical ones
+- **retiredStillLinked** — deprecated or superseded documents still cited by canonical ones
 - **unansweredQuestions** — questions in `questions_raised` that no document answers
 
 Pass `{ "filter": "oldDrafts" }` to restrict the report to one check.

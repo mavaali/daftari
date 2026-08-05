@@ -63,9 +63,33 @@ describe("lint", () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
-      const finding = report.value.checks.deprecatedStillLinked;
+      const finding = report.value.checks.retiredStillLinked;
       expect(finding.map((f) => f.path)).toEqual(["deprecated-linked.md"]);
       expect(finding[0]?.detail).toContain("canonical-hub.md");
+    });
+
+    it("flags a superseded file still linked from a canonical doc", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "daftari-lint-sup-"));
+      try {
+        const stub = (name: string, status: string, body: string): void => {
+          writeFileSync(
+            join(dir, name),
+            `---\ntitle: "${name}"\ndomain: accumulation\ncollection: docs\nstatus: ${status}\nconfidence: high\ncreated: 2026-01-01\nupdated: 2026-05-01\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: null\ntags: []\n---\n\n${body}\n`,
+            "utf-8",
+          );
+        };
+        stub("canon.md", "canonical", "See [[superseded-old]].");
+        stub("superseded-old.md", "superseded", "Old content.");
+
+        const report = await runLint(dir);
+        expect(report.ok).toBe(true);
+        if (!report.ok) return;
+        const finding = report.value.checks.retiredStillLinked;
+        expect(finding.map((f) => f.path)).toEqual(["superseded-old.md"]);
+        expect(finding[0]?.detail).toContain("canon.md");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it("totals one finding per check", async () => {
@@ -257,7 +281,7 @@ ${body}
         "pricing/can.md",
         "pricing/island.md",
       ]);
-      const dep = report.value.checks.deprecatedStillLinked;
+      const dep = report.value.checks.retiredStillLinked;
       expect(dep.map((f) => f.path)).toEqual(["pricing/dep.md"]);
       expect(dep[0]?.detail).toContain("pricing/can.md");
       expect(dep[0]?.detail).not.toContain("moonshot/mcan.md");

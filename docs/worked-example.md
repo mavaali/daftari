@@ -215,7 +215,7 @@ is complete, and a confidence level has been explicitly set — which it is.
     "orphanFiles": [],
     "oldDrafts": [],
     "stagnantLowConfidence": [],
-    "deprecatedStillLinked": []
+    "retiredStillLinked": []
   },
   "totalFindings": 0
 }

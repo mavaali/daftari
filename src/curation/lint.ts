@@ -49,7 +49,7 @@ export const LINT_CHECKS = [
   "orphanFiles",
   "oldDrafts",
   "stagnantLowConfidence",
-  "deprecatedStillLinked",
+  "retiredStillLinked",
   "unansweredQuestions",
   "tierDemotions",
   "brokenSourceRefs",
@@ -253,7 +253,7 @@ export async function runLint(
     orphanFiles: [],
     oldDrafts: [],
     stagnantLowConfidence: [],
-    deprecatedStillLinked: [],
+    retiredStillLinked: [],
     unansweredQuestions: [],
     tierDemotions: [],
     brokenSourceRefs: [],
@@ -333,13 +333,13 @@ export async function runLint(
       }
     }
 
-    // 5. Deprecated but still linked from a canonical document.
-    if (fm.status === "deprecated") {
+    // 5. Retired (deprecated or superseded) but still linked from a canonical document.
+    if (fm.status === "deprecated" || fm.status === "superseded") {
       const linkers = [...(inbound.get(doc.path) ?? [])].filter(
         (from) => byPath.get(from)?.frontmatter.status === "canonical",
       );
       if (linkers.length > 0) {
-        checks.deprecatedStillLinked.push({
+        checks.retiredStillLinked.push({
           path: doc.path,
           detail: `still linked from canonical: ${linkers.sort().join(", ")}`,
         });
