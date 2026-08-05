@@ -703,6 +703,7 @@ const triageSideSchema: Record<string, unknown> = {
     tier: { type: ["integer", "null"], description: "null when the doc is unknown or untiered" },
     confidence: { type: ["string", "null"], enum: ["low", "medium", "high", null] },
     read_heat: triageReadHeatSchema,
+    criticality: { type: ["string", "null"], enum: ["low", "medium", "high", null] },
   },
   required: ["path", "claim", "tier", "confidence", "read_heat"],
   additionalProperties: false,
