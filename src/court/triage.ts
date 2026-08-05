@@ -29,7 +29,8 @@ function renderReadHeat(side: TriageSide): string {
 function renderSide(label: string, side: TriageSide): string[] {
   const tier = side.tier === null ? "—" : String(side.tier);
   const conf = side.confidence === null ? "—" : side.confidence;
-  const head = `    ${label}  ${side.path}  ·  tier ${tier} · conf ${conf} · ${renderReadHeat(side)}`;
+  const crit = side.criticality === null ? "—" : side.criticality;
+  const head = `    ${label}  ${side.path}  ·  tier ${tier} · conf ${conf} · crit ${crit} · ${renderReadHeat(side)}`;
   const claim = `       "${truncate(side.claim, CLAIM_WIDTH)}"`;
   return [head, claim];
 }

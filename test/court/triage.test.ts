@@ -22,6 +22,7 @@ const side = (overrides: Partial<TriageSide> = {}): TriageSide => ({
   tier: 1,
   confidence: "high",
   read_heat: { count: 3, last_read: "2026-05-30T00:00:00Z", instrumented: true },
+  criticality: null,
   ...overrides,
 });
 
@@ -59,7 +60,7 @@ describe("renderTriageCard", () => {
       "[tension-001] factual · 31d old · blast 4 primary / 2 advisory (hidden: none)",
     );
     expect(out).toContain("A  a.md");
-    expect(out).toContain("tier 1 · conf high · read 3 (last 2026-05-30)");
+    expect(out).toContain("tier 1 · conf high · crit — · read 3 (last 2026-05-30)");
     expect(out).toContain("B  b.md");
     expect(out).toContain("tier — · conf low");
     expect(out).toContain('"A claim"');
@@ -103,6 +104,16 @@ describe("renderTriageCard", () => {
       ],
     };
     expect(renderTriageCard(result)).toContain("blast unavailable");
+  });
+
+  it("renders per-side criticality, dash when unstated", () => {
+    const result = { cluster_count: 1, tension_count: 1, clusters: [{ cluster_id: "c1", documents: ["a.md", "b.md"], tensions: [{ id: "tension-001", title: "t", kind: "factual", age_days: 5,
+      a: { path: "a.md", claim: "A", tier: null, confidence: "high", read_heat: null, criticality: "high" },
+      b: { path: "b.md", claim: "B", tier: null, confidence: "low", read_heat: null, criticality: null },
+      primary_blast: 0, advisory_blast: 0, hidden_downstream: "none" }] }] };
+    const out = renderTriageCard(result as never);
+    expect(out).toContain("crit high");
+    expect(out).toContain("crit —");
   });
 
   it("caps clusters at the limit and notes the remainder", () => {
