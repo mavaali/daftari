@@ -704,6 +704,11 @@ const triageSideSchema: Record<string, unknown> = {
     confidence: { type: ["string", "null"], enum: ["low", "medium", "high", null] },
     read_heat: triageReadHeatSchema,
     criticality: { type: ["string", "null"], enum: ["low", "medium", "high", null] },
+    provenance: {
+      type: ["string", "null"],
+      enum: ["direct", "synthesized", "inferred", null],
+    },
+    updated_by: { type: ["string", "null"] },
   },
   required: ["path", "claim", "tier", "confidence", "read_heat"],
   additionalProperties: false,
