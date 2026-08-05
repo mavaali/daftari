@@ -107,10 +107,43 @@ describe("renderTriageCard", () => {
   });
 
   it("renders per-side criticality, dash when unstated", () => {
-    const result = { cluster_count: 1, tension_count: 1, clusters: [{ cluster_id: "c1", documents: ["a.md", "b.md"], tensions: [{ id: "tension-001", title: "t", kind: "factual", age_days: 5,
-      a: { path: "a.md", claim: "A", tier: null, confidence: "high", read_heat: null, criticality: "high" },
-      b: { path: "b.md", claim: "B", tier: null, confidence: "low", read_heat: null, criticality: null },
-      primary_blast: 0, advisory_blast: 0, hidden_downstream: "none" }] }] };
+    const result = {
+      cluster_count: 1,
+      tension_count: 1,
+      clusters: [
+        {
+          cluster_id: "c1",
+          documents: ["a.md", "b.md"],
+          tensions: [
+            {
+              id: "tension-001",
+              title: "t",
+              kind: "factual",
+              age_days: 5,
+              a: {
+                path: "a.md",
+                claim: "A",
+                tier: null,
+                confidence: "high",
+                read_heat: null,
+                criticality: "high",
+              },
+              b: {
+                path: "b.md",
+                claim: "B",
+                tier: null,
+                confidence: "low",
+                read_heat: null,
+                criticality: null,
+              },
+              primary_blast: 0,
+              advisory_blast: 0,
+              hidden_downstream: "none",
+            },
+          ],
+        },
+      ],
+    };
     const out = renderTriageCard(result as never);
     expect(out).toContain("crit high");
     expect(out).toContain("crit —");

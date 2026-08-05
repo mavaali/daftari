@@ -298,8 +298,11 @@ describe("curation tools", () => {
       const def = curationTools.find((t) => t.name === "vault_tension_triage");
       expect(def).toBeDefined();
       // Navigate: outputSchema.properties.clusters.items.properties.tensions.items.properties.a.properties
-      const clusters = (def?.outputSchema as { properties: Record<string, unknown> }).properties.clusters as { items: { properties: Record<string, unknown> } };
-      const tensionItems = clusters.items.properties.tensions as { items: { properties: Record<string, unknown> } };
+      const clusters = (def?.outputSchema as { properties: Record<string, unknown> }).properties
+        .clusters as { items: { properties: Record<string, unknown> } };
+      const tensionItems = clusters.items.properties.tensions as {
+        items: { properties: Record<string, unknown> };
+      };
       const sideAProps = tensionItems.items.properties.a as { properties: Record<string, unknown> };
       expect(sideAProps.properties).toHaveProperty("criticality");
     });
