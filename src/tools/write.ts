@@ -340,9 +340,10 @@ export interface WriteResult {
   conflicts_with?: string[];
   tension_id?: string | null;
   tension_error?: string;
-  // U1: downstream dependents advisory — set on vault_deprecate and
+  // Downstream dependents advisory — set on vault_deprecate and
   // vault_supersede to surface which docs cite the retracted doc.
   // Advisory only; no dependent is ever edited. Omitted on load failure.
+  // (max_depth from the blast is intentionally not surfaced in this shape.)
   dependents?: {
     downstream: BlastDownstreamEntry[];
     primary_blast: number;
@@ -1309,7 +1310,7 @@ export async function vaultPromote(
 }
 
 // ---------------------------------------------------------------------------
-// U1: downstream dependents advisory helper
+// downstream dependents advisory helper
 // ---------------------------------------------------------------------------
 
 // Builds the downstream dependents advisory for a retracted doc (deprecated
