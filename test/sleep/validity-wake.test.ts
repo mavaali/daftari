@@ -129,3 +129,118 @@ describe("daftari sleep — expired validity", () => {
     expect(r.value.staleness.total).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unit U4 — retracted source wake
+//
+// A canonical accumulation doc that cites a deprecated or superseded doc in
+// its `sources` frontmatter should be woken regardless of its own TTL or
+// validity state. The trigger is the *source doc's* lifecycle status, not the
+// citing doc's staleness. Self-terminating: once the citing doc drops/re-points
+// the retracted source it stops matching.
+// ---------------------------------------------------------------------------
+
+function mdRetracted(vault: string, path: string, over: Record<string, unknown> = {}): void {
+  const base: Record<string, unknown> = {
+    title: `Doc ${path}`,
+    domain: "accumulation",
+    collection: path.split("/")[0] ?? "",
+    status: "canonical",
+    confidence: "high",
+    created: "2026-07-01",
+    // Deliberately fresh — TTL and validity are not the wake trigger here.
+    updated: "2026-07-24",
+    updated_by: "agent:test",
+    provenance: "direct",
+    ttl_days: "365",
+    ...over,
+  };
+  const lines = Object.entries(base).map(([k, v]) => {
+    if (Array.isArray(v)) return `${k}: [${(v as string[]).join(", ")}]`;
+    return `${k}: ${String(v)}`;
+  });
+  mkdirSync(join(vault, path.split("/")[0] ?? ""), { recursive: true });
+  writeFileSync(join(vault, path), `---\n${lines.join("\n")}\ntags: []\n---\n\nBody.\n`);
+}
+
+describe("daftari sleep — retracted source wake", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-sleep-retracted-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("wakes a fresh canonical doc whose sources cite a deprecated doc", async () => {
+    // The retracted source.
+    mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
+    // The dependent that cites it — fresh by TTL, validity intact.
+    mdRetracted(vault, "analysis/dep.md", { sources: ["refs/old-spec.md"] });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const woken = r.value.wake.map((w) => w.path);
+    expect(woken).toContain("analysis/dep.md");
+  });
+
+  it("reason mentions 'retracted source'", async () => {
+    mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
+    mdRetracted(vault, "analysis/dep.md", { sources: ["refs/old-spec.md"] });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const task = r.value.wake.find((w) => w.path === "analysis/dep.md");
+    expect(task?.reason).toContain("retracted source");
+  });
+
+  it("wakes a fresh canonical doc whose sources cite a superseded doc", async () => {
+    mdRetracted(vault, "refs/superseded-spec.md", { status: "superseded" });
+    mdRetracted(vault, "analysis/dep2.md", { sources: ["refs/superseded-spec.md"] });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const woken = r.value.wake.map((w) => w.path);
+    expect(woken).toContain("analysis/dep2.md");
+  });
+
+  it("does NOT wake a canonical doc citing a canonical (non-retracted) source", async () => {
+    mdRetracted(vault, "refs/live-spec.md", { status: "canonical" });
+    mdRetracted(vault, "analysis/healthy.md", { sources: ["refs/live-spec.md"] });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/healthy.md");
+  });
+
+  it("self-termination: re-pointing away from the retracted source stops the wake", async () => {
+    mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
+    mdRetracted(vault, "refs/new-spec.md", { status: "canonical" });
+    // dep3 now points at the live source, not the retracted one.
+    mdRetracted(vault, "analysis/dep3.md", { sources: ["refs/new-spec.md"] });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/dep3.md");
+  });
+
+  it("does NOT wake a draft (non-canonical) doc even if it cites a retracted source", async () => {
+    mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
+    mdRetracted(vault, "analysis/draft-dep.md", {
+      status: "draft",
+      sources: ["refs/old-spec.md"],
+    });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/draft-dep.md");
+  });
+});
