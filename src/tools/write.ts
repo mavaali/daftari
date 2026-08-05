@@ -341,7 +341,8 @@ export interface WriteResult {
   tension_id?: string | null;
   tension_error?: string;
   // Downstream dependents advisory — set on vault_deprecate and
-  // vault_supersede to surface which docs cite the retracted doc.
+  // vault_supersede to surface which docs transitively depend on the
+  // retracted doc (the full blast closure, matching vault_tension_blast).
   // Advisory only; no dependent is ever edited. Omitted on load failure.
   // (max_depth from the blast is intentionally not surfaced in this shape.)
   dependents?: {
