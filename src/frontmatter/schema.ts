@@ -11,6 +11,8 @@ import { normalizeIsoDate } from "../utils/dates.js";
 import {
   CONFIDENCES,
   type Confidence,
+  CRITICALITIES,
+  type Criticality,
   DOMAINS,
   type Domain,
   type Frontmatter,
@@ -261,6 +263,7 @@ export function validateFrontmatter(
     updated_by: requireString("updated_by"),
     provenance: requireEnum<Provenance>("provenance", PROVENANCES, "inferred"),
     tier: optionalEnum<Tier>("tier", TIERS),
+    criticality: optionalEnum<Criticality>("criticality", CRITICALITIES),
     sources: optionalStringArray("sources"),
     superseded_by: optionalString("superseded_by"),
     ttl_days: optionalNumber("ttl_days"),
