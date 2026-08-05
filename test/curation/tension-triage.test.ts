@@ -210,8 +210,26 @@ describe("computeTensionTriage", () => {
       },
     ];
     const docMeta = new Map([
-      ["a.md", { tier: null, confidence: "high" as const, criticality: "high" as const, provenance: "direct" as const, updated_by: "agent:x" }],
-      ["b.md", { tier: null, confidence: "low" as const, criticality: null, provenance: "direct" as const, updated_by: "agent:x" }],
+      [
+        "a.md",
+        {
+          tier: null,
+          confidence: "high" as const,
+          criticality: "high" as const,
+          provenance: "direct" as const,
+          updated_by: "agent:x",
+        },
+      ],
+      [
+        "b.md",
+        {
+          tier: null,
+          confidence: "low" as const,
+          criticality: null,
+          provenance: "direct" as const,
+          updated_by: "agent:x",
+        },
+      ],
     ]);
     const result = computeTensionTriage(
       tensions as never,

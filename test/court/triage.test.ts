@@ -62,7 +62,9 @@ describe("renderTriageCard", () => {
       "[tension-001] factual · 31d old · blast 4 primary / 2 advisory (hidden: none)",
     );
     expect(out).toContain("A  a.md");
-    expect(out).toContain("tier 1 · conf high · crit — · prov direct · by human:mihir · read 3 (last 2026-05-30)");
+    expect(out).toContain(
+      "tier 1 · conf high · crit — · prov direct · by human:mihir · read 3 (last 2026-05-30)",
+    );
     expect(out).toContain("B  b.md");
     expect(out).toContain("tier — · conf low");
     expect(out).toContain('"A claim"');
