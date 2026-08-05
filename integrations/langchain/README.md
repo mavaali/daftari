@@ -58,7 +58,7 @@ with DaftariClient(vault_path="./my-vault", user="me", role="admin") as client:
 
 Don't have a vault yet? Scaffold one with `npx daftari --init ./my-vault`.
 
-## What you get: 14 tools
+## What you get: 35 tools
 
 | Category    | Tools                                                        |
 |-------------|--------------------------------------------------------------|
@@ -67,7 +67,7 @@ Don't have a vault yet? Scaffold one with `npx daftari --init ./my-vault`.
 | **Write**   | `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`       |
 | **Curate**  | `vault_tension_log`, `vault_lint`, `vault_provenance`        |
 
-Tool names, descriptions, and argument schemas come from the live MCP server's
+*A sample per category — the wrapper exposes all 35.* Tool names, descriptions, and argument schemas come from the live MCP server's
 `tools/list` response — never from baked-in copies — so the wrapper layer
 tracks server changes automatically when you upgrade daftari.
 

@@ -107,7 +107,7 @@ And the honest cost, since compounding isn't free:
 
 ## What it is
 
-A directory of markdown files with YAML frontmatter, exposed to agents as 27
+A directory of markdown files with YAML frontmatter, exposed to agents as 35
 MCP tools over stdio. The vault is plain text: you can read it in any editor,
 `git log` it, grep it. Daftari adds the machinery agents need to treat it as a
 shared workspace.
@@ -244,17 +244,23 @@ reported as uninformative rather than as signal.
 tensions inline and foreground the current source of superseded documents),
 `vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
 
-**Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`
+**Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`, `vault_set_tier`
 
-**Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_lint`, `vault_provenance`
+**Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_tension_triage` (the unranked triage card / `court --triage`), `vault_lint`, `vault_provenance`, `vault_staleness` (edge-staleness: pending upstream changes / broken-read rate)
 
-**Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`
+**Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`, `vault_consumes` (query the compiled dependency graph)
+
+**Dispatch:** `vault_tier1` (type-directed change dispatch), `vault_tier2_queue`, `vault_tier2_verdict` (semantic-review queue + verdict)
 
 **Ratify:** `vault_stage_action`, `vault_ratify`
 
 The curation engine is advisory: `vault_lint` reports problems and
 `vault_tension_log` records contradictions. Neither auto-fixes anything. Every
-change is a deliberate, attributable act.
+change is a deliberate, attributable act. Retraction is surfaced, not enforced:
+the `retiredStillLinked` lint check / `retired_still_linked` read-time advisory
+flags canonical docs still citing a deprecated or superseded source, and
+`vault_deprecate`/`vault_supersede` return a `dependents` advisory (the
+downstream blast) at retraction time.
 
 ### Tool tiers
 
@@ -274,8 +280,8 @@ tools:
 `core` is the search-before-derive loop (`vault_search`, `vault_read`,
 `vault_write`, `vault_index`, `vault_lint`, `vault_status`); `standard` adds
 the full document lifecycle (append/promote/deprecate/supersede/merge,
-confidence and tier setters, propose/ratify) plus diagnostics; `full` is
-everything. `--tools <tier>` overrides the tier for one invocation. Filtering
+confidence and tier setters, propose/ratify) plus `vault_search_related`,
+`vault_provenance`, and diagnostics; `full` is everything. `--tools <tier>` overrides the tier for one invocation. Filtering
 only changes what is *advertised* — calls to any registered tool still work,
 so an agent holding a cached tool name keeps working across a tier change.
 Unknown names in `include`/`exclude` warn at startup and are ignored, so a
@@ -320,6 +326,11 @@ first, then by blast radius): both sides' claims, the present state of their
 documents, the downstream stakes, cluster membership, and **precedents** —
 past rulings on disputes that shared a document, a collection pair, or a
 kind.
+
+The **triage card** (`daftari court --triage` / `vault_tension_triage`) is the
+deliberately **unranked**, cluster-grouped companion view — legibility, not a
+severity score. Each contested side surfaces `criticality`, `provenance`, and
+`updated_by`, so a resolver can judge trust without opening the documents.
 
 ```bash
 # The docket — a 5-minute weekly ritual
@@ -843,7 +854,7 @@ Design tenets: functions and types, no classes; tool handlers return
 ## Integrations
 
 - [`integrations/langchain/`](integrations/langchain/) — `langchain-daftari`, a
-  Python package that exposes the 14 daftari tools as LangChain `BaseTool`s
+  Python package that exposes all 35 daftari tools as LangChain `BaseTool`s
   for use with LangGraph / `create_react_agent`. Sync + async, schemas pulled
   live from `tools/list`.
 - [`packages/router`](packages/router) — multi-vault MCP router that fans out across N Daftari vaults

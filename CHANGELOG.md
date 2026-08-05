@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-08-05
 
 ### Changed
 
@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tension-triage card** (`daftari court --triage` / `vault_tension_triage`) — an unranked, cluster-grouped companion to the ranked docket that makes each contested tension's cost legible. Deliberately no severity score: it surfaces the signals and lets the human rank.
+- Each contested side of the triage card surfaces per-side **`criticality`** (`low`/`medium`/`high`), read straight from document frontmatter.
+- Each contested side of the triage card also surfaces **`provenance`** (`direct`/`synthesized`/`inferred`) and **`updated_by`**, so a resolver can judge how each side was obtained and who last touched it without opening the documents.
 - `vault_deprecate` and `vault_supersede` now return a best-effort `dependents` advisory — the RBAC-filtered downstream blast of the retracted document — so the caller immediately sees which documents' grounding just weakened. Advisory only; omitted when the index/docs are unavailable.
 - The nightly `sleep` cycle now wakes a canonical, accumulation-domain document whose frontmatter `sources` cite a deprecated/superseded document, even when the citing document is itself fresh — so a retracted source proactively surfaces its dependents for re-pointing. Self-terminating once the citation is dropped or re-pointed.
 
