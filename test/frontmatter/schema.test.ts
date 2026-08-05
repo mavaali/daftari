@@ -119,15 +119,16 @@ describe("tier validation (optional enum, defaults to null)", () => {
 
 describe("criticality validation", () => {
   it("accepts a valid level", () => {
-    const { frontmatter, report } = validateFrontmatter({ title: "t", domain: "accumulation", collection: "c", status: "draft", confidence: "low", created: "2026-01-01", updated: "2026-01-01", updated_by: "agent:x", provenance: "direct", criticality: "high" });
-    expect(frontmatter.criticality).toBe("high"); expect(report.valid).toBe(true);
+    const { frontmatter, report } = validateFrontmatter(data({ criticality: "high" }));
+    expect(frontmatter.criticality).toBe("high");
+    expect(report.valid).toBe(true);
   });
   it("defaults to null when absent", () => {
-    const { frontmatter } = validateFrontmatter({ title: "t", domain: "accumulation", collection: "c", status: "draft", confidence: "low", created: "2026-01-01", updated: "2026-01-01", updated_by: "agent:x", provenance: "direct" });
+    const { frontmatter } = validateFrontmatter(data({}));
     expect(frontmatter.criticality).toBeNull();
   });
   it("flags a malformed value and blocks (mirrors tier)", () => {
-    const { frontmatter, report } = validateFrontmatter({ title: "t", domain: "accumulation", collection: "c", status: "draft", confidence: "low", created: "2026-01-01", updated: "2026-01-01", updated_by: "agent:x", provenance: "direct", criticality: "urgent" });
+    const { frontmatter, report } = validateFrontmatter(data({ criticality: "urgent" }));
     expect(frontmatter.criticality).toBeNull();
     expect(report.issues.some((i) => i.field === "criticality")).toBe(true);
     expect(report.valid).toBe(false);

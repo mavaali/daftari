@@ -164,6 +164,20 @@ describe("deriveProposed", () => {
     expect(derivation.updated_by).toBe("invoker-fallback");
   });
 
+  it("preserves an author-supplied criticality through derive", () => {
+    const { proposed, derivation } = deriveProposed({
+      relPath: "specs/x.md",
+      body: "# X",
+      raw: { criticality: "high" },
+      git: { created: null, updated: null, author: null },
+      mtimeDate: "2026-06-07",
+      identityMap: {},
+      invoker: "human:tester",
+    });
+    expect(proposed.criticality).toBe("high");
+    expect(derivation.criticality).toBe("preserved");
+  });
+
   it("preserves present fields and fills only the missing ones", () => {
     const raw = { title: "Existing Baz Title", created: "2024-12-01" };
     const { proposed, derivation } = deriveProposed({
