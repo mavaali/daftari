@@ -388,7 +388,7 @@ export async function vaultSearch(
       // one indexed query per hit on the same open handle, vantage-filtered.
       const sd = structuralDecay({ db, path: hit.path, status: hit.status, access });
       if (sd?.orphan) hit.orphan = true;
-      if (sd?.deprecated_still_linked) hit.deprecatedStillLinked = true;
+      if (sd?.retired_still_linked) hit.retiredStillLinked = true;
     }
 
     // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if
@@ -661,7 +661,7 @@ const hybridHitSchema = {
         "severity is withheld. Absent = none.",
     },
     orphan: { type: "boolean", description: "No inbound links from the caller's vantage." },
-    deprecatedStillLinked: { type: "boolean" },
+    retiredStillLinked: { type: "boolean" },
     viaCoverage: {
       type: "boolean",
       description: "True when the coverage pass added this doc rather than the ranker.",

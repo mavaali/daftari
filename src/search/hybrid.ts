@@ -75,7 +75,7 @@ export interface HybridHit {
   // vantage — hidden linkers neither count nor leak. Absent = healthy.
   // Tool handler, not ranker.
   orphan?: boolean;
-  deprecatedStillLinked?: boolean;
+  retiredStillLinked?: boolean;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
 }
