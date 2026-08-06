@@ -84,13 +84,47 @@ export function isProcessAlive(pid: number): boolean {
 // Protects against PID recycling — if the original daftari died and the OS
 // reassigned its PID to e.g. vim, we must NOT SIGTERM the unrelated process.
 //
-// Uses `ps -p PID -o command=` which is POSIX-portable. Match requires the
-// exact vault path to appear in the command line: daftari's CLI requires
-// `--vault <path>` as a positional argument, so the path is always in argv.
-// We deliberately do NOT match on the substring "daftari" anywhere in the
-// output, because the daftari repo's own path contains that string and would
-// falsely match any node process whose cwd or argv includes the repo root
-// (e.g. vitest workers).
+// The vault path must appear in the command line as a WHOLE path token, not as
+// a bare substring. A plain `includes(vaultRoot)` check has two dangerous
+// false-positive modes, both of which end in SIGTERM against the wrong process
+// on the stdio takeover path (acquireLock below):
+//   - prefix aliasing: vault "/x/v" substring-matches a daftari serving
+//     "/x/v2", so a start against "/x/v" would kill the "/x/v2" server.
+//   - PID recycling into an unrelated process whose argv holds a path INSIDE
+//     the vault, e.g. `vim /x/v/notes.md` — we'd SIGTERM the editor.
+// A match is accepted only when the occurrence of vaultRoot is followed by a
+// token boundary: end-of-string, whitespace, or a lone trailing slash (a
+// "/x/v/" invocation). Every occurrence the old substring check accepted for
+// THIS vault still matches (the holder's own `--vault <resolved-path>` is
+// followed by a space or the end), so this adds no new false-negatives — which
+// matters because failing to recognize a live holder would overwrite its lock
+// and let two processes double-write index.db, the exact corruption the lock
+// exists to prevent.
+export function commandLineTargetsVault(commandLine: string, vaultRoot: string): boolean {
+  if (vaultRoot.length === 0) return false;
+  for (
+    let at = commandLine.indexOf(vaultRoot);
+    at !== -1;
+    at = commandLine.indexOf(vaultRoot, at + 1)
+  ) {
+    const tail = commandLine.slice(at + vaultRoot.length);
+    // end-of-string | starts with whitespace | a lone trailing slash then a boundary
+    if (tail === "" || /^\s/.test(tail) || /^\/(\s|$)/.test(tail)) return true;
+  }
+  return false;
+}
+
+// Best-effort check that PID belongs to a daftari process running THIS vault.
+// Protects against PID recycling — if the original daftari died and the OS
+// reassigned its PID to e.g. vim, we must NOT SIGTERM the unrelated process.
+//
+// Uses `ps -p PID -o command=` which is POSIX-portable. Both invocation modes
+// store `vaultRoot = resolve(vaultArg)` and pass it on argv as `--vault
+// <path>`, so the resolved path is the identity token we match (see
+// commandLineTargetsVault for the boundary rule). We deliberately do NOT match
+// on the substring "daftari" anywhere in the output, because the daftari repo's
+// own path contains that string and would falsely match any node process whose
+// cwd or argv includes the repo root (e.g. vitest workers).
 export function isDaftariProcess(pid: number, vaultRoot: string): boolean {
   if (!isProcessAlive(pid)) return false;
   try {
@@ -99,7 +133,7 @@ export function isDaftariProcess(pid: number, vaultRoot: string): boolean {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (out.length === 0) return false;
-    return out.includes(vaultRoot);
+    return commandLineTargetsVault(out, vaultRoot);
   } catch {
     return false;
   }

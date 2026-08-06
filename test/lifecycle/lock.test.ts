@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLock,
+  commandLineTargetsVault,
   isDaftariProcess,
   isProcessAlive,
   type LockData,
@@ -76,6 +77,45 @@ describe("isDaftariProcess", () => {
 
   it("returns false for an unused PID", () => {
     expect(isDaftariProcess(2 ** 30, "/some/vault")).toBe(false);
+  });
+});
+
+describe("commandLineTargetsVault", () => {
+  const VAULT = "/Users/x/vault";
+
+  // Legitimate holders of THIS vault must still match (no new false-negatives —
+  // a missed live holder overwrites its lock and double-writes index.db).
+  it("matches the resolved vault path as a whole token, mid-command", () => {
+    expect(commandLineTargetsVault(`node cli.js --vault ${VAULT} --user me`, VAULT)).toBe(true);
+  });
+  it("matches the vault path at end-of-command", () => {
+    expect(commandLineTargetsVault(`node cli.js --vault ${VAULT}`, VAULT)).toBe(true);
+  });
+  it("matches a trailing-slash invocation (resolve() strips it from vaultRoot)", () => {
+    expect(commandLineTargetsVault(`node cli.js --vault ${VAULT}/ serve`, VAULT)).toBe(true);
+    expect(commandLineTargetsVault(`node cli.js --vault ${VAULT}/`, VAULT)).toBe(true);
+  });
+  it("matches a vault path containing spaces", () => {
+    const spaced = "/Users/x/my vault";
+    expect(commandLineTargetsVault(`node cli.js --vault ${spaced} serve`, spaced)).toBe(true);
+  });
+
+  // The two documented false-positive shapes must be rejected.
+  it("rejects a prefix-aliased sibling vault (…/vault vs …/vault2)", () => {
+    expect(commandLineTargetsVault(`node cli.js --vault ${VAULT}2 serve`, VAULT)).toBe(false);
+    expect(commandLineTargetsVault(`node cli.js --vault ${VAULT}-backup`, VAULT)).toBe(false);
+  });
+  it("rejects an unrelated process editing a file inside the vault (PID recycle)", () => {
+    expect(commandLineTargetsVault(`vim ${VAULT}/notes.md`, VAULT)).toBe(false);
+  });
+  it("rejects when the path is absent entirely", () => {
+    expect(commandLineTargetsVault("node cli.js --vault /other/place", VAULT)).toBe(false);
+  });
+  it("matches a real occurrence even when a prefix-alias occurrence appears first", () => {
+    expect(commandLineTargetsVault(`x ${VAULT}2 y ${VAULT} z`, VAULT)).toBe(true);
+  });
+  it("returns false for an empty vaultRoot rather than matching everything", () => {
+    expect(commandLineTargetsVault("node cli.js", "")).toBe(false);
   });
 });
 
