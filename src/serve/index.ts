@@ -352,8 +352,12 @@ export function startHttpServer(
   const httpServer = createHttpServer((req, res) => {
     void handle(req, res).catch((e) => {
       const reason = e instanceof Error ? e.message : String(e);
+      // Log the detail server-side, but never echo internal error text (file
+      // paths, git stderr, config contents) to a network client. Return a
+      // generic body.
+      process.stderr.write(`daftari serve: unhandled request error: ${reason}\n`);
       if (!res.headersSent) {
-        writeJson(res, 500, { error: "internal", message: reason });
+        writeJson(res, 500, { error: "internal" });
       } else {
         res.end();
       }
