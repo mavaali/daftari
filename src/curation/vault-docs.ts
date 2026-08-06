@@ -6,6 +6,7 @@
 // regexes and the path-normalisation rules in one place so the two callers
 // can't drift apart.
 
+import { stat } from "node:fs/promises";
 import { posix } from "node:path";
 import { parseDocument } from "../frontmatter/parser.js";
 import { type Frontmatter, ok, type Result, type ValidationReport } from "../frontmatter/types.js";
@@ -24,29 +25,117 @@ export interface LoadedDoc {
   validation: ValidationReport;
 }
 
-// Loads every markdown file under the vault root, returning frontmatter +
-// body for each. Files that fail to parse or to read are silently skipped —
-// the curation surface should never crash because a single file is malformed.
-export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
+const DEFAULT_IDLE_MS = 60_000;
+
+interface CacheEntry {
+  mtimeMs: number;
+  size: number;
+  doc: LoadedDoc;
+}
+
+interface VaultCache {
+  entries: Map<string, CacheEntry>;
+  inflight: Promise<Result<LoadedDoc[], Error>> | null;
+  idleTimer: NodeJS.Timeout | null;
+}
+
+const caches = new Map<string, VaultCache>();
+
+// Test seams (mirrors watcher.ts's injectable hooks). Production defaults; a
+// test swaps these to count parses, inject stat results, or shrink the idle
+// window. Never mutated by production code.
+export const docCacheTestHooks = {
+  idleMs: DEFAULT_IDLE_MS,
+  statFn: async (absPath: string): Promise<{ mtimeMs: number; size: number }> => {
+    const s = await stat(absPath);
+    return { mtimeMs: s.mtimeMs, size: s.size };
+  },
+  parseFn: parseDocument,
+};
+
+// Drops every cached vault (and its idle timers). Test-only; production relies
+// on idle-eviction. Exported so a test's afterEach can guarantee isolation.
+export function resetDocumentCache(): void {
+  for (const c of caches.values()) {
+    if (c.idleTimer) clearTimeout(c.idleTimer);
+  }
+  caches.clear();
+}
+
+function getCache(vaultRoot: string): VaultCache {
+  let c = caches.get(vaultRoot);
+  if (!c) {
+    c = { entries: new Map(), inflight: null, idleTimer: null };
+    caches.set(vaultRoot, c);
+  }
+  return c;
+}
+
+// Re-reads only what changed. Byte-freshness comes from the {mtimeMs,size}
+// fingerprint: any content change moves at least one of them (the sole
+// accepted miss is a same-mtime-tick edit that also preserves byte length).
+async function refresh(vaultRoot: string, c: VaultCache): Promise<Result<LoadedDoc[], Error>> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return list;
 
+  // Fingerprint pass: resolve + stat every listed path in parallel. stat holds
+  // no file descriptor, so a wide Promise.all is safe on large vaults. A
+  // resolve or stat failure yields a null fingerprint => the path is treated as
+  // changed (re-read attempt below, which then skips on its own failure).
+  const probed = await Promise.all(
+    list.value.map(async (relPath) => {
+      const resolved = resolveVaultPath(vaultRoot, relPath);
+      if (!resolved.ok) return { relPath, absPath: null, fp: null };
+      try {
+        const fp = await docCacheTestHooks.statFn(resolved.value.absPath);
+        return { relPath, absPath: resolved.value.absPath, fp };
+      } catch {
+        return { relPath, absPath: resolved.value.absPath, fp: null };
+      }
+    }),
+  );
+
+  const nextEntries = new Map<string, CacheEntry>();
   const docs: LoadedDoc[] = [];
-  for (const relPath of list.value) {
-    const resolved = resolveVaultPath(vaultRoot, relPath);
-    if (!resolved.ok) continue;
-    const file = await readFile(resolved.value.absPath);
+
+  for (const { relPath, absPath, fp } of probed) {
+    if (fp) {
+      const prior = c.entries.get(relPath);
+      if (prior && prior.mtimeMs === fp.mtimeMs && prior.size === fp.size) {
+        nextEntries.set(relPath, prior);
+        docs.push(prior.doc);
+        continue;
+      }
+    }
+    // changed / new / unresolvable / un-stattable: re-read + parse, skipping on
+    // any failure exactly as the pre-cache loadDocuments did (never cached).
+    if (!absPath) continue;
+    const file = await readFile(absPath);
     if (!file.ok) continue;
-    const parsed = parseDocument(file.value);
+    const parsed = docCacheTestHooks.parseFn(file.value);
     if (!parsed.ok) continue;
-    docs.push({
+    const doc: LoadedDoc = {
       path: relPath,
       frontmatter: parsed.value.frontmatter,
       content: parsed.value.content,
       validation: parsed.value.validation,
-    });
+    };
+    if (fp) nextEntries.set(relPath, { mtimeMs: fp.mtimeMs, size: fp.size, doc });
+    docs.push(doc);
   }
+
+  c.entries = nextEntries;
   return ok(docs);
+}
+
+// Loads every markdown file under the vault root as frontmatter + body. Backed
+// by a per-vault incremental cache: only files whose {mtimeMs,size} changed
+// since the last call are re-read and re-parsed. Byte-fresh and full-fidelity —
+// disk stays the source of truth. Files that fail to resolve, read, or parse
+// are silently skipped, so one malformed file never crashes the surface.
+export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
+  const c = getCache(vaultRoot);
+  return refresh(vaultRoot, c);
 }
 
 // Pulls every internal link target out of a markdown body: both [[wikilinks]]
