@@ -34,4 +34,11 @@ describe("changedSince", () => {
     const res = await changedSince(dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     expect(res.ok).toBe(false);
   });
+
+  it("rejects a ref beginning with '-' instead of passing it to git as an option", async () => {
+    writeFileSync(join(dir, "a.md"), "# a\n");
+    await commit(dir, ["."], "first", "agent:test");
+    const res = await changedSince(dir, "--output=/tmp/daftari-cs-pwn");
+    expect(res.ok).toBe(false);
+  });
 });

@@ -233,7 +233,11 @@ export async function changedSince(
   if (typeof sinceCommit !== "string" || sinceCommit.trim().length === 0) {
     return err(new Error("changedSince requires a non-empty commit ref"));
   }
-  const result = await git(vaultRoot, ["diff", "--name-only", `${sinceCommit}..HEAD`]);
+  const since = sinceCommit.trim();
+  if (since.startsWith("-")) {
+    return err(new Error("changedSince: commit ref must not start with '-'"));
+  }
+  const result = await git(vaultRoot, ["diff", "--name-only", `${since}..HEAD`]);
   if (!result.ok) return result;
   const paths = result.value
     .split("\n")
