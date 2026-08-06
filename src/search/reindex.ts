@@ -48,6 +48,7 @@ import {
   setMeta,
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
 import { chunkText, embed, getProvider } from "./vector.js";
@@ -109,24 +110,41 @@ function readCachedVector(db: IndexDb, hash: string, modelId: string): Float32Ar
 // can decide whether the persisted index already reflects the files on disk.
 const MANIFEST_META_KEY = "vault_manifest";
 
+// How many files the reindex fan-outs (the stat pass in buildManifest and the
+// readFile+parse pass in stageDocuments) keep in flight at once. Benchmarked
+// on a 3200-file vault (#7): serial→8 cut the stat pass ~24% (72→55ms) and
+// staging ~39% (270→164ms); 16+ bought <3% more and UNBOUNDED was slower than
+// 8 for stat. 8 sits on the plateau while bounding fd/memory pressure on the
+// startup hot path (buildManifest runs on every server start via isIndexFresh).
+const REINDEX_IO_CONCURRENCY = 8;
+
 // Walks the vault and produces a fresh path→mtimeMs map. Returns null if any
 // file cannot be stat'd or the file listing fails — caller treats null as
 // "can't prove freshness, fall back to a full reindex."
 async function buildManifest(vaultRoot: string): Promise<Record<string, number> | null> {
   const list = await listFiles(vaultRoot);
   if (!list.ok) return null;
-  const manifest: Record<string, number> = {};
-  for (const relPath of list.value) {
-    const resolved = resolveVaultPath(vaultRoot, relPath);
-    if (!resolved.ok) return null;
-    try {
+  // Bounded fan-out (#7): stat REINDEX_IO_CONCURRENCY files at a time instead
+  // of one-by-one. Any failure rejects, which maps to the same null the serial
+  // version returned; results come back in input order.
+  try {
+    const mtimes = await mapWithConcurrency(list.value, REINDEX_IO_CONCURRENCY, async (relPath) => {
+      const resolved = resolveVaultPath(vaultRoot, relPath);
+      if (!resolved.ok) throw resolved.error;
       const st = await stat(resolved.value.absPath);
-      manifest[relPath] = st.mtimeMs;
-    } catch {
-      return null;
+      return st.mtimeMs;
+    });
+    const manifest: Record<string, number> = {};
+    for (let i = 0; i < list.value.length; i++) {
+      const relPath = list.value[i];
+      const mtime = mtimes[i];
+      if (relPath === undefined || mtime === undefined) return null;
+      manifest[relPath] = mtime;
     }
+    return manifest;
+  } catch {
+    return null;
   }
-  return manifest;
 }
 
 export function readManifest(db: IndexDb): Record<string, number> | null {
@@ -348,8 +366,17 @@ async function stageDocuments(vaultRoot: string): Promise<
   const skipped: FlaggedDocument[] = [];
   const invalidFrontmatter: FlaggedDocument[] = [];
 
-  for (const relPath of list.value) {
-    const one = await stageOne(vaultRoot, relPath);
+  // Bounded fan-out (#7): read+parse REINDEX_IO_CONCURRENCY files at a time.
+  // stageOne never throws (failures come back as "skipped" outcomes), and
+  // mapWithConcurrency returns outcomes in input order, so the buckets below
+  // are filled in exactly the order the serial loop produced.
+  const outcomes = await mapWithConcurrency(list.value, REINDEX_IO_CONCURRENCY, (relPath) =>
+    stageOne(vaultRoot, relPath),
+  );
+  for (let i = 0; i < list.value.length; i++) {
+    const relPath = list.value[i] ?? "";
+    const one = outcomes[i];
+    if (!one) continue;
     if (one.kind === "skipped") {
       skipped.push({ path: relPath, reason: one.reason });
       continue;
