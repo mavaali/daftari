@@ -38,6 +38,14 @@ const BATCH_SIZE = 96;
 const MAX_RETRIES = 3;
 const BASE_BACKOFF_MS = 500;
 
+// Per-attempt deadline. Without it a stalled connection (or a slow-drip
+// response body) hangs a whole reindex indefinitely — undici applies no overall
+// request timeout. An abort surfaces as a thrown error, which the retry loop
+// below already treats like a network failure, so a hung attempt retries and
+// ultimately degrades to a Result.err (BM25-only) rather than hanging. The
+// deadline is operator policy — DAFTARI_OPENAI_TIMEOUT_MS overrides the default.
+const REQUEST_TIMEOUT_MS = Number(process.env.DAFTARI_OPENAI_TIMEOUT_MS) || 60_000;
+
 interface OpenAIEmbeddingResponse {
   data: Array<{ embedding: number[] }>;
 }
@@ -91,6 +99,7 @@ async function embedBatch(
           authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({ input: inputs, model: OPENAI_MODEL }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
       // Network-level failure (DNS, connection reset). Retry like a 5xx.
