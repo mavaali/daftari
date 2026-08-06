@@ -11,6 +11,16 @@ import { parseDocument } from "../../src/frontmatter/parser.js";
 
 let vault: string;
 
+// Snapshot of the whole hooks surface, captured before each test. Restoring all
+// three fields in afterEach keeps a per-test override (parseFn / idleMs / statFn)
+// from leaking into a later test — the statFn seam in particular is reassigned
+// by several tests and must be reset to its real default.
+let hooksSnapshot: {
+  statFn: typeof docCacheTestHooks.statFn;
+  parseFn: typeof docCacheTestHooks.parseFn;
+  idleMs: number;
+};
+
 function writeDoc(rel: string, body: string): void {
   const abs = join(vault, rel);
   mkdirSync(join(abs, ".."), { recursive: true });
@@ -23,14 +33,22 @@ const DOC = (title: string) =>
 beforeEach(() => {
   vault = mkdtempSync(join(tmpdir(), "daftari-doccache-"));
   resetDocumentCache();
+  // Capture the full default hooks surface so afterEach can restore every field.
+  hooksSnapshot = {
+    statFn: docCacheTestHooks.statFn,
+    parseFn: docCacheTestHooks.parseFn,
+    idleMs: docCacheTestHooks.idleMs,
+  };
   // Route parsing through the hook so tests can count parse calls.
   docCacheTestHooks.parseFn = parseDocument;
   docCacheTestHooks.idleMs = 60_000;
 });
 afterEach(() => {
   resetDocumentCache();
-  docCacheTestHooks.parseFn = parseDocument;
-  docCacheTestHooks.idleMs = 60_000;
+  // Restore all three fields — including statFn — so no override leaks forward.
+  docCacheTestHooks.statFn = hooksSnapshot.statFn;
+  docCacheTestHooks.parseFn = hooksSnapshot.parseFn;
+  docCacheTestHooks.idleMs = hooksSnapshot.idleMs;
   vi.restoreAllMocks();
   rmSync(vault, { recursive: true, force: true });
 });
@@ -141,13 +159,54 @@ describe("loadDocuments cache", () => {
   });
 
   it("drops the whole cache after the idle window, forcing a cold rebuild", async () => {
-    docCacheTestHooks.idleMs = 20; // short window for the test
-    writeDoc("a.md", DOC("A"));
-    await loadDocuments(vault); // arms a 20ms idle timer
-    await new Promise((r) => setTimeout(r, 40)); // let it fire
-    const spy = vi.fn(parseDocument);
-    docCacheTestHooks.parseFn = spy;
-    await loadDocuments(vault); // cache was dropped => cold rebuild
-    expect(spy).toHaveBeenCalledTimes(1); // re-parsed a.md from scratch
+    vi.useFakeTimers();
+    try {
+      docCacheTestHooks.idleMs = 1000;
+      writeDoc("a.md", DOC("A"));
+      await loadDocuments(vault); // arms a 1000ms idle timer (faked)
+      vi.advanceTimersByTime(1001); // fire it -> caches.delete(vault)
+      const spy = vi.fn(parseDocument);
+      docCacheTestHooks.parseFn = spy;
+      await loadDocuments(vault); // cache dropped => cold rebuild
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an orphaned cache's idle timer does not evict a newer live cache", async () => {
+    vi.useFakeTimers();
+    try {
+      docCacheTestHooks.idleMs = 1000;
+      writeDoc("a.md", DOC("A"));
+      await loadDocuments(vault); // cache C1, timer T1 armed at t=1000
+
+      // Hold the next refresh in-flight past T1 by gating statFn.
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const baseStat = docCacheTestHooks.statFn;
+      docCacheTestHooks.statFn = async (p) => {
+        await gate;
+        return baseStat(p);
+      };
+      const call2 = loadDocuments(vault); // C1.inflight set, awaiting gate
+
+      vi.advanceTimersByTime(1001); // T1 fires -> deletes C1 from map (mid-inflight)
+      release();
+      await call2; // C1 finishes, arms T2 on the now-orphaned C1 (at now+1000)
+      docCacheTestHooks.statFn = baseStat;
+
+      // Give C2 a far-future idle window so ITS own timer can't confound the
+      // assertion: only the orphaned T2 must be in range of the advance below.
+      docCacheTestHooks.idleMs = 1_000_000;
+      await loadDocuments(vault); // creates fresh C2, warms it, arms T3 at now+1e6
+      const spy = vi.fn(parseDocument);
+      docCacheTestHooks.parseFn = spy;
+      vi.advanceTimersByTime(1001); // fires ONLY the orphaned T2 — must NOT delete C2
+      await loadDocuments(vault); // if C2 survived: 0 reparse; if evicted: cold rebuild
+      expect(spy).toHaveBeenCalledTimes(0); // C2 preserved
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -74,7 +74,9 @@ function getCache(vaultRoot: string): VaultCache {
 function armIdleTimer(vaultRoot: string, c: VaultCache): void {
   if (c.idleTimer) clearTimeout(c.idleTimer);
   c.idleTimer = setTimeout(() => {
-    caches.delete(vaultRoot);
+    // Only evict if this is still the live cache for the vault — a timer armed on
+    // a since-replaced cache object must not delete its successor.
+    if (caches.get(vaultRoot) === c) caches.delete(vaultRoot);
   }, docCacheTestHooks.idleMs);
   // Never keep the process alive just to expire a cache.
   c.idleTimer.unref?.();
