@@ -1,4 +1,6 @@
 {
+  "model": "sonnet",
+  "fallbackModel": ["opus"],
   "permissions": {
     "allow": [
       "Bash(npm run build)",
