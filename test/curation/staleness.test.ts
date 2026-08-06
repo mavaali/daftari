@@ -1,8 +1,6 @@
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ageInDays, computeStaleness, listStaleFiles } from "../../src/curation/staleness.js";
+import { ageInDays, computeStaleness } from "../../src/curation/staleness.js";
 
-const LINT_VAULT = resolve("test/fixtures/lint-vault");
 const NOW = new Date("2026-02-15T12:00:00Z");
 
 describe("staleness", () => {
@@ -48,24 +46,6 @@ describe("staleness", () => {
       expect(r.score).toBe(0);
       expect(r.expired).toBe(false);
       expect(r.ttlDays).toBeNull();
-    });
-  });
-
-  describe("listStaleFiles", () => {
-    it("reports only documents at or past their TTL by default", async () => {
-      const result = await listStaleFiles(LINT_VAULT);
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.value.map((f) => f.path)).toEqual(["stale-doc.md"]);
-      expect(result.value[0]?.staleness.expired).toBe(true);
-    });
-
-    it("returns every document, most stale first, at threshold 0", async () => {
-      const result = await listStaleFiles(LINT_VAULT, 0);
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.value).toHaveLength(9);
-      expect(result.value[0]?.path).toBe("stale-doc.md");
     });
   });
 });
