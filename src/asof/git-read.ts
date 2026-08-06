@@ -116,6 +116,10 @@ export async function readBlobsAt(
     child.on("error", (e) => {
       resolvePromise(err(new Error(`git cat-file failed to spawn: ${e.message}`)));
     });
+    // A failed spawn surfaces via the child 'error' event above; without this
+    // listener the queued stdin writes below emit an uncaught stream error that
+    // crashes the process instead of resolving to err(...).
+    child.stdin.on("error", () => {});
 
     child.on("close", (code) => {
       if (code !== 0) {
