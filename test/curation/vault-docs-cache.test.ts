@@ -111,4 +111,17 @@ describe("loadDocuments cache", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.map((d) => d.path)).toEqual(["a.md"]);
   });
+
+  it("skips a malformed file and retries it on the next call once fixed", async () => {
+    writeDoc("good.md", DOC("Good"));
+    writeDoc("bad.md", "---\n: not: valid: yaml\n---\n"); // parse fails
+    const r1 = await loadDocuments(vault);
+    expect(r1.ok).toBe(true);
+    if (r1.ok) expect(r1.value.map((d) => d.path)).toEqual(["good.md"]);
+    // Fix bad.md; it must appear on the next call (was never cached).
+    writeDoc("bad.md", DOC("Bad"));
+    const r2 = await loadDocuments(vault);
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.value.map((d) => d.path)).toEqual(["bad.md", "good.md"]);
+  });
 });
