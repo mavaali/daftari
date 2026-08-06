@@ -88,4 +88,27 @@ describe("loadDocuments cache", () => {
     await loadDocuments(vault);
     expect(spy).toHaveBeenCalledTimes(1);
   });
+
+  it("reflects a newly added file without re-parsing untouched ones", async () => {
+    writeDoc("a.md", DOC("A"));
+    await loadDocuments(vault);
+    const spy = vi.fn(parseDocument);
+    docCacheTestHooks.parseFn = spy;
+    writeDoc("c.md", DOC("C"));
+    const r = await loadDocuments(vault);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.map((d) => d.path)).toEqual(["a.md", "c.md"]);
+    expect(spy).toHaveBeenCalledTimes(1); // only c.md
+  });
+
+  it("drops a deleted file from the result and the cache", async () => {
+    writeDoc("a.md", DOC("A"));
+    writeDoc("b.md", DOC("B"));
+    await loadDocuments(vault);
+    rmSync(join(vault, "b.md"));
+    const r = await loadDocuments(vault);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.map((d) => d.path)).toEqual(["a.md"]);
+  });
 });
