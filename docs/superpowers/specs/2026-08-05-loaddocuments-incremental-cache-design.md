@@ -49,13 +49,15 @@ type VaultCache = {
 const caches = new Map<string /* vaultRoot */, VaultCache>();
 ```
 
-`vaultRoot` is used verbatim as the key — callers already pass a resolved absolute path (`resolve(vaultArg)`), consistent with the rest of the codebase.
+`vaultRoot` is used verbatim as the map key — callers already pass a resolved absolute path (`resolve(vaultArg)`), consistent with the rest of the codebase.
+
+`relPath` for `CacheEntry` and the fingerprint is the **raw `listFiles` path** — the exact string stored as `LoadedDoc.path` today (`vault-docs.ts:43`), **not** `resolveVaultPath`'s canonical `relPath`. `loadDocuments` computes both and they can differ under a symlinked vault root; using the `listFiles` path uniformly (as key, as `stat` target, and as `LoadedDoc.path`) keeps the cache key, the fingerprint, and the returned document consistent and preserves today's output exactly.
 
 ### 4.2 Algorithm (one `loadDocuments` call)
 
 1. **Single-flight:** if `cache.inflight` is set, `await` and return it.
 2. **Fingerprint:** `listFiles(vaultRoot)` → sorted relPaths; `stat` each (bounded concurrency) → `path → {mtimeMs, size}`. A `stat` failure for a path treats it as changed/absent (never served from cache) — fail toward a fresh read, never a phantom.
-3. **Diff & reuse:** for each current path, if a cache entry exists with matching `mtimeMs` **and** `size`, reuse its `LoadedDoc`; else `readFile` + `parseDocument` and build a fresh entry. As today, a file that fails to read or parse is **silently skipped** (not cached), so a malformed file never crashes the surface and is retried next call.
+3. **Diff & reuse:** for each current path, if a cache entry exists with matching `mtimeMs` **and** `size`, reuse its `LoadedDoc`; else `readFile` + `parseDocument` and build a fresh entry. As today, a file that fails **any** of the three steps — `resolveVaultPath` (`vault-docs.ts:37`), `readFile` (`:39`), or `parseDocument` (`:41`) — is **silently skipped and not cached**, so a malformed or unresolvable file never crashes the surface, never poisons the cache, and is retried on the next call.
 4. **Prune:** drop cache entries whose path is no longer in the current set.
 5. **Assemble:** return `LoadedDoc[]` in `listFiles` (sorted) order — identical ordering to today.
 6. **Bookkeeping:** replace `cache.entries` with the new map, clear `inflight`, reset the idle timer.
