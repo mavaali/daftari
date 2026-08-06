@@ -26,6 +26,7 @@ import {
   insertEmbedding,
   insertEmbeddingVec,
   openIndexDb,
+  parseJsonColumn,
   setMeta,
 } from "../../src/storage/index-db.js";
 import { sha256Hex } from "../../src/utils/hash.js";
@@ -828,5 +829,17 @@ describe("chunks_fts", () => {
       testDb.close();
       cleanupVault(vault);
     }
+  });
+});
+
+describe("parseJsonColumn", () => {
+  it("parses a valid JSON column", () => {
+    expect(parseJsonColumn<string[]>('["a","b"]', "tags", "notes/x.md")).toEqual(["a", "b"]);
+  });
+
+  it("throws an actionable error naming the row + column + reindex remedy on corrupt JSON", () => {
+    expect(() => parseJsonColumn<string[]>("{not json", "tags", "notes/x.md")).toThrow(
+      /corrupt index row for 'notes\/x\.md': tags column is not valid JSON.*daftari --reindex/,
+    );
   });
 });

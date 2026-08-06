@@ -852,6 +852,23 @@ interface DocumentRow {
   valid_until: string | null;
 }
 
+// Parse a JSON-encoded index column (tags / tokens). These are written via
+// JSON.stringify, so a parse failure means a corrupt or tampered index.db. A
+// raw SyntaxError bubbling out of a storage read — which every caller treats as
+// infallible — is opaque; surface an actionable error naming the row and the
+// remedy instead. The index is a derived artifact, so reindexing is the fix.
+export function parseJsonColumn<T>(raw: string, column: string, path: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `corrupt index row for '${path}': ${column} column is not valid JSON (${reason}); ` +
+        `run 'daftari --reindex' to rebuild the index`,
+    );
+  }
+}
+
 function rowToDocument(row: DocumentRow): IndexedDocument {
   return {
     path: row.path,
@@ -861,9 +878,9 @@ function rowToDocument(row: DocumentRow): IndexedDocument {
     status: row.status,
     confidence: row.confidence,
     updated: row.updated,
-    tags: JSON.parse(row.tags) as string[],
+    tags: parseJsonColumn<string[]>(row.tags, "tags", row.path),
     content: row.content,
-    tokens: JSON.parse(row.tokens) as string[],
+    tokens: parseJsonColumn<string[]>(row.tokens, "tokens", row.path),
     ttlDays: row.ttl_days,
     created: row.created,
     supersededBy: row.superseded_by,
