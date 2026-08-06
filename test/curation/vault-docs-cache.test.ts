@@ -139,4 +139,15 @@ describe("loadDocuments cache", () => {
     // Two files, ONE fingerprint pass shared by both callers => 2 stat calls, not 4.
     expect(statCalls).toBe(2);
   });
+
+  it("drops the whole cache after the idle window, forcing a cold rebuild", async () => {
+    docCacheTestHooks.idleMs = 20; // short window for the test
+    writeDoc("a.md", DOC("A"));
+    await loadDocuments(vault); // arms a 20ms idle timer
+    await new Promise((r) => setTimeout(r, 40)); // let it fire
+    const spy = vi.fn(parseDocument);
+    docCacheTestHooks.parseFn = spy;
+    await loadDocuments(vault); // cache was dropped => cold rebuild
+    expect(spy).toHaveBeenCalledTimes(1); // re-parsed a.md from scratch
+  });
 });

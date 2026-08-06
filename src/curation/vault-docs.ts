@@ -71,6 +71,15 @@ function getCache(vaultRoot: string): VaultCache {
   return c;
 }
 
+function armIdleTimer(vaultRoot: string, c: VaultCache): void {
+  if (c.idleTimer) clearTimeout(c.idleTimer);
+  c.idleTimer = setTimeout(() => {
+    caches.delete(vaultRoot);
+  }, docCacheTestHooks.idleMs);
+  // Never keep the process alive just to expire a cache.
+  c.idleTimer.unref?.();
+}
+
 // Re-reads only what changed. Byte-freshness comes from the {mtimeMs,size}
 // fingerprint: any content change moves at least one of them (the sole
 // accepted miss is a same-mtime-tick edit that also preserves byte length).
@@ -141,6 +150,7 @@ export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc
     return await c.inflight;
   } finally {
     c.inflight = null;
+    armIdleTimer(vaultRoot, c);
   }
 }
 
