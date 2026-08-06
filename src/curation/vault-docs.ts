@@ -135,7 +135,13 @@ async function refresh(vaultRoot: string, c: VaultCache): Promise<Result<LoadedD
 // are silently skipped, so one malformed file never crashes the surface.
 export async function loadDocuments(vaultRoot: string): Promise<Result<LoadedDoc[], Error>> {
   const c = getCache(vaultRoot);
-  return refresh(vaultRoot, c);
+  if (c.inflight) return c.inflight;
+  c.inflight = refresh(vaultRoot, c);
+  try {
+    return await c.inflight;
+  } finally {
+    c.inflight = null;
+  }
 }
 
 // Pulls every internal link target out of a markdown body: both [[wikilinks]]

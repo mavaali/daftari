@@ -124,4 +124,19 @@ describe("loadDocuments cache", () => {
     expect(r2.ok).toBe(true);
     if (r2.ok) expect(r2.value.map((d) => d.path)).toEqual(["bad.md", "good.md"]);
   });
+
+  it("collapses concurrent calls into one fingerprint+parse pass", async () => {
+    writeDoc("a.md", DOC("A"));
+    writeDoc("b.md", DOC("B"));
+    let statCalls = 0;
+    const base = docCacheTestHooks.statFn;
+    docCacheTestHooks.statFn = async (p) => {
+      statCalls++;
+      return base(p);
+    };
+    const [r1, r2] = await Promise.all([loadDocuments(vault), loadDocuments(vault)]);
+    expect(r1.ok && r2.ok).toBe(true);
+    // Two files, ONE fingerprint pass shared by both callers => 2 stat calls, not 4.
+    expect(statCalls).toBe(2);
+  });
 });
