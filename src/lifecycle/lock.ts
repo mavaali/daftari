@@ -173,6 +173,35 @@ function tryCreateExclusive(vaultRoot: string, data: LockData): Result<boolean, 
   }
 }
 
+// How many times acquireLock re-attempts the atomic claim when it keeps losing
+// the race to a competing acquirer. Each iteration either creates the lock
+// (O_EXCL), returns a definitive refusal, or removes a defunct lock and retries;
+// the bound stops two simultaneous stdio takeovers from ping-ponging forever.
+const MAX_ACQUIRE_ATTEMPTS = 5;
+
+// Remove the lockfile iff it still holds exactly `expected` (same pid AND
+// startedAt). Used to reclaim a defunct lock without a plain in-place overwrite:
+// if a competing acquirer replaced it with its own valid lock in the race
+// window, the content differs and we leave it untouched, so acquireLock
+// re-evaluates it as a live contender instead of clobbering it — which would
+// reintroduce the two-writers-one-vault corruption the lock exists to prevent.
+// The atomic claim is the tryCreateExclusive that follows on the next loop
+// iteration; this only avoids deleting a lock that is demonstrably not the
+// stale one we inspected.
+export function removeLockIfUnchanged(vaultRoot: string, expected: LockData): void {
+  const current = readLockfile(vaultRoot);
+  if (!current.ok || current.value === null) return;
+  if (current.value.pid !== expected.pid || current.value.startedAt !== expected.startedAt) {
+    return;
+  }
+  try {
+    unlinkSync(lockPath(vaultRoot));
+  } catch {
+    // Already gone / concurrent removal — fine; the retry's exclusive create
+    // resolves the outcome.
+  }
+}
+
 export interface AcquireLockOptions {
   mode?: LockMode; // default "stdio"
   bind?: string; // recorded for serve holders (refusal-message remedy)
@@ -216,14 +245,26 @@ export async function acquireLock(
     ...(options.bind ? { bind: options.bind } : {}),
   };
 
-  const created = tryCreateExclusive(vaultRoot, our);
-  if (!created.ok) return created;
-  if (created.value) return ok(undefined);
+  // The claim is ALWAYS the atomic O_EXCL create — never a plain overwrite.
+  // On EEXIST we resolve the existing lock (refuse, or SIGTERM-and-wait a live
+  // holder, or drop a defunct one) and loop so the create is retried. This
+  // closes the stale-takeover TOCTOU: two processes that both saw a dead-PID
+  // lock previously both fell through to an in-place writeLockfile and both
+  // believed they held the vault; now only one can win the exclusive create.
+  for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
+    const created = tryCreateExclusive(vaultRoot, our);
+    if (!created.ok) return created;
+    if (created.value) return ok(undefined);
 
-  const existing = readLockfile(vaultRoot);
-  if (!existing.ok) return existing;
+    const existing = readLockfile(vaultRoot);
+    if (!existing.ok) return existing;
+    if (existing.value === null) {
+      // The lock vanished between our failed exclusive create and this read
+      // (the holder released, or a competing acquirer removed a stale lock).
+      // Retry the atomic create.
+      continue;
+    }
 
-  if (existing.value !== null) {
     const prior = existing.value;
     if (isDaftariProcess(prior.pid, vaultRoot)) {
       const priorMode: LockMode = prior.mode ?? "stdio";
@@ -271,9 +312,22 @@ export async function acquireLock(
         `daftari: removing stale lockfile (pid=${prior.pid} not a live daftari instance)\n`,
       );
     }
+
+    // Drop the defunct lock only if it is still the exact one we inspected,
+    // then loop so the next tryCreateExclusive is the real atomic claim. If a
+    // competing acquirer installed its own lock in the race window, its content
+    // differs — leave it and re-evaluate as a live contender rather than
+    // clobbering a valid lock.
+    removeLockIfUnchanged(vaultRoot, prior);
   }
 
-  return writeLockfile(vaultRoot, our);
+  return err(
+    new Error(
+      `could not acquire the process lock for ${vaultRoot} after ` +
+        `${MAX_ACQUIRE_ATTEMPTS} attempts — the vault is under heavy ` +
+        `acquisition contention; retry`,
+    ),
+  );
 }
 
 // Idempotent. Removes the lockfile only if it still belongs to us — protects

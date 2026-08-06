@@ -10,6 +10,7 @@ import {
   type LockData,
   readLockfile,
   releaseLock,
+  removeLockIfUnchanged,
   writeLockfile,
 } from "../../src/lifecycle/lock.js";
 
@@ -116,6 +117,57 @@ describe("commandLineTargetsVault", () => {
   });
   it("returns false for an empty vaultRoot rather than matching everything", () => {
     expect(commandLineTargetsVault("node cli.js", "")).toBe(false);
+  });
+});
+
+describe("removeLockIfUnchanged", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-rmlock-"));
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  const lock = (pid: number, startedAt: string): LockData => ({
+    daftari: true,
+    pid,
+    vaultRoot: vault,
+    startedAt,
+    version: "1.0.0",
+  });
+
+  it("removes the lock when it still matches the inspected pid + startedAt", () => {
+    const l = lock(2 ** 30, "2026-01-01T00:00:00.000Z");
+    writeLockfile(vault, l);
+    removeLockIfUnchanged(vault, l);
+    const after = readLockfile(vault);
+    expect(after.ok && after.value).toBe(null);
+  });
+
+  it("does NOT clobber a lock a competing acquirer swapped in (different pid)", () => {
+    // We inspected a stale lock (pidA); before we reclaim, a competing acquirer
+    // installed its own valid lock (pidB). Reclamation must leave pidB alone.
+    const inspected = lock(2 ** 30, "2026-01-01T00:00:00.000Z");
+    const competitor = lock(process.pid, "2026-02-02T00:00:00.000Z");
+    writeLockfile(vault, competitor);
+    removeLockIfUnchanged(vault, inspected);
+    const after = readLockfile(vault);
+    expect(after.ok && after.value?.pid).toBe(process.pid);
+  });
+
+  it("does NOT remove when only the startedAt differs (same pid, restarted)", () => {
+    const inspected = lock(4242, "2026-01-01T00:00:00.000Z");
+    const current = lock(4242, "2026-03-03T00:00:00.000Z");
+    writeLockfile(vault, current);
+    removeLockIfUnchanged(vault, inspected);
+    const after = readLockfile(vault);
+    expect(after.ok && after.value?.startedAt).toBe("2026-03-03T00:00:00.000Z");
+  });
+
+  it("is a no-op when the lock is already gone", () => {
+    expect(() => removeLockIfUnchanged(vault, lock(1, "2026-01-01T00:00:00.000Z"))).not.toThrow();
   });
 });
 
