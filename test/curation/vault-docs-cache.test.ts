@@ -57,4 +57,35 @@ describe("loadDocuments cache", () => {
     expect(spy).toHaveBeenCalledTimes(0);
     if (r.ok) expect(r.value.map((d) => d.path)).toEqual(["a.md", "b.md"]);
   });
+
+  it("re-parses only the file whose mtime changed", async () => {
+    writeDoc("a.md", DOC("A"));
+    writeDoc("b.md", DOC("B"));
+    await loadDocuments(vault);
+    const spy = vi.fn(parseDocument);
+    docCacheTestHooks.parseFn = spy;
+    // Bump only a.md's mtime by injecting a newer fingerprint for it.
+    const base = docCacheTestHooks.statFn;
+    docCacheTestHooks.statFn = async (p) => {
+      const fp = await base(p);
+      return p.endsWith("/a.md") ? { ...fp, mtimeMs: fp.mtimeMs + 1000 } : fp;
+    };
+    const r = await loadDocuments(vault);
+    expect(r.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1); // only a.md
+  });
+
+  it("invalidates on a size change within the same mtime tick", async () => {
+    writeDoc("a.md", DOC("A"));
+    await loadDocuments(vault);
+    const spy = vi.fn(parseDocument);
+    docCacheTestHooks.parseFn = spy;
+    const base = docCacheTestHooks.statFn;
+    docCacheTestHooks.statFn = async (p) => {
+      const fp = await base(p);
+      return { ...fp, size: fp.size + 1 }; // same mtime, different length
+    };
+    await loadDocuments(vault);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
 });
