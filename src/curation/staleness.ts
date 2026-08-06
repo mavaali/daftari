@@ -8,10 +8,6 @@
 // This is advisory only. Nothing here edits a file or changes a status; it
 // reports a number the curator (vault_lint, vault_status) can act on.
 
-import { parseDocument } from "../frontmatter/parser.js";
-import { ok, type Result } from "../frontmatter/types.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
-
 const MS_PER_DAY = 86_400_000;
 
 // Whole days between an ISO date (YYYY-MM-DD) and `now`. Negative if the date
@@ -50,41 +46,4 @@ export function computeStaleness(
   const ratio = ageDays / ttlDays;
   const score = Math.min(1, Math.max(0, ratio));
   return { score, ageDays, ttlDays, expired: ageDays >= ttlDays };
-}
-
-export interface StaleFile {
-  path: string;
-  title: string;
-  staleness: StalenessResult;
-}
-
-// Scans the whole vault and returns documents whose decay score is at or above
-// `threshold`, most stale first. The default threshold of 1.0 reports only
-// documents at or past their TTL.
-export async function listStaleFiles(
-  vaultRoot: string,
-  threshold = 1,
-  now: Date = new Date(),
-): Promise<Result<StaleFile[], Error>> {
-  const list = await listFiles(vaultRoot);
-  if (!list.ok) return list;
-
-  const stale: StaleFile[] = [];
-  for (const relPath of list.value) {
-    const resolved = resolveVaultPath(vaultRoot, relPath);
-    if (!resolved.ok) continue;
-    const file = await readFile(resolved.value.absPath);
-    if (!file.ok) continue;
-    const parsed = parseDocument(file.value);
-    if (!parsed.ok) continue;
-
-    const fm = parsed.value.frontmatter;
-    const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
-    if (staleness.score >= threshold) {
-      stale.push({ path: relPath, title: fm.title, staleness });
-    }
-  }
-
-  stale.sort((a, b) => b.staleness.score - a.staleness.score);
-  return ok(stale);
 }
