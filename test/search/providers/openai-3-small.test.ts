@@ -91,6 +91,15 @@ describe("openai-3-small provider", () => {
     expect(body.input).toEqual(["one", "two"]);
   });
 
+  it("arms a per-request abort timeout signal on the embeddings call", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse(1));
+    vi.stubGlobal("fetch", fetchSpy);
+    const provider = makeOpenAi3SmallProvider(FAKE_KEY);
+    await provider.embed(["one"]);
+    const init = (fetchSpy.mock.calls[0] as [string, RequestInit])[1];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("batches inputs at 96 per request", async () => {
     // 200 inputs → ceil(200 / 96) = 3 requests (96, 96, 8).
     const fetchSpy = vi

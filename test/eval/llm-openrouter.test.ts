@@ -105,6 +105,27 @@ describe("complete", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("arms a per-request abort timeout signal", async () => {
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await client.complete(OPTS);
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("retries when a request aborts on timeout (TimeoutError is transport-transient)", async () => {
+    const timeoutErr = new DOMException("The operation timed out", "TimeoutError");
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(timeoutErr)
+      .mockResolvedValueOnce(fakeRes(200, okBody("after timeout")));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await client.complete(OPTS);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.text).toBe("after timeout");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("a 4xx (non-429) fails fast without retry, carrying status + body snippet", async () => {
     const fetchImpl = vi.fn(async () => fakeRes(400, { error: { message: "bad model slug" } }));
     const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });

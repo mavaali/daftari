@@ -27,6 +27,14 @@ import type { CortexEvalError } from "./types.js";
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
+// Per-attempt deadline for a single /chat/completions POST. undici applies no
+// overall request timeout, so a stalled connection or a slow-drip 200 body would
+// hang a consolidate/eval run indefinitely. An abort throws, which postChat's
+// catch already classifies as a retryable transport failure. Completions and
+// tool-loop rounds run longer than embeddings, hence the larger default;
+// DAFTARI_OPENROUTER_TIMEOUT_MS overrides it (the deadline is operator policy).
+const REQUEST_TIMEOUT_MS = Number(process.env.DAFTARI_OPENROUTER_TIMEOUT_MS) || 120_000;
+
 export type LlmTransport = "anthropic" | "openrouter";
 
 // Transport selection: explicit value (CLI flag) wins, then the
@@ -113,6 +121,7 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
       // Transport-level failure (DNS, reset, timeout): transient, retryable.
