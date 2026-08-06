@@ -48,6 +48,11 @@ Entrypoints: `src/index.ts` (stdio MCP entry), `src/server.ts` (MCP server wirin
 - MCP: the server speaks the 2026-07-28 stateless revision (v2 SDK, `@modelcontextprotocol/server`). `daftari serve` resolves identity per request from the bearer — no sessions — and refuses 2025-era traffic; stdio serves both eras, so lagging clients use stdio. `vault_ratify` without a decision elicits an approve/reject form (reject preselected) with HMAC-signed opaque state. The maintenance passes stay CLI-only until the Tasks extension has a TS SDK runtime. See docs/superpowers/specs/2026-07-26-mcp-2026-07-28-readiness-design.md.
 - Only one daftari process may hold a vault at a time. `.daftari/process.lock` is the per-vault process lock, and it records the holder's mode (stdio or serve). Live-holder precedence favors the durable tenant (2026-07-20 spec, Decision 4): stdio finding a live stdio holder SIGTERMs it and waits up to 3 seconds before taking over (the original single-user convenience — the only implicit live takeover); stdio finding a live `daftari serve` REFUSES to start; a new serve refuses against ANY live holder unless started with `--takeover`. Stale locks (dead PID, or PID recycled) are overwritten silently in every mode. The lockfile is ephemeral — never check it in.
 
+## Model defaults
+- The session model defaults to Sonnet (`.claude/settings.json`), with Opus as the automatic fallback on overload/unavailability. This applies uniformly — Claude Code has no plan-mode-specific model override other than the built-in `opusplan` alias (Opus-to-plan Sonnet-to-execute), and no automatic downgrade-on-quota-exhaustion mechanism; a model unavailable mid-session must be switched by hand with `/model`.
+- For architecture and design work — anything crossing a module boundary, touching ACL/visibility semantics, or introducing a new concept — delegate to the `strategist` subagent (`.claude/agents/strategist.md`), which runs on Fable. It is read-only; it returns a recommendation, the calling session writes the code.
+- If Fable capacity/credits are exhausted, edit `strategist.md`'s `model:` field to `opus` until they reset. There's no built-in fallback for this — it's a manual switch.
+
 ## Labeling
 - [DATA] for values read from files or the index
 - [TRAINING] for knowledge from the model's training
