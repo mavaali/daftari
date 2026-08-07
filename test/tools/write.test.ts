@@ -7,6 +7,7 @@ import { readProvenanceLog } from "../../src/curation/provenance.js";
 import type { Frontmatter } from "../../src/frontmatter/types.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
+import { vaultAssert } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import {
   serializeDocument,
@@ -1526,5 +1527,110 @@ describe("expectStampedToday — UTC-midnight boundary tolerance", () => {
     expect(() => expectStampedToday("2020-01-01")).toThrow();
     // Two days back is outside the tolerated window → still a real failure.
     expect(() => expectStampedToday("2026-06-09")).toThrow();
+  });
+});
+
+describe("vault_write foreign-position guard (U-8)", () => {
+  const ALICE = {
+    user: "alice",
+    roleName: "writer",
+    role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+  };
+  const BOB = { ...ALICE, user: "bob" };
+  const DOC = "pricing/guarded.md";
+  let vault: string;
+
+  beforeEach(async () => {
+    vault = makeTempVault();
+    const r = await vaultWrite(vault, {
+      path: DOC,
+      body: "# G\n\nx.\n",
+      frontmatter: {
+        title: "G",
+        domain: "accumulation",
+        collection: "pricing",
+        status: "canonical",
+        confidence: "high",
+        created: "2026-08-01",
+        provenance: "direct",
+      },
+      agent: "agent:seed",
+    });
+    if (!r.ok) throw r.error;
+    const a = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "b" },
+      BOB,
+    );
+    if (!a.ok) throw a.error; // bob holds pos-001
+  });
+  afterEach(() => cleanupVault(vault));
+
+  it("alice dropping bob's position via vault_write is rejected + provenance logged (mandated)", async () => {
+    const before = await vaultRead(vault, DOC);
+    if (!before.ok) throw before.error;
+    const r = await vaultWrite(
+      vault,
+      {
+        path: DOC,
+        body: "# G\n\nx.\n",
+        frontmatter: { ...before.value.raw, positions: [] },
+        agent: "agent:alice",
+      },
+      ALICE,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("pos-001");
+
+    const after = await vaultRead(vault, DOC);
+    expect(after.ok && after.value.frontmatter.positions).toHaveLength(1); // unchanged
+
+    const log = await readProvenanceLog(vault);
+    if (!log.ok) throw log.error;
+    expect(log.value.some((e) => e.action === "rejected_foreign_position" && e.file === DOC)).toBe(
+      true,
+    );
+  });
+
+  it("alice editing bob's statement is rejected", async () => {
+    const before = await vaultRead(vault, DOC);
+    if (!before.ok) throw before.error;
+    const positions = (before.value.frontmatter.positions ?? []).map((p) => ({
+      ...p,
+      statement: "reworded",
+    }));
+    const r = await vaultWrite(
+      vault,
+      { path: DOC, body: "# G\n\nx.\n", frontmatter: { positions }, agent: "a" },
+      ALICE,
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("a body-only update that does not touch positions lands, positions intact", async () => {
+    const r = await vaultWrite(
+      vault,
+      {
+        path: DOC,
+        body: "# G\n\nnew body.\n",
+        frontmatter: { title: "G" },
+        agent: "a",
+      },
+      ALICE,
+    );
+    expect(r.ok).toBe(true);
+    const read = await vaultRead(vault, DOC);
+    expect(read.ok && read.value.frontmatter.positions?.[0]?.principal).toBe("bob");
+  });
+
+  it("operator server (no access) bypasses the guard", async () => {
+    const r = await vaultWrite(vault, {
+      path: DOC,
+      body: "# G\n\nx.\n",
+      frontmatter: { positions: [] },
+      agent: "op",
+    });
+    expect(r.ok).toBe(true);
   });
 });

@@ -14,6 +14,7 @@ import matter from "gray-matter";
 import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
 import { mintConsumesEdges } from "../curation/consumes.js";
+import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -43,6 +44,7 @@ import {
   err,
   type Frontmatter,
   ok,
+  type Position,
   PROVENANCES,
   type Result,
   STATUSES,
@@ -866,10 +868,12 @@ export async function vaultWrite(
     const proposeConfig = loadConfig(vaultRoot);
     if (!proposeConfig.ok) return proposeConfig;
     let previewRaw: Record<string, unknown> = { ...rawFrontmatter };
+    let existingPositions: Position[] | null = null;
     const onDisk = await readFile(resolved.value.absPath);
     if (onDisk.ok) {
       const parsedExisting = parseDocument(onDisk.value);
       if (parsedExisting.ok) {
+        existingPositions = parsedExisting.value.frontmatter.positions;
         const merged: Record<string, unknown> = { ...parsedExisting.value.raw };
         for (const [key, value] of Object.entries(rawFrontmatter)) {
           if (value === null) delete merged[key];
@@ -885,6 +889,26 @@ export async function vaultWrite(
       previewRaw.updated_by = agent.value;
     }
     const preview = validateFrontmatter(previewRaw, proposeConfig.value.schemaExtensions);
+
+    // R-12/LD-13: die at stage time — cheaper than waiting for a poisoned
+    // proposal to fail at ratify dispatch (which re-checks authoritatively
+    // through the direct path above).
+    if (existingPositions != null) {
+      const previewViolation = foreignPositionViolation(
+        existingPositions,
+        preview.frontmatter.positions,
+        access.user,
+      );
+      if (previewViolation) {
+        return err(
+          new Error(
+            `vault_write (stage preview): ${previewViolation} — another principal's ` +
+              `position entries can only be superseded by their own new position ` +
+              `(vault_assert) or edited by their holder`,
+          ),
+        );
+      }
+    }
 
     const staged = await stageActionWithConflictCheck(vaultRoot, {
       actionType: "write",
@@ -1057,6 +1081,36 @@ export async function vaultWrite(
   if (!mergedReport.valid) {
     const summary = mergedReport.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return err(new Error(`invalid frontmatter: ${summary}`));
+  }
+
+  // R-12/LD-13: no principal rewrites another's positions through the
+  // generic write path. Checked after validation so both sides are typed
+  // Position[] (raw YAML dates already normalized). Operator servers
+  // (no access) bypass, matching the tier/ratify gate conventions.
+  if (access && isUpdate && oldFrontmatter && oldFrontmatter.positions != null) {
+    const violation = foreignPositionViolation(
+      oldFrontmatter.positions,
+      frontmatter.positions,
+      access.user,
+    );
+    if (violation) {
+      await recordProvenance(vaultRoot, {
+        tool: "vault_write",
+        file: resolved.value.relPath,
+        agent: agent.value,
+        principal: access.user,
+        ...(runId.value !== undefined ? { run_id: runId.value } : {}),
+        action: "rejected_foreign_position",
+        reason: violation,
+      });
+      return err(
+        new Error(
+          `vault_write: ${violation} — another principal's position entries can ` +
+            `only be superseded by their own new position (vault_assert) or ` +
+            `edited by their holder`,
+        ),
+      );
+    }
   }
 
   const stamped: Frontmatter = {
