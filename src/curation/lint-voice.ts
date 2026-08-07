@@ -38,6 +38,7 @@ const LEDGER_CLAUSE: Record<LintCheckName, string> = {
   schemaInvalid: "will not keep to the ledger's schema",
   domainLeaks: "lets one domain bleed into another",
   validityConflicts: "asserts a validity that quarrels with another",
+  positionIntegrity: "holds positions that do not square with one another",
 };
 
 // "1 matter" / "3 matters" — a small deterministic pluralizer for the copy.
