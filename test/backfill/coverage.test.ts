@@ -19,6 +19,9 @@ const validProposed: Frontmatter = {
   tags: [],
   questions_answered: [],
   questions_raised: [],
+  positions: null,
+  org_position: null,
+  contested: null,
 };
 
 function entry(over: Partial<Frontmatter>, collisions: PlanEntry["collisions"] = []): PlanEntry {

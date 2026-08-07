@@ -16,9 +16,13 @@ import {
   DOMAINS,
   type Domain,
   type Frontmatter,
+  type OrgPosition,
+  type Position,
   PROVENANCES,
   type Provenance,
+  STANCES,
   STATUSES,
+  type Stance,
   type Status,
   TIERS,
   type Tier,
@@ -252,6 +256,129 @@ export function validateFrontmatter(
     return null;
   };
 
+  const optionalBoolean = (field: string): boolean | null => {
+    const v = data[field];
+    if (v === undefined || v === null) return null;
+    if (typeof v === "boolean") return v;
+    issues.push({ field, message: `expected boolean or null, got ${JSON.stringify(v)}` });
+    return null;
+  };
+
+  // Position elements: TYPE-SHAPE errors flag (report.valid === false blocks
+  // writes — a malformed positions payload must not land). SEMANTIC problems
+  // (dangling superseded_by, duplicate live position per principal, contested
+  // drift) deliberately do NOT flag here — vault_lint owns them (U-9), the
+  // optionalDate/validityConflicts precedent. A malformed element is dropped
+  // from the typed value with one issue; well-formed siblings survive.
+  const asDateString = (v: unknown): string | null =>
+    v instanceof Date && !Number.isNaN(v.getTime())
+      ? v.toISOString().slice(0, 10)
+      : typeof v === "string"
+        ? v
+        : null;
+
+  const optionalPositions = (field: string): Position[] | null => {
+    const v = data[field];
+    if (v === undefined || v === null) return null;
+    if (!Array.isArray(v)) {
+      issues.push({ field, message: `expected array, got ${typeof v}` });
+      return null;
+    }
+    const out: Position[] = [];
+    v.forEach((item, i) => {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) {
+        issues.push({ field, message: `element ${i} is not an object` });
+        return;
+      }
+      const p = item as Record<string, unknown>;
+      const id = typeof p.id === "string" && /^pos-\d+$/.test(p.id) ? p.id : null;
+      const principal =
+        typeof p.principal === "string" && p.principal.length > 0 ? p.principal : null;
+      const stance =
+        typeof p.stance === "string" && (STANCES as readonly string[]).includes(p.stance)
+          ? (p.stance as Stance)
+          : null;
+      const confidence =
+        typeof p.confidence === "string" &&
+        (CONFIDENCES as readonly string[]).includes(p.confidence)
+          ? (p.confidence as Confidence)
+          : null;
+      const created = asDateString(p.created);
+      if (!id || !principal || !stance || !confidence || !created) {
+        issues.push({
+          field,
+          message:
+            `element ${i} dropped: requires id (pos-NNN), principal, ` +
+            `stance (${STANCES.join("|")}), confidence, created`,
+        });
+        return;
+      }
+      let provenance: Provenance = "direct";
+      if (p.provenance !== undefined && p.provenance !== null) {
+        if (
+          typeof p.provenance === "string" &&
+          (PROVENANCES as readonly string[]).includes(p.provenance)
+        ) {
+          provenance = p.provenance as Provenance;
+        } else {
+          issues.push({ field, message: `element ${i}: invalid provenance, coerced to direct` });
+        }
+      }
+      out.push({
+        id,
+        principal,
+        stance,
+        statement: typeof p.statement === "string" ? p.statement : null,
+        confidence,
+        provenance,
+        valid_from: asDateString(p.valid_from),
+        superseded_by: typeof p.superseded_by === "string" ? p.superseded_by : null,
+        created,
+        sources: Array.isArray(p.sources)
+          ? p.sources.filter((s): s is string => typeof s === "string")
+          : [],
+      });
+    });
+    return out;
+  };
+
+  const optionalOrgPosition = (field: string): OrgPosition | null => {
+    const v = data[field];
+    if (v === undefined || v === null) return null;
+    if (typeof v !== "object" || Array.isArray(v)) {
+      issues.push({ field, message: `expected object or null, got ${typeof v}` });
+      return null;
+    }
+    const o = v as Record<string, unknown>;
+    const stance =
+      typeof o.stance === "string" && (STANCES as readonly string[]).includes(o.stance)
+        ? (o.stance as Stance)
+        : null;
+    const confidence =
+      typeof o.confidence === "string" && (CONFIDENCES as readonly string[]).includes(o.confidence)
+        ? (o.confidence as Confidence)
+        : null;
+    const ratifiedBy =
+      typeof o.ratified_by === "string" && o.ratified_by.length > 0 ? o.ratified_by : null;
+    const ratifiedAt = asDateString(o.ratified_at);
+    if (!stance || !confidence || !ratifiedBy || !ratifiedAt) {
+      issues.push({
+        field,
+        message: "dropped: requires stance, confidence, ratified_by, ratified_at",
+      });
+      return null;
+    }
+    return {
+      stance,
+      confidence,
+      ratified_by: ratifiedBy,
+      ratified_at: ratifiedAt,
+      dissent: Array.isArray(o.dissent)
+        ? o.dissent.filter((s): s is string => typeof s === "string")
+        : [],
+    };
+  };
+
   const frontmatter: Frontmatter = {
     title: requireString("title"),
     domain: requireEnum<Domain>("domain", DOMAINS, "accumulation"),
@@ -273,6 +400,9 @@ export function validateFrontmatter(
     describes: optionalStringArray("describes"),
     questions_answered: optionalStringArray("questions_answered"),
     questions_raised: optionalStringArray("questions_raised"),
+    positions: optionalPositions("positions"),
+    org_position: optionalOrgPosition("org_position"),
+    contested: optionalBoolean("contested"),
   };
 
   for (const ext of extensions) {

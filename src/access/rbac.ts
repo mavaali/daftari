@@ -66,9 +66,9 @@ export function canRatify(role: RoleConfig | null): boolean {
 }
 
 // True if the role is propose-only (#235): its writes must land as staged
-// `write` proposals, never as direct mutations. vault_write coerces; every
-// other write tool denies. The write grant still scopes WHICH collections the
-// role may propose into.
+// `write` proposals, never as direct mutations. vault_write and vault_assert
+// coerce into staged proposals; every other write tool denies. The write
+// grant still scopes WHICH collections the role may propose into.
 export function isProposeOnly(role: RoleConfig | null): boolean {
   return role?.proposeOnly ?? false;
 }

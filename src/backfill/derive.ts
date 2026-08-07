@@ -223,6 +223,9 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
   }
 
   const proposed: Frontmatter = {
+    positions: null,
+    org_position: null,
+    contested: null,
     title,
     domain: resolve("domain", "accumulation", "default"),
     collection,

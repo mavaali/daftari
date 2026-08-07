@@ -11,6 +11,7 @@ import { ok, type Result } from "../frontmatter/types.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
+import { isContested, unsuperseded } from "./positions.js";
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
@@ -59,6 +60,7 @@ export const LINT_CHECKS = [
   // Appended, not inserted: LINT_CHECKS order is presentation order, and new
   // checks go at the end so an existing reader's mental layout does not shift.
   "validityConflicts",
+  "positionIntegrity",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -261,6 +263,7 @@ export async function runLint(
     schemaInvalid: [],
     domainLeaks: [],
     validityConflicts: [],
+    positionIntegrity: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -359,6 +362,46 @@ export async function runLint(
           `${orphanQuestions.length} question(s) raised but not answered in ` +
           `any document: ${orphanQuestions.join("; ")}`,
       });
+    }
+
+    // 13. Position integrity (U-9, R-10). Advisory only — the schema layer
+    // deliberately does not flag these (semantic, not type-shape).
+    const positions = fm.positions;
+    if (positions != null) {
+      const ids = new Set(positions.map((p) => p.id));
+      for (const p of positions) {
+        if (p.superseded_by != null && !ids.has(p.superseded_by)) {
+          checks.positionIntegrity.push({
+            path: doc.path,
+            detail: `position ${p.id} superseded_by dangling id ${p.superseded_by}`,
+          });
+        }
+      }
+      const liveByPrincipal = new Map<string, number>();
+      for (const p of unsuperseded(positions)) {
+        liveByPrincipal.set(p.principal, (liveByPrincipal.get(p.principal) ?? 0) + 1);
+      }
+      for (const [principal, n] of liveByPrincipal) {
+        if (n > 1) {
+          checks.positionIntegrity.push({
+            path: doc.path,
+            detail: `principal '${principal}' holds ${n} unsuperseded positions (max 1)`,
+          });
+        }
+      }
+      const derived = isContested(positions);
+      if ((fm.contested ?? false) !== derived) {
+        checks.positionIntegrity.push({
+          path: doc.path,
+          detail: `contested is ${String(fm.contested)} but the position set derives ${derived}`,
+        });
+      }
+      if (derived && fm.org_position == null && fm.confidence !== "low") {
+        checks.positionIntegrity.push({
+          path: doc.path,
+          detail: `contested without org position but confidence is '${fm.confidence}' (expected low)`,
+        });
+      }
     }
   }
 

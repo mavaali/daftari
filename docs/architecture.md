@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, started against one vault directory, running as
-one access identity for its lifetime, serving 35 tools over stdio. The rest of
+one access identity for its lifetime, serving 37 tools over stdio. The rest of
 the surfaces are CLI-only — `daftari asof`, `audit`, `backfill`, `canary`,
 `consolidate`, `court`, `eval`, `import obsidian`, `interview`, `okf`, `serve`,
 `sleep` and `sync` — plus a one-shot `daftari --init` scaffolder; each is
@@ -76,11 +76,20 @@ The argument for *why* — memory you own for a model you rent, and the centurie
 ledger discipline behind it — lives in the [manifesto](manifesto.md). The rest of
 *this* document is how the four layers make that one law structural.
 
+Positions (Slice 1): a claim doc is the unit of compilation; multiple
+authenticated principals hold attributed, graded, supersedable `positions[]`
+inside it. Conflicting live stances (assert vs dispute) derive
+`contested: true`, cap doc confidence at low until an org position is ratified
+(Slice 2), and auto-log a system-generated `positional` tension. `vault_assert`
+writes positions; `vault_positions` queries them; `vault_write` refuses to
+mutate another principal's entries. One process per vault still — principals
+take turns until the Slice-3 write lease.
+
 ## The layered model
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 35 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 37 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐

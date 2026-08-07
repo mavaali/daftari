@@ -12,6 +12,7 @@ import {
   splitUpstreamVisibility,
   type UpstreamStaleness,
 } from "../curation/edge-staleness.js";
+import { comparePositions, isContested, unsuperseded } from "../curation/positions.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
 import { computeStaleness } from "../curation/staleness.js";
@@ -27,8 +28,10 @@ import {
   err,
   type Frontmatter,
   ok,
+  type Position,
   PROVENANCES,
   type Result,
+  STANCES,
   STATUSES,
   TIERS,
   type ValidationReport,
@@ -127,6 +130,16 @@ export interface VaultReadResult {
   // none are visible.
   contested?: ContestedTension[];
   contestedCount?: number;
+  // U-7 (LD-7): the positional contest block — distinct from `contested`
+  // (tension annotations). Present ONLY on a contested doc with no
+  // ratified org_position; absent otherwise (upstream_staleness's
+  // absent-key discipline — no existence signal either way).
+  contested_positions?: {
+    flag: "CONTESTED";
+    positions: Position[];
+    open_tension_ids: string[];
+    note: string;
+  };
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -253,6 +266,29 @@ export async function vaultRead(
     db?.close();
   }
 
+  // U-7: positional contest block. Positional tensions are self-tensions on
+  // THIS doc; the caller passed the canRead gate above, so their ids are
+  // visible by construction — no per-tension visibility check (LD-15).
+  let contestedPositions: VaultReadResult["contested_positions"];
+  const posSet = parsed.value.frontmatter.positions;
+  if (posSet != null && isContested(posSet) && parsed.value.frontmatter.org_position == null) {
+    const tensionsRes = await listTensions(vaultRoot);
+    const openIds = tensionsRes.ok
+      ? tensionsRes.value
+          .filter(
+            (t) => t.kind === "positional" && !t.resolved && t.sourceA === resolved.value.relPath,
+          )
+          .map((t) => t.id)
+          .filter((id): id is string => id !== undefined)
+      : [];
+    contestedPositions = {
+      flag: "CONTESTED",
+      positions: unsuperseded(posSet).slice().sort(comparePositions),
+      open_tension_ids: openIds,
+      note: "the org has no consolidated view on this claim",
+    };
+  }
+
   return ok({
     path,
     content: parsed.value.content,
@@ -270,6 +306,7 @@ export async function vaultRead(
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
+    ...(contestedPositions ? { contested_positions: contestedPositions } : {}),
     version: sha256Hex(file.value),
   });
 }
@@ -781,7 +818,9 @@ export const readTools: ToolDefinition[] = [
       "orphan: nothing you can read links here; retired_still_linked: " +
       "canonical docs still lean on this retired (deprecated/superseded) one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
-      "shape as search hits), and a 'version' token (SHA-256 of the file) " +
+      "shape as search hits), a contested_positions block when principals " +
+      "hold conflicting live positions and no org position is ratified, " +
+      "and a 'version' token (SHA-256 of the file) " +
       "that can be passed back to a write tool as 'base_version' for " +
       "optimistic-concurrency checking. Path is relative to the vault root.",
     inputSchema: {
@@ -881,6 +920,47 @@ export const readTools: ToolDefinition[] = [
           },
         },
         contestedCount: { type: "integer", minimum: 0 },
+        // U-7: present only on a contested doc with no ratified org_position;
+        // absent otherwise (same absent-key discipline as upstream_staleness).
+        contested_positions: {
+          type: "object",
+          properties: {
+            flag: { type: "string", enum: ["CONTESTED"] },
+            positions: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  principal: { type: "string" },
+                  stance: { type: "string", enum: [...STANCES] },
+                  statement: { type: ["string", "null"] },
+                  confidence: { type: "string", enum: [...CONFIDENCES] },
+                  provenance: { type: "string", enum: [...PROVENANCES] },
+                  valid_from: { type: ["string", "null"] },
+                  superseded_by: { type: ["string", "null"] },
+                  created: { type: "string" },
+                  sources: { type: "array", items: { type: "string" } },
+                },
+                required: [
+                  "id",
+                  "principal",
+                  "stance",
+                  "statement",
+                  "confidence",
+                  "provenance",
+                  "valid_from",
+                  "superseded_by",
+                  "created",
+                  "sources",
+                ],
+              },
+            },
+            open_tension_ids: { type: "array", items: { type: "string" } },
+            note: { type: "string" },
+          },
+          required: ["flag", "positions", "open_tension_ids", "note"],
+        },
         version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
       },
       required: [

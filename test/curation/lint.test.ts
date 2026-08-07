@@ -320,6 +320,7 @@ ${body}
         factual: 0,
         interpretive: 0,
         "inter-proposal": 0,
+        positional: 0,
         unspecified: 0,
       });
       expect(h.resolvedLifetime).toBe(0);
@@ -386,6 +387,7 @@ ${body}
         factual: 2,
         interpretive: 2,
         "inter-proposal": 0,
+        positional: 0,
         unspecified: 1,
       });
       expect(h.resolvedLifetime).toBe(3);
@@ -696,6 +698,7 @@ ${body}
         factual: 3,
         interpretive: 3,
         "inter-proposal": 0,
+        positional: 0,
         unspecified: 1,
       });
       expect(h.aging.fresh).toBe(3);
@@ -706,6 +709,7 @@ ${body}
         factual: 1,
         interpretive: 1,
         "inter-proposal": 0,
+        positional: 0,
         unspecified: 0,
       });
       // All three stale-tier messages render.
@@ -1159,5 +1163,84 @@ describe("tierDemotions (#141)", () => {
       .filter(([name]) => name !== "tierDemotions")
       .reduce((n, [, f]) => n + f.length, 0);
     expect(r.value.totalFindings).toBe(others + 1);
+  });
+});
+
+describe("positionIntegrity (U-9)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => cleanupVault(vault));
+
+  const doc = (positions: string, extra = "") => `---
+title: P
+domain: accumulation
+collection: pricing
+status: canonical
+confidence: high
+created: 2026-08-01
+updated: 2026-08-01
+updated_by: "agent:test"
+provenance: direct
+positions:
+${positions}${extra}
+---
+
+Body.
+`;
+
+  const live = (id: string, principal: string, stance: string) => `  - id: ${id}
+    principal: ${principal}
+    stance: ${stance}
+    confidence: medium
+    created: 2026-08-01
+`;
+
+  it("flags dangling superseded_by, duplicate live per principal, contested drift, and a missing cap", async () => {
+    writeFileSync(
+      join(vault, "pricing", "bad-positions.md"),
+      doc(
+        `  - id: pos-001
+    principal: alice
+    stance: assert
+    confidence: high
+    created: 2026-08-01
+    superseded_by: pos-999
+${live("pos-002", "bob", "assert")}${live("pos-003", "bob", "dispute")}${live("pos-004", "bob", "assert")}`,
+        "contested: false\n",
+      ),
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const details = report.value.checks.positionIntegrity
+      .filter((f) => f.path === "pricing/bad-positions.md")
+      .map((f) => f.detail)
+      .join(" | ");
+    expect(details).toContain("pos-999"); // (a) dangling
+    expect(details).toContain("bob"); // (b) two live bob positions
+    expect(details).toContain("contested"); // (c) drift: false vs derived true
+    expect(details).toContain("confidence"); // (d) contested-unratified but confidence high
+  });
+
+  it("clean contested doc (capped, consistent) and legacy docs produce no findings", async () => {
+    writeFileSync(
+      join(vault, "pricing", "clean-contested.md"),
+      doc(
+        `${live("pos-001", "alice", "assert")}${live("pos-002", "bob", "dispute")}`,
+        "contested: true\n",
+      ).replace("confidence: high", "confidence: low"),
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(
+      report.value.checks.positionIntegrity.filter((f) => f.path === "pricing/clean-contested.md"),
+    ).toEqual([]);
+    // Legacy fixture docs (no positions) never appear.
+    expect(report.value.checks.positionIntegrity.every((f) => f.path.includes("positions"))).toBe(
+      true,
+    );
   });
 });

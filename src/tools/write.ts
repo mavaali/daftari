@@ -14,6 +14,7 @@ import matter from "gray-matter";
 import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
 import { mintConsumesEdges } from "../curation/consumes.js";
+import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -43,6 +44,7 @@ import {
   err,
   type Frontmatter,
   ok,
+  type Position,
   PROVENANCES,
   type Result,
   STATUSES,
@@ -152,7 +154,7 @@ function boundaryHint(successorPath: string, boundary: string): string {
 // clears the index and re-inserts every document, so a write that lands in
 // between can be wiped or land against a half-built index. Failing fast keeps
 // hooks, locks, and git commits from running for a write we can't index yet.
-function requireIndexReady(): Result<void, Error> {
+export function requireIndexReady(): Result<void, Error> {
   const status = getIndexStatus();
   if (status.status === "indexing") {
     return err(new Error(indexingBusyMessage(status)));
@@ -182,7 +184,7 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
 // runs before we touch the target, preserving "deny before revealing anything".
 // A path that escapes the root yields a `..`-leading segment, which no role can
 // write; `resolveVaultPath` rejects it properly downstream.
-function targetCollection(vaultRoot: string, relPath: string): string {
+export function targetCollection(vaultRoot: string, relPath: string): string {
   const rel = relative(resolve(vaultRoot), resolve(vaultRoot, relPath));
   return rel.split(sep)[0] ?? "";
 }
@@ -258,6 +260,14 @@ export function serializeDocument(
     describes: fm.describes,
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
+    // Positions (Slice 1): emitted ONLY when non-null — a deliberate exception
+    // to the always-emit built-in convention so the thousands of legacy docs
+    // stay byte-stable. A null typed value with surviving raw content (e.g. a
+    // malformed hand-written positions block) still round-trips verbatim via
+    // the raw-preservation loop below (#113).
+    ...(fm.positions != null ? { positions: fm.positions } : {}),
+    ...(fm.org_position != null ? { org_position: fm.org_position } : {}),
+    ...(fm.contested != null ? { contested: fm.contested } : {}),
   };
   const handled = new Set<string>(Object.keys(ordered));
   for (const ext of extensions) {
@@ -299,6 +309,7 @@ export interface WriteResult {
     | "merge"
     | "confidence-set"
     | "tier-set"
+    | "assert"
     | "staged";
   // Short commit hash when the write was auto-committed; null when the vault
   // is configured with `auto_commit: false` and the caller owns git.
@@ -583,7 +594,7 @@ function denyIfProposeOnly(access: AccessContext | undefined, tool: string): Res
 // The uniform RBAC write gate. One helper because the denial string is part
 // of the tool contract — every write tool emits the identical message shape,
 // and it must never leak more than the collection name.
-function requireWriteAccess(
+export function requireWriteAccess(
   access: AccessContext | undefined,
   collection: string,
 ): Result<void, Error> {
@@ -601,14 +612,14 @@ function requireWriteAccess(
 // deprecate, set_confidence, set_tier, supersede) load it: canonical paths,
 // parsed document, and vault config, in the shared error order — resolve,
 // read (not-found named by the tool), parse, config.
-interface TargetDocument {
+export interface TargetDocument {
   relPath: string;
   absPath: string;
   parsed: ParsedDocument;
   config: DaftariConfig;
 }
 
-async function loadTargetDocument(
+export async function loadTargetDocument(
   vaultRoot: string,
   rawPath: string,
   tool: string,
@@ -640,7 +651,7 @@ async function loadTargetDocument(
 // The shared performWrite tail for frontmatter-only mutations: body preserved
 // verbatim (bodyChanged false), file text re-serialized from the new
 // frontmatter over the existing content.
-function performFrontmatterWrite(opts: {
+export function performFrontmatterWrite(opts: {
   vaultRoot: string;
   target: TargetDocument;
   agent: string;
@@ -650,6 +661,7 @@ function performFrontmatterWrite(opts: {
   commitMessage: string;
   baseVersion: string | undefined;
   access?: AccessContext;
+  runId?: string;
 }): Promise<Result<WriteResult, Error>> {
   const { target } = opts;
   return performWrite({
@@ -675,6 +687,7 @@ function performFrontmatterWrite(opts: {
     shadowMode: target.config.shadowMode,
     principal: opts.access?.user,
     bodyChanged: false,
+    ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
   });
 }
 
@@ -855,10 +868,12 @@ export async function vaultWrite(
     const proposeConfig = loadConfig(vaultRoot);
     if (!proposeConfig.ok) return proposeConfig;
     let previewRaw: Record<string, unknown> = { ...rawFrontmatter };
+    let existingPositions: Position[] | null = null;
     const onDisk = await readFile(resolved.value.absPath);
     if (onDisk.ok) {
       const parsedExisting = parseDocument(onDisk.value);
       if (parsedExisting.ok) {
+        existingPositions = parsedExisting.value.frontmatter.positions;
         const merged: Record<string, unknown> = { ...parsedExisting.value.raw };
         for (const [key, value] of Object.entries(rawFrontmatter)) {
           if (value === null) delete merged[key];
@@ -874,6 +889,26 @@ export async function vaultWrite(
       previewRaw.updated_by = agent.value;
     }
     const preview = validateFrontmatter(previewRaw, proposeConfig.value.schemaExtensions);
+
+    // R-12/LD-13: die at stage time — cheaper than waiting for a poisoned
+    // proposal to fail at ratify dispatch (which re-checks authoritatively
+    // through the direct path above).
+    if (existingPositions != null) {
+      const previewViolation = foreignPositionViolation(
+        existingPositions,
+        preview.frontmatter.positions,
+        access.user,
+      );
+      if (previewViolation) {
+        return err(
+          new Error(
+            `vault_write (stage preview): ${previewViolation} — another principal's ` +
+              `position entries can only be superseded by their own new position ` +
+              `(vault_assert) or edited by their holder`,
+          ),
+        );
+      }
+    }
 
     const staged = await stageActionWithConflictCheck(vaultRoot, {
       actionType: "write",
@@ -1046,6 +1081,36 @@ export async function vaultWrite(
   if (!mergedReport.valid) {
     const summary = mergedReport.issues.map((i) => `${i.field}: ${i.message}`).join("; ");
     return err(new Error(`invalid frontmatter: ${summary}`));
+  }
+
+  // R-12/LD-13: no principal rewrites another's positions through the
+  // generic write path. Checked after validation so both sides are typed
+  // Position[] (raw YAML dates already normalized). Operator servers
+  // (no access) bypass, matching the tier/ratify gate conventions.
+  if (access && isUpdate && oldFrontmatter && oldFrontmatter.positions != null) {
+    const violation = foreignPositionViolation(
+      oldFrontmatter.positions,
+      frontmatter.positions,
+      access.user,
+    );
+    if (violation) {
+      await recordProvenance(vaultRoot, {
+        tool: "vault_write",
+        file: resolved.value.relPath,
+        agent: agent.value,
+        principal: access.user,
+        ...(runId.value !== undefined ? { run_id: runId.value } : {}),
+        action: "rejected_foreign_position",
+        reason: violation,
+      });
+      return err(
+        new Error(
+          `vault_write: ${violation} — another principal's position entries can ` +
+            `only be superseded by their own new position (vault_assert) or ` +
+            `edited by their holder`,
+        ),
+      );
+    }
   }
 
   const stamped: Frontmatter = {

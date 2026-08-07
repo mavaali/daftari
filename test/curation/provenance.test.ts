@@ -21,6 +21,9 @@ const baseFrontmatter: Frontmatter = {
   superseded_by: null,
   ttl_days: null,
   tags: [],
+  positions: null,
+  org_position: null,
+  contested: null,
 };
 
 describe("provenance", () => {
