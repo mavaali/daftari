@@ -12,6 +12,7 @@ import {
   type TensionEntry,
   tensionsPath,
 } from "../../src/curation/tension.js";
+import { vaultTensionLog } from "../../src/tools/curation.js";
 
 const sampleInput = {
   title: "Pooled vs consumption billing",
@@ -461,6 +462,7 @@ describe("STALE_TIER_LINT_COPY", () => {
       "factual",
       "inter-proposal",
       "interpretive",
+      "positional",
       "temporal",
     ]);
     // The interpretive copy must name the accepted/invalid resolution paths —
@@ -468,5 +470,102 @@ describe("STALE_TIER_LINT_COPY", () => {
     expect(STALE_TIER_LINT_COPY.interpretive).toContain("`accepted`");
     expect(STALE_TIER_LINT_COPY.interpretive).toContain("`invalid`");
     expect(STALE_TIER_LINT_COPY.interpretive).not.toMatch(/garbage collect/i);
+  });
+});
+
+describe("positional tension kind (U-3)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-tension-pos-"));
+  });
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  const positionalInput = {
+    title: "alice vs bob on retry storms",
+    sourceA: "pricing/retry-storms.md",
+    claimA: "the 250ms floor causes storms",
+    sourceB: "pricing/retry-storms.md",
+    claimB: "storms predate the floor",
+    loggedBy: "alice",
+    kind: "positional" as const,
+    positionA: "pos-001",
+    positionB: "pos-002",
+  };
+
+  it("mints a positional self-tension with position ids rendered and round-tripped", async () => {
+    const added = await addTension(vault, positionalInput);
+    expect(added.ok).toBe(true);
+    if (!added.ok) throw added.error;
+    expect(added.value.id).toMatch(/^tension-\d{3}$/);
+    expect(added.value.positionA).toBe("pos-001");
+    expect(added.value.positionB).toBe("pos-002");
+
+    const raw = readFileSync(tensionsPath(vault), "utf-8");
+    expect(raw).toContain("- **Position A:** pos-001");
+    expect(raw).toContain("- **Position B:** pos-002");
+
+    const listed = await listTensions(vault);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw listed.error;
+    expect(listed.value[0]?.kind).toBe("positional");
+    expect(listed.value[0]?.positionA).toBe("pos-001");
+    expect(listed.value[0]?.positionB).toBe("pos-002");
+  });
+
+  it("rejects a positional tension that is not a self-tension", async () => {
+    const r = await addTension(vault, { ...positionalInput, sourceB: "pricing/other.md" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("self-tension");
+  });
+
+  it("rejects a positional tension missing positionB", async () => {
+    const { positionB: _pb, ...noB } = positionalInput;
+    const r = await addTension(vault, noB);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("positionA");
+  });
+
+  it("vault_tension_log rejects kind positional (not caller-loggable, R-6)", async () => {
+    const r = await vaultTensionLog(vault, {
+      title: "t",
+      sourceA: "a.md",
+      sourceB: "a.md",
+      claimA: "x",
+      claimB: "y",
+      agent: "agent:test",
+      kind: "positional",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain(LOGGABLE_TENSION_KINDS.join(", "));
+  });
+
+  it("a legacy block without position lines parses with both undefined", async () => {
+    const plain = await addTension(vault, sampleInput);
+    expect(plain.ok).toBe(true);
+    const listed = await listTensions(vault);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw listed.error;
+    expect(listed.value[0]?.positionA).toBeUndefined();
+    expect(listed.value[0]?.positionB).toBeUndefined();
+  });
+
+  it("a resolved-accepted positional tension is exempt from aging (R-7 regression)", async () => {
+    const added = await addTension(vault, { ...positionalInput, date: "2020-01-01" });
+    expect(added.ok).toBe(true);
+    if (!added.ok) throw added.error;
+    expect(agingTier(added.value, new Date("2026-08-06"))).toBe("stale");
+    const resolved = await resolveTension(vault, added.value.id as string, {
+      resolved_at: new Date().toISOString(),
+      resolved_by: "carol",
+      kind: "accepted",
+    });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw resolved.error;
+    expect(agingTier(resolved.value, new Date("2026-08-06"))).toBeNull();
   });
 });
