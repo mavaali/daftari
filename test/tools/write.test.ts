@@ -1562,7 +1562,7 @@ describe("vault_write foreign-position guard (U-8)", () => {
       { path: DOC, stance: "dispute", confidence: "medium", agent: "b" },
       BOB,
     );
-    if (!a.ok) throw a.error; // bob holds pos-001
+    if (!a.ok) throw a.error; // pos-000 (unknown, U-12 legacy snapshot) + pos-001 (bob)
   });
   afterEach(() => cleanupVault(vault));
 
@@ -1581,10 +1581,12 @@ describe("vault_write foreign-position guard (U-8)", () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error.message).toContain("pos-001");
+    // The guard flags the first foreign entry it finds — with U-12, that is
+    // pos-000 (the legacy snapshot), which is equally foreign to alice.
+    expect(r.error.message).toContain("pos-000");
 
     const after = await vaultRead(vault, DOC);
-    expect(after.ok && after.value.frontmatter.positions).toHaveLength(1); // unchanged
+    expect(after.ok && after.value.frontmatter.positions).toHaveLength(2); // unchanged
 
     const log = await readProvenanceLog(vault);
     if (!log.ok) throw log.error;
@@ -1621,7 +1623,10 @@ describe("vault_write foreign-position guard (U-8)", () => {
     );
     expect(r.ok).toBe(true);
     const read = await vaultRead(vault, DOC);
-    expect(read.ok && read.value.frontmatter.positions?.[0]?.principal).toBe("bob");
+    const bobPos = read.ok
+      ? read.value.frontmatter.positions?.find((p) => p.id === "pos-001")
+      : undefined;
+    expect(bobPos?.principal).toBe("bob");
   });
 
   it("operator server (no access) bypasses the guard", async () => {
@@ -1632,5 +1637,137 @@ describe("vault_write foreign-position guard (U-8)", () => {
       agent: "op",
     });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe("vault_write protects pos-000 (U-12, C-2 guard 3/4)", () => {
+  const ALICE = {
+    user: "alice",
+    roleName: "writer",
+    role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+  };
+  const DOC = "pricing/legacy-snapshot.md";
+  let vault: string;
+
+  beforeEach(async () => {
+    vault = makeTempVault();
+    const seeded = await vaultWrite(vault, {
+      path: DOC,
+      body: "# G\n\nx.\n",
+      frontmatter: {
+        title: "G",
+        domain: "accumulation",
+        collection: "pricing",
+        status: "canonical",
+        confidence: "high",
+        created: "2026-08-01",
+        provenance: "direct",
+      },
+      agent: "agent:seed",
+    });
+    if (!seeded.ok) throw seeded.error;
+    // First assert on the legacy doc mints pos-000 (principal: unknown) + carol's pos-001.
+    const a = await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "op", principal: "carol" },
+      undefined,
+    );
+    if (!a.ok) throw a.error;
+  });
+  afterEach(() => cleanupVault(vault));
+
+  it("guard 3: an authenticated writer altering pos-000's statement is rejected, foreign-position provenance logged", async () => {
+    const before = await vaultRead(vault, DOC);
+    if (!before.ok) throw before.error;
+    const positions = (before.value.frontmatter.positions ?? []).map((p) =>
+      p.id === "pos-000" ? { ...p, statement: "reworded" } : p,
+    );
+    const r = await vaultWrite(
+      vault,
+      { path: DOC, body: "# G\n\nx.\n", frontmatter: { positions }, agent: "a" },
+      ALICE,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("pos-000");
+
+    const log = await readProvenanceLog(vault);
+    if (!log.ok) throw log.error;
+    expect(log.value.some((e) => e.action === "rejected_foreign_position" && e.file === DOC)).toBe(
+      true,
+    );
+  });
+
+  it("guard 3: an authenticated writer dropping pos-000 entirely is rejected", async () => {
+    const before = await vaultRead(vault, DOC);
+    if (!before.ok) throw before.error;
+    const positions = (before.value.frontmatter.positions ?? []).filter((p) => p.id !== "pos-000");
+    const r = await vaultWrite(
+      vault,
+      { path: DOC, body: "# G\n\nx.\n", frontmatter: { positions }, agent: "a" },
+      ALICE,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("pos-000");
+  });
+
+  it("guard 4: on a still-legacy doc, a merged positions write carrying pos-000 lands (guard silent, existing was null)", async () => {
+    const legacyDoc = "pricing/still-legacy.md";
+    const seeded = await vaultWrite(vault, {
+      path: legacyDoc,
+      body: "# L\n\nx.\n",
+      frontmatter: {
+        title: "L",
+        domain: "accumulation",
+        collection: "pricing",
+        status: "canonical",
+        confidence: "high",
+        created: "2026-08-01",
+        provenance: "direct",
+      },
+      agent: "agent:seed",
+    });
+    if (!seeded.ok) throw seeded.error;
+
+    const mergedPositions = [
+      {
+        id: "pos-000",
+        principal: "unknown",
+        stance: "assert",
+        statement: null,
+        confidence: "high",
+        provenance: "direct",
+        valid_from: null,
+        superseded_by: null,
+        created: "2026-08-01",
+        sources: [],
+      },
+      {
+        id: "pos-001",
+        principal: "carol",
+        stance: "assert",
+        statement: null,
+        confidence: "high",
+        provenance: "direct",
+        valid_from: null,
+        superseded_by: null,
+        created: "2026-08-06",
+        sources: [],
+      },
+    ];
+    const r = await vaultWrite(
+      vault,
+      {
+        path: legacyDoc,
+        body: "# L\n\nx.\n",
+        frontmatter: { positions: mergedPositions },
+        agent: "a",
+      },
+      ALICE,
+    );
+    expect(r.ok).toBe(true);
+    const read = await vaultRead(vault, legacyDoc);
+    expect(read.ok && read.value.frontmatter.positions).toHaveLength(2);
   });
 });

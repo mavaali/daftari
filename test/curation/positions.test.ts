@@ -5,6 +5,7 @@ import {
   conflictPairs,
   foreignPositionViolation,
   isContested,
+  legacySnapshot,
   nextPositionId,
   unsuperseded,
 } from "../../src/curation/positions.js";
@@ -139,5 +140,54 @@ describe("foreignPositionViolation (LD-13)", () => {
 
   it("dropping the whole positions key (null incoming) violates when foreign entries existed", () => {
     expect(foreignPositionViolation([bobOld], null, "alice")).toContain("pos-002");
+  });
+});
+
+describe("legacySnapshot (U-12, LD-22)", () => {
+  it("builds the pos-000 snapshot from the prior authored fields", () => {
+    const snap = legacySnapshot({
+      confidence: "high",
+      provenance: "direct",
+      valid_from: null,
+      updated: "2026-08-01",
+    });
+    expect(snap).toEqual({
+      id: "pos-000",
+      principal: "unknown",
+      stance: "assert",
+      statement: null,
+      confidence: "high",
+      provenance: "direct",
+      valid_from: null,
+      superseded_by: null,
+      created: "2026-08-01",
+      sources: [],
+    });
+  });
+
+  it("applyAssert over [legacySnapshot(fm)] never lets alice's assert supersede pos-000 (guard 2)", () => {
+    const snap = legacySnapshot({
+      confidence: "medium",
+      provenance: "direct",
+      valid_from: null,
+      updated: "2026-08-01",
+    });
+    const out = applyAssert([snap], { ...assertInput, principal: "alice" });
+    expect(out.newPosition.id).toBe("pos-001");
+    expect(out.superseded).toBeNull();
+    expect(out.positions.find((p) => p.id === "pos-000")?.superseded_by).toBeNull();
+  });
+
+  it("pos-000 assert + alice assert is not contested; + bob dispute is (snapshot is a live assert side)", () => {
+    const snap = legacySnapshot({
+      confidence: "medium",
+      provenance: "direct",
+      valid_from: null,
+      updated: "2026-08-01",
+    });
+    const aliceOut = applyAssert([snap], { ...assertInput, principal: "alice" });
+    expect(isContested(aliceOut.positions)).toBe(false);
+    const bobDispute = pos({ id: "pos-002", principal: "bob", stance: "dispute" });
+    expect(isContested([...aliceOut.positions, bobDispute])).toBe(true);
   });
 });

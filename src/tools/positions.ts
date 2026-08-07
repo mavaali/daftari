@@ -9,6 +9,7 @@ import {
   comparePositions,
   conflictPairs,
   isContested,
+  legacySnapshot,
   unsuperseded,
 } from "../curation/positions.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -144,6 +145,15 @@ export async function vaultAssert(
     principal = principalArg.value;
   }
 
+  // C-2 guard 1: "unknown" is reserved for the pos-000 legacy-snapshot
+  // principal (LD-22) — no live caller, authenticated or operator, may
+  // assert AS it. One check on the resolved value covers both paths.
+  if (principal === "unknown") {
+    return err(
+      new Error("vault_assert: 'unknown' is reserved for the legacy snapshot principal (pos-000)"),
+    );
+  }
+
   // RBAC before any file I/O, keyed off the physical target dir (S1 rule).
   const writeGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
   if (!writeGate.ok) return writeGate;
@@ -155,7 +165,13 @@ export async function vaultAssert(
   if (!target.ok) return target;
   const fm = target.value.parsed.frontmatter;
 
-  const applied = applyAssert(fm.positions, {
+  // U-12 / DN-2 / LD-22: the first assert on a legacy doc (typed positions
+  // null — an explicit `positions: []` means already opted in, no snapshot)
+  // snapshots the prior authored belief as pos-000 before the caller's own
+  // position is applied. Guard 2 (applyAssert never self-supersedes across
+  // principals) means the snapshot is never touched by a live caller's assert.
+  const basePositions = fm.positions ?? [legacySnapshot(fm)];
+  const applied = applyAssert(basePositions, {
     principal,
     stance: stanceRaw.value as Stance,
     statement: statement.value,
@@ -395,7 +411,9 @@ const assertToolDefinition: ToolDefinition = {
     "caller-loggable via vault_tension_log; resolve through " +
     "vault_tension_resolve). Propose-only roles: the assert lands as a staged " +
     "'write' proposal for ratification — nothing is written and no positional " +
-    "tension is logged until the ratified write lands.",
+    "tension is logged until the ratified write lands. The first assert on a " +
+    "legacy doc (typed positions null) snapshots the doc's prior belief as " +
+    "pos-000 (principal 'unknown', system-authored, unforgeable).",
   inputSchema: {
     type: "object",
     properties: {

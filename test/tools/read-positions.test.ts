@@ -54,9 +54,11 @@ describe("vault_read contested_positions (U-7)", () => {
     if (!read.ok) throw read.error;
     const block = read.value.contested_positions;
     expect(block?.flag).toBe("CONTESTED");
-    // high (pos-001) before medium (pos-002).
-    expect(block?.positions.map((p) => p.id)).toEqual(["pos-001", "pos-002"]);
-    expect(block?.open_tension_ids).toHaveLength(1);
+    // U-12: pos-000 (legacy snapshot) is minted by the first assert on this
+    // legacy doc; high confidence (pos-000, pos-001) before medium (pos-002).
+    expect(block?.positions.map((p) => p.id)).toEqual(["pos-000", "pos-001", "pos-002"]);
+    // bob's dispute conflicts with BOTH live asserts (pos-000 and pos-001).
+    expect(block?.open_tension_ids).toHaveLength(2);
     expect(block?.note).toContain("no consolidated view");
     expect(read.value.frontmatter.confidence).toBe("low"); // R-9 cap visible
   });

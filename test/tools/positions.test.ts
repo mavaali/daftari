@@ -76,7 +76,8 @@ describe("vault_assert (U-4)", () => {
     expect(r.value.commit).toBeTruthy();
 
     const read = await vaultRead(vault, DOC);
-    expect(read.ok && read.value.frontmatter.positions).toHaveLength(1);
+    // LD-24: pos-000 (legacy snapshot, U-12) is minted first, so length is 2.
+    expect(read.ok && read.value.frontmatter.positions).toHaveLength(2);
     expect(read.ok && read.value.frontmatter.confidence).toBe("high"); // uncontested: untouched
 
     const log = await readProvenanceLog(vault);
@@ -106,7 +107,9 @@ describe("vault_assert (U-4)", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) throw r.error;
     expect(r.value.contested).toBe(true);
-    expect(r.value.tension_ids).toHaveLength(1);
+    // LD-24: bob's dispute (pos-002) now conflicts with BOTH pos-000 (the
+    // legacy snapshot, U-12) and pos-001 (alice) — two positional tensions.
+    expect(r.value.tension_ids).toHaveLength(2);
 
     const read = await vaultRead(vault, DOC);
     expect(read.ok && read.value.frontmatter.confidence).toBe("low"); // R-9 cap
@@ -115,12 +118,14 @@ describe("vault_assert (U-4)", () => {
     const tensions = await listTensions(vault);
     if (!tensions.ok) throw tensions.error;
     const t = tensions.value.filter((x) => x.kind === "positional");
-    expect(t).toHaveLength(1);
-    expect(t[0]?.sourceA).toBe(DOC);
-    expect(t[0]?.sourceB).toBe(DOC);
-    expect(t[0]?.positionA).toBe("pos-001");
-    expect(t[0]?.positionB).toBe("pos-002");
-    expect(t[0]?.loggedBy).toBe("bob"); // DN-3
+    expect(t).toHaveLength(2);
+    for (const tension of t) {
+      expect(tension.sourceA).toBe(DOC);
+      expect(tension.sourceB).toBe(DOC);
+      expect(tension.loggedBy).toBe("bob"); // DN-3
+      expect(tension.positionB).toBe("pos-002");
+    }
+    expect(t.map((x) => x.positionA).sort()).toEqual(["pos-000", "pos-001"]);
   });
 
   it("alice re-asserts → pos-003 supersedes pos-001, bob untouched, no duplicate tension (mandated)", async () => {
@@ -149,14 +154,16 @@ describe("vault_assert (U-4)", () => {
     if (!r.ok) throw r.error;
     expect(r.value.position?.id).toBe("pos-003");
     expect(r.value.superseded_position_id).toBe("pos-001");
-    // (pos-001,pos-002) already tensioned; (pos-002,pos-003) is the one NEW live pair.
+    // LD-24: (pos-000,pos-002) and (pos-001,pos-002) already tensioned from
+    // bob's dispute against BOTH live asserts (pos-000 = legacy snapshot,
+    // U-12); (pos-002,pos-003) is the one NEW live pair from alice's re-assert.
     const tensions = await listTensions(vault);
     if (!tensions.ok) throw tensions.error;
     const pairs = tensions.value
       .filter((x) => x.kind === "positional")
       .map((x) => `${x.positionA}/${x.positionB}`)
       .sort();
-    expect(pairs).toEqual(["pos-001/pos-002", "pos-002/pos-003"]);
+    expect(pairs).toEqual(["pos-000/pos-002", "pos-001/pos-002", "pos-002/pos-003"]);
 
     const read = await vaultRead(vault, DOC);
     if (!read.ok) throw read.error;
@@ -201,7 +208,9 @@ describe("vault_assert (U-4)", () => {
     if (!action.ok) throw action.error;
     expect(action.value?.actionType).toBe("write");
     const diff = action.value?.proposedDiff as { frontmatter: { positions: unknown[] } };
-    expect(diff.frontmatter.positions).toHaveLength(1);
+    // LD-24: pos-000 (legacy snapshot, U-12) is included in the staged
+    // payload alongside carol's pos-001.
+    expect(diff.frontmatter.positions).toHaveLength(2);
 
     const tensions = await listTensions(vault);
     expect(tensions.ok && tensions.value.filter((x) => x.kind === "positional")).toEqual([]);
@@ -284,6 +293,180 @@ describe("vault_assert (U-4)", () => {
   });
 });
 
+describe("vault_assert pos-000 legacy snapshot (U-12, C-2)", () => {
+  let vault: string;
+  beforeEach(async () => {
+    vault = makeTempVault();
+    await seedDoc(vault);
+  });
+  afterEach(() => cleanupVault(vault));
+
+  it("first assert on a legacy doc snapshots pos-000 (unknown, prior confidence/created)", async () => {
+    const before = await vaultRead(vault, DOC);
+    if (!before.ok) throw before.error;
+    const priorUpdated = before.value.frontmatter.updated;
+
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "medium", agent: "op", principal: "carol" },
+      undefined,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.value.contested).toBe(false);
+    expect(r.value.tension_ids).toEqual([]);
+
+    const read = await vaultRead(vault, DOC);
+    if (!read.ok) throw read.error;
+    const positions = read.value.frontmatter.positions;
+    expect(positions).toHaveLength(2);
+    expect(positions?.[0]).toMatchObject({
+      id: "pos-000",
+      principal: "unknown",
+      stance: "assert",
+      confidence: "high", // the doc's prior authored confidence
+      created: priorUpdated, // the doc's prior updated date
+    });
+    expect(positions?.[1]).toMatchObject({ id: "pos-001", principal: "carol" });
+  });
+
+  it("first dispute on a legacy doc: contested, capped low, exactly ONE positional tension naming pos-000/pos-001", async () => {
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "op", principal: "carol" },
+      undefined,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.value.contested).toBe(true);
+    expect(r.value.tension_ids).toHaveLength(1);
+
+    const read = await vaultRead(vault, DOC);
+    if (!read.ok) throw read.error;
+    expect(read.value.frontmatter.confidence).toBe("low");
+
+    const tensions = await listTensions(vault);
+    if (!tensions.ok) throw tensions.error;
+    const t = tensions.value.filter((x) => x.kind === "positional");
+    expect(t).toHaveLength(1);
+    expect(t[0]?.positionA).toBe("pos-000");
+    expect(t[0]?.positionB).toBe("pos-001");
+    // statement null → claim falls back to "<title> — assert (<confidence>)"
+    expect(t[0]?.claimA).toBe("Retry storms — assert (high)");
+  });
+
+  it("assert on a doc with explicit positions: [] (already opted in) → NO pos-000", async () => {
+    const opted = "pricing/opted-in.md";
+    const seeded = await vaultWrite(
+      vault,
+      {
+        path: opted,
+        body: "# Opted\n\nx.\n",
+        frontmatter: {
+          title: "Opted",
+          domain: "accumulation",
+          collection: "pricing",
+          status: "canonical",
+          confidence: "high",
+          created: "2026-08-01",
+          provenance: "direct",
+          positions: [],
+        },
+        agent: "agent:seed",
+      },
+      undefined,
+    );
+    if (!seeded.ok) throw seeded.error;
+
+    const r = await vaultAssert(
+      vault,
+      { path: opted, stance: "assert", confidence: "high", agent: "op", principal: "carol" },
+      undefined,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+
+    const read = await vaultRead(vault, opted);
+    if (!read.ok) throw read.error;
+    expect(read.value.frontmatter.positions).toHaveLength(1);
+    expect(read.value.frontmatter.positions?.[0]?.id).toBe("pos-001");
+  });
+
+  it("reserved principal, operator mode: principal 'unknown' is rejected, nothing written", async () => {
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "op", principal: "unknown" },
+      undefined,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("reserved");
+
+    const read = await vaultRead(vault, DOC);
+    expect(read.ok && read.value.frontmatter.positions).toBeNull();
+  });
+
+  it("reserved principal, authenticated: access.user 'unknown' is rejected", async () => {
+    const UNKNOWN_USER = {
+      user: "unknown",
+      roleName: "writer",
+      role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+    };
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "op" },
+      UNKNOWN_USER,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("reserved");
+  });
+
+  it("second principal's assert on the now-positioned doc mints NO second snapshot", async () => {
+    await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "op", principal: "carol" },
+      undefined,
+    );
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "op", principal: "dave" },
+      undefined,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+
+    const read = await vaultRead(vault, DOC);
+    if (!read.ok) throw read.error;
+    const ids = (read.value.frontmatter.positions ?? []).map((p) => p.id);
+    expect(ids.filter((id) => id === "pos-000")).toHaveLength(1);
+    expect(ids).toEqual(["pos-000", "pos-001", "pos-002"]);
+  });
+
+  it("propose-only role's first assert on a legacy doc: staged payload carries BOTH pos-000 and the proposer's pos-001", async () => {
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "c" },
+      PROPOSER,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.value.action).toBe("staged");
+
+    const read = await vaultRead(vault, DOC);
+    expect(read.ok && read.value.frontmatter.positions).toBeNull(); // file untouched
+
+    const action = await getStagedActionById(vault, r.value.staged_id as string);
+    if (!action.ok) throw action.error;
+    const diff = action.value?.proposedDiff as {
+      frontmatter: { positions: Array<{ id: string; principal: string }> };
+    };
+    expect(diff.frontmatter.positions).toHaveLength(2);
+    expect(diff.frontmatter.positions[0]).toMatchObject({ id: "pos-000", principal: "unknown" });
+    expect(diff.frontmatter.positions[1]).toMatchObject({ id: "pos-001", principal: "carol" });
+  });
+});
+
 describe("vault_positions (U-5)", () => {
   let vault: string;
   beforeEach(async () => {
@@ -306,11 +489,16 @@ describe("vault_positions (U-5)", () => {
     const live = await vaultPositions(vault, { path: DOC }, ALICE);
     expect(live.ok).toBe(true);
     if (!live.ok) throw live.error;
-    expect(live.value.positions.map((p) => p.position.id)).toEqual(["pos-002"]);
+    // pos-000 (legacy snapshot, U-12) is also live — it is never superseded
+    // by a different principal's assert.
+    expect(live.value.positions.map((p) => p.position.id)).toEqual(["pos-000", "pos-002"]);
     const all = await vaultPositions(vault, { path: DOC, include_superseded: true }, ALICE);
     if (!all.ok) throw all.error;
-    expect(all.value.positions).toHaveLength(2);
-    expect(all.value.positions[0]?.position.superseded_by).toBe("pos-002");
+    expect(all.value.positions).toHaveLength(3);
+    const pos001 = all.value.positions.find((p) => p.position.id === "pos-001");
+    expect(pos001?.position.superseded_by).toBe("pos-002");
+    const pos000 = all.value.positions.find((p) => p.position.id === "pos-000");
+    expect(pos000?.position.superseded_by).toBeNull();
   });
 
   it("by path on a legacy doc: empty list, not an error", async () => {
