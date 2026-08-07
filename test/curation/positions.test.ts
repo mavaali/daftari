@@ -3,6 +3,7 @@ import {
   applyAssert,
   comparePositions,
   conflictPairs,
+  dissentIds,
   foreignPositionViolation,
   isContested,
   legacySnapshot,
@@ -189,5 +190,57 @@ describe("legacySnapshot (U-12, LD-22)", () => {
     expect(isContested(aliceOut.positions)).toBe(false);
     const bobDispute = pos({ id: "pos-002", principal: "bob", stance: "dispute" });
     expect(isContested([...aliceOut.positions, bobDispute])).toBe(true);
+  });
+});
+
+describe("dissentIds (U-10, LD-18)", () => {
+  const alice = pos({
+    id: "pos-001",
+    principal: "alice",
+    stance: "assert",
+    confidence: "high",
+    created: "2026-08-01",
+  });
+  const bob = pos({
+    id: "pos-002",
+    principal: "bob",
+    stance: "dispute",
+    confidence: "medium",
+    created: "2026-08-02",
+  });
+  const carol = pos({ id: "pos-003", principal: "carol", stance: "qualify" });
+
+  it("org stance assert → dissent is the live disputes; dispute → live asserts; qualify → none", () => {
+    const set = [alice, bob, carol];
+    expect(dissentIds(set, "assert")).toEqual(["pos-002"]);
+    expect(dissentIds(set, "dispute")).toEqual(["pos-001"]);
+    expect(dissentIds(set, "qualify")).toEqual([]);
+  });
+
+  it("a superseded dispute never appears in dissent", () => {
+    const supersededBob = { ...bob, superseded_by: "pos-004" };
+    expect(dissentIds([alice, supersededBob], "assert")).toEqual([]);
+  });
+
+  it("two live disputes → both ids, comparePositions order (confidence desc, created desc, id asc)", () => {
+    const bobLow = pos({
+      id: "pos-004",
+      principal: "bob",
+      stance: "dispute",
+      confidence: "low",
+      created: "2026-08-03",
+    });
+    const daveHigh = pos({
+      id: "pos-005",
+      principal: "dave",
+      stance: "dispute",
+      confidence: "high",
+      created: "2026-08-01",
+    });
+    expect(dissentIds([alice, bob, bobLow, daveHigh], "assert")).toEqual([
+      "pos-005",
+      "pos-002",
+      "pos-004",
+    ]);
   });
 });

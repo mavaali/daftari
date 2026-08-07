@@ -310,6 +310,7 @@ export interface WriteResult {
     | "confidence-set"
     | "tier-set"
     | "assert"
+    | "consolidate"
     | "staged";
   // Short commit hash when the write was auto-committed; null when the vault
   // is configured with `auto_commit: false` and the caller owns git.

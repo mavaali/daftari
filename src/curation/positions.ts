@@ -84,6 +84,20 @@ export function comparePositions(a: Position, b: Position): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+// LD-18: the dissent a ratified org stance carries — ids of unsuperseded
+// positions whose stance opposes the ratified one under the R-1 rule
+// (assert<->dispute; qualify opposes nothing). Computed by vault_consolidate
+// at ratify time, LD-11 ordered — never hand-supplied.
+export function dissentIds(positions: Position[], stance: Stance): string[] {
+  const opposite: Stance | null =
+    stance === "assert" ? "dispute" : stance === "dispute" ? "assert" : null;
+  if (opposite === null) return [];
+  return unsuperseded(positions)
+    .filter((p) => p.stance === opposite)
+    .sort(comparePositions)
+    .map((p) => p.id);
+}
+
 export interface AssertInput {
   principal: string;
   stance: Stance;

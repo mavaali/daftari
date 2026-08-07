@@ -3,17 +3,30 @@
 // principal. Pure logic lives in curation/positions.ts; write plumbing is
 // reused from write.ts (LD-9) — no duplicated lock/commit/provenance code.
 
-import { type AccessContext, canRead, hasAnyRead, isProposeOnly } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canRatify,
+  canRead,
+  hasAnyRead,
+  isProposeOnly,
+} from "../access/rbac.js";
 import {
   applyAssert,
   comparePositions,
   conflictPairs,
+  dissentIds,
   isContested,
   legacySnapshot,
   unsuperseded,
 } from "../curation/positions.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
-import { addTension, listTensions } from "../curation/tension.js";
+import {
+  addTension,
+  listTensions,
+  type ResolutionKind,
+  resolveTension,
+  type TensionResolution,
+} from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import {
@@ -21,6 +34,7 @@ import {
   type Confidence,
   err,
   type Frontmatter,
+  type OrgPosition,
   ok,
   type Position,
   PROVENANCES,
@@ -299,6 +313,238 @@ export async function vaultAssert(
   });
 }
 
+// The subset of RESOLUTION_KINDS vault_consolidate accepts for its in-call
+// resolve_tension (LD-19). "invalid" is a legitimate tension-resolution kind
+// generally, but not a consolidation verdict — consolidate is not a backdoor
+// generic resolver.
+const CONSOLIDATABLE_RESOLUTION_KINDS = ["superseded", "corrected", "accepted"] as const;
+type ConsolidatableResolutionKind = (typeof CONSOLIDATABLE_RESOLUTION_KINDS)[number];
+
+export interface ConsolidateResult {
+  path: string;
+  action: "consolidate";
+  org_position: OrgPosition;
+  confidence: Confidence;
+  dissent: string[];
+  contested: boolean | null;
+  resolved_tension_id: string | null;
+  resolve_error?: string;
+  commit: string | null;
+  committed: boolean;
+}
+
+// U-10 / R-16: ratify-gated consolidation. Writes the org's ratified stance
+// (org_position), mirrors its confidence onto the doc (clearing the R-9
+// low-confidence cap — C-1's "the mirror moves only by re-consolidating"),
+// and carries dissent — computed server-side, never caller-supplied (LD-18).
+// Optionally resolves one open positional tension on this doc in the same
+// call (LD-19): validated BEFORE the write; the write commits first, and a
+// resolve failure afterward is reported as resolve_error, never rolled back.
+export async function vaultConsolidate(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<ConsolidateResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const path = str(args, "path", "vault_consolidate");
+  if (!path.ok) return path;
+  const agent = str(args, "agent", "vault_consolidate");
+  if (!agent.ok) return agent;
+
+  const stanceRaw = str(args, "stance", "vault_consolidate");
+  if (!stanceRaw.ok) return stanceRaw;
+  if (!(STANCES as readonly string[]).includes(stanceRaw.value)) {
+    return err(new Error(`vault_consolidate 'stance' must be one of: ${STANCES.join(", ")}`));
+  }
+  const confidenceRaw = str(args, "confidence", "vault_consolidate");
+  if (!confidenceRaw.ok) return confidenceRaw;
+  if (!(CONFIDENCES as readonly string[]).includes(confidenceRaw.value)) {
+    return err(
+      new Error(`vault_consolidate 'confidence' must be one of: ${CONFIDENCES.join(", ")}`),
+    );
+  }
+  const runIdArg = optStr(args, "run_id", "vault_consolidate");
+  if (!runIdArg.ok) return runIdArg;
+
+  let resolveTensionArg: {
+    id: string;
+    kind: ConsolidatableResolutionKind;
+    rationale?: string;
+  } | null = null;
+  if (args.resolve_tension !== undefined && args.resolve_tension !== null) {
+    const rt = args.resolve_tension;
+    if (typeof rt !== "object" || Array.isArray(rt)) {
+      return err(new Error("vault_consolidate: 'resolve_tension' must be an object"));
+    }
+    const rtObj = rt as Record<string, unknown>;
+    const idRes = str(rtObj, "id", "vault_consolidate resolve_tension");
+    if (!idRes.ok) return idRes;
+    const kindRes = str(rtObj, "kind", "vault_consolidate resolve_tension");
+    if (!kindRes.ok) return kindRes;
+    if (!(CONSOLIDATABLE_RESOLUTION_KINDS as readonly string[]).includes(kindRes.value)) {
+      return err(
+        new Error(
+          `vault_consolidate resolve_tension 'kind' must be one of: ` +
+            `${CONSOLIDATABLE_RESOLUTION_KINDS.join(", ")}`,
+        ),
+      );
+    }
+    const rationaleRes = optStr(rtObj, "rationale", "vault_consolidate resolve_tension");
+    if (!rationaleRes.ok) return rationaleRes;
+    resolveTensionArg = {
+      id: idRes.value,
+      kind: kindRes.value as ConsolidatableResolutionKind,
+      ...(rationaleRes.value !== null ? { rationale: rationaleRes.value } : {}),
+    };
+  }
+
+  // LD-25: same identity shape as vault_assert's R-3 operator rule, but the
+  // resolved identity here is the RATIFIER, not a position's principal.
+  const principalArg = optStr(args, "principal", "vault_consolidate");
+  if (!principalArg.ok) return principalArg;
+  let ratifier: string;
+  if (access) {
+    if (principalArg.value !== null && principalArg.value !== access.user) {
+      return err(
+        new Error(
+          `vault_consolidate: cannot ratify as another principal ` +
+            `(authenticated as '${access.user}')`,
+        ),
+      );
+    }
+    ratifier = access.user;
+  } else {
+    if (principalArg.value === null) {
+      return err(
+        new Error(
+          "vault_consolidate: no access context — an explicit 'principal' argument is " +
+            "required (recorded as unverified)",
+        ),
+      );
+    }
+    ratifier = principalArg.value;
+  }
+
+  // C-2 guard 5: "unknown" is reserved for the pos-000 legacy-snapshot
+  // principal — no live ratifier, authenticated or operator, may ratify AS it.
+  if (ratifier === "unknown") {
+    return err(
+      new Error(
+        "vault_consolidate: 'unknown' is reserved for the legacy snapshot principal (pos-000)",
+      ),
+    );
+  }
+
+  // LD-20: a propose-only role is denied even if `ratify` is (mis)granted —
+  // a proposer is not a ratifier, and there is no propose-only path for
+  // consolidate (unlike vault_write/vault_assert, which coerce into staged
+  // proposals).
+  if (access && isProposeOnly(access.role)) {
+    return err(
+      new Error(`access denied: role '${access.roleName}' is propose-only — it cannot consolidate`),
+    );
+  }
+  if (access && !canRatify(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot consolidate`));
+  }
+
+  const target = await loadTargetDocument(vaultRoot, path.value, "vault_consolidate");
+  if (!target.ok) return target;
+  const fm = target.value.parsed.frontmatter;
+
+  const dissent = dissentIds(fm.positions ?? [], stanceRaw.value as Stance);
+
+  // LD-19: resolve_tension is validated BEFORE any write. The id must name
+  // an OPEN tension with kind "positional" and sourceA === this doc — never
+  // a backdoor generic resolver.
+  if (resolveTensionArg) {
+    const all = await listTensions(vaultRoot);
+    if (!all.ok) return all;
+    const t = all.value.find((x) => x.id === resolveTensionArg?.id);
+    if (!t || t.resolved || t.kind !== "positional" || t.sourceA !== target.value.relPath) {
+      return err(
+        new Error(
+          "vault_consolidate: resolve_tension does not name an open positional tension " +
+            "on this document",
+        ),
+      );
+    }
+    if (resolveTensionArg.kind === "accepted" && dissent.length === 0) {
+      return err(
+        new Error("vault_consolidate: resolve_tension kind 'accepted' requires standing dissent"),
+      );
+    }
+  }
+
+  const orgPosition: OrgPosition = {
+    stance: stanceRaw.value as Stance,
+    confidence: confidenceRaw.value as Confidence,
+    ratified_by: ratifier,
+    ratified_at: todayISO(),
+    dissent,
+  };
+
+  // LD-21: contested is re-derived from the live set, never touched by
+  // consolidate itself; a fully legacy doc (positions null) stays null.
+  const contested = fm.positions != null ? isContested(fm.positions) : null;
+
+  const newFrontmatter: Frontmatter = {
+    ...fm,
+    org_position: orgPosition,
+    confidence: confidenceRaw.value as Confidence, // the mirror — clears the R-9 cap
+    contested,
+    updated: todayISO(),
+    updated_by: agent.value,
+  };
+
+  const written = await performFrontmatterWrite({
+    vaultRoot,
+    target: target.value,
+    agent: agent.value,
+    tool: "vault_consolidate",
+    action: "consolidate" as WriteResult["action"],
+    newFrontmatter,
+    commitMessage: `vault_consolidate: ${stanceRaw.value} on ${target.value.relPath} ratified by ${ratifier}`,
+    baseVersion: undefined,
+    access,
+    ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
+  });
+  if (!written.ok) return written;
+
+  // The doc write commits FIRST; a resolve failure afterward is reported as
+  // resolve_error, not rolled back (LD-19 — mirror of Slice 1's tension_error
+  // channel).
+  let resolvedTensionId: string | null = null;
+  let resolveError: string | undefined;
+  if (resolveTensionArg) {
+    const resolution: TensionResolution = {
+      resolved_at: new Date().toISOString(),
+      resolved_by: ratifier,
+      kind: resolveTensionArg.kind as ResolutionKind,
+      ...(resolveTensionArg.rationale !== undefined
+        ? { rationale: resolveTensionArg.rationale }
+        : {}),
+    };
+    const resolved = await resolveTension(vaultRoot, resolveTensionArg.id, resolution);
+    if (resolved.ok) resolvedTensionId = resolveTensionArg.id;
+    else resolveError = resolved.error.message;
+  }
+
+  return ok({
+    path: target.value.relPath,
+    action: "consolidate" as const,
+    org_position: orgPosition,
+    confidence: confidenceRaw.value as Confidence,
+    dissent,
+    contested,
+    resolved_tension_id: resolvedTensionId,
+    ...(resolveError !== undefined ? { resolve_error: resolveError } : {}),
+    commit: written.value.commit,
+    committed: written.value.committed,
+  });
+}
+
 export interface PositionsResult {
   count: number;
   positions: Array<{ path: string; position: Position; contested: boolean }>;
@@ -395,6 +641,18 @@ const POSITION_SCHEMA: Record<string, unknown> = {
     "created",
     "sources",
   ],
+};
+
+const ORG_POSITION_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    stance: { type: "string", enum: [...STANCES] },
+    confidence: { type: "string", enum: [...CONFIDENCES] },
+    ratified_by: { type: "string" },
+    ratified_at: { type: "string" },
+    dissent: { type: "array", items: { type: "string" } },
+  },
+  required: ["stance", "confidence", "ratified_by", "ratified_at", "dissent"],
 };
 
 const assertToolDefinition: ToolDefinition = {
@@ -509,4 +767,85 @@ const positionsToolDefinition: ToolDefinition = {
   handler: (vaultRoot, args, access) => vaultPositions(vaultRoot, args, access),
 };
 
-export const positionsTools: ToolDefinition[] = [assertToolDefinition, positionsToolDefinition];
+const consolidateToolDefinition: ToolDefinition = {
+  name: "vault_consolidate",
+  title: "Ratify an org position on a contested claim",
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  description:
+    "Ratify the org's consolidated stance on a claim document (ratify-gated: " +
+    "requires a role with ratify: true; propose-only roles are denied outright " +
+    "— there is no staged-proposal path for consolidation). Writes org_position " +
+    "and mirrors its confidence onto the doc, clearing the R-9 low-confidence " +
+    "cap; the mirror holds through re-contest and moves only by " +
+    "re-consolidating. dissent is computed server-side from the live position " +
+    "set at ratify time (assert<->dispute; qualify opposes nothing) — never " +
+    "caller-supplied. Allowed on uncontested or fully legacy docs (dissent: " +
+    "[]). Optionally resolves one open positional tension on this doc in the " +
+    "same call via resolve_tension: validated before any write (must name an " +
+    "open 'positional' tension whose sourceA is this doc; kind 'accepted' " +
+    "requires standing dissent); the doc write commits first, and a resolve " +
+    "failure afterward is reported as resolve_error, never rolled back.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Vault-relative path of the existing claim doc" },
+      stance: { type: "string", enum: [...STANCES] },
+      confidence: { type: "string", enum: [...CONFIDENCES] },
+      agent: { type: "string", description: "Free-text acting identity (advisory)" },
+      principal: {
+        type: "string",
+        description:
+          "Only honored (and required) when the server runs without an access " +
+          "context; recorded as unverified as the ratifier. With an access " +
+          "context it must match the authenticated user.",
+      },
+      run_id: { type: "string" },
+      resolve_tension: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          kind: { type: "string", enum: [...CONSOLIDATABLE_RESOLUTION_KINDS] },
+          rationale: { type: "string" },
+        },
+        required: ["id", "kind"],
+        additionalProperties: false,
+      },
+    },
+    required: ["path", "stance", "confidence", "agent"],
+    additionalProperties: false,
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string" },
+      action: { type: "string", enum: ["consolidate"] },
+      org_position: ORG_POSITION_SCHEMA,
+      confidence: { type: "string", enum: [...CONFIDENCES] },
+      dissent: { type: "array", items: { type: "string" } },
+      contested: { type: ["boolean", "null"] },
+      resolved_tension_id: { type: ["string", "null"] },
+      resolve_error: { type: "string" },
+      commit: { type: ["string", "null"] },
+      committed: { type: "boolean" },
+    },
+    required: [
+      "path",
+      "action",
+      "org_position",
+      "confidence",
+      "dissent",
+      "contested",
+      "resolved_tension_id",
+      "commit",
+      "committed",
+    ],
+  },
+  docLinks: (value) => [(value as ConsolidateResult).path],
+  handler: (vaultRoot, args, access) => vaultConsolidate(vaultRoot, args, access),
+};
+
+export const positionsTools: ToolDefinition[] = [
+  assertToolDefinition,
+  positionsToolDefinition,
+  consolidateToolDefinition,
+];
