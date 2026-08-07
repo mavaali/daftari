@@ -76,6 +76,15 @@ The argument for *why* — memory you own for a model you rent, and the centurie
 ledger discipline behind it — lives in the [manifesto](manifesto.md). The rest of
 *this* document is how the four layers make that one law structural.
 
+Positions (Slice 1): a claim doc is the unit of compilation; multiple
+authenticated principals hold attributed, graded, supersedable `positions[]`
+inside it. Conflicting live stances (assert vs dispute) derive
+`contested: true`, cap doc confidence at low until an org position is ratified
+(Slice 2), and auto-log a system-generated `positional` tension. `vault_assert`
+writes positions; `vault_positions` queries them; `vault_write` refuses to
+mutate another principal's entries. One process per vault still — principals
+take turns until the Slice-3 write lease.
+
 ## The layered model
 
 ```
