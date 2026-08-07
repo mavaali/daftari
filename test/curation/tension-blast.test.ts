@@ -60,6 +60,9 @@ function syntheticDoc(opts: { path: string; content?: string; sources?: string[]
     tags: [],
     questions_answered: [],
     questions_raised: [],
+    positions: null,
+    org_position: null,
+    contested: null,
   };
   return {
     path: opts.path,

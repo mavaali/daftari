@@ -28,6 +28,9 @@ function doc(
     describes: [],
     questions_answered: [],
     questions_raised: [],
+    positions: null,
+    org_position: null,
+    contested: null,
     ...over,
   };
   return {

@@ -258,6 +258,14 @@ export function serializeDocument(
     describes: fm.describes,
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
+    // Positions (Slice 1): emitted ONLY when non-null — a deliberate exception
+    // to the always-emit built-in convention so the thousands of legacy docs
+    // stay byte-stable. A null typed value with surviving raw content (e.g. a
+    // malformed hand-written positions block) still round-trips verbatim via
+    // the raw-preservation loop below (#113).
+    ...(fm.positions != null ? { positions: fm.positions } : {}),
+    ...(fm.org_position != null ? { org_position: fm.org_position } : {}),
+    ...(fm.contested != null ? { contested: fm.contested } : {}),
   };
   const handled = new Set<string>(Object.keys(ordered));
   for (const ext of extensions) {

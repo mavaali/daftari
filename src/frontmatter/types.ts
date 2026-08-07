@@ -19,6 +19,39 @@ export type Confidence = (typeof CONFIDENCES)[number];
 export const PROVENANCES = ["direct", "synthesized", "inferred"] as const;
 export type Provenance = (typeof PROVENANCES)[number];
 
+// A principal's stance on the claim a doc carries. `qualify` refines without
+// contesting: it conflicts with nothing (R-1 rule — contested requires a live
+// assert AND a live dispute; stance-enum-only, no text comparison).
+export const STANCES = ["assert", "dispute", "qualify"] as const;
+export type Stance = (typeof STANCES)[number];
+
+// One principal's attributed, graded, supersedable position on a claim doc.
+// `principal` is the bare AccessContext.user string — the same ground truth
+// the provenance log records (DN-1); never the free-text `agent` claim.
+// `superseded_by` targets a position id WITHIN the same doc, or null (live).
+export interface Position {
+  id: string; // pos-NNN, unique within the doc
+  principal: string;
+  stance: Stance;
+  statement: string | null;
+  confidence: Confidence;
+  provenance: Provenance;
+  valid_from: string | null; // YYYY-MM-DD
+  superseded_by: string | null;
+  created: string; // YYYY-MM-DD
+  sources: string[];
+}
+
+// The RATIFIED consolidated stance. Typed in Slice 1 so reads and the schema
+// round-trip it; the only writer (vault_consolidate) is Slice 2.
+export interface OrgPosition {
+  stance: Stance;
+  confidence: Confidence;
+  ratified_by: string;
+  ratified_at: string; // YYYY-MM-DD
+  dissent: string[]; // surviving minority position ids
+}
+
 // #141: opt-in write-protection tier. `source` — raw ingested material, body
 // is immutable to every writer (escape hatch: vault_set_tier demotes it first,
 // loudly). `manual` — human-authored canon, body rewrites require a `human:*`
@@ -86,6 +119,13 @@ export interface BuiltinFrontmatter {
   // metadata. Default to [] when absent.
   questions_answered: string[];
   questions_raised: string[];
+  // Multi-principal contested beliefs (Slice 1). Null = legacy consolidated
+  // doc — principal unknown, never retroactively attributed from updated_by.
+  positions: Position[] | null;
+  org_position: OrgPosition | null;
+  // Derived: ≥2 unsuperseded positions with conflicting stances (assert vs
+  // dispute). Recomputed by every vault_assert; lint flags hand-set drift.
+  contested: boolean | null;
 }
 
 // The built-in field names, as a runtime list. Config-declared schema
@@ -112,6 +152,9 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "describes",
   "questions_answered",
   "questions_raised",
+  "positions",
+  "org_position",
+  "contested",
 ] as const;
 
 // The metadata layer for every vault document. Mirrors the YAML frontmatter
@@ -119,7 +162,10 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
 // admits any config-declared schema-extension field without a core type
 // change. Daftari does not maintain any metadata outside frontmatter.
 export type Frontmatter = BuiltinFrontmatter & {
-  [extensionKey: string]: ExtensionValue;
+  // Widened beyond ExtensionValue because Position[]/OrgPosition are built-in
+  // object shapes an intersection literal must satisfy (LD-8). Config-declared
+  // extensions are still constrained to ExtensionValue at the config layer.
+  [extensionKey: string]: ExtensionValue | Position[] | OrgPosition;
 };
 
 // A single problem found while validating frontmatter. Advisory only —
