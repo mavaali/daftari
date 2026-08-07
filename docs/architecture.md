@@ -79,11 +79,22 @@ ledger discipline behind it — lives in the [manifesto](manifesto.md). The rest
 Positions (Slice 1): a claim doc is the unit of compilation; multiple
 authenticated principals hold attributed, graded, supersedable `positions[]`
 inside it. Conflicting live stances (assert vs dispute) derive
-`contested: true`, cap doc confidence at low until an org position is ratified
-(Slice 2), and auto-log a system-generated `positional` tension. `vault_assert`
+`contested: true`, cap doc confidence at low until an org position is ratified,
+and auto-log a system-generated `positional` tension. `vault_assert`
 writes positions; `vault_positions` queries them; `vault_write` refuses to
 mutate another principal's entries. One process per vault still — principals
-take turns until the Slice-3 write lease.
+take turns until the Slice-3 write lease. The first assert on a legacy doc
+mints `pos-000`, a system-authored `principal: "unknown"` snapshot of its
+pre-Slice-1 belief — reserved and unforgeable, so a contested legacy doc never
+loses its prior claim to silence. Consolidation (Slice 2): `vault_consolidate`
+is ratify-gated — it writes a ratified `org_position`, mirrors its confidence
+onto the doc (clearing the contested low-cap), carries the losing side forward
+as `dissent` rather than erasing it, and optionally resolves the triggering
+tension in the same call; a later re-contest surfaces on read but never
+re-caps confidence — only re-consolidation moves the mirror. Downstream
+consumers of a contested-unratified input get an advisory `contested_inputs`
+annotation at read time (effective confidence low) — never a write to the
+consumer's own frontmatter.
 
 ## The layered model
 

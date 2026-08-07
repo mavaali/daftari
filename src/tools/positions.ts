@@ -665,7 +665,7 @@ const assertToolDefinition: ToolDefinition = {
     "--user; a prior live position by the same principal is superseded, never " +
     "edited. A second conflicting live stance (assert vs dispute) marks the " +
     "document contested, caps its confidence at low until an org position is " +
-    "ratified (Slice 2), and auto-logs a 'positional' tension (never " +
+    "ratified (see vault_consolidate), and auto-logs a 'positional' tension (never " +
     "caller-loggable via vault_tension_log; resolve through " +
     "vault_tension_resolve). Propose-only roles: the assert lands as a staged " +
     "'write' proposal for ratification — nothing is written and no positional " +
