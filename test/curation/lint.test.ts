@@ -1243,4 +1243,156 @@ ${live("pos-002", "bob", "assert")}${live("pos-003", "bob", "dispute")}${live("p
       true,
     );
   });
+
+  const org = (
+    confidence: string,
+    dissent: string,
+    stance = "assert",
+    ratifiedBy = "carol",
+  ) => `org_position:
+  stance: ${stance}
+  confidence: ${confidence}
+  ratified_by: ${ratifiedBy}
+  ratified_at: 2026-08-01
+  dissent: ${dissent}
+`;
+
+  it("(e) mirror drift: mismatched org_position/doc confidence flags; consistent pair does not", async () => {
+    writeFileSync(
+      join(vault, "pricing", "drift.md"),
+      doc(`${live("pos-001", "alice", "assert")}`, org("medium", "[]")),
+    );
+    writeFileSync(
+      join(vault, "pricing", "no-drift.md"),
+      doc(`${live("pos-001", "alice", "assert")}`, org("high", "[]")),
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const drift = report.value.checks.positionIntegrity.filter(
+      (f) => f.path === "pricing/drift.md",
+    );
+    expect(drift.some((f) => f.detail.includes("medium") && f.detail.includes("high"))).toBe(true);
+    expect(
+      report.value.checks.positionIntegrity.filter((f) => f.path === "pricing/no-drift.md"),
+    ).toEqual([]);
+  });
+
+  it("(f) dangling dissent id flags; an existing (even superseded) id does not", async () => {
+    writeFileSync(
+      join(vault, "pricing", "dangling.md"),
+      doc(`${live("pos-001", "alice", "assert")}`, org("high", "[pos-999]")),
+    );
+    const supersededLive = `  - id: pos-002
+    principal: bob
+    stance: dispute
+    confidence: medium
+    created: 2026-08-01
+    superseded_by: pos-001
+`;
+    writeFileSync(
+      join(vault, "pricing", "dangling-ok.md"),
+      doc(`${live("pos-001", "alice", "assert")}${supersededLive}`, org("high", "[pos-002]")),
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const bad = report.value.checks.positionIntegrity.filter(
+      (f) => f.path === "pricing/dangling.md",
+    );
+    expect(bad.some((f) => f.detail.includes("pos-999"))).toBe(true);
+    expect(
+      report.value.checks.positionIntegrity.filter((f) => f.path === "pricing/dangling-ok.md"),
+    ).toEqual([]);
+  });
+
+  it("(f) dissent dangles even on a fully legacy doc (positions null, DN-4 consolidation)", async () => {
+    writeFileSync(
+      join(vault, "pricing", "legacy-consolidated.md"),
+      `---
+title: P
+domain: accumulation
+collection: pricing
+status: canonical
+confidence: high
+created: 2026-08-01
+updated: 2026-08-01
+updated_by: "agent:test"
+provenance: direct
+${org("high", "[pos-999]")}---
+
+Body.
+`,
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const findings = report.value.checks.positionIntegrity.filter(
+      (f) => f.path === "pricing/legacy-consolidated.md",
+    );
+    expect(findings.some((f) => f.detail.includes("pos-999"))).toBe(true);
+  });
+
+  it("(g) unknown-principal anomaly: non-pos-000 unknown flags, duplicate unknowns flag, clean pos-000 does not", async () => {
+    const badUnknown = `  - id: pos-007
+    principal: unknown
+    stance: assert
+    confidence: high
+    created: 2026-08-01
+`;
+    writeFileSync(
+      join(vault, "pricing", "fake-unknown.md"),
+      doc(`${live("pos-001", "alice", "assert")}${badUnknown}`),
+    );
+    const unknown1 = `  - id: pos-000
+    principal: unknown
+    stance: assert
+    confidence: high
+    created: 2026-08-01
+`;
+    const unknown2 = `  - id: pos-005
+    principal: unknown
+    stance: assert
+    confidence: high
+    created: 2026-08-02
+`;
+    writeFileSync(join(vault, "pricing", "double-unknown.md"), doc(`${unknown1}${unknown2}`));
+    writeFileSync(
+      join(vault, "pricing", "clean-pos-000.md"),
+      doc(`${unknown1}${live("pos-001", "alice", "assert")}`),
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(
+      report.value.checks.positionIntegrity.some(
+        (f) => f.path === "pricing/fake-unknown.md" && f.detail.includes("pos-007"),
+      ),
+    ).toBe(true);
+    expect(
+      report.value.checks.positionIntegrity.some(
+        (f) => f.path === "pricing/double-unknown.md" && f.detail.includes("2 positions"),
+      ),
+    ).toBe(true);
+    expect(
+      report.value.checks.positionIntegrity.filter((f) => f.path === "pricing/clean-pos-000.md"),
+    ).toEqual([]);
+  });
+
+  it("(d) regression: a ratified contested doc whose confidence matches the mirror produces no (d) finding", async () => {
+    writeFileSync(
+      join(vault, "pricing", "ratified-clean.md"),
+      doc(
+        `${live("pos-001", "alice", "assert")}${live("pos-002", "bob", "dispute")}`,
+        `contested: true\n${org("medium", "[pos-002]")}`,
+      ).replace("confidence: high", "confidence: medium"),
+    );
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const findings = report.value.checks.positionIntegrity.filter(
+      (f) => f.path === "pricing/ratified-clean.md",
+    );
+    expect(findings.some((f) => f.detail.includes("expected low"))).toBe(false);
+  });
 });

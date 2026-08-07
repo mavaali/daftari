@@ -9,6 +9,7 @@
 import {
   CONFIDENCES,
   type Confidence,
+  type Frontmatter,
   type Position,
   type Provenance,
   type Stance,
@@ -30,6 +31,27 @@ export function nextPositionId(existing: Position[]): string {
 
 export function unsuperseded(positions: Position[]): Position[] {
   return positions.filter((p) => p.superseded_by == null);
+}
+
+// U-12 / LD-22: system-authored snapshot of a legacy doc's prior belief,
+// minted by the first vault_assert on a doc whose typed positions is null.
+// `principal: "unknown"` is a reserved, unforgeable identity — the tools
+// layer rejects any live caller from claiming it (C-2 guard 1). Pure, no I/O.
+export function legacySnapshot(
+  fm: Pick<Frontmatter, "confidence" | "provenance" | "valid_from" | "updated">,
+): Position {
+  return {
+    id: "pos-000",
+    principal: "unknown",
+    stance: "assert",
+    statement: null,
+    confidence: fm.confidence,
+    provenance: fm.provenance,
+    valid_from: fm.valid_from,
+    superseded_by: null,
+    created: fm.updated,
+    sources: [],
+  };
 }
 
 // R-1 (locked): contested ⇔ the live set holds ≥1 assert AND ≥1 dispute.
@@ -60,6 +82,20 @@ export function comparePositions(a: Position, b: Position): number {
   if (conf !== 0) return conf;
   if (a.created !== b.created) return a.created < b.created ? 1 : -1;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+// LD-18: the dissent a ratified org stance carries — ids of unsuperseded
+// positions whose stance opposes the ratified one under the R-1 rule
+// (assert<->dispute; qualify opposes nothing). Computed by vault_consolidate
+// at ratify time, LD-11 ordered — never hand-supplied.
+export function dissentIds(positions: Position[], stance: Stance): string[] {
+  const opposite: Stance | null =
+    stance === "assert" ? "dispute" : stance === "dispute" ? "assert" : null;
+  if (opposite === null) return [];
+  return unsuperseded(positions)
+    .filter((p) => p.stance === opposite)
+    .sort(comparePositions)
+    .map((p) => p.id);
 }
 
 export interface AssertInput {
