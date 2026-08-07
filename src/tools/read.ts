@@ -140,6 +140,23 @@ export interface VaultReadResult {
     open_tension_ids: string[];
     note: string;
   };
+  // R-17 (LD-17): compile case 1 — the org's ratified stance, with the
+  // surviving minority carried as full Position objects (not bare ids) and
+  // an honest re-contest surface (C-1: a ratified mirror holds through a
+  // fresh dispute; this is where that fresh dispute becomes visible).
+  // Present ONLY when `org_position != null`; mutually exclusive with
+  // `contested_positions` by construction (that block requires
+  // `org_position == null`).
+  ratified_view?: {
+    flag: "RATIFIED";
+    stance: Position["stance"];
+    confidence: Position["confidence"];
+    ratified_by: string;
+    ratified_at: string;
+    dissent: Position[];
+    open_tension_ids: string[];
+    note: string;
+  };
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -266,12 +283,18 @@ export async function vaultRead(
     db?.close();
   }
 
-  // U-7: positional contest block. Positional tensions are self-tensions on
-  // THIS doc; the caller passed the canRead gate above, so their ids are
-  // visible by construction — no per-tension visibility check (LD-15).
-  let contestedPositions: VaultReadResult["contested_positions"];
+  // U-7 / R-17: positional contest and ratified-view blocks share one open
+  // positional tension scan — the two conditions are mutually exclusive by
+  // construction (LD-17: contested_positions requires org_position == null,
+  // ratified_view requires org_position != null), so at most one ever reads
+  // the result. Positional tensions are self-tensions on THIS doc; the
+  // caller passed the canRead gate above, so their ids are visible by
+  // construction — no per-tension visibility check (LD-15).
   const posSet = parsed.value.frontmatter.positions;
-  if (posSet != null && isContested(posSet) && parsed.value.frontmatter.org_position == null) {
+  const org = parsed.value.frontmatter.org_position;
+  let contestedPositions: VaultReadResult["contested_positions"];
+  let ratifiedView: VaultReadResult["ratified_view"];
+  if (posSet != null || org != null) {
     const tensionsRes = await listTensions(vaultRoot);
     const openIds = tensionsRes.ok
       ? tensionsRes.value
@@ -281,12 +304,43 @@ export async function vaultRead(
           .map((t) => t.id)
           .filter((id): id is string => id !== undefined)
       : [];
-    contestedPositions = {
-      flag: "CONTESTED",
-      positions: unsuperseded(posSet).slice().sort(comparePositions),
-      open_tension_ids: openIds,
-      note: "the org has no consolidated view on this claim",
-    };
+
+    if (posSet != null && org == null && isContested(posSet)) {
+      contestedPositions = {
+        flag: "CONTESTED",
+        positions: unsuperseded(posSet).slice().sort(comparePositions),
+        open_tension_ids: openIds,
+        note: "the org has no consolidated view on this claim",
+      };
+    }
+
+    if (org != null) {
+      const byId = new Map((posSet ?? []).map((p) => [p.id, p]));
+      const dissent = org.dissent
+        .map((id) => byId.get(id))
+        .filter((p): p is Position => p !== undefined)
+        .sort(comparePositions);
+      const notes: string[] = [];
+      if (dissent.length > 0) {
+        notes.push(
+          `standing dissent: ${dissent.length} minority position${dissent.length === 1 ? "" : "s"} remain live`,
+        );
+      }
+      if (openIds.length > 0) {
+        notes.push("re-contested: open positional tension(s) contest the ratified view");
+      }
+      const base = `org position: ${org.stance} (${org.confidence}), ratified by ${org.ratified_by} ${org.ratified_at}`;
+      ratifiedView = {
+        flag: "RATIFIED",
+        stance: org.stance,
+        confidence: org.confidence,
+        ratified_by: org.ratified_by,
+        ratified_at: org.ratified_at,
+        dissent,
+        open_tension_ids: openIds,
+        note: notes.length > 0 ? `${base}; ${notes.join("; ")}` : base,
+      };
+    }
   }
 
   return ok({
@@ -307,6 +361,7 @@ export async function vaultRead(
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
     ...(contestedPositions ? { contested_positions: contestedPositions } : {}),
+    ...(ratifiedView ? { ratified_view: ratifiedView } : {}),
     version: sha256Hex(file.value),
   });
 }
@@ -787,6 +842,36 @@ const PROVENANCE_ENTRY_SCHEMA: Record<string, unknown> = {
   required: ["timestamp", "tool", "file", "agent", "action"],
 };
 
+// Shared item schema for a full Position object, used by both
+// contested_positions.positions and ratified_view.dissent.
+const READ_POSITION_ITEM_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    principal: { type: "string" },
+    stance: { type: "string", enum: [...STANCES] },
+    statement: { type: ["string", "null"] },
+    confidence: { type: "string", enum: [...CONFIDENCES] },
+    provenance: { type: "string", enum: [...PROVENANCES] },
+    valid_from: { type: ["string", "null"] },
+    superseded_by: { type: ["string", "null"] },
+    created: { type: "string" },
+    sources: { type: "array", items: { type: "string" } },
+  },
+  required: [
+    "id",
+    "principal",
+    "stance",
+    "statement",
+    "confidence",
+    "provenance",
+    "valid_from",
+    "superseded_by",
+    "created",
+    "sources",
+  ],
+};
+
 function asString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
@@ -820,7 +905,11 @@ export const readTools: ToolDefinition[] = [
       "any unresolved tensions involving the document (contested, same " +
       "shape as search hits), a contested_positions block when principals " +
       "hold conflicting live positions and no org position is ratified, " +
-      "and a 'version' token (SHA-256 of the file) " +
+      "a ratified_view block when an org position IS ratified (the org's " +
+      "belief at its confidence, with the surviving minority carried as " +
+      "full dissent positions, and an honest re-contest note when a fresh " +
+      "dispute has landed since ratification — mutually exclusive with " +
+      "contested_positions), and a 'version' token (SHA-256 of the file) " +
       "that can be passed back to a write tool as 'base_version' for " +
       "optimistic-concurrency checking. Path is relative to the vault root.",
     inputSchema: {
@@ -926,40 +1015,36 @@ export const readTools: ToolDefinition[] = [
           type: "object",
           properties: {
             flag: { type: "string", enum: ["CONTESTED"] },
-            positions: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  id: { type: "string" },
-                  principal: { type: "string" },
-                  stance: { type: "string", enum: [...STANCES] },
-                  statement: { type: ["string", "null"] },
-                  confidence: { type: "string", enum: [...CONFIDENCES] },
-                  provenance: { type: "string", enum: [...PROVENANCES] },
-                  valid_from: { type: ["string", "null"] },
-                  superseded_by: { type: ["string", "null"] },
-                  created: { type: "string" },
-                  sources: { type: "array", items: { type: "string" } },
-                },
-                required: [
-                  "id",
-                  "principal",
-                  "stance",
-                  "statement",
-                  "confidence",
-                  "provenance",
-                  "valid_from",
-                  "superseded_by",
-                  "created",
-                  "sources",
-                ],
-              },
-            },
+            positions: { type: "array", items: READ_POSITION_ITEM_SCHEMA },
             open_tension_ids: { type: "array", items: { type: "string" } },
             note: { type: "string" },
           },
           required: ["flag", "positions", "open_tension_ids", "note"],
+        },
+        // R-17: present only when org_position != null; mutually exclusive
+        // with contested_positions by construction (LD-17).
+        ratified_view: {
+          type: "object",
+          properties: {
+            flag: { type: "string", enum: ["RATIFIED"] },
+            stance: { type: "string", enum: [...STANCES] },
+            confidence: { type: "string", enum: [...CONFIDENCES] },
+            ratified_by: { type: "string" },
+            ratified_at: { type: "string" },
+            dissent: { type: "array", items: READ_POSITION_ITEM_SCHEMA },
+            open_tension_ids: { type: "array", items: { type: "string" } },
+            note: { type: "string" },
+          },
+          required: [
+            "flag",
+            "stance",
+            "confidence",
+            "ratified_by",
+            "ratified_at",
+            "dissent",
+            "open_tension_ids",
+            "note",
+          ],
         },
         version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
       },
