@@ -157,6 +157,16 @@ export interface VaultReadResult {
     open_tension_ids: string[];
     note: string;
   };
+  // U-11 (LD-23, DN-5): advisory annotation when ≥1 VISIBLE compiled
+  // upstream input is contested-unratified. Caps effective confidence at
+  // read time only — consumer frontmatter is NEVER mutated by this (the
+  // advisory-curation invariant: a read of doc A never writes doc B).
+  // Absent when there is nothing to report.
+  contested_inputs?: {
+    inputs: { unit: string }[];
+    effective_confidence: "low";
+    banner: string;
+  };
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
@@ -343,6 +353,38 @@ export async function vaultRead(
     }
   }
 
+  // U-11 (LD-23, DN-5): advisory cap on VISIBLE compiled upstream inputs
+  // that are themselves contested-unratified. Iterates upstream?.edges
+  // only — already RBAC-visibility-filtered above (#217's splitUpstream
+  // Visibility) — so no separate per-unit visibility check here. Per-unit
+  // read/parse failure is skipped silently (advisory, never authoritative;
+  // this read must never fail on another document's state). Cost posture:
+  // one extra readFile+parse per compiled edge, paid only when the doc has
+  // compiled inputs at all.
+  let contestedInputs: VaultReadResult["contested_inputs"];
+  const contestedUnits: string[] = [];
+  for (const edge of upstream?.edges ?? []) {
+    const unitResolved = resolveVaultPath(vaultRoot, edge.unit);
+    if (!unitResolved.ok) continue;
+    const unitFile = await readFile(unitResolved.value.absPath);
+    if (!unitFile.ok) continue;
+    const unitParsed = parseDocument(unitFile.value);
+    if (!unitParsed.ok) continue;
+    const unitFm = unitParsed.value.frontmatter;
+    if (unitFm.positions != null && isContested(unitFm.positions) && unitFm.org_position == null) {
+      contestedUnits.push(edge.unit);
+    }
+  }
+  if (contestedUnits.length > 0) {
+    contestedInputs = {
+      inputs: contestedUnits.map((unit) => ({ unit })),
+      effective_confidence: "low",
+      banner:
+        `${contestedUnits.length} compiled input${contestedUnits.length === 1 ? " is" : "s are"} ` +
+        "contested without a ratified org position — treat this content as low-confidence until consolidated.",
+    };
+  }
+
   return ok({
     path,
     content: parsed.value.content,
@@ -362,6 +404,7 @@ export async function vaultRead(
       : {}),
     ...(contestedPositions ? { contested_positions: contestedPositions } : {}),
     ...(ratifiedView ? { ratified_view: ratifiedView } : {}),
+    ...(contestedInputs ? { contested_inputs: contestedInputs } : {}),
     version: sha256Hex(file.value),
   });
 }
@@ -909,7 +952,10 @@ export const readTools: ToolDefinition[] = [
       "belief at its confidence, with the surviving minority carried as " +
       "full dissent positions, and an honest re-contest note when a fresh " +
       "dispute has landed since ratification — mutually exclusive with " +
-      "contested_positions), and a 'version' token (SHA-256 of the file) " +
+      "contested_positions), a contested_inputs block when a VISIBLE " +
+      "compiled upstream input is itself contested-unratified (advisory " +
+      "only — caps the READ-TIME effective confidence at low; never " +
+      "writes back to this document), and a 'version' token (SHA-256 of the file) " +
       "that can be passed back to a write tool as 'base_version' for " +
       "optimistic-concurrency checking. Path is relative to the vault root.",
     inputSchema: {
@@ -1045,6 +1091,25 @@ export const readTools: ToolDefinition[] = [
             "open_tension_ids",
             "note",
           ],
+        },
+        // U-11 (LD-23, DN-5): present only when >=1 VISIBLE compiled upstream
+        // input is contested-unratified. Advisory only — never mutates the
+        // consumer document on disk.
+        contested_inputs: {
+          type: "object",
+          properties: {
+            inputs: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { unit: { type: "string" } },
+                required: ["unit"],
+              },
+            },
+            effective_confidence: { type: "string", enum: ["low"] },
+            banner: { type: "string" },
+          },
+          required: ["inputs", "effective_confidence", "banner"],
         },
         version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
       },
