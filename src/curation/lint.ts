@@ -402,6 +402,47 @@ export async function runLint(
           detail: `contested without org position but confidence is '${fm.confidence}' (expected low)`,
         });
       }
+      const unknownPositions = positions.filter((p) => p.principal === "unknown");
+      for (const p of unknownPositions) {
+        if (p.id !== "pos-000") {
+          checks.positionIntegrity.push({
+            path: doc.path,
+            detail: `position ${p.id} has principal 'unknown' but is not the pos-000 legacy snapshot`,
+          });
+        }
+      }
+      if (unknownPositions.length > 1) {
+        checks.positionIntegrity.push({
+          path: doc.path,
+          detail:
+            `${unknownPositions.length} positions carry principal 'unknown' ` +
+            `(expected at most 1, pos-000)`,
+        });
+      }
+    }
+
+    // Org position mirror/dissent integrity (U-10 tail). Fires independent
+    // of whether `positions` is null — a legacy doc consolidated under DN-4
+    // can still hand-drift.
+    if (fm.org_position != null) {
+      const org = fm.org_position;
+      if (fm.confidence !== org.confidence) {
+        checks.positionIntegrity.push({
+          path: doc.path,
+          detail:
+            `org_position confidence '${org.confidence}' but doc confidence ` +
+            `'${fm.confidence}' (mirror drift)`,
+        });
+      }
+      const idSet = new Set((positions ?? []).map((p) => p.id));
+      for (const id of org.dissent) {
+        if (!idSet.has(id)) {
+          checks.positionIntegrity.push({
+            path: doc.path,
+            detail: `org_position dissent names dangling position id ${id}`,
+          });
+        }
+      }
     }
   }
 
