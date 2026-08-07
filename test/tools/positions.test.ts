@@ -283,3 +283,81 @@ describe("vault_assert (U-4)", () => {
     expect(aliased.value.superseded_position_id).toBe("pos-001"); // same set, not a second one
   });
 });
+
+describe("vault_positions (U-5)", () => {
+  let vault: string;
+  beforeEach(async () => {
+    vault = makeTempVault();
+    await seedDoc(vault);
+  });
+  afterEach(() => cleanupVault(vault));
+
+  it("by path: live only by default; include_superseded returns all", async () => {
+    await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "a" },
+      ALICE,
+    );
+    await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "medium", agent: "a" },
+      ALICE,
+    );
+    const live = await vaultPositions(vault, { path: DOC }, ALICE);
+    expect(live.ok).toBe(true);
+    if (!live.ok) throw live.error;
+    expect(live.value.positions.map((p) => p.position.id)).toEqual(["pos-002"]);
+    const all = await vaultPositions(vault, { path: DOC, include_superseded: true }, ALICE);
+    if (!all.ok) throw all.error;
+    expect(all.value.positions).toHaveLength(2);
+    expect(all.value.positions[0]?.position.superseded_by).toBe("pos-002");
+  });
+
+  it("by path on a legacy doc: empty list, not an error", async () => {
+    const r = await vaultPositions(vault, { path: DOC }, ALICE);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.value.positions).toEqual([]);
+  });
+
+  it("unreadable doc is 'not found'-shaped (no existence leak)", async () => {
+    const scoped = {
+      user: "sam",
+      roleName: "scoped",
+      role: { read: ["decisions"], write: [], promote: false, ratify: false },
+    };
+    const denied = await vaultPositions(vault, { path: DOC }, scoped);
+    expect(denied.ok).toBe(false);
+    if (denied.ok) return;
+    expect(denied.error.message).toContain("not found");
+    expect(denied.error.message).not.toContain("pricing");
+  });
+
+  it("by principal: unreadable docs silently omitted; no read grants denied", async () => {
+    await seedDoc(vault, "decisions/other-claim.md");
+    await vaultAssert(vault, { path: DOC, stance: "assert", confidence: "high", agent: "b" }, BOB);
+    await vaultAssert(
+      vault,
+      { path: "decisions/other-claim.md", stance: "dispute", confidence: "low", agent: "b" },
+      BOB,
+    );
+
+    const scoped = {
+      user: "sam",
+      roleName: "scoped",
+      role: { read: ["decisions"], write: [], promote: false, ratify: false },
+    };
+    const r = await vaultPositions(vault, { principal: "bob" }, scoped);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw r.error;
+    expect(r.value.positions.map((p) => p.path)).toEqual(["decisions/other-claim.md"]);
+
+    const guest = await vaultPositions(vault, { principal: "bob" }, GUEST);
+    expect(guest.ok).toBe(false);
+  });
+
+  it("exactly one of path|principal is required", async () => {
+    expect((await vaultPositions(vault, {}, ALICE)).ok).toBe(false);
+    expect((await vaultPositions(vault, { path: DOC, principal: "bob" }, ALICE)).ok).toBe(false);
+  });
+});

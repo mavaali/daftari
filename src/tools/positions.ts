@@ -3,10 +3,18 @@
 // principal. Pure logic lives in curation/positions.ts; write plumbing is
 // reused from write.ts (LD-9) — no duplicated lock/commit/provenance code.
 
-import { type AccessContext, isProposeOnly } from "../access/rbac.js";
-import { applyAssert, conflictPairs, isContested } from "../curation/positions.js";
+import { type AccessContext, canRead, hasAnyRead, isProposeOnly } from "../access/rbac.js";
+import {
+  applyAssert,
+  comparePositions,
+  conflictPairs,
+  isContested,
+  unsuperseded,
+} from "../curation/positions.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { addTension, listTensions } from "../curation/tension.js";
+import { loadDocuments } from "../curation/vault-docs.js";
+import { parseDocument } from "../frontmatter/parser.js";
 import {
   CONFIDENCES,
   type Confidence,
@@ -20,7 +28,8 @@ import {
   STANCES,
   type Stance,
 } from "../frontmatter/types.js";
-import type { ToolDefinition } from "./read.js";
+import { readFile, resolveVaultPath } from "../storage/local.js";
+import { collectionOf, type ToolDefinition } from "./read.js";
 import {
   loadTargetDocument,
   performFrontmatterWrite,
@@ -274,13 +283,74 @@ export async function vaultAssert(
   });
 }
 
-// Task 5 replaces this stub with the real implementation.
+export interface PositionsResult {
+  count: number;
+  positions: Array<{ path: string; position: Position; contested: boolean }>;
+}
+
 export async function vaultPositions(
-  _vaultRoot: string,
-  _args: Record<string, unknown>,
-  _access?: AccessContext,
-): Promise<Result<unknown, Error>> {
-  return err(new Error("not implemented"));
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<PositionsResult, Error>> {
+  const path = optStr(args, "path", "vault_positions");
+  if (!path.ok) return path;
+  const principal = optStr(args, "principal", "vault_positions");
+  if (!principal.ok) return principal;
+  const includeSuperseded = args.include_superseded === true;
+  if ((path.value === null) === (principal.value === null)) {
+    return err(new Error("vault_positions requires exactly one of 'path' or 'principal'"));
+  }
+
+  if (path.value !== null) {
+    const resolved = resolveVaultPath(vaultRoot, path.value);
+    if (!resolved.ok) return resolved;
+    // #212 discipline: the message never echoes the path — an unreadable doc
+    // must be byte-indistinguishable from a missing one, and the collection
+    // is the first path segment, so even echoing the caller's own string
+    // would leak it back through this channel.
+    const notFound = () => err(new Error("vault_positions: document not found"));
+    const file = await readFile(resolved.value.absPath);
+    if (!file.ok) return notFound();
+    const parsed = parseDocument(file.value);
+    if (!parsed.ok) return parsed;
+    if (
+      access &&
+      !canRead(access.role, collectionOf(resolved.value.relPath, parsed.value.frontmatter))
+    ) {
+      return notFound();
+    }
+    const set = parsed.value.frontmatter.positions ?? [];
+    const chosen = (includeSuperseded ? set : unsuperseded(set)).slice().sort(comparePositions);
+    return ok({
+      count: chosen.length,
+      positions: chosen.map((p) => ({
+        path: resolved.value.relPath,
+        position: p,
+        contested: isContested(set),
+      })),
+    });
+  }
+
+  // By principal: whole-vault scan via the lint loader (LD-10). Unreadable
+  // docs are silently omitted — no count, no hint (#217 omission rule).
+  if (access && !hasAnyRead(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot use vault_positions`));
+  }
+  const loaded = await loadDocuments(vaultRoot);
+  if (!loaded.ok) return loaded;
+  const out: PositionsResult["positions"] = [];
+  for (const doc of loaded.value) {
+    if (access && !canRead(access.role, collectionOf(doc.path, doc.frontmatter))) continue;
+    const set = doc.frontmatter.positions;
+    if (set == null) continue;
+    const pool = includeSuperseded ? set : unsuperseded(set);
+    for (const p of pool.filter((x) => x.principal === principal.value).sort(comparePositions)) {
+      out.push({ path: doc.path, position: p, contested: isContested(set) });
+    }
+  }
+  out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return ok({ count: out.length, positions: out });
 }
 
 const POSITION_SCHEMA: Record<string, unknown> = {
@@ -380,4 +450,45 @@ const assertToolDefinition: ToolDefinition = {
   handler: (vaultRoot, args, access) => vaultAssert(vaultRoot, args, access),
 };
 
-export const positionsTools: ToolDefinition[] = [assertToolDefinition];
+const positionsToolDefinition: ToolDefinition = {
+  name: "vault_positions",
+  title: "Query principals' positions",
+  annotations: { readOnlyHint: true },
+  description:
+    "Query positions: all positions on one doc ('path'), or all live " +
+    "positions held by a principal across the vault ('principal'). Exactly " +
+    "one selector. Results are limited to docs the caller can read; " +
+    "include_superseded (default false) adds superseded entries.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string" },
+      principal: { type: "string" },
+      include_superseded: { type: "boolean" },
+    },
+    additionalProperties: false,
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      count: { type: "integer", minimum: 0 },
+      positions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            position: POSITION_SCHEMA,
+            contested: { type: "boolean" },
+          },
+          required: ["path", "position", "contested"],
+        },
+      },
+    },
+    required: ["count", "positions"],
+  },
+  docLinks: (value) => [...new Set((value as PositionsResult).positions.map((p) => p.path))],
+  handler: (vaultRoot, args, access) => vaultPositions(vaultRoot, args, access),
+};
+
+export const positionsTools: ToolDefinition[] = [assertToolDefinition, positionsToolDefinition];
