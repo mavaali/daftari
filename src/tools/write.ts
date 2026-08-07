@@ -152,7 +152,7 @@ function boundaryHint(successorPath: string, boundary: string): string {
 // clears the index and re-inserts every document, so a write that lands in
 // between can be wiped or land against a half-built index. Failing fast keeps
 // hooks, locks, and git commits from running for a write we can't index yet.
-function requireIndexReady(): Result<void, Error> {
+export function requireIndexReady(): Result<void, Error> {
   const status = getIndexStatus();
   if (status.status === "indexing") {
     return err(new Error(indexingBusyMessage(status)));
@@ -182,7 +182,7 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
 // runs before we touch the target, preserving "deny before revealing anything".
 // A path that escapes the root yields a `..`-leading segment, which no role can
 // write; `resolveVaultPath` rejects it properly downstream.
-function targetCollection(vaultRoot: string, relPath: string): string {
+export function targetCollection(vaultRoot: string, relPath: string): string {
   const rel = relative(resolve(vaultRoot), resolve(vaultRoot, relPath));
   return rel.split(sep)[0] ?? "";
 }
@@ -307,6 +307,7 @@ export interface WriteResult {
     | "merge"
     | "confidence-set"
     | "tier-set"
+    | "assert"
     | "staged";
   // Short commit hash when the write was auto-committed; null when the vault
   // is configured with `auto_commit: false` and the caller owns git.
@@ -591,7 +592,7 @@ function denyIfProposeOnly(access: AccessContext | undefined, tool: string): Res
 // The uniform RBAC write gate. One helper because the denial string is part
 // of the tool contract — every write tool emits the identical message shape,
 // and it must never leak more than the collection name.
-function requireWriteAccess(
+export function requireWriteAccess(
   access: AccessContext | undefined,
   collection: string,
 ): Result<void, Error> {
@@ -609,14 +610,14 @@ function requireWriteAccess(
 // deprecate, set_confidence, set_tier, supersede) load it: canonical paths,
 // parsed document, and vault config, in the shared error order — resolve,
 // read (not-found named by the tool), parse, config.
-interface TargetDocument {
+export interface TargetDocument {
   relPath: string;
   absPath: string;
   parsed: ParsedDocument;
   config: DaftariConfig;
 }
 
-async function loadTargetDocument(
+export async function loadTargetDocument(
   vaultRoot: string,
   rawPath: string,
   tool: string,
@@ -648,7 +649,7 @@ async function loadTargetDocument(
 // The shared performWrite tail for frontmatter-only mutations: body preserved
 // verbatim (bodyChanged false), file text re-serialized from the new
 // frontmatter over the existing content.
-function performFrontmatterWrite(opts: {
+export function performFrontmatterWrite(opts: {
   vaultRoot: string;
   target: TargetDocument;
   agent: string;
@@ -658,6 +659,7 @@ function performFrontmatterWrite(opts: {
   commitMessage: string;
   baseVersion: string | undefined;
   access?: AccessContext;
+  runId?: string;
 }): Promise<Result<WriteResult, Error>> {
   const { target } = opts;
   return performWrite({
@@ -683,6 +685,7 @@ function performFrontmatterWrite(opts: {
     shadowMode: target.config.shadowMode,
     principal: opts.access?.user,
     bodyChanged: false,
+    ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
   });
 }
 

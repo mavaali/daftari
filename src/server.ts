@@ -25,6 +25,7 @@ import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
 import { edgeStalenessTools } from "./tools/edge-staleness.js";
 import { edgeTools } from "./tools/edges.js";
+import { positionsTools } from "./tools/positions.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { receiptTools } from "./tools/receipt.js";
 import { searchTools } from "./tools/search.js";
@@ -56,6 +57,7 @@ const allTools: ToolDefinition[] = [
   ...searchTools,
   ...themesTools,
   ...writeTools,
+  ...positionsTools,
   ...curationTools,
   ...stagedActionTools,
   ...edgeTools,
