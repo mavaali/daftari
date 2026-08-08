@@ -1,6 +1,7 @@
 import { symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { acquireLock, openLockDb } from "../../src/access/locks.js";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { vaultRead } from "../../src/tools/read.js";
@@ -287,6 +288,20 @@ describe("vault_merge", () => {
     expect(la.value[0]?.subject).toContain("vault_merge");
     expect(la.value[0]?.hash).toBe(lt.value[0]?.hash);
     expect(lb.value[0]?.hash).toBe(lt.value[0]?.hash);
+
+    // S3-a release pairing: vault_merge mints ONE holder for all paths in
+    // the sorted acquire loop and must use that same const in the release
+    // loop (write.ts:2066/2134). A mismatch would leave any touched path
+    // wedged for the 60s TTL after a successful merge.
+    const lockDbResult = openLockDb(vault);
+    expect(lockDbResult.ok).toBe(true);
+    if (!lockDbResult.ok) return;
+    const lockDb = lockDbResult.value;
+    for (const p of ["pricing/a.md", "pricing/b.md", "pricing/merged.md"]) {
+      const reacquired = acquireLock(lockDb, p, "agent:probe");
+      expect(reacquired.ok).toBe(true);
+    }
+    lockDb.close();
   }, 60_000);
 
   it("merges B into A when target equals path_a", async () => {

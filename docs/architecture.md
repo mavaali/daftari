@@ -564,6 +564,29 @@ alone does not catch a **stale write**: an agent that reads a document, then
 writes it after another agent changed it in between, never held the lock at
 the same time as that other agent.
 
+#### Two locks, two jobs
+
+Daftari has two independent locking mechanisms and it is worth being precise
+about which does what. `.daftari/process.lock` (`src/lifecycle/lock.ts`) is
+single-process **admission control**: it decides which one daftari process
+may hold a vault at all (see the stdio/serve precedence matrix in
+CLAUDE.md). `.daftari/locks.db` (`src/access/locks.ts`), described above, is
+the per-mutation **file lease**: a 60-second-TTL, fail-fast lock on one path,
+taken only around a write and never on a read. Its holders are minted fresh
+per mutation attempt (`pid:uuid:agent`, `mintLeaseHolder`), not the raw agent
+string, so two overlapping mutations from the same agent on the same path
+never false-share a lock as a same-holder re-acquire. The tension log
+(`.daftari/tensions.jsonl`) is a shared file outside the per-document lease
+space, so its own read-modify-write is leased under the reserved
+`__tensions__` key using the same mechanism.
+
+Multi-user writes are expected to happen through one `daftari serve` process
+with per-request identity — the stdio-finds-a-live-serve-holder refusal is
+the router toward that topology, not an obstacle to route around. Writing to
+one vault from multiple concurrent *processes* is out of scope by design; see
+the 2026-08-08 multi-user contested-beliefs slice 3 design pass for the full
+bill of materials.
+
 **Optimistic concurrency** closes that gap. `vault_read` returns a `version`
 token — the SHA-256 of the file as read, frontmatter included. Every write
 tool (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`)

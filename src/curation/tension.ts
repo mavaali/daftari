@@ -21,8 +21,15 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { ageInDays } from "./staleness.js";
+
+// Reserved lock key for the tension-log read-modify-write (S3-b). Lock keys
+// are otherwise canonical vault relPaths (#127/#128 rule, write.ts:642-645),
+// and `__tensions__` is not a valid `.md` document path any write tool would
+// ever key a lock on, so there is no real collision surface.
+export const TENSIONS_LOCK_KEY = "__tensions__";
 
 export const DEFAULT_TENSION_STATUS = "unresolved";
 export const RESOLVED_TENSION_STATUS = "resolved";
@@ -207,45 +214,59 @@ export async function addTension(
     );
   }
 
+  const lockDbResult = openLockDb(vaultRoot);
+  if (!lockDbResult.ok) return lockDbResult;
+  const lockDb = lockDbResult.value;
+  const holder = mintLeaseHolder(input.loggedBy);
+
   try {
-    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
-    // Critical section (mirrors stageAction's id allocation in
-    // staged-actions.ts): read the log, allocate the next id, and append in
-    // one synchronous breath with no intervening await, so two concurrent
-    // addTension calls — e.g. the inter-proposal conflict check firing from
-    // two contending stagings, the exact scenario #235 targets — can never
-    // mint the same tension-NNN id. Per-process, which is sufficient under
-    // the one-process-per-vault rule (.daftari/process.lock).
-    let raw = "";
+    const lock = acquireLock(lockDb, TENSIONS_LOCK_KEY, holder);
+    if (!lock.ok) return err(new Error(`cannot update tension log: ${lock.error.message}`));
+
     try {
-      raw = readFileSync(tensionsPath(vaultRoot), "utf-8");
+      mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+      // Critical section (mirrors stageAction's id allocation in
+      // staged-actions.ts): read the log, allocate the next id, and append in
+      // one synchronous breath with no intervening await, so two concurrent
+      // addTension calls — e.g. the inter-proposal conflict check firing from
+      // two contending stagings, the exact scenario #235 targets — can never
+      // mint the same tension-NNN id. The `__tensions__` lease above makes
+      // this an enforced invariant rather than an accident of the
+      // one-process-per-vault rule, and serializes it against resolveTension.
+      let raw = "";
+      try {
+        raw = readFileSync(tensionsPath(vaultRoot), "utf-8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      const entry: TensionEntry = {
+        id: nextTensionId(parseTensionLog(raw)),
+        date: input.date ?? new Date().toISOString().slice(0, 10),
+        title: input.title.trim(),
+        kind: input.kind,
+        sourceA: input.sourceA.trim(),
+        claimA: input.claimA.trim(),
+        sourceB: input.sourceB.trim(),
+        claimB: input.claimB.trim(),
+        status: input.status ?? DEFAULT_TENSION_STATUS,
+        loggedBy: input.loggedBy.trim(),
+        ...(input.decidedByPrincipal != null && input.decidedByPrincipal.trim().length > 0
+          ? { decidedByPrincipal: input.decidedByPrincipal.trim() }
+          : {}),
+        ...(input.positionA !== undefined ? { positionA: input.positionA } : {}),
+        ...(input.positionB !== undefined ? { positionB: input.positionB } : {}),
+        resolved: false,
+      };
+      // A leading blank line keeps this block separated from the previous one.
+      appendFileSync(tensionsPath(vaultRoot), `\n${renderEntry(entry)}`);
+      return ok(entry);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      const reason = e instanceof Error ? e.message : String(e);
+      return err(new Error(`cannot append to tension log: ${reason}`));
     }
-    const entry: TensionEntry = {
-      id: nextTensionId(parseTensionLog(raw)),
-      date: input.date ?? new Date().toISOString().slice(0, 10),
-      title: input.title.trim(),
-      kind: input.kind,
-      sourceA: input.sourceA.trim(),
-      claimA: input.claimA.trim(),
-      sourceB: input.sourceB.trim(),
-      claimB: input.claimB.trim(),
-      status: input.status ?? DEFAULT_TENSION_STATUS,
-      loggedBy: input.loggedBy.trim(),
-      ...(input.decidedByPrincipal != null && input.decidedByPrincipal.trim().length > 0
-        ? { decidedByPrincipal: input.decidedByPrincipal.trim() }
-        : {}),
-      ...(input.positionA !== undefined ? { positionA: input.positionA } : {}),
-      ...(input.positionB !== undefined ? { positionB: input.positionB } : {}),
-      resolved: false,
-    };
-    // A leading blank line keeps this block separated from the previous one.
-    appendFileSync(tensionsPath(vaultRoot), `\n${renderEntry(entry)}`);
-    return ok(entry);
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`cannot append to tension log: ${reason}`));
+  } finally {
+    releaseLock(lockDb, TENSIONS_LOCK_KEY, holder);
+    lockDb.close();
   }
 }
 
@@ -399,69 +420,82 @@ export async function resolveTension(
   id: string,
   resolution: TensionResolution,
 ): Promise<Result<TensionEntry, Error>> {
-  let raw: string;
+  const lockDbResult = openLockDb(vaultRoot);
+  if (!lockDbResult.ok) return lockDbResult;
+  const lockDb = lockDbResult.value;
+  const holder = mintLeaseHolder(resolution.resolved_by);
+
   try {
-    raw = await readFile(tensionsPath(vaultRoot), "utf-8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+    const lock = acquireLock(lockDb, TENSIONS_LOCK_KEY, holder);
+    if (!lock.ok) return err(new Error(`cannot update tension log: ${lock.error.message}`));
+
+    let raw: string;
+    try {
+      raw = await readFile(tensionsPath(vaultRoot), "utf-8");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        return err(new Error(`tension not found: ${id}`));
+      }
+      const reason = e instanceof Error ? e.message : String(e);
+      return err(new Error(`cannot read tension log: ${reason}`));
+    }
+
+    // Split the file into a leading preamble (anything before the first
+    // entry) plus a list of entry blocks. Reassembled the same way.
+    const segments = raw.split(/(?=^## )/m);
+    const preamble = segments[0]?.startsWith("## ") ? "" : (segments[0] ?? "");
+    const blocks = segments.filter((s) => s.startsWith("## "));
+
+    let matched: TensionEntry | null = null;
+    let matchIdx = -1;
+    for (let i = 0; i < blocks.length; i++) {
+      const entry = parseBlock((blocks[i] as string).trim());
+      if (!entry || entry.id !== id) continue;
+      matched = entry;
+      matchIdx = i;
+      break;
+    }
+
+    if (!matched || matchIdx === -1) {
       return err(new Error(`tension not found: ${id}`));
     }
-    const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`cannot read tension log: ${reason}`));
-  }
+    if (matched.resolved) {
+      return err(new Error(`tension is already resolved: ${id}`));
+    }
 
-  // Split the file into a leading preamble (anything before the first
-  // entry) plus a list of entry blocks. Reassembled the same way.
-  const segments = raw.split(/(?=^## )/m);
-  const preamble = segments[0]?.startsWith("## ") ? "" : (segments[0] ?? "");
-  const blocks = segments.filter((s) => s.startsWith("## "));
+    const updated: TensionEntry = {
+      ...matched,
+      status: RESOLVED_TENSION_STATUS,
+      resolved: true,
+      resolution,
+    };
 
-  let matched: TensionEntry | null = null;
-  let matchIdx = -1;
-  for (let i = 0; i < blocks.length; i++) {
-    const entry = parseBlock((blocks[i] as string).trim());
-    if (!entry || entry.id !== id) continue;
-    matched = entry;
-    matchIdx = i;
-    break;
-  }
+    // Preserve the leading blank line of the original block: every block in the
+    // file (except possibly the first) is preceded by one blank line. The split
+    // captures the "## " marker at the start of each block, so we re-add the
+    // blank-line prefix on rewrite.
+    const rewritten = blocks.map((b, i) => {
+      if (i !== matchIdx) return b;
+      // The new block content includes its trailing newline.
+      const rendered = renderEntry(updated);
+      // Preserve the same separator the original block had: count leading
+      // newlines on the original to keep the file's spacing stable.
+      const leading = (b.match(/^\n*/)?.[0] ?? "").length;
+      return `${"\n".repeat(leading)}${rendered}`;
+    });
 
-  if (!matched || matchIdx === -1) {
-    return err(new Error(`tension not found: ${id}`));
-  }
-  if (matched.resolved) {
-    return err(new Error(`tension is already resolved: ${id}`));
-  }
+    const next = preamble + rewritten.join("");
 
-  const updated: TensionEntry = {
-    ...matched,
-    status: RESOLVED_TENSION_STATUS,
-    resolved: true,
-    resolution,
-  };
-
-  // Preserve the leading blank line of the original block: every block in the
-  // file (except possibly the first) is preceded by one blank line. The split
-  // captures the "## " marker at the start of each block, so we re-add the
-  // blank-line prefix on rewrite.
-  const rewritten = blocks.map((b, i) => {
-    if (i !== matchIdx) return b;
-    // The new block content includes its trailing newline.
-    const rendered = renderEntry(updated);
-    // Preserve the same separator the original block had: count leading
-    // newlines on the original to keep the file's spacing stable.
-    const leading = (b.match(/^\n*/)?.[0] ?? "").length;
-    return `${"\n".repeat(leading)}${rendered}`;
-  });
-
-  const next = preamble + rewritten.join("");
-
-  try {
-    await writeFile(tensionsPath(vaultRoot), next);
-    return ok(updated);
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return err(new Error(`cannot write tension log: ${reason}`));
+    try {
+      await writeFile(tensionsPath(vaultRoot), next);
+      return ok(updated);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return err(new Error(`cannot write tension log: ${reason}`));
+    }
+  } finally {
+    releaseLock(lockDb, TENSIONS_LOCK_KEY, holder);
+    lockDb.close();
   }
 }
 
