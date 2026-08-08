@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../../src/access/locks.js";
 import {
   addTension,
   agingTier,
@@ -9,6 +10,7 @@ import {
   listTensions,
   resolveTension,
   STALE_TIER_LINT_COPY,
+  TENSIONS_LOCK_KEY,
   type TensionEntry,
   tensionsPath,
 } from "../../src/curation/tension.js";
@@ -294,6 +296,158 @@ describe("tension", () => {
       expect(list.value.find((e) => e.title === "Second")?.resolved).toBe(true);
       expect(list.value.find((e) => e.title === sampleInput.title)?.resolved).toBe(false);
       expect(list.value.find((e) => e.title === "Third")?.resolved).toBe(false);
+    });
+  });
+
+  describe("S3-b: tension-log RMW lease", () => {
+    // The lost-update regression. resolveTension is async: readFile → rewrite
+    // → writeFile, with a real await window between the read and the write
+    // (tension.ts:404/460). Two concurrent resolutions can both read the
+    // same original content before either writes back; whichever writes
+    // last silently discards the other's resolution — but that caller's
+    // resolveTension call already returned `ok: true`. The invariant that
+    // must never be violated: every call that reports success must be
+    // reflected on disk. This is order-independent (unlike "who wins"), so
+    // it is a reliable RED test against today's unleased RMW.
+    it("never reports a phantom success under concurrent resolveTension calls", async () => {
+      const a = await addTension(vault, { ...sampleInput, title: "First" });
+      const b = await addTension(vault, { ...sampleInput, title: "Second" });
+      expect(a.ok && b.ok).toBe(true);
+      if (!a.ok || !b.ok) return;
+
+      const [ra, rb] = await Promise.all([
+        resolveTension(vault, a.value.id as string, {
+          resolved_at: "2026-08-08",
+          resolved_by: "agent:a",
+          kind: "accepted",
+        }),
+        resolveTension(vault, b.value.id as string, {
+          resolved_at: "2026-08-08",
+          resolved_by: "agent:b",
+          kind: "accepted",
+        }),
+      ]);
+
+      const logged = await listTensions(vault);
+      expect(logged.ok).toBe(true);
+      if (!logged.ok) return;
+
+      for (const [id, r] of [
+        [a.value.id, ra],
+        [b.value.id, rb],
+      ] as const) {
+        if (r.ok) {
+          const onDisk = logged.value.find((t) => t.id === id);
+          expect(onDisk?.resolved).toBe(true);
+        }
+      }
+    });
+
+    it("fails fast when addTension is attempted while `__tensions__` is held", async () => {
+      const lockDbResult = openLockDb(vault);
+      expect(lockDbResult.ok).toBe(true);
+      if (!lockDbResult.ok) return;
+      const lockDb = lockDbResult.value;
+      const held = acquireLock(lockDb, TENSIONS_LOCK_KEY, mintLeaseHolder("agent:other"));
+      expect(held.ok).toBe(true);
+
+      const blocked = await addTension(vault, sampleInput);
+      expect(blocked.ok).toBe(false);
+      if (blocked.ok) return;
+      expect(blocked.error.message).toContain("locked");
+
+      const logged = await listTensions(vault);
+      expect(logged.ok && logged.value).toEqual([]);
+      lockDb.close();
+    });
+
+    it("fails fast when resolveTension is attempted while `__tensions__` is held, leaving the file untouched", async () => {
+      const logged = await addTension(vault, sampleInput);
+      expect(logged.ok).toBe(true);
+      if (!logged.ok) return;
+      const before = readFileSync(tensionsPath(vault), "utf-8");
+
+      const lockDbResult = openLockDb(vault);
+      expect(lockDbResult.ok).toBe(true);
+      if (!lockDbResult.ok) return;
+      const lockDb = lockDbResult.value;
+      const held = acquireLock(lockDb, TENSIONS_LOCK_KEY, mintLeaseHolder("agent:other"));
+      expect(held.ok).toBe(true);
+
+      const blocked = await resolveTension(vault, logged.value.id as string, {
+        resolved_at: "2026-08-08",
+        resolved_by: "agent:a",
+        kind: "accepted",
+      });
+      expect(blocked.ok).toBe(false);
+      if (blocked.ok) return;
+      expect(blocked.error.message).toContain("locked");
+
+      const after = readFileSync(tensionsPath(vault), "utf-8");
+      expect(after).toBe(before);
+      lockDb.close();
+    });
+
+    it("releases the `__tensions__` lease on every early-error path", async () => {
+      const logged = await addTension(vault, sampleInput);
+      expect(logged.ok).toBe(true);
+      if (!logged.ok) return;
+
+      // Path 1: tension not found.
+      const notFound = await resolveTension(vault, "tension-999", {
+        resolved_at: "2026-08-08",
+        resolved_by: "agent:a",
+        kind: "accepted",
+      });
+      expect(notFound.ok).toBe(false);
+
+      let probeResult = openLockDb(vault);
+      expect(probeResult.ok).toBe(true);
+      if (!probeResult.ok) return;
+      let probe = acquireLock(probeResult.value, TENSIONS_LOCK_KEY, mintLeaseHolder("agent:probe"));
+      expect(probe.ok).toBe(true);
+      if (probe.ok) releaseLock(probeResult.value, TENSIONS_LOCK_KEY, probe.value.holder);
+      probeResult.value.close();
+
+      // Path 2: already resolved.
+      await resolveTension(vault, logged.value.id as string, {
+        resolved_at: "2026-08-08",
+        resolved_by: "agent:a",
+        kind: "accepted",
+      });
+      const alreadyResolved = await resolveTension(vault, logged.value.id as string, {
+        resolved_at: "2026-08-09",
+        resolved_by: "agent:b",
+        kind: "accepted",
+      });
+      expect(alreadyResolved.ok).toBe(false);
+
+      probeResult = openLockDb(vault);
+      expect(probeResult.ok).toBe(true);
+      if (!probeResult.ok) return;
+      probe = acquireLock(probeResult.value, TENSIONS_LOCK_KEY, mintLeaseHolder("agent:probe2"));
+      expect(probe.ok).toBe(true);
+      probeResult.value.close();
+    });
+
+    it("does not block addTension while a file lease is held on an unrelated path, and vice versa (R4)", async () => {
+      const lockDbResult = openLockDb(vault);
+      expect(lockDbResult.ok).toBe(true);
+      if (!lockDbResult.ok) return;
+      const lockDb = lockDbResult.value;
+      const fileLease = acquireLock(lockDb, "pricing/a.md", mintLeaseHolder("agent:writer"));
+      expect(fileLease.ok).toBe(true);
+
+      const added = await addTension(vault, sampleInput);
+      expect(added.ok).toBe(true);
+
+      const tensionLease = acquireLock(
+        lockDb,
+        TENSIONS_LOCK_KEY,
+        mintLeaseHolder("agent:tensioner"),
+      );
+      expect(tensionLease.ok).toBe(true);
+      lockDb.close();
     });
   });
 });
