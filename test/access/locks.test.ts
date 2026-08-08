@@ -5,6 +5,7 @@ import {
   isLocked,
   LOCK_TTL_MS,
   type LockDb,
+  mintLeaseHolder,
   openLockDb,
   releaseLock,
 } from "../../src/access/locks.js";
@@ -98,5 +99,34 @@ describe("locks", () => {
     expect(isLocked(db, "pricing/b.md", 1_000)).toBe(false);
     const bobElsewhere = acquireLock(db, "pricing/b.md", BOB, 1_000);
     expect(bobElsewhere.ok).toBe(true);
+  });
+
+  describe("mintLeaseHolder (S3-a)", () => {
+    it("mints a distinct holder on every call, even for the same agent", () => {
+      const a = mintLeaseHolder(ALICE);
+      const b = mintLeaseHolder(ALICE);
+      expect(a).not.toBe(b);
+    });
+
+    it("keeps the agent as a readable suffix, so contention messages stay informative", () => {
+      const holder = mintLeaseHolder(ALICE);
+      expect(holder.endsWith(`:${ALICE}`)).toBe(true);
+    });
+
+    // The S3-a regression test: two mutation attempts by the same agent must
+    // mutually exclude on the same path. Against today's wiring — the raw
+    // agent string passed straight through as holder — this scenario
+    // false-shares: acquireLock treats same-holder as a TTL-refreshing
+    // re-acquire (locks.ts:98), so both callers would wrongly succeed.
+    it("mutually excludes two same-agent mutations on the same path", () => {
+      const first = acquireLock(db, PATH, mintLeaseHolder(ALICE), 1_000);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const second = acquireLock(db, PATH, mintLeaseHolder(ALICE), 1_100);
+      expect(second.ok).toBe(false);
+      if (second.ok) return;
+      expect(second.error.message).toContain(first.value.holder);
+    });
   });
 });

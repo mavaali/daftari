@@ -11,7 +11,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
-import { acquireLock, openLockDb, releaseLock } from "../access/locks.js";
+import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
 import { mintConsumesEdges } from "../curation/consumes.js";
 import { foreignPositionViolation } from "../curation/positions.js";
@@ -450,9 +450,13 @@ async function performWrite(params: {
   const lockDbResult = openLockDb(params.vaultRoot);
   if (!lockDbResult.ok) return lockDbResult;
   const lockDb = lockDbResult.value;
+  // Minted ONCE per mutation attempt (S3-a) and reused at every acquire/
+  // release below — never re-mint at the release site, or the release
+  // silently no-ops and the path wedges for the 60s TTL.
+  const holder = mintLeaseHolder(params.agent);
 
   try {
-    const lock = acquireLock(lockDb, params.relPath, params.agent);
+    const lock = acquireLock(lockDb, params.relPath, holder);
     if (!lock.ok) return lock;
 
     try {
@@ -536,7 +540,7 @@ async function performWrite(params: {
         indexUpdated: indexed.ok,
       });
     } finally {
-      releaseLock(lockDb, params.relPath, params.agent);
+      releaseLock(lockDb, params.relPath, holder);
     }
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -2060,10 +2064,15 @@ export async function vaultMerge(
   const lockDb = lockDbResult.value;
   const lockPaths = [...new Set(writes.map((w) => w.relPath))].sort();
   const held: string[] = [];
+  // ONE minted holder for every path in this merge (S3-a): the same-holder
+  // re-acquire rule means a merge whose deduped, sorted path set is
+  // acquired under one holder cannot self-conflict. Never re-mint at the
+  // release loop below.
+  const holder = mintLeaseHolder(agent.value);
 
   try {
     for (const relPath of lockPaths) {
-      const lock = acquireLock(lockDb, relPath, agent.value);
+      const lock = acquireLock(lockDb, relPath, holder);
       if (!lock.ok) return lock;
       held.push(relPath);
     }
@@ -2131,7 +2140,7 @@ export async function vaultMerge(
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`vault_merge failed: ${reason}`));
   } finally {
-    for (const relPath of held) releaseLock(lockDb, relPath, agent.value);
+    for (const relPath of held) releaseLock(lockDb, relPath, holder);
     lockDb.close();
   }
 }

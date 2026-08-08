@@ -10,6 +10,7 @@
 // so a reindex never disturbs them. The file is still ephemeral: every lock
 // expires within a minute, so a lost locks.db costs nothing.
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -72,6 +73,19 @@ function rowToLock(row: LockRow): Lock {
 // expired lock is auto-released without a separate reaper.
 function purgeExpired(db: LockDb, now: number): void {
   db.prepare("DELETE FROM locks WHERE expires_at <= ?").run(now);
+}
+
+// Mints a per-mutation lease holder: unique on every call, even for the same
+// agent, so two overlapping mutations claiming the same free-text `agent`
+// string never false-share a lock (acquireLock treats a matching holder as a
+// TTL-refreshing re-acquire, not contention). The agent is kept as a
+// readable suffix so the existing contention message — which prints the raw
+// holder — still ends with the acting identity. Callers must mint exactly
+// once per mutation attempt and pass that same value to both acquireLock and
+// its paired releaseLock; a fresh mint at the release site unpairs them and
+// releaseLock silently no-ops instead of erroring.
+export function mintLeaseHolder(agent: string): string {
+  return `${process.pid}:${randomUUID()}:${agent}`;
 }
 
 // Acquires an exclusive lock on `path` for `holder`. Fails if the file is held

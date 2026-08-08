@@ -634,6 +634,79 @@ describe("write tools", () => {
       const read = await vaultRead(vault, "pricing/race.md");
       expect(read.ok).toBe(true);
     }, 60_000);
+
+    // S3-a regression: today performWrite passes the raw `agent` string
+    // straight through as the lock holder (write.ts:455). Two overlapping
+    // mutations by the SAME agent therefore false-share: acquireLock treats
+    // a matching holder as a TTL-refreshing re-acquire (locks.ts:98), so a
+    // second same-agent write is wrongly let through while the first is
+    // still in flight. Pre-holding the lock under the raw agent string
+    // reproduces exactly what an in-flight performWrite call held before
+    // the S3-a fix — after the fix, performWrite mints a fresh per-mutation
+    // holder, so this same-agent write must be BLOCKED, not let through.
+    it("does not false-share a lock between two mutations by the same agent (S3-a)", async () => {
+      const lockDbResult = openLockDb(vault);
+      expect(lockDbResult.ok).toBe(true);
+      if (!lockDbResult.ok) return;
+      const lockDb = lockDbResult.value;
+      const held = acquireLock(lockDb, "pricing/same-agent.md", AGENT);
+      expect(held.ok).toBe(true);
+      lockDb.close();
+
+      const blocked = await vaultWrite(vault, {
+        path: "pricing/same-agent.md",
+        body: "body\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+      expect(blocked.ok).toBe(false);
+      if (blocked.ok) return;
+      expect(blocked.error.message).toContain("locked");
+    }, 60_000);
+
+    // "Two different docs both succeed" (no accidental global serialization)
+    // is covered at the lease layer by locks.test.ts's "locks paths
+    // independently". A vaultWrite-level version of this scenario is NOT
+    // added here: two concurrent vaultWrite calls to different paths still
+    // race on the shared `git commit` shell-out (a distinct, pre-existing,
+    // documented-out-of-scope race — design doc §1.3.4/§4 — since a
+    // concurrent `git commit` on one repo can fail with `.git/index.lock`
+    // regardless of file-lease correctness). Exercising it here would test
+    // an unrelated known limitation, not S3-a.
+
+    // S3-a release-pairing: the error path (stale base_version) must release
+    // under the SAME minted holder used at acquire. A holder mismatch would
+    // make releaseLock a silent no-op (`released: false`, locks.ts:133) and
+    // wedge the path for the full 60s TTL — the riskiest failure mode named
+    // in the plan, and one no happy-path test would catch.
+    it("releases the lease on the stale-base_version error path, leaving the path immediately re-acquirable", async () => {
+      const path = "pricing/stale-release.md";
+      await vaultWrite(vault, {
+        path,
+        body: "v1\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+      });
+
+      const rejected = await vaultWrite(vault, {
+        path,
+        body: "v2 composed against a stale version\n",
+        frontmatter: newFrontmatter(),
+        agent: AGENT,
+        base_version: "0".repeat(64),
+      });
+      expect(rejected.ok).toBe(false);
+      if (rejected.ok) return;
+      expect(rejected.error.message).toContain("stale");
+
+      const lockDbResult = openLockDb(vault);
+      expect(lockDbResult.ok).toBe(true);
+      if (!lockDbResult.ok) return;
+      const lockDb = lockDbResult.value;
+      const reacquired = acquireLock(lockDb, path, "agent:probe");
+      expect(reacquired.ok).toBe(true);
+      lockDb.close();
+    }, 60_000);
   });
 
   // -------------------------------------------------------------------------
