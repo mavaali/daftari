@@ -39,6 +39,22 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # gh issue create --label 422s if the label doesn't exist, and nothing
+      # else in the repo creates these. Idempotent (--force updates in
+      # place), so the first run after merge can't fail on missing setup.
+      # Creating the delegate label here is safe: creating ≠ applying, and
+      # only a human with triage+ can apply it (delegate.yml).
+      - name: Ensure agent labels exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create agent-found -R "${{ github.repository }}" --force \
+            --description "Filed by the nightly sweep: a scoped, mechanical finding" \
+            --color 1D76DB
+          gh label create delegate -R "${{ github.repository }}" --force \
+            --description "Authorize an agent to implement this issue (delegate.yml)" \
+            --color 5319E7
+
       - name: Run maintenance sweep
         uses: anthropics/claude-code-action@v1
         env:

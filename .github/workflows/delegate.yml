@@ -54,6 +54,11 @@ jobs:
             authorizes you to implement it. Read the issue (`gh issue view`)
             and the relevant code, then:
 
+            0. Dedupe first: check for an existing open PR already linked to
+               this issue (`gh pr list --state open --search "<issue number>
+               in:body"` and the issue's timeline). If one exists — e.g. the
+               label was re-applied while a prior run was in flight — comment
+               a one-line pointer to that PR and STOP; do not open a second.
             1. Read CLAUDE.md first and follow its conventions and key
                decisions throughout.
             2. Implement the smallest change that resolves the issue, with

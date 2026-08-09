@@ -48,11 +48,15 @@ jobs:
       - run: npx vitest run test/regression
 
   # Technical backstop for the agent lanes (delegate.yml, @claude): prompt
-  # rules telling agents not to touch the automation surface are policy, not
-  # enforcement. This check FAILS any bot-authored PR that modifies
-  # .github/** or .claude/** — workflows, guardrails, permission allowlists —
-  # so such a PR can never merge quietly; a human must see red and decide.
-  # Human-authored PRs (like this one) are exempt: the job skips.
+  # rules telling agents not to touch protected surfaces are policy, not
+  # enforcement. This check FAILS any bot-authored PR that modifies the
+  # automation surface (.github/**, .claude/** — workflows, guardrails,
+  # permission allowlists) or the invariant-critical source surfaces
+  # (src/access/** RBAC, src/court/** — CLAUDE.md hard boundaries), so such
+  # a PR can never merge quietly; a human must see red and decide. Extend
+  # the path list as new guarded surfaces appear. Human-authored PRs are
+  # exempt: the job skips. Note auto-merge.yml's label path already refuses
+  # bot-authored PRs outright — this check is the second, visible layer.
   bot-guardrail:
     if: github.event_name == 'pull_request' && github.event.pull_request.user.type == 'Bot'
     runs-on: ubuntu-latest
@@ -72,7 +76,7 @@ jobs:
             echo "::error::gh pr view failed — cannot verify automation surface" >&2
             exit 1
           }
-          TOUCHED="$(grep -E '^(\.github/|\.claude/)' <<<"$FILES" || true)"
+          TOUCHED="$(grep -E '^(\.github/|\.claude/|src/access/|src/court/)' <<<"$FILES" || true)"
           if [ -n "$TOUCHED" ]; then
             echo "Bot-authored PR modifies the automation surface:" >&2
             echo "$TOUCHED" >&2
