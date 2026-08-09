@@ -65,8 +65,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          TOUCHED="$(gh pr view "$PR_URL" --json files -q '.files[].path' \
-            | grep -E '^(\.github/|\.claude/)' || true)"
+          # Fail CLOSED: if the file listing itself errors (auth, rate
+          # limit, network), the guard must fail — a green result must mean
+          # "checked and clean", never "couldn't check".
+          FILES="$(gh pr view "$PR_URL" --json files -q '.files[].path')" || {
+            echo "::error::gh pr view failed — cannot verify automation surface" >&2
+            exit 1
+          }
+          TOUCHED="$(grep -E '^(\.github/|\.claude/)' <<<"$FILES" || true)"
           if [ -n "$TOUCHED" ]; then
             echo "Bot-authored PR modifies the automation surface:" >&2
             echo "$TOUCHED" >&2
