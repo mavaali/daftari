@@ -57,8 +57,22 @@ jobs:
   # the path list as new guarded surfaces appear. Human-authored PRs are
   # exempt: the job skips. Note auto-merge.yml's label path already refuses
   # bot-authored PRs outright — this check is the second, visible layer.
+  #
+  # Trigger scope, precisely:
+  # - Bot-AUTHORED PRs, except dependabot[bot]: its workflow-version bumps
+  #   are a pre-existing trusted lane with its own guard (patch/minor-only
+  #   auto-merge; majors wait for a human). Blocking it would permanently
+  #   redline every actions-group bump.
+  # - ALSO when the triggering push came from claude[bot]: the @claude
+  #   mention flow can land agent commits on a human-OPENED PR, which the
+  #   opener field never sees. A red from this path clears when a human
+  #   pushes the next commit themselves (the re-run's actor is human).
   bot-guardrail:
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.type == 'Bot'
+    if: |
+      github.event_name == 'pull_request' &&
+      ((github.event.pull_request.user.type == 'Bot' &&
+        github.event.pull_request.user.login != 'dependabot[bot]') ||
+       github.actor == 'claude[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,16 +81,28 @@ jobs:
       - name: Reject bot changes to the automation surface
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
         run: |
           # Fail CLOSED: if the file listing itself errors (auth, rate
           # limit, network), the guard must fail — a green result must mean
-          # "checked and clean", never "couldn't check".
-          FILES="$(gh pr view "$PR_URL" --json files -q '.files[].path')" || {
-            echo "::error::gh pr view failed — cannot verify automation surface" >&2
+          # "checked and clean", never "couldn't check". The REST files
+          # endpoint (unlike `gh pr view --json files`) also surfaces
+          # previous_filename, so renaming a file OUT of a guarded path
+          # (git mv .github/workflows/x.yml elsewhere) is still caught.
+          FILES="$(gh api "repos/$REPO/pulls/$PR_NUM/files" --paginate \
+            -q '.[] | .filename, (.previous_filename // empty)')" || {
+            echo "::error::file listing failed — cannot verify automation surface" >&2
             exit 1
           }
-          TOUCHED="$(grep -E '^(\.github/|\.claude/|src/access/|src/court/)' <<<"$FILES" || true)"
+          # grep exit 1 = clean (tolerated); anything >1 is a real error
+          # and must fail closed like the listing above.
+          RC=0
+          TOUCHED="$(grep -E '^(\.github/|\.claude/|src/access/|src/court/)' <<<"$FILES")" || RC=$?
+          if [ "$RC" -gt 1 ]; then
+            echo "::error::grep failed (exit $RC) — cannot verify automation surface" >&2
+            exit 1
+          fi
           if [ -n "$TOUCHED" ]; then
             echo "Bot-authored PR modifies the automation surface:" >&2
             echo "$TOUCHED" >&2
