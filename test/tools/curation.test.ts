@@ -203,7 +203,9 @@ describe("curation tools", () => {
       expect(def).toBeDefined();
       expect(def?.annotations?.readOnlyHint).toBe(true);
       // No required arguments — accepts an empty object.
-      expect((def?.inputSchema as { required?: unknown } | undefined)?.required).toBeUndefined();
+      const inputSchema = def?.inputSchema;
+      if (!inputSchema) throw new Error("vault_tension_clusters declares no inputSchema");
+      expect((inputSchema as { required?: unknown }).required).toBeUndefined();
     });
   });
 
@@ -228,7 +230,9 @@ describe("curation tools", () => {
       // Neither argument is required at the schema level — the exactly-one-of
       // constraint is enforced in the handler so the error message stays
       // consolidated and informative.
-      expect((def?.inputSchema as { required?: unknown } | undefined)?.required).toBeUndefined();
+      const inputSchema = def?.inputSchema;
+      if (!inputSchema) throw new Error("vault_tension_blast declares no inputSchema");
+      expect((inputSchema as { required?: unknown }).required).toBeUndefined();
     });
   });
 
@@ -291,13 +295,16 @@ describe("curation tools", () => {
       const def = curationTools.find((t) => t.name === "vault_tension_triage");
       expect(def).toBeDefined();
       expect(def?.annotations?.readOnlyHint).toBe(true);
-      expect((def?.inputSchema as { required?: unknown } | undefined)?.required).toBeUndefined();
+      const inputSchema = def?.inputSchema;
+      if (!inputSchema) throw new Error("vault_tension_triage declares no inputSchema");
+      expect((inputSchema as { required?: unknown }).required).toBeUndefined();
     });
 
-    it("declares criticality on triageSideSchema in the outputSchema", () => {
-      const def = curationTools.find((t) => t.name === "vault_tension_triage");
-      expect(def).toBeDefined();
-      // Navigate: outputSchema.properties.clusters.items.properties.tensions.items.properties.a.properties
+    // Navigate outputSchema.properties.clusters.items.properties.tensions
+    // .items.properties.a — the triageSideSchema both assertions inspect.
+    function triageSideAProps(def: { outputSchema?: unknown } | undefined): {
+      properties: Record<string, unknown>;
+    } {
       const schema = def?.outputSchema;
       if (!schema) throw new Error("vault_tension_triage declares no outputSchema");
       const clusters = (schema as { properties: Record<string, unknown> }).properties.clusters as {
@@ -306,22 +313,20 @@ describe("curation tools", () => {
       const tensionItems = clusters.items.properties.tensions as {
         items: { properties: Record<string, unknown> };
       };
-      const sideAProps = tensionItems.items.properties.a as { properties: Record<string, unknown> };
+      return tensionItems.items.properties.a as { properties: Record<string, unknown> };
+    }
+
+    it("declares criticality on triageSideSchema in the outputSchema", () => {
+      const def = curationTools.find((t) => t.name === "vault_tension_triage");
+      expect(def).toBeDefined();
+      const sideAProps = triageSideAProps(def);
       expect(sideAProps.properties).toHaveProperty("criticality");
     });
 
     it("declares provenance and updated_by on triageSideSchema in the outputSchema", () => {
       const def = curationTools.find((t) => t.name === "vault_tension_triage");
       expect(def).toBeDefined();
-      const schema = def?.outputSchema;
-      if (!schema) throw new Error("vault_tension_triage declares no outputSchema");
-      const clusters = (schema as { properties: Record<string, unknown> }).properties.clusters as {
-        items: { properties: Record<string, unknown> };
-      };
-      const tensionItems = clusters.items.properties.tensions as {
-        items: { properties: Record<string, unknown> };
-      };
-      const sideAProps = tensionItems.items.properties.a as { properties: Record<string, unknown> };
+      const sideAProps = triageSideAProps(def);
       expect(sideAProps.properties).toHaveProperty("provenance");
       expect(sideAProps.properties).toHaveProperty("updated_by");
     });
