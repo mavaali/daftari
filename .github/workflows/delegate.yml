@@ -31,6 +31,10 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      # id-token: write is REQUIRED by claude-code-action's auth: it performs
+      # one specific, reviewed OIDC exchange (GitHub OIDC -> Anthropic ->
+      # short-lived Claude GitHub App token) to push and open the PR. No
+      # cloud-provider federation trusts this repo's Actions issuer.
       id-token: write
       actions: read
     steps:

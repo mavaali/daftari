@@ -3,7 +3,8 @@ name: CI
 # Read-only. Every job checks out, installs, and runs lint/build/test; none
 # writes to the repository, publishes, or posts to a pull request. Without this
 # block the jobs inherit whatever the repository default grants, which is a
-# broader token than any step here uses.
+# broader token than any step here uses. (bot-guardrail additionally reads PR
+# metadata via its own job-level grant.)
 permissions:
   contents: read
 
@@ -45,6 +46,35 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run test/regression
+
+  # Technical backstop for the agent lanes (delegate.yml, @claude): prompt
+  # rules telling agents not to touch the automation surface are policy, not
+  # enforcement. This check FAILS any bot-authored PR that modifies
+  # .github/** or .claude/** — workflows, guardrails, permission allowlists —
+  # so such a PR can never merge quietly; a human must see red and decide.
+  # Human-authored PRs (like this one) are exempt: the job skips.
+  bot-guardrail:
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.type == 'Bot'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Reject bot changes to the automation surface
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          TOUCHED="$(gh pr view "$PR_URL" --json files -q '.files[].path' \
+            | grep -E '^(\.github/|\.claude/)' || true)"
+          if [ -n "$TOUCHED" ]; then
+            echo "Bot-authored PR modifies the automation surface:" >&2
+            echo "$TOUCHED" >&2
+            echo "Agents must not change workflows, guardrails, or allowlists." >&2
+            echo "A human can re-author these changes on their own branch." >&2
+            exit 1
+          fi
+          echo "No automation-surface changes."
 
   # End-to-end gate: spawns the built dist/cli.js as a real subprocess and
   # drives it over MCP stdio — handshake, tool catalog, read/write with git
