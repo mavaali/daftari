@@ -203,7 +203,7 @@ describe("curation tools", () => {
       expect(def).toBeDefined();
       expect(def?.annotations?.readOnlyHint).toBe(true);
       // No required arguments — accepts an empty object.
-      expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
+      expect((def?.inputSchema as { required?: unknown } | undefined)?.required).toBeUndefined();
     });
   });
 
@@ -228,7 +228,7 @@ describe("curation tools", () => {
       // Neither argument is required at the schema level — the exactly-one-of
       // constraint is enforced in the handler so the error message stays
       // consolidated and informative.
-      expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
+      expect((def?.inputSchema as { required?: unknown } | undefined)?.required).toBeUndefined();
     });
   });
 
@@ -291,7 +291,7 @@ describe("curation tools", () => {
       const def = curationTools.find((t) => t.name === "vault_tension_triage");
       expect(def).toBeDefined();
       expect(def?.annotations?.readOnlyHint).toBe(true);
-      expect((def?.inputSchema as { required?: unknown }).required).toBeUndefined();
+      expect((def?.inputSchema as { required?: unknown } | undefined)?.required).toBeUndefined();
     });
 
     it("declares criticality on triageSideSchema in the outputSchema", () => {
