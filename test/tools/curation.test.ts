@@ -298,8 +298,11 @@ describe("curation tools", () => {
       const def = curationTools.find((t) => t.name === "vault_tension_triage");
       expect(def).toBeDefined();
       // Navigate: outputSchema.properties.clusters.items.properties.tensions.items.properties.a.properties
-      const clusters = (def?.outputSchema as { properties: Record<string, unknown> }).properties
-        .clusters as { items: { properties: Record<string, unknown> } };
+      const schema = def?.outputSchema;
+      if (!schema) throw new Error("vault_tension_triage declares no outputSchema");
+      const clusters = (schema as { properties: Record<string, unknown> }).properties.clusters as {
+        items: { properties: Record<string, unknown> };
+      };
       const tensionItems = clusters.items.properties.tensions as {
         items: { properties: Record<string, unknown> };
       };
@@ -310,8 +313,11 @@ describe("curation tools", () => {
     it("declares provenance and updated_by on triageSideSchema in the outputSchema", () => {
       const def = curationTools.find((t) => t.name === "vault_tension_triage");
       expect(def).toBeDefined();
-      const clusters = (def?.outputSchema as { properties: Record<string, unknown> }).properties
-        .clusters as { items: { properties: Record<string, unknown> } };
+      const schema = def?.outputSchema;
+      if (!schema) throw new Error("vault_tension_triage declares no outputSchema");
+      const clusters = (schema as { properties: Record<string, unknown> }).properties.clusters as {
+        items: { properties: Record<string, unknown> };
+      };
       const tensionItems = clusters.items.properties.tensions as {
         items: { properties: Record<string, unknown> };
       };
