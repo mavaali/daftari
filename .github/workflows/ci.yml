@@ -3,7 +3,8 @@ name: CI
 # Read-only. Every job checks out, installs, and runs lint/build/test; none
 # writes to the repository, publishes, or posts to a pull request. Without this
 # block the jobs inherit whatever the repository default grants, which is a
-# broader token than any step here uses.
+# broader token than any step here uses. (bot-guardrail additionally reads PR
+# metadata via its own job-level grant.)
 permissions:
   contents: read
 
@@ -45,6 +46,71 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run test/regression
+
+  # Technical backstop for the agent lanes (delegate.yml, @claude): prompt
+  # rules telling agents not to touch protected surfaces are policy, not
+  # enforcement. This check FAILS any bot-authored PR that modifies the
+  # automation surface (.github/**, .claude/** — workflows, guardrails,
+  # permission allowlists) or the invariant-critical source surfaces
+  # (src/access/** RBAC, src/court/** — CLAUDE.md hard boundaries), so such
+  # a PR can never merge quietly; a human must see red and decide. Extend
+  # the path list as new guarded surfaces appear. Human-authored PRs are
+  # exempt: the job skips. Note auto-merge.yml's label path already refuses
+  # bot-authored PRs outright — this check is the second, visible layer.
+  #
+  # Trigger scope, precisely:
+  # - Bot-AUTHORED PRs, except dependabot[bot]: its workflow-version bumps
+  #   are a pre-existing trusted lane with its own guard (patch/minor-only
+  #   auto-merge; majors wait for a human). Blocking it would permanently
+  #   redline every actions-group bump.
+  # - ALSO when the triggering push came from claude[bot]: the @claude
+  #   mention flow can land agent commits on a human-OPENED PR, which the
+  #   opener field never sees. A red from this path clears when a human
+  #   pushes the next commit themselves (the re-run's actor is human).
+  bot-guardrail:
+    if: |
+      github.event_name == 'pull_request' &&
+      ((github.event.pull_request.user.type == 'Bot' &&
+        github.event.pull_request.user.login != 'dependabot[bot]') ||
+       github.actor == 'claude[bot]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Reject bot changes to the automation surface
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          # Fail CLOSED: if the file listing itself errors (auth, rate
+          # limit, network), the guard must fail — a green result must mean
+          # "checked and clean", never "couldn't check". The REST files
+          # endpoint (unlike `gh pr view --json files`) also surfaces
+          # previous_filename, so renaming a file OUT of a guarded path
+          # (git mv .github/workflows/x.yml elsewhere) is still caught.
+          FILES="$(gh api "repos/$REPO/pulls/$PR_NUM/files" --paginate \
+            -q '.[] | .filename, (.previous_filename // empty)')" || {
+            echo "::error::file listing failed — cannot verify automation surface" >&2
+            exit 1
+          }
+          # grep exit 1 = clean (tolerated); anything >1 is a real error
+          # and must fail closed like the listing above.
+          RC=0
+          TOUCHED="$(grep -E '^(\.github/|\.claude/|src/access/|src/court/)' <<<"$FILES")" || RC=$?
+          if [ "$RC" -gt 1 ]; then
+            echo "::error::grep failed (exit $RC) — cannot verify automation surface" >&2
+            exit 1
+          fi
+          if [ -n "$TOUCHED" ]; then
+            echo "Bot-authored PR modifies the automation surface:" >&2
+            echo "$TOUCHED" >&2
+            echo "Agents must not change workflows, guardrails, or allowlists." >&2
+            echo "A human can re-author these changes on their own branch." >&2
+            exit 1
+          fi
+          echo "No automation-surface changes."
 
   # End-to-end gate: spawns the built dist/cli.js as a real subprocess and
   # drives it over MCP stdio — handshake, tool catalog, read/write with git
