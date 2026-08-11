@@ -51,6 +51,7 @@ const HELP = `daftari serve — server mode over Streamable HTTP (spec 2026-07-2
 
 Usage:
   daftari serve --vault <path> [--port <n>] [--bind <addr>] [--takeover]
+                [--legacy-http]
 
 Defaults:
   --port ${DEFAULT_PORT}
@@ -60,8 +61,12 @@ Defaults:
   --takeover      deliberately replace a LIVE daftari holding this vault
                   (a plain serve refuses against any live holder)
 
+  --legacy-http   ALSO answer 2025-era MCP clients through the SDK's
+                  stateless legacy fallback (#366). Temporary migration
+                  flag; auth and RBAC apply per request either way.
+
 Endpoint: http://<bind>:<port>/mcp   (MCP 2026-07-28, stateless — lagging
-                                     clients use stdio)
+                                     clients use stdio or --legacy-http)
 
 Auth: clients send "Authorization: Bearer <token>" on EVERY request. Two
 composable schemes:
@@ -251,12 +256,20 @@ export function violatesLoopbackGuard(
   return null;
 }
 
+export interface StartHttpServerOptions {
+  // --legacy-http (#366): serve 2025-era clients through the SDK's stateless
+  // legacy fallback instead of rejecting them. Temporary, opt-in; removal
+  // criterion lives in the issue.
+  legacyHttp?: boolean;
+}
+
 export function startHttpServer(
   vaultRoot: string,
   config: DaftariConfig,
   tokens: ResolvedToken[],
   bind: string,
   port: number,
+  opts: StartHttpServerOptions = {},
 ): Promise<ServeHandle> {
   const oauth = config.server.oauth;
   const authConfigured = tokens.length > 0 || oauth !== undefined;
@@ -327,13 +340,16 @@ export function startHttpServer(
     return null;
   };
 
-  // The MCP handler: per-request, stateless, 2026-07-28 only. The factory
-  // runs once per request with the identity our authenticate() resolved and
-  // stashed in the pass-through authInfo — createServer parameterizes the
-  // access context, which is what makes this migration (like 2026-07-20's)
-  // cheap. `legacy: "reject"` answers 2025-era traffic with the
+  // The MCP handler: per-request, stateless. The factory runs once per
+  // request with the identity our authenticate() resolved and stashed in the
+  // pass-through authInfo — createServer parameterizes the access context,
+  // which is what makes this migration (like 2026-07-20's) cheap. By default
+  // `legacy: "reject"` answers 2025-era traffic with the
   // unsupported-protocol-version error: no dual-stacking; lagging clients
-  // use stdio.
+  // use stdio. `--legacy-http` (#366) amends that decision with an opt-in
+  // escape hatch: the SDK's stateless legacy fallback answers 2025-era
+  // requests from the same factory — same process, same per-request auth,
+  // no session table (legacy GET/DELETE session operations stay 405).
   //
   // Single-holder stays the process lock's job, not the transport's: two
   // daftari processes on one vault is what .daftari/process.lock refuses
@@ -345,7 +361,7 @@ export function startHttpServer(
         resolveAccess(config, "guest", GUEST_ROLE);
       return createServer(vaultRoot, access, config.tools);
     },
-    { legacy: "reject" },
+    { legacy: opts.legacyHttp ? "stateless" : "reject" },
   );
   const nodeHandler = toNodeHandler(mcpHandler);
 
@@ -483,6 +499,7 @@ export async function runServe(argv: string[]): Promise<number> {
     return 2;
   }
   const bind = parseFlag(argv, "bind") ?? DEFAULT_BIND;
+  const legacyHttp = argv.includes("--legacy-http");
   const portRaw = parseFlag(argv, "port");
   const port = portRaw === null ? DEFAULT_PORT : Number.parseInt(portRaw, 10);
   if (Number.isNaN(port) || port < 0 || port > 65535) {
@@ -543,7 +560,9 @@ export async function runServe(argv: string[]): Promise<number> {
   }
 
   try {
-    handle = await startHttpServer(vaultRoot, config.value, gate.tokens, bind, port);
+    handle = await startHttpServer(vaultRoot, config.value, gate.tokens, bind, port, {
+      legacyHttp,
+    });
   } catch (e) {
     process.stderr.write(
       `daftari serve: failed to bind ${bind}:${port}: ${e instanceof Error ? e.message : String(e)}\n`,
@@ -557,7 +576,8 @@ export async function runServe(argv: string[]): Promise<number> {
   ];
   process.stderr.write(
     `daftari: serving vault at ${vaultRoot} — http://${bind}:${handle.port}/mcp ` +
-      `(${authParts.length > 0 ? authParts.join(" + ") : "no auth: guest-only"})\n`,
+      `(${authParts.length > 0 ? authParts.join(" + ") : "no auth: guest-only"})` +
+      `${legacyHttp ? " [legacy-http]" : ""}\n`,
   );
 
   await startVaultServices(vaultRoot, {

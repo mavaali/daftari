@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   matchToken,
   prepareStorageSync,
+  runServe,
   type ServeHandle,
   startHttpServer,
   startPeriodicSync,
@@ -85,6 +86,20 @@ async function connect(port: number, token?: string): Promise<Client> {
   const client = new Client(
     { name: "serve-test", version: "0.0.0" },
     { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  await client.connect(transport);
+  return client;
+}
+
+// A genuine 2025-era client: mode "legacy" speaks only the initialize
+// handshake wire, never the 2026-07-28 envelope.
+async function connectLegacy(port: number, token?: string): Promise<Client> {
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+    requestInit: token ? { headers: { Authorization: `Bearer ${token}` } } : {},
+  });
+  const client = new Client(
+    { name: "serve-test-legacy", version: "0.0.0" },
+    { versionNegotiation: { mode: "legacy" } },
   );
   await client.connect(transport);
   return client;
@@ -417,6 +432,142 @@ describe("startPeriodicSync drives the interval push (#6)", () => {
       expect(syncFn).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+// --legacy-http (#366): an opt-in escape hatch amending the Decision 1
+// strict-reject posture — the SDK's stateless legacy fallback answers
+// 2025-era traffic from the same factory, same process, no session table.
+describe("legacy HTTP compatibility (--legacy-http, #366)", () => {
+  let vault: string;
+  let cfg: DaftariConfig;
+  let tokens: Parameters<typeof startHttpServer>[2];
+  let handle: ServeHandle;
+
+  beforeAll(async () => {
+    vault = buildVault(true);
+    process.env.DAFTARI_TEST_TOKEN_ANALYST = "analyst-secret";
+    process.env.DAFTARI_TEST_TOKEN_ADMIN = "admin-secret";
+    const reindexed = await vaultReindex(vault);
+    if (!reindexed.ok) throw reindexed.error;
+    cfg = loadedConfig(vault);
+    const gate = validateServeStartup(cfg, "127.0.0.1", process.env);
+    if (!gate.ok) throw new Error(gate.error);
+    tokens = gate.tokens;
+    handle = await startHttpServer(vault, cfg, tokens, "127.0.0.1", 0, { legacyHttp: true });
+  }, 60_000);
+
+  afterAll(async () => {
+    await handle.close();
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("a 2025-era client can initialize, list tools, and search under its RBAC vantage", async () => {
+    const legacy = await connectLegacy(handle.port, "analyst-secret");
+    try {
+      const tools = await legacy.listTools();
+      expect(tools.tools.map((t) => t.name)).toContain("vault_search");
+      const paths = await searchPaths(legacy, "zephyr protocol calibration");
+      expect(paths.length).toBeGreaterThan(0);
+      expect(paths.every((p) => p.startsWith("notes/p"))).toBe(true);
+    } finally {
+      await legacy.close();
+    }
+  }, 30_000);
+
+  it("mixed traffic: a modern client works on the same legacy-enabled server, per-client RBAC intact", async () => {
+    const modern = await connect(handle.port, "admin-secret");
+    const legacy = await connectLegacy(handle.port, "analyst-secret");
+    try {
+      const [adminPaths, analystPaths] = await Promise.all([
+        searchPaths(modern, "zephyr protocol calibration"),
+        searchPaths(legacy, "zephyr protocol calibration"),
+      ]);
+      expect(adminPaths.some((p) => p.startsWith("notes/s"))).toBe(true);
+      expect(analystPaths.every((p) => p.startsWith("notes/p"))).toBe(true);
+    } finally {
+      await modern.close();
+      await legacy.close();
+    }
+  }, 30_000);
+
+  it("the legacy path enforces auth: missing or wrong bearer is 401, never guest", async () => {
+    await expect(connectLegacy(handle.port)).rejects.toThrow(/unauthorized|401/i);
+    await expect(connectLegacy(handle.port, "wrong-secret")).rejects.toThrow(/unauthorized|401/i);
+  });
+
+  it("the same 2025-era client is refused when the flag is off", async () => {
+    const strict = await startHttpServer(vault, cfg, tokens, "127.0.0.1", 0);
+    try {
+      await expect(connectLegacy(strict.port, "analyst-secret")).rejects.toThrow(
+        /-32022|unsupported protocol/i,
+      );
+    } finally {
+      await strict.close();
+    }
+  }, 30_000);
+
+  // The SDK's stateless fallback owns these semantics (its default posture,
+  // upstream-controlled) — pin them locally so an SDK upgrade that quietly
+  // grows a session map fails here, not in production (#366 acceptance
+  // criteria; the repo invariant that Mcp-Session-Id is never a credential).
+  it("legacy session operations stay 405 and no session id is ever issued", async () => {
+    for (const method of ["GET", "DELETE"]) {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+        method,
+        headers: {
+          authorization: "Bearer analyst-secret",
+          accept: "application/json, text/event-stream",
+          "mcp-session-id": "forged-session-id",
+        },
+      });
+      expect(res.status).toBe(405);
+      expect(res.headers.get("mcp-session-id")).toBeNull();
+      await res.text();
+    }
+  });
+
+  it("a spoofed Mcp-Session-Id never alters identity — the bearer decides the vantage", async () => {
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        requestInit: {
+          headers: {
+            Authorization: "Bearer analyst-secret",
+            "mcp-session-id": "forged-session-id",
+          },
+        },
+      },
+    );
+    const legacy = new Client(
+      { name: "serve-test-legacy-spoof", version: "0.0.0" },
+      { versionNegotiation: { mode: "legacy" } },
+    );
+    await legacy.connect(transport);
+    try {
+      const paths = await searchPaths(legacy, "zephyr protocol calibration");
+      expect(paths.length).toBeGreaterThan(0);
+      expect(paths.every((p) => p.startsWith("notes/p"))).toBe(true);
+    } finally {
+      await legacy.close();
+    }
+  }, 30_000);
+});
+
+describe("runServe --help", () => {
+  it("documents --legacy-http", async () => {
+    const chunks: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((s) => {
+      chunks.push(String(s));
+      return true;
+    });
+    try {
+      const code = await runServe(["--help"]);
+      expect(code).toBe(0);
+      expect(chunks.join("")).toContain("--legacy-http");
+    } finally {
+      spy.mockRestore();
     }
   });
 });
