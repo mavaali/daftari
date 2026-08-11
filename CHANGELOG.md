@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-08-10
+
+### Added
+
+- **Multi-user contested beliefs** (slices 1–3, #359 #360 #361) — three new tools. `vault_assert` records the calling principal's position (assert/dispute/qualify) on a claim document; a second conflicting live stance marks the document contested, caps its confidence at low, and auto-logs a `positional` tension. `vault_positions` queries positions by document or by principal, RBAC-filtered. `vault_consolidate` ratifies the org's stance (ratify-gated), mirrors its confidence onto the document, and computes dissent server-side. Slice 3 also hardened the concurrency layer: per-file lease false-sharing and a tension-log read-modify-write race are fixed.
+- **`daftari serve --legacy-http`** (#366, #370) — temporary, opt-in compatibility for 2025-era MCP clients over HTTP via the SDK's stateless legacy fallback: same process, per-request auth/RBAC unchanged, no session table (legacy GET/DELETE session operations answer 405). Strict 2026-07-28-only remains the default. Removal is tracked in #371.
+
+### Changed
+
+- **Reindex staging is batched with bounded concurrency** (#358), with a startup manifest — large-vault reindex is substantially faster without unbounded parallel file IO.
+- `loadDocuments` keeps an incremental stat cache (#357), cutting repeated curation-scan cost on large vaults.
+
+### Fixed
+
+- Process-lock stale takeover closed a TOCTOU window — reclaim is now atomic and never overwrites a live holder (#351); lock holder matching treats the vault path as a whole token, not a substring (#350).
+- OpenAI/OpenRouter embedding requests arm per-request fetch timeouts (#349), so a hung provider can no longer stall indexing indefinitely.
+- Git subprocess stream and ref handling hardened (#348).
+- `daftari serve` no longer echoes internal error text in 500 responses (#353); corrupt JSON index columns now fail with an actionable error naming the rebuild path (#354).
+
 ## [3.0.0] - 2026-08-05
 
 ### Changed
