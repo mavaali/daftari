@@ -107,7 +107,7 @@ And the honest cost, since compounding isn't free:
 
 ## What it is
 
-A directory of markdown files with YAML frontmatter, exposed to agents as 35
+A directory of markdown files with YAML frontmatter, exposed to agents as 38
 MCP tools over stdio. The vault is plain text: you can read it in any editor,
 `git log` it, grep it. Daftari adds the machinery agents need to treat it as a
 shared workspace.
@@ -253,6 +253,8 @@ tensions inline and foreground the current source of superseded documents),
 **Dispatch:** `vault_tier1` (type-directed change dispatch), `vault_tier2_queue`, `vault_tier2_verdict` (semantic-review queue + verdict)
 
 **Ratify:** `vault_stage_action`, `vault_ratify`
+
+**Positions:** `vault_assert` (a principal's assert/dispute/qualify stance on a claim doc; conflicting live stances mark it contested and cap confidence), `vault_positions` (query positions by doc or principal), `vault_consolidate` (ratify-gated org stance; clears the contested confidence cap, dissent computed server-side)
 
 The curation engine is advisory: `vault_lint` reports problems and
 `vault_tension_log` records contradictions. Neither auto-fixes anything. Every
@@ -634,11 +636,15 @@ for clients that can't spawn a local process (claude.ai web/mobile, Cowork):
 ```bash
 daftari serve --vault ./my-vault              # http://127.0.0.1:8787/mcp
 daftari serve --vault ./my-vault --bind 0.0.0.0 --port 9000
+daftari serve --vault ./my-vault --legacy-http   # also answer 2025-era MCP clients
 ```
 
-Identity is **per MCP session**, resolved when the session opens, so every
-RBAC and existence-disclosure rule applies per connection with zero tool
-changes. Two composable auth schemes, both declared in config.
+Identity is **per request**, resolved from the bearer on every request (MCP
+2026-07-28 is stateless — there are no sessions), so every RBAC and
+existence-disclosure rule applies per caller with zero tool changes. Two
+composable auth schemes, both declared in config. `--legacy-http` is a
+temporary, opt-in migration flag for clients still on 2025-era MCP: same
+process, same per-request auth, no session table (removal tracked in #371).
 
 <details>
 <summary><b>Auth config (bearer tokens + OAuth 2.1) and the fail-loud posture (▸ expand for full reference)</b></summary>
@@ -854,7 +860,7 @@ Design tenets: functions and types, no classes; tool handlers return
 ## Integrations
 
 - [`integrations/langchain/`](integrations/langchain/) — `langchain-daftari`, a
-  Python package that exposes all 35 daftari tools as LangChain `BaseTool`s
+  Python package that exposes all 38 daftari tools as LangChain `BaseTool`s
   for use with LangGraph / `create_react_agent`. Sync + async, schemas pulled
   live from `tools/list`.
 - [`packages/router`](packages/router) — multi-vault MCP router that fans out across N Daftari vaults
