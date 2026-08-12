@@ -176,6 +176,33 @@ export const TENSION_SCAN_DEFAULTS: TensionScanConfig = {
   agent: "agent:sleep-tension-scan",
 };
 
+// Budgets for the compile-on-ingest distill pipeline (`distill:` config block).
+// Absent block ⇒ distill refuses to run (explicit opt-in, never a silent default
+// spend). A declared block must set `model`; numeric fields fall back to these
+// defaults. A malformed block fails loud like every other block.
+export interface DistillConfig {
+  /** Model id passed to every LLM call in the distill pipeline. */
+  model: string;
+  /** Hard cap on total LLM calls per distill invocation. */
+  maxLlmCalls: number;
+  /** Maximum raw claims the extract stage may produce per run. */
+  maxClaims: number;
+  /** Maximum verbatim-quoted characters across all claims per run. */
+  maxVerbatimChars: number;
+  /**
+   * MCP in-call input cap: maximum characters of source material fed to the
+   * LLM in a single call (bounds per-call token spend).
+   */
+  inCallInputCap: number;
+}
+
+export const DISTILL_NUMERIC_DEFAULTS: Omit<DistillConfig, "model"> = {
+  maxLlmCalls: 100,
+  maxClaims: 50,
+  maxVerbatimChars: 8000,
+  inCallInputCap: 16000,
+};
+
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
@@ -267,6 +294,10 @@ export interface DaftariConfig {
   // Kill-switch for the read-time pin check (`jit_anchors` key). Defaults true;
   // false removes the entire read-path code path.
   jitAnchors: boolean;
+  // Compile-on-ingest distill pipeline budgets (`distill:` block). Undefined
+  // when the block is absent — distill refuses to run without an explicit
+  // config (no silent default spend). Set to activate the pipeline.
+  distill?: DistillConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -292,6 +323,7 @@ function emptyConfig(): DaftariConfig {
     storage: undefined,
     codeRepos: {},
     jitAnchors: true,
+    distill: undefined,
   };
 }
 
@@ -720,6 +752,54 @@ function validateTensionScan(raw: unknown): Result<TensionScanConfig, Error> {
       return err(new Error("'tension_scan.agent' must be a non-empty string"));
     }
     out.agent = obj.agent.trim();
+  }
+  return ok(out);
+}
+
+// Parses the optional `distill:` block. Absent block ⇒ undefined (the caller
+// — resolveDistillClient — refuses to run without it). A declared block must
+// supply `model`; numeric fields fall back to DISTILL_NUMERIC_DEFAULTS. An
+// unrecognised child key fails loud so a typo can't silently leave a budget
+// at its default.
+const RECOGNISED_DISTILL_KEYS = [
+  "model",
+  "max_llm_calls",
+  "max_claims",
+  "max_verbatim_chars",
+  "in_call_input_cap",
+] as const;
+
+function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error> {
+  if (raw === undefined) return ok(undefined);
+  const mapping = requireMapping(raw, "'distill'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_DISTILL_KEYS, "distill");
+  if (!known.ok) return known;
+
+  if (typeof obj.model !== "string" || obj.model.trim().length === 0) {
+    return err(new Error("'distill.model' must be a non-empty string"));
+  }
+  const out: DistillConfig = {
+    model: obj.model.trim(),
+    ...DISTILL_NUMERIC_DEFAULTS,
+  };
+
+  for (const key of [
+    "max_llm_calls",
+    "max_claims",
+    "max_verbatim_chars",
+    "in_call_input_cap",
+  ] as const) {
+    const v = obj[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+      return err(new Error(`'distill.${key}' must be a positive integer`));
+    }
+    if (key === "max_llm_calls") out.maxLlmCalls = v;
+    else if (key === "max_claims") out.maxClaims = v;
+    else if (key === "max_verbatim_chars") out.maxVerbatimChars = v;
+    else out.inCallInputCap = v;
   }
   return ok(out);
 }
@@ -1207,6 +1287,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const tensionScan = validateTensionScan(root.tension_scan);
   if (!tensionScan.ok) return err(new Error(`malformed config: ${tensionScan.error.message}`));
 
+  const distillConfig = validateDistill(root.distill);
+  if (!distillConfig.ok) return err(new Error(`malformed config: ${distillConfig.error.message}`));
+
   const toolsConfig = validateTools(root.tools);
   if (!toolsConfig.ok) return err(new Error(`malformed config: ${toolsConfig.error.message}`));
 
@@ -1300,5 +1383,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     storage: storageConfig.value,
     codeRepos: codeRepos.value,
     jitAnchors,
+    distill: distillConfig.value,
   });
 }

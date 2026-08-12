@@ -14,20 +14,99 @@
 // calling it is safe; it will return the parsed messages and empty arrays for
 // the downstream stages until those units are implemented.
 
+export type { DistillConfig } from "../utils/config.js";
 export { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
 export type { MessageType, NormalizedMessage, SourceAdapter } from "./adapters/types.js";
+
+// ---------------------------------------------------------------------------
+// Imports
+// ---------------------------------------------------------------------------
+
+import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
+import { createOpenRouterClient, resolveTransport } from "../eval/llm-openrouter.js";
+import { err, ok, type Result } from "../frontmatter/types.js";
+import { type DistillConfig, loadConfig } from "../utils/config.js";
+import { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
+import type { SourceAdapter } from "./adapters/types.js";
 
 // ---------------------------------------------------------------------------
 // Adapter registry
 // ---------------------------------------------------------------------------
 
-import { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
-import type { SourceAdapter } from "./adapters/types.js";
-
 /** Built-in adapter registry, keyed by sourceId(). */
 export const ADAPTER_REGISTRY: Record<string, SourceAdapter> = {
   "chat-transcript": new ChatTranscriptAdapter(),
 };
+
+// ---------------------------------------------------------------------------
+// Internal LLM client + config gate (U2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolved distill client and config, returned by `resolveDistillClient`.
+ * Later units receive this via dependency injection so they never re-load
+ * config or re-construct the client.
+ */
+export interface ResolvedDistill {
+  client: LlmClient;
+  config: DistillConfig;
+}
+
+// Transport-aware LLM construction — mirrors the pattern in src/consolidate
+// and src/sleep: check the API key BEFORE calling the constructor so a
+// missing key produces a clear error rather than the client's internal throw.
+function constructLlm(transport: "anthropic" | "openrouter"): Result<LlmClient, Error> {
+  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
+  if (!process.env[keyVar]) {
+    return err(new Error(`${keyVar} env var is required (transport: ${transport})`));
+  }
+  try {
+    return ok(transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient());
+  } catch (e) {
+    return err(e instanceof Error ? e : new Error(String(e)));
+  }
+}
+
+/**
+ * Resolves the distill config from `vaultRoot` and constructs an LLM client.
+ *
+ * Refuses to run (returns `err`) when:
+ *   - The config cannot be loaded (malformed yaml, I/O error).
+ *   - The `distill:` block is absent — no silent default spend.
+ *   - The resolved transport's API key is missing — fail-fast before any
+ *     network call (mirrors the consolidate/sleep posture).
+ *
+ * Transport defaults to `anthropic`; the caller may override via the
+ * `DAFTARI_LLM_TRANSPORT` env var or by passing an explicit value.
+ *
+ * @param vaultRoot - Absolute path to the vault root.
+ * @param transport - Optional explicit transport override (CLI flag value).
+ */
+export function resolveDistillClient(
+  vaultRoot: string,
+  transport?: string,
+): Result<ResolvedDistill, Error> {
+  const cfg = loadConfig(vaultRoot);
+  if (!cfg.ok) return err(cfg.error);
+
+  if (!cfg.value.distill) {
+    return err(
+      new Error(
+        "distill not configured: add a 'distill:' block to .daftari/config.yaml " +
+          "with at least 'model' set before running the distill pipeline",
+      ),
+    );
+  }
+  const distillCfg = cfg.value.distill;
+
+  const transportRes = resolveTransport(transport);
+  if (!transportRes.ok) return err(transportRes.error);
+
+  const llmRes = constructLlm(transportRes.value);
+  if (!llmRes.ok) return err(llmRes.error);
+
+  return ok({ client: llmRes.value, config: distillCfg });
+}
 
 // ---------------------------------------------------------------------------
 // Pipeline stub
