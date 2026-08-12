@@ -23,6 +23,7 @@ import {
 
 export type { StagedActionLintItem } from "./staged-actions.js";
 
+import { parseDescribesEntry } from "../audit/describes.js";
 import { ageInDays, computeStaleness } from "./staleness.js";
 import {
   agingTier,
@@ -61,6 +62,7 @@ export const LINT_CHECKS = [
   // checks go at the end so an existing reader's mental layout does not shift.
   "validityConflicts",
   "positionIntegrity",
+  "malformedPins",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -264,6 +266,7 @@ export async function runLint(
     domainLeaks: [],
     validityConflicts: [],
     positionIntegrity: [],
+    malformedPins: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -442,6 +445,19 @@ export async function runLint(
             detail: `org_position dissent names dangling position id ${id}`,
           });
         }
+      }
+    }
+
+    // 6b. Malformed JIT anchor pins: a `describes` entry whose pin suffix
+    // parsed structurally but was invalid (e.g. end < start). Advisory — the
+    // entry still resolves as a bare binding; this only flags the bad pin so it
+    // gets fixed. Never a write blocker (the write path does not validate pins).
+    for (const raw of fm.describes) {
+      if (parseDescribesEntry(raw, "").malformedPin) {
+        checks.malformedPins.push({
+          path: doc.path,
+          detail: `malformed pin suffix in describes entry: ${raw}`,
+        });
       }
     }
   }

@@ -1396,3 +1396,59 @@ Body.
     expect(findings.some((f) => f.detail.includes("expected low"))).toBe(false);
   });
 });
+
+describe("lint — malformedPins (JIT anchor pins, U6)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  function writeDoc(name: string, describes: string[]): void {
+    const list = describes.map((d) => `  - "${d}"`).join("\n");
+    const fm = [
+      "---",
+      "title: Note",
+      "domain: accumulation",
+      "collection: notes",
+      "status: draft",
+      "confidence: high",
+      "created: 2026-08-04",
+      "provenance: direct",
+      "describes:",
+      list,
+      "---",
+      "body",
+      "",
+    ].join("\n");
+    writeFileSync(join(vault, name), fm);
+  }
+
+  it("flags a describes entry whose pin has end < start", async () => {
+    writeDoc("bad.md", ["api:src/x.ts#L58-40@9f3c2ab"]);
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.malformedPins.map((f) => f.path)).toEqual(["bad.md"]);
+    expect(report.value.checks.malformedPins[0]?.detail).toContain("#L58-40@9f3c2ab");
+  });
+
+  it("does not flag a well-formed pin", async () => {
+    writeDoc("good.md", ["api:src/x.ts#L40-58@9f3c2ab"]);
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.malformedPins).toEqual([]);
+  });
+
+  it("does not flag a bare binding with no pin", async () => {
+    writeDoc("bare.md", ["api:src/x.ts"]);
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.malformedPins).toEqual([]);
+  });
+});

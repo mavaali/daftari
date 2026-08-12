@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  catFileBlob,
   commit,
   ensureGitRepo,
   fileGitMeta,
   gitIdentity,
+  hashObjectFile,
   isGitRepo,
   log,
 } from "../../src/utils/git.js";
@@ -71,6 +73,47 @@ describe("git", () => {
 
   it("fails a commit with no paths", async () => {
     const result = await commit(vault, [], "empty", "agent:tester");
+    expect(result.ok).toBe(false);
+  });
+
+  // --- blob plumbing for JIT anchor pins (U3) -------------------------------
+
+  it("hashObjectFile returns a stable blob id and catFileBlob round-trips it", async () => {
+    await writeFile(join(vault, "code.ts"), "line1\nline2\nline3\n", "utf-8");
+    await commit(vault, ["code.ts"], "add code", "agent:tester");
+
+    const sha = await hashObjectFile(vault, "code.ts");
+    expect(sha.ok).toBe(true);
+    if (!sha.ok) return;
+    expect(sha.value).toMatch(/^[0-9a-f]{40}$/);
+
+    const blob = await catFileBlob(vault, sha.value);
+    expect(blob.ok).toBe(true);
+    if (!blob.ok) return;
+    expect(blob.value).toBe("line1\nline2\nline3\n");
+  });
+
+  it("hashObjectFile of a dirty (uncommitted) file returns the working-tree blob, not HEAD's", async () => {
+    await writeFile(join(vault, "code.ts"), "original\n", "utf-8");
+    await commit(vault, ["code.ts"], "add code", "agent:tester");
+    const committed = await hashObjectFile(vault, "code.ts");
+
+    await writeFile(join(vault, "code.ts"), "modified\n", "utf-8"); // dirty, not committed
+    const dirty = await hashObjectFile(vault, "code.ts");
+
+    expect(committed.ok && dirty.ok).toBe(true);
+    if (!committed.ok || !dirty.ok) return;
+    expect(dirty.value).not.toBe(committed.value); // hashes the current working tree
+  });
+
+  it("hashObjectFile of an absent path fails (feeds `missing`)", async () => {
+    const result = await hashObjectFile(vault, "does-not-exist.ts");
+    expect(result.ok).toBe(false);
+  });
+
+  it("catFileBlob of a sha not in the odb fails (feeds `moved`)", async () => {
+    await ensureGitRepo(vault);
+    const result = await catFileBlob(vault, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     expect(result.ok).toBe(false);
   });
 });

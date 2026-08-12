@@ -60,6 +60,32 @@ export async function isGitRepo(vaultRoot: string): Promise<boolean> {
   return result.ok && result.value.trim() === "true";
 }
 
+// Blob plumbing for JIT anchor pins (citation-anchors spec, Decision 2). Both
+// scope to an arbitrary repo via the shared `git -C <repo>` helper, so the
+// `repoRoot` here is a code repo, not the vault. Read-only, no network.
+
+// The current-working-tree blob id of `relPath` (`git hash-object`). Hashes the
+// file as it is on disk — dirty/uncommitted content included — which is what
+// the pin's `intact` check (step 2) compares against. Fails when the path is
+// absent from the tree, which the classifier reads as `missing`.
+export async function hashObjectFile(
+  repoRoot: string,
+  relPath: string,
+): Promise<Result<string, Error>> {
+  const result = await git(repoRoot, ["hash-object", "--", relPath]);
+  if (!result.ok) return result;
+  return ok(result.value.trim());
+}
+
+// The content of a blob by id (`git cat-file blob <sha>`), used to retrieve the
+// pinned lines when the current blob differs (step 3). Returns the bytes
+// verbatim (no trim — blob content is exact). Fails when the object is not in
+// the odb (e.g. a pin over never-committed or gc'd content), which the
+// classifier reads as `moved`.
+export async function catFileBlob(repoRoot: string, sha: string): Promise<Result<string, Error>> {
+  return git(repoRoot, ["cat-file", "blob", sha]);
+}
+
 // Initializes a git repo for the vault if one does not already exist. When
 // `gitDir` is given, the repo data lives there (git init --separate-git-dir),
 // leaving only a static `.git` FILE in the vault — so a cloud-synced vault never
