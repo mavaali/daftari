@@ -31,6 +31,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include='src/**/*.ts' --coverage.reportOnFailure",
     "dev": "tsx watch src/index.ts --vault ./test/fixtures/sample-vault",
     "lint": "biome check src test",
     "lint:fix": "biome check --write src test",
@@ -75,6 +76,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.8.0",
     "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "pg": "^8.22.0",
@@ -87,9 +89,9 @@
     "hono": "^4.12.25"
   },
   "peerDependencies": {
-    "pg": ">=8",
     "@aws-sdk/client-s3": "^3.600.0",
-    "@azure/storage-blob": "^12.24.0"
+    "@azure/storage-blob": "^12.24.0",
+    "pg": ">=8"
   },
   "peerDependenciesMeta": {
     "pg": {
