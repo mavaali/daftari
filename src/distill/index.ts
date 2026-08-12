@@ -2,21 +2,28 @@
 //
 // `distill` module — compile-on-ingest pipeline orchestrator.
 //
-// Pipeline shape (U1 stub — later units fill chunk/extract/propose):
+// Pipeline shape:
 //
 //   distill(raw, adapter)
 //     -> parse   : adapter.parse(raw)         → NormalizedMessage[]   [U1 DONE]
-//     -> chunk   : split messages into chunks  → Chunk[]               [U2 TODO]
-//     -> extract : LLM-driven claim extraction → RawClaim[]            [U3 TODO]
+//     -> chunk   : split messages into chunks  → Chunk[]               [U3 DONE]
+//     -> extract : LLM-driven claim extraction → RawClaim[]            [U3 DONE — extractClaims, CLI-wired in U7]
 //     -> propose : map to vault proposals      → VaultProposal[]       [U4 TODO]
 //
-// The orchestrator is intentionally a thin stub at this stage. Importing and
-// calling it is safe; it will return the parsed messages and empty arrays for
-// the downstream stages until those units are implemented.
+// The orchestrator stays a thin synchronous stub: it parses and chunks, but
+// extraction (needs an LLM client + call budget) and proposals return empty
+// arrays until the CLI orchestration wires them.
 
 export type { DistillConfig } from "../utils/config.js";
 export { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
 export type { MessageType, NormalizedMessage, SourceAdapter } from "./adapters/types.js";
+export { CHUNK_WINDOW, type Chunk, chunkMessages } from "./chunk.js";
+export {
+  type ExtractedClaim,
+  type ExtractOpts,
+  type ExtractOutcome,
+  extractClaims,
+} from "./extract.js";
 
 // ---------------------------------------------------------------------------
 // Imports
@@ -28,6 +35,8 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { type DistillConfig, loadConfig } from "../utils/config.js";
 import { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
 import type { SourceAdapter } from "./adapters/types.js";
+import { type Chunk, chunkMessages } from "./chunk.js";
+import type { ExtractedClaim } from "./extract.js";
 
 // ---------------------------------------------------------------------------
 // Adapter registry
@@ -115,13 +124,8 @@ export function resolveDistillClient(
 // Placeholder types for the stages that later units will fill in.
 // Defined here so the orchestrator's return type is stable across unit work.
 
-/** Placeholder — U2 will replace with a real Chunk definition. */
-// biome-ignore lint/suspicious/noEmptyInterface: intentional stub for U2
-export interface Chunk {}
-
-/** Placeholder — U3 will replace with a real RawClaim definition. */
-// biome-ignore lint/suspicious/noEmptyInterface: intentional stub for U3
-export interface RawClaim {}
+/** Extracted claims are the distill pipeline's "raw claim" (U3). */
+export type RawClaim = ExtractedClaim;
 
 /** Placeholder — U4 will replace with a real VaultProposal definition. */
 // biome-ignore lint/suspicious/noEmptyInterface: intentional stub for U4
@@ -130,9 +134,13 @@ export interface VaultProposal {}
 export interface DistillResult {
   /** Parsed messages from the adapter (U1). */
   messages: ReturnType<SourceAdapter["parse"]>;
-  /** Chunked message windows (U2 — stub, always []). */
+  /** Chunked message windows (U3). */
   chunks: Chunk[];
-  /** Extracted raw claims (U3 — stub, always []). */
+  /**
+   * Extracted raw claims. The extract stage (extractClaims, U3) needs an LLM
+   * client + budget, which only the CLI orchestration (U7) has — so this
+   * synchronous entry point keeps the stub and the CLI wires extraction.
+   */
   claims: RawClaim[];
   /** Vault write proposals (U4 — stub, always []). */
   proposals: VaultProposal[];
@@ -152,10 +160,11 @@ export function distill(raw: string, adapter: SourceAdapter): DistillResult {
   // U1: parse
   const messages = adapter.parse(raw);
 
-  // U2 TODO: chunk messages into overlapping windows
-  const chunks: Chunk[] = [];
+  // U3: chunk messages into turn windows
+  const chunks = chunkMessages(messages);
 
-  // U3 TODO: extract raw claims from each chunk via LLM
+  // U3: extraction lives in extractClaims (needs an LLM client + budget) —
+  // the CLI (U7) wires it; this synchronous stub keeps claims empty.
   const claims: RawClaim[] = [];
 
   // U4 TODO: map raw claims to vault write proposals
