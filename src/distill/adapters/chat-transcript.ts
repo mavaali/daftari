@@ -53,10 +53,13 @@ function pad2(n: number): string {
 }
 
 /**
- * Parse an iOS-style time string ("6:57:23 PM", "9:05 AM") to { h, m, s }.
+ * Parse an iOS-style time string ("6:57:23 PM", "9:05 AM") to { h, m, s },
+ * or null when the hour is outside the valid 12-hour range (1–12).
  * Handles 12-hour clock correctly: 12 AM → 0, 12 PM → 12.
+ * Returns null for malformed inputs such as "13:00:00 PM" (raw hour 13),
+ * which would otherwise produce an out-of-range ISO hour like 25.
  */
-function parseIosTime(t: string): { h: number; m: number; s: number } {
+function parseIosTime(t: string): { h: number; m: number; s: number } | null {
   const cleaned = t.trim();
   const isPM = /PM$/i.test(cleaned);
   const isAM = /AM$/i.test(cleaned);
@@ -66,18 +69,23 @@ function parseIosTime(t: string): { h: number; m: number; s: number } {
   const m = parts[1] ?? 0;
   const s = parts[2] ?? 0;
 
+  // A valid 12-hour clock hour is 1–12; 0 and 13+ are not representable.
+  if (h < 1 || h > 12) return null;
+
   if (isAM && h === 12) h = 0;
   else if (isPM && h !== 12) h += 12;
 
   return { h, m, s };
 }
 
-function iosToIso(date: string, time: string): string {
+function iosToIso(date: string, time: string): string | null {
   const [mStr, dStr, yStr] = date.split("/");
   const year = expandYear(yStr);
   const month = Number.parseInt(mStr, 10);
   const day = Number.parseInt(dStr, 10);
-  const { h, m, s } = parseIosTime(time);
+  const parsed = parseIosTime(time);
+  if (parsed === null) return null;
+  const { h, m, s } = parsed;
   return `${year}-${pad2(month)}-${pad2(day)}T${pad2(h)}:${pad2(m)}:${pad2(s)}`;
 }
 
@@ -100,6 +108,9 @@ const OMITTED_RE = /\b(image|document|audio|video|sticker|GIF|Contact card) omit
 const ATTACHED_RE = /^<attached: (.+?)>$/;
 const EDITED_SUFFIX = "<This message was edited>";
 
+// Classification is first-match: the order below is significant.
+// A body is tested against each pattern in sequence and the first match wins.
+// Order: system → deleted → call → attached → omitted → edited → text.
 function classifyBody(body: string): {
   type: MessageType;
   text: string;
@@ -168,9 +179,11 @@ export class ChatTranscriptAdapter implements SourceAdapter {
       const iosMatch = IOS_LINE_RE.exec(line);
       if (iosMatch) {
         const [, date, time, rawSender, rawBody] = iosMatch;
+        const ts = iosToIso(date, time);
+        // Malformed timestamp (e.g. hour outside 1–12): skip the line entirely.
+        if (ts === null) continue;
         const sender = stripBidi(rawSender.trim());
         const body = stripBidi(rawBody);
-        const ts = iosToIso(date, time);
         const { type, text, attachment } = classifyBody(body);
         messages.push({ ts, sender, type, text, attachment });
         continue;

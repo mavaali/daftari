@@ -186,6 +186,23 @@ describe("ChatTranscriptAdapter.parse — deleted messages", () => {
   });
 });
 
+describe("ChatTranscriptAdapter.parse — malformed iOS timestamps", () => {
+  it("skips an iOS line where the 12-hour clock hour is 13 (invalid)", () => {
+    // [5/25/26, 13:00:00 PM] would produce hour 25 — must be skipped entirely.
+    const raw = "[5/25/26, 13:00:00 PM] User: bad time";
+    const msgs = adapter.parse(raw);
+    expect(msgs).toHaveLength(0);
+  });
+
+  it("still parses a normal iOS line following a skipped malformed line", () => {
+    const raw = "[5/25/26, 13:00:00 PM] User: bad time\n[5/25/26, 2:00:00 PM] User: good time";
+    const msgs = adapter.parse(raw);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].ts).toBe("2026-05-25T14:00:00");
+    expect(msgs[0].text).toBe("good time");
+  });
+});
+
 describe("ChatTranscriptAdapter.parse — system notices", () => {
   it("classifies the end-to-end encrypted notice as system", () => {
     const raw =
