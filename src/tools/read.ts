@@ -5,6 +5,7 @@
 // definitions; tests call the logic functions directly.
 
 import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import { type DescribesPin, parseDescribesEntry } from "../audit/describes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   compiledUpstreamStaleness,
@@ -40,8 +41,10 @@ import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider } from "../search/vector.js";
 import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
+import { type AnchorState, classifyPin } from "./anchors.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
@@ -167,10 +170,39 @@ export interface VaultReadResult {
     effective_confidence: "low";
     banner: string;
   };
+  // JIT anchor pins (citation-anchors spec, Decision 2): pinned `describes`
+  // bindings verified against their configured code repo at read time. Null
+  // when there are no pinned bindings, no configured repo resolves, or
+  // `jit_anchors` is off — the same null-when-silent contract as `decay`, and
+  // deliberately indistinguishable between "no pins" and "repo not checked out"
+  // so absence leaks nothing. Advisory only: a `moved`/`missing` state never
+  // mutates the doc.
+  anchors: ReadAnchors | null;
   // SHA-256 (hex) of the raw file bytes, frontmatter included. A caller passes
   // this back as a write tool's `base_version` to detect a stale write.
   version: string;
 }
+
+export interface ReadAnchorEntry {
+  raw: string; // the `describes` entry as written
+  repo: string;
+  path: string;
+  symbol: string | null;
+  pin: DescribesPin;
+  state: AnchorState;
+  relocated?: { start: number; end: number }; // present for an intact-via-relocation
+}
+
+export interface ReadAnchors {
+  entries: ReadAnchorEntry[];
+  checked: number; // pinned+resolvable candidates classified (capped)
+  skipped: number; // over-cap remainder (checked + skipped === candidate count)
+  banner: string | null; // drift summary, or null when every checked pin is intact
+}
+
+// At most this many pins are classified per read — a fixed bound on the git
+// work a single `vault_read` can trigger. The remainder is reported as skipped.
+const ANCHOR_PIN_CAP = 24;
 
 export async function vaultRead(
   vaultRoot: string,
@@ -353,6 +385,44 @@ export async function vaultRead(
     }
   }
 
+  // JIT anchor pins (#xjo, spec Decision 2). Best-effort and fully self-
+  // contained: any failure (config load, git, guarded read) collapses to
+  // `anchors: null` and the read still succeeds. Only PINNED describes bindings
+  // whose `repo:` prefix resolves to a configured code repo are candidates; a
+  // bare binding resolves to the vault itself (the "" sentinel below), which is
+  // never a code repo, so it is skipped.
+  const anchors = await computeAnchors(vaultRoot, parsed.value.frontmatter.describes ?? []);
+
+  // Decision 4 — softened decay copy (annotate-only). A doc past its TTL whose
+  // code pins are ALL intact is stale by the clock but verifiably current about
+  // the code it describes, so we APPEND a softening clause to the decay banner.
+  // Copy only: level, reasons, score, bucket, and vault_status are untouched —
+  // one untouched source file must never launder whole-doc rot into freshness.
+  let decay = computeDecay(parsed.value.frontmatter);
+  if (
+    decay?.banner &&
+    anchors &&
+    anchors.entries.length > 0 &&
+    anchors.entries.every((e) => e.state === "intact")
+  ) {
+    const st = computeStaleness(
+      {
+        updated: parsed.value.frontmatter.updated,
+        ttl_days: parsed.value.frontmatter.ttl_days,
+      },
+      new Date(),
+    );
+    if (st.expired) {
+      const n = anchors.entries.length;
+      decay = {
+        ...decay,
+        banner:
+          `${decay.banner} Past TTL, but its ${n} code pin${n === 1 ? "" : "s"} ` +
+          "intact — the code it describes has not changed since the pins were written.",
+      };
+    }
+  }
+
   // U-11 (LD-23, DN-5): advisory cap on VISIBLE compiled upstream inputs
   // that are themselves contested-unratified. Iterates upstream?.edges
   // only — already RBAC-visibility-filtered above (#217's splitUpstream
@@ -392,7 +462,7 @@ export async function vaultRead(
     raw: parsed.value.raw,
     validation: parsed.value.validation,
     hasFrontmatter: parsed.value.hasFrontmatter,
-    decay: computeDecay(parsed.value.frontmatter),
+    decay,
     // Evaluated against today. No index access and no RBAC branch — these
     // fields belong to a document the caller has already been permitted to
     // read.
@@ -405,8 +475,58 @@ export async function vaultRead(
     ...(contestedPositions ? { contested_positions: contestedPositions } : {}),
     ...(ratifiedView ? { ratified_view: ratifiedView } : {}),
     ...(contestedInputs ? { contested_inputs: contestedInputs } : {}),
+    anchors,
     version: sha256Hex(file.value),
   });
+}
+
+// Classify a doc's pinned `describes` bindings against their configured code
+// repos. Returns null when there is nothing to say (no pinned+resolvable
+// bindings, or `jit_anchors` off) or when anything at all goes wrong — the
+// read-path best-effort contract. Never throws.
+async function computeAnchors(vaultRoot: string, describes: string[]): Promise<ReadAnchors | null> {
+  try {
+    const cfg = loadConfig(vaultRoot);
+    if (!cfg.ok || !cfg.value.jitAnchors) return null;
+    const codeRepos = cfg.value.codeRepos;
+
+    // "" sentinel source repo: a bare (prefix-less) binding resolves to "",
+    // which is never a configured code-repo key, so it is filtered out here.
+    const candidates = describes
+      .map((raw) => ({ raw, parsed: parseDescribesEntry(raw, "") }))
+      .filter((c) => c.parsed.pin !== undefined && codeRepos[c.parsed.repo] !== undefined);
+    if (candidates.length === 0) return null;
+
+    const checkedList = candidates.slice(0, ANCHOR_PIN_CAP);
+    const skipped = candidates.length - checkedList.length;
+
+    const entries: ReadAnchorEntry[] = [];
+    for (const { raw, parsed } of checkedList) {
+      const pin = parsed.pin as DescribesPin;
+      const cls = await classifyPin(codeRepos[parsed.repo] as string, parsed.path, pin);
+      if (!cls) continue; // null → degrade this binding to absent
+      entries.push({
+        raw,
+        repo: parsed.repo,
+        path: parsed.path,
+        symbol: parsed.symbol,
+        pin,
+        state: cls.state,
+        ...(cls.relocated ? { relocated: cls.relocated } : {}),
+      });
+    }
+
+    const drift = entries.filter((e) => e.state === "moved" || e.state === "missing").length;
+    const banner =
+      drift > 0
+        ? `${drift} code citation${drift === 1 ? "" : "s"} moved or missing — ` +
+          "re-check the source before trusting this document's account of it."
+        : null;
+
+    return { entries, checked: checkedList.length, skipped, banner };
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
