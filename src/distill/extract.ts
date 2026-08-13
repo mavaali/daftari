@@ -60,7 +60,12 @@ would be worth remembering after the conversation ends. Each claim must be a
 single self-contained sentence, understandable without the transcript. Ground
 every claim in what participants actually said — do not speculate, do not merge
 unrelated points, and return an empty list when the window contains nothing
-worth keeping (greetings, logistics chatter, media placeholders).`;
+worth keeping (greetings, logistics chatter, media placeholders).
+
+Paraphrase in your own words by default: a claim is a compiled belief, not a
+transcript excerpt. Do not copy long verbatim spans from the window. If a short
+exact quote is genuinely necessary, keep it brief and enclose only the quoted
+words in double quotes.`;
 
 const EXTRACT_SCHEMA = {
   type: "object",

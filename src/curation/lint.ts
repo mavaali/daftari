@@ -8,6 +8,7 @@
 // advisory judgments, but the posture is the same: report only.
 
 import { ok, type Result } from "../frontmatter/types.js";
+import { DISTILL_NUMERIC_DEFAULTS } from "../utils/config.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
@@ -63,6 +64,7 @@ export const LINT_CHECKS = [
   "validityConflicts",
   "positionIntegrity",
   "malformedPins",
+  "verbatimQuoteOverrun",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -195,6 +197,25 @@ export interface LintOptions {
   // hidden linker exists). tensionHealth is exempt: vault-global counts by
   // design (see the 2026-07-14 edge-graph spec, decision C).
   pathVisible?: (path: string) => boolean;
+  // U12/R9: verbatim-quote budget for synthesized (compiled) notes. Defaults to
+  // the distill config's maxVerbatimChars; a caller may override per run.
+  maxVerbatimChars?: number;
+}
+
+// U12/R9: verbatim quotes in a compiled note's body — straight or curly
+// double-quoted spans on a single line. Used by the verbatimQuoteOverrun
+// advisory check. Pure; the body only (frontmatter already stripped).
+function verbatimQuotes(body: string): string[] {
+  const quotes: string[] = [];
+  for (const re of [/"([^"\n]+)"/g, /\u201C([^\u201D\n]+)\u201D/g]) {
+    re.lastIndex = 0;
+    let m = re.exec(body);
+    while (m !== null) {
+      quotes.push(m[1]);
+      m = re.exec(body);
+    }
+  }
+  return quotes;
 }
 
 // --- question matching ----------------------------------------------------
@@ -238,6 +259,7 @@ export async function runLint(
   const now = opts.now ?? new Date();
   const draftMaxDays = opts.draftMaxDays ?? DRAFT_MAX_DAYS;
   const lowConfidenceMaxDays = opts.lowConfidenceMaxDays ?? LOW_CONFIDENCE_MAX_DAYS;
+  const maxVerbatimChars = opts.maxVerbatimChars ?? DISTILL_NUMERIC_DEFAULTS.maxVerbatimChars;
   const inbound = buildInboundMap(docs);
   const byPath = new Map(docs.map((d) => [d.path, d]));
 
@@ -267,6 +289,7 @@ export async function runLint(
     validityConflicts: [],
     positionIntegrity: [],
     malformedPins: [],
+    verbatimQuoteOverrun: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -458,6 +481,30 @@ export async function runLint(
           path: doc.path,
           detail: `malformed pin suffix in describes entry: ${raw}`,
         });
+      }
+    }
+
+    // 6c. Verbatim-quote budget (U12/R9): distill compiles conversation into
+    // paraphrased belief, so a synthesized note carrying long verbatim quotes —
+    // or any quote with no sources[] pointer to attribute it — is a
+    // compile-quality smell. Advisory, scoped to synthesized provenance
+    // (manual/direct notes may quote freely).
+    if (fm.provenance === "synthesized") {
+      const quotes = verbatimQuotes(doc.content);
+      if (quotes.length > 0) {
+        const totalChars = quotes.reduce((n, q) => n + q.length, 0);
+        if (totalChars > maxVerbatimChars) {
+          checks.verbatimQuoteOverrun.push({
+            path: doc.path,
+            detail: `${totalChars} verbatim-quoted chars exceed cap ${maxVerbatimChars}`,
+          });
+        }
+        if (fm.sources.length === 0) {
+          checks.verbatimQuoteOverrun.push({
+            path: doc.path,
+            detail: "verbatim quote(s) present but no sources[] attribution",
+          });
+        }
       }
     }
   }
