@@ -32,6 +32,7 @@ const BUILTIN_KEYS = [
   "describes",
   "questions_answered",
   "questions_raised",
+  "subjects",
 ];
 
 function frontmatterKeys(text: string): string[] {
@@ -60,6 +61,7 @@ function fm(): Frontmatter {
     describes: [],
     questions_answered: [],
     questions_raised: ["Is spend predictable?"],
+    subjects: [],
   };
 }
 
