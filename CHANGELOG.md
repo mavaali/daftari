@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-08-13
+
+### Added
+
+- **JIT anchor-pin binding layer** — daftari now binds beliefs to code without ingesting it. A `describes` entry can carry a code-anchor pin (`[repo:]path#Lx-y@<blob-sha>`), and the read/lint path re-checks it against a configured code repo using local git plumbing only — no network, no LLM.
+  - **Read-path pin verification** (#374) — at `vault_read`, pinned `describes` bindings are classified `intact`/`moved`/`missing` via an advisory, null-when-silent `anchors` annotation (matching the `decay`/`structural` idiom). Always advisory: a `moved`/`missing` state never mutates the document. New `code_repos` + `jit_anchors` config (fail-loud shape validation; repo existence is not checked at load), a `malformed_pin` advisory lint finding, and softened decay copy when every pin is intact (annotate-only — scores, buckets, and `vault_status` bytes unchanged).
+  - **Pin minting** (#375) — an agent writes a shaless pin `[repo:]path#Lx-y` and daftari attaches `@<blob-sha>` from the working tree at `vault_write` time (surfaced via a null-when-silent `pin_mint` result field), closing the adoption gap where agents had to hand-compute blob shas.
+  - **Re-pin** (#375) — a relocated pin gets a staged `repin` action that, on **human `vault_ratify`**, rewrites it to its current `#Lx-y@<sha>`. Surfaced three ways: a `repin_hint` on `vault_read`, ad-hoc `vault_stage_action`, and an idempotent auto-stage proposer in the `daftari sleep` cycle (gated by `auto_repin`, default on). Re-pin applies only via human ratify — never auto-applied. All new fields are additive; `describes` stays `string[]` and no code-repo writes are ever made.
+
 ## [3.1.0] - 2026-08-10
 
 ### Added
