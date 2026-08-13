@@ -16,8 +16,10 @@ import { listStagedActions } from "../../src/curation/staged-actions.js";
 import type { ExtractedClaim } from "../../src/distill/extract.js";
 import type { ProposeOutcome } from "../../src/distill/propose.js";
 import {
+  type ClaimAction,
   type DistillUpsertOutcome,
   distillUpsert,
+  joinClaims,
   readDistillState,
   recordLandedClaim,
 } from "../../src/distill/state.js";
@@ -223,5 +225,92 @@ describe("distillUpsert (U5 idempotency)", () => {
     mkdirSync(join(vault, ".daftari"), { recursive: true });
     writeFileSync(join(vault, ".daftari", "distill-state.json"), "not json {{{");
     expect(readDistillState(vault)).toEqual({ sources: {} });
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 6: direct joinClaims unit test — ambiguous prefix is no-match
+  // -------------------------------------------------------------------------
+
+  it("joinClaims treats an ambiguous prefix as new-write and handles unambiguous cases correctly", () => {
+    // Two landed claims share the same anchor:slug prefix but different hash8s.
+    // This is the "two siblings" case — joining against it must be conservative.
+    const prior = {
+      content_hash: "abcd1234abcd1234",
+      claims: {
+        "chat:0:tea-aaaa1111": "knowledge/chat-0-tea-aaaa1111.md",
+        "chat:0:tea-bbbb2222": "knowledge/chat-0-tea-bbbb2222.md",
+      },
+    };
+
+    // A third claim whose prefix is "chat:0:tea" — shares the same ambiguous prefix.
+    const ambiguousClaim: ExtractedClaim = {
+      claim_key: "chat:0:tea-cccc3333",
+      statement: "The team prefers tea.",
+      proposed_frontmatter: { title: "The team prefers tea" },
+    };
+
+    // An exact-match claim — same key as one already landed.
+    const exactClaim: ExtractedClaim = {
+      claim_key: "chat:0:tea-aaaa1111",
+      statement: "Alice prefers tea.",
+      proposed_frontmatter: { title: "Alice prefers tea" },
+    };
+
+    // A single-sibling prefix claim: only ONE landed key shares its prefix.
+    const singleSiblingLandedClaims = {
+      content_hash: "0000000000000000",
+      claims: {
+        "chat:1:coffee-dddd4444": "knowledge/chat-1-coffee-dddd4444.md",
+      },
+    };
+    const updatedClaim: ExtractedClaim = {
+      claim_key: "chat:1:coffee-eeee5555",
+      statement: "Bob now prefers coffee.",
+      proposed_frontmatter: { title: "Bob now prefers coffee" },
+    };
+
+    // --- ambiguous prefix ⇒ new-write ---
+    const ambiguousActions: ClaimAction[] = joinClaims(prior, [ambiguousClaim]);
+    expect(ambiguousActions).toHaveLength(1);
+    expect(ambiguousActions[0]?.kind).toBe("new");
+
+    // --- exact key match ⇒ skip ---
+    const exactActions: ClaimAction[] = joinClaims(prior, [exactClaim]);
+    expect(exactActions).toHaveLength(1);
+    expect(exactActions[0]?.kind).toBe("skip");
+    expect((exactActions[0] as Extract<ClaimAction, { kind: "skip" }>).landedPath).toBe(
+      "knowledge/chat-0-tea-aaaa1111.md",
+    );
+
+    // --- single-sibling prefix + different hash8 ⇒ update ---
+    const updateActions: ClaimAction[] = joinClaims(singleSiblingLandedClaims, [updatedClaim]);
+    expect(updateActions).toHaveLength(1);
+    expect(updateActions[0]?.kind).toBe("update");
+    expect((updateActions[0] as Extract<ClaimAction, { kind: "update" }>).landedPath).toBe(
+      "knowledge/chat-1-coffee-dddd4444.md",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 7: distillUpsert rejects an empty sourceId — no proposals staged
+  // -------------------------------------------------------------------------
+
+  it("returns an error Result for an empty sourceId and stages no proposals", async () => {
+    // Whitespace-only sourceId is also invalid (trim guard).
+    for (const badId of ["", "   "]) {
+      const res = await distillUpsert(vault, {
+        sourceId: badId,
+        sourceContent: CONTENT_V1,
+        claims: [CLAIM_A],
+        runId: "run-guard",
+      });
+
+      expect(res.ok).toBe(false);
+      if (res.ok) throw new Error("expected err Result");
+      expect(res.error.message).toMatch(/non-empty sourceId/i);
+    }
+
+    // The durable queue must remain completely empty — no proposal was staged.
+    expect(await pendingActions(vault)).toHaveLength(0);
   });
 });
