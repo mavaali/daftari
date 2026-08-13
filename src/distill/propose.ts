@@ -24,6 +24,7 @@ import { type StageOutcome, stageActionWithConflictCheck } from "../curation/sta
 import { slugifyKey } from "../import/langgraph-store.js";
 import { vaultSearch } from "../tools/search.js";
 import type { ExtractedClaim } from "./extract.js";
+import { refuseRawDistillOutput } from "./output-fence.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -272,6 +273,15 @@ export async function proposeAllClaims(
       superseded_by: null,
       ttl_days: null,
     };
+
+    // U11/R8: distill-and-discard fence. Refuse before staging any landing that
+    // would write raw/source material (top-level raw/ path or tier: source) —
+    // defense-in-depth against a bad path override or future refactor.
+    const fence = refuseRawDistillOutput(targetPath, frontmatter);
+    if (!fence.ok) {
+      errors.push({ claim_key: claim.claim_key, error: fence.error.message });
+      continue;
+    }
 
     const body = assembleBody(claim, frontmatter, ids);
 
