@@ -19,8 +19,10 @@
 
 import { join } from "node:path";
 import { dump } from "js-yaml";
+import type { AccessContext } from "../access/rbac.js";
 import { type StageOutcome, stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { slugifyKey } from "../import/langgraph-store.js";
+import { vaultSearch } from "../tools/search.js";
 import type { ExtractedClaim } from "./extract.js";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +34,52 @@ export const DISTILL_COLLECTION = "distill";
 
 /** The proposing agent identity, recorded on every proposal. */
 export const DISTILL_AGENT = "agent:distill";
+
+/**
+ * Maximum number of overlap paths attached to a proposal rationale (U8).
+ * Small and bounded: the hint is advisory context for the ratifier, not a
+ * full search result set.
+ */
+export const OVERLAP_HINT_TOP_K = 3;
+
+// ---------------------------------------------------------------------------
+// Overlap-hint types and factory (U8, R5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A function that, given a claim statement, returns the vault-relative paths
+ * of documents that are likely to overlap with the claim (no LLM, no tension
+ * scan — pure local index query). An empty return means no overlaps found.
+ *
+ * Errors thrown by this function are caught by proposeAllClaims and cause a
+ * graceful no-hint degradation (the claim still stages).
+ */
+export type OverlapSearchFn = (statement: string) => Promise<string[]>;
+
+/**
+ * Build an overlap-search function backed by the vault's hybrid search index.
+ * The CLI wires this into proposeAllClaims; tests inject stubs instead.
+ *
+ * Design note: vaultSearch is query-based (statement → top-K existing docs).
+ * vaultSearchRelated is path-based and requires an already-indexed document.
+ * Distilled claims do not exist in the index yet, so vaultSearch is the
+ * correct primitive — confirmed deviation from the plan's `vault_search_related`
+ * wording.
+ *
+ * @param vaultRoot Absolute path to the vault root.
+ * @param access    Optional RBAC context forwarded to vaultSearch.
+ */
+export function makeOverlapHinter(vaultRoot: string, access?: AccessContext): OverlapSearchFn {
+  return async (statement: string): Promise<string[]> => {
+    const result = await vaultSearch(
+      vaultRoot,
+      { query: statement, limit: OVERLAP_HINT_TOP_K },
+      access,
+    );
+    if (!result.ok) return [];
+    return result.value.hits.slice(0, OVERLAP_HINT_TOP_K).map((h) => h.path);
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -133,6 +181,30 @@ function assembleBody(
 }
 
 // ---------------------------------------------------------------------------
+// Rationale builder (U8)
+// ---------------------------------------------------------------------------
+
+// Build the proposal rationale, optionally appending an overlap-hint line.
+// The statement is always the lead so stageActionWithConflictCheck's
+// firstSentence() extraction and the ratifier's first read both land on the
+// claim itself. A non-empty overlap list appends a "Possible overlaps: ..."
+// line separated by a blank line. An empty list or a throwing overlapSearch
+// produces the statement alone — no "Possible overlaps:" line at all.
+async function buildRationale(statement: string, overlapSearch?: OverlapSearchFn): Promise<string> {
+  if (!overlapSearch) return statement;
+  let paths: string[] = [];
+  try {
+    const raw = await overlapSearch(statement);
+    paths = raw.slice(0, OVERLAP_HINT_TOP_K);
+  } catch {
+    // Degrade to no-hint: a search failure must never block staging.
+    return statement;
+  }
+  if (paths.length === 0) return statement;
+  return `${statement}\n\nPossible overlaps: ${paths.join(", ")}`;
+}
+
+// ---------------------------------------------------------------------------
 // Core emitter
 // ---------------------------------------------------------------------------
 
@@ -146,12 +218,23 @@ function assembleBody(
  * @param ids            Stable source-id (idempotency key) + per-run trace id.
  * @param pathOverrides  claim_key -> target path, for U5 update-in-place
  *                       proposals that must land on an already-landed path.
+ * @param overlapSearch  Optional injected function (U8/R5): given a claim
+ *                       statement, returns vault-relative paths of likely
+ *                       overlapping documents. When provided, the top-K paths
+ *                       are appended to the proposal rationale so the ratifier
+ *                       can see possible collisions. No LLM or tension-scan
+ *                       runs here — the function is a pure local index query.
+ *                       When absent, rationale is the statement alone (the
+ *                       original U4 behaviour, fully backward-compatible).
+ *                       Errors thrown by overlapSearch degrade to no-hint;
+ *                       the claim still stages.
  */
 export async function proposeAllClaims(
   vaultRoot: string,
   claims: ExtractedClaim[],
   ids: DistillIds,
   pathOverrides?: Record<string, string>,
+  overlapSearch?: OverlapSearchFn,
 ): Promise<ProposeOutcome> {
   const results: ClaimProposalResult[] = [];
   const errors: Array<{ claim_key: string; error: string }> = [];
@@ -183,11 +266,18 @@ export async function proposeAllClaims(
 
     const body = assembleBody(claim, frontmatter, ids);
 
+    // U8/R5: overlap-hint. Attach top-K likely-collision neighbor paths to
+    // the rationale so the ratifier can see possible overlaps at a glance.
+    // No LLM or tension-scan runs here — overlapSearch is a pure local index
+    // query injected by the caller. A missing or throwing overlapSearch
+    // degrades to no-hint (claim still stages, original rationale preserved).
+    const rationale = await buildRationale(claim.statement, overlapSearch);
+
     const staged = await stageActionWithConflictCheck(vaultRoot, {
       actionType: "write",
       targetPath,
       proposedBy: DISTILL_AGENT,
-      rationale: claim.statement,
+      rationale,
       proposedDiff: { frontmatter, body },
       runId: ids.runId,
     });
