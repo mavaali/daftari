@@ -282,6 +282,59 @@ describe("overlap-hint (U8) — makeOverlapHinter export", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix 2: newline sanitization in overlap paths
+// ---------------------------------------------------------------------------
+
+describe("overlap-hint (U8) — newline sanitization in paths", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-u8-newline-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("strips newlines from overlap paths so the statement remains the first line", async () => {
+    // A path that contains an embedded newline — must not break the rationale.
+    const pathWithNewline = "knowledge/some\ndoc.md";
+    const overlapSearch = async (_statement: string): Promise<string[]> => [pathWithNewline];
+
+    const claim = makeClaim({
+      claim_key: "chunk-u8:newline-path-test-ff001122",
+      statement: "Newline safety check.",
+      proposed_frontmatter: { title: "Newline safety check" },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], IDS, undefined, overlapSearch);
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+
+    // The statement must still be the FIRST LINE (no newline injected before it).
+    const firstLine = action.rationale.split("\n")[0];
+    expect(firstLine).toBe(claim.statement);
+
+    // The sanitized path (newline replaced with space) must appear in the rationale.
+    expect(action.rationale).toContain("knowledge/some doc.md");
+
+    // No raw newline from the path must appear in the "Possible overlaps:" line.
+    const overlapLine = action.rationale
+      .split("\n")
+      .find((l) => l.startsWith("Possible overlaps:"));
+    expect(overlapLine).toBeDefined();
+    expect(overlapLine).not.toContain("\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // No tension-scan / LLM assertion (structural proof)
 //
 // proposeAllClaims never receives an LlmClient — the function signature has

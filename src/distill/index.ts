@@ -48,6 +48,7 @@ import { type Chunk, chunkMessages } from "./chunk.js";
 import { buildReceipt, planDistill } from "./cost.js";
 import type { ExtractedClaim } from "./extract.js";
 import { extractClaims } from "./extract.js";
+import { makeOverlapHinter } from "./propose.js";
 import { distillUpsert } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -609,12 +610,19 @@ export async function runDistill(argv: string[]): Promise<number> {
     }
   }
 
+  // U8: build the overlap-hinter from the vault's local search index.
+  // No AccessContext on the CLI path (single-user, no RBAC filter needed);
+  // vaultSearch tolerates undefined access — RBAC filter only applies when
+  // access is present.
+  const hinter = makeOverlapHinter(vaultRoot);
+
   // Stage proposals via distillUpsert (idempotent join).
   const upsertRes = await distillUpsert(vaultRoot, {
     sourceId,
     sourceContent,
     claims: outcome.claims,
     runId,
+    overlapSearch: hinter,
   });
 
   if (!upsertRes.ok) {

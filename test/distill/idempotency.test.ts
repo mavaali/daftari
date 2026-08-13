@@ -328,4 +328,42 @@ describe("distillUpsert (U5 idempotency)", () => {
     // The durable queue must remain completely empty — no proposal was staged.
     expect(await pendingActions(vault)).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------
+  // U8 end-to-end: overlapSearch wired through distillUpsert → rationale hint
+  // -------------------------------------------------------------------------
+
+  it("threads overlapSearch through distillUpsert so staged rationale contains the hint path", async () => {
+    const knownPath = "knowledge/alice-prefers-tea.md";
+
+    // Stub: returns a single known path for any query.
+    const overlapSearch = async (_statement: string): Promise<string[]> => [knownPath];
+
+    const res = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-u8-wire",
+      overlapSearch,
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw res.error;
+    expect(res.value.noop).toBe(false);
+    expect(res.value.propose?.proposed).toBe(1);
+
+    // Read back the staged action and confirm the rationale was augmented.
+    const actions = await pendingActions(vault);
+    expect(actions).toHaveLength(1);
+
+    const action = actions[0];
+    if (!action) throw new Error("expected a staged action");
+
+    // The claim statement is still the lead (firstSentence() invariant).
+    expect(action.rationale.startsWith(CLAIM_A.statement)).toBe(true);
+
+    // The overlap hint path must appear in the rationale.
+    expect(action.rationale).toContain(knownPath);
+    expect(action.rationale).toMatch(/Possible overlaps:/);
+  });
 });

@@ -192,16 +192,21 @@ function assembleBody(
 // produces the statement alone — no "Possible overlaps:" line at all.
 async function buildRationale(statement: string, overlapSearch?: OverlapSearchFn): Promise<string> {
   if (!overlapSearch) return statement;
-  let paths: string[] = [];
+  let raw: string[] | undefined;
   try {
-    const raw = await overlapSearch(statement);
-    paths = raw.slice(0, OVERLAP_HINT_TOP_K);
+    raw = await overlapSearch(statement);
   } catch {
     // Degrade to no-hint: a search failure must never block staging.
     return statement;
   }
-  if (paths.length === 0) return statement;
-  return `${statement}\n\nPossible overlaps: ${paths.join(", ")}`;
+  // Surface non-array / unexpected returns rather than silently swallowing them.
+  if (!raw || raw.length === 0) return statement;
+  const paths = raw.slice(0, OVERLAP_HINT_TOP_K);
+  // Sanitize newlines in paths — a path containing \r or \n would break the
+  // "statement is the lead" invariant that stageActionWithConflictCheck's
+  // firstSentence() relies on.
+  const safePaths = paths.map((p) => p.replace(/[\r\n]+/g, " "));
+  return `${statement}\n\nPossible overlaps: ${safePaths.join(", ")}`;
 }
 
 // ---------------------------------------------------------------------------

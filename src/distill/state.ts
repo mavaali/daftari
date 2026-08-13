@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { sha256Hex } from "../utils/hash.js";
 import type { ExtractedClaim } from "./extract.js";
-import { type ProposeOutcome, proposeAllClaims } from "./propose.js";
+import { type OverlapSearchFn, type ProposeOutcome, proposeAllClaims } from "./propose.js";
 
 // ---------------------------------------------------------------------------
 // State shape + file I/O (mirrors src/consolidate/state.ts)
@@ -186,6 +186,15 @@ export interface DistillUpsertInput {
   claims: ExtractedClaim[];
   /** Per-run trace stamp (StageActionInput.runId). Never the idempotency key. */
   runId: string;
+  /**
+   * Optional overlap-search function (U8/R5): given a claim statement, returns
+   * vault-relative paths of likely overlapping documents. When provided, the
+   * top-K paths are appended to each proposal's rationale so the ratifier can
+   * see possible collisions. When absent, rationale is the statement alone
+   * (original U4 behaviour, fully backward-compatible). All existing 4-field
+   * callers remain valid — this field is optional.
+   */
+  overlapSearch?: OverlapSearchFn;
 }
 
 export interface DistillUpsertOutcome {
@@ -260,6 +269,7 @@ export async function distillUpsert(
     toPropose,
     { sourceId: input.sourceId, runId: input.runId },
     pathOverrides,
+    input.overlapSearch,
   );
 
   // Advance the emit clock; the landed map only moves via recordLandedClaim.
