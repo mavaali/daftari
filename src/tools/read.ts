@@ -867,6 +867,7 @@ export const FRONTMATTER_SCHEMA: Record<string, unknown> = {
     describes: { type: "array", items: { type: "string" } },
     questions_answered: { type: "array", items: { type: "string" } },
     questions_raised: { type: "array", items: { type: "string" } },
+    subjects: { type: "array", items: { type: "string" } },
   },
   required: [
     "title",
@@ -886,6 +887,7 @@ export const FRONTMATTER_SCHEMA: Record<string, unknown> = {
     "describes",
     "questions_answered",
     "questions_raised",
+    "subjects",
   ],
 };
 

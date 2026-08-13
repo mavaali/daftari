@@ -82,6 +82,7 @@ export function renderTranscript(answers: InterviewAnswer[], meta: TranscriptMet
     tags: ["interview"],
     questions_answered: answers.map((a) => a.question.question),
     questions_raised: [],
+    subjects: [],
   };
 
   const body = [
