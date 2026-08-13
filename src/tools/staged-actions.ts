@@ -700,6 +700,82 @@ export async function vaultRatify(
       dispatched = await vaultMerge(vaultRoot, mergeArgs, access);
       break;
     }
+    case "repin": {
+      // R5: recompute against the CURRENT working tree at dispatch time, not the
+      // staged diff — the staged replacements are advisory display only. A fresh
+      // zero-replacement result means either the pin was already fixed or the code
+      // moved to an unresolvable state; in both cases the action stays pending.
+      const repinPlan = await computeRepin(vaultRoot, action.targetPath);
+      if (!repinPlan.ok) {
+        return err(
+          new Error(
+            `vault_ratify: computeRepin failed for ${action.targetPath}: ` +
+              `${repinPlan.error.message} — the action stays pending`,
+          ),
+        );
+      }
+      if (repinPlan.value.replacements.length === 0) {
+        return err(
+          new Error(
+            `vault_ratify: nothing is currently relocated for ${action.targetPath} — ` +
+              `the pin may have been fixed or the block deleted; the action stays pending`,
+          ),
+        );
+      }
+
+      // Read the document's current content so we can re-send it through vaultWrite
+      // unchanged (vaultWrite has no frontmatter-only mode — every dispatch sends
+      // a full payload; pattern mirrors the `write` and `supersede` dispatch cases).
+      const resolvedRepin = resolveVaultPath(vaultRoot, action.targetPath);
+      if (!resolvedRepin.ok) {
+        return err(
+          new Error(
+            `vault_ratify: cannot resolve path ${action.targetPath}: ` +
+              `${resolvedRepin.error.message} — the action stays pending`,
+          ),
+        );
+      }
+      const currentFile = await readFile(resolvedRepin.value.absPath);
+      if (!currentFile.ok) {
+        return err(
+          new Error(
+            `vault_ratify: document not found at dispatch: ${action.targetPath} — ` +
+              `the action stays pending`,
+          ),
+        );
+      }
+      const currentParsed = parseDocument(currentFile.value);
+      if (!currentParsed.ok) {
+        return err(
+          new Error(
+            `vault_ratify: cannot parse document ${action.targetPath}: ` +
+              `${currentParsed.error.message} — the action stays pending`,
+          ),
+        );
+      }
+
+      // Build the new `describes` array: replace exact matches; leave everything else
+      // byte-identical. Array order is preserved (R7: invariants — repin can NEVER
+      // wholesale-replace describes; only matching entries are rewritten).
+      const currentDescribes: string[] = currentParsed.value.frontmatter.describes ?? [];
+      const replacementMap = new Map(
+        repinPlan.value.replacements.map((r) => [r.old, r.new] as [string, string]),
+      );
+      const newDescribes = currentDescribes.map((entry) => replacementMap.get(entry) ?? entry);
+
+      dispatched = await vaultWrite(
+        vaultRoot,
+        {
+          path: action.targetPath,
+          frontmatter: { describes: newDescribes },
+          body: currentParsed.value.content,
+          agent: principal.value,
+          ...(action.runId ? { run_id: action.runId } : {}),
+        },
+        access,
+      );
+      break;
+    }
     default:
       return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
   }
@@ -856,7 +932,8 @@ export const stagedActionTools: ToolDefinition[] = [
       "Approve or reject a single pending staged action. On approve, dispatches " +
       "to the matching write tool (promote → vault_promote, deprecate → " +
       "vault_deprecate, supersede → vault_supersede, confidence-up → " +
-      "vault_set_confidence, merge → vault_merge, write → vault_write) and " +
+      "vault_set_confidence, merge → vault_merge, write → vault_write, " +
+      "repin → recomputes pins fresh and lands via vault_write) and " +
       "auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
       "action pending. Approving a promote, an unforwarded deprecate, or a " +

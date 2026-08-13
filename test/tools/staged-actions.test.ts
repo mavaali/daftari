@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
@@ -10,6 +11,7 @@ import {
 import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
 import type { RepinPlan } from "../../src/tools/repin.js";
+import { computeRepin } from "../../src/tools/repin.js";
 import {
   describeRatifyElicitation,
   sanitizeRationaleForDisplay,
@@ -17,6 +19,8 @@ import {
   vaultStageAction,
 } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
+import { clearConfigCache, configPath } from "../../src/utils/config.js";
+import { commit, ensureGitRepo, hashObjectFile } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 // ---------------------------------------------------------------------------
@@ -1341,5 +1345,524 @@ describe("vault_stage_action repin (U4)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("replacements");
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// vault_ratify — repin dispatch (U5)
+//
+// The top-level vi.mock replaces computeRepin for all tests in this file.
+// For the real e2e test we override the mock with vi.importActual so the
+// actual implementation runs at dispatch time while all other tests keep the
+// lightweight mock.
+// ---------------------------------------------------------------------------
+
+/** Set up a real git code repo with a single committed file. Returns the repo
+ *  dir and the committed blob sha12. */
+async function makeCodeRepoWithFile(
+  relPath: string,
+  content: string,
+): Promise<{ codeRepo: string; sha12: string }> {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const codeRepo = mkdtempSync(join(tmpdir(), "daftari-u5-code-"));
+  await ensureGitRepo(codeRepo);
+  mkdirSync(join(codeRepo, relPath, ".."), { recursive: true });
+  await writeFile(join(codeRepo, relPath), content, "utf-8");
+  await commit(codeRepo, [relPath], `add ${relPath}`, "agent:tester");
+  const shaResult = await hashObjectFile(codeRepo, relPath);
+  if (!shaResult.ok) throw new Error(`hashObjectFile failed: ${shaResult.error.message}`);
+  const sha12 = shaResult.value.slice(0, 12);
+  return { codeRepo, sha12 };
+}
+
+/** Write a vault doc at `docRelPath` with given `describes` + required fields. */
+function writeVaultDocWithDescribes(
+  vault: string,
+  docRelPath: string,
+  describes: string[],
+  extraFields = "",
+): void {
+  const describesYaml =
+    describes.length === 0 ? "" : `describes:\n${describes.map((e) => `  - "${e}"`).join("\n")}\n`;
+  const content =
+    `---\ntitle: test doc\nstatus: draft\ncollection: pricing\n` +
+    `domain: accumulation\nconfidence: medium\ncreated: 2026-01-01\n` +
+    `provenance: direct\nsources: []\nttl_days: 90\ntags: []\n` +
+    `${extraFields}${describesYaml}---\n\nbody content here\n`;
+  mkdirSync(join(vault, docRelPath, ".."), { recursive: true });
+  writeFileSync(join(vault, docRelPath), content, "utf-8");
+}
+
+/** Wire a vault with a .daftari/config.yaml pointing at `codeRepo`. */
+function wireVaultCodeRepo(vault: string, codeRepo: string, repoName = "repo"): void {
+  mkdirSync(join(vault, ".daftari"), { recursive: true });
+  writeFileSync(configPath(vault), `code_repos:\n  ${repoName}: ${codeRepo}\n`);
+  clearConfigCache();
+}
+
+describe("vault_ratify — repin dispatch (U5)", () => {
+  let vault: string;
+  let codeRepo: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+
+  afterEach(() => {
+    cleanupVault(vault);
+    if (codeRepo) {
+      rmSync(codeRepo, { recursive: true, force: true });
+      codeRepo = "";
+    }
+    clearConfigCache();
+    // Reset mock back to the file-level default after any per-test overrides.
+    mockRepinResult = { ok: true, value: { replacements: [], skipped: [] } };
+    vi.mocked(computeRepin).mockReset();
+    vi.mocked(computeRepin).mockImplementation(async () => mockRepinResult);
+  });
+
+  // -------------------------------------------------------------------------
+  // Happy path — REAL end-to-end (no computeRepin mock at dispatch time)
+  // -------------------------------------------------------------------------
+
+  it("e2e (real git + real vault): stage → ratify approve → doc pin rewritten, provenance recorded, action ratified; no repin_hint, anchors intact", async () => {
+    // Set up a real code repo with a file; the pin target block is lines 5-8.
+    const original = "line1\nline2\nline3\nline4\nTARGET_A\nTARGET_B\nTARGET_C\nTARGET_D\nline9\n";
+    const result1 = await makeCodeRepoWithFile("src/mod.ts", original);
+    codeRepo = result1.codeRepo;
+    const sha12 = result1.sha12;
+
+    wireVaultCodeRepo(vault, codeRepo);
+
+    const pinEntry = `repo:src/mod.ts#L5-8@${sha12}`;
+    const sibling = "repo:src/mod.ts"; // unpinned — must remain byte-identical
+    writeVaultDocWithDescribes(vault, "pricing/anchored.md", [pinEntry, sibling]);
+
+    // Shift the block to lines 15-18 by prepending 10 lines (working tree, NOT committed).
+    const prefix = `${Array.from({ length: 10 }, (_, i) => `inserted${i + 1}`).join("\n")}\n`;
+    await writeFile(join(codeRepo, "src/mod.ts"), prefix + original, "utf-8");
+
+    // For stage time: mock computeRepin to return one replacement (so staging passes).
+    // This simulates the U4 stage path without needing a real computeRepin at stage.
+    // At dispatch time (ratify), we OVERRIDE the mock to call the real implementation.
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: pinEntry, new: `repo:src/mod.ts#L15-18@${sha12}` }],
+        skipped: [],
+      },
+    };
+
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/anchored.md",
+      proposed_by: AGENT,
+      rationale: "Pin relocated after refactor.",
+      proposed_diff: {},
+    });
+    expect(staged.ok, "stage should succeed").toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // Before ratify: override the mock so REAL computeRepin runs at dispatch time.
+    const actual = await vi.importActual<typeof import("../../src/tools/repin.js")>(
+      "../../src/tools/repin.js",
+    );
+    vi.mocked(computeRepin).mockImplementationOnce(actual.computeRepin);
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok, "ratify should succeed").toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+    expect(ratified.value.commit).toMatch(/^[0-9a-f]+$/);
+
+    // Re-read the doc and verify the pin was updated.
+    const read = await vaultRead(vault, "pricing/anchored.md");
+    expect(read.ok).toBe(true);
+    if (!read.ok) throw read.error;
+
+    const describes = read.value.frontmatter.describes as string[] | undefined;
+    expect(Array.isArray(describes)).toBe(true);
+    // Old pin replaced with the new range.
+    expect(describes).not.toContain(pinEntry);
+    const newPin = describes?.find((e: string) => e.startsWith("repo:src/mod.ts#L"));
+    expect(newPin).toMatch(/^repo:src\/mod\.ts#L15-18@[0-9a-f]{12}$/);
+
+    // Sibling (unpinned) entry must be byte-identical — repin never touches
+    // describes entries not in its replacement plan.
+    expect(describes).toContain(sibling);
+
+    // Action must now be ratified.
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("ratified");
+
+    // Provenance must have a line recording the ratification.
+    const prov = await readProvenanceLog(vault, "pricing/anchored.md");
+    expect(prov.ok).toBe(true);
+    if (!prov.ok) throw prov.error;
+    expect(prov.value.length).toBeGreaterThan(0);
+
+    // No repin_hint on the freshly-read doc (U6 territory — assert absent).
+    expect((read.value.frontmatter as Record<string, unknown>).repin_hint).toBeUndefined();
+
+    // Anchors annotation: the new pin is plain-intact (no relocated).
+    // vault_read returns anchors: { entries: [...], banner, ... } | null.
+    // After repin the newly-landed pin should classify intact with no `relocated` field.
+    const anchors = (read.value as Record<string, unknown>).anchors as
+      | { entries: Array<{ state: string; relocated?: unknown }> }
+      | null
+      | undefined;
+    if (anchors?.entries) {
+      for (const a of anchors.entries) {
+        expect(a.relocated).toBeUndefined();
+      }
+    }
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Edge: drift between stage and ratify — approve applies FRESHEST range
+  // -------------------------------------------------------------------------
+
+  it("drift: code moves again after staging → approve applies freshest recomputed range, not the staged one", async () => {
+    const original = "line1\nline2\nline3\nline4\nTARGET_A\nTARGET_B\nTARGET_C\nTARGET_D\nline9\n";
+    const result1 = await makeCodeRepoWithFile("src/mod.ts", original);
+    codeRepo = result1.codeRepo;
+    const sha12 = result1.sha12;
+    wireVaultCodeRepo(vault, codeRepo);
+
+    const pinEntry = `repo:src/mod.ts#L5-8@${sha12}`;
+    writeVaultDocWithDescribes(vault, "pricing/drift.md", [pinEntry]);
+
+    // Stage: mock returns a +10 relocation (lines 15-18).
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: pinEntry, new: `repo:src/mod.ts#L15-18@${sha12}` }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/drift.md",
+      proposed_by: AGENT,
+      rationale: "First relocation.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // Now shift again by another 5 lines (+15 total → lines 20-23).
+    const prefix15 = `${Array.from({ length: 15 }, (_, i) => `extra${i + 1}`).join("\n")}\n`;
+    await writeFile(join(codeRepo, "src/mod.ts"), prefix15 + original, "utf-8");
+
+    // At dispatch time, use the REAL computeRepin so it recomputes from the
+    // current working tree.
+    const actual = await vi.importActual<typeof import("../../src/tools/repin.js")>(
+      "../../src/tools/repin.js",
+    );
+    vi.mocked(computeRepin).mockImplementationOnce(actual.computeRepin);
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+
+    const read = await vaultRead(vault, "pricing/drift.md");
+    expect(read.ok).toBe(true);
+    if (!read.ok) throw read.error;
+    const describes = read.value.frontmatter.describes as string[];
+    // Must reflect the CURRENT 20-23 range, not the staged 15-18.
+    const landed = describes.find((e: string) => e.startsWith("repo:src/mod.ts#L"));
+    expect(landed).toMatch(/^repo:src\/mod\.ts#L20-23@[0-9a-f]{12}$/);
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Edge: stale proposal — nothing relocated at dispatch → stays pending
+  // -------------------------------------------------------------------------
+
+  it("stale: nothing relocated at dispatch (pin hand-fixed) → approve errors, action stays pending", async () => {
+    // Stage with a mock that returns a replacement (so staging passes).
+    await seedDraft(vault, "pricing/stale-repin.md");
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: "repo:file.ts#L1-5@aaa", new: "repo:file.ts#L2-6@bbb" }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/stale-repin.md",
+      proposed_by: AGENT,
+      rationale: "Stale proposal — nothing to repin at dispatch.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // At dispatch time: mock returns zero replacements (pin was hand-fixed / code moved back).
+    mockRepinResult = { ok: true, value: { replacements: [], skipped: [] } };
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(false);
+    if (ratified.ok) throw new Error("expected error");
+    expect(ratified.error.message).toContain("nothing is currently relocated");
+    expect(ratified.error.message).toContain("the action stays pending");
+
+    // Action must still be pending (not ratified).
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Edge: missing block at dispatch — all entries skipped → stays pending
+  // -------------------------------------------------------------------------
+
+  it("missing-block: pinned block deleted after staging → approve errors (zero replacements), stays pending", async () => {
+    await seedDraft(vault, "pricing/missing-block.md");
+    // Stage: mock says block is relocated.
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: "repo:file.ts#L1-5@aaa", new: "repo:file.ts#L2-6@bbb" }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/missing-block.md",
+      proposed_by: AGENT,
+      rationale: "Pin to be fixed.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // At dispatch: block deleted → only skipped, zero replacements.
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [],
+        skipped: [{ entry: "repo:file.ts#L1-5@aaa", state: "missing" }],
+      },
+    };
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(false);
+    if (ratified.ok) throw new Error("expected error");
+    expect(ratified.error.message).toContain("the action stays pending");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Edge: shadow mode — nothing written, shadow:true, action stays pending
+  // -------------------------------------------------------------------------
+
+  it("shadow mode: approve under shadow_mode → nothing written, shadow:true returned, action stays pending", async () => {
+    await seedDraft(vault, "pricing/shadow-repin.md");
+    // Enable shadow_mode in vault config.
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(configPath(vault), "version: 1\nshadow_mode: true\n");
+    clearConfigCache();
+
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: "repo:file.ts#L1-5@aaa", new: "repo:file.ts#L2-6@bbb" }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/shadow-repin.md",
+      proposed_by: AGENT,
+      rationale: "Shadow mode test.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // At dispatch: same mock applies — mock still returns a replacement so
+    // computeRepin at dispatch sees work to do; shadow_mode makes vaultWrite
+    // return shadow:true without writing.
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.shadow).toBe(true);
+    expect(ratified.value.applied).toBe(false);
+
+    // Action must remain pending (shadow write must not close it).
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // RBAC: ratifier's role lacks write on the collection → inner vaultWrite
+  // denies; action stays pending
+  // -------------------------------------------------------------------------
+
+  it("RBAC: ratifier role lacking write on the collection → dispatch denied, action stays pending", async () => {
+    await seedDraft(vault, "pricing/rbac-repin.md");
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: "repo:file.ts#L1-5@aaa", new: "repo:file.ts#L2-6@bbb" }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/rbac-repin.md",
+      proposed_by: AGENT,
+      rationale: "RBAC denial test.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // Ratifier has ratify grant but NO write on "pricing".
+    const ratifierAccess = {
+      user: "human:ratifier",
+      roleName: "ratifier-no-write",
+      role: { read: ["pricing"], write: [], promote: false, ratify: true },
+    };
+
+    const ratified = await vaultRatify(
+      vault,
+      {
+        id: staged.value.id,
+        decision: "approve",
+        principal: HUMAN,
+      },
+      ratifierAccess,
+    );
+    expect(ratified.ok).toBe(false);
+    if (ratified.ok) throw new Error("expected denial");
+    expect(ratified.error.message).toContain("access denied");
+
+    // Action stays pending.
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Siblings byte-identical invariant
+  // -------------------------------------------------------------------------
+
+  it("siblings: untouched describes entries are byte-identical after repin (repin never wholesale-replaces describes)", async () => {
+    await seedDraft(vault, "pricing/siblings.md");
+    // Doc has three describes entries: one to be repinned and two siblings.
+    const toRepin = "repo:a.ts#L1-5@oldsha12abc1";
+    const siblingPinned = "repo:b.ts#L10-20@zyxwvutsrqpo";
+    const siblingBare = "repo:c.ts";
+
+    // Write the doc directly with describes.
+    const docPath = join(vault, "pricing/siblings.md");
+    const existing = writeFileSync; // just to keep the reference; we'll rewrite
+    void existing;
+    const content =
+      `---\ntitle: Siblings Test\nstatus: draft\ncollection: pricing\n` +
+      `domain: accumulation\nconfidence: medium\ncreated: 2026-01-01\n` +
+      `provenance: direct\nsources: []\nttl_days: 90\ntags: []\n` +
+      `describes:\n  - "${toRepin}"\n  - "${siblingPinned}"\n  - "${siblingBare}"\n` +
+      `---\n\nbody\n`;
+    writeFileSync(docPath, content, "utf-8");
+
+    // Mock returns only the replacement for `toRepin`; siblings are untouched.
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: toRepin, new: "repo:a.ts#L6-10@newsha12abc1" }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/siblings.md",
+      proposed_by: AGENT,
+      rationale: "Repin only the first entry.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+
+    const read = await vaultRead(vault, "pricing/siblings.md");
+    expect(read.ok).toBe(true);
+    if (!read.ok) throw read.error;
+    const describes = read.value.frontmatter.describes as string[];
+
+    // The repinned entry must be updated.
+    expect(describes).not.toContain(toRepin);
+    expect(describes).toContain("repo:a.ts#L6-10@newsha12abc1");
+
+    // Both siblings must be byte-identical — repin must never touch them.
+    expect(describes).toContain(siblingPinned);
+    expect(describes).toContain(siblingBare);
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Reject still works when a repin action is pending
+  // -------------------------------------------------------------------------
+
+  it("reject: a pending repin action can be rejected; action status becomes rejected", async () => {
+    await seedDraft(vault, "pricing/reject-repin.md");
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: "repo:file.ts#L1-5@aaa", new: "repo:file.ts#L2-6@bbb" }],
+        skipped: [],
+      },
+    };
+    const staged = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/reject-repin.md",
+      proposed_by: AGENT,
+      rationale: "Reject test.",
+      proposed_diff: {},
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "reject",
+      principal: HUMAN,
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(false);
+    expect(ratified.value.decision).toBe("reject");
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("rejected");
   }, 60_000);
 });
