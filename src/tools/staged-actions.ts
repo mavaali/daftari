@@ -723,9 +723,11 @@ export async function vaultRatify(
         );
       }
 
-      // Read the document's current content so we can re-send it through vaultWrite
-      // unchanged (vaultWrite has no frontmatter-only mode — every dispatch sends
-      // a full payload; pattern mirrors the `write` and `supersede` dispatch cases).
+      // Re-read and re-parse the doc here even though computeRepin already parsed it
+      // internally. This is intentional: the doc could be modified between computeRepin's
+      // read and this dispatch (e.g. a concurrent write), so we need a fresh snapshot to
+      // guarantee the body and non-describes frontmatter we forward to vaultWrite are
+      // current. RepinPlan intentionally omits the parsed body to keep it minimal.
       const resolvedRepin = resolveVaultPath(vaultRoot, action.targetPath);
       if (!resolvedRepin.ok) {
         return err(

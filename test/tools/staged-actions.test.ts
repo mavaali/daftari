@@ -1,5 +1,6 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
@@ -1363,8 +1364,6 @@ async function makeCodeRepoWithFile(
   relPath: string,
   content: string,
 ): Promise<{ codeRepo: string; sha12: string }> {
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
   const codeRepo = mkdtempSync(join(tmpdir(), "daftari-u5-code-"));
   await ensureGitRepo(codeRepo);
   mkdirSync(join(codeRepo, relPath, ".."), { recursive: true });
@@ -1407,6 +1406,7 @@ describe("vault_ratify — repin dispatch (U5)", () => {
 
   beforeEach(() => {
     vault = makeTempVault();
+    codeRepo = "";
   });
 
   afterEach(() => {
@@ -1779,8 +1779,6 @@ describe("vault_ratify — repin dispatch (U5)", () => {
 
     // Write the doc directly with describes.
     const docPath = join(vault, "pricing/siblings.md");
-    const existing = writeFileSync; // just to keep the reference; we'll rewrite
-    void existing;
     const content =
       `---\ntitle: Siblings Test\nstatus: draft\ncollection: pricing\n` +
       `domain: accumulation\nconfidence: medium\ncreated: 2026-01-01\n` +
