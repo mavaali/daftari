@@ -400,6 +400,7 @@ export function validateFrontmatter(
     describes: optionalStringArray("describes"),
     questions_answered: optionalStringArray("questions_answered"),
     questions_raised: optionalStringArray("questions_raised"),
+    subjects: optionalStringArray("subjects"),
     positions: optionalPositions("positions"),
     org_position: optionalOrgPosition("org_position"),
     contested: optionalBoolean("contested"),
