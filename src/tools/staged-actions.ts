@@ -33,6 +33,7 @@ import { loadConfig } from "../utils/config.js";
 import { log as gitLog } from "../utils/git.js";
 import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
+import { computeRepin } from "./repin.js";
 import {
   vaultDeprecate,
   vaultMerge,
@@ -121,6 +122,33 @@ export async function vaultStageAction(
     }
   }
 
+  // A `repin` proposal carries an optional advisory `replacements` array in
+  // proposed_diff. Validate the shape up front if present — a malformed array
+  // must never sit in the queue.
+  const isRepin = actionType.value === "repin";
+  if (isRepin) {
+    const diff = args.proposed_diff as Record<string, unknown>;
+    if (diff.replacements !== undefined) {
+      if (
+        !Array.isArray(diff.replacements) ||
+        !(diff.replacements as unknown[]).every(
+          (r) =>
+            r !== null &&
+            typeof r === "object" &&
+            typeof (r as Record<string, unknown>).old === "string" &&
+            typeof (r as Record<string, unknown>).new === "string",
+        )
+      ) {
+        return err(
+          new Error(
+            "vault_stage_action: a 'repin' action's proposed_diff.replacements must be " +
+              "an array of {old, new} string pairs when present",
+          ),
+        );
+      }
+    }
+  }
+
   const resolved = resolveVaultPath(vaultRoot, targetPath.value);
   if (!resolved.ok) return resolved;
   const exists = await readFile(resolved.value.absPath);
@@ -164,6 +192,39 @@ export async function vaultStageAction(
     return err(new Error(`vault_stage_action: target document not found: ${targetPath.value}`));
   }
 
+  // Fail fast for `repin`: if computeRepin finds no currently-relocated pins
+  // on the target, a ratification would be a no-op and the proposal would sit
+  // in the queue for 14 days until it expires. Surface the problem immediately.
+  // When computeRepin returns replacements, stamp them into proposed_diff so
+  // the ratifier's elicitation shows the concrete old→new pairs (display only;
+  // the U5 dispatch recomputes them authoritatively at ratify time).
+  let proposedDiffOverride: unknown = args.proposed_diff;
+  if (isRepin) {
+    const repinResult = await computeRepin(vaultRoot, resolved.value.relPath);
+    if (!repinResult.ok) {
+      return err(
+        new Error(
+          `vault_stage_action: computeRepin failed for ${targetPath.value}: ${repinResult.error.message}`,
+        ),
+      );
+    }
+    if (repinResult.value.replacements.length === 0) {
+      return err(
+        new Error(
+          `vault_stage_action: nothing to re-pin: no pin on ${resolved.value.relPath} is currently relocated`,
+        ),
+      );
+    }
+    // Stamp the computed replacements into the proposed_diff so the ratifier's
+    // elicitation shows the concrete old→new pairs (advisory; U5 recomputes).
+    // args.proposed_diff is guaranteed non-null/object by the guard at ~line 98-100.
+    const existingDiff = args.proposed_diff as Record<string, unknown>;
+    proposedDiffOverride = {
+      ...existingDiff,
+      replacements: repinResult.value.replacements,
+    };
+  }
+
   let ttlDays: number | undefined;
   if (args.ttl_days !== undefined && args.ttl_days !== null) {
     if (typeof args.ttl_days !== "number" || !Number.isFinite(args.ttl_days)) {
@@ -180,7 +241,7 @@ export async function vaultStageAction(
     targetPath: resolved.value.relPath,
     proposedBy: proposedBy.value,
     rationale: rationale.value,
-    proposedDiff: args.proposed_diff,
+    proposedDiff: proposedDiffOverride,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     ...(ttlDays !== undefined ? { ttlDays } : {}),
   });
@@ -639,6 +700,84 @@ export async function vaultRatify(
       dispatched = await vaultMerge(vaultRoot, mergeArgs, access);
       break;
     }
+    case "repin": {
+      // R5: recompute against the CURRENT working tree at dispatch time, not the
+      // staged diff — the staged replacements are advisory display only. A fresh
+      // zero-replacement result means either the pin was already fixed or the code
+      // moved to an unresolvable state; in both cases the action stays pending.
+      const repinPlan = await computeRepin(vaultRoot, action.targetPath);
+      if (!repinPlan.ok) {
+        return err(
+          new Error(
+            `vault_ratify: computeRepin failed for ${action.targetPath}: ` +
+              `${repinPlan.error.message} — the action stays pending`,
+          ),
+        );
+      }
+      if (repinPlan.value.replacements.length === 0) {
+        return err(
+          new Error(
+            `vault_ratify: nothing is currently relocated for ${action.targetPath} — ` +
+              `the pin may have been fixed or the block deleted; the action stays pending`,
+          ),
+        );
+      }
+
+      // Re-read and re-parse the doc here even though computeRepin already parsed it
+      // internally. This is intentional: the doc could be modified between computeRepin's
+      // read and this dispatch (e.g. a concurrent write), so we need a fresh snapshot to
+      // guarantee the body and non-describes frontmatter we forward to vaultWrite are
+      // current. RepinPlan intentionally omits the parsed body to keep it minimal.
+      const resolvedRepin = resolveVaultPath(vaultRoot, action.targetPath);
+      if (!resolvedRepin.ok) {
+        return err(
+          new Error(
+            `vault_ratify: cannot resolve path ${action.targetPath}: ` +
+              `${resolvedRepin.error.message} — the action stays pending`,
+          ),
+        );
+      }
+      const currentFile = await readFile(resolvedRepin.value.absPath);
+      if (!currentFile.ok) {
+        return err(
+          new Error(
+            `vault_ratify: document not found at dispatch: ${action.targetPath} — ` +
+              `the action stays pending`,
+          ),
+        );
+      }
+      const currentParsed = parseDocument(currentFile.value);
+      if (!currentParsed.ok) {
+        return err(
+          new Error(
+            `vault_ratify: cannot parse document ${action.targetPath}: ` +
+              `${currentParsed.error.message} — the action stays pending`,
+          ),
+        );
+      }
+
+      // Build the new `describes` array: replace exact matches; leave everything else
+      // byte-identical. Array order is preserved (R7: invariants — repin can NEVER
+      // wholesale-replace describes; only matching entries are rewritten).
+      const currentDescribes: string[] = currentParsed.value.frontmatter.describes ?? [];
+      const replacementMap = new Map(
+        repinPlan.value.replacements.map((r) => [r.old, r.new] as [string, string]),
+      );
+      const newDescribes = currentDescribes.map((entry) => replacementMap.get(entry) ?? entry);
+
+      dispatched = await vaultWrite(
+        vaultRoot,
+        {
+          path: action.targetPath,
+          frontmatter: { describes: newDescribes },
+          body: currentParsed.value.content,
+          agent: principal.value,
+          ...(action.runId ? { run_id: action.runId } : {}),
+        },
+        access,
+      );
+      break;
+    }
     default:
       return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
   }
@@ -731,13 +870,17 @@ export const stagedActionTools: ToolDefinition[] = [
       "ttl_days (default 14). This is the producer side of the staged-action " +
       "queue — normally called by the curation loop or an agent, not by a human " +
       "directly. Action types: promote, deprecate, supersede, merge, " +
-      "confidence-up, write. proposed_diff carries the per-action payload " +
+      "confidence-up, write, repin. proposed_diff carries the per-action payload " +
       "replayed on ratification: supersede → {superseded_by}, confidence-up → " +
       "{confidence}, merge → {merge_from: [path_a, path_b], body, frontmatter?}, " +
       "write → {frontmatter, body} (full content; the target may be a new " +
-      "document). If other pending proposals already target the same document, " +
-      "the new one still lands — both stay pending — and an inter-proposal " +
-      "tension is logged; the result carries conflicts_with and tension_id.",
+      "document), repin → {} or {replacements: [{old, new}]} (advisory; " +
+      "stage time runs computeRepin and stamps in the computed old→new pairs; " +
+      "the dispatch recomputes authoritatively at ratify time — fail-fast if no " +
+      "pin on the target is currently relocated). If other pending proposals " +
+      "already target the same document, the new one still lands — both stay " +
+      "pending — and an inter-proposal tension is logged; the result carries " +
+      "conflicts_with and tension_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -791,7 +934,8 @@ export const stagedActionTools: ToolDefinition[] = [
       "Approve or reject a single pending staged action. On approve, dispatches " +
       "to the matching write tool (promote → vault_promote, deprecate → " +
       "vault_deprecate, supersede → vault_supersede, confidence-up → " +
-      "vault_set_confidence, merge → vault_merge, write → vault_write) and " +
+      "vault_set_confidence, merge → vault_merge, write → vault_write, " +
+      "repin → recomputes pins fresh and lands via vault_write) and " +
       "auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
       "action pending. Approving a promote, an unforwarded deprecate, or a " +

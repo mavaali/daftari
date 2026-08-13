@@ -3,7 +3,7 @@
 // markdown to stdout by default, JSON with full detail, capped lists with an
 // explicit "+n more" so truncation is visible, never silent.
 
-import type { SleepCycleResult, WakeTask } from "./cycle.js";
+import type { RepinPassResult, SleepCycleResult, WakeTask } from "./cycle.js";
 import type { TensionScanOutcome } from "./tension-scan.js";
 
 export interface SleepReport {
@@ -19,6 +19,34 @@ function wakeLine(w: WakeTask): string {
     `| ${w.path} | ${w.ageDays}d / ${w.ttlDays ?? "—"}d | ` +
     `${w.blastTotal} (${w.blastPrimary}p/${w.blastAdvisory}a) | ${w.sources.join(", ") || "—"} |`
   );
+}
+
+function renderRepinSection(lines: string[], r: RepinPassResult): void {
+  if (r.staged.length === 0 && r.skippedPending === 0 && r.errors.length === 0) {
+    lines.push("No relocated pins found — nothing staged.");
+    return;
+  }
+  if (r.staged.length > 0) {
+    lines.push(
+      `Staged ${r.staged.length} repin proposal(s) (agent:sleep-repin → ratify to apply):`,
+    );
+    for (const s of r.staged) {
+      lines.push(`- ${s.path} (${s.actionId})`);
+    }
+    if (r.skippedPending > 0) {
+      lines.push(`- skipped ${r.skippedPending} doc(s) with a pending repin already queued`);
+    }
+  } else if (r.skippedPending > 0) {
+    // Nothing new to stage, but some docs were already queued — say so plainly
+    // rather than leading with a context-free "- skipped …" bullet.
+    lines.push(`Skipped ${r.skippedPending} doc(s) already queued — nothing new to stage.`);
+  }
+  if (r.errors.length > 0) {
+    lines.push(`- ${r.errors.length} per-doc error(s) (cycle continued):`);
+    for (const e of r.errors) {
+      lines.push(`  - ${e.path}: ${e.reason}`);
+    }
+  }
 }
 
 export function renderMarkdown(report: SleepReport): string {
@@ -86,6 +114,12 @@ export function renderMarkdown(report: SleepReport): string {
     }
   }
   lines.push("");
+
+  if (c.repin !== undefined) {
+    lines.push("## Anchor re-pin");
+    renderRepinSection(lines, c.repin);
+    lines.push("");
+  }
 
   lines.push("## Ratification queue");
   lines.push(`- pending: ${c.ratification.pending}`);

@@ -267,6 +267,10 @@ export interface DaftariConfig {
   // Kill-switch for the read-time pin check (`jit_anchors` key). Defaults true;
   // false removes the entire read-path code path.
   jitAnchors: boolean;
+  // Kill-switch for the sleep-cycle auto-repin proposer (`auto_repin` key).
+  // Defaults true; false disables the nightly repin pass entirely (no `repin`
+  // field on SleepCycleResult). Mirrors the jit_anchors parse shape.
+  autoRepin: boolean;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -292,6 +296,7 @@ function emptyConfig(): DaftariConfig {
     storage: undefined,
     codeRepos: {},
     jitAnchors: true,
+    autoRepin: true,
   };
 }
 
@@ -1204,6 +1209,14 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     jitAnchors = root.jit_anchors;
   }
 
+  let autoRepin = true;
+  if (root.auto_repin !== undefined) {
+    if (typeof root.auto_repin !== "boolean") {
+      return err(new Error("malformed config: 'auto_repin' must be true or false"));
+    }
+    autoRepin = root.auto_repin;
+  }
+
   const tensionScan = validateTensionScan(root.tension_scan);
   if (!tensionScan.ok) return err(new Error(`malformed config: ${tensionScan.error.message}`));
 
@@ -1300,5 +1313,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     storage: storageConfig.value,
     codeRepos: codeRepos.value,
     jitAnchors,
+    autoRepin,
   });
 }

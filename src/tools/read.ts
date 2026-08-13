@@ -44,7 +44,7 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
-import { type AnchorState, classifyPin } from "./anchors.js";
+import { ANCHOR_PIN_CAP, type AnchorState, classifyPin } from "./anchors.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
@@ -198,11 +198,11 @@ export interface ReadAnchors {
   checked: number; // pinned+resolvable candidates classified (capped)
   skipped: number; // over-cap remainder (checked + skipped === candidate count)
   banner: string | null; // drift summary, or null when every checked pin is intact
+  // Present only when ≥1 entry has `relocated` (intact-via-relocation) — names
+  // the count and the exact vault_stage_action call to queue a fix. Absent
+  // (not null, not empty-string) in all other cases (null-when-silent contract).
+  repin_hint?: string;
 }
-
-// At most this many pins are classified per read — a fixed bound on the git
-// work a single `vault_read` can trigger. The remainder is reported as skipped.
-const ANCHOR_PIN_CAP = 24;
 
 export async function vaultRead(
   vaultRoot: string,
@@ -391,7 +391,11 @@ export async function vaultRead(
   // whose `repo:` prefix resolves to a configured code repo are candidates; a
   // bare binding resolves to the vault itself (the "" sentinel below), which is
   // never a code repo, so it is skipped.
-  const anchors = await computeAnchors(vaultRoot, parsed.value.frontmatter.describes ?? []);
+  const anchors = await computeAnchors(
+    vaultRoot,
+    resolved.value.relPath,
+    parsed.value.frontmatter.describes ?? [],
+  );
 
   // Decision 4 — softened decay copy (annotate-only). A doc past its TTL whose
   // code pins are ALL intact is stale by the clock but verifiably current about
@@ -484,7 +488,15 @@ export async function vaultRead(
 // repos. Returns null when there is nothing to say (no pinned+resolvable
 // bindings, or `jit_anchors` off) or when anything at all goes wrong — the
 // read-path best-effort contract. Never throws.
-async function computeAnchors(vaultRoot: string, describes: string[]): Promise<ReadAnchors | null> {
+// `vaultRelPath` is the canonical, symlink-resolved, no-leading-dot relative
+// path of the document (from `resolveVaultPath(...).relPath`). It is embedded
+// verbatim in the `repin_hint`'s `target_path` so the hint is stageable
+// without further normalisation.
+async function computeAnchors(
+  vaultRoot: string,
+  vaultRelPath: string,
+  describes: string[],
+): Promise<ReadAnchors | null> {
   try {
     const cfg = loadConfig(vaultRoot);
     if (!cfg.ok || !cfg.value.jitAnchors) return null;
@@ -523,7 +535,23 @@ async function computeAnchors(vaultRoot: string, describes: string[]): Promise<R
           "re-check the source before trusting this document's account of it."
         : null;
 
-    return { entries, checked: checkedList.length, skipped, banner };
+    // R6: when ≥1 entry is intact-via-relocation, tell the reading agent exactly
+    // how to queue a fix. Derived entirely from already-computed entries (R7 —
+    // no staging, no writes, no new git work from this read path).
+    const relocatedCount = entries.filter((e) => e.relocated !== undefined).length;
+    const repinHint =
+      relocatedCount > 0
+        ? `${relocatedCount} pin${relocatedCount === 1 ? "" : "s"} ${relocatedCount === 1 ? "has" : "have"} relocated — ` +
+          `stage a fix with vault_stage_action { action_type: "repin", target_path: "${vaultRelPath}" }`
+        : undefined;
+
+    return {
+      entries,
+      checked: checkedList.length,
+      skipped,
+      banner,
+      ...(repinHint !== undefined ? { repin_hint: repinHint } : {}),
+    };
   } catch {
     return null;
   }
@@ -1230,6 +1258,23 @@ export const readTools: ToolDefinition[] = [
             banner: { type: "string" },
           },
           required: ["inputs", "effective_confidence", "banner"],
+        },
+        // JIT anchor pins (Decision 2). Null when there is nothing to say (no
+        // pinned bindings, repo not configured, kill-switch off, or any error).
+        // Null-when-silent: absent/null is indistinguishable (no existence leak).
+        anchors: {
+          type: ["object", "null"],
+          properties: {
+            entries: { type: "array", items: { type: "object" } },
+            checked: { type: "integer", minimum: 0 },
+            skipped: { type: "integer", minimum: 0 },
+            banner: { type: ["string", "null"] },
+            // R6: present only when ≥1 entry has `relocated` (intact-via-relocation).
+            // Names the count and the ready-made vault_stage_action call to fix it.
+            // Absent (not null, not empty-string) when no relocation was detected.
+            repin_hint: { type: "string" },
+          },
+          required: ["entries", "checked", "skipped", "banner"],
         },
         version: { type: "string", description: "SHA-256 (hex) of the raw file bytes" },
       },
