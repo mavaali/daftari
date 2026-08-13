@@ -278,13 +278,39 @@ describe("vaultRead — anchors.repin_hint (U6)", () => {
     // The entry must be intact-via-relocation.
     expect(anchors?.entries[0]?.state).toBe("intact");
     expect(anchors?.entries[0]?.relocated).toBeDefined();
-    // repin_hint must be present and contain the path.
+    // repin_hint must be present with exact singular phrasing and the path.
     expect(anchors?.repin_hint).toBeDefined();
     expect(typeof anchors?.repin_hint).toBe("string");
+    expect(anchors?.repin_hint).toContain("1 pin has relocated");
     expect(anchors?.repin_hint).toContain("notes/pinned.md");
     expect(anchors?.repin_hint).toContain("vault_stage_action");
     expect(anchors?.repin_hint).toContain("repin");
-    expect(anchors?.repin_hint).toContain("1");
+  });
+
+  // Important 1: non-canonical input path → hint embeds canonical target_path.
+  // Passing "./notes/pinned.md" (leading dot-slash) must produce a hint whose
+  // target_path is the normalised "notes/pinned.md" — not the raw input form.
+  // This test would fail against the old `path` (raw caller arg) behaviour.
+  it("embeds canonical target_path in repin_hint even when called with a non-canonical path", async () => {
+    const sha = await commitCode("src/x.ts", "keep\nOLD_A\nOLD_B\nkeep\n");
+    await writeFile(join(codeRepo, "src/x.ts"), "HEAD\nHEAD\nkeep\nOLD_A\nOLD_B\nkeep\n", "utf-8");
+    writeConfig(`code_repos:\n  api: ${codeRepo}\n`);
+    writeDoc("notes/pinned.md", [`api:src/x.ts#L2-3@${sha.slice(0, 10)}`]);
+
+    // Read with a non-canonical path (leading "./").
+    const res = await vaultRead(vault, "./notes/pinned.md");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const anchors = res.value.anchors as ReadAnchors | null;
+    expect(anchors).not.toBeNull();
+    expect(anchors?.entries[0]?.relocated).toBeDefined();
+    const hint = anchors?.repin_hint;
+    expect(hint).toBeDefined();
+
+    // The embedded target_path must be the canonical form, NOT "./notes/pinned.md".
+    const hintTargetMatch = hint?.match(/target_path: "([^"]+)"/);
+    expect(hintTargetMatch).not.toBeNull();
+    expect(hintTargetMatch?.[1]).toBe("notes/pinned.md");
   });
 
   // Edge: all pins intact (no relocation) → NO repin_hint.
@@ -370,11 +396,19 @@ describe("vaultRead — anchors.repin_hint (U6)", () => {
     expect(hint).toBeDefined();
     expect(typeof hint).toBe("string");
 
+    // Derive target_path from the hint itself — if the hint embeds the wrong
+    // path this assertion fails before the stage call, making the test
+    // falsifiable against the raw-path bug.
+    const hintTargetMatch = hint?.match(/target_path: "([^"]+)"/);
+    expect(hintTargetMatch).not.toBeNull();
+    const hintTargetPath = hintTargetMatch?.[1];
+    expect(hintTargetPath).toBe("notes/integration.md");
+
     // Execute the call the hint describes: vault_stage_action with action_type
-    // "repin" and target_path set to the doc's vault-relative path.
+    // "repin" and target_path extracted from the hint string.
     const staged = await vaultStageAction(vault, {
       action_type: "repin",
-      target_path: "notes/integration.md",
+      target_path: hintTargetPath,
       proposed_by: "agent:test",
       rationale: "Pin relocated — applying repin_hint.",
       proposed_diff: {},

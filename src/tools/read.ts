@@ -391,7 +391,11 @@ export async function vaultRead(
   // whose `repo:` prefix resolves to a configured code repo are candidates; a
   // bare binding resolves to the vault itself (the "" sentinel below), which is
   // never a code repo, so it is skipped.
-  const anchors = await computeAnchors(vaultRoot, path, parsed.value.frontmatter.describes ?? []);
+  const anchors = await computeAnchors(
+    vaultRoot,
+    resolved.value.relPath,
+    parsed.value.frontmatter.describes ?? [],
+  );
 
   // Decision 4 — softened decay copy (annotate-only). A doc past its TTL whose
   // code pins are ALL intact is stale by the clock but verifiably current about
@@ -484,6 +488,10 @@ export async function vaultRead(
 // repos. Returns null when there is nothing to say (no pinned+resolvable
 // bindings, or `jit_anchors` off) or when anything at all goes wrong — the
 // read-path best-effort contract. Never throws.
+// `vaultRelPath` is the canonical, symlink-resolved, no-leading-dot relative
+// path of the document (from `resolveVaultPath(...).relPath`). It is embedded
+// verbatim in the `repin_hint`'s `target_path` so the hint is stageable
+// without further normalisation.
 async function computeAnchors(
   vaultRoot: string,
   vaultRelPath: string,
@@ -531,9 +539,9 @@ async function computeAnchors(
     // how to queue a fix. Derived entirely from already-computed entries (R7 —
     // no staging, no writes, no new git work from this read path).
     const relocatedCount = entries.filter((e) => e.relocated !== undefined).length;
-    const repin_hint =
+    const repinHint =
       relocatedCount > 0
-        ? `${relocatedCount} pin${relocatedCount === 1 ? "" : "s"} have relocated — ` +
+        ? `${relocatedCount} pin${relocatedCount === 1 ? "" : "s"} ${relocatedCount === 1 ? "has" : "have"} relocated — ` +
           `stage a fix with vault_stage_action { action_type: "repin", target_path: "${vaultRelPath}" }`
         : undefined;
 
@@ -542,7 +550,7 @@ async function computeAnchors(
       checked: checkedList.length,
       skipped,
       banner,
-      ...(repin_hint !== undefined ? { repin_hint } : {}),
+      ...(repinHint !== undefined ? { repin_hint: repinHint } : {}),
     };
   } catch {
     return null;
