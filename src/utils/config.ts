@@ -39,6 +39,10 @@ export interface RoleConfig {
   // permission layer, not convention. YAML key: propose_only. Optional so
   // existing configs (and role literals) are unchanged; absent means false.
   proposeOnly?: boolean;
+  // R11-R13: may erase content from git history (vault_erase). The most
+  // destructive grant — a history rewrite + force-push is irreversible — so it
+  // is opt-in, off by default. YAML key: erase. Optional; absent means false.
+  erase?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -379,6 +383,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     proposeOnly = obj.propose_only;
   }
 
+  let erase = false;
+  if (obj.erase !== undefined) {
+    if (typeof obj.erase !== "boolean") {
+      return err(new Error(`role '${name}' erase must be true or false`));
+    }
+    erase = obj.erase;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -405,6 +417,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     promote,
     ratify,
     ...(proposeOnly ? { proposeOnly } : {}),
+    ...(erase ? { erase } : {}),
   });
 }
 
