@@ -4,7 +4,7 @@
 // already-intact, unmapped repo, unpinned entry). Never throws on per-entry
 // problems; doc-level failures (unreadable doc, config failure) return err.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,7 +72,6 @@ describe("computeRepin", () => {
 
   afterEach(() => {
     if (vault) cleanupVault(vault);
-    const { rmSync } = require("node:fs");
     rmSync(codeRepo, { recursive: true, force: true });
     clearConfigCache();
   });
@@ -129,7 +128,7 @@ describe("computeRepin", () => {
   // Edge: moved (content gone) → skipped, zero replacements
   // -------------------------------------------------------------------------
 
-  it("edge: moved pin (block deleted) → zero replacements, entry in skipped with state=moved", async () => {
+  it("edge: block content replaced → classified moved → zero replacements, entry in skipped with state=moved", async () => {
     const sha = await commitFile(codeRepo, "src/mod.ts", "A\nB\nC\nD\n");
     const sha12 = sha.slice(0, 12);
     const pinEntry = `repo:src/mod.ts#L2-3@${sha12}`;
@@ -163,7 +162,6 @@ describe("computeRepin", () => {
     writeVaultDoc(vault, "note.md", [pinEntry]);
 
     // Delete the file.
-    const { rmSync } = require("node:fs");
     rmSync(join(codeRepo, "src/mod.ts"));
 
     const result = await computeRepin(vault, "note.md");

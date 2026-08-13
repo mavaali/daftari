@@ -38,7 +38,7 @@ export interface RepinReplacement {
 export interface RepinSkipped {
   /** The raw `describes` entry string. */
   entry: string;
-  /** Why this entry was not re-pinned: "intact", "moved", "missing", or "null" (classifier gave null). */
+  /** Why this entry was not re-pinned: "moved", "missing", or "null" (classifier gave null). */
   state: string;
 }
 
@@ -149,7 +149,9 @@ export async function computeRepin(
 
     // cls.state === "intact"
     if (!cls.relocated) {
-      // Plain intact: nothing to do, not a problem — skip silently (not in skipped either).
+      // Plain intact: nothing to do, not a problem — skip silently.
+      // `skipped` is for entries that COULD NOT be re-pinned; plain-intact
+      // pins are healthy as-is and do not belong there.
       continue;
     }
 
