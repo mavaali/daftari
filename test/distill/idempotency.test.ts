@@ -22,6 +22,7 @@ import {
   joinClaims,
   readDistillState,
   recordLandedClaim,
+  sourceContentHash,
 } from "../../src/distill/state.js";
 
 // ---------------------------------------------------------------------------
@@ -294,6 +295,20 @@ describe("distillUpsert (U5 idempotency)", () => {
   // -------------------------------------------------------------------------
   // Scenario 7: distillUpsert rejects an empty sourceId — no proposals staged
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // U5 honesty fix: sourceContentHash normalizes line endings
+  // -------------------------------------------------------------------------
+
+  it("sourceContentHash produces identical hashes for CRLF and LF content", () => {
+    const lf = "a\nb\nc";
+    const crlf = "a\r\nb\r\nc";
+    const cr = "a\rb\rc";
+    expect(sourceContentHash(crlf)).toBe(sourceContentHash(lf));
+    expect(sourceContentHash(cr)).toBe(sourceContentHash(lf));
+    // Different content still produces a different hash.
+    expect(sourceContentHash("x\ny")).not.toBe(sourceContentHash(lf));
+  });
 
   it("returns an error Result for an empty sourceId and stages no proposals", async () => {
     // Whitespace-only sourceId is also invalid (trim guard).

@@ -231,3 +231,175 @@ describe("runDistill — bad usage (no source)", () => {
     expect(lines.join("")).toBe("");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scenario 4: unknown flag → exits 2
+// ---------------------------------------------------------------------------
+
+describe("runDistill — unknown flag", () => {
+  it("exits 2 on an unknown flag", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--not-a-real-flag"]);
+    expect(code).toBe(2);
+  });
+
+  it("writes a message mentioning the unknown flag to stderr", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", sampleFile, "--not-a-real-flag"]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(lines.join("")).toMatch(/--not-a-real-flag/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 5: both --plan and --propose → exits 2
+// ---------------------------------------------------------------------------
+
+describe("runDistill — both --plan and --propose", () => {
+  it("exits 2 when both --plan and --propose are given", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", "--propose", sampleFile]);
+    expect(code).toBe(2);
+  });
+
+  it("writes a usage message to stderr", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", "--propose", sampleFile]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(lines.join("")).toMatch(/cannot specify both/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 6: --max-claims with invalid values → exits 2
+// ---------------------------------------------------------------------------
+
+describe("runDistill — invalid numeric flags", () => {
+  it("exits 2 when --max-claims is non-numeric", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--max-claims", "abc"]);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 when --max-claims is zero", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--max-claims", "0"]);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 when --max-claims is negative", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--max-claims", "-5"]);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 when --max-llm-calls is non-numeric", async () => {
+    const code = await runDistill([
+      "--vault",
+      vault,
+      "--plan",
+      sampleFile,
+      "--max-llm-calls",
+      "abc",
+    ]);
+    expect(code).toBe(2);
+  });
+
+  it("writes a message mentioning the flag name to stderr", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", sampleFile, "--max-claims", "abc"]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(lines.join("")).toMatch(/--max-claims/);
+  });
+
+  it("exits 0 when --max-claims is a valid positive integer", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--max-claims", "5"]);
+    expect(code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 7: value-taking flag at end of argv → exits 2 (I1)
+// ---------------------------------------------------------------------------
+
+describe("runDistill — value-taking flag with missing value", () => {
+  it("exits 2 when --source-id is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--source-id"]);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 when --transport is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--transport"]);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 when --model is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--model"]);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 when --max-claims is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--max-claims"]);
+    expect(code).toBe(2);
+  });
+
+  it("writes a 'requires a value' message to stderr", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", sampleFile, "--source-id"]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(lines.join("")).toMatch(/requires a value/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 8: extra positionals → exits 2 (m3)
+// ---------------------------------------------------------------------------
+
+describe("runDistill — extra positionals", () => {
+  it("exits 2 when two source arguments are given", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, sampleFile]);
+    expect(code).toBe(2);
+  });
+
+  it("writes a message about only one source being accepted", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", sampleFile, sampleFile]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(lines.join("")).toMatch(/only one source/);
+  });
+});

@@ -71,7 +71,17 @@ export const ADAPTER_REGISTRY: Record<string, SourceAdapter> = {
 export interface ResolvedDistill {
   client: LlmClient;
   config: DistillConfig;
+  /** The transport that was actually resolved and used to build `client`. */
+  transport: LlmTransport;
 }
+
+// ---------------------------------------------------------------------------
+// Shared error messages (m1 — deduplicate refuse string)
+// ---------------------------------------------------------------------------
+
+const DISTILL_NOT_CONFIGURED_MSG =
+  "distill not configured: add a 'distill:' block to .daftari/config.yaml " +
+  "with at least 'model' set before running the distill pipeline";
 
 // Transport-aware LLM construction — mirrors the pattern in src/consolidate
 // and src/sleep: check the API key BEFORE calling the constructor so a
@@ -111,12 +121,7 @@ export function resolveDistillClient(
   if (!cfg.ok) return err(cfg.error);
 
   if (!cfg.value.distill) {
-    return err(
-      new Error(
-        "distill not configured: add a 'distill:' block to .daftari/config.yaml " +
-          "with at least 'model' set before running the distill pipeline",
-      ),
-    );
+    return err(new Error(DISTILL_NOT_CONFIGURED_MSG));
   }
   const distillCfg = cfg.value.distill;
 
@@ -126,7 +131,7 @@ export function resolveDistillClient(
   const llmRes = constructLlm(transportRes.value);
   if (!llmRes.ok) return err(llmRes.error);
 
-  return ok({ client: llmRes.value, config: distillCfg });
+  return ok({ client: llmRes.value, config: distillCfg, transport: transportRes.value });
 }
 
 // ---------------------------------------------------------------------------
@@ -220,20 +225,72 @@ Exit codes:
   4   Partial-emit failure (some claims failed to stage on --propose).
 `;
 
-/** Parse a positive integer flag value; returns undefined when absent or invalid. */
-function readPositiveInt(argv: string[], flag: string): number | undefined {
-  const raw = readStringArg(argv, flag);
-  if (raw === undefined) return undefined;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+/**
+ * Read a string flag value (--flag value or --flag=value).
+ *
+ * Returns:
+ *   `{ found: false }` — flag is absent from argv.
+ *   `{ found: true, value: string }` — flag present with a non-empty value.
+ *   `{ found: true, value: undefined }` — flag present but its value is
+ *     missing (last token) or the `=`-form was `--flag=` (empty rhs); the
+ *     caller should exit 2.
+ */
+function readStringArg(
+  argv: string[],
+  flag: string,
+): { found: false } | { found: true; value: string | undefined } {
+  const match = argv.find((a) => a === flag || a.startsWith(`${flag}=`));
+  if (match === undefined) return { found: false };
+  if (match.includes("=")) {
+    const rhs = match.slice(match.indexOf("=") + 1);
+    return { found: true, value: rhs.length > 0 ? rhs : undefined };
+  }
+  const idx = argv.indexOf(match);
+  const next = argv[idx + 1];
+  // If next token is absent or is itself a flag, the value is missing.
+  return {
+    found: true,
+    value: next !== undefined && !next.startsWith("--") ? next : undefined,
+  };
 }
 
-/** Read a string flag value (--flag value or --flag=value). */
-function readStringArg(argv: string[], flag: string): string | undefined {
-  const raw = argv.find((a) => a === flag || a.startsWith(`${flag}=`));
-  if (raw === undefined) return undefined;
-  const idx = argv.indexOf(raw);
-  return raw.includes("=") ? raw.slice(raw.indexOf("=") + 1) : argv[idx + 1];
+/**
+ * Read a string flag, returning the value or undefined when absent.
+ * Exits 2 via `process.exit`-equivalent return of a sentinel string when the
+ * flag is present but its value is missing — callers check `MISSING_VALUE`.
+ *
+ * Because `runDistill` is async and exit codes are returned, not thrown, we
+ * use a shared sentinel object to signal "flag present, value missing".
+ */
+const MISSING_FLAG_VALUE = Symbol("MISSING_FLAG_VALUE");
+
+function readString(argv: string[], flag: string): string | undefined | typeof MISSING_FLAG_VALUE {
+  const res = readStringArg(argv, flag);
+  if (!res.found) return undefined;
+  if (res.value === undefined) return MISSING_FLAG_VALUE;
+  return res.value;
+}
+
+/**
+ * Parse a positive integer flag value.
+ *
+ * Returns:
+ *   `undefined`              — flag is absent (use default).
+ *   `number`                 — flag present with a valid positive integer.
+ *   `MISSING_FLAG_VALUE`     — flag present but value token is missing.
+ *   `INVALID_INT_VALUE`      — flag present but value is non-numeric or ≤ 0.
+ */
+const INVALID_INT_VALUE = Symbol("INVALID_INT_VALUE");
+
+function readPositiveInt(
+  argv: string[],
+  flag: string,
+): number | undefined | typeof MISSING_FLAG_VALUE | typeof INVALID_INT_VALUE {
+  const res = readStringArg(argv, flag);
+  if (!res.found) return undefined;
+  if (res.value === undefined) return MISSING_FLAG_VALUE;
+  const n = Number.parseInt(res.value, 10);
+  return Number.isFinite(n) && n > 0 ? n : INVALID_INT_VALUE;
 }
 
 /**
@@ -269,12 +326,7 @@ function resolveDistillConfig(vaultRoot: string): Result<DistillConfig, Error> {
   if (!cfg.ok) return err(cfg.error);
 
   if (!cfg.value.distill) {
-    return err(
-      new Error(
-        "distill not configured: add a 'distill:' block to .daftari/config.yaml " +
-          "with at least 'model' set before running the distill pipeline",
-      ),
-    );
+    return err(new Error(DISTILL_NOT_CONFIGURED_MSG));
   }
   return ok(cfg.value.distill);
 }
@@ -299,13 +351,71 @@ export async function runDistill(argv: string[]): Promise<number> {
   // Parse flags
   // ---------------------------------------------------------------------------
 
-  const vaultRaw = readStringArg(argv, "--vault") ?? ".";
+  // I5: both --plan and --propose is a usage error.
+  if (argv.includes("--plan") && argv.includes("--propose")) {
+    process.stderr.write(
+      `daftari distill: cannot specify both --plan and --propose\n\n${DISTILL_USAGE}`,
+    );
+    return 2;
+  }
+
+  // I1: read value-taking flags; any flag present without a value is an error.
+  const vaultRes = readString(argv, "--vault");
+  if (vaultRes === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --vault requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  const vaultRaw = vaultRes ?? ".";
   const vaultRoot = resolve(vaultRaw);
-  const sourceIdFlag = readStringArg(argv, "--source-id");
-  const transportFlag = readStringArg(argv, "--transport");
-  const maxLlmCallsFlag = readPositiveInt(argv, "--max-llm-calls");
-  const maxClaimsFlag = readPositiveInt(argv, "--max-claims");
-  const modelFlag = readStringArg(argv, "--model");
+
+  const sourceIdRes = readString(argv, "--source-id");
+  if (sourceIdRes === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --source-id requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  const sourceIdFlag = sourceIdRes;
+
+  const transportRes2 = readString(argv, "--transport");
+  if (transportRes2 === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --transport requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  const transportFlag = transportRes2;
+
+  const modelRes = readString(argv, "--model");
+  if (modelRes === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --model requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  const modelFlag = modelRes;
+
+  // I2: numeric flags — distinguish absent (ok) from present-but-bad (exit 2).
+  const maxLlmCallsRaw = readPositiveInt(argv, "--max-llm-calls");
+  if (maxLlmCallsRaw === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --max-llm-calls requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  if (maxLlmCallsRaw === INVALID_INT_VALUE) {
+    process.stderr.write(
+      `daftari distill: --max-llm-calls must be a positive integer\n\n${DISTILL_USAGE}`,
+    );
+    return 2;
+  }
+  const maxLlmCallsFlag = maxLlmCallsRaw;
+
+  const maxClaimsRaw = readPositiveInt(argv, "--max-claims");
+  if (maxClaimsRaw === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --max-claims requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  if (maxClaimsRaw === INVALID_INT_VALUE) {
+    process.stderr.write(
+      `daftari distill: --max-claims must be a positive integer\n\n${DISTILL_USAGE}`,
+    );
+    return 2;
+  }
+  const maxClaimsFlag = maxClaimsRaw;
+
   const zdr = argv.includes("--zdr");
   const wantPropose = argv.includes("--propose");
 
@@ -342,6 +452,14 @@ export async function runDistill(argv: string[]): Promise<number> {
       return 2;
     }
     positionals.push(a);
+  }
+
+  // m3: reject extra positionals before checking for absent source.
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `daftari distill: only one source is accepted; got: ${positionals.join(", ")}\n\n${DISTILL_USAGE}`,
+    );
+    return 2;
   }
 
   const sourceArg = positionals[0];
@@ -385,6 +503,14 @@ export async function runDistill(argv: string[]): Promise<number> {
   // ---------------------------------------------------------------------------
   // Read source content
   // ---------------------------------------------------------------------------
+
+  // I3: guard stdin TTY before attempting to read (would block forever).
+  if (sourceArg === "-" && process.stdin.isTTY) {
+    process.stderr.write(
+      `daftari distill: stdin is a terminal — pipe content or pass a file path\n`,
+    );
+    return 2;
+  }
 
   let sourceContent: string;
   try {
@@ -433,12 +559,12 @@ export async function runDistill(argv: string[]): Promise<number> {
       [
         `distill --plan`,
         `  source:              ${sourceArg}`,
-        `  source-id:          ${sourceId}`,
-        `  vault:              ${vaultRoot}`,
-        `  model:              ${plan.model}`,
-        `  chunks:             ${plan.chunkCount}`,
+        `  source-id:           ${sourceId}`,
+        `  vault:               ${vaultRoot}`,
+        `  model:               ${plan.model}`,
+        `  chunks:              ${plan.chunkCount}`,
         `  estimated LLM calls: ${plan.estimatedLlmCalls}`,
-        `  estimated cost:     ${costLine}`,
+        `  estimated cost:      ${costLine}`,
         ``,
         `Run with --propose to extract claims and stage proposals.`,
         ``,
@@ -451,19 +577,15 @@ export async function runDistill(argv: string[]): Promise<number> {
   // --propose: full extraction + staging
   // ---------------------------------------------------------------------------
 
-  // Resolve transport + client (spending path — requires API key).
-  const transportRes = resolveTransport(transportFlag);
-  if (!transportRes.ok) {
-    process.stderr.write(`daftari distill: ${transportRes.error.message}\n`);
-    return 3;
-  }
-  const transport: LlmTransport = transportRes.value;
-
+  // C1: single transport resolution — resolveDistillClient owns transport
+  // selection and returns the transport it actually used. Reading provider
+  // from clientRes.value.transport ensures the receipt matches the client.
   const clientRes = resolveDistillClient(vaultRoot, transportFlag);
   if (!clientRes.ok) {
     process.stderr.write(`daftari distill: ${clientRes.error.message}\n`);
     return 3;
   }
+  const transport: LlmTransport = clientRes.value.transport;
 
   const budgetedClient = withCallBudget(clientRes.value.client, config.maxLlmCalls);
 
@@ -529,6 +651,14 @@ export async function runDistill(argv: string[]): Promise<number> {
       ``,
     ].join("\n"),
   );
+
+  // I4: warn on stateWritten:false — proposals staged, but next run will
+  // re-distill because the content-hash was not persisted.
+  if (!upsert.stateWritten) {
+    process.stderr.write(
+      `daftari distill: warning: state write failed — next run will re-distill this source\n`,
+    );
+  }
 
   if (outcome.budget_exhausted) {
     process.stderr.write(

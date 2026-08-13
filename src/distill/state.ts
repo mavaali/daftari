@@ -62,9 +62,19 @@ export function distillStatePath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "distill-state.json");
 }
 
-/** Same sha256-sliced shape as consolidate's docContentHash. */
+/**
+ * Same sha256-sliced shape as consolidate's docContentHash.
+ *
+ * Line endings are normalized (CRLF and bare CR → LF) before hashing so that
+ * the same logical file produces the same hash regardless of OS line endings.
+ * The "normalized" comment in `content_hash`'s field declaration is therefore
+ * accurate: a Windows checkout and a macOS checkout of the same file hash
+ * identically and do not trigger a redundant re-distill.
+ */
 export function sourceContentHash(content: string): string {
-  return sha256Hex(content).slice(0, 16);
+  // Normalize: \r\n → \n, then any remaining \r → \n.
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return sha256Hex(normalized).slice(0, 16);
 }
 
 // Absent OR corrupt ⇒ the empty default. The state is ephemeral: losing it
