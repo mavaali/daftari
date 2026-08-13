@@ -44,7 +44,7 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
-import { type AnchorState, classifyPin } from "./anchors.js";
+import { ANCHOR_PIN_CAP, type AnchorState, classifyPin } from "./anchors.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
 // Tool-annotation hints surfaced to MCP clients. The MCP spec treats these as
@@ -199,10 +199,6 @@ export interface ReadAnchors {
   skipped: number; // over-cap remainder (checked + skipped === candidate count)
   banner: string | null; // drift summary, or null when every checked pin is intact
 }
-
-// At most this many pins are classified per read — a fixed bound on the git
-// work a single `vault_read` can trigger. The remainder is reported as skipped.
-const ANCHOR_PIN_CAP = 24;
 
 export async function vaultRead(
   vaultRoot: string,

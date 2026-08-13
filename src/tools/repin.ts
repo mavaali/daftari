@@ -21,7 +21,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { hashObjectFile } from "../utils/git.js";
-import { classifyPin } from "./anchors.js";
+import { ANCHOR_PIN_CAP, classifyPin } from "./anchors.js";
 import { formatPin } from "./pin-mint.js";
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ export interface RepinSkipped {
   /** The raw `describes` entry string. */
   entry: string;
   /** Why this entry was not re-pinned: "moved", "missing", or "null" (classifier gave null). */
-  state: string;
+  state: "moved" | "missing" | "null";
 }
 
 export interface RepinPlan {
@@ -48,9 +48,6 @@ export interface RepinPlan {
   /** One record per candidate entry that was examined but not re-pinned. */
   skipped: RepinSkipped[];
 }
-
-// Cap matching computeAnchors in read.ts.
-const ANCHOR_PIN_CAP = 24;
 
 // ---------------------------------------------------------------------------
 // computeRepin
@@ -156,23 +153,16 @@ export async function computeRepin(
     }
 
     // intact-via-relocation: build the replacement.
-    // The head is the portion of the raw entry before any `#L` tail (including
-    // any `repo:` prefix and `::symbol`). We derive it by stripping the old
-    // pin suffix from the raw string.
-    //
-    // The raw string has the form: <head>#L<start>-<end>@<sha>
-    // parseDescribesEntry already stripped the pin suffix from `head`: we can
-    // reconstruct the head by parsing the raw string and taking everything
-    // before the pin's #L tail.
-    //
-    // We need the head WITHOUT the #L part — same as formatPin expects.
-    // Strategy: slice off the `@<sha>` suffix first (the pin match is end-
-    // anchored), then slice off the `#L<start>-<end>` or `#L<start>` part.
-    const pinSuffixPattern = /(?:#L\d+(?:-\d+)?)?@[0-9a-f]{7,40}$/;
-    const headWithHash = raw.replace(pinSuffixPattern, "");
-    // headWithHash is `<head>#L<start>[-end]` (the part before @sha).
-    // Strip the trailing `#L<n>[-<n>]` to get the pure head formatPin wants.
-    const head = headWithHash.replace(/#L\d+(?:-\d+)?$/, "");
+    // Reconstruct the head (the portion before the #L…@sha pin tail) directly
+    // from the already-parsed fields rather than running regex replacements on
+    // the raw string.  `parseDescribesEntry` (called above in the candidate
+    // filter) already split the entry into repo, path, and symbol — reassemble
+    // them in the canonical `[repo:]path[::symbol]` form that formatPin expects.
+    // `repo` is "" for bare (prefix-less) entries, `symbol` is null when absent.
+    const head =
+      (parsed.repo ? `${parsed.repo}:` : "") +
+      parsed.path +
+      (parsed.symbol ? `::${parsed.symbol}` : "");
 
     // Compute the CURRENT sha12 for the file (R5: against the working tree).
     let currentSha12: string;
