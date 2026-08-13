@@ -8,7 +8,7 @@
 //   3. buildReceipt — truncation flag when claimsProduced >= maxClaims
 //   4. buildReceipt — provider + ZDR recorded faithfully
 //   5. buildReceipt — honors budget_exhausted as a truncation signal
-//   6. buildReceipt — actual cost via estimateCostUSD (reuse, not duplicate)
+//   6. buildReceipt — approx cost via estimateCostUSD (reuse, not duplicate)
 
 import { describe, expect, it } from "vitest";
 import type { NormalizedMessage } from "../../src/distill/adapters/types.js";
@@ -20,7 +20,6 @@ import {
   planDistill,
 } from "../../src/distill/cost.js";
 import type { ExtractOutcome } from "../../src/distill/extract.js";
-import type { LlmClient } from "../../src/eval/llm.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -36,18 +35,6 @@ function msg(i: number, text: string): NormalizedMessage {
   };
 }
 
-/** A spy LlmClient whose completeJson throws if invoked — validates zero spend. */
-function neverCalledLlm(): LlmClient {
-  const boom = (): never => {
-    throw new Error("planDistill must not make any LLM calls");
-  };
-  return {
-    complete: boom,
-    completeJson: boom,
-    completeWithTools: boom,
-  } as unknown as LlmClient;
-}
-
 const CONFIG = {
   model: "claude-haiku-4-5-20251001",
   maxLlmCalls: 10,
@@ -61,18 +48,15 @@ const CONFIG = {
 // ---------------------------------------------------------------------------
 
 describe("planDistill — zero LLM calls", () => {
-  it("returns an estimate without ever calling the LLM client", () => {
+  it("returns an estimate without any LLM spend (structural guarantee)", () => {
+    // Zero-spend is structural: planDistill accepts no LlmClient, so it
+    // cannot make a call regardless of implementation. No spy needed.
     const messages = Array.from({ length: 60 }, (_, i) =>
       msg(i, `Message number ${i}: some content about the project.`),
     );
     const chunks = chunkMessages(messages);
+    const plan = planDistill(chunks, CONFIG);
 
-    // The spy throws if completeJson is ever called; this test passes iff it
-    // never fires — which is the load-bearing assertion.
-    const spy = neverCalledLlm();
-    const plan = planDistill(chunks, CONFIG, spy);
-
-    // Should succeed and return a plan, not throw.
     expect(plan.chunkCount).toBeGreaterThan(0);
     expect(plan.estimatedLlmCalls).toBeGreaterThan(0);
     expect(plan.estimatedCostUSD).toBeGreaterThanOrEqual(0);
@@ -80,7 +64,7 @@ describe("planDistill — zero LLM calls", () => {
 
   it("returns zero cost for an empty message list", () => {
     const chunks = chunkMessages([]);
-    const plan = planDistill(chunks, CONFIG, neverCalledLlm());
+    const plan = planDistill(chunks, CONFIG);
     expect(plan.chunkCount).toBe(0);
     expect(plan.estimatedLlmCalls).toBe(0);
     expect(plan.estimatedCostUSD).toBe(0);
@@ -95,7 +79,7 @@ describe("planDistill — estimate shape", () => {
   it("chunkCount matches the actual chunk array length", () => {
     const messages = Array.from({ length: 45 }, (_, i) => msg(i, `msg ${i}`));
     const chunks = chunkMessages(messages); // 30-message windows → 2 chunks
-    const plan = planDistill(chunks, CONFIG, neverCalledLlm());
+    const plan = planDistill(chunks, CONFIG);
     expect(plan.chunkCount).toBe(chunks.length);
   });
 
@@ -104,7 +88,7 @@ describe("planDistill — estimate shape", () => {
     const messages = Array.from({ length: 200 }, (_, i) => msg(i, `msg ${i}`));
     const chunks = chunkMessages(messages);
     const cfg = { ...CONFIG, maxLlmCalls: 3 };
-    const plan = planDistill(chunks, cfg, neverCalledLlm());
+    const plan = planDistill(chunks, cfg);
     expect(plan.estimatedLlmCalls).toBe(3);
   });
 
@@ -112,13 +96,13 @@ describe("planDistill — estimate shape", () => {
     const messages = Array.from({ length: 30 }, (_, i) => msg(i, `msg ${i}`));
     const chunks = chunkMessages(messages); // exactly 1 chunk
     const cfg = { ...CONFIG, maxLlmCalls: 100 };
-    const plan = planDistill(chunks, cfg, neverCalledLlm());
+    const plan = planDistill(chunks, cfg);
     expect(plan.estimatedLlmCalls).toBe(chunks.length);
   });
 
   it("exposes model and priced flag from the config model", () => {
     const chunks = chunkMessages([msg(0, "hello")]);
-    const plan = planDistill(chunks, CONFIG, neverCalledLlm());
+    const plan = planDistill(chunks, CONFIG);
     expect(plan.model).toBe(CONFIG.model);
     // claude-haiku-4-5-20251001 is in the pricing table
     expect(plan.priced).toBe(true);
@@ -127,14 +111,14 @@ describe("planDistill — estimate shape", () => {
   it("marks priced: false for an unknown model", () => {
     const chunks = chunkMessages([msg(0, "hello")]);
     const cfg = { ...CONFIG, model: "some-unknown-model-xyz" };
-    const plan = planDistill(chunks, cfg, neverCalledLlm());
+    const plan = planDistill(chunks, cfg);
     expect(plan.priced).toBe(false);
   });
 
   it("estimated cost is non-negative for any input", () => {
     const messages = Array.from({ length: 90 }, (_, i) => msg(i, "x".repeat(100)));
     const chunks = chunkMessages(messages);
-    const plan = planDistill(chunks, CONFIG, neverCalledLlm());
+    const plan = planDistill(chunks, CONFIG);
     expect(plan.estimatedCostUSD).toBeGreaterThanOrEqual(0);
   });
 });
@@ -164,6 +148,30 @@ describe("buildReceipt — truncation signal", () => {
     });
     expect(receipt.truncated).toBe(true);
     expect(receipt.claimsProduced).toBe(5);
+  });
+
+  it("sets truncated: true when claimsProduced exceeds maxClaims (condition is >=)", () => {
+    // Defensive invariant: claimsProduced === maxClaims + 1 also triggers truncated.
+    // The condition `claimsProduced >= maxClaims` covers both the exact-cap case
+    // and any over-run, ensuring partial-import is never silently missed.
+    const outcome: ExtractOutcome = {
+      claims: Array.from({ length: 6 }, (_, i) => ({
+        claim_key: `key-${i}`,
+        statement: `Claim ${i}`,
+        proposed_frontmatter: { title: `Claim ${i}` },
+      })),
+      budget_exhausted: false,
+      llmCalls: 5,
+      chunkErrors: [],
+    };
+    const receipt = buildReceipt({
+      outcome,
+      config: { ...CONFIG, maxClaims: 5 }, // claimsProduced (6) === maxClaims + 1
+      provider: "anthropic",
+      zdr: false,
+    });
+    expect(receipt.truncated).toBe(true);
+    expect(receipt.claimsProduced).toBe(6);
   });
 
   it("sets truncated: false when claims are below the cap", () => {
@@ -339,11 +347,11 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. buildReceipt — actual cost (reuses estimateCostUSD, not duplicated)
+// 6. buildReceipt — approx cost (reuses estimateCostUSD, not duplicated)
 // ---------------------------------------------------------------------------
 
-describe("buildReceipt — actual cost", () => {
-  it("actualCostUSD is non-negative", () => {
+describe("buildReceipt — approx cost", () => {
+  it("approxCostUSD is non-negative", () => {
     const outcome: ExtractOutcome = {
       claims: Array.from({ length: 3 }, (_, i) => ({
         claim_key: `k${i}`,
@@ -355,10 +363,10 @@ describe("buildReceipt — actual cost", () => {
       chunkErrors: [],
     };
     const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
-    expect(r.actualCostUSD).toBeGreaterThanOrEqual(0);
+    expect(r.approxCostUSD).toBeGreaterThanOrEqual(0);
   });
 
-  it("actualCostUSD is 0 when llmCalls is 0", () => {
+  it("approxCostUSD is 0 when llmCalls is 0", () => {
     const outcome: ExtractOutcome = {
       claims: [],
       budget_exhausted: false,
@@ -366,7 +374,7 @@ describe("buildReceipt — actual cost", () => {
       chunkErrors: [],
     };
     const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
-    expect(r.actualCostUSD).toBe(0);
+    expect(r.approxCostUSD).toBe(0);
   });
 
   it("receipt carries a non-empty runId", () => {
@@ -401,7 +409,7 @@ describe("buildReceipt — actual cost", () => {
 describe("DistillPlan type shape", () => {
   it("has all required fields", () => {
     const chunks = chunkMessages([msg(0, "hello world decision")]);
-    const plan: DistillPlan = planDistill(chunks, CONFIG, neverCalledLlm());
+    const plan: DistillPlan = planDistill(chunks, CONFIG);
     // TypeScript enforces these fields at compile time; runtime check as belt-and-suspenders.
     expect(typeof plan.chunkCount).toBe("number");
     expect(typeof plan.estimatedLlmCalls).toBe("number");
@@ -432,7 +440,7 @@ describe("DistillReceipt type shape", () => {
     expect(typeof r.llmCalls).toBe("number");
     expect(typeof r.claimsProduced).toBe("number");
     expect(typeof r.truncated).toBe("boolean");
-    expect(typeof r.actualCostUSD).toBe("number");
+    expect(typeof r.approxCostUSD).toBe("number");
     expect(typeof r.completedAt).toBe("string");
   });
 });

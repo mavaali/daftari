@@ -16,7 +16,7 @@
 //   The actual token counts are not collected here (the LLM client returns them
 //   in CompleteResult, but U3's extractClaims doesn't surface them through
 //   ExtractOutcome). The receipt therefore uses the same heuristic for
-//   actualCostUSD — see ACTUAL COST NOTE below.
+//   approxCostUSD — see ACTUAL COST NOTE below.
 //
 // ZDR (zero-data-retention) FLAG:
 //   Recorded as an explicit caller-supplied boolean, default false.
@@ -35,7 +35,7 @@
 //
 // ACTUAL COST NOTE:
 //   ExtractOutcome does not carry per-call token counts (they are consumed
-//   inside extractClaims but not threaded out). actualCostUSD therefore uses
+//   inside extractClaims but not threaded out). approxCostUSD therefore uses
 //   the same per-call heuristic as the pre-flight estimate, scaled by the
 //   actual llmCalls count. This is consistent with the estimate and is clearly
 //   labeled an approximation. A future slice could add token tracking to
@@ -48,7 +48,6 @@
 
 import { randomUUID } from "node:crypto";
 import { estimateCostUSD, isModelPriced } from "../consolidate/constants.js";
-import type { LlmClient } from "../eval/llm.js";
 import type { DistillConfig } from "../utils/config.js";
 import type { Chunk } from "./chunk.js";
 import type { ExtractOutcome } from "./extract.js";
@@ -158,9 +157,10 @@ export interface DistillReceipt {
   truncated: boolean;
   /**
    * Approximate USD cost. Uses the same per-call token heuristic as the
-   * pre-flight estimate, scaled by actual llmCalls. See ACTUAL COST NOTE.
+   * pre-flight estimate, scaled by actual llmCalls. The value is an estimate,
+   * not a measured count — see ACTUAL COST NOTE.
    */
-  actualCostUSD: number;
+  approxCostUSD: number;
   /** ISO 8601 timestamp when buildReceipt was called. */
   completedAt: string;
 }
@@ -172,23 +172,13 @@ export interface DistillReceipt {
 /**
  * Compute a pre-flight estimate for a distill run.
  *
- * IMPORTANT: this function is pure (no async, no network). The `_llm` param
- * is accepted only so the caller can pass a spy/fake in tests and confirm it
- * was never invoked. Production callers may pass undefined or any LlmClient;
- * neither path results in a call.
+ * This function is pure (no async, no network, no LLM calls). The zero-spend
+ * guarantee is structural: no LlmClient is received, so none can be called.
  *
  * @param chunks   - Pre-computed chunks from chunkMessages().
  * @param config   - DistillConfig for this vault.
- * @param _llm     - Accepted but never called. Pass a throw-on-call spy in tests.
  */
-export function planDistill(
-  chunks: Chunk[],
-  config: DistillConfig,
-  // _llm is accepted but never called — the leading underscore tells both
-  // TypeScript and Biome that this is intentionally unused. Callers pass a
-  // throw-on-call spy in tests to assert zero LLM spend.
-  _llm: LlmClient,
-): DistillPlan {
+export function planDistill(chunks: Chunk[], config: DistillConfig): DistillPlan {
   const chunkCount = chunks.length;
 
   if (chunkCount === 0) {
@@ -254,9 +244,9 @@ export function buildReceipt(opts: BuildReceiptOpts): DistillReceipt {
   // budget was exhausted. See TRUNCATION SIGNAL design note.
   const truncated = outcome.budget_exhausted || claimsProduced >= config.maxClaims;
 
-  // Actual cost: token heuristic applied to the real llmCalls count.
+  // Approximate cost: token heuristic applied to the real llmCalls count.
   // We don't have real token counts from ExtractOutcome (see ACTUAL COST NOTE).
-  const actualCostUSD = costFromLlmCalls(outcome.llmCalls, config);
+  const approxCostUSD = costFromLlmCalls(outcome.llmCalls, config);
 
   return {
     runId: randomUUID(),
@@ -267,7 +257,7 @@ export function buildReceipt(opts: BuildReceiptOpts): DistillReceipt {
     llmCalls: outcome.llmCalls,
     claimsProduced,
     truncated,
-    actualCostUSD,
+    approxCostUSD,
     completedAt: new Date().toISOString(),
   };
 }
