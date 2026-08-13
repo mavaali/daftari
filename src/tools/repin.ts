@@ -116,7 +116,8 @@ export async function computeRepin(
 
   for (const { raw, parsed } of checkedList) {
     // parsed.pin is guaranteed non-undefined by the candidate filter.
-    const pin = parsed.pin!;
+    if (parsed.pin === undefined) continue;
+    const pin = parsed.pin;
     const repoRoot = codeRepos[parsed.repo] as string;
 
     // Classify the pin (per-entry failure degrades to skipped).
