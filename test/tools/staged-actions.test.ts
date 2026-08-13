@@ -2,7 +2,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
-import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
+import {
+  getStagedActionById,
+  listStagedActions,
+  stageAction,
+} from "../../src/curation/staged-actions.js";
 import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
 import type { RepinPlan } from "../../src/tools/repin.js";
@@ -1197,6 +1201,44 @@ describe("vault_stage_action repin (U4)", () => {
     if (result.ok) return;
     expect(result.error.message).toContain("nothing to re-pin");
     expect(result.error.message).toContain("pricing/no-reloc.md");
+
+    // Queue must be untouched — no repin action should have been persisted.
+    const queued = await listStagedActions(vault);
+    expect(queued.ok).toBe(true);
+    if (!queued.ok) throw queued.error;
+    const repinActions = queued.value.filter((a) => a.actionType === "repin");
+    expect(repinActions).toHaveLength(0);
+  }, 60_000);
+
+  // --- Fail-fast: computeRepin itself errors --------------------------------
+
+  it("errors when computeRepin returns err; queue untouched", async () => {
+    await seedDraft(vault, "pricing/bad-config.md");
+    mockRepinResult = {
+      ok: false,
+      error: new Error("config load failed"),
+    };
+
+    const result = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/bad-config.md",
+      proposed_by: AGENT,
+      rationale: "Should surface computeRepin error.",
+      proposed_diff: {},
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("computeRepin failed for");
+    expect(result.error.message).toContain("pricing/bad-config.md");
+    expect(result.error.message).toContain("config load failed");
+
+    // Queue must be untouched — no repin action should have been persisted.
+    const queued = await listStagedActions(vault);
+    expect(queued.ok).toBe(true);
+    if (!queued.ok) throw queued.error;
+    const repinActions = queued.value.filter((a) => a.actionType === "repin");
+    expect(repinActions).toHaveLength(0);
   }, 60_000);
 
   // --- Fail-fast: absent target doc ----------------------------------------

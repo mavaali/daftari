@@ -267,11 +267,10 @@ describe("staged-actions", () => {
       expect(idx).toBeGreaterThan(writeIdx);
     });
 
-    it("rejects 'repin' as action_type through stageAction when the type is missing (pre-impl guard)", async () => {
-      // This test verifies that once 'repin' is in the type list, stageAction accepts it.
-      // We stage with a known-absent target so we can isolate the type-check from the
-      // not-found check (which fires after type validation).
-      // The important invariant is: the type check must NOT reject 'repin'.
+    it("stageAction does not reject 'repin' on the type-check", async () => {
+      // Invariant: 'repin' is in STAGED_ACTION_TYPES, so stageAction must not
+      // fail with the type-rejection error. It may fail for other reasons
+      // (e.g. missing target document) but never on the type-check.
       const vault = mkdtempSync(join(tmpdir(), "daftari-repin-reg-"));
       try {
         const result = await stageAction(vault, {
@@ -281,11 +280,14 @@ describe("staged-actions", () => {
           rationale: "re-pin check",
           proposedDiff: {},
         });
-        // If 'repin' is not yet in the type list → result.ok is false with "action_type must be one of"
-        // Once it IS in the list, stageAction proceeds (may still fail on missing dir write, but not on type).
+        // Whether ok or not, the type-check must never be the rejection reason.
         if (!result.ok) {
           expect(result.error.message).not.toContain("action_type must be one of");
         }
+        // Unconditional: the type-check passed (result is ok OR failed for a non-type reason).
+        expect(result.ok || !result.error.message.includes("action_type must be one of")).toBe(
+          true,
+        );
       } finally {
         rmSync(vault, { recursive: true, force: true });
       }

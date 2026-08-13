@@ -217,10 +217,8 @@ export async function vaultStageAction(
     }
     // Stamp the computed replacements into the proposed_diff so the ratifier's
     // elicitation shows the concrete old→new pairs (advisory; U5 recomputes).
-    const existingDiff =
-      args.proposed_diff !== null && typeof args.proposed_diff === "object"
-        ? (args.proposed_diff as Record<string, unknown>)
-        : {};
+    // args.proposed_diff is guaranteed non-null/object by the guard at ~line 98-100.
+    const existingDiff = args.proposed_diff as Record<string, unknown>;
     proposedDiffOverride = {
       ...existingDiff,
       replacements: repinResult.value.replacements,
