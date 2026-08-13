@@ -65,7 +65,9 @@ function hash8FromClaimKey(claimKey: string): string {
   if (lastDash !== -1 && claimKey.length - lastDash - 1 === 8) {
     return claimKey.slice(lastDash + 1);
   }
-  // Fallback: take last 8 chars of the key itself.
+  // Fallback: take last 8 chars of the key itself. This branch is only
+  // reachable if claim_key deviates from U3's documented
+  // `<anchor>:<slug>-<sha256[:8]>` format — intentionally best-effort.
   return claimKey.slice(-8).replace(/[^a-z0-9]/g, "x");
 }
 
@@ -73,11 +75,22 @@ function hash8FromClaimKey(claimKey: string): string {
 //   <collection>/<run_group>/<slug(title)>--<hash8>.md
 // The run_group is the run_id slugified (keeps same-run claims co-located);
 // falls back to "claims" if the run_id is empty or non-slug-friendly.
+//
+// Path-traversal safety: slugifyKey strips everything except [a-z0-9-], so
+// none of the join components can contain ".." or path separators — the
+// sanitizer is the invariant; don't remove it in a future refactor.
 function derivePath(claim: ExtractedClaim, runId: string): string {
   const title = claim.proposed_frontmatter.title;
   const hash8 = hash8FromClaimKey(claim.claim_key);
   const runGroup = slugifyKey(runId) || "claims";
-  return join(DISTILL_COLLECTION, runGroup, `${slugifyKey(title)}--${hash8}.md`);
+  // Fall back to the claim_key slug when the title is empty. slugifyKey
+  // returns the sentinel "memory" for an empty/whitespace-only string — a
+  // truthy value — so we cannot use || on its return value. Guard on the
+  // raw title instead. Avoids every empty-title claim collapsing to
+  // "memory", which makes U5's targetPath-based upsert join harder to
+  // reason about and produces semantically useless names.
+  const titleSlug = title.trim() ? slugifyKey(title) : slugifyKey(claim.claim_key);
+  return join(DISTILL_COLLECTION, runGroup, `${titleSlug}--${hash8}.md`);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +152,11 @@ export async function proposeAllClaims(
       status: "draft",
       confidence: "low",
       provenance: "synthesized",
+      // proposed_by (vault document field) and proposedBy on the StageActionInput
+      // below (the actor recorded on the JSONL staged-action record) are both set
+      // to DISTILL_AGENT. They are DIFFERENT concepts — document metadata vs
+      // queue actor — intentionally kept in sync. Update both together if either
+      // ever needs to change.
       proposed_by: DISTILL_AGENT,
       sources: [`distill:${runId}#${claim.claim_key}`],
       superseded_by: null,

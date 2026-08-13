@@ -196,6 +196,34 @@ describe("proposeAllClaims (U4)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Scenario 5: empty title → claim_key slug used, never "memory" sentinel
+  // -------------------------------------------------------------------------
+
+  it("derives a non-'memory' path segment from claim_key when title is empty", async () => {
+    const claim = makeClaim({
+      claim_key: "chunk-005:service-uses-grpc-f1e2d3c4",
+      statement: "The service exposes its API over gRPC.",
+      proposed_frontmatter: { title: "" },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], "run-empty-title");
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const [result] = outcome.results;
+    if (!result) throw new Error("expected a result");
+
+    // Must not contain the langgraph "memory" sentinel segment.
+    expect(result.targetPath).not.toMatch(/\/memory--/);
+    // Must contain a slug derived from the claim_key (the hash8 suffix is a
+    // substring of claim_key and must appear in the path).
+    const hash8 = claim.claim_key.slice(-8);
+    expect(result.targetPath).toMatch(new RegExp(`${hash8}\\.md$`));
+    // Path must be under the distill collection.
+    expect(result.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+  });
+
+  // -------------------------------------------------------------------------
   // Empty input: no proposals, no errors
   // -------------------------------------------------------------------------
 
