@@ -9,6 +9,7 @@ import {
   nowISO,
   rebuildStagedActionsIndex,
   recordDecision,
+  STAGED_ACTION_TYPES,
   type StageActionInput,
   stageAction,
   stageActionWithConflictCheck,
@@ -253,6 +254,42 @@ describe("staged-actions", () => {
     expect(fetched.ok).toBe(true);
     if (!fetched.ok || !fetched.value) return;
     expect(fetched.value.decidedByPrincipal).toBeNull();
+  });
+
+  describe("STAGED_ACTION_TYPES — repin registration (U4)", () => {
+    it("includes 'repin' in the type list", () => {
+      expect(STAGED_ACTION_TYPES).toContain("repin");
+    });
+
+    it("'repin' is appended after 'write', not inserted", () => {
+      const idx = STAGED_ACTION_TYPES.indexOf("repin" as (typeof STAGED_ACTION_TYPES)[number]);
+      const writeIdx = STAGED_ACTION_TYPES.indexOf("write");
+      expect(idx).toBeGreaterThan(writeIdx);
+    });
+
+    it("rejects 'repin' as action_type through stageAction when the type is missing (pre-impl guard)", async () => {
+      // This test verifies that once 'repin' is in the type list, stageAction accepts it.
+      // We stage with a known-absent target so we can isolate the type-check from the
+      // not-found check (which fires after type validation).
+      // The important invariant is: the type check must NOT reject 'repin'.
+      const vault = mkdtempSync(join(tmpdir(), "daftari-repin-reg-"));
+      try {
+        const result = await stageAction(vault, {
+          actionType: "repin" as StageActionInput["actionType"],
+          targetPath: "pricing/something.md",
+          proposedBy: "agent:test",
+          rationale: "re-pin check",
+          proposedDiff: {},
+        });
+        // If 'repin' is not yet in the type list → result.ok is false with "action_type must be one of"
+        // Once it IS in the list, stageAction proceeds (may still fail on missing dir write, but not on type).
+        if (!result.ok) {
+          expect(result.error.message).not.toContain("action_type must be one of");
+        }
+      } finally {
+        rmSync(vault, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("stageActionWithConflictCheck (#235)", () => {

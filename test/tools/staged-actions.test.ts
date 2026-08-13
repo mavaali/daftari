@@ -1,10 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { getStagedActionById, stageAction } from "../../src/curation/staged-actions.js";
 import { listTensions } from "../../src/curation/tension.js";
 import { vaultRead } from "../../src/tools/read.js";
+import type { RepinPlan } from "../../src/tools/repin.js";
 import {
   describeRatifyElicitation,
   sanitizeRationaleForDisplay,
@@ -13,6 +14,22 @@ import {
 } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
+
+// ---------------------------------------------------------------------------
+// Mock computeRepin for repin staged-action tests (U4).
+// The repin staged-action calls computeRepin at stage time; the real
+// implementation needs actual git repos wired in config, which is out of scope
+// for the staged-action integration tests. The mock is controlled per-test via
+// mockRepinResult.
+// ---------------------------------------------------------------------------
+let mockRepinResult: { ok: true; value: RepinPlan } | { ok: false; error: Error } = {
+  ok: true,
+  value: { replacements: [], skipped: [] },
+};
+
+vi.mock("../../src/tools/repin.js", () => ({
+  computeRepin: vi.fn(async () => mockRepinResult),
+}));
 
 const AGENT = "agent:curation-loop";
 const HUMAN = "human:mihir";
@@ -1099,4 +1116,188 @@ describe("describeRatifyElicitation — untrusted rationale on the approval surf
     if (!spec.ok) return;
     expect(spec.value.message.endsWith("?")).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// vault_stage_action — repin type (U4)
+// ---------------------------------------------------------------------------
+
+describe("vault_stage_action repin (U4)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+    // Reset the mock to a "no relocations" state; individual tests override as needed.
+    mockRepinResult = { ok: true, value: { replacements: [], skipped: [] } };
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  // --- Happy path -----------------------------------------------------------
+
+  it("stages a repin when computeRepin finds a relocated pin; proposed_diff.replacements is stamped", async () => {
+    await seedDraft(vault, "pricing/anchored.md");
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [
+          {
+            old: "myrepo:src/auth.ts#L10-20@abc123def456",
+            new: "myrepo:src/auth.ts#L15-25@abc123def456",
+          },
+        ],
+        skipped: [],
+      },
+    };
+
+    const result = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/anchored.md",
+      proposed_by: AGENT,
+      rationale: "Pin relocated after refactor.",
+      proposed_diff: {},
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.value.id).toMatch(/^stage-\d+$/);
+    expect(result.value.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    // The computed replacements are stamped into the queued proposed_diff.
+    const action = await getStagedActionById(vault, result.value.id);
+    expect(action.ok).toBe(true);
+    if (!action.ok || !action.value) throw new Error("action not found");
+    const diff = action.value.proposedDiff as Record<string, unknown>;
+    expect(Array.isArray(diff.replacements)).toBe(true);
+    const reps = diff.replacements as Array<{ old: string; new: string }>;
+    expect(reps).toHaveLength(1);
+    expect(reps[0]?.old).toBe("myrepo:src/auth.ts#L10-20@abc123def456");
+    expect(reps[0]?.new).toBe("myrepo:src/auth.ts#L15-25@abc123def456");
+  }, 60_000);
+
+  // --- Fail-fast: no relocated pins ----------------------------------------
+
+  it("errors when computeRepin finds no relocated pins (all plain-intact), queue untouched", async () => {
+    await seedDraft(vault, "pricing/no-reloc.md");
+    mockRepinResult = {
+      ok: true,
+      value: { replacements: [], skipped: [] },
+    };
+
+    const result = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/no-reloc.md",
+      proposed_by: AGENT,
+      rationale: "Should fail fast — nothing to re-pin.",
+      proposed_diff: {},
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("nothing to re-pin");
+    expect(result.error.message).toContain("pricing/no-reloc.md");
+  }, 60_000);
+
+  // --- Fail-fast: absent target doc ----------------------------------------
+
+  it("errors for an absent target document (not-found fail-fast)", async () => {
+    const result = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/does-not-exist.md",
+      proposed_by: AGENT,
+      rationale: "Target absent.",
+      proposed_diff: {},
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("not found");
+  }, 60_000);
+
+  // --- Conflict: pending supersede already targeting the same doc -----------
+
+  it("stages repin even when a pending supersede already targets the doc; conflicts_with + tension fire", async () => {
+    await seedDraft(vault, "pricing/shared.md");
+    // First stage a supersede on the same target.
+    const supersede = await vaultStageAction(vault, {
+      action_type: "supersede",
+      target_path: "pricing/shared.md",
+      proposed_by: "agent:alpha",
+      rationale: "Replaced by new version.",
+      proposed_diff: { superseded_by: "pricing/new.md" },
+    });
+    expect(supersede.ok).toBe(true);
+    if (!supersede.ok) throw supersede.error;
+
+    // Now stage a repin on the same target — computeRepin returns a replacement.
+    mockRepinResult = {
+      ok: true,
+      value: {
+        replacements: [{ old: "repo:file.ts#L1-5@aaa", new: "repo:file.ts#L2-6@bbb" }],
+        skipped: [],
+      },
+    };
+
+    const result = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/shared.md",
+      proposed_by: AGENT,
+      rationale: "Pin relocated — must still stage despite pending supersede.",
+      proposed_diff: {},
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    // The repin staged successfully.
+    expect(result.value.id).toMatch(/^stage-\d+$/);
+    // The conflict is surfaced.
+    expect(result.value.conflicts_with).toContain(supersede.value.id);
+    expect(result.value.tension_id).toMatch(/^tension-/);
+  }, 60_000);
+
+  // --- RBAC: read-only role denied -----------------------------------------
+
+  it("denies a read-only role staging a repin", async () => {
+    await seedDraft(vault, "pricing/rbac-target.md");
+    const readOnly = {
+      user: "agent:reader",
+      roleName: "reader",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+
+    const result = await vaultStageAction(
+      vault,
+      {
+        action_type: "repin",
+        target_path: "pricing/rbac-target.md",
+        proposed_by: AGENT,
+        rationale: "read-only role must be denied",
+        proposed_diff: {},
+      },
+      readOnly,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("access denied");
+  }, 60_000);
+
+  // --- Malformed input: proposed_diff.replacements not an array of {old,new} strings ---
+
+  it("errors when proposed_diff.replacements is present but malformed (not array of {old,new})", async () => {
+    await seedDraft(vault, "pricing/malformed-repin.md");
+
+    const result = await vaultStageAction(vault, {
+      action_type: "repin",
+      target_path: "pricing/malformed-repin.md",
+      proposed_by: AGENT,
+      rationale: "Malformed replacements array.",
+      proposed_diff: { replacements: ["not-an-object"] },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("replacements");
+  }, 60_000);
 });
