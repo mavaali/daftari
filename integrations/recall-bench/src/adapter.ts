@@ -27,7 +27,7 @@ import { createOpenRouterClient } from "../../../dist/eval/llm-openrouter.js";
 import { runConsolidate } from "../../../dist/consolidate/index.js";
 import { parseConfig, type AdapterConfig } from "./config.js";
 import { makeAnswerer, type RetrievalEntry, type ToolCallRecord } from "./answerer.js";
-import { makeCompiler } from "./compiler.js";
+import { makeCompiler, makeDistillCompiler } from "./compiler.js";
 import { enableRealConsolidation } from "./consolidate-config.js";
 import { EA_WIKI_MD } from "./wiki-schema.js";
 import { mapDay } from "./corpus-map.js";
@@ -137,6 +137,7 @@ export async function createDaftariAdapter(
   let vaultRoot: string | null = null;
   let answer: ((q: string) => Promise<QueryDetail>) | null = null;
   let compiler: ReturnType<typeof makeCompiler> | null = null;
+  let distillCompiler: ReturnType<typeof makeDistillCompiler> | null = null;
   let priorDayPaths: string[] = [];
 
   // Single source of truth for question handling. Both query() and queryDetail()
@@ -164,7 +165,11 @@ export async function createDaftariAdapter(
     async setup(): Promise<string> {
       vaultRoot = await mkdtemp(join(tmpdir(), "rb-daftari-"));
       answer = makeAnswerer(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
-      if (cfg.compile !== "raw") {
+      if (cfg.compile === "distill") {
+        // The distill arm runs Daftari's own compile pipeline, not the
+        // authoring-agent loop — no WIKI scaffold, a distinct compiler.
+        distillCompiler = makeDistillCompiler(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
+      } else if (cfg.compile !== "raw") {
         await writeFile(join(vaultRoot, "WIKI.md"), EA_WIKI_MD, "utf8");
         compiler = makeCompiler(vaultRoot, cfg, resolveAnswererClient(cfg, deps));
       }
@@ -179,6 +184,10 @@ export async function createDaftariAdapter(
         const abs = join(vaultRoot, daily.relPath);
         await mkdir(dirname(abs), { recursive: true });
         await writeFile(abs, daily.markdown, "utf8");
+      } else if (cfg.compile === "distill") {
+        // Daftari's own compile pipeline lands the day's claims as ratified docs.
+        const r = await distillCompiler!(day, content, meta, priorDayPaths);
+        priorDayPaths = priorDayPaths.concat(r.notesWritten);
       } else {
         // Both "write" and "write+consolidate" use the per-day compiler.
         // The consolidation pass runs later in finalizeIngestion for write+consolidate.

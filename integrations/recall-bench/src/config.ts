@@ -13,7 +13,7 @@ export type TimestampsAxis = "on" | "off";
 // exposed. answererModel must be a slug the chosen transport understands.
 export type AnswererTransport = "anthropic" | "openrouter";
 
-export type CompileAxis = "raw" | "write" | "write+consolidate";
+export type CompileAxis = "raw" | "write" | "write+consolidate" | "distill";
 
 export interface AdapterConfig {
   answererModel: string;
@@ -82,9 +82,12 @@ export function parseConfig(raw: Record<string, unknown>): Result<AdapterConfig,
     rawCompile !== undefined &&
     rawCompile !== "raw" &&
     rawCompile !== "write" &&
-    rawCompile !== "write+consolidate"
+    rawCompile !== "write+consolidate" &&
+    rawCompile !== "distill"
   ) {
-    return err(new Error('config.compile must be "raw", "write", or "write+consolidate"'));
+    return err(
+      new Error('config.compile must be "raw", "write", "write+consolidate", or "distill"'),
+    );
   }
   const compile: CompileAxis = rawCompile === undefined ? DEFAULT_COMPILE : rawCompile;
 

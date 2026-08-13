@@ -11,6 +11,14 @@
 // was (or was not) called, inspect the returned rejection object.
 
 import type { LlmClient, CompleteWithToolsResult, ToolDef } from "../../../dist/eval/llm.js";
+import { withCallBudget } from "../../../dist/consolidate/call-budget.js";
+import { chunkMessages } from "../../../dist/distill/chunk.js";
+import { extractClaims } from "../../../dist/distill/extract.js";
+import type { NormalizedMessage } from "../../../dist/distill/adapters/types.js";
+import { proposeAllClaims } from "../../../dist/distill/propose.js";
+import { listStagedActions } from "../../../dist/curation/staged-actions.js";
+import { vaultRatify } from "../../../dist/tools/staged-actions.js";
+import { DISTILL_NUMERIC_DEFAULTS } from "../../../dist/utils/config.js";
 import { AUTHORING_SYSTEM_PROMPT } from "./authoring-prompt.js";
 import { buildWriteToolSurface } from "./write-tools.js";
 import type { AdapterConfig } from "./config.js";
@@ -166,5 +174,73 @@ export function makeCompiler(
     }));
 
     return { toolCalls, notesWritten };
+  };
+}
+
+// The distill compile arm (U10/R16). Runs Daftari's OWN compile-on-ingest
+// pipeline — chunk → extract → propose → ratify-to-land — over each benchmark
+// day, so recall-bench scores the distiller's compile quality on the fixed,
+// reproducible internal compiler (R2), not an authoring-agent loop.
+//
+// Each day is fed to the pipeline as a single synthetic transcript message
+// (the distiller's native input is a chat transcript; a benchmark day is prose,
+// so we wrap it — the chunk/extract/propose stages are identical either way).
+// The timestamp is derived deterministically from the day's date so chunk
+// anchors, and therefore claim_keys and landed paths, are reproducible across
+// identical runs. Because a recall-bench query only sees LANDED docs, every
+// staged proposal from the run is approved through the same `vault_ratify` path
+// a human review would use — distill proposes, ratify disposes, here on
+// autopilot for the benchmark.
+export function makeDistillCompiler(
+  vaultRoot: string,
+  cfg: AdapterConfig,
+  llm: LlmClient,
+): (
+  day: number,
+  content: string,
+  meta: DayMetadata,
+  priorDayPaths: string[],
+) => Promise<CompileResult> {
+  return async (_day: number, content: string, meta: DayMetadata): Promise<CompileResult> => {
+    const message: NormalizedMessage = {
+      ts: `${meta.date}T12:00:00`,
+      sender: meta.personaId,
+      text: content,
+      type: "text",
+      attachment: null,
+    };
+    const chunks = chunkMessages([message]);
+
+    const extracted = await extractClaims(
+      chunks,
+      withCallBudget(llm, DISTILL_NUMERIC_DEFAULTS.maxLlmCalls),
+      {
+        model: cfg.authoringModel,
+        maxClaims: DISTILL_NUMERIC_DEFAULTS.maxClaims,
+        inCallInputCap: DISTILL_NUMERIC_DEFAULTS.inCallInputCap,
+      },
+    );
+
+    const sourceId = `day-${meta.dayNumber}`;
+    const runId = `rb-distill-day-${meta.dayNumber}`;
+    await proposeAllClaims(vaultRoot, extracted.claims, { sourceId, runId });
+
+    // Ratify-to-land: a compiled claim recall-bench can query must be a landed
+    // doc, not a draft proposal. Approve every staged action from this run.
+    const notesWritten: string[] = [];
+    const pending = await listStagedActions(vaultRoot, "pending");
+    if (pending.ok) {
+      for (const action of pending.value) {
+        if (action.runId !== runId) continue;
+        const ratified = await vaultRatify(vaultRoot, {
+          id: action.id,
+          decision: "approve",
+          principal: "agent:recall-bench",
+        });
+        if (ratified.ok) notesWritten.push(action.targetPath);
+      }
+    }
+
+    return { toolCalls: [], notesWritten };
   };
 }
