@@ -1080,19 +1080,28 @@ export async function vaultWrite(
   // minting happens when vault_ratify dispatches back through vaultWrite with
   // the ratifier's access (the isProposeOnly branch above returns early).
   let pinMintOutcome: { minted: MintedEntry[]; unresolved: UnresolvedEntry[] } | undefined;
-  const rawDescribes = rawFrontmatter.describes;
-  if (Array.isArray(rawDescribes) && rawDescribes.length > 0) {
-    try {
-      const mintResult = await mintDescribesPins(vaultRoot, rawDescribes as string[]);
-      // Write the enriched array back so validation + serialization see it (R3).
-      rawFrontmatter.describes = mintResult.entries;
-      // Surface the outcome only when at least one entry was mintable
-      // (null-when-silent, matching supersede_hint/domain_warnings precedent).
-      if (mintResult.minted.length > 0 || mintResult.unresolved.length > 0) {
-        pinMintOutcome = { minted: mintResult.minted, unresolved: mintResult.unresolved };
+  if (Array.isArray(rawFrontmatter.describes) && rawFrontmatter.describes.length > 0) {
+    // Type-safety: describes is schema-typed string[], but the raw payload is
+    // unknown[]. Non-string elements would be rejected by validateFrontmatter
+    // anyway; skip minting entirely if any entry is not a string so that the
+    // minted result array stays correctly parallel to the input (no reordering
+    // or dropping needed).
+    const allStrings = (rawFrontmatter.describes as unknown[]).every(
+      (e): e is string => typeof e === "string",
+    );
+    if (allStrings) {
+      try {
+        const mintResult = await mintDescribesPins(vaultRoot, rawFrontmatter.describes as string[]);
+        // Write the enriched array back so validation + serialization see it (R3).
+        rawFrontmatter.describes = mintResult.entries;
+        // Surface the outcome only when at least one entry was mintable
+        // (null-when-silent, matching supersede_hint/domain_warnings precedent).
+        if (mintResult.minted.length > 0 || mintResult.unresolved.length > 0) {
+          pinMintOutcome = { minted: mintResult.minted, unresolved: mintResult.unresolved };
+        }
+      } catch {
+        // Best-effort: mint failure is silent; write proceeds with entries as-is.
       }
-    } catch {
-      // Best-effort: mint failure is silent; write proceeds with entries as-is.
     }
   }
 
@@ -1195,7 +1204,9 @@ export async function vaultWrite(
   // Attached here (not in performWrite) so vault_supersede and the other
   // lifecycle tools never nudge about themselves. A shadow-mode result is
   // excluded: nothing landed and nothing was replaced, so the hints' text
-  // would be false. #4's domain warnings ride the same channel.
+  // would be false. #4's domain warnings ride the same channel. pin_mint is
+  // also suppressed under shadow: nothing landed on disk, so the minted sha
+  // would point at a write that never happened (same logic as supersede_hint).
   if (!written.ok || written.value.shadow) return written;
   const warnings = generativeDomainRefs(
     vaultRoot,

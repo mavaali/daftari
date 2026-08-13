@@ -194,10 +194,11 @@ describe("vault_write — pin_mint (U2)", () => {
     await ensureGitRepo(codeRepo);
     vault = makeVaultWithCodeRepo(codeRepo, "repo");
 
+    const bareEntries = ["repo:src/a.ts", "repo:src/b.ts"];
     const result = await vaultWrite(vault, {
       path: "pricing/bare-describes.md",
       body: "# Bare\n",
-      frontmatter: baseFrontmatter({ describes: ["repo:src/a.ts", "repo:src/b.ts"] }),
+      frontmatter: baseFrontmatter({ describes: bareEntries }),
       agent: "agent:tester",
     });
 
@@ -205,6 +206,13 @@ describe("vault_write — pin_mint (U2)", () => {
     if (!result.ok) throw result.error;
     // No mintable entries → pin_mint absent (null-when-silent)
     expect(result.value.pin_mint).toBeUndefined();
+
+    // On-disk describes entries must be byte-identical to what was passed in
+    const readBack = await vaultRead(vault, "pricing/bare-describes.md");
+    expect(readBack.ok).toBe(true);
+    if (!readBack.ok) throw readBack.error;
+    const describes = readBack.value.frontmatter.describes ?? [];
+    expect(describes).toEqual(bareEntries);
   }, 60_000);
 
   // -------------------------------------------------------------------------
@@ -285,6 +293,73 @@ describe("vault_write — pin_mint (U2)", () => {
     if (!readBack.ok) throw readBack.error;
     const describes = readBack.value.frontmatter.describes ?? [];
     expect(describes).toContain(shalessEntry);
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Shadow mode: pin_mint suppressed (nothing landed on disk)
+  // -------------------------------------------------------------------------
+  it("shadow-mode write with mintable describes returns no pin_mint and shadow log carries no @sha pin", async () => {
+    await ensureGitRepo(codeRepo);
+    await commitFile(codeRepo, "src/shadow.ts", "a\nb\nc\n");
+    vault = makeVaultWithCodeRepo(codeRepo, "repo");
+
+    // Enable shadow mode on the vault
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(configPath(vault), `shadow_mode: true\ncode_repos:\n  repo: ${codeRepo}\n`);
+    clearConfigCache();
+
+    const shalessEntry = "repo:src/shadow.ts#L1-2";
+    const result = await vaultWrite(vault, {
+      path: "pricing/shadow-pin.md",
+      body: "# Shadow\n",
+      frontmatter: baseFrontmatter({ describes: [shalessEntry] }),
+      agent: "agent:tester",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    // Shadow mode: nothing was written, so pin_mint must be absent
+    expect(result.value.shadow).toBe(true);
+    expect(result.value.pin_mint).toBeUndefined();
+
+    // The file must not exist on disk (shadow mode: nothing lands)
+    const noFile = await vaultRead(vault, "pricing/shadow-pin.md");
+    expect(noFile.ok).toBe(false);
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Kill-switch: jit_anchors: false → no minting, entry lands verbatim
+  // -------------------------------------------------------------------------
+  it("jit_anchors: false — no pin_mint on result, entry lands verbatim (kill-switch, Issue 5)", async () => {
+    await ensureGitRepo(codeRepo);
+    await commitFile(codeRepo, "src/killswitch.ts", "x\ny\nz\n");
+    vault = makeVaultWithCodeRepo(codeRepo, "repo");
+
+    // Override config to disable JIT minting
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(configPath(vault), `jit_anchors: false\ncode_repos:\n  repo: ${codeRepo}\n`);
+    clearConfigCache();
+
+    const shalessEntry = "repo:src/killswitch.ts#L1-2";
+    const result = await vaultWrite(vault, {
+      path: "pricing/killswitch-pin.md",
+      body: "# Kill-switch\n",
+      frontmatter: baseFrontmatter({ describes: [shalessEntry] }),
+      agent: "agent:tester",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    // Kill-switch active → no minting
+    expect(result.value.pin_mint).toBeUndefined();
+
+    // Entry must land on disk exactly as passed (no @sha appended)
+    const readBack = await vaultRead(vault, "pricing/killswitch-pin.md");
+    expect(readBack.ok).toBe(true);
+    if (!readBack.ok) throw readBack.error;
+    const describes = readBack.value.frontmatter.describes ?? [];
+    expect(describes).toContain(shalessEntry);
+    expect(describes.some((d) => d.includes("@"))).toBe(false);
   }, 60_000);
 
   // -------------------------------------------------------------------------
