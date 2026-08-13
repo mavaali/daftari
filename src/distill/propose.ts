@@ -251,6 +251,10 @@ export async function proposeAllClaims(
     // override these — the emitter owns the invariant.
     const frontmatter: Record<string, unknown> = {
       title: claim.proposed_frontmatter.title,
+      // Required date field: stamp the emit date so the proposal is a complete,
+      // ratifiable document (vault_ratify validates the full frontmatter before
+      // it lands the write — a proposal missing `created` cannot be approved).
+      created: new Date().toISOString().slice(0, 10),
       domain: "accumulation",
       collection: DISTILL_COLLECTION,
       status: "draft",
