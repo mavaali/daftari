@@ -10,13 +10,9 @@
 // written to (R7). Any failure for a single entry leaves it byte-identical
 // and pushes a reason to `unresolved`; the function never throws (R2).
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { parseDescribesEntry } from "../audit/describes.js";
 import { loadConfig } from "../utils/config.js";
-import { hashObjectFile } from "../utils/git.js";
-
-const run = promisify(execFile);
+import { blobExists, hashObjectFile } from "../utils/git.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -68,26 +64,6 @@ export function formatPin(head: string, start: number, end: number, sha: string)
 // Matches `#L<start>[-<end>]` at the end of a string — no `@sha` component.
 // Applied ONLY when parseDescribesEntry confirmed no existing pin/malformedPin.
 const SHALESS_TAIL = /^(.*?)#L(\d+)(?:-(\d+))?$/;
-
-// ---------------------------------------------------------------------------
-// blobExists — advisory committed check
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true when `sha` is a reachable object in `repoRoot`'s odb
- * (`git cat-file -e <sha>`). A failure means the object is absent — the blob
- * was hashed from a working-tree file that was never committed (or was gc'd).
- */
-async function blobExists(repoRoot: string, sha: string): Promise<boolean> {
-  try {
-    await run("git", ["-C", repoRoot, "cat-file", "-e", sha], {
-      maxBuffer: 4096,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // mintDescribesPins
@@ -164,14 +140,7 @@ export async function mintDescribesPins(
     const endRaw =
       tailMatch[3] !== undefined ? Number.parseInt(tailMatch[3] as string, 10) : startRaw;
 
-    // Validate line numbers.
-    if (endRaw < startRaw) {
-      unresolved.push({
-        entry: raw,
-        reason: `inverted range: end (${endRaw}) < start (${startRaw})`,
-      });
-      continue;
-    }
+    // Validate line numbers (invalid line numbers before inverted-range check).
     if (startRaw <= 0 || endRaw <= 0) {
       unresolved.push({
         entry: raw,
@@ -179,10 +148,21 @@ export async function mintDescribesPins(
       });
       continue;
     }
+    if (endRaw < startRaw) {
+      unresolved.push({
+        entry: raw,
+        reason: `inverted range: end (${endRaw}) < start (${startRaw})`,
+      });
+      continue;
+    }
 
-    // Resolve repo. Re-parse via parseDescribesEntry to get the repo name from head.
-    // We pass "" as sourceRepo so bare (unprefixed) entries resolve to "", which is
-    // never in codeRepos — matching the candidate filter in read.ts ~line 493-497.
+    // Resolve repo. Re-parse via parseDescribesEntry to get the repo name and
+    // clean path from `head` (the portion before the `#L` tail). `parsed` from
+    // step 1 was called on the full `raw` string which has no @sha suffix but
+    // still has the `#L<n>` tail, so `parsed.path` includes that tail — it
+    // cannot be reused directly for hashing. We pass "" as sourceRepo so bare
+    // (unprefixed) entries resolve to "", which is never in codeRepos —
+    // matching the candidate filter in read.ts ~line 493-497.
     const parsedHead = parseDescribesEntry(head, "");
     const repoName = parsedHead.repo; // "" for bare entries, or the declared repo prefix
 
