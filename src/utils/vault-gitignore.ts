@@ -29,6 +29,7 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/tier2-verdicts.jsonl
 .daftari/shadow-actions.jsonl
 .daftari/consolidate-state.json
+.daftari/distill-state.json
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl

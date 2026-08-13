@@ -60,7 +60,10 @@ describe("proposeAllClaims (U4)", () => {
     const claim = makeClaim();
     const runId = "run-test-abc123";
 
-    const outcome: ProposeOutcome = await proposeAllClaims(vault, [claim], runId);
+    const outcome: ProposeOutcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-1",
+      runId,
+    });
 
     expect(outcome.proposed).toBe(1);
     expect(outcome.errors).toHaveLength(0);
@@ -117,7 +120,10 @@ describe("proposeAllClaims (U4)", () => {
       proposed_frontmatter: { title: "Canonical sounding title" },
     });
 
-    const outcome = await proposeAllClaims(vault, [claim], "run-canonical-test");
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-1",
+      runId: "run-canonical-test",
+    });
     expect(outcome.proposed).toBe(1);
 
     const listed = await listStagedActions(vault, "pending");
@@ -156,7 +162,10 @@ describe("proposeAllClaims (U4)", () => {
       proposed_frontmatter: { title: sharedTitle },
     });
 
-    const outcome = await proposeAllClaims(vault, [claim1, claim2], "run-conflict-test");
+    const outcome = await proposeAllClaims(vault, [claim1, claim2], {
+      sourceId: "chat-export-1",
+      runId: "run-conflict-test",
+    });
 
     // Both proposals must land (neither wins last-write-wins).
     expect(outcome.proposed).toBe(2);
@@ -188,7 +197,7 @@ describe("proposeAllClaims (U4)", () => {
       proposed_frontmatter: { title: "Distill must never write directly" },
     });
 
-    await proposeAllClaims(vault, [claim], "run-spy-test");
+    await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId: "run-spy-test" });
 
     expect(vaultWriteSpy).not.toHaveBeenCalled();
 
@@ -206,7 +215,10 @@ describe("proposeAllClaims (U4)", () => {
       proposed_frontmatter: { title: "" },
     });
 
-    const outcome = await proposeAllClaims(vault, [claim], "run-empty-title");
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-1",
+      runId: "run-empty-title",
+    });
     expect(outcome.proposed).toBe(1);
     expect(outcome.errors).toHaveLength(0);
 
@@ -228,7 +240,10 @@ describe("proposeAllClaims (U4)", () => {
   // -------------------------------------------------------------------------
 
   it("returns zero proposed and no errors for an empty claim list", async () => {
-    const outcome = await proposeAllClaims(vault, [], "run-empty");
+    const outcome = await proposeAllClaims(vault, [], {
+      sourceId: "chat-export-1",
+      runId: "run-empty",
+    });
     expect(outcome.proposed).toBe(0);
     expect(outcome.errors).toHaveLength(0);
     expect(outcome.results).toHaveLength(0);
