@@ -66,6 +66,8 @@ import { normalizeIsoDate } from "../utils/dates.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
+import type { MintedEntry, UnresolvedEntry } from "./pin-mint.js";
+import { mintDescribesPins } from "./pin-mint.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -352,6 +354,14 @@ export interface WriteResult {
   conflicts_with?: string[];
   tension_id?: string | null;
   tension_error?: string;
+  // JIT anchor-pin minting outcome (U2, citation-anchors spec). Present ONLY
+  // when at least one describes entry was mintable (had a shaless #L tail) —
+  // null-when-silent, matching supersede_hint/domain_warnings precedent.
+  // Absent on propose-only staged writes (nothing was written).
+  pin_mint?: {
+    minted: MintedEntry[];
+    unresolved: UnresolvedEntry[];
+  };
   // Downstream dependents advisory — set on vault_deprecate and
   // vault_supersede to surface which docs transitively depend on the
   // retracted doc (the full blast closure, matching vault_tension_blast).
@@ -1062,6 +1072,30 @@ export async function vaultWrite(
     rawFrontmatter.updated_by = agent.value;
   }
 
+  // JIT anchor-pin minting (U2, R1/R2/R3): enrich shaless `describes` entries
+  // with working-tree blob shas BEFORE validateFrontmatter/serialization so
+  // both see the pinned values and the enriched array lands in the .md (R3).
+  // Best-effort: a throw from mintDescribesPins must never fail the write (R2).
+  // Propose-only path: NO minting here — the raw payload is staged verbatim;
+  // minting happens when vault_ratify dispatches back through vaultWrite with
+  // the ratifier's access (the isProposeOnly branch above returns early).
+  let pinMintOutcome: { minted: MintedEntry[]; unresolved: UnresolvedEntry[] } | undefined;
+  const rawDescribes = rawFrontmatter.describes;
+  if (Array.isArray(rawDescribes) && rawDescribes.length > 0) {
+    try {
+      const mintResult = await mintDescribesPins(vaultRoot, rawDescribes as string[]);
+      // Write the enriched array back so validation + serialization see it (R3).
+      rawFrontmatter.describes = mintResult.entries;
+      // Surface the outcome only when at least one entry was mintable
+      // (null-when-silent, matching supersede_hint/domain_warnings precedent).
+      if (mintResult.minted.length > 0 || mintResult.unresolved.length > 0) {
+        pinMintOutcome = { minted: mintResult.minted, unresolved: mintResult.unresolved };
+      }
+    } catch {
+      // Best-effort: mint failure is silent; write proceeds with entries as-is.
+    }
+  }
+
   const { frontmatter, report } = validateFrontmatter(rawFrontmatter, extensions);
 
   // Pre-write hooks run after built-in schema validation has filled
@@ -1173,11 +1207,12 @@ export async function vaultWrite(
     },
     access,
   );
-  if (!isUpdate && warnings === null) return written;
+  if (!isUpdate && warnings === null && pinMintOutcome === undefined) return written;
   return ok({
     ...written.value,
     ...(isUpdate ? { supersede_hint: SUPERSEDE_HINT } : {}),
     ...(warnings ? { domain_warnings: warnings } : {}),
+    ...(pinMintOutcome !== undefined ? { pin_mint: pinMintOutcome } : {}),
   });
 }
 
@@ -2301,6 +2336,17 @@ const frontmatterProperty = {
         "Open questions this document raises (mirrors ## Questions Raised). " +
         "Surfaced by vault_lint's `unanswered-questions` check.",
     },
+    describes: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Code bindings this document describes, in the form " +
+        "`[<repo>:]<path>[::symbol][#L<start>[-<end>]][@<sha12>]`. " +
+        "Shaless entries with a `#L` range are enriched with a working-tree " +
+        "blob sha at write time (JIT pin minting, U2); the minting outcome is " +
+        "reported in `pin_mint` on the result. The schema stays `string[]` — " +
+        "no structural change; enrichment happens pre-validation.",
+    },
   },
   required: ["title", "domain", "collection", "status", "confidence", "created", "provenance"],
   additionalProperties: true,
@@ -2354,6 +2400,46 @@ const domainWarningsProperty = {
     "#4 advisory epistemic-boundary warnings: this accumulation-domain write " +
     "references generative-domain documents the caller can read. Absent when " +
     "there is nothing to warn about. The write has already landed.",
+};
+
+const pinMintProperty = {
+  type: "object",
+  description:
+    "JIT anchor-pin minting outcome (U2). Present only when at least one " +
+    "`describes` entry had a shaless `#L<start>-<end>` tail that was a " +
+    "candidate for minting. Absent (null-when-silent) when no entries were " +
+    "mintable. The write always lands regardless of mint errors.",
+  properties: {
+    minted: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          entry: { type: "string", description: "Original (input) entry string" },
+          pinned: { type: "string", description: "Rewritten entry with @sha12 pin" },
+          committed: {
+            type: "boolean",
+            description: "True when the blob is reachable in the odb (was committed)",
+          },
+        },
+        required: ["entry", "pinned", "committed"],
+      },
+      description: "Entries successfully enriched with a blob-sha pin",
+    },
+    unresolved: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          entry: { type: "string", description: "Original (input) entry string" },
+          reason: { type: "string", description: "Why the entry could not be minted" },
+        },
+        required: ["entry", "reason"],
+      },
+      description: "Entries that could not be minted, with reasons",
+    },
+  },
+  required: ["minted", "unresolved"],
 };
 
 // The shared WriteResult shape. `actions` and `statuses` are the closed
@@ -2480,6 +2566,7 @@ export const writeTools: ToolDefinition[] = [
             "and its lineage instead. The write has already landed.",
         },
         domain_warnings: domainWarningsProperty,
+        pin_mint: pinMintProperty,
         staged_id: {
           type: "string",
           description:
