@@ -35,8 +35,7 @@ function daysAgo(n: number): string {
 
 /** Create a minimal git code repo. */
 async function makeCodeRepo(): Promise<string> {
-  const { mkdtempSync: mdt } = await import("node:fs");
-  const dir = mdt(join(tmpdir(), "daftari-code-u7-"));
+  const dir = mkdtempSync(join(tmpdir(), "daftari-code-u7-"));
   await ensureGitRepo(dir);
   return dir;
 }
@@ -510,5 +509,49 @@ describe("runSleepCycle — U7 auto-repin proposer", () => {
 
     expect(md).toContain("## Anchor re-pin");
     expect(md).toContain("knowledge/doc.md");
+  });
+
+  // -------------------------------------------------------------------------
+  // Morning Report: nothing staged but a pending repin queued → standalone line
+  // -------------------------------------------------------------------------
+
+  it("Morning Report renders a clear standalone line when nothing new is staged", async () => {
+    const body = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n");
+    const sha = await commitFile(codeRepo, "src/mod.ts", body);
+    const sha12 = sha.slice(0, 12);
+
+    writeVaultDoc(vault, "knowledge/doc.md", [`repo:src/mod.ts#L1-5@${sha12}`]);
+    writeConfig(vault, codeRepo);
+
+    // Relocate.
+    const prepend = Array.from({ length: 5 }, (_, i) => `pre ${i + 1}`).join("\n");
+    await writeFile(join(codeRepo, "src/mod.ts"), `${prepend}\n${body}`, "utf-8");
+    await commit(codeRepo, ["src/mod.ts"], "relocate", "agent:tester");
+
+    // First run stages one proposal; second run skips it (already pending).
+    const r1 = await runSleepCycle(vault);
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    expect(r1.value.repin?.staged).toHaveLength(1);
+
+    const r2 = await runSleepCycle(vault);
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.value.repin?.staged).toHaveLength(0);
+    expect(r2.value.repin?.skippedPending).toBe(1);
+
+    const { renderMarkdown } = await import("../../src/sleep/report.js");
+    const md = renderMarkdown({
+      generatedAt: new Date().toISOString(),
+      vault,
+      cycle: r2.value,
+      wakeQueuePath: null,
+      wakeLimit: 20,
+    });
+
+    expect(md).toContain("## Anchor re-pin");
+    expect(md).toContain("Skipped 1 doc(s) already queued — nothing new to stage.");
+    // Must NOT lead with the context-free bullet under an empty staged list.
+    expect(md).not.toContain("- skipped 1 doc(s) with a pending repin already queued");
   });
 });

@@ -33,9 +33,13 @@ function renderRepinSection(lines: string[], r: RepinPassResult): void {
     for (const s of r.staged) {
       lines.push(`- ${s.path} (${s.actionId})`);
     }
-  }
-  if (r.skippedPending > 0) {
-    lines.push(`- skipped ${r.skippedPending} doc(s) with a pending repin already queued`);
+    if (r.skippedPending > 0) {
+      lines.push(`- skipped ${r.skippedPending} doc(s) with a pending repin already queued`);
+    }
+  } else if (r.skippedPending > 0) {
+    // Nothing new to stage, but some docs were already queued — say so plainly
+    // rather than leading with a context-free "- skipped …" bullet.
+    lines.push(`Skipped ${r.skippedPending} doc(s) already queued — nothing new to stage.`);
   }
   if (r.errors.length > 0) {
     lines.push(`- ${r.errors.length} per-doc error(s) (cycle continued):`);

@@ -229,96 +229,98 @@ export async function runSleepCycle(
   // re-list for the ratification report so the report reflects post-staging.
   let repinResult: RepinPassResult | undefined;
   const cfgResult = loadConfig(vaultRoot);
-  const autoRepin = cfgResult.ok ? cfgResult.value.autoRepin : true;
-  const jitAnchors = cfgResult.ok ? cfgResult.value.jitAnchors : true;
-  const codeRepos = cfgResult.ok ? cfgResult.value.codeRepos : {};
+  // A malformed/unreadable config SKIPS the advisory repin pass cleanly and
+  // deliberately (mirrors read.ts's `if (!cfg.ok) return null`): we do not
+  // run the pass, leave repinResult undefined (no `repin` field — identical
+  // to a kill-switch), and never throw or fail the cycle over it.
+  if (cfgResult.ok) {
+    const { autoRepin, jitAnchors, codeRepos } = cfgResult.value;
 
-  if (autoRepin && jitAnchors && Object.keys(codeRepos).length > 0) {
-    // Candidate filter: docs whose frontmatter `describes` has ≥1 entry that
-    // parseDescribesEntry reads as a real @sha pin with a repo mapped in
-    // codeRepos — the computeAnchors candidate filter in read.ts.
-    const candidates = docs.value.filter((doc) => {
-      const describes = doc.frontmatter.describes ?? [];
-      return describes
-        .slice(0, ANCHOR_PIN_CAP)
-        .some(
-          (raw) =>
-            parseDescribesEntry(raw as string, "").pin !== undefined &&
-            codeRepos[parseDescribesEntry(raw as string, "").repo] !== undefined,
-        );
-    });
-
-    // Dedup (R8, LOAD-BEARING): snapshot pending repin actions ONCE before
-    // staging. stageActionWithConflictCheck deliberately re-stages duplicates
-    // and logs inter-proposal tensions — without this check every nightly run
-    // adds a duplicate pending action plus an inter-proposal tension per doc.
-    // Non-pending statuses (ratified/rejected/expired) do NOT block.
-    const preSnapshot = await listStagedActions(vaultRoot);
-    const pendingRepinPaths = new Set<string>();
-    if (preSnapshot.ok) {
-      for (const a of preSnapshot.value) {
-        if (a.status === "pending" && a.actionType === "repin") {
-          pendingRepinPaths.add(a.targetPath);
-        }
-      }
-    }
-
-    const staged: { path: string; actionId: string }[] = [];
-    let skippedPending = 0;
-    const errors: { path: string; reason: string }[] = [];
-
-    for (const doc of candidates) {
-      // Skip docs that already have a pending repin (dedup).
-      if (pendingRepinPaths.has(doc.path)) {
-        skippedPending += 1;
-        continue;
-      }
-
-      // Compute the repin plan for this doc (U3 — read-only).
-      let plan: Awaited<ReturnType<typeof computeRepin>>;
-      try {
-        plan = await computeRepin(vaultRoot, doc.path);
-      } catch (e) {
-        errors.push({
-          path: doc.path,
-          reason: e instanceof Error ? e.message : String(e),
-        });
-        continue;
-      }
-
-      if (!plan.ok) {
-        errors.push({ path: doc.path, reason: plan.error.message });
-        continue;
-      }
-
-      // Zero replacements → plain-intact or all-skipped; no queue noise.
-      if (plan.value.replacements.length === 0) {
-        continue;
-      }
-
-      // Stage via stageActionWithConflictCheck — access undefined
-      // (operator/unrestricted posture, same as write.ts propose-only coercion).
-      const rationale =
-        `auto-repin: ${plan.value.replacements.length} relocated pin(s) in ${doc.path} — ` +
-        plan.value.replacements.map((r) => `${r.old} → ${r.new}`).join("; ");
-
-      const stageRes = await stageActionWithConflictCheck(vaultRoot, {
-        actionType: "repin",
-        targetPath: doc.path,
-        proposedBy: "agent:sleep-repin",
-        rationale,
-        proposedDiff: { replacements: plan.value.replacements },
+    if (autoRepin && jitAnchors && Object.keys(codeRepos).length > 0) {
+      // Candidate filter: docs whose frontmatter `describes` has ≥1 entry that
+      // parseDescribesEntry reads as a real @sha pin with a repo mapped in
+      // codeRepos — the computeAnchors candidate filter in read.ts. Parse each
+      // raw entry ONCE, then filter on the parsed result.
+      const candidates = docs.value.filter((doc) => {
+        const describes = doc.frontmatter.describes ?? [];
+        return describes
+          .slice(0, ANCHOR_PIN_CAP)
+          .map((raw) => ({ raw, parsed: parseDescribesEntry(raw, "") }))
+          .some((c) => c.parsed.pin !== undefined && codeRepos[c.parsed.repo] !== undefined);
       });
 
-      if (!stageRes.ok) {
-        errors.push({ path: doc.path, reason: stageRes.error.message });
-        continue;
+      // Dedup (R8, LOAD-BEARING): snapshot pending repin actions ONCE before
+      // staging. stageActionWithConflictCheck deliberately re-stages duplicates
+      // and logs inter-proposal tensions — without this check every nightly run
+      // adds a duplicate pending action plus an inter-proposal tension per doc.
+      // Non-pending statuses (ratified/rejected/expired) do NOT block.
+      const preSnapshot = await listStagedActions(vaultRoot);
+      const pendingRepinPaths = new Set<string>();
+      if (preSnapshot.ok) {
+        for (const a of preSnapshot.value) {
+          if (a.status === "pending" && a.actionType === "repin") {
+            pendingRepinPaths.add(a.targetPath);
+          }
+        }
       }
 
-      staged.push({ path: doc.path, actionId: stageRes.value.id });
-    }
+      const staged: { path: string; actionId: string }[] = [];
+      let skippedPending = 0;
+      const errors: { path: string; reason: string }[] = [];
 
-    repinResult = { staged, skippedPending, errors };
+      for (const doc of candidates) {
+        // Skip docs that already have a pending repin (dedup).
+        if (pendingRepinPaths.has(doc.path)) {
+          skippedPending += 1;
+          continue;
+        }
+
+        // Compute the repin plan for this doc (U3 — read-only).
+        let plan: Awaited<ReturnType<typeof computeRepin>>;
+        try {
+          plan = await computeRepin(vaultRoot, doc.path);
+        } catch (e) {
+          errors.push({
+            path: doc.path,
+            reason: e instanceof Error ? e.message : String(e),
+          });
+          continue;
+        }
+
+        if (!plan.ok) {
+          errors.push({ path: doc.path, reason: plan.error.message });
+          continue;
+        }
+
+        // Zero replacements → plain-intact or all-skipped; no queue noise.
+        if (plan.value.replacements.length === 0) {
+          continue;
+        }
+
+        // Stage via stageActionWithConflictCheck — access undefined
+        // (operator/unrestricted posture, same as write.ts propose-only coercion).
+        const rationale =
+          `auto-repin: ${plan.value.replacements.length} relocated pin(s) in ${doc.path} — ` +
+          plan.value.replacements.map((r) => `${r.old} → ${r.new}`).join("; ");
+
+        const stageRes = await stageActionWithConflictCheck(vaultRoot, {
+          actionType: "repin",
+          targetPath: doc.path,
+          proposedBy: "agent:sleep-repin",
+          rationale,
+          proposedDiff: { replacements: plan.value.replacements },
+        });
+
+        if (!stageRes.ok) {
+          errors.push({ path: doc.path, reason: stageRes.error.message });
+          continue;
+        }
+
+        staged.push({ path: doc.path, actionId: stageRes.value.id });
+      }
+
+      repinResult = { staged, skippedPending, errors };
+    }
   }
 
   // Ratification queue + the rubber-stamp monitor. Listed AFTER the repin
