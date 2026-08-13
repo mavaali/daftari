@@ -272,4 +272,68 @@ describe("mintDescribesPins", () => {
     await mintDescribesPins(vault, ["repo:src/a.ts#L1-1"]);
     expect(statSync(codeRepo).mtimeMs).toBe(repoMtime);
   });
+
+  it("R7: source FILE mtime and content unchanged after mint (file-level write guard)", async () => {
+    await commitFile(codeRepo, "src/a.ts", "line1\nline2\n");
+    vault = makeVaultWithConfig(codeRepo);
+
+    const filePath = join(codeRepo, "src/a.ts");
+    const { readFileSync } = await import("node:fs");
+    const beforeMtime = statSync(filePath).mtimeMs;
+    const beforeContent = readFileSync(filePath, "utf-8");
+
+    await mintDescribesPins(vault, ["repo:src/a.ts#L1-2"]);
+
+    expect(statSync(filePath).mtimeMs).toBe(beforeMtime);
+    expect(readFileSync(filePath, "utf-8")).toBe(beforeContent);
+  });
+
+  // --- Error: line number <= 0 ----------------------------------------------
+
+  it("error (line<=0): #L0-5 → unresolved, reason mentions invalid line numbers, minted empty", async () => {
+    await commitFile(codeRepo, "src/a.ts", "a\nb\nc\n");
+    vault = makeVaultWithConfig(codeRepo);
+
+    const entries = ["repo:src/a.ts#L0-5"];
+    const outcome = await mintDescribesPins(vault, entries);
+
+    expect(outcome.minted).toHaveLength(0);
+    expect(outcome.unresolved).toHaveLength(1);
+    const u0 = outcome.unresolved[0] as NonNullable<(typeof outcome.unresolved)[0]>;
+    expect(u0.entry).toBe("repo:src/a.ts#L0-5");
+    expect(u0.reason).toMatch(/invalid line|line.*must be|start=0/i);
+    // entry byte-identical
+    expect(outcome.entries[0]).toBe("repo:src/a.ts#L0-5");
+  });
+
+  it("error (line<=0): single #L0 → unresolved, minted empty", async () => {
+    await commitFile(codeRepo, "src/a.ts", "a\nb\n");
+    vault = makeVaultWithConfig(codeRepo);
+
+    const entries = ["repo:src/a.ts#L0"];
+    const outcome = await mintDescribesPins(vault, entries);
+
+    expect(outcome.minted).toHaveLength(0);
+    expect(outcome.unresolved).toHaveLength(1);
+    expect(outcome.unresolved[0]?.reason).toMatch(/invalid line|line.*must be|start=0/i);
+    expect(outcome.entries[0]).toBe("repo:src/a.ts#L0");
+  });
+
+  // --- Error: bare path with #L tail (no repo prefix) -----------------------
+
+  it("error (bare with #L): src/a.ts#L5-10 (no repo: prefix) → unresolved, entry unchanged", async () => {
+    await commitFile(codeRepo, "src/a.ts", "a\nb\nc\n");
+    vault = makeVaultWithConfig(codeRepo); // configured repo is "repo", not ""
+
+    const entries = ["src/a.ts#L5-10"];
+    const outcome = await mintDescribesPins(vault, entries);
+
+    expect(outcome.minted).toHaveLength(0);
+    expect(outcome.unresolved).toHaveLength(1);
+    const u0 = outcome.unresolved[0] as NonNullable<(typeof outcome.unresolved)[0]>;
+    expect(u0.entry).toBe("src/a.ts#L5-10");
+    expect(u0.reason).toMatch(/no configured repo/i);
+    // entry must be byte-identical — not silently passed through as minted
+    expect(outcome.entries[0]).toBe("src/a.ts#L5-10");
+  });
 });
