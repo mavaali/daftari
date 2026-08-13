@@ -12,8 +12,14 @@
 // generative document going stale is expected, not a defect — it is counted,
 // never woken.
 
+import { parseDescribesEntry } from "../audit/describes.js";
 import { buildDocket } from "../court/docket.js";
-import { daysUntil, listStagedActions, sweepExpiredActions } from "../curation/staged-actions.js";
+import {
+  daysUntil,
+  listStagedActions,
+  stageActionWithConflictCheck,
+  sweepExpiredActions,
+} from "../curation/staged-actions.js";
 import { computeStaleness } from "../curation/staleness.js";
 import { agingTier, listTensions } from "../curation/tension.js";
 import {
@@ -24,6 +30,9 @@ import {
 import { computeValidity } from "../curation/validity.js";
 import { buildPathIndexes, loadDocuments, resolveLink } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
+import { ANCHOR_PIN_CAP } from "../tools/anchors.js";
+import { computeRepin } from "../tools/repin.js";
+import { loadConfig } from "../utils/config.js";
 
 // A load-bearing decayed document: canonical, accumulation-domain, past its
 // TTL, with at least one downstream dependent. The wake queue exists for an
@@ -45,6 +54,15 @@ export interface WakeTask {
 export interface QuietDecay {
   path: string;
   ageDays: number;
+}
+
+// Present on SleepCycleResult only when the auto-repin pass ran (i.e., all
+// three conditions held: autoRepin && jitAnchors && codeRepos non-empty).
+// Absent when any kill-switch fired — byte-identical to pre-U7 in that case.
+export interface RepinPassResult {
+  staged: { path: string; actionId: string }[];
+  skippedPending: number;
+  errors: { path: string; reason: string }[];
 }
 
 export interface SleepCycleResult {
@@ -69,6 +87,8 @@ export interface SleepCycleResult {
     history: { ratified: number; rejected: number; expired: number };
   };
   sweptExpired: string[];
+  // Present only when the auto-repin pass ran (all kill-switches off).
+  repin?: RepinPassResult;
 }
 
 export async function runSleepCycle(
@@ -200,7 +220,109 @@ export async function runSleepCycle(
     blastTotal: e.blast.total,
   }));
 
-  // Ratification queue + the rubber-stamp monitor.
+  // Auto-repin proposer (U7, R8): stage a `repin` proposal for every doc with
+  // a currently-relocated pin, idempotently, under agent:sleep-repin. Three
+  // kill-switches: autoRepin, jitAnchors, empty codeRepos — any one fires →
+  // skip the pass, leave the result byte-identical to pre-U7 (no `repin` key).
+  //
+  // Order: snapshot the pending queue FIRST (dedup check), then stage, then
+  // re-list for the ratification report so the report reflects post-staging.
+  let repinResult: RepinPassResult | undefined;
+  const cfgResult = loadConfig(vaultRoot);
+  const autoRepin = cfgResult.ok ? cfgResult.value.autoRepin : true;
+  const jitAnchors = cfgResult.ok ? cfgResult.value.jitAnchors : true;
+  const codeRepos = cfgResult.ok ? cfgResult.value.codeRepos : {};
+
+  if (autoRepin && jitAnchors && Object.keys(codeRepos).length > 0) {
+    // Candidate filter: docs whose frontmatter `describes` has ≥1 entry that
+    // parseDescribesEntry reads as a real @sha pin with a repo mapped in
+    // codeRepos — the computeAnchors candidate filter in read.ts.
+    const candidates = docs.value.filter((doc) => {
+      const describes = doc.frontmatter.describes ?? [];
+      return describes
+        .slice(0, ANCHOR_PIN_CAP)
+        .some(
+          (raw) =>
+            parseDescribesEntry(raw as string, "").pin !== undefined &&
+            codeRepos[parseDescribesEntry(raw as string, "").repo] !== undefined,
+        );
+    });
+
+    // Dedup (R8, LOAD-BEARING): snapshot pending repin actions ONCE before
+    // staging. stageActionWithConflictCheck deliberately re-stages duplicates
+    // and logs inter-proposal tensions — without this check every nightly run
+    // adds a duplicate pending action plus an inter-proposal tension per doc.
+    // Non-pending statuses (ratified/rejected/expired) do NOT block.
+    const preSnapshot = await listStagedActions(vaultRoot);
+    const pendingRepinPaths = new Set<string>();
+    if (preSnapshot.ok) {
+      for (const a of preSnapshot.value) {
+        if (a.status === "pending" && a.actionType === "repin") {
+          pendingRepinPaths.add(a.targetPath);
+        }
+      }
+    }
+
+    const staged: { path: string; actionId: string }[] = [];
+    let skippedPending = 0;
+    const errors: { path: string; reason: string }[] = [];
+
+    for (const doc of candidates) {
+      // Skip docs that already have a pending repin (dedup).
+      if (pendingRepinPaths.has(doc.path)) {
+        skippedPending += 1;
+        continue;
+      }
+
+      // Compute the repin plan for this doc (U3 — read-only).
+      let plan: Awaited<ReturnType<typeof computeRepin>>;
+      try {
+        plan = await computeRepin(vaultRoot, doc.path);
+      } catch (e) {
+        errors.push({
+          path: doc.path,
+          reason: e instanceof Error ? e.message : String(e),
+        });
+        continue;
+      }
+
+      if (!plan.ok) {
+        errors.push({ path: doc.path, reason: plan.error.message });
+        continue;
+      }
+
+      // Zero replacements → plain-intact or all-skipped; no queue noise.
+      if (plan.value.replacements.length === 0) {
+        continue;
+      }
+
+      // Stage via stageActionWithConflictCheck — access undefined
+      // (operator/unrestricted posture, same as write.ts propose-only coercion).
+      const rationale =
+        `auto-repin: ${plan.value.replacements.length} relocated pin(s) in ${doc.path} — ` +
+        plan.value.replacements.map((r) => `${r.old} → ${r.new}`).join("; ");
+
+      const stageRes = await stageActionWithConflictCheck(vaultRoot, {
+        actionType: "repin",
+        targetPath: doc.path,
+        proposedBy: "agent:sleep-repin",
+        rationale,
+        proposedDiff: { replacements: plan.value.replacements },
+      });
+
+      if (!stageRes.ok) {
+        errors.push({ path: doc.path, reason: stageRes.error.message });
+        continue;
+      }
+
+      staged.push({ path: doc.path, actionId: stageRes.value.id });
+    }
+
+    repinResult = { staged, skippedPending, errors };
+  }
+
+  // Ratification queue + the rubber-stamp monitor. Listed AFTER the repin
+  // pass so pending count + expiringSoon reflect any newly staged proposals.
   const actions = await listStagedActions(vaultRoot);
   if (!actions.ok) return actions;
   const pending = actions.value.filter((a) => a.status === "pending");
@@ -227,5 +349,6 @@ export async function runSleepCycle(
     tensions: { open: openTensions.length, stale: staleTensions, docketTop },
     ratification: { pending: pending.length, expiringSoon, history },
     sweptExpired: swept.value.expired,
+    ...(repinResult !== undefined ? { repin: repinResult } : {}),
   });
 }
