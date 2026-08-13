@@ -316,7 +316,7 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   if (argv[0] === "distill") {
-    const { runDistill } = await import("./distill/index.js");
+    const { runDistill } = await import("./distill/cli.js");
     process.exitCode = await runDistill(argv.slice(1));
     return;
   }
