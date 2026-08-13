@@ -91,7 +91,7 @@ R1–R16 defined in the source spec. Each unit cites the R-IDs it advances.
 **Execution note:** mock the LLM in tests; assert on the engine's handling of responses, not model quality (quality is U10's job).
 
 ### U4. Proposal emitter → staged actions
-**Goal:** Emit each claim as a `vault_stage_action("write")` proposal at draft/low/synthesized, stamped with `run_id`.
+**Goal:** Emit each claim as a `vault_stage_action` "write" proposal at draft/low/synthesized, stamped with `run_id`.
 **Requirements:** R3.
 **Dependencies:** U3.
 **Files:** `src/distill/propose.ts`, `test/distill/propose.test.ts`.
