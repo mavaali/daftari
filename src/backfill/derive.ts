@@ -250,6 +250,8 @@ export function deriveProposed(input: DeriveInputs): DerivedFrontmatter {
     tags: tagsValue,
     // No signal to derive doc-to-code bindings from raw content; default empty.
     describes: resolve("describes", [], "empty"),
+    // subjects: reserved built-in; not derived — preserve author value or [].
+    subjects: resolve("subjects", [], "empty"),
     questions_answered: resolve(
       "questions_answered",
       qAnswered,

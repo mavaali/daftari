@@ -27,6 +27,7 @@ function fm(): Frontmatter {
     describes: [],
     questions_answered: [],
     questions_raised: [],
+    subjects: [],
     positions: null,
     org_position: null,
     contested: null,
@@ -59,6 +60,7 @@ const BUILTIN_KEYS = [
   "describes",
   "questions_answered",
   "questions_raised",
+  "subjects",
 ];
 
 // Top-level YAML keys of the frontmatter block, in document order.

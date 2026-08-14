@@ -126,6 +126,7 @@ describe("validity round-trips through serializeDocument", () => {
       describes: [],
       questions_answered: [],
       questions_raised: [],
+      subjects: [],
       ...over,
     };
   }

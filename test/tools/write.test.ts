@@ -1314,6 +1314,7 @@ describe("write tools", () => {
         "describes",
         "questions_answered",
         "questions_raised",
+        "subjects",
       ];
       expect(Object.keys(read.value.raw).sort()).toEqual([...BUILTIN_KEYS].sort());
     }, 60_000);
@@ -1561,6 +1562,7 @@ describe("serializeDocument — custom Date frontmatter fields", () => {
       describes: [],
       questions_answered: [],
       questions_raised: [],
+      subjects: [],
     }) as unknown as Frontmatter;
     const out = serializeDocument(fm, "body\n", [], {
       published: new Date("2026-06-15T00:00:00.000Z"),

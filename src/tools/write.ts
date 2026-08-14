@@ -262,6 +262,7 @@ export function serializeDocument(
     describes: fm.describes,
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
+    subjects: fm.subjects,
     // Positions (Slice 1): emitted ONLY when non-null — a deliberate exception
     // to the always-emit built-in convention so the thousands of legacy docs
     // stay byte-stable. A null typed value with surviving raw content (e.g. a

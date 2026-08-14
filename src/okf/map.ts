@@ -356,6 +356,7 @@ export function okfToDaftari(
     describes: [],
     questions_answered: [],
     questions_raised: [],
+    subjects: [],
   };
 
   // Preserve the OKF kind so the import is not lossy. serializeDocument writes

@@ -16,13 +16,22 @@ import type { LlmClient } from "../eval/llm.js";
 import type { CortexEvalError } from "../eval/types.js";
 import { err, type Result } from "../frontmatter/types.js";
 
+// Marker kept in the message so consumers can distinguish "budget spent"
+// from a real runtime failure. Use isBudgetExhaustedError — don't match the
+// string elsewhere.
+const BUDGET_EXHAUSTED_MARKER = "LLM call budget exhausted";
+
+export function isBudgetExhaustedError(e: CortexEvalError): boolean {
+  return e.kind === "runtime" && e.message.includes(BUDGET_EXHAUSTED_MARKER);
+}
+
 export function withCallBudget(llm: LlmClient, maxCalls: number): LlmClient {
   let used = 0;
 
   function exhausted<T>(): Result<T, CortexEvalError> {
     return err({
       kind: "runtime",
-      message: `LLM call budget exhausted (--max-llm-calls ${maxCalls})`,
+      message: `${BUDGET_EXHAUSTED_MARKER} (--max-llm-calls ${maxCalls})`,
     });
   }
 

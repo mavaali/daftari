@@ -119,6 +119,10 @@ export interface BuiltinFrontmatter {
   // metadata. Default to [] when absent.
   questions_answered: string[];
   questions_raised: string[];
+  // Reserved built-in for the deferred subject-keyed erasure subsystem.
+  // Default []; not populated by distill, no cascade — placeholder so future
+  // subject-keyed erasure is a feature-add, not a migration.
+  subjects: string[];
   // Multi-principal contested beliefs (Slice 1). Null = legacy consolidated
   // doc — principal unknown, never retroactively attributed from updated_by.
   positions: Position[] | null;
@@ -152,6 +156,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "describes",
   "questions_answered",
   "questions_raised",
+  "subjects",
   "positions",
   "org_position",
   "contested",

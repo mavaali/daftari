@@ -25,6 +25,7 @@ function fm(over: Partial<Frontmatter> = {}): Frontmatter {
     describes: [],
     questions_answered: [],
     questions_raised: [],
+    subjects: [],
     positions: null,
     org_position: null,
     contested: null,

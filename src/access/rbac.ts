@@ -65,6 +65,15 @@ export function canRatify(role: RoleConfig | null): boolean {
   return role?.ratify ?? false;
 }
 
+// True if the role may erase content from the vault's git history (vault_erase,
+// R11-R13). The most destructive grant: a history rewrite + force-push is
+// irreversible, so it is opt-in and off by default (an absent `erase` key ⇒
+// false), distinct from every other capability. A role without it cannot scrub
+// history even if it can write or ratify.
+export function canErase(role: RoleConfig | null): boolean {
+  return role?.erase ?? false;
+}
+
 // True if the role is propose-only (#235): its writes must land as staged
 // `write` proposals, never as direct mutations. vault_write and vault_assert
 // coerce into staged proposals; every other write tool denies. The write
