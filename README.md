@@ -20,7 +20,7 @@ model.** A cortex, not a clipboard.
 
 **Concepts** — [What it is](#what-it-is) · [The four layers](#the-four-layers) · [Two kinds of knowledge](#two-kinds-of-knowledge) · [File format](#file-format)
 
-**The rituals** — [The tools](#the-tools) · [Circadian memory](#circadian-memory) · [Tension Court](#tension-court) · [The principal interview](#the-principal-interview) · [Belief archaeology](#belief-archaeology) · [The vault as witness](#the-vault-as-witness--and-the-wager-layer) · [Coherence audit](#coherence-audit)
+**The rituals** — [The tools](#the-tools) · [Circadian memory](#circadian-memory) · [The viewer](#the-viewer) · [Tension Court](#tension-court) · [The principal interview](#the-principal-interview) · [Belief archaeology](#belief-archaeology) · [The vault as witness](#the-vault-as-witness--and-the-wager-layer) · [Coherence audit](#coherence-audit)
 
 **Running it** — [Access control](#access-control) · [Server mode](#server-mode-self-hosted) · [Storage backing](#storage-backing) · [Adopting a vault + OKF](#adopting-an-existing-vault)
 
@@ -248,7 +248,7 @@ tensions inline and foreground the current source of superseded documents),
 
 **Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_tension_triage` (the unranked triage card / `court --triage`), `vault_lint`, `vault_provenance`, `vault_staleness` (edge-staleness: pending upstream changes / broken-read rate)
 
-**Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`, `vault_consumes` (query the compiled dependency graph)
+**Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`, `vault_consumes` (query the compiled dependency graph), `vault_backlinks` (the reverse knowledge-graph query — which documents reference a target; a code-path target lists the docs whose `describes` binds that file, and `verify:true` classifies each pin against its code repo)
 
 **Dispatch:** `vault_tier1` (type-directed change dispatch), `vault_tier2_queue`, `vault_tier2_verdict` (semantic-review queue + verdict)
 
@@ -319,6 +319,22 @@ court docket head, the ratification queue with soon-to-expire proposals, and
 the rubber-stamp monitor — zero rejections over a long decision history is
 printed as a warning, not a compliment. The agent proposes overnight; you
 ratify over coffee.
+
+Each completed pass appends a content-light summary (counts only, no document
+bodies) to a self-pruning `.daftari/runs.jsonl`; `daftari runs [list|show <id>]`
+reads that history back, so the loop's own liveness is legible over time.
+
+## The viewer
+
+`daftari view` serves a read-only web portal over the vault — loopback only,
+no editing. An index of documents by collection; a page per document with
+rendered (sanitized) markdown, its frontmatter, its **backlinks** (who cites or
+links it), and a **Contested** panel surfacing the open tensions on it; and a
+search box over the hybrid index.
+
+```bash
+daftari view --vault ./my-vault    # then open http://127.0.0.1:8788
+```
 
 ## Tension Court
 
