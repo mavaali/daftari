@@ -12,6 +12,7 @@
 
 import type { GraphOptions } from "./graph.js";
 import { escHtml } from "./render.js";
+import type { StatusView } from "./status-view.js";
 
 const CSS = `
 :root { color-scheme: light dark;
@@ -148,6 +149,35 @@ ul.docs .cf { font-family:var(--mono); font-size:10px; color:var(--muted); flex:
   vertical-align:middle; }
 .legend .ln { display:inline-block; width:16px; height:0; border-top:3px solid; margin-right:5px;
   vertical-align:middle; }
+
+/* topbar nav */
+.nav { display:flex; gap:14px; margin-left:18px; }
+.nav a { font-family:var(--mono); font-size:12px; color:var(--muted); }
+.nav a:hover { color:var(--link); }
+
+/* dashboard */
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:0 0 20px; }
+.tile { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+.tile .num { font-size:28px; font-weight:700; letter-spacing:-.02em; }
+.tile .lbl { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+  color:var(--muted); margin-top:2px; }
+.tile a { display:block; }
+.tile.alert .num { color:var(--accent); }
+.panel { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+  padding:14px 18px; margin:0 0 16px; }
+.panel h2 { font-size:12px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.04em;
+  color:var(--muted); margin:0 0 10px; }
+.sbar { display:flex; height:14px; border-radius:7px; overflow:hidden; background:var(--dim-bg); }
+.sbar span { display:block; }
+.sbar .fresh { background:var(--good); } .sbar .aging { background:var(--warn); }
+.sbar .stale { background:var(--bad); }
+.sbar-key { display:flex; gap:16px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--muted); }
+.sbar-key .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+.runs { list-style:none; margin:0; padding:0; }
+.runs li { display:flex; gap:10px; align-items:baseline; padding:5px 0; border-top:1px solid var(--border); font-size:13px; }
+.runs li:first-child { border-top:none; }
+.runs .kind { font-family:var(--mono); font-size:11px; color:var(--muted); min-width:96px; }
+.runs .when { color:var(--muted); font-size:12px; }
 `;
 
 function searchBox(query = ""): string {
@@ -156,10 +186,14 @@ function searchBox(query = ""): string {
 }
 
 export function layout(title: string, bodyHtml: string, query = ""): string {
-  return `<!doctype html><html><head><meta charset="utf-8">
+  return (
+    `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escHtml(title)}</title><style>${CSS}</style></head>
-<body><div class="wrap"><div class="topbar"><a class="brand" href="/">daftari · vault</a>${searchBox(query)}</div>${bodyHtml}</div></body></html>`;
+<body><div class="wrap"><div class="topbar"><a class="brand" href="/">daftari · vault</a>` +
+    `<nav class="nav"><a href="/docs">documents</a><a href="/graph">graph</a></nav>` +
+    `${searchBox(query)}</div>${bodyHtml}</div></body></html>`
+  );
 }
 
 // --- epistemic visual vocabulary ---------------------------------------------
@@ -486,4 +520,65 @@ export function renderGraphPage(opts: GraphOptions): string {
     `<script src="/assets/cytoscape.min.js"></script>` +
     `<script>${GRAPH_CLIENT_JS}</script>`;
   return layout("Knowledge graph", body);
+}
+
+// --- dashboard (home) --------------------------------------------------------
+
+function tile(
+  num: number | string,
+  label: string,
+  opts: { href?: string; alert?: boolean } = {},
+): string {
+  const inner = `<div class="num">${escHtml(String(num))}</div><div class="lbl">${escHtml(label)}</div>`;
+  const cls = `tile${opts.alert ? " alert" : ""}`;
+  return opts.href
+    ? `<div class="${cls}"><a href="${opts.href}">${inner}</a></div>`
+    : `<div class="${cls}">${inner}</div>`;
+}
+
+export function renderDashboardPage(s: StatusView): string {
+  const tiles =
+    `<div class="tiles">` +
+    tile(s.fileCount, "documents", { href: "/docs" }) +
+    tile(s.collections.length, "collections") +
+    tile(s.unresolvedTensions, "open tensions", { alert: s.unresolvedTensions > 0 }) +
+    tile(s.ratificationQueue, "ratification queue", { alert: s.ratificationQueue > 0 }) +
+    `</div>`;
+
+  // Staleness distribution as one proportional bar (fresh/aging/stale).
+  const st = s.staleness;
+  const pct = (n: number) => (st.total > 0 ? (n / st.total) * 100 : 0);
+  const stalenessPanel =
+    `<div class="panel"><h2>Freshness</h2>` +
+    `<div class="sbar">` +
+    `<span class="fresh" style="width:${pct(st.fresh)}%"></span>` +
+    `<span class="aging" style="width:${pct(st.aging)}%"></span>` +
+    `<span class="stale" style="width:${pct(st.stale)}%"></span>` +
+    `</div>` +
+    `<div class="sbar-key">` +
+    `<span><span class="sw" style="background:var(--good)"></span>fresh ${st.fresh}</span>` +
+    `<span><span class="sw" style="background:var(--warn)"></span>aging ${st.aging}</span>` +
+    `<span><span class="sw" style="background:var(--bad)"></span>stale ${st.stale}</span>` +
+    `<span>valid-time ${s.validity.authored}/${s.validity.total}</span>` +
+    (s.invalidCount > 0 ? `<span>⚠ ${s.invalidCount} invalid</span>` : "") +
+    `</div></div>`;
+
+  const runsPanel =
+    s.recentRuns.length === 0
+      ? `<div class="panel"><h2>Recent sleep runs</h2><p class="empty">No runs recorded yet.</p></div>`
+      : `<div class="panel"><h2>Recent sleep runs</h2><ul class="runs">${s.recentRuns
+          .map(
+            (r) =>
+              `<li><span class="kind">${escHtml(r.kind)}</span>` +
+              `<span class="when">${escHtml(r.ts.slice(0, 16).replace("T", " "))}</span></li>`,
+          )
+          .join("")}</ul></div>`;
+
+  const body =
+    `<h1>Vault dashboard</h1>` +
+    tiles +
+    stalenessPanel +
+    runsPanel +
+    `<div class="graphlink"><a href="/graph">◧ open the knowledge graph →</a></div>`;
+  return layout("Vault dashboard", body);
 }

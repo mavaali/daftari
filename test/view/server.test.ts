@@ -49,14 +49,15 @@ describe("view server (slice C)", () => {
     expect(res.status).toBe(405);
   });
 
-  it("index lists a written doc under its collection", async () => {
+  it("the /docs index lists a written doc under its collection", async () => {
     await vaultWrite(vault, {
       path: "pricing/alpha.md",
       body: "# Alpha\n",
       frontmatter: frontmatter({ title: "Alpha" }),
       agent: AGENT,
     });
-    const res = await handleView(vault, { path: "/", host: HOST });
+    // R10: home is the dashboard; the collection index moved to /docs.
+    const res = await handleView(vault, { path: "/docs", host: HOST });
     expect(res.status).toBe(200);
     expect(res.body).toContain("Alpha");
     expect(res.body).toContain(`href="/doc/pricing/alpha.md"`);
