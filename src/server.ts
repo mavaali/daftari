@@ -20,6 +20,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
+import { backlinksTools } from "./tools/backlinks.js";
 import { canonTools } from "./tools/canon.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
@@ -62,6 +63,7 @@ const allTools: ToolDefinition[] = [
   ...stagedActionTools,
   ...edgeTools,
   ...consumesTools,
+  ...backlinksTools,
   ...tier1Tools,
   ...tier2Tools,
   ...edgeStalenessTools,
