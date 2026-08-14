@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-08-14
+
+### Added
+
+- **`daftari view` — a read-only web portal over the vault** (#381) — a loopback-only browse UI (no editing, no mutation routes). An index of documents by collection, and a page per document with rendered markdown, its frontmatter, and its backlinks. Document bodies pass through a sanitizing render pipeline (`unified` + `remark-gfm` + `rehype-sanitize`, so untrusted content cannot inject script or dangerous-protocol links), and a loopback Host allow-list blunts DNS-rebinding. Uses `node:http` (no web framework).
+- **Contested panel in the viewer** (#382) — a document page surfaces the open tensions on it (kind, a link to the counterpart, and both sides' claims), putting daftari's differentiator on the page. Reuses `contestedFor`, whose `db` argument (RBAC-only) is now nullable so the loopback viewer reads the tension ledger directly and needs no built index.
+- **In-app search in the viewer** (#383) — a search box on every page and a `/search` route backed by the existing hybrid index (`vault_search`); results show title, collection, and snippet per hit. Read-only, host-guarded like every route.
+- **`vault_backlinks verify` — live pin-state on code hits** (#384) — the code facet gains an opt-in `verify` flag: each hit whose pin resolves to a configured `code_repos` root is classified against that working tree (`intact`/`moved`/`missing`), mirroring the read-path anchor logic. A bare entry or unconfigured repo is skipped; a classify failure leaves the hit stateless, never a false state. Default `false`, so the base query is unchanged.
+
 ## [3.3.0] - 2026-08-14
 
 ### Added
