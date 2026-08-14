@@ -15,7 +15,7 @@ import { computeDecay } from "../curation/decay.js";
 import { listTensions } from "../curation/tension.js";
 import { buildReverseLinkMap, buildReverseSourceMap } from "../curation/tension-blast.js";
 import type { LoadedDoc } from "../curation/vault-docs.js";
-import { loadDocuments } from "../curation/vault-docs.js";
+import { buildPathIndexes, loadDocuments, resolveLink } from "../curation/vault-docs.js";
 import { vaultEdges } from "../tools/edges.js";
 import { vaultSearch } from "../tools/search.js";
 import { buildDocView, type DocView } from "./doc-view.js";
@@ -32,7 +32,7 @@ import {
   renderSearchPage,
   type SearchHitView,
 } from "./pages.js";
-import { escHtml, renderMarkdown } from "./render.js";
+import { escHtml, renderDocBody } from "./render.js";
 import { buildStatusView } from "./status-view.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -257,6 +257,18 @@ export async function handleView(
       claimOther: c.claimOther,
       loggedAt: c.loggedAt,
     }));
+
+    // R11: resolve in-vault relative links to /doc/<path> with the SAME
+    // resolver backlinks use, so the two can't disagree. A cold doc-page load;
+    // the /api/doc JSON deliberately stays raw markdown (a presentation concern
+    // lives in rendering, not the DTO/B-seam).
+    const linkDocs = await loadDocuments(vaultRoot);
+    const indexes = linkDocs.ok ? buildPathIndexes(linkDocs.value) : null;
+    const rendered = renderDocBody(dto.content, {
+      resolveLink: indexes
+        ? (raw) => resolveLink(raw, dto.path, indexes.byPath, indexes.byBasename)
+        : undefined,
+    });
     return html(
       200,
       renderDocPage({
@@ -270,7 +282,8 @@ export async function handleView(
           tier: dto.frontmatter.tier ?? null,
           tags: dto.frontmatter.tags ?? [],
         },
-        bodyHtml: renderMarkdown(dto.content),
+        bodyHtml: rendered.html,
+        toc: rendered.toc,
         backlinks,
         tensions,
         banners: docBanners(dto),

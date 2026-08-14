@@ -11,7 +11,7 @@
 // weak/hazard (low / warn / deprecated), maroon accent = contested.
 
 import type { GraphOptions } from "./graph.js";
-import { escHtml } from "./render.js";
+import { escHtml, type TocEntry } from "./render.js";
 import type { StatusView } from "./status-view.js";
 
 const CSS = `
@@ -77,6 +77,14 @@ h2 { line-height:1.25; }
 .spacer { flex:1 1 auto; }
 .tier { font-family:var(--mono); font-size:11px; color:var(--muted); }
 .graphlink { margin:0 0 14px; font-size:13px; }
+.toc { background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+  padding:10px 16px; margin:0 0 16px; }
+.toc h2 { font-size:11px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.04em;
+  color:var(--muted); margin:0 0 6px; }
+.toc ul { list-style:none; margin:0; padding:0; }
+.toc li { padding:2px 0; font-size:13px; }
+.toc li.d2 { padding-left:14px; } .toc li.d3 { padding-left:28px; font-size:12px; }
+.body :is(h1,h2,h3) { scroll-margin-top:12px; }
 .tags { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }
 .tag { font-family:var(--mono); font-size:11px; color:var(--muted);
   border:1px solid var(--border); border-radius:20px; padding:1px 9px; }
@@ -277,6 +285,7 @@ export function renderDocPage(args: {
   validity?: string | null;
   decayLevel?: string | null; // DecayState.level, or null when fresh
   contestedCount?: number;
+  toc?: TocEntry[];
 }): string {
   const fm = args.frontmatter;
   const contested = args.contestedCount ?? args.tensions?.length ?? 0;
@@ -327,6 +336,18 @@ export function renderDocPage(args: {
   const graphLink =
     `<div class="graphlink"><a href="/graph?scope=ego&root=${encodeURI(args.path)}&depth=2">` +
     `◧ neighborhood graph →</a></div>`;
+  // R11: a table of contents, shown only when the body has enough structure to
+  // warrant one. Headings carry matching ids (added by renderDocBody).
+  const toc = args.toc ?? [];
+  const tocPanel =
+    toc.length >= 3
+      ? `<nav class="toc"><h2>On this page</h2><ul>${toc
+          .map(
+            (t) =>
+              `<li class="d${t.depth}"><a href="#${encodeURI(t.id)}">${escHtml(t.text)}</a></li>`,
+          )
+          .join("")}</ul></nav>`
+      : "";
   const body =
     `<h1>${escHtml(fm.title || args.path)}</h1>` +
     standing +
@@ -334,6 +355,7 @@ export function renderDocPage(args: {
     tags +
     banners +
     tensionsPanel +
+    tocPanel +
     `<div class="body">${args.bodyHtml}</div>` +
     `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>`;
   return layout(fm.title || args.path, body);
