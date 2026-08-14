@@ -65,7 +65,13 @@
     "gray-matter": "^4.0.3",
     "jose": "^6.2.4",
     "js-yaml": "^4.1.1",
-    "sqlite-vec": "^0.1.9"
+    "rehype-sanitize": "^6.0.0",
+    "rehype-stringify": "^10.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "sqlite-vec": "^0.1.9",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
@@ -87,9 +93,9 @@
     "hono": "^4.12.25"
   },
   "peerDependencies": {
-    "pg": ">=8",
     "@aws-sdk/client-s3": "^3.600.0",
-    "@azure/storage-blob": "^12.24.0"
+    "@azure/storage-blob": "^12.24.0",
+    "pg": ">=8"
   },
   "peerDependenciesMeta": {
     "pg": {
