@@ -35,6 +35,11 @@ ul.docs li { padding:6px 0; border-bottom:1px solid var(--border); }
 .tag { font-size:11px; color:var(--muted); border:1px solid var(--border);
   border-radius:20px; padding:1px 8px; }
 .tag-warn { color:var(--accent); border-color:var(--accent); }
+.banner { border-radius:8px; padding:9px 14px; margin:0 0 10px; font-size:13px;
+  border:1px solid var(--border); }
+.banner-warn { border-color:var(--accent); color:var(--accent);
+  background:var(--accent-soft, rgba(177,31,75,0.06)); }
+.banner-info { color:var(--muted); }
 .tensions { background:var(--surface); border:1px solid var(--accent);
   border-radius:10px; padding:12px 16px; margin:0 0 20px; }
 .tensions h2 { font-size:14px; color:var(--accent); margin:0 0 8px; }
@@ -140,12 +145,19 @@ export interface DocTensionView {
   loggedAt: string;
 }
 
+export interface DocBannerView {
+  level: "warn" | "info";
+  text: string;
+}
+
 export function renderDocPage(args: {
   path: string;
   frontmatter: DocFrontmatterView;
   bodyHtml: string; // already sanitized by renderMarkdown
   backlinks: DocBacklinkView[];
   tensions?: DocTensionView[];
+  banners?: DocBannerView[]; // epistemic state (decay / structural / upstream / anchors)
+  validity?: string | null; // valid-time note, when the doc authors an interval
 }): string {
   const fm = args.frontmatter;
   const chips = [
@@ -154,6 +166,7 @@ export function renderDocPage(args: {
     ["confidence", fm.confidence],
     ["provenance", fm.provenance],
     ["tier", fm.tier ?? "—"],
+    ...(args.validity ? [["valid", args.validity] as [string, string]] : []),
   ]
     .map(
       ([k, v]) =>
@@ -186,9 +199,13 @@ export function renderDocPage(args: {
               `<div class="claim"><span class="k">other:</span> ${escHtml(t.claimOther)}</div></li>`,
           )
           .join("")}</ul></div>`;
+  const banners = (args.banners ?? [])
+    .map((b) => `<div class="banner banner-${b.level}">${escHtml(b.text)}</div>`)
+    .join("");
   const body =
     `<h1>${escHtml(fm.title || args.path)}</h1>` +
     `<div class="fm">${chips}${tags}</div>` +
+    banners +
     tensionsPanel +
     `<div class="body">${args.bodyHtml}</div>` +
     `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>`;
