@@ -11,12 +11,15 @@ import { createServer, type Server } from "node:http";
 import { buildReverseLinkMap, buildReverseSourceMap } from "../curation/tension-blast.js";
 import { loadDocuments } from "../curation/vault-docs.js";
 import { contestedFor } from "../search/contested.js";
+import { vaultSearch } from "../tools/search.js";
 import {
   type DocBacklinkView,
   type DocTensionView,
   type IndexGroup,
   renderDocPage,
   renderIndexPage,
+  renderSearchPage,
+  type SearchHitView,
 } from "./pages.js";
 import { escHtml, renderMarkdown } from "./render.js";
 
@@ -43,13 +46,33 @@ function html(status: number, body: string): ViewResponse {
 // (no server object needed) so it is directly unit-testable.
 export async function handleView(
   vaultRoot: string,
-  req: { method?: string; path: string; host?: string },
+  req: { method?: string; path: string; host?: string; query?: string },
 ): Promise<ViewResponse> {
   if (!isAllowedHost(req.host)) {
     return html(403, "<h1>403</h1><p>Host not allowed.</p>");
   }
   if ((req.method ?? "GET") !== "GET") {
     return html(405, "<h1>405</h1><p>The vault viewer is read-only.</p>");
+  }
+
+  // Search runs against the hybrid index (which it builds on demand), not the
+  // loaded doc set — handle it before loadDocuments so an empty query is cheap.
+  if (req.path === "/search") {
+    const query = (req.query ?? "").trim();
+    if (query.length === 0) {
+      return html(200, renderSearchPage("", []));
+    }
+    const result = await vaultSearch(vaultRoot, { query });
+    if (!result.ok) {
+      return html(500, `<h1>500</h1><p>${escHtml(result.error.message)}</p>`);
+    }
+    const hits: SearchHitView[] = result.value.hits.map((h) => ({
+      path: h.path,
+      title: h.title,
+      collection: h.collection,
+      snippet: h.snippet,
+    }));
+    return html(200, renderSearchPage(query, hits));
   }
 
   const loaded = await loadDocuments(vaultRoot);
@@ -129,10 +152,11 @@ export async function handleView(
 export function createViewServer(vaultRoot: string): Server {
   return createServer((request, response) => {
     const url = request.url ?? "/";
-    const path = url.split("?")[0] ?? "/";
+    const parsed = new URL(url, "http://localhost");
     void handleView(vaultRoot, {
       method: request.method,
-      path,
+      path: parsed.pathname,
+      query: parsed.searchParams.get("q") ?? undefined,
       host: request.headers.host,
     }).then((res) => {
       response.writeHead(res.status, { "Content-Type": res.contentType });
