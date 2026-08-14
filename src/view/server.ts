@@ -8,12 +8,12 @@
 // and document bodies are rendered through the sanitizing pipeline.
 
 import { createServer, type Server } from "node:http";
-import { buildReverseLinkMap, buildReverseSourceMap } from "../curation/tension-blast.js";
 import { loadDocuments } from "../curation/vault-docs.js";
-import { contestedFor } from "../search/contested.js";
 import { vaultSearch } from "../tools/search.js";
+import { buildDocView, type DocView } from "./doc-view.js";
 import {
   type DocBacklinkView,
+  type DocBannerView,
   type DocTensionView,
   type IndexGroup,
   renderDocPage,
@@ -40,6 +40,31 @@ export interface ViewResponse {
 
 function html(status: number, body: string): ViewResponse {
   return { status, contentType: "text/html; charset=utf-8", body };
+}
+
+function json(status: number, value: unknown): ViewResponse {
+  return { status, contentType: "application/json; charset=utf-8", body: JSON.stringify(value) };
+}
+
+// Collect the non-null epistemic banners the DTO carries into display banners,
+// each tagged by kind so the page colors them distinctly. Every report follows
+// the null-when-silent contract, so a fresh, healthy doc yields an empty array.
+function docBanners(dto: DocView): DocBannerView[] {
+  const banners: DocBannerView[] = [];
+  if (dto.decay?.banner) banners.push({ kind: "decay", text: dto.decay.banner });
+  if (dto.structural?.banner) banners.push({ kind: "structural", text: dto.structural.banner });
+  if (dto.upstream_staleness?.banner)
+    banners.push({ kind: "upstream", text: dto.upstream_staleness.banner });
+  if (dto.anchors?.banner) banners.push({ kind: "anchor", text: dto.anchors.banner });
+  if (dto.validity?.banner) banners.push({ kind: "validity", text: dto.validity.banner });
+  return banners;
+}
+
+// A compact valid-time chip, when the document authors an interval.
+function validityChip(dto: DocView): string | null {
+  const v = dto.validity;
+  if (!v || (v.from === null && v.until === null)) return null;
+  return `${v.from ?? "…"} → ${v.until ?? "now"}`;
 }
 
 // Resolve, render, and route one request. Pure over the vault's current state
@@ -75,6 +100,56 @@ export async function handleView(
     return html(200, renderSearchPage(query, hits));
   }
 
+  // The JSON data contract behind a document page (the B-seam): the same DTO
+  // the HTML page renders from, so a future client app consumes it unchanged.
+  if (req.path.startsWith("/api/doc/")) {
+    const target = decodeURIComponent(req.path.slice("/api/doc/".length));
+    const view = await buildDocView(vaultRoot, target);
+    if (!view.ok) return json(500, { error: view.error.message });
+    if (view.value === null) return json(404, { error: `no document at ${target}` });
+    return json(200, view.value);
+  }
+
+  if (req.path.startsWith("/doc/")) {
+    const target = decodeURIComponent(req.path.slice("/doc/".length));
+    const view = await buildDocView(vaultRoot, target);
+    if (!view.ok) return html(500, `<h1>500</h1><p>${escHtml(view.error.message)}</p>`);
+    if (view.value === null) {
+      return html(404, `<h1>404</h1><p>No document at ${escHtml(target)}.</p>`);
+    }
+    const dto = view.value;
+    const backlinks: DocBacklinkView[] = dto.backlinks.map((b) => ({ doc: b.doc, label: b.via }));
+    const tensions: DocTensionView[] = dto.contested.map((c) => ({
+      counterpart: c.counterpart,
+      kind: c.kind,
+      claimSelf: c.claimSelf,
+      claimOther: c.claimOther,
+      loggedAt: c.loggedAt,
+    }));
+    return html(
+      200,
+      renderDocPage({
+        path: dto.path,
+        frontmatter: {
+          title: dto.frontmatter.title,
+          collection: dto.frontmatter.collection,
+          status: dto.frontmatter.status,
+          confidence: dto.frontmatter.confidence,
+          provenance: dto.frontmatter.provenance,
+          tier: dto.frontmatter.tier ?? null,
+          tags: dto.frontmatter.tags ?? [],
+        },
+        bodyHtml: renderMarkdown(dto.content),
+        backlinks,
+        tensions,
+        banners: docBanners(dto),
+        validity: validityChip(dto),
+        decayLevel: dto.decay?.level ?? null,
+        contestedCount: dto.contested.length,
+      }),
+    );
+  }
+
   const loaded = await loadDocuments(vaultRoot);
   if (!loaded.ok) {
     return html(500, `<h1>500</h1><p>${escHtml(loaded.error.message)}</p>`);
@@ -82,11 +157,17 @@ export async function handleView(
   const docs = loaded.value;
 
   if (req.path === "/" || req.path === "") {
-    const byCollection = new Map<string, { path: string; title: string }[]>();
+    const byCollection = new Map<string, IndexGroup["docs"]>();
     for (const d of docs) {
       const col = d.frontmatter.collection || "(uncategorized)";
       const list = byCollection.get(col) ?? [];
-      list.push({ path: d.path, title: d.frontmatter.title });
+      list.push({
+        path: d.path,
+        title: d.frontmatter.title,
+        status: d.frontmatter.status,
+        confidence: d.frontmatter.confidence,
+        tier: d.frontmatter.tier ?? null,
+      });
       byCollection.set(col, list);
     }
     const groups: IndexGroup[] = [...byCollection.entries()]
@@ -96,53 +177,6 @@ export async function handleView(
         docs: entries.sort((a, b) => (a.title || a.path).localeCompare(b.title || b.path)),
       }));
     return html(200, renderIndexPage(groups));
-  }
-
-  if (req.path.startsWith("/doc/")) {
-    const target = decodeURIComponent(req.path.slice("/doc/".length));
-    const doc = docs.find((d) => d.path === target);
-    if (!doc) {
-      return html(404, `<h1>404</h1><p>No document at ${escHtml(target)}.</p>`);
-    }
-    // Doc-facet backlinks, inline from the same reverse maps vault_backlinks
-    // uses (avoids re-loading the doc set for one lookup).
-    const reverseSource = buildReverseSourceMap(docs);
-    const reverseLink = buildReverseLinkMap(docs);
-    const backlinks: DocBacklinkView[] = [];
-    for (const b of reverseSource.get(doc.path) ?? []) backlinks.push({ doc: b, label: "source" });
-    for (const b of reverseLink.get(doc.path) ?? []) backlinks.push({ doc: b, label: "link" });
-    backlinks.sort((a, b) => a.doc.localeCompare(b.doc) || a.label.localeCompare(b.label));
-
-    // Contested/tension panel — daftari's differentiator surfaced in the
-    // viewer. The loopback viewer applies no RBAC, so it reads the tension
-    // ledger directly (db=null) and needs no built index.
-    const contested = contestedFor(vaultRoot, null, doc.path);
-    const tensions: DocTensionView[] = (contested?.contested ?? []).map((c) => ({
-      counterpart: c.counterpart,
-      kind: c.kind,
-      claimSelf: c.claimSelf,
-      claimOther: c.claimOther,
-      loggedAt: c.loggedAt,
-    }));
-
-    return html(
-      200,
-      renderDocPage({
-        path: doc.path,
-        frontmatter: {
-          title: doc.frontmatter.title,
-          collection: doc.frontmatter.collection,
-          status: doc.frontmatter.status,
-          confidence: doc.frontmatter.confidence,
-          provenance: doc.frontmatter.provenance,
-          tier: doc.frontmatter.tier ?? null,
-          tags: doc.frontmatter.tags ?? [],
-        },
-        bodyHtml: renderMarkdown(doc.content),
-        backlinks,
-        tensions,
-      }),
-    );
   }
 
   return html(404, "<h1>404</h1><p>Not found.</p>");
