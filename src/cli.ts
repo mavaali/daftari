@@ -43,6 +43,7 @@ Usage:
   daftari okf <export|import> ...     Bridge a vault and the Open Knowledge Format (see: daftari okf --help)
   daftari serve --vault <path>        Server mode over Streamable HTTP for multiple clients (see: daftari serve --help)
   daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
+  daftari runs [list|show <id>]       Inspect the sleep run ledger (see: daftari runs --help)
   daftari sync --vault <path>         Push the vault to its storage backing / restore (see: daftari sync --help)
 
 Server options:
@@ -281,6 +282,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "sleep") {
     const { runSleep } = await import("./sleep/index.js");
     process.exitCode = await runSleep(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "runs") {
+    const { runRuns } = await import("./sleep/runs-cli.js");
+    process.exitCode = await runRuns(argv.slice(1));
     return;
   }
 
