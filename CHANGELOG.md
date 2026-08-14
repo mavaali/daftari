@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-08-14
+
+### Added
+
+- **Viewer: epistemic surface on the document page** (#387) — the document page leads with a **standing strip** (status badge, a confidence meter, a decay chip, a contested flag) over the body, with epistemic banners differentiated by kind (decay / structural / upstream-staleness / pins / validity), all read from a new `/api/doc/<path>` JSON contract (the same DTO the page renders — a client app could consume it unchanged). The collection index carries per-document standing dots.
+- **Viewer: knowledge graph** (#388) — a new `/graph` route renders an interactive map of the vault (nodes are documents, colored by status and flagged when decayed or contested; edges are `source` / `link` / `derives_from` / `contested`), backed by a `GET /api/graph?scope=all|ego&root=&depth=` JSON endpoint. Click a node to open its document; every document page links to its own neighborhood; large graphs cap by degree with a truncation notice. The graph library is vendored and lazy-loaded only on this route.
+- **Viewer: dashboard home** (#389) — the home page becomes a vault dashboard (documents, collections, open tensions, ratification queue, a freshness distribution, and the recent sleep-run trend), rendered from a new `GET /api/status` JSON endpoint. The collection index moves to `/docs`; a top-bar nav reaches documents and the graph from every page.
+- **Viewer: in-vault links + table of contents** (#390) — relative links to other vault documents are resolved to `/doc/<path>` using the same resolver backlinks use (so they cannot disagree), and `h1`–`h3` headings get stable anchor ids plus an "On this page" table of contents. Both run after sanitization, adding only controlled attributes.
+
 ## [3.4.0] - 2026-08-14
 
 ### Added

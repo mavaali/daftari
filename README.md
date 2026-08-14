@@ -327,10 +327,26 @@ reads that history back, so the loop's own liveness is legible over time.
 ## The viewer
 
 `daftari view` serves a read-only web portal over the vault — loopback only,
-no editing. An index of documents by collection; a page per document with
-rendered (sanitized) markdown, its frontmatter, its **backlinks** (who cites or
-links it), and a **Contested** panel surfacing the open tensions on it; and a
-search box over the hybrid index.
+no editing — that makes the vault's *epistemic state and knowledge graph*
+legible, not just its prose:
+
+- **Dashboard home** — vault metrics, a freshness distribution (fresh/aging/
+  stale), open-tension and ratification-queue counts, and the recent sleep-run
+  trend.
+- **Document pages** lead with a **standing strip** — status, a confidence
+  meter, decay, and a contested flag — over rendered (sanitized) markdown, with
+  epistemic banners (decay / structural / upstream / pins), a **Contested**
+  panel, **backlinks**, a table of contents, and in-vault links resolved to
+  their documents.
+- **Knowledge graph** (`/graph`) — an interactive map of the vault: nodes are
+  documents (colored by status, flagged when decayed or contested), edges are
+  source / link / derives-from / contested relations. Click a node to open it;
+  every document links to its own neighborhood.
+- **Search** over the hybrid index, on every page.
+
+Read-only by construction (only GET, no mutation routes, a loopback Host
+allow-list against DNS-rebinding), built on `node:http` with one lazily loaded
+graph library — no web framework.
 
 ```bash
 daftari view --vault ./my-vault    # then open http://127.0.0.1:8788
