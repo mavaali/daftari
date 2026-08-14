@@ -34,6 +34,14 @@ ul.docs li { padding:6px 0; border-bottom:1px solid var(--border); }
 .backlinks li { padding:4px 0; font-size:13px; }
 .tag { font-size:11px; color:var(--muted); border:1px solid var(--border);
   border-radius:20px; padding:1px 8px; }
+.tag-warn { color:var(--accent); border-color:var(--accent); }
+.tensions { background:var(--surface); border:1px solid var(--accent);
+  border-radius:10px; padding:12px 16px; margin:0 0 20px; }
+.tensions h2 { font-size:14px; color:var(--accent); margin:0 0 8px; }
+.tensions ul { list-style:none; margin:0; padding:0; }
+.tensions li { padding:8px 0; border-top:1px solid var(--border); font-size:13px; }
+.tensions li:first-child { border-top:none; }
+.tensions .claim { color:var(--muted); margin-top:3px; }
 .empty { color:var(--muted); font-size:13px; }
 `;
 
@@ -85,11 +93,20 @@ export interface DocBacklinkView {
   label: string; // e.g. "source" | "link" | describes raw
 }
 
+export interface DocTensionView {
+  counterpart: string; // the other side's vault path
+  kind: string; // factual | temporal | interpretive | ...
+  claimSelf: string; // this doc's claim
+  claimOther: string; // the counterpart's claim
+  loggedAt: string;
+}
+
 export function renderDocPage(args: {
   path: string;
   frontmatter: DocFrontmatterView;
   bodyHtml: string; // already sanitized by renderMarkdown
   backlinks: DocBacklinkView[];
+  tensions?: DocTensionView[];
 }): string {
   const fm = args.frontmatter;
   const chips = [
@@ -117,9 +134,23 @@ export function renderDocPage(args: {
               `<li><a href="/doc/${encodeURI(b.doc)}">${escHtml(b.doc)}</a> <span class="tag">${escHtml(b.label)}</span></li>`,
           )
           .join("")}</ul>`;
+  const tensions = args.tensions ?? [];
+  const tensionsPanel =
+    tensions.length === 0
+      ? ""
+      : `<div class="tensions"><h2>Contested</h2><ul>${tensions
+          .map(
+            (t) =>
+              `<li><span class="tag tag-warn">${escHtml(t.kind)}</span> vs ` +
+              `<a href="/doc/${encodeURI(t.counterpart)}">${escHtml(t.counterpart)}</a>` +
+              `<div class="claim"><span class="k">this:</span> ${escHtml(t.claimSelf)}</div>` +
+              `<div class="claim"><span class="k">other:</span> ${escHtml(t.claimOther)}</div></li>`,
+          )
+          .join("")}</ul></div>`;
   const body =
     `<h1>${escHtml(fm.title || args.path)}</h1>` +
     `<div class="fm">${chips}${tags}</div>` +
+    tensionsPanel +
     `<div class="body">${args.bodyHtml}</div>` +
     `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>`;
   return layout(fm.title || args.path, body);

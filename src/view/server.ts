@@ -10,7 +10,14 @@
 import { createServer, type Server } from "node:http";
 import { buildReverseLinkMap, buildReverseSourceMap } from "../curation/tension-blast.js";
 import { loadDocuments } from "../curation/vault-docs.js";
-import { type DocBacklinkView, type IndexGroup, renderDocPage, renderIndexPage } from "./pages.js";
+import { contestedFor } from "../search/contested.js";
+import {
+  type DocBacklinkView,
+  type DocTensionView,
+  type IndexGroup,
+  renderDocPage,
+  renderIndexPage,
+} from "./pages.js";
 import { escHtml, renderMarkdown } from "./render.js";
 
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -83,6 +90,18 @@ export async function handleView(
     for (const b of reverseLink.get(doc.path) ?? []) backlinks.push({ doc: b, label: "link" });
     backlinks.sort((a, b) => a.doc.localeCompare(b.doc) || a.label.localeCompare(b.label));
 
+    // Contested/tension panel — daftari's differentiator surfaced in the
+    // viewer. The loopback viewer applies no RBAC, so it reads the tension
+    // ledger directly (db=null) and needs no built index.
+    const contested = contestedFor(vaultRoot, null, doc.path);
+    const tensions: DocTensionView[] = (contested?.contested ?? []).map((c) => ({
+      counterpart: c.counterpart,
+      kind: c.kind,
+      claimSelf: c.claimSelf,
+      claimOther: c.claimOther,
+      loggedAt: c.loggedAt,
+    }));
+
     return html(
       200,
       renderDocPage({
@@ -98,6 +117,7 @@ export async function handleView(
         },
         bodyHtml: renderMarkdown(doc.content),
         backlinks,
+        tensions,
       }),
     );
   }
