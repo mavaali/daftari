@@ -43,6 +43,7 @@ Usage:
   daftari interview [ask] [options]   Interview the principal on what the vault finds unclear (see: daftari interview --help)
   daftari okf <export|import> ...     Bridge a vault and the Open Knowledge Format (see: daftari okf --help)
   daftari serve --vault <path>        Server mode over Streamable HTTP for multiple clients (see: daftari serve --help)
+  daftari view [--vault <path>]       Read-only web portal over the vault (see: daftari view --help)
   daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
   daftari runs [list|show <id>]       Inspect the sleep run ledger (see: daftari runs --help)
   daftari sync --vault <path>         Push the vault to its storage backing / restore (see: daftari sync --help)
@@ -289,6 +290,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "runs") {
     const { runRuns } = await import("./sleep/runs-cli.js");
     process.exitCode = await runRuns(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "view") {
+    const { runView } = await import("./view/index.js");
+    process.exitCode = await runView(argv.slice(1));
     return;
   }
 
