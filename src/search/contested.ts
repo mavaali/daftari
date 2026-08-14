@@ -129,16 +129,18 @@ function tensionsByPath(vaultRoot: string): Map<string, SideRecord[]> {
 // matching vaultSearch's own filtering.
 export function contestedFor(
   vaultRoot: string,
-  db: IndexDb,
+  db: IndexDb | null,
   hitPath: string,
   access?: AccessContext,
 ): { contested: ContestedTension[]; contestedCount: number } | null {
   const records = tensionsByPath(vaultRoot).get(canonicalRel(hitPath));
   if (records === undefined) return null;
 
-  const visible = access
-    ? records.filter((r) => sourceReadable(db, access, r.counterpart))
-    : records;
+  // RBAC filtering needs both an access context and the index (to resolve a
+  // counterpart's collection). A caller with no access context (e.g. the
+  // loopback viewer) passes db=null and sees every recorded side.
+  const visible =
+    access && db ? records.filter((r) => sourceReadable(db, access, r.counterpart)) : records;
   if (visible.length === 0) return null;
 
   // Date desc, then log position desc: dates are day-granular, so the file
