@@ -42,14 +42,53 @@ ul.docs li { padding:6px 0; border-bottom:1px solid var(--border); }
 .tensions li { padding:8px 0; border-top:1px solid var(--border); font-size:13px; }
 .tensions li:first-child { border-top:none; }
 .tensions .claim { color:var(--muted); margin-top:3px; }
+.topbar { display:flex; align-items:center; gap:16px; margin-bottom:12px; }
+.topbar form { margin-left:auto; }
+.topbar input { font-size:13px; padding:5px 10px; border:1px solid var(--border);
+  border-radius:8px; background:var(--surface); color:var(--text); width:220px; }
+.results { list-style:none; margin:0; padding:0; }
+.results li { padding:10px 0; border-bottom:1px solid var(--border); }
+.results .snippet { color:var(--muted); font-size:13px; margin-top:3px; }
+.results .meta { font-size:11px; color:var(--muted); }
 .empty { color:var(--muted); font-size:13px; }
 `;
 
-export function layout(title: string, bodyHtml: string): string {
+function searchBox(query = ""): string {
+  return `<form class="search" action="/search" method="get">
+<input type="search" name="q" placeholder="Search the vault…" value="${escHtml(query)}" autocomplete="off"></form>`;
+}
+
+export function layout(title: string, bodyHtml: string, query = ""): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escHtml(title)}</title><style>${CSS}</style></head>
-<body><div class="wrap"><a class="brand" href="/">daftari · vault</a>${bodyHtml}</div></body></html>`;
+<body><div class="wrap"><div class="topbar"><a class="brand" href="/">daftari · vault</a>${searchBox(query)}</div>${bodyHtml}</div></body></html>`;
+}
+
+export interface SearchHitView {
+  path: string;
+  title: string;
+  collection: string;
+  snippet: string;
+}
+
+export function renderSearchPage(query: string, hits: SearchHitView[]): string {
+  const q = query.trim();
+  if (q.length === 0) {
+    return layout("Search", `<h1>Search</h1><p class="empty">Type a query above.</p>`);
+  }
+  const body =
+    hits.length === 0
+      ? `<h1>Search</h1><p class="empty">No results for “${escHtml(q)}”.</p>`
+      : `<h1>Search</h1><ul class="results">${hits
+          .map(
+            (h) =>
+              `<li><a href="/doc/${encodeURI(h.path)}">${escHtml(h.title || h.path)}</a>` +
+              `<div class="meta">${escHtml(h.collection)}</div>` +
+              `<div class="snippet">${escHtml(h.snippet)}</div></li>`,
+          )
+          .join("")}</ul>`;
+  return layout("Search", body, q);
 }
 
 export interface IndexEntry {
