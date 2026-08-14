@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-08-14
+
+### Added
+
+- **Compile-on-ingest distiller (`daftari distill`)** (#377) — a CLI front door that compiles a raw chat transcript into *proposed graded claims* (staged `write` actions at `draft`/`low`/`synthesized`) instead of storing the raw. `--plan` gives a free pre-flight (chunk count, estimated LLM calls, estimated cost) before any spend; `--propose` runs the pipeline (turn-window chunking → budgeted claim extraction → idempotent upsert → staged proposals with a no-LLM overlap hint); `--review <run_id>` batch-approves a run's proposals through the existing `vault_ratify` gate. Requires an explicit `distill:` config block (model + budgets) — it refuses to run without one (no silent default spend). Governing principle: distill proposes, ratify disposes; ingestion never mints trust.
+- **Retention hygiene** (#377) — distill-and-discard is enforced: distilled output can never land under a `raw/` path or as `tier: source` (the import-reserved tier), and a verbatim-quote budget (`distill.max_verbatim_chars`) with an advisory `verbatim_quote_overrun` lint caps how much raw wording survives into a compiled note. `PRIVACY.md` documents the boundary honestly: distill-and-discard bounds *Daftari's* retention, not the synthesis provider's, and the `distill:<source>#<claim>` pointer is an audit breadcrumb, not a re-derivation source.
+- **`vault_erase` history-scrub primitive + `erase` role capability** (#377) — a path/source-keyed git-history rewrite (`git filter-repo` + reflog expire + gc, with remote force-push) for the accidental sensitive commit, behind an opt-in, off-by-default `erase` RBAC capability and an exact-echo confirmation; `git filter-repo` is required (absent ⇒ refuse, never a silent worktree-only no-op). Ships as a tested primitive with a documented coordinated multi-clone rewrite protocol; MCP/CLI exposure is deferred.
+- **`vault_backlinks`** (#378) — a reverse knowledge-graph query: given a target, list the documents that reference it. A vault-doc target lists docs that cite it in `sources` or link it in their body; a code-path target lists docs whose `describes` frontmatter binds that file ("which beliefs touch this file"). Read-only, RBAC mirrors `vault_consumes` (unreadable referrers omitted from list and count), no schema change.
+- **`daftari sleep` run ledger + `daftari runs`** (#379) — each completed circadian pass appends a content-light summary record (counts only — staleness buckets, wake count, open tensions, ratification history; no doc bodies) to a self-pruning `.daftari/runs.jsonl` (`--no-ledger` opts out). New `daftari runs [list|show <id>]` reads it back, newest-first or by id/prefix.
+- **Reserved `subjects[]` frontmatter field** (#377) — a format hook for the deferred subject-keyed erasure subsystem (additive; unused until triggered).
+
 ## [3.2.0] - 2026-08-13
 
 ### Added
