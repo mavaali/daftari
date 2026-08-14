@@ -46,17 +46,17 @@ function json(status: number, value: unknown): ViewResponse {
   return { status, contentType: "application/json; charset=utf-8", body: JSON.stringify(value) };
 }
 
-// Collect the non-null epistemic banners the DTO carries into display banners.
-// Every report follows the null-when-silent contract, so a fresh, healthy doc
-// yields an empty array (R4: nothing renders).
+// Collect the non-null epistemic banners the DTO carries into display banners,
+// each tagged by kind so the page colors them distinctly. Every report follows
+// the null-when-silent contract, so a fresh, healthy doc yields an empty array.
 function docBanners(dto: DocView): DocBannerView[] {
   const banners: DocBannerView[] = [];
-  if (dto.decay?.banner) banners.push({ level: "warn", text: dto.decay.banner });
-  if (dto.structural?.banner) banners.push({ level: "warn", text: dto.structural.banner });
+  if (dto.decay?.banner) banners.push({ kind: "decay", text: dto.decay.banner });
+  if (dto.structural?.banner) banners.push({ kind: "structural", text: dto.structural.banner });
   if (dto.upstream_staleness?.banner)
-    banners.push({ level: "warn", text: dto.upstream_staleness.banner });
-  if (dto.anchors?.banner) banners.push({ level: "warn", text: dto.anchors.banner });
-  if (dto.validity?.banner) banners.push({ level: "warn", text: dto.validity.banner });
+    banners.push({ kind: "upstream", text: dto.upstream_staleness.banner });
+  if (dto.anchors?.banner) banners.push({ kind: "anchor", text: dto.anchors.banner });
+  if (dto.validity?.banner) banners.push({ kind: "validity", text: dto.validity.banner });
   return banners;
 }
 
@@ -144,6 +144,8 @@ export async function handleView(
         tensions,
         banners: docBanners(dto),
         validity: validityChip(dto),
+        decayLevel: dto.decay?.level ?? null,
+        contestedCount: dto.contested.length,
       }),
     );
   }
@@ -155,11 +157,17 @@ export async function handleView(
   const docs = loaded.value;
 
   if (req.path === "/" || req.path === "") {
-    const byCollection = new Map<string, { path: string; title: string }[]>();
+    const byCollection = new Map<string, IndexGroup["docs"]>();
     for (const d of docs) {
       const col = d.frontmatter.collection || "(uncategorized)";
       const list = byCollection.get(col) ?? [];
-      list.push({ path: d.path, title: d.frontmatter.title });
+      list.push({
+        path: d.path,
+        title: d.frontmatter.title,
+        status: d.frontmatter.status,
+        confidence: d.frontmatter.confidence,
+        tier: d.frontmatter.tier ?? null,
+      });
       byCollection.set(col, list);
     }
     const groups: IndexGroup[] = [...byCollection.entries()]
