@@ -1,0 +1,374 @@
+{
+  "version": 1,
+  "edges": [
+    {
+      "id": "v2-001",
+      "fromPath": "vornic/long-path-drop.md",
+      "toPath": "vornic/drift-rules.md",
+      "fromContent": "A Vornic packet routed through a chain of relays longer than the gap between anchor resets will be discarded before it reaches its destination.",
+      "toContent": "In the Vornic protocol, every relay increments a packet's drift counter and discards any packet whose drift exceeds that relay's tolerance; only an anchor node resets the drift counter to zero.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig vd-001]"
+    },
+    {
+      "id": "v2-002",
+      "fromPath": "vornic/anchor-hint-needed.md",
+      "toPath": "vornic/drift-rules.md",
+      "fromContent": "A Vornic sender whose chosen route is longer than the drift limit must insert an anchor hint, or its packet will not arrive.",
+      "toContent": "Vornic relays discard a packet once its accumulated drift exceeds the relay's tolerance, and only an anchor node resets drift to zero.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig vd-002]"
+    },
+    {
+      "id": "v2-003",
+      "fromPath": "glimmer/light-pollution-crash.md",
+      "toPath": "glimmer/navigation.md",
+      "fromContent": "Glimmer-moth numbers fall sharply in the skies above brightly lit cities.",
+      "toContent": "Glimmer moths navigate solely by the polarization pattern of moonlight, which artificial city lighting scrambles.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-glimmer. [orig gm-001]"
+    },
+    {
+      "id": "v2-004",
+      "fromPath": "glimmer/no-fern-no-moth.md",
+      "toPath": "glimmer/larval-diet.md",
+      "fromContent": "A valley where the saber fern has died out can no longer sustain any glimmer-moth population.",
+      "toContent": "Glimmer-moth larvae feed exclusively on the saber fern and can digest no other plant.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-glimmer. [orig gm-002]"
+    },
+    {
+      "id": "v2-005",
+      "fromPath": "castellan/lone-warden-cannot-win.md",
+      "toPath": "castellan/warden-movement.md",
+      "fromContent": "In Castellan, a lone warden can never by itself force a winning trap of the enemy keep on an open board.",
+      "toContent": "The warden moves only diagonally, so it can ever reach tiles of a single colour; the keep can always step to an unthreatened tile of the opposite colour.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-castellan. [orig cs-001]"
+    },
+    {
+      "id": "v2-006",
+      "fromPath": "tithe/hoarding-loses.md",
+      "toPath": "tithe/decay-rule.md",
+      "fromContent": "In the tithe-credit economy, hoarding credits across many cycles is a guaranteed way to lose wealth.",
+      "toContent": "Any tithe-credit left unspent loses ten percent of its value at the end of each cycle.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-tithe. [orig tc-001]"
+    },
+    {
+      "id": "v2-007",
+      "fromPath": "tithe/overissue-inflation.md",
+      "toPath": "tithe/fixed-issue-face-value.md",
+      "fromContent": "When the council suddenly issues far more tithe-credits than usual, merchant prices rise.",
+      "toContent": "Merchants must accept tithe-credits at face value, and only the council may create them; with more credits chasing the same goods, sellers raise prices.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-tithe. [orig tc-002]"
+    },
+    {
+      "id": "v2-008",
+      "fromPath": "lumen/grows-in-dark.md",
+      "toPath": "lumen/infrared-photosynthesis.md",
+      "fromContent": "A lumen tree can keep growing through a months-long sunless polar winter, as long as the ground stays warm.",
+      "toContent": "Lumen trees photosynthesize from infrared (heat) radiation rather than visible light.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-lumen. [orig lt-001]"
+    },
+    {
+      "id": "v2-009",
+      "fromPath": "korl/no-data-race.md",
+      "toPath": "korl/immutable-pure.md",
+      "fromContent": "A program written in the Korl language can never exhibit a data race between concurrent tasks.",
+      "toContent": "Korl has no mutable state: every value is immutable and every function is pure, with no shared cell a task could write.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-korl. [orig kl-001]"
+    },
+    {
+      "id": "v2-010",
+      "fromPath": "korl/infinite-list-ok.md",
+      "toPath": "korl/lazy-evaluation.md",
+      "fromContent": "In Korl, merely defining an infinite list does not by itself make the program hang.",
+      "toContent": "Korl evaluates lazily, computing each element of a structure only when some later step actually demands it.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 2/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-korl. [orig kl-002]"
+    },
+    {
+      "id": "v2-011",
+      "fromPath": "castellan/opening-theory-double-warden.md",
+      "toPath": "castellan/lone-warden-cannot-win.md",
+      "fromContent": "Standard Castellan opening theory tells players to develop a second warden early rather than push a single one forward.",
+      "toContent": "A lone warden cannot by itself force a winning trap of the enemy keep, because it only ever covers tiles of one colour.",
+      "truth": "derives",
+      "edgeClass": "forward-temporal",
+      "rationale": "DERIVES (subtle, forward-temporal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-castellan. [orig cs-002]"
+    },
+    {
+      "id": "v2-012",
+      "fromPath": "vault/architecture/index-loss-safe.md",
+      "toPath": "vault/architecture/index-is-projection.md",
+      "fromContent": "Deleting Daftari's .daftari/index.db file loses no vault data.",
+      "toContent": "The index.db is a rebuildable projection of the markdown files, which are the single source of truth for all vault content and metadata.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). post-cutoff/private (Daftari internals). Domain: daftari. [orig dv-001]"
+    },
+    {
+      "id": "v2-013",
+      "fromPath": "vault/cortex/coldstart-stages.md",
+      "toPath": "vault/cortex/coldstart-budget-floor.md",
+      "fromContent": "At an empty cold start, every Daftari curation action stages for human approval rather than auto-writing.",
+      "toContent": "At cold start the action ledger is empty and every edge is a k=0 candidate, so the trust budget sits at its floor and no action can clear the auto-write gate.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). post-cutoff/private (Daftari internals). Domain: daftari. [orig dv-002]"
+    },
+    {
+      "id": "v2-014",
+      "fromPath": "thesis/rag-as-regularizer.md",
+      "toPath": "reading-notes/regularization-restricts.md",
+      "fromContent": "Retrieval-augmented generation acts as a regularizer on the retrieval inverse problem, injecting a low-rank prior that suppresses the unconstrained components that surface as hallucinations.",
+      "toContent": "Regularizing an ill-posed inverse problem works by adding a prior that restricts the solution to a lower-dimensional subspace, damping the components the data alone cannot determine.",
+      "truth": "derives",
+      "edgeClass": "forward-temporal",
+      "rationale": "DERIVES (subtle, forward-temporal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). post-cutoff novel content. Domain: ml-novel. [orig nv-001]"
+    },
+    {
+      "id": "v2-015",
+      "fromPath": "tithe/velocity-high.md",
+      "toPath": "tithe/decay-rule.md",
+      "fromContent": "Tithe-credits change hands far more often than an ordinary currency would.",
+      "toContent": "Unspent tithe-credits lose ten percent of their value each cycle, so holders rush to spend them.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-tithe. [orig tc-003]"
+    },
+    {
+      "id": "v2-016",
+      "fromPath": "lumen/bark-shedding-winter.md",
+      "toPath": "lumen/cold-bark-shed.md",
+      "fromContent": "You can tell a hard frost passed through a lumen grove by the carpet of shed bark on the ground.",
+      "toContent": "Lumen trees shed their outer bark whenever the temperature drops below freezing.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-lumen. [orig lt-002]"
+    },
+    {
+      "id": "v2-017",
+      "fromPath": "korl/same-input-same-output.md",
+      "toPath": "korl/immutable-pure.md",
+      "fromContent": "Calling a Korl function twice with the same arguments always yields the same result, anywhere in the program.",
+      "toContent": "Every Korl function is pure: its output depends only on its arguments, with no hidden mutable state or side effects.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-korl. [orig kl-003]"
+    },
+    {
+      "id": "v2-018",
+      "fromPath": "vornic/anchor-is-bottleneck.md",
+      "toPath": "vornic/drift-rules.md",
+      "fromContent": "If a region's only anchor node fails, long-distance Vornic traffic across that region collapses even though every relay is still working.",
+      "toContent": "Only anchor nodes reset a packet's drift counter; relays merely increment it and drop over-drifted packets.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig vd-004]"
+    },
+    {
+      "id": "v2-019",
+      "fromPath": "vornic/drift-counter.md",
+      "toPath": "vornic/addressing.md",
+      "fromContent": "Every Vornic packet carries a drift counter that each relay increments by one.",
+      "toContent": "Vornic node addresses are 128 bits long and handed out by regional registrars.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two Vornic facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig cv-001]"
+    },
+    {
+      "id": "v2-020",
+      "fromPath": "glimmer/navigation.md",
+      "toPath": "glimmer/wingspan.md",
+      "fromContent": "Glimmer moths navigate by the polarization pattern of moonlight.",
+      "toContent": "An adult glimmer moth has a wingspan of about four centimetres.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two glimmer facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-glimmer. [orig cv-002]"
+    },
+    {
+      "id": "v2-021",
+      "fromPath": "korl/lazy.md",
+      "toPath": "korl/syntax.md",
+      "fromContent": "Korl evaluates all expressions lazily.",
+      "toContent": "Korl's surface syntax uses significant indentation rather than curly braces to delimit blocks.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two Korl facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-korl. [orig cv-003]"
+    },
+    {
+      "id": "v2-022",
+      "fromPath": "tithe/decay.md",
+      "toPath": "tithe/token-form.md",
+      "fromContent": "Unspent tithe-credits lose ten percent of their value each cycle.",
+      "toContent": "Tithe-credits are minted as small hexagonal copper tokens stamped with the council seal.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two tithe facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-tithe. [orig cv-004]"
+    },
+    {
+      "id": "v2-023",
+      "fromPath": "castellan/warden-move.md",
+      "toPath": "castellan/board-size.md",
+      "fromContent": "The warden piece moves only along diagonals.",
+      "toContent": "A Castellan board has eighty-one tiles arranged in a nine-by-nine grid.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two Castellan facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-castellan. [orig cv-005]"
+    },
+    {
+      "id": "v2-024",
+      "fromPath": "lumen/infrared.md",
+      "toPath": "lumen/luthier-wood.md",
+      "fromContent": "Lumen trees photosynthesize from infrared radiation rather than visible light.",
+      "toContent": "Lumen-tree wood is prized by instrument makers for its unusually even resonance.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two lumen facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-lumen. [orig cv-006]"
+    },
+    {
+      "id": "v2-025",
+      "fromPath": "vornic/anchor-reset.md",
+      "toPath": "vornic/relay-queue.md",
+      "fromContent": "Only anchor nodes reset a Vornic packet's drift counter to zero.",
+      "toContent": "Vornic relays forward waiting packets using a least-drift-first queue discipline.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — both about Vornic drift handling, embedding-near, independent mechanisms. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig cv-007]"
+    },
+    {
+      "id": "v2-026",
+      "fromPath": "glimmer/diet.md",
+      "toPath": "glimmer/lifecycle.md",
+      "fromContent": "Glimmer-moth larvae feed only on the saber fern.",
+      "toContent": "A glimmer moth completes its entire life cycle within a single lunar month.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two glimmer biology facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-glimmer. [orig cv-008]"
+    },
+    {
+      "id": "v2-027",
+      "fromPath": "korl/pure.md",
+      "toPath": "korl/stdlib.md",
+      "fromContent": "Every Korl function is pure, free of side effects.",
+      "toContent": "The Korl standard library ships with just over one thousand built-in functions.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two Korl facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-korl. [orig cv-009]"
+    },
+    {
+      "id": "v2-028",
+      "fromPath": "tithe/face-value.md",
+      "toPath": "tithe/council-cadence.md",
+      "fromContent": "Merchants must accept tithe-credits at full face value.",
+      "toContent": "The tithe-council convenes at each solstice to fix that season's issue amount.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two tithe-economy facts, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-tithe. [orig cv-010]"
+    },
+    {
+      "id": "v2-029",
+      "fromPath": "vault/architecture/git-autocommit.md",
+      "toPath": "vault/architecture/index-db-ephemeral.md",
+      "fromContent": "Every Daftari write operation auto-commits to git; git is the version-control layer and there is no separate versioning subsystem.",
+      "toContent": "The .daftari/index.db SQLite file is ephemeral: it is the search/ACL index and can be rebuilt from the markdown files at any time.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two Daftari persistence facts, independent (validated in v1). A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). post-cutoff/private (Daftari internals). Domain: daftari. [orig cv-011]"
+    },
+    {
+      "id": "v2-030",
+      "fromPath": "vault/curation/vault-lint-advisory.md",
+      "toPath": "vault/curation/vault-tension-log-advisory.md",
+      "fromContent": "Daftari's vault_lint reports curation problems but never auto-fixes them; the curation engine is advisory.",
+      "toContent": "Daftari's vault_tension_log records tensions between documents but never resolves them; recording a tension does not act on it.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — common-cause siblings of 'curation engine is advisory' (validated in v1). A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). post-cutoff/private (Daftari internals). Domain: daftari. [orig cv-012]"
+    },
+    {
+      "id": "v2-031",
+      "fromPath": "lumen/bark-shed.md",
+      "toPath": "lumen/conductive-sap.md",
+      "fromContent": "Lumen trees shed their outer bark whenever the temperature drops below freezing.",
+      "toContent": "The sap of a lumen tree conducts electricity readily.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence). co-occurrence — two lumen-tree properties, independent. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-lumen. [orig cv-013]"
+    },
+    {
+      "id": "v2-032",
+      "fromPath": "vornic/more-relays-more-drops.md",
+      "toPath": "vornic/more-relays-slower.md",
+      "fromContent": "A Vornic packet that passes through more relays is dropped more often.",
+      "toContent": "A Vornic packet that passes through more relays takes longer to arrive.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — co-consequences of hop count (common cause), not one deriving from the other. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig tr-001]"
+    },
+    {
+      "id": "v2-033",
+      "fromPath": "korl/easy-to-test.md",
+      "toPath": "korl/easy-to-parallelize.md",
+      "fromContent": "Korl programs are unusually easy to unit-test.",
+      "toContent": "Korl programs are unusually easy to run in parallel across many cores.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both are consequences of purity (common cause); neither is the other's premise. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-korl. [orig tr-002]"
+    },
+    {
+      "id": "v2-034",
+      "fromPath": "tithe/prices-rise-cycle-end.md",
+      "toPath": "tithe/donations-spike-cycle-end.md",
+      "fromContent": "Market prices in tithe-credits climb in the final days of each cycle.",
+      "toContent": "Charitable donations of tithe-credits spike in the final days of each cycle.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both driven by the decay rule (common cause: holders offloading), not one from the other. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 2/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-tithe. [orig tr-003]"
+    },
+    {
+      "id": "v2-035",
+      "fromPath": "castellan/two-wardens-early.md",
+      "toPath": "castellan/control-centre-early.md",
+      "fromContent": "Strong Castellan players almost always develop a second warden in the opening.",
+      "toContent": "Strong Castellan players almost always seize control of the board's centre in the opening.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both are correlates of skilled play (common cause), not a derivation between the two habits. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-castellan. [orig tr-004]"
+    },
+    {
+      "id": "v2-036",
+      "fromPath": "vornic/busy-relay-higher-drift.md",
+      "toPath": "vornic/busy-relay-more-drops.md",
+      "fromContent": "Busier Vornic relays report a higher average drift on the packets they handle.",
+      "toContent": "Busier Vornic relays drop more packets per hour.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both track traffic volume (common cause); higher average drift doesn't itself cause the drops. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-vornic. [orig tr-005]"
+    },
+    {
+      "id": "v2-037",
+      "fromPath": "lumen/glow-cold-nights.md",
+      "toPath": "lumen/shed-bark-cold-nights.md",
+      "fromContent": "Lumen trees give off a faint glow on cold nights.",
+      "toContent": "Lumen trees shed flakes of outer bark on cold nights.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both triggered by cold (common cause); the glow and the bark-shedding are independent responses. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-lumen. [orig tr-006]"
+    },
+    {
+      "id": "v2-038",
+      "fromPath": "glimmer/moths-peak-latesummer.md",
+      "toPath": "glimmer/owls-peak-latesummer.md",
+      "fromContent": "Glimmer-moth sightings reach their yearly peak in late summer.",
+      "toContent": "The night owls that hunt over the same meadows are also most active in late summer.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both are seasonal (common cause); shared timing invites a false predator-prey derivation. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). contamination-free (invented self-consistent domain — the model must reason, cannot recall). Domain: synthetic-glimmer. [orig tr-007]"
+    },
+    {
+      "id": "v2-039",
+      "fromPath": "vault/architecture/bigger-vault-bigger-db.md",
+      "toPath": "vault/architecture/bigger-vault-slower-reindex.md",
+      "fromContent": "A Daftari vault with more documents has a larger .daftari/index.db file.",
+      "toContent": "A Daftari vault with more documents takes longer to reindex.",
+      "truth": "neither",
+      "rationale": "NEITHER (common-cause/co-consequence TRAP). TRAP — both scale with document count (common cause); reindex reads the markdown, not the db, so db size isn't the premise. A and B share theme/vocabulary but neither is a load-bearing premise for the other. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). post-cutoff/private (Daftari internals). Domain: daftari. [orig tr-008]"
+    }
+  ]
+}

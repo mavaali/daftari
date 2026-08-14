@@ -1,0 +1,938 @@
+{
+  "fixtureSize": 39,
+  "fixtureSource": "tests/fixtures/decorrelation-fixture-v2-pathonly.json",
+  "axes": [
+    "forward",
+    "reverse",
+    "contrast"
+  ],
+  "model": "anthropic/claude-haiku-4.5",
+  "metrics": {
+    "singleVoteAccuracy": {
+      "forward": 0.5384615384615384,
+      "reverse": 0.5384615384615384,
+      "contrast": 0.5384615384615384
+    },
+    "majorityAccuracy": 0.5384615384615384,
+    "liftOverBestSingle": 0,
+    "axisAgreementRate": 0.8461538461538461,
+    "errorCorrelation": 0.6666666666666666
+  },
+  "passes": false,
+  "perEdge": [
+    {
+      "id": "v2-001",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, no derivation or dependence relationship can be established with DOC A's claim about packet discard in long relay chains."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B content is not provided (marked only as [template:reverse]), making it impossible to evaluate whether DOC A's claim about Vornic packet discard rules depends on DOC B's central claim. Without DOC B's actual content, no load-bearing premise relationship can be assessed."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim), making it impossible to evaluate a derivation relationship. DOC A contains a specific technical claim about Vornic packet routing and relay chain length, but without substantive content in DOC B, no load-bearing premise relationship can be established."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-002",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim to evaluate). Without DOC B's content, no derivation or dependency relationship can be established. DOC A's claim about anchor hints and drift limits cannot be assessed against a non-existent premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B content is not provided (appears as [template:reverse] placeholder), making it impossible to evaluate whether DOC A's claim about anchor hints and drift limits depends on DOC B's central claim as a load-bearing premise. Without DOC B's actual content, no derivation relationship can be assessed."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim). DOC A makes a substantive claim about Vornic sender behavior and anchor hints, but without content in DOC B, no derivation relationship can be established. A derivation requires both documents to contain evaluable claims with a load-bearing premise relationship."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-003",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about glimmer-moth population decline in brightly lit cities cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about glimmer-moth population decline in brightly lit cities does not depend on DOC B's content about navigation. Without knowing DOC B's specific claim, I cannot establish a load-bearing logical dependence. The documents appear to address different topics (moth population ecology vs. navigation mechanics), and the moth decline claim is self-contained as an empirical observation rather than deriving from premises about navigation."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a substantive claim in DOC B, no derivation relationship can be established between the two documents. DOC A's claim about glimmer-moth population decline in lit cities cannot derive from or depend on a non-existent premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-004",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that glimmer-moth populations cannot be sustained without saber fern depends on the premise that glimmer-moths require saber fern for survival. DOC B's central claim about larval diet would establish this dependency if it shows larvae feed on saber fern. Without DOC B's content visible, the logical structure indicates DOC A's claim load-bearingly depends on whatever dietary relationship DOC B describes."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that glimmer-moth populations cannot be sustained in valleys without saber fern depends on DOC B's implicit or explicit claim about the larval diet of glimmer-moths. If saber fern is the primary or sole larval food source (as suggested by DOC B's title 'larval-diet.md'), then the causal relationship in DOC A—that fern death leads to moth population collapse—logically derives from that dietary dependence. DOC B's specification of larval food requirements is a load-bearing premise for DOC A's sustainability claim."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (no central claim present). DOC A makes a claim about saber fern die-out and glimmer-moth population collapse, but without content in DOC B, no derivation relationship can be established. A derivation requires both documents to have substantive claims with a load-bearing dependency between them."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-005",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B contains no central claim—it appears to be a stub or empty document with only a title about warden movement. DOC A makes a specific game-theoretic claim about lone wardens being unable to force a winning trap. Without substantive content in DOC B, no derivation or dependence relation can be established."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided in the query, making it impossible to assess whether DOC A's claim about a lone warden's inability to force a winning trap depends on DOC B as a load-bearing premise. Without access to DOC B's central claim, no valid derivation analysis can be performed."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without substantive content in DOC B, no derivation relationship can be established between it and DOC A's claim about lone wardens being unable to force winning traps."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-006",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content from DOC B, no derivation or dependency relationship can be established with DOC A's claim about hoarding credits leading to wealth loss."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that 'hoarding credits across many cycles is a guaranteed way to lose wealth' depends on DOC B's decay rule as a load-bearing premise. The mechanism by which hoarding causes wealth loss in a tithe-credit economy is the decay rule itself—without the rule that credits decay over time, the claim that hoarding loses wealth would have no foundation. The decay rule is the load-bearing premise that makes DOC A's claim logically sound."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim), making it impossible to establish a derivation relationship. DOC A's claim about hoarding causing wealth loss in a tithe-credit economy cannot depend on or derive from content that does not exist."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-007",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (no central claim provided), making it impossible to establish any derivation or dependence relationship. DOC A's claim about overissue-inflation stands independently and cannot be evaluated against a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about sudden overissue of tithe-credits causing merchant price rises is an independent economic mechanism. DOC B's claim about fixed face value is a separate structural property of the currency. While they could be related in a broader monetary system, DOC A's central claim does not logically depend on DOC B's as a load-bearing premise. The inflation effect from overissue could occur regardless of whether the face value is fixed or variable."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, no derivation relationship can be established between the two documents. A derivation requires a load-bearing premise in the source document, which is absent here."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-008",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no content), so there is no central claim to derive from or depend upon. DOC A makes a claim about lumen tree growth during polar winters with warm ground, but without DOC B's content, no derivation or dependence relationship can be established."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that lumen trees can grow during sunless polar winters depends on DOC B's implied premise about infrared photosynthesis. The ability to grow without sunlight requires an alternative photosynthetic mechanism (infrared photosynthesis) to be load-bearing for DOC A's claim to be scientifically coherent. Without the capability described in DOC B, DOC A's assertion would contradict established plant biology."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, no derivation relationship can be established between the documents. DOC A makes a specific claim about lumen trees growing in polar winter with warm ground, but there is nothing in DOC B to either support or depend upon this claim."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-009",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without DOC B's content, it is impossible to establish whether DOC A's claim about data-race freedom derives from or depends on DOC B's position. The relationship cannot be evaluated."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about freedom from data races in Korl does not depend on DOC B's claim about immutability and purity as a load-bearing premise. While immutability and purity could theoretically support data-race freedom, the dependence is not demonstrated here. DOC A makes an independent safety guarantee that could be enforced through other mechanisms (e.g., ownership systems, type systems, or synchronization primitives) without requiring immutability or purity. The content of DOC B is not provided in sufficient detail to establish whether it actually serves as a necessary foundation for DOC A's claim."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established between the documents. A derivation requires both documents to contain substantive claims with a load-bearing premise relationship."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-010",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, there is no basis to establish whether DOC A's claim about infinite lists in Korl derives from or depends on DOC B's reasoning."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that 'defining an infinite list does not make the program hang' depends on DOC B's central claim about lazy evaluation as a load-bearing premise. Lazy evaluation is the mechanism that prevents infinite list definitions from causing hangs — without lazy evaluation, the claim in DOC A would be false. The absence of hanging is a consequence of lazy evaluation, making DOC B's concept foundational to DOC A's assertion."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim to evaluate). Without B's content, no derivation relationship can be established between the documents. A derivation requires both documents to contain substantive claims where one depends on the other as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-011",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's recommendation to develop a second warden (rather than push a single one forward) appears to depend on an implicit premise that a lone warden cannot win or is insufficient—which is the exact subject of DOC B. DOC A's prescriptive claim about what players 'should' do relies on DOC B's analytical claim about what a lone warden cannot achieve."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about developing a second warden early in Castellan opening theory cannot be evaluated for dependence on DOC B's central claim because DOC B's content was not provided in the prompt. Without access to DOC B's actual central claim, no valid dependence relationship can be determined."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided, making it impossible to evaluate the relationship between the central claims. DOC A presents a strategic principle about developing a second warden, but without DOC B's claim, no derivation can be assessed. The file paths suggest potentially complementary or contrasting topics, but this is insufficient to determine logical dependence."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-012",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim). DOC A's claim about data safety when deleting index.db cannot derive from or depend on a non-existent premise in DOC B. While they appear to address related topics in the Daftari architecture, there is no substantive claim in DOC B to establish dependence."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's claim that deleting the index file 'loses no vault data' logically depends on DOC B's premise that the index is a projection (derivable representation) of vault data. If the index were not a projection—if it contained original, non-recoverable data—then deletion could lose vault data. The safety claim in A load-bearingly assumes the architectural fact in B."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no central claim to evaluate. DOC A makes a specific assertion about data safety when deleting an index file, but without DOC B's content, no derivation relationship can be established. A derivation requires both documents to have identifiable claims where one depends on the other as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-013",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (no central claim provided). DOC A's claim about Daftari curation actions staging for approval at cold start cannot derive from or depend on content that does not exist. A derivation relationship requires both documents to have identifiable central claims that can be evaluated for logical dependence."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about Daftari curation actions staging for human approval at cold start is independent. DOC B's content is not provided in full, but based on the filename 'coldstart-budget-floor.md', it appears to concern resource constraints or thresholds rather than the approval staging mechanism. The staging behavior described in DOC A does not logically depend on a budget floor as a load-bearing premise—it is an operational design choice that could exist regardless of budget constraints."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A makes a specific assertion about Daftari curation behavior at cold start, but without content in DOC B, no derivation relationship can be established in either direction."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-014",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no central claim. DOC A presents a specific theoretical claim about RAG functioning as a regularizer on the retrieval inverse problem, but without content from DOC B, no derivation or dependence relationship can be established."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided (only a path is shown), making it impossible to evaluate whether DOC A's claim about RAG as a regularizer depends on DOC B's central claim as a load-bearing premise. Without access to DOC B's actual content, no dependence relationship can be established."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim to evaluate). Without a substantive claim in DOC B, no derivation relationship can be established between the documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-015",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, no derivation or dependence relationship can be established. DOC A's claim about tithe-credits changing hands frequently stands independently and cannot be evaluated against a non-existent premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim is that tithe-credits change hands frequently. DOC B's content is not provided (appears to be a template placeholder), so there is no identifiable central claim to evaluate dependency against. Without knowing what DOC B actually asserts about decay rules, no load-bearing premise relationship can be established."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A makes a claim about tithe-credit velocity, but without content in DOC B to evaluate, no derivation relationship can be established. A derivation requires a load-bearing premise in the source document, which is absent here."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-016",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about bark-shedding as an indicator of frost cannot derive from or depend on a non-existent premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided (marked as [template:reverse]), making it impossible to identify its central claim. Without knowing what DOC B asserts, I cannot evaluate whether DOC A's claim about frost and bark shedding in lumen groves depends on it as a load-bearing premise."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established between the documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-017",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, there is no basis for evaluating derivation or dependence. The question cannot be meaningfully answered."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content was not provided in the prompt. Without access to DOC B's central claim, it is impossible to evaluate whether DOC A's claim about deterministic function behavior (same input → same output) depends on it as a load-bearing premise."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, no derivation relationship can be established in either direction. A derivation requires both documents to present substantive claims where one depends on the other as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-018",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim). DOC A makes a claim about anchor node failure causing traffic collapse, but there is no content in DOC B to establish a derivation or dependency relationship."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B content is not provided (marked as [template:reverse]), making it impossible to evaluate whether DOC A's claim about anchor node failure causing traffic collapse depends on DOC B's central claim. Without DOC B's actual content, no load-bearing premise relationship can be assessed."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no discernible central claim. DOC A makes a specific claim about anchor node failure causing traffic collapse in Vornic, but without substantive content in DOC B, no derivation relationship can be established in either direction."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-019",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about drift counters in Vornic packets cannot derive from or depend on content that does not exist."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about Vornic packets carrying drift counters that relays increment is self-contained and does not logically depend on any premise from DOC B. The documents appear to be about different aspects of the Vornic protocol (drift counters vs. addressing), and without seeing DOC B's content, there is no evidence that DOC A's claim requires DOC B's content as a load-bearing premise. The documents can be understood independently."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no central claim to establish a derivation relationship with DOC A's claim about drift counters in Vornic packets. Without substantive content in DOC B, no load-bearing dependency can be identified."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-020",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B to evaluate, there is no basis for DOC A's claim to derive from or depend upon it."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided in the query, making it impossible to determine whether DOC A's claim about glimmer moths navigating by moonlight polarization patterns depends on any premise from DOC B. Without DOC B's actual content, no dependence relationship can be established."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a central claim in DOC B, no derivation relationship can be established between the two documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-021",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about lazy evaluation in Korl cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim is that Korl evaluates all expressions lazily. DOC B's content is not provided (appears to be a template placeholder), so there is no identifiable central claim in DOC B to serve as a load-bearing premise. Without knowing what DOC B actually claims, no derivation relationship can be established."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established between the documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-022",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (contains no central claim), so DOC A's claim about tithe-credit decay cannot derive from or depend on it. There is no load-bearing premise to establish a derivation relationship."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided (only template markers appear), so its central claim cannot be identified. Without knowing what DOC B actually asserts, no dependence relationship can be established. DOC A's claim about tithe-credit decay stands independently as stated."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, there is no basis for evaluating whether DOC A's claim about tithe-credit decay derives from or depends on it."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-023",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B contains no visible central claim (the content is empty or not provided). DOC A's claim about the warden piece moving diagonally cannot derive from or depend on an absent premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about warden piece diagonal movement does not depend on DOC B's board-size specification as a load-bearing premise. The warden's movement rules can be defined independently of board dimensions. While board size might affect tactical implications, it is not a load-bearing premise for the movement rule itself."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A asserts that the warden piece moves diagonally. Without substantive content in DOC B, there is no premise upon which DOC A's claim could depend, and DOC B makes no claim that could derive from DOC A."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-024",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about lumen trees photosynthezing from infrared radiation cannot derive from or depend on content that does not exist."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about lumen trees photosynthesizing from infrared radiation is a standalone biological claim. DOC B's content is not provided, but based on the file path (luthier-wood.md), it likely concerns wood properties or woodworking. There is no indication that DOC A's claim about infrared photosynthesis depends on premises about luthier wood as a load-bearing foundation. The two appear to address unrelated subjects."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. There is no relationship to evaluate between a claim in DOC A and a nonexistent claim in DOC B."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-025",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about anchor nodes resetting drift counters cannot derive from or depend on a claim that does not exist."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim concerns anchor nodes resetting a Vornic packet's drift counter to zero. DOC B's content is not provided (marked as [template:reverse]), making it impossible to determine if DOC B contains a central claim that DOC A depends on. Without access to DOC B's actual content, no dependence relationship can be established."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established in either direction."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-026",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B to evaluate against, no derivation or dependence relationship can be established."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about glimmer-moth larvae feeding exclusively on saber fern is a factual statement about dietary preference. Without access to DOC B's content (marked [template:reverse]), I cannot determine if DOC B contains a claim that serves as a load-bearing premise for DOC A. However, lifecycle information (the apparent topic of DOC B) would not typically be a necessary logical foundation for a dietary claim. The dietary fact stands independently."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B contains no central claim or content to evaluate. It is empty, making it impossible to assess whether either document's claim derives from or depends on the other."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-027",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about Korl functions being pure cannot derive from or depend on a non-existent or empty claim in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim that 'Every Korl function is pure, free of side effects' does not depend on DOC B's content as a load-bearing premise. DOC B appears to be empty or contain only template markers with no substantive claim. Even if DOC B contained relevant content about stdlib functions, DOC A makes a universal claim about all Korl functions that would stand independently. The documents do not show a dependency relationship where one's central claim logically depends on the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a substantive claim in DOC B, no derivation relationship can be established between the documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-028",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's assertion about tithe-credit acceptance cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim that merchants must accept tithe-credits at full face value is a standalone normative requirement. DOC B's content is not provided in the context, making it impossible to assess dependence. However, even generically, a rule about accepting credits at face value does not inherently depend on council cadence (the apparent topic of DOC B) as a load-bearing premise. The two claims address different domains: one concerns transaction policy, the other concerns governance frequency."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B to evaluate, no derivation relationship can be established between the two documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-029",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about auto-commit behavior and git as the version-control layer cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about auto-committing writes to git and using git as the version-control layer does not depend on DOC B's claims about an ephemeral index database. These are independent architectural components—one about version control mechanisms, the other about database persistence strategies. Neither is a load-bearing premise for the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a substantive claim in DOC B, no derivation relationship can be established. DOC A's claim about auto-commits and git as the version-control layer cannot derive from or depend on a non-existent premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-030",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty (no central claim provided). DOC A's claim about vault_lint being advisory cannot derive from or depend on content that does not exist. Derivation requires a substantive premise in the source document."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about vault_lint being advisory and never auto-fixing curation problems does not depend on DOC B's claim about tension logging. The two documents address different advisory systems (lint vs. tension logging) and their respective operational characteristics. Neither claim serves as a load-bearing premise for the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no discernible central claim. DOC A asserts that vault_lint is advisory and non-auto-fixing, but without content from DOC B, no derivation relationship can be established. A claim cannot derive from or depend on an absent or empty premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-031",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about lumen trees shedding bark below freezing cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about lumen trees shedding bark in freezing temperatures is presented as an independent statement. DOC B's content is not provided, making it impossible to evaluate dependency. Even if DOC B contains related information about lumen trees or conductive sap, the claim in DOC A appears self-contained and does not explicitly reference or logically depend on any premise from DOC B."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established between the two documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-032",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B's content is empty or unavailable, making it impossible to determine if DOC A's claim about packet drops correlates with relay count derives from or depends on DOC B's claim. Without DOC B's central claim, no derivation relationship can be evaluated."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A claims that more relays correlates with more packet drops. DOC B claims that more relays correlates with slower performance. These are independent empirical observations about different outcomes (drop rate vs. latency). Neither claim logically depends on the other as a load-bearing premise—both could be true or false independently. DOC A does not require DOC B's claim about slowness to support its claim about drops."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B has no content provided. DOC A's central claim concerns packet drop rates increasing with relay count. Without DOC B's claim, no derivation relationship can be established. A derivation requires both documents to have substantive claims that can be evaluated for load-bearing dependence."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-033",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about ease of unit-testing in Korl programs cannot derive from or depend on a non-existent premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim is that Korl programs are easy to unit-test. DOC B's central claim is that Korl programs are easy to parallelize. These are independent properties of the language. The testability claim does not logically depend on the parallelizability claim as a load-bearing premise. They address different concerns and could each be true or false independently."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established between the two documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-034",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about market prices rising in tithe-credits at cycle-end cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about market prices climbing in tithe-credits during cycle-end is independent of DOC B's claim about donations spiking at cycle-end. While both may occur in the same time period, one does not logically depend on the other as a load-bearing premise. Price movements in a credit system and donation behavior are distinct phenomena that can be explained independently."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a stated claim in DOC B, no derivation relationship can be established between the documents. A derivation relationship requires both documents to contain propositions where one depends on the other as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-035",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B to evaluate, there is no basis for determining derivation or dependence."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim is about opening strategy in a game (developing a second warden). DOC B's content is not provided in sufficient detail to establish a load-bearing dependency relationship. Without knowing DOC B's central claim, no clear dependence can be determined. The paths suggest different topics (two-wardens vs control-centre), indicating they likely address distinct strategic concepts rather than one deriving from the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty (no central claim present), so no derivation relationship can be established between it and DOC A's claim about Castellan players developing a second warden early."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-036",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without content in DOC B, there is no premise upon which DOC A's claim about busy relays and packet drift could depend. A derivation requires a substantive second claim to serve as a load-bearing premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim is that busier Vornic relays report higher average drift on packets. DOC B's central claim is that busier relays experience more drops. These are independent observations about different performance metrics (drift vs. drops). Neither claim serves as a necessary load-bearing premise for the other—they could both be true or false independently. While both concern relay busyness, they do not form a dependency relationship where one must logically precede or underpin the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no central claim. Without a claim in DOC B to evaluate against DOC A's assertion about drift in busy relays, no derivation relationship can be established. A derivation requires both documents to contain substantive claims where one depends on the other as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-037",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about lumen trees glowing on cold nights cannot derive from or depend on content that does not exist."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim that 'Lumen trees give off a faint glow on cold nights' does not depend on DOC B's claim about shedding bark on cold nights as a load-bearing premise. The glow phenomenon and bark-shedding are distinct biological processes. Neither claim requires the other as a foundational assumption; they are independent observations about how lumen trees respond to cold."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a substantive claim in DOC B, no derivation relationship can be established between the documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-038",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A's claim about glimmer-moth sightings peaking in late summer cannot derive from or depend on a non-existent premise in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC B's content is not provided (marked as [template:reverse]), making it impossible to evaluate whether DOC A's claim about glimmer-moth peak sightings depends on DOC B as a load-bearing premise. The dependence cannot be assessed without knowing DOC B's central claim."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. Without a claim in DOC B, no derivation relationship can be established between the two documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-039",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC B is empty and contains no central claim. DOC A makes a factual statement about database file size scaling with document count, but there is no claim in DOC B to establish any derivation or dependence relationship."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim (larger vault → larger index.db file) is a straightforward technical observation about database file size scaling. DOC B's claim (larger vault → slower reindexing) concerns performance during reindexing operations. These are independent technical propositions; neither depends on the other as a load-bearing premise. One could be true without the other. The claims address different aspects (storage vs. performance) of how vault size affects the system."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC B is empty or contains no central claim to establish a derivation relationship. Without B's content, no load-bearing dependence can be evaluated between the two documents."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    }
+  ],
+  "axisCounts": {
+    "forward": {
+      "correct": 21,
+      "wrong": 18,
+      "errored": 0
+    },
+    "reverse": {
+      "correct": 21,
+      "wrong": 18,
+      "errored": 0
+    },
+    "contrast": {
+      "correct": 21,
+      "wrong": 18,
+      "errored": 0
+    }
+  }
+}

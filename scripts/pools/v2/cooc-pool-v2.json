@@ -1,0 +1,142 @@
+[
+  {
+    "id": "cv-001",
+    "domain": "synthetic-vornic",
+    "fromPath": "vornic/drift-counter.md",
+    "toPath": "vornic/addressing.md",
+    "fromContent": "Every Vornic packet carries a drift counter that each relay increments by one.",
+    "toContent": "Vornic node addresses are 128 bits long and handed out by regional registrars.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Vornic facts, independent"
+  },
+  {
+    "id": "cv-002",
+    "domain": "synthetic-glimmer",
+    "fromPath": "glimmer/navigation.md",
+    "toPath": "glimmer/wingspan.md",
+    "fromContent": "Glimmer moths navigate by the polarization pattern of moonlight.",
+    "toContent": "An adult glimmer moth has a wingspan of about four centimetres.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two glimmer facts, independent"
+  },
+  {
+    "id": "cv-003",
+    "domain": "synthetic-korl",
+    "fromPath": "korl/lazy.md",
+    "toPath": "korl/syntax.md",
+    "fromContent": "Korl evaluates all expressions lazily.",
+    "toContent": "Korl's surface syntax uses significant indentation rather than curly braces to delimit blocks.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Korl facts, independent"
+  },
+  {
+    "id": "cv-004",
+    "domain": "synthetic-tithe",
+    "fromPath": "tithe/decay.md",
+    "toPath": "tithe/token-form.md",
+    "fromContent": "Unspent tithe-credits lose ten percent of their value each cycle.",
+    "toContent": "Tithe-credits are minted as small hexagonal copper tokens stamped with the council seal.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two tithe facts, independent"
+  },
+  {
+    "id": "cv-005",
+    "domain": "synthetic-castellan",
+    "fromPath": "castellan/warden-move.md",
+    "toPath": "castellan/board-size.md",
+    "fromContent": "The warden piece moves only along diagonals.",
+    "toContent": "A Castellan board has eighty-one tiles arranged in a nine-by-nine grid.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Castellan facts, independent"
+  },
+  {
+    "id": "cv-006",
+    "domain": "synthetic-lumen",
+    "fromPath": "lumen/infrared.md",
+    "toPath": "lumen/luthier-wood.md",
+    "fromContent": "Lumen trees photosynthesize from infrared radiation rather than visible light.",
+    "toContent": "Lumen-tree wood is prized by instrument makers for its unusually even resonance.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two lumen facts, independent"
+  },
+  {
+    "id": "cv-007",
+    "domain": "synthetic-vornic",
+    "fromPath": "vornic/anchor-reset.md",
+    "toPath": "vornic/relay-queue.md",
+    "fromContent": "Only anchor nodes reset a Vornic packet's drift counter to zero.",
+    "toContent": "Vornic relays forward waiting packets using a least-drift-first queue discipline.",
+    "truth": "neither",
+    "subtype": "co-occurrence — both about Vornic drift handling, embedding-near, independent mechanisms"
+  },
+  {
+    "id": "cv-008",
+    "domain": "synthetic-glimmer",
+    "fromPath": "glimmer/diet.md",
+    "toPath": "glimmer/lifecycle.md",
+    "fromContent": "Glimmer-moth larvae feed only on the saber fern.",
+    "toContent": "A glimmer moth completes its entire life cycle within a single lunar month.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two glimmer biology facts, independent"
+  },
+  {
+    "id": "cv-009",
+    "domain": "synthetic-korl",
+    "fromPath": "korl/pure.md",
+    "toPath": "korl/stdlib.md",
+    "fromContent": "Every Korl function is pure, free of side effects.",
+    "toContent": "The Korl standard library ships with just over one thousand built-in functions.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Korl facts, independent"
+  },
+  {
+    "id": "cv-010",
+    "domain": "synthetic-tithe",
+    "fromPath": "tithe/face-value.md",
+    "toPath": "tithe/council-cadence.md",
+    "fromContent": "Merchants must accept tithe-credits at full face value.",
+    "toContent": "The tithe-council convenes at each solstice to fix that season's issue amount.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two tithe-economy facts, independent"
+  },
+  {
+    "id": "cv-011",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/git-autocommit.md",
+    "toPath": "vault/architecture/index-db-ephemeral.md",
+    "fromContent": "Every Daftari write operation auto-commits to git; git is the version-control layer and there is no separate versioning subsystem.",
+    "toContent": "The .daftari/index.db SQLite file is ephemeral: it is the search/ACL index and can be rebuilt from the markdown files at any time.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Daftari persistence facts, independent (validated in v1)"
+  },
+  {
+    "id": "cv-012",
+    "domain": "daftari",
+    "fromPath": "vault/curation/vault-lint-advisory.md",
+    "toPath": "vault/curation/vault-tension-log-advisory.md",
+    "fromContent": "Daftari's vault_lint reports curation problems but never auto-fixes them; the curation engine is advisory.",
+    "toContent": "Daftari's vault_tension_log records tensions between documents but never resolves them; recording a tension does not act on it.",
+    "truth": "neither",
+    "subtype": "co-occurrence — common-cause siblings of 'curation engine is advisory' (validated in v1)"
+  },
+  {
+    "id": "cv-013",
+    "domain": "synthetic-lumen",
+    "fromPath": "lumen/bark-shed.md",
+    "toPath": "lumen/conductive-sap.md",
+    "fromContent": "Lumen trees shed their outer bark whenever the temperature drops below freezing.",
+    "toContent": "The sap of a lumen tree conducts electricity readily.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two lumen-tree properties, independent"
+  },
+  {
+    "id": "cv-014",
+    "domain": "synthetic-castellan",
+    "fromPath": "castellan/keep-threat-rule.md",
+    "toPath": "castellan/warden-colour.md",
+    "fromContent": "A Castellan keep may not move onto any tile a warden threatens.",
+    "toContent": "Because the warden moves diagonally, each warden only ever threatens tiles of a single colour.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Castellan rules; share 'warden/threat' vocabulary but neither is the other's premise"
+  }
+]
