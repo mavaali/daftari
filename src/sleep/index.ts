@@ -40,6 +40,7 @@ import {
   renderTensionScanMarkdown,
   type SleepReport,
 } from "./report.js";
+import { appendRun, makeCircadianRecord } from "./run-ledger.js";
 import { runTensionScan, type TensionScanDeps } from "./tension-scan.js";
 
 const DEFAULT_WAKE_LIMIT = 20;
@@ -88,6 +89,7 @@ Flags (circadian):
   --wake-limit <n>       Wake-list rows shown in the report (default: ${DEFAULT_WAKE_LIMIT}).
                          The queue file always carries the full list.
   --no-queue             Do not write .daftari/wake-queue.jsonl.
+  --no-ledger            Do not append this pass to .daftari/runs.jsonl.
   --output <md>          Markdown report destination (default: stdout).
   --output-json <json>   JSON report destination (default: not written).
 
@@ -208,6 +210,18 @@ export async function runSleep(argv: string[]): Promise<number> {
     const reason = e instanceof Error ? e.message : String(e);
     process.stderr.write(`daftari sleep: write failed: ${reason}\n`);
     return 3;
+  }
+
+  // Record this completed pass in the run ledger. Non-fatal: a ledger write
+  // failure must not fail an otherwise-successful pass (the report already
+  // went out) — warn and carry on, like the tension-scan state write.
+  if (!argv.includes("--no-ledger")) {
+    try {
+      appendRun(vaultRoot, makeCircadianRecord(cycle.value));
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`daftari sleep: run-ledger append failed: ${reason}\n`);
+    }
   }
 
   return 0;
