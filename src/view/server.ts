@@ -25,6 +25,7 @@ import {
   type DocBannerView,
   type DocTensionView,
   type IndexGroup,
+  renderDashboardPage,
   renderDocPage,
   renderGraphPage,
   renderIndexPage,
@@ -32,6 +33,7 @@ import {
   type SearchHitView,
 } from "./pages.js";
 import { escHtml, renderMarkdown } from "./render.js";
+import { buildStatusView } from "./status-view.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -223,6 +225,22 @@ export async function handleView(
     return json(200, buildGraph(input, parseGraphOptions(req.params)));
   }
 
+  // The dashboard JSON contract (the B-seam): vault metrics + staleness +
+  // open tensions + ratification queue + the sleep run-ledger trend.
+  if (req.path === "/api/status") {
+    const view = await buildStatusView(vaultRoot);
+    if (!view.ok) return json(500, { error: view.error.message });
+    return json(200, view.value);
+  }
+
+  // Home is the dashboard (R10), rendered from /api/status; the collection
+  // index moves to /docs below.
+  if (req.path === "/" || req.path === "") {
+    const view = await buildStatusView(vaultRoot);
+    if (!view.ok) return html(500, `<h1>500</h1><p>${escHtml(view.error.message)}</p>`);
+    return html(200, renderDashboardPage(view.value));
+  }
+
   if (req.path.startsWith("/doc/")) {
     const target = decodeURIComponent(req.path.slice("/doc/".length));
     const view = await buildDocView(vaultRoot, target);
@@ -269,7 +287,7 @@ export async function handleView(
   }
   const docs = loaded.value;
 
-  if (req.path === "/" || req.path === "") {
+  if (req.path === "/docs") {
     const byCollection = new Map<string, IndexGroup["docs"]>();
     for (const d of docs) {
       const col = d.frontmatter.collection || "(uncategorized)";
