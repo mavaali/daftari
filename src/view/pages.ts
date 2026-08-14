@@ -10,6 +10,7 @@
 // strong (high / canonical / fresh), amber = caution (medium / aging), red =
 // weak/hazard (low / warn / deprecated), maroon accent = contested.
 
+import type { GraphOptions } from "./graph.js";
 import { escHtml } from "./render.js";
 
 const CSS = `
@@ -74,6 +75,7 @@ h2 { line-height:1.25; }
 .dot.bad{background:var(--bad);} .dot.dim{background:var(--dim);}
 .spacer { flex:1 1 auto; }
 .tier { font-family:var(--mono); font-size:11px; color:var(--muted); }
+.graphlink { margin:0 0 14px; font-size:13px; }
 .tags { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }
 .tag { font-family:var(--mono); font-size:11px; color:var(--muted);
   border:1px solid var(--border); border-radius:20px; padding:1px 9px; }
@@ -131,6 +133,21 @@ ul.docs .cf { font-family:var(--mono); font-size:10px; color:var(--muted); flex:
 .results .meta { font-family:var(--mono); font-size:10px; color:var(--muted);
   text-transform:uppercase; letter-spacing:.04em; }
 .empty { color:var(--muted); font-size:13px; }
+
+/* graph */
+.gtools { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0 0 8px; font-size:13px; }
+.gtools label { font-family:var(--mono); font-size:11px; color:var(--muted); }
+.gtools select { font-size:13px; padding:4px 8px; border:1px solid var(--border-2);
+  border-radius:7px; background:var(--surface); color:var(--text); }
+.ginfo { font-size:12px; color:var(--muted); margin:0 0 8px; min-height:15px; }
+#cy { width:100%; height:72vh; background:var(--surface); border:1px solid var(--border);
+  border-radius:12px; }
+.legend { display:flex; gap:16px; flex-wrap:wrap; font-family:var(--mono); font-size:11px;
+  color:var(--muted); margin:10px 0 0; }
+.legend .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px;
+  vertical-align:middle; }
+.legend .ln { display:inline-block; width:16px; height:0; border-top:3px solid; margin-right:5px;
+  vertical-align:middle; }
 `;
 
 function searchBox(query = ""): string {
@@ -272,9 +289,14 @@ export function renderDocPage(args: {
               `<li><a href="/doc/${encodeURI(b.doc)}">${escHtml(b.doc)}</a> <span class="tag">${escHtml(b.label)}</span></li>`,
           )
           .join("")}</ul>`;
+  // R7: walk this document's neighborhood in the knowledge graph.
+  const graphLink =
+    `<div class="graphlink"><a href="/graph?scope=ego&root=${encodeURI(args.path)}&depth=2">` +
+    `◧ neighborhood graph →</a></div>`;
   const body =
     `<h1>${escHtml(fm.title || args.path)}</h1>` +
     standing +
+    graphLink +
     tags +
     banners +
     tensionsPanel +
@@ -355,4 +377,113 @@ export function renderSearchPage(query: string, hits: SearchHitView[]): string {
           )
           .join("")}</ul>`;
   return layout("Search", body, q);
+}
+
+// --- graph -------------------------------------------------------------------
+
+// The graph client is fully static (no server data is interpolated): it reads
+// the current query string and fetches /api/graph, so the same script serves
+// whole-vault and ego views. Kept as vanilla JS — the one lazy-loaded library
+// (cytoscape) is the only client dependency, and only on this route.
+const GRAPH_CLIENT_JS = `
+(function () {
+  var COL = { canonical:'#15803d', draft:'#8a8a8a', retired:'#c2410c',
+    contested:'#b11f4b', decayed:'#b45309', derives:'#0a66c2', edge:'#c9c1b4' };
+  var info = document.getElementById('ginfo');
+  fetch('/api/graph' + (location.search || '')).then(function (r) { return r.json(); }).then(function (g) {
+    if (!g.nodes || g.nodes.length === 0) { info.textContent = 'No documents to graph.'; return; }
+    if (g.truncated) {
+      info.textContent = 'Showing ' + g.shown + ' of ' + g.total + ' documents (most-connected shown).';
+    } else {
+      info.textContent = g.shown + ' documents, ' + g.edges.length + ' links.';
+    }
+    var els = [];
+    var statuses = {}, collections = {};
+    for (var i = 0; i < g.nodes.length; i++) {
+      var n = g.nodes[i];
+      statuses[n.status] = 1; collections[n.collection] = 1;
+      els.push({ data: { id: n.path, label: n.title || n.path, status: n.status,
+        decayed: !!n.decayed, contested: !!n.contested, collection: n.collection } });
+    }
+    for (var j = 0; j < g.edges.length; j++) {
+      var e = g.edges[j];
+      els.push({ data: { source: e.from, target: e.to, kind: e.kind } });
+    }
+    var cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: els,
+      style: [
+        { selector: 'node', style: { 'label': 'data(label)', 'font-size': 7, 'width': 16, 'height': 16,
+          'background-color': COL.draft, 'color': '#6b6b6b', 'text-wrap': 'ellipsis', 'text-max-width': 90,
+          'text-valign': 'bottom', 'text-margin-y': 2, 'border-width': 0, 'min-zoomed-font-size': 6 } },
+        { selector: 'node[status="canonical"]', style: { 'background-color': COL.canonical } },
+        { selector: 'node[status="draft"]', style: { 'background-color': COL.draft } },
+        { selector: 'node[status="deprecated"]', style: { 'background-color': COL.retired } },
+        { selector: 'node[status="superseded"]', style: { 'background-color': COL.retired } },
+        { selector: 'node[status="archived"]', style: { 'background-color': COL.retired } },
+        { selector: 'node[?decayed]', style: { 'border-width': 3, 'border-color': COL.decayed, 'border-style': 'dashed' } },
+        { selector: 'node[?contested]', style: { 'border-width': 4, 'border-color': COL.contested, 'border-style': 'solid' } },
+        { selector: 'edge', style: { 'width': 1.2, 'line-color': COL.edge, 'curve-style': 'bezier',
+          'target-arrow-color': COL.edge, 'target-arrow-shape': 'triangle', 'arrow-scale': 0.7 } },
+        { selector: 'edge[kind="derives_from"]', style: { 'line-color': COL.derives, 'target-arrow-color': COL.derives } },
+        { selector: 'edge[kind="contested"]', style: { 'line-color': COL.contested, 'line-style': 'dashed', 'target-arrow-shape': 'none' } },
+        { selector: '.hidden', style: { 'display': 'none' } }
+      ],
+      layout: { name: 'cose', animate: false, padding: 24, nodeRepulsion: 7000, idealEdgeLength: 70 }
+    });
+    cy.on('tap', 'node', function (evt) { window.location.href = '/doc/' + encodeURI(evt.target.id()); });
+
+    function opts(sel, keys) {
+      var s = document.getElementById(sel);
+      Object.keys(keys).sort().forEach(function (k) {
+        var o = document.createElement('option'); o.value = k; o.textContent = k; s.appendChild(o);
+      });
+    }
+    opts('fstatus', statuses); opts('fcollection', collections);
+    function apply() {
+      var st = document.getElementById('fstatus').value;
+      var co = document.getElementById('fcollection').value;
+      cy.batch(function () {
+        cy.nodes().forEach(function (n) {
+          var hide = (st !== 'all' && n.data('status') !== st) || (co !== 'all' && n.data('collection') !== co);
+          if (hide) n.addClass('hidden'); else n.removeClass('hidden');
+        });
+        cy.edges().forEach(function (e) {
+          if (e.source().hasClass('hidden') || e.target().hasClass('hidden')) e.addClass('hidden');
+          else e.removeClass('hidden');
+        });
+      });
+    }
+    document.getElementById('fstatus').addEventListener('change', apply);
+    document.getElementById('fcollection').addEventListener('change', apply);
+  }).catch(function (err) { info.textContent = 'Failed to load graph: ' + err; });
+})();
+`;
+
+export function renderGraphPage(opts: GraphOptions): string {
+  const scopeLabel =
+    opts.scope === "ego" && opts.root
+      ? `Neighborhood of <a href="/doc/${encodeURI(opts.root)}">${escHtml(opts.root)}</a>`
+      : "Whole vault";
+  const body =
+    `<h1>Knowledge graph</h1>` +
+    `<div class="ginfo" id="ginfo">${scopeLabel} — loading…</div>` +
+    `<div class="gtools">` +
+    `<label for="fstatus">status</label><select id="fstatus"><option value="all">all</option></select>` +
+    `<label for="fcollection">collection</label><select id="fcollection"><option value="all">all</option></select>` +
+    (opts.scope === "ego" ? `<a href="/graph">↔ whole vault</a>` : "") +
+    `</div>` +
+    `<div id="cy"></div>` +
+    `<div class="legend">` +
+    `<span><span class="sw" style="background:#15803d"></span>canonical</span>` +
+    `<span><span class="sw" style="background:#8a8a8a"></span>draft</span>` +
+    `<span><span class="sw" style="background:#c2410c"></span>retired</span>` +
+    `<span><span class="sw" style="background:#fff;border:3px dashed #b45309"></span>decayed</span>` +
+    `<span><span class="sw" style="background:#fff;border:4px solid #b11f4b"></span>contested</span>` +
+    `<span><span class="ln" style="border-color:#0a66c2"></span>derives_from</span>` +
+    `<span><span class="ln" style="border-color:#b11f4b"></span>contested</span>` +
+    `</div>` +
+    `<script src="/assets/cytoscape.min.js"></script>` +
+    `<script>${GRAPH_CLIENT_JS}</script>`;
+  return layout("Knowledge graph", body);
 }
