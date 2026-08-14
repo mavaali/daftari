@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, started against one vault directory, running as
-one access identity for its lifetime, serving 38 tools over stdio. The rest of
+one access identity for its lifetime, serving 39 tools over stdio. The rest of
 the surfaces are CLI-only — `daftari asof`, `audit`, `backfill`, `canary`,
 `consolidate`, `court`, `eval`, `import obsidian`, `interview`, `okf`, `serve`,
 `sleep` and `sync` — plus a one-shot `daftari --init` scaffolder; each is
@@ -100,7 +100,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 38 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 39 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
