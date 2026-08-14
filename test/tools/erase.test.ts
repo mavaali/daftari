@@ -70,11 +70,21 @@ describe("vault_erase — guardrails", () => {
     expect(r.error.message).toMatch(/access denied/);
   });
 
-  it("aborts when confirm does not echo the target exactly", async () => {
+  it("fails closed when no access context is supplied", async () => {
+    const r = await vaultErase(vault, { path: "notes/x.md", confirm: "notes/x.md" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/fail-closed|authenticated access/);
+  });
+
+  it("aborts on a confirm mismatch WITHOUT echoing the target token", async () => {
     const r = await vaultErase(vault, { path: "notes/x.md", confirm: "notes/y.md" }, eraser);
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error.message).toMatch(/aborted/);
+    expect(r.error.message).toMatch(/did not match/);
+    // The expected value must not be handed back — an agent caller must not be
+    // able to copy it verbatim on retry.
+    expect(r.error.message).not.toContain("notes/x.md");
   });
 
   it("requires exactly one of path or source_ref", async () => {
@@ -106,12 +116,28 @@ describe("vault_erase — history scrub", () => {
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
+    expect(r.value.refused).toBe(true);
+    // A refused erase is NOT a success: erased is empty, not the target paths.
+    expect(r.value.erased).toEqual([]);
     expect(r.value.incomplete).toContain("git-history: filter-repo not installed");
     // Worktree untouched — nothing was silently removed.
     expect(existsSync(join(vault, file))).toBe(true);
-    // The refusal is still an auditable event.
+    // The refusal is an auditable event, recorded as a refusal (not an erasure).
     const receipt = readFileSync(join(vault, ".daftari/erasures.jsonl"), "utf8");
-    expect(receipt).toMatch(/filter-repo not installed/);
+    expect(receipt).toMatch(/"kind":"erasure_refused"/);
+  });
+
+  it("errors (does not report success) when the path was never in git history", async () => {
+    initRepo(vault, "notes/leak.md", MARKER);
+    // A typo for the real path: never committed, so nothing to scrub.
+    const typo = "notes/leek.md";
+    const r = await vaultErase(vault, { path: typo, confirm: typo }, eraser, {
+      filterRepoAvailable: async () => true,
+      runFilterRepo: async () => ({ ok: true, value: undefined }),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/not present in git history/);
   });
 
   it("dispatches the rewrite and writes a receipt when filter-repo is available (stubbed)", async () => {
@@ -176,6 +202,36 @@ describe("vault_erase — history scrub", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.guidance).toMatch(/rotate/i);
+  });
+
+  it("flags worktree-only resolution when erasing by source_ref", async () => {
+    const ref = "distill:chat-a#c1";
+    const doc = [
+      "---",
+      "title: A claim",
+      "domain: accumulation",
+      "collection: distill",
+      "status: draft",
+      "confidence: low",
+      "created: 2026-01-01",
+      "updated: 2026-01-01",
+      "updated_by: agent:test",
+      "provenance: synthesized",
+      `sources: ["${ref}"]`,
+      "tags: []",
+      "---",
+      "",
+      "Body.",
+    ].join("\n");
+    initRepo(vault, "notes/claim.md", doc);
+    const r = await vaultErase(vault, { source_ref: ref, confirm: ref }, eraser, {
+      filterRepoAvailable: async () => true,
+      runFilterRepo: async () => ({ ok: true, value: undefined }),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.erased).toContain("notes/claim.md");
+    expect(r.value.incomplete.some((s) => s.includes("worktree only"))).toBe(true);
   });
 });
 

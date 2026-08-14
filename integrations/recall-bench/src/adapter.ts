@@ -18,20 +18,20 @@
 // Lifecycle methods MAY throw (per the bench adapter contract), unlike daftari's
 // internal Result convention.
 
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname, sep } from "node:path";
-import { reindexVault, type ReindexResult } from "../../../dist/search/reindex.js";
+import { dirname, join, resolve, sep } from "node:path";
+import { runConsolidate } from "../../../dist/consolidate/index.js";
 import { createAnthropicClient, type LlmClient } from "../../../dist/eval/llm.js";
 import { createOpenRouterClient } from "../../../dist/eval/llm-openrouter.js";
-import { runConsolidate } from "../../../dist/consolidate/index.js";
-import { parseConfig, type AdapterConfig } from "./config.js";
+import { type ReindexResult, reindexVault } from "../../../dist/search/reindex.js";
 import { makeAnswerer, type RetrievalEntry, type ToolCallRecord } from "./answerer.js";
 import { makeCompiler, makeDistillCompiler } from "./compiler.js";
+import { type AdapterConfig, parseConfig } from "./config.js";
 import { enableRealConsolidation } from "./consolidate-config.js";
-import { EA_WIKI_MD } from "./wiki-schema.js";
 import { mapDay } from "./corpus-map.js";
 import type { DayMetadata } from "./types.js";
+import { EA_WIKI_MD } from "./wiki-schema.js";
 
 // What queryDetail returns (query() returns just the answer string).
 export interface QueryDetail {
@@ -258,6 +258,7 @@ export async function createDaftariAdapter(
       vaultRoot = null;
       answer = null;
       compiler = null;
+      distillCompiler = null;
       priorDayPaths = [];
     },
   };

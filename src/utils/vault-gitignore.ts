@@ -28,6 +28,10 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/consumes.jsonl
 .daftari/tier2-verdicts.jsonl
 .daftari/shadow-actions.jsonl
+# vault_erase receipt — its 'paths' field NAMES the erased file, which can
+# itself be the sensitive breadcrumb; must never be committed into the freshly
+# scrubbed history (R12).
+.daftari/erasures.jsonl
 .daftari/consolidate-state.json
 .daftari/distill-state.json
 # Transient backfill staging surface (daftari backfill --plan). The apply

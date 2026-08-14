@@ -24,10 +24,12 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { eraseFromHistory, type GitEraseDeps } from "../utils/git-erase.js";
 
 export interface EraseOutcome {
-  /** Vault-relative paths that were scrubbed. */
+  /** Vault-relative paths that were scrubbed. Empty when the erase was refused. */
   erased: string[];
   /** Anything the scrub could not guarantee (see EraseResult.incomplete). */
   incomplete: string[];
+  /** True when the history op was refused (filter-repo absent) — nothing erased. */
+  refused: boolean;
   /** Present only when the target looks secret-shaped: rotate-first guidance. */
   guidance?: string;
 }
@@ -60,12 +62,12 @@ async function resolveSourceRefToPaths(
 // audit log so an erase is itself an auditable event.
 async function appendReceipt(
   vaultRoot: string,
-  record: { erased: string[]; incomplete: string[]; principal: string },
+  record: { erased: string[]; incomplete: string[]; principal: string; refused: boolean },
 ): Promise<void> {
   const dir = join(vaultRoot, ".daftari");
   await mkdir(dir, { recursive: true });
   const line = `${JSON.stringify({
-    kind: "erasure",
+    kind: record.refused ? "erasure_refused" : "erasure",
     at: new Date().toISOString(),
     principal: record.principal,
     paths: record.erased,
@@ -80,8 +82,17 @@ export async function vaultErase(
   access?: AccessContext,
   deps: GitEraseDeps = {},
 ): Promise<Result<EraseOutcome, Error>> {
-  // 1. RBAC: the most destructive capability, checked first.
-  if (access && !canErase(access.role)) {
+  // 1. RBAC: the most destructive capability, checked first — and FAIL-CLOSED.
+  // Every softer tool defaults to allow when no access context is present;
+  // erase does not. An irreversible history rewrite + force-push is the one tool
+  // where a missing identity must DENY, so a future wiring cannot inherit a
+  // silent fail-open.
+  if (!access) {
+    return err(
+      new Error("vault_erase requires an authenticated access context (fail-closed — no default)"),
+    );
+  }
+  if (!canErase(access.role)) {
     return err(new Error(`access denied: role '${access.roleName}' cannot erase from history`));
   }
 
@@ -93,11 +104,16 @@ export async function vaultErase(
   }
   const target = (path ?? sourceRef) as string;
 
-  // 3. Confirmation: the caller must echo the exact target — a typo aborts.
+  // 3. Confirmation: the caller must echo the exact target — a typo aborts. The
+  // expected value is NOT echoed in the error, so an agent caller cannot copy it
+  // verbatim on retry (the confirmation must come from the caller's own intent).
   const confirm = typeof args.confirm === "string" ? args.confirm : undefined;
   if (confirm !== target) {
     return err(
-      new Error(`vault_erase aborted: 'confirm' must echo the target exactly ('${target}')`),
+      new Error(
+        "vault_erase aborted: 'confirm' did not match — re-issue with 'confirm' set to the exact " +
+          "path or source_ref you intend to erase (the expected value is not echoed here on purpose)",
+      ),
     );
   }
 
@@ -116,11 +132,27 @@ export async function vaultErase(
 
   const scrub = await eraseFromHistory(vaultRoot, paths, deps);
   if (!scrub.ok) return scrub;
+  const { refused } = scrub.value;
+  const incomplete = [...scrub.value.incomplete];
+
+  // H3: source_ref resolves against the CURRENT worktree only — history copies
+  // of docs that cited the ref but were later deleted/superseded are not
+  // covered. Say so loudly; those must be erased by path per historical name.
+  if (sourceRef !== undefined) {
+    incomplete.push(
+      "source-ref: resolved against the current worktree only — history copies of deleted or " +
+        "superseded docs citing this ref are NOT covered; erase those by path",
+    );
+  }
+
+  // On refuse, nothing was erased — the result must not read as a success.
+  const erased = refused ? [] : scrub.value.paths;
 
   await appendReceipt(vaultRoot, {
-    erased: paths,
-    incomplete: scrub.value.incomplete,
-    principal: access?.user ?? "cli",
+    erased,
+    incomplete,
+    principal: access.user,
+    refused,
   });
 
   const guidance = looksSecretShaped(target)
@@ -129,8 +161,9 @@ export async function vaultErase(
     : undefined;
 
   return ok({
-    erased: paths,
-    incomplete: scrub.value.incomplete,
+    erased,
+    incomplete,
+    refused,
     ...(guidance ? { guidance } : {}),
   });
 }

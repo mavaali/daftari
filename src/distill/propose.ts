@@ -96,6 +96,14 @@ export interface DistillIds {
   sourceId: string;
   /** Per-run trace stamp (StageActionInput.runId). Never the idempotency key. */
   runId: string;
+  /**
+   * Optional `created`/`updated` date (YYYY-MM-DD) for the emitted proposals.
+   * Defaults to today. Set it when the source has a meaningful as-of date that
+   * differs from the run date — e.g. the recall-bench distill arm stamps each
+   * benchmark day's own date so temporal signals are correct and landed content
+   * is date-stable across runs.
+   */
+  asOf?: string;
 }
 
 /** Per-claim staging outcome (the StageOutcome from the queue, or an error). */
@@ -252,10 +260,11 @@ export async function proposeAllClaims(
     // override these — the emitter owns the invariant.
     const frontmatter: Record<string, unknown> = {
       title: claim.proposed_frontmatter.title,
-      // Required date field: stamp the emit date so the proposal is a complete,
-      // ratifiable document (vault_ratify validates the full frontmatter before
-      // it lands the write — a proposal missing `created` cannot be approved).
-      created: new Date().toISOString().slice(0, 10),
+      // Required date field: stamp the as-of date (falling back to the emit
+      // date) so the proposal is a complete, ratifiable document (vault_ratify
+      // validates the full frontmatter before it lands the write — a proposal
+      // missing `created` cannot be approved).
+      created: ids.asOf ?? new Date().toISOString().slice(0, 10),
       domain: "accumulation",
       collection: DISTILL_COLLECTION,
       status: "draft",

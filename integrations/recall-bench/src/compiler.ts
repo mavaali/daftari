@@ -10,20 +10,20 @@
 // testable without a real vault: inject a spy inner handler, assert the spy
 // was (or was not) called, inspect the returned rejection object.
 
-import type { LlmClient, CompleteWithToolsResult, ToolDef } from "../../../dist/eval/llm.js";
 import { withCallBudget } from "../../../dist/consolidate/call-budget.js";
+import { listStagedActions } from "../../../dist/curation/staged-actions.js";
+import type { NormalizedMessage } from "../../../dist/distill/adapters/types.js";
 import { chunkMessages } from "../../../dist/distill/chunk.js";
 import { extractClaims } from "../../../dist/distill/extract.js";
-import type { NormalizedMessage } from "../../../dist/distill/adapters/types.js";
 import { proposeAllClaims } from "../../../dist/distill/propose.js";
-import { listStagedActions } from "../../../dist/curation/staged-actions.js";
+import type { CompleteWithToolsResult, LlmClient, ToolDef } from "../../../dist/eval/llm.js";
 import { vaultRatify } from "../../../dist/tools/staged-actions.js";
 import { DISTILL_NUMERIC_DEFAULTS } from "../../../dist/utils/config.js";
+import type { ToolCallRecord } from "./answerer.js";
 import { AUTHORING_SYSTEM_PROMPT } from "./authoring-prompt.js";
-import { buildWriteToolSurface } from "./write-tools.js";
 import type { AdapterConfig } from "./config.js";
 import type { DayMetadata } from "./types.js";
-import type { ToolCallRecord } from "./answerer.js";
+import { buildWriteToolSurface } from "./write-tools.js";
 
 export interface CompileResult {
   toolCalls: ToolCallRecord[];
@@ -58,9 +58,7 @@ export function wrapHandlerWithSupersede(
     }
 
     const inp =
-      typeof input === "object" && input !== null
-        ? (input as Record<string, unknown>)
-        : {};
+      typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {};
     const oldPath = typeof inp.old_path === "string" ? inp.old_path : undefined;
 
     if (oldPath === undefined || !allowed.has(oldPath)) {
@@ -202,14 +200,35 @@ export function makeDistillCompiler(
   priorDayPaths: string[],
 ) => Promise<CompileResult> {
   return async (_day: number, content: string, meta: DayMetadata): Promise<CompileResult> => {
-    const message: NormalizedMessage = {
-      ts: `${meta.date}T12:00:00`,
+    // Split the day into paragraph-level synthetic messages so the chunk windows
+    // engage and the extraction input cap cannot silently truncate a long day
+    // (one giant single message → the 16k slice would drop its tail unmarked).
+    const paragraphs = content
+      .split(/\n{2,}/)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+    const bodies = paragraphs.length > 0 ? paragraphs : [content];
+    const messages: NormalizedMessage[] = bodies.map((text, i) => ({
+      ts: `${meta.date}T12:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}`,
       sender: meta.personaId,
-      text: content,
+      text,
       type: "text",
       attachment: null,
-    };
-    const chunks = chunkMessages([message]);
+    }));
+    const chunks = chunkMessages(messages);
+
+    // Truncation must be LOUD, not silent: if a chunk still exceeds the input
+    // cap, extraction would slice it and lose content with no marker — fail the
+    // run rather than quietly confound the recall baseline.
+    for (const chunk of chunks) {
+      if (chunk.text.length > DISTILL_NUMERIC_DEFAULTS.inCallInputCap) {
+        throw new Error(
+          `recall-bench distill arm: a chunk on day ${meta.dayNumber} is ${chunk.text.length} ` +
+            `chars, over the ${DISTILL_NUMERIC_DEFAULTS.inCallInputCap}-char input cap — it would ` +
+            "be silently truncated; the benchmark day needs finer splitting",
+        );
+      }
+    }
 
     const extracted = await extractClaims(
       chunks,
@@ -220,25 +239,58 @@ export function makeDistillCompiler(
         inCallInputCap: DISTILL_NUMERIC_DEFAULTS.inCallInputCap,
       },
     );
+    // A confounded baseline is worse than a loud failure: any extraction error or
+    // exhausted budget means this day landed partial/zero memory, so the R16 gate
+    // number would read as compile quality when it is partly infra failure.
+    if (extracted.chunkErrors.length > 0) {
+      throw new Error(
+        `recall-bench distill arm: ${extracted.chunkErrors.length} extraction error(s) on day ` +
+          `${meta.dayNumber}: ${extracted.chunkErrors.map((e) => e.error).join("; ")}`,
+      );
+    }
+    if (extracted.budget_exhausted) {
+      throw new Error(
+        `recall-bench distill arm: LLM call budget exhausted on day ${meta.dayNumber} — ` +
+          "recall baseline would be confounded",
+      );
+    }
 
     const sourceId = `day-${meta.dayNumber}`;
     const runId = `rb-distill-day-${meta.dayNumber}`;
-    await proposeAllClaims(vaultRoot, extracted.claims, { sourceId, runId });
+    // Stamp each proposal with the benchmark day's own date (not today's) so
+    // temporal questions get the right signal and landed content is date-stable.
+    const proposal = await proposeAllClaims(vaultRoot, extracted.claims, {
+      sourceId,
+      runId,
+      asOf: meta.date,
+    });
+    if (proposal.errors.length > 0) {
+      throw new Error(
+        `recall-bench distill arm: ${proposal.errors.length} claim(s) failed to stage on day ` +
+          `${meta.dayNumber}: ${proposal.errors.map((e) => e.error).join("; ")}`,
+      );
+    }
 
     // Ratify-to-land: a compiled claim recall-bench can query must be a landed
-    // doc, not a draft proposal. Approve every staged action from this run.
+    // doc, not a draft proposal. Approve every staged action from this run; a
+    // ratify failure is loud, not skipped (it would drop a day's memory).
     const notesWritten: string[] = [];
     const pending = await listStagedActions(vaultRoot, "pending");
-    if (pending.ok) {
-      for (const action of pending.value) {
-        if (action.runId !== runId) continue;
-        const ratified = await vaultRatify(vaultRoot, {
-          id: action.id,
-          decision: "approve",
-          principal: "agent:recall-bench",
-        });
-        if (ratified.ok) notesWritten.push(action.targetPath);
+    if (!pending.ok) throw pending.error;
+    for (const action of pending.value) {
+      if (action.runId !== runId) continue;
+      const ratified = await vaultRatify(vaultRoot, {
+        id: action.id,
+        decision: "approve",
+        principal: "agent:recall-bench",
+      });
+      if (!ratified.ok) {
+        throw new Error(
+          `recall-bench distill arm: failed to ratify ${action.id} on day ${meta.dayNumber}: ` +
+            ratified.error.message,
+        );
       }
+      notesWritten.push(action.targetPath);
     }
 
     return { toolCalls: [], notesWritten };
