@@ -20,6 +20,8 @@ import { buildReverseLinkMap, buildReverseSourceMap } from "../curation/tension-
 import { loadDocuments } from "../curation/vault-docs.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { canonicalVaultRelPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
+import { ANCHOR_PIN_CAP, type AnchorState, classifyPin } from "./anchors.js";
 import type { ToolDefinition } from "./read.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -38,6 +40,11 @@ export interface CodeBacklink {
   repo: string; // resolved repo (the source doc's repo for a bare entry)
   path: string; // repo-relative code path the entry resolved to
   pin?: { start: number | null; end: number | null; sha: string };
+  // Present only when `verify` was requested AND the pin's repo resolved to a
+  // configured code_repos root: the pin's state against that working tree.
+  // Verification failure degrades to absent (no state), never a false state.
+  state?: AnchorState;
+  relocated?: { start: number; end: number }; // set only for a relocated 'intact'
 }
 
 export interface BacklinksResult {
@@ -76,6 +83,14 @@ export async function vaultBacklinks(
       return err(new Error("vault_backlinks 'kind' must be 'doc' or 'code'"));
     }
     kind = args.kind;
+  }
+
+  let verify = false;
+  if (args.verify !== undefined && args.verify !== null) {
+    if (typeof args.verify !== "boolean") {
+      return err(new Error("vault_backlinks 'verify' must be a boolean"));
+    }
+    verify = args.verify;
   }
 
   const loaded = await loadDocuments(vaultRoot);
@@ -138,6 +153,28 @@ export async function vaultBacklinks(
       }
     }
     references.sort((a, b) => a.doc.localeCompare(b.doc) || a.raw.localeCompare(b.raw));
+
+    // R3: opt-in live pin-state. Mirrors the read path — only a pin whose repo
+    // resolves to a configured code_repos root is classified (a bare entry's
+    // repo "" is never a key, so it is skipped). Bounded by ANCHOR_PIN_CAP; a
+    // classify failure leaves the hit with no state (never a false state).
+    if (verify) {
+      const cfg = loadConfig(vaultRoot);
+      if (cfg.ok && cfg.value.jitAnchors) {
+        const codeRepos = cfg.value.codeRepos;
+        let checked = 0;
+        for (const ref of references) {
+          if (checked >= ANCHOR_PIN_CAP) break;
+          const root = ref.pin ? codeRepos[ref.repo] : undefined;
+          if (!ref.pin || root === undefined) continue;
+          checked++;
+          const cls = await classifyPin(root, ref.path, ref.pin);
+          if (!cls) continue;
+          ref.state = cls.state;
+          if (cls.relocated) ref.relocated = cls.relocated;
+        }
+      }
+    }
     return ok({ target, kind, references, total: references.length });
   } finally {
     db?.close();
@@ -180,6 +217,20 @@ const codeBacklinkSchema: Record<string, unknown> = {
       },
       required: ["start", "end", "sha"],
     },
+    state: {
+      type: "string",
+      enum: ["intact", "moved", "missing"],
+      description:
+        "Pin state against the working tree, present only when 'verify' was set " +
+        "and the pin's repo resolved to a configured code_repos root",
+    },
+    relocated: {
+      type: "object",
+      description:
+        "For a relocated 'intact' pin: the 1-based line range where the content now lives",
+      properties: { start: { type: "integer" }, end: { type: "integer" } },
+      required: ["start", "end"],
+    },
   },
   required: ["doc", "raw", "repo", "path"],
 };
@@ -196,7 +247,9 @@ export const backlinksTools: ToolDefinition[] = [
       "'sources' ('source' edge) or link to it in their body ('link' edge). A " +
       "repo CODE path (optionally 'repo:path') returns docs whose 'describes' " +
       "frontmatter binds that file — 'which beliefs touch this file'. Read-only; " +
-      "an unreadable referencing document is omitted from the list and the count.",
+      "an unreadable referencing document is omitted from the list and the count. " +
+      "With verify:true, each code hit whose pin resolves to a configured " +
+      "code_repos root is annotated with its live state (intact/moved/missing).",
     inputSchema: {
       type: "object",
       properties: {
@@ -209,6 +262,13 @@ export const backlinksTools: ToolDefinition[] = [
           enum: ["doc", "code"],
           description:
             "Override the inferred facet: 'doc' (vault doc target) or 'code' (code file)",
+        },
+        verify: {
+          type: "boolean",
+          description:
+            "Code facet only: classify each pinned hit against its code repo's working " +
+            "tree (intact/moved/missing). Requires the pin's repo to be a configured " +
+            "code_repos root; otherwise the hit carries no state. Default false.",
         },
       },
       required: ["target"],
