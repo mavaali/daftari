@@ -53,6 +53,7 @@ export const STAGED_ACTION_TYPES = [
   "merge",
   "confidence-up",
   "write",
+  "repin",
 ] as const;
 export type StagedActionType = (typeof STAGED_ACTION_TYPES)[number];
 

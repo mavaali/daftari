@@ -107,4 +107,36 @@ describe("loadConfig — code_repos + jit_anchors", () => {
     if (result.ok) return;
     expect(result.error.message).toMatch(/'jit_anchors' must be true or false/);
   });
+
+  // auto_repin (U7): kill-switch for the sleep-cycle auto-repin proposer.
+  it("defaults auto_repin to true when no config exists", () => {
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.autoRepin).toBe(true);
+  });
+
+  it("defaults auto_repin to true when the key is omitted", () => {
+    writeConfig("auto_commit: true\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.autoRepin).toBe(true);
+  });
+
+  it("accepts auto_repin: false", () => {
+    writeConfig("auto_repin: false\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.autoRepin).toBe(false);
+  });
+
+  it("rejects a non-boolean auto_repin", () => {
+    writeConfig('auto_repin: "yes"\n');
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/'auto_repin' must be true or false/);
+  });
 });

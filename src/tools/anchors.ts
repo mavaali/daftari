@@ -11,6 +11,10 @@ import type { DescribesPin } from "../audit/describes.js";
 import { readTextFile } from "../audit/readtext.js";
 import { catFileBlob, hashObjectFile } from "../utils/git.js";
 
+// At most this many pinned describes entries are classified per read/repin call —
+// a fixed bound on the git work a single vault operation can trigger.
+export const ANCHOR_PIN_CAP = 24;
+
 export type AnchorState = "intact" | "moved" | "missing";
 
 export interface AnchorClassification {

@@ -9,6 +9,7 @@ import {
   nowISO,
   rebuildStagedActionsIndex,
   recordDecision,
+  STAGED_ACTION_TYPES,
   type StageActionInput,
   stageAction,
   stageActionWithConflictCheck,
@@ -253,6 +254,44 @@ describe("staged-actions", () => {
     expect(fetched.ok).toBe(true);
     if (!fetched.ok || !fetched.value) return;
     expect(fetched.value.decidedByPrincipal).toBeNull();
+  });
+
+  describe("STAGED_ACTION_TYPES — repin registration (U4)", () => {
+    it("includes 'repin' in the type list", () => {
+      expect(STAGED_ACTION_TYPES).toContain("repin");
+    });
+
+    it("'repin' is appended after 'write', not inserted", () => {
+      const idx = STAGED_ACTION_TYPES.indexOf("repin" as (typeof STAGED_ACTION_TYPES)[number]);
+      const writeIdx = STAGED_ACTION_TYPES.indexOf("write");
+      expect(idx).toBeGreaterThan(writeIdx);
+    });
+
+    it("stageAction does not reject 'repin' on the type-check", async () => {
+      // Invariant: 'repin' is in STAGED_ACTION_TYPES, so stageAction must not
+      // fail with the type-rejection error. It may fail for other reasons
+      // (e.g. missing target document) but never on the type-check.
+      const vault = mkdtempSync(join(tmpdir(), "daftari-repin-reg-"));
+      try {
+        const result = await stageAction(vault, {
+          actionType: "repin" as StageActionInput["actionType"],
+          targetPath: "pricing/something.md",
+          proposedBy: "agent:test",
+          rationale: "re-pin check",
+          proposedDiff: {},
+        });
+        // Whether ok or not, the type-check must never be the rejection reason.
+        if (!result.ok) {
+          expect(result.error.message).not.toContain("action_type must be one of");
+        }
+        // Unconditional: the type-check passed (result is ok OR failed for a non-type reason).
+        expect(result.ok || !result.error.message.includes("action_type must be one of")).toBe(
+          true,
+        );
+      } finally {
+        rmSync(vault, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("stageActionWithConflictCheck (#235)", () => {

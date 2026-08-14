@@ -86,6 +86,15 @@ export async function catFileBlob(repoRoot: string, sha: string): Promise<Result
   return git(repoRoot, ["cat-file", "blob", sha]);
 }
 
+// Returns true when `sha` is a reachable object in `repoRoot`'s odb
+// (`git cat-file -e <sha>`). A failure means the object is absent — the blob
+// was hashed from a working-tree file that was never committed (or was gc'd).
+// Used by the JIT pin minter as an advisory committed-flag check (U1).
+export async function blobExists(repoRoot: string, sha: string): Promise<boolean> {
+  const result = await git(repoRoot, ["cat-file", "-e", sha]);
+  return result.ok;
+}
+
 // Initializes a git repo for the vault if one does not already exist. When
 // `gitDir` is given, the repo data lives there (git init --separate-git-dir),
 // leaving only a static `.git` FILE in the vault — so a cloud-synced vault never
