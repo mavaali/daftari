@@ -94,6 +94,13 @@ export interface AssertResult {
   staged_id?: string;
   expires_at?: string;
   conflicts_with?: string[];
+  // Shadow mode (spec §11.5, mirrors WriteResult.shadow): the position write
+  // itself was computed and logged but nothing landed — no file, no commit.
+  // When true, tension_ids is always [] — a shadowed assert must never mint
+  // a REAL positional tension for a position that was never actually
+  // written. Omitted (not false) when the write was live, matching
+  // WriteResult.shadow's own convention.
+  shadow?: boolean;
 }
 
 export async function vaultAssert(
@@ -302,6 +309,26 @@ export async function vaultAssert(
   if (attempt.value.kind === "staged") return ok(attempt.value.result);
   const { relPath, title, applied, contested, written } = attempt.value;
 
+  // Shadow mode: the doc write above was computed and logged but nothing
+  // landed (performWrite's shadow branch — no lock, no file, no commit, no
+  // provenance). Minting a REAL positional tension for a position that was
+  // never actually written would be exactly the leak shadow mode exists to
+  // prevent — "log what would have happened, mutate nothing" applies to the
+  // tension graph too, not just the doc. Skip the mint loop entirely.
+  if (written.shadow) {
+    return ok({
+      path: relPath,
+      action: "assert" as const,
+      position: applied.newPosition,
+      superseded_position_id: applied.superseded?.id ?? null,
+      contested,
+      tension_ids: [],
+      commit: written.commit,
+      committed: written.committed,
+      shadow: true,
+    });
+  }
+
   // R-5 + locked R-3: one binary tension per NEW conflicting pair, skipped
   // when an OPEN positional tension already names the same two ids on this
   // doc. loggedBy = the asserting principal (DN-3) — the loop-authored
@@ -379,6 +406,13 @@ export interface ConsolidateResult {
   resolve_errors: Array<{ id: string; error: string }>;
   commit: string | null;
   committed: boolean;
+  // Shadow mode (spec §11.5, mirrors WriteResult.shadow / AssertResult.shadow):
+  // the org_position write itself was computed and logged but nothing landed.
+  // When true, resolved_tension_id is always null and resolved_tension_ids is
+  // always [] — a shadowed consolidate must never resolve a REAL tension for
+  // a ratification that was never actually written. Omitted when the write
+  // was live.
+  shadow?: boolean;
 }
 
 // U-10 / R-16: ratify-gated consolidation. Writes the org's ratified stance
@@ -644,6 +678,31 @@ export async function vaultConsolidate(
   if (!attempt.ok) return attempt;
   const { relPath, orgPosition, dissent, contested, batchIds, written } = attempt.value;
 
+  // Shadow mode: the org_position write above was computed and logged but
+  // nothing landed (performWrite's shadow branch). Resolving a REAL tension
+  // — the single resolve_tension or the resolve_tensions batch — for a
+  // ratification that was never actually written would mutate real state
+  // out from under a mode whose contract is "log what would have happened,
+  // mutate nothing". Skip both resolution paths entirely; batchIds and the
+  // resolveTensionArg validation above are read-only and already ran, so
+  // there is nothing to unwind.
+  if (written.shadow) {
+    return ok({
+      path: relPath,
+      action: "consolidate" as const,
+      org_position: orgPosition,
+      confidence: confidenceRaw.value as Confidence,
+      dissent,
+      contested,
+      resolved_tension_id: null,
+      resolved_tension_ids: [],
+      resolve_errors: [],
+      commit: written.commit,
+      committed: written.committed,
+      shadow: true,
+    });
+  }
+
   // The doc write commits FIRST; a resolve failure afterward is reported as
   // resolve_error, not rolled back (LD-19 — mirror of Slice 1's tension_error
   // channel). Resolutions ride the §3.5 bounded tension-lease retry.
@@ -875,6 +934,10 @@ const assertToolDefinition: ToolDefinition = {
       staged_id: { type: "string" },
       expires_at: { type: "string" },
       conflicts_with: { type: "array", items: { type: "string" } },
+      shadow: {
+        type: "boolean",
+        description: "Present (true) only when shadow_mode intercepted the write; nothing landed.",
+      },
     },
     required: [
       "path",
@@ -1023,6 +1086,10 @@ const consolidateToolDefinition: ToolDefinition = {
       },
       commit: { type: ["string", "null"] },
       committed: { type: "boolean" },
+      shadow: {
+        type: "boolean",
+        description: "Present (true) only when shadow_mode intercepted the write; nothing landed.",
+      },
     },
     required: [
       "path",
