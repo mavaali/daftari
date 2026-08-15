@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1013,6 +1014,61 @@ describe("write tools", () => {
       if (!final.ok) return;
       expect(final.value.content).toContain("B's revised pricing notes");
       expect(final.value.content).not.toContain("composed against the pre-B version");
+    }, 60_000);
+  });
+
+  // Git history is the attribution layer, and the free-text `agent` argument
+  // is spoofable: any authenticated principal could pass agent: "human:mihir"
+  // and git-blame would show Mihir. When an AccessContext exists, the commit
+  // author must be the AUTHENTICATED principal; the claimed agent survives as
+  // a Daftari-Agent trailer so the advisory identity stays in-history.
+  describe("commit authorship is the authenticated principal", () => {
+    const WRITER: AccessContext = {
+      user: "alice",
+      roleName: "writer",
+      role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+    };
+
+    function commitMeta(vaultRoot: string): { author: string; body: string } {
+      const author = execFileSync("git", ["-C", vaultRoot, "log", "-1", "--format=%an"], {
+        encoding: "utf-8",
+      }).trim();
+      const body = execFileSync("git", ["-C", vaultRoot, "log", "-1", "--format=%B"], {
+        encoding: "utf-8",
+      }).trim();
+      return { author, body };
+    }
+
+    it("authors the commit as the authenticated principal, keeping the claimed agent as a trailer", async () => {
+      const result = await vaultWrite(
+        vault,
+        {
+          path: "pricing/authored.md",
+          body: "# Authored\n\nBy alice.\n",
+          frontmatter: newFrontmatter({ title: "Authored" }),
+          agent: "agent:claude-code",
+        },
+        WRITER,
+      );
+      expect(result.ok).toBe(true);
+
+      const { author, body } = commitMeta(vault);
+      expect(author).toBe("alice");
+      expect(body).toContain("Daftari-Agent: agent:claude-code");
+    }, 60_000);
+
+    it("keeps the agent as author when no access context exists (operator path)", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/operator.md",
+        body: "# Operator\n\nNo access context.\n",
+        frontmatter: newFrontmatter({ title: "Operator" }),
+        agent: "agent:claude-code",
+      });
+      expect(result.ok).toBe(true);
+
+      const { author, body } = commitMeta(vault);
+      expect(author).toBe("agent:claude-code");
+      expect(body).not.toContain("Daftari-Agent:");
     }, 60_000);
   });
 

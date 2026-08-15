@@ -510,11 +510,12 @@ async function performWrite(params: {
       let commitHash: string | null = null;
       let commitError: Error | null = null;
       if (params.autoCommit) {
+        const identity = commitIdentity(params.agent, params.principal);
         const committed = await commit(
           params.vaultRoot,
           [params.relPath],
-          params.commitMessage,
-          params.agent,
+          params.commitMessage + identity.trailer,
+          identity.author,
           { gitDir: params.gitDir },
         );
         if (committed.ok) commitHash = committed.value.hash;
@@ -640,6 +641,21 @@ export function requireWriteAccess(
     );
   }
   return ok(undefined);
+}
+
+// Git history is the attribution layer, and the caller-supplied `agent`
+// string is advisory — any authenticated principal could claim any agent.
+// When an AccessContext exists the commit author is the AUTHENTICATED
+// principal (matching the provenance log's ground-truth `principal` field);
+// the claimed agent survives as a Daftari-Agent trailer so the advisory
+// identity stays in-history. With no access context (operator/stdio), the
+// agent is the only identity there is and authors the commit as before.
+export function commitIdentity(
+  agent: string,
+  principal?: string,
+): { author: string; trailer: string } {
+  if (!principal || principal === agent) return { author: agent, trailer: "" };
+  return { author: principal, trailer: `\n\nDaftari-Agent: ${agent}` };
 }
 
 // The one place the stale-rejection message prefix is defined: the producer
@@ -2193,11 +2209,13 @@ export async function vaultMerge(
     let commitHash: string | null = null;
     let commitError: Error | null = null;
     if (config.value.autoCommit) {
+      const identity = commitIdentity(agent.value, access?.user);
       const committed = await commit(
         vaultRoot,
         writes.map((w) => w.relPath),
-        `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}`,
-        agent.value,
+        `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}` +
+          identity.trailer,
+        identity.author,
         { gitDir: config.value.gitDir },
       );
       if (committed.ok) commitHash = committed.value.hash;

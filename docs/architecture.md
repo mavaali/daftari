@@ -517,7 +517,9 @@ Three mechanisms, in order of how much they matter:
   automatically, so a crashed writer cannot wedge the vault. This is a safety
   mechanism — single-writer-per-file — not a coordination protocol.
 - **Auto-commit.** Every successful write is committed to git, authored by the
-  acting identity. The history *is* complete and attributable without anyone
+  authenticated principal when an access context exists (the free-text `agent`
+  claim is advisory and survives as a `Daftari-Agent` trailer), else by the
+  acting agent. The history *is* complete and attributable without anyone
   having to remember to commit. Vaults that set `auto_commit: false` skip this
   step — the write is still durable and provenance-logged, but the caller owns
   git (useful when the vault is a subdirectory of a larger repo with its own

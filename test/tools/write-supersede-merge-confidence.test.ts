@@ -305,6 +305,36 @@ describe("vault_merge", () => {
     lockDb.close();
   }, 60_000);
 
+  it("authors the merge commit as the authenticated principal", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    const result = await vaultMerge(
+      vault,
+      {
+        path_a: "pricing/a.md",
+        path_b: "pricing/b.md",
+        target_path: "pricing/merged.md",
+        body: "# Merged\n\nCombined content.\n",
+        agent: AGENT,
+      },
+      {
+        user: "alice",
+        roleName: "writer",
+        role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+      },
+    );
+    expect(result.ok).toBe(true);
+
+    const author = execFileSync("git", ["-C", vault, "log", "-1", "--format=%an"], {
+      encoding: "utf-8",
+    }).trim();
+    const body = execFileSync("git", ["-C", vault, "log", "-1", "--format=%B"], {
+      encoding: "utf-8",
+    }).trim();
+    expect(author).toBe("alice");
+    expect(body).toContain(`Daftari-Agent: ${AGENT}`);
+  }, 60_000);
+
   it("records provenance and an accurate error when the merge commit fails", async () => {
     await seed(vault, "pricing/a.md");
     await seed(vault, "pricing/b.md");
