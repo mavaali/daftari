@@ -564,8 +564,10 @@ describe("runDistill — --sender filter (R6)", () => {
     expect(matchUser).not.toBeNull();
     const chunksUser = Number.parseInt(matchUser?.[1], 10);
 
-    expect(chunksUser).toBeGreaterThan(0);
-    expect(chunksUser).toBeLessThan(chunksAll);
+    // Exact geometry (pins filter-before-chunk placement): 31 msgs → 2 chunks
+    // unfiltered; 30 user msgs → exactly 1 chunk (CHUNK_WINDOW = 30).
+    expect(chunksAll).toBe(2);
+    expect(chunksUser).toBe(1);
   });
 
   it("--sender robot exits 2 and stderr mentions sender", async () => {
@@ -586,7 +588,7 @@ describe("runDistill — --sender filter (R6)", () => {
   });
 });
 
-// Add --sender to Scenario 7's "value-taking flag with missing value" suite.
+// --sender with no value is a usage error, like the other value-taking flags.
 describe("runDistill — --sender with missing value (R6)", () => {
   it("exits 2 when --sender is the last token with no value", async () => {
     const code = await runDistill(["--vault", vault, "--plan", "--sender"]);
