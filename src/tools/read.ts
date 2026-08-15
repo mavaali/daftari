@@ -22,7 +22,16 @@ import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation
 import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
+import {
+  type FederatedPath,
+  federatedPathOf,
+  getMountRegistry,
+  type LoadedMount,
+  mountCanRead,
+  parseFederatedPath,
+} from "../federation/mounts.js";
 import { parseDocument } from "../frontmatter/parser.js";
+import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
   CONFIDENCES,
   DOMAINS,
@@ -110,6 +119,10 @@ export interface UpstreamReadStaleness {
 
 export interface VaultReadResult {
   path: string;
+  // #297: which vault served the document — a mount alias, or "local" for the
+  // canonical vault. Always present so agents branch on the field, never on
+  // parsing the path prefix.
+  vault: string;
   content: string;
   frontmatter: Frontmatter;
   raw: Record<string, unknown>;
@@ -204,6 +217,58 @@ export interface ReadAnchors {
   repin_hint?: string;
 }
 
+// Federated read (#297): a document from a mounted vault, gated by the
+// mount's principal-resolved role against the REFERENCED vault's policy and
+// validated against ITS schema extensions. Documents only — decay, validity,
+// upstream staleness, structural decay, tensions, positions, and anchors are
+// all vault state of the referenced vault, which is not federated in v1, so
+// every one of those channels is null/absent. The `version` token is still
+// returned (it is just a hash of the bytes read). The read is deliberately
+// NOT recorded in the canonical read log: its joins expect canonical
+// relPaths, and a mount doc can never become a consumes edge in v1.
+async function vaultReadFederated(
+  mount: LoadedMount,
+  fed: FederatedPath,
+): Promise<Result<VaultReadResult, Error>> {
+  if (mount.root === null) {
+    return err(new Error(`mount "${mount.alias}" is unavailable — its path was not found`));
+  }
+  const resolved = resolveVaultPath(mount.root, fed.relPath);
+  if (!resolved.ok) return resolved;
+  const file = await readFile(resolved.value.absPath);
+  if (!file.ok) return file;
+  const parsed = parseDocument(file.value);
+  if (!parsed.ok) return parsed;
+
+  const collection = collectionOf(resolved.value.relPath, parsed.value.frontmatter);
+  if (!mountCanRead(mount, collection)) {
+    return err(
+      new Error(`access denied: role '${mount.roleName}' cannot read collection '${collection}'`),
+    );
+  }
+
+  // The advisory validation report is computed against the REFERENCED
+  // vault's declared schema extensions — the caller sees the doc as its own
+  // vault's schema judges it, not as the canonical vault's would.
+  const { frontmatter, report } = validateFrontmatter(parsed.value.raw, mount.schemaExtensions);
+
+  return ok({
+    path: federatedPathOf(mount.alias, resolved.value.relPath),
+    vault: mount.alias,
+    content: parsed.value.content,
+    frontmatter,
+    raw: parsed.value.raw,
+    validation: report,
+    hasFrontmatter: parsed.value.hasFrontmatter,
+    decay: null,
+    validity: null,
+    upstream_staleness: null,
+    structural: null,
+    anchors: null,
+    version: sha256Hex(file.value),
+  });
+}
+
 export async function vaultRead(
   vaultRoot: string,
   path: string,
@@ -212,6 +277,17 @@ export async function vaultRead(
 ): Promise<Result<VaultReadResult, Error>> {
   if (typeof path !== "string" || path.length === 0) {
     return err(new Error("vault_read requires a non-empty 'path' argument"));
+  }
+  // Alias-path dispatch (#297): federated only when the first-':' prefix
+  // exactly matches a declared mount alias; every other path — ':' included —
+  // stays canonical.
+  const fedRegistry = getMountRegistry();
+  if (fedRegistry) {
+    const fed = parseFederatedPath(path, fedRegistry);
+    if (fed) {
+      const mount = fedRegistry.mounts.get(fed.alias);
+      if (mount) return vaultReadFederated(mount, fed);
+    }
   }
   const resolved = resolveVaultPath(vaultRoot, path);
   if (!resolved.ok) return resolved;
@@ -461,6 +537,7 @@ export async function vaultRead(
 
   return ok({
     path,
+    vault: "local",
     content: parsed.value.content,
     frontmatter: parsed.value.frontmatter,
     raw: parsed.value.raw,
@@ -716,6 +793,18 @@ export interface RecentWrites {
   entries: ProvenanceEntry[];
 }
 
+// #297: per-mount status line. Counts are the READABLE subset under the
+// mount's principal-resolved role — never unfiltered totals (a referenced
+// vault's global counts sliced for a guest are exactly the aggregate the
+// 2026-07-14 spec rejected). `readableDocCount` is null when unavailable.
+// `lastRefresh` is null until the per-mount index ships (follow-up slice).
+export interface FederationMountStatus {
+  alias: string;
+  state: "ok" | "unavailable";
+  readableDocCount: number | null;
+  lastRefresh: string | null;
+}
+
 export interface VaultStatusResult {
   vault: string;
   fileCount: number;
@@ -732,6 +821,8 @@ export interface VaultStatusResult {
   // the condition so the operator can investigate rather than wonder why
   // search quality is degraded.
   embeddingDimMismatches: number;
+  // #297: present only when federation is configured — one entry per mount.
+  federation?: FederationMountStatus[];
 }
 
 export async function vaultStatus(
@@ -837,6 +928,38 @@ export async function vaultStatus(
     }
   }
 
+  // #297: one status line per mount. Doc counts are computed over the mount's
+  // readable subset under its principal-resolved role — a whole-mount scan,
+  // paid only when federation is configured. Reads only; nothing under the
+  // referenced root is created or opened for write.
+  let federation: FederationMountStatus[] | undefined;
+  const fedRegistry = getMountRegistry();
+  if (fedRegistry) {
+    federation = [];
+    for (const mount of fedRegistry.mounts.values()) {
+      if (mount.root === null) {
+        federation.push({
+          alias: mount.alias,
+          state: "unavailable",
+          readableDocCount: null,
+          lastRefresh: null,
+        });
+        continue;
+      }
+      const mountScan = await scanVaultDocs(mount.root);
+      const readable = mountScan.ok
+        ? mountScan.value.filter((d) => mountCanRead(mount, collectionOf(d.relPath, d.frontmatter)))
+            .length
+        : null;
+      federation.push({
+        alias: mount.alias,
+        state: "ok",
+        readableDocCount: readable,
+        lastRefresh: null,
+      });
+    }
+  }
+
   return ok({
     vault: vaultRoot,
     fileCount: indexEntries.count,
@@ -854,6 +977,7 @@ export async function vaultStatus(
       entries: visibleWrites.slice(-10),
     },
     embeddingDimMismatches,
+    ...(federation ? { federation } : {}),
   });
 }
 
@@ -1113,7 +1237,10 @@ export const readTools: ToolDefinition[] = [
       properties: {
         path: {
           type: "string",
-          description: "Vault-relative path to the markdown file, e.g. competitive-intel/foo.md",
+          description:
+            "Vault-relative path to the markdown file, e.g. competitive-intel/foo.md. " +
+            "With federation configured, an '<alias>:<path>' form reads from " +
+            "that mounted vault (documents only; read-only).",
         },
         run_id: {
           type: "string",
@@ -1130,6 +1257,12 @@ export const readTools: ToolDefinition[] = [
       type: "object",
       properties: {
         path: { type: "string", description: "The path as requested by the caller" },
+        vault: {
+          type: "string",
+          description:
+            "Which vault served the document: a federation mount alias, or " +
+            '"local" for the canonical vault (#297)',
+        },
         content: { type: "string", description: "Markdown body, frontmatter block stripped" },
         frontmatter: FRONTMATTER_SCHEMA,
         raw: {
@@ -1444,6 +1577,24 @@ export const readTools: ToolDefinition[] = [
           description:
             "Embedding cache rows for the active model whose stored dim does not " +
             "match the provider's; non-zero means those chunks are skipped in ranking",
+        },
+        // Present only when federation is configured (#297). Counts are the
+        // readable subset under each mount's granted role, never unfiltered.
+        federation: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              alias: { type: "string" },
+              state: { type: "string", enum: ["ok", "unavailable"] },
+              readableDocCount: { type: ["integer", "null"], minimum: 0 },
+              lastRefresh: {
+                type: ["string", "null"],
+                description: "ISO 8601; null until the per-mount index ships",
+              },
+            },
+            required: ["alias", "state", "readableDocCount", "lastRefresh"],
+          },
         },
       },
       required: [

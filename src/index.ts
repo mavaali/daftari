@@ -20,6 +20,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 import { materializeEdges } from "./curation/edges.js";
 import { materializeStagedActions } from "./curation/staged-actions.js";
+import { loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import {
   markIndexError,
@@ -120,6 +121,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (access.role === null && roleName !== GUEST_ROLE) {
     process.stderr.write(
       `daftari: warning: role '${roleName}' not found in config — running as deny-all guest\n`,
+    );
+  }
+
+  // Cross-vault federation (#297): load the declared mounts before the
+  // transport opens. Fail-loud — a mount that cannot be validated (missing
+  // required path, not a vault, nesting, duplicate, alias-prefix collision)
+  // refuses startup, the malformed-RBAC posture. Deny-all-guest resolutions
+  // are operator stderr notices, never tool output.
+  const federation = config.value.federation;
+  if (federation && federation.mounts.length > 0) {
+    const registry = await loadMounts(vaultRoot, federation, access.user, (line) =>
+      process.stderr.write(`daftari: ${line}\n`),
+    );
+    if (!registry.ok) {
+      process.stderr.write(`daftari: ${registry.error.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    setMountRegistry(registry.value);
+    const ok = [...registry.value.mounts.values()].filter((m) => m.state === "ok").length;
+    process.stderr.write(
+      `daftari: federation: ${ok}/${registry.value.mounts.size} mounts available ` +
+        `(${[...registry.value.mounts.keys()].join(", ")})\n`,
     );
   }
 
