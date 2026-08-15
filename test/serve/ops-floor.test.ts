@@ -83,18 +83,26 @@ function call(port: number, token?: string): Promise<Response> {
   });
 }
 
-async function readAuthLog(vault: string): Promise<Array<Record<string, unknown>>> {
-  // The append is fire-and-forget; give it a beat to land.
-  for (let i = 0; i < 20; i++) {
-    if (existsSync(authLogPath(vault))) break;
+async function readAuthLog(
+  vault: string,
+  expectLines: number,
+): Promise<Array<Record<string, unknown>>> {
+  // Appends are fire-and-forget: polling for file EXISTENCE alone races the
+  // later appends (seen on CI — the deny-401 line landed after the read).
+  // Poll until the expected line count arrives, bounded.
+  const read = (): Array<Record<string, unknown>> =>
+    existsSync(authLogPath(vault))
+      ? readFileSync(authLogPath(vault), "utf-8")
+          .trim()
+          .split("\n")
+          .filter((l) => l.length > 0)
+          .map((l) => JSON.parse(l))
+      : [];
+  for (let i = 0; i < 80; i++) {
+    if (read().length >= expectLines) break;
     await new Promise((r) => setTimeout(r, 25));
   }
-  if (!existsSync(authLogPath(vault))) return [];
-  return readFileSync(authLogPath(vault), "utf-8")
-    .trim()
-    .split("\n")
-    .filter((l) => l.length > 0)
-    .map((l) => JSON.parse(l));
+  return read();
 }
 
 beforeAll(() => {
@@ -106,7 +114,7 @@ describe("per-principal rate limit (429)", () => {
   let vault: string;
   let handle: ServeHandle;
   beforeAll(async () => {
-    vault = buildVault("  limits:\n    burst: 2\n    rate_per_minute: 60\n");
+    vault = buildVault("  limits:\n    burst: 2\n    rate_per_minute: 1\n");
     handle = await boot(vault);
   }, 60_000);
   afterAll(async () => {
@@ -182,7 +190,7 @@ describe("auth audit log", () => {
   let vault: string;
   let handle: ServeHandle;
   beforeAll(async () => {
-    vault = buildVault("  limits:\n    burst: 1\n    rate_per_minute: 60\n");
+    vault = buildVault("  limits:\n    burst: 1\n    rate_per_minute: 1\n");
     handle = await boot(vault);
   }, 60_000);
   afterAll(async () => {
@@ -195,7 +203,7 @@ describe("auth audit log", () => {
     await call(handle.port, "alice-secret"); // rate-limited (principal known)
     await call(handle.port, "wrong-token"); // deny-401 (token_hint)
 
-    const lines = await readAuthLog(vault);
+    const lines = await readAuthLog(vault, 3);
     const outcomes = lines.map((l) => l.outcome);
     expect(outcomes).toContain("allow");
     expect(outcomes).toContain("rate-limited");
