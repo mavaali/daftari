@@ -50,6 +50,7 @@ import {
   performFrontmatterWrite,
   requireIndexReady,
   requireWriteAccess,
+  retryOnStale,
   targetCollection,
   type WriteResult,
 } from "./write.js";
@@ -172,92 +173,128 @@ export async function vaultAssert(
   const writeGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
   if (!writeGate.ok) return writeGate;
 
-  // Assert targets an EXISTING claim doc; creating the doc is vault_write's
-  // job. loadTargetDocument canonicalizes (#127/#128) — one lock, one
-  // position set per file, however the path is spelled.
-  const target = await loadTargetDocument(vaultRoot, path.value, "vault_assert");
-  if (!target.ok) return target;
-  const fm = target.value.parsed.frontmatter;
+  // The load→apply→write below is a read-modify-write whose new positions
+  // array is a pure function of the loaded document, so it runs under
+  // retryOnStale: the write declares the load-time contentHash as its
+  // base_version (issue #14's guarantee, which slice 1 shipped without), and
+  // a writer whose lease window did not overlap the winner's — the silent
+  // lost-position race — is rejected as stale, reloaded, and recomputed
+  // against the winner's positions instead of erasing them.
+  type AssertAttempt =
+    | { kind: "staged"; result: AssertResult }
+    | {
+        kind: "written";
+        relPath: string;
+        title: string;
+        applied: ReturnType<typeof applyAssert>;
+        contested: boolean;
+        written: WriteResult;
+      };
 
-  // U-12 / DN-2 / LD-22: the first assert on a legacy doc (typed positions
-  // null — an explicit `positions: []` means already opted in, no snapshot)
-  // snapshots the prior authored belief as pos-000 before the caller's own
-  // position is applied. Guard 2 (applyAssert never self-supersedes across
-  // principals) means the snapshot is never touched by a live caller's assert.
-  const basePositions = fm.positions ?? [legacySnapshot(fm)];
-  const applied = applyAssert(basePositions, {
-    principal,
-    stance: stanceRaw.value as Stance,
-    statement: statement.value,
-    confidence: confidenceRaw.value as Confidence,
-    provenance,
-    valid_from: validFrom.value,
-    sources,
-    created: todayISO(),
-  });
-  const contested = isContested(applied.positions);
-  const capConfidence = contested && fm.org_position == null; // R-9
+  const attemptAssert = async (): Promise<Result<AssertAttempt, Error>> => {
+    // Assert targets an EXISTING claim doc; creating the doc is vault_write's
+    // job. loadTargetDocument canonicalizes (#127/#128) — one lock, one
+    // position set per file, however the path is spelled.
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_assert");
+    if (!target.ok) return target;
+    const fm = target.value.parsed.frontmatter;
 
-  const newFrontmatter: Frontmatter = {
-    ...fm,
-    positions: applied.positions,
-    contested, // R-8: recomputed on every assert; hand-set values overwritten
-    ...(capConfidence ? { confidence: "low" as Confidence } : {}),
-    updated: todayISO(),
-    updated_by: agent.value,
-  };
+    // U-12 / DN-2 / LD-22: the first assert on a legacy doc (typed positions
+    // null — an explicit `positions: []` means already opted in, no snapshot)
+    // snapshots the prior authored belief as pos-000 before the caller's own
+    // position is applied. Guard 2 (applyAssert never self-supersedes across
+    // principals) means the snapshot is never touched by a live caller's assert.
+    const basePositions = fm.positions ?? [legacySnapshot(fm)];
+    const applied = applyAssert(basePositions, {
+      principal,
+      stance: stanceRaw.value as Stance,
+      statement: statement.value,
+      confidence: confidenceRaw.value as Confidence,
+      provenance,
+      valid_from: validFrom.value,
+      sources,
+      created: todayISO(),
+    });
+    const contested = isContested(applied.positions);
+    const capConfidence = contested && fm.org_position == null; // R-9
 
-  // R-13: a propose-only role's assert lands as a staged `write` proposal —
-  // no file write, no positional tension yet (it fires when the ratified
-  // write lands). Contention with other pending proposals is surfaced by
-  // stageActionWithConflictCheck's inter-proposal tension.
-  if (access && isProposeOnly(access.role)) {
-    const staged = await stageActionWithConflictCheck(vaultRoot, {
-      actionType: "write",
-      targetPath: target.value.relPath,
-      proposedBy: agent.value,
-      rationale:
-        `propose-only role '${access.roleName}': position ${stanceRaw.value} by ` +
-        `'${principal}' staged for ratification`,
-      proposedDiff: {
-        frontmatter: {
-          positions: applied.positions,
-          contested,
-          ...(capConfidence ? { confidence: "low" } : {}),
+    const newFrontmatter: Frontmatter = {
+      ...fm,
+      positions: applied.positions,
+      contested, // R-8: recomputed on every assert; hand-set values overwritten
+      ...(capConfidence ? { confidence: "low" as Confidence } : {}),
+      updated: todayISO(),
+      updated_by: agent.value,
+    };
+
+    // R-13: a propose-only role's assert lands as a staged `write` proposal —
+    // no file write, no positional tension yet (it fires when the ratified
+    // write lands). Contention with other pending proposals is surfaced by
+    // stageActionWithConflictCheck's inter-proposal tension.
+    if (access && isProposeOnly(access.role)) {
+      const staged = await stageActionWithConflictCheck(vaultRoot, {
+        actionType: "write",
+        targetPath: target.value.relPath,
+        proposedBy: agent.value,
+        rationale:
+          `propose-only role '${access.roleName}': position ${stanceRaw.value} by ` +
+          `'${principal}' staged for ratification`,
+        proposedDiff: {
+          frontmatter: {
+            positions: applied.positions,
+            contested,
+            ...(capConfidence ? { confidence: "low" } : {}),
+          },
+          body: target.value.parsed.content,
         },
-        body: target.value.parsed.content,
-      },
+        ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
+      });
+      if (!staged.ok) return staged;
+      return ok({
+        kind: "staged" as const,
+        result: {
+          path: target.value.relPath,
+          action: "staged" as const,
+          position: applied.newPosition,
+          superseded_position_id: applied.superseded?.id ?? null,
+          contested,
+          tension_ids: [],
+          commit: null,
+          committed: false,
+          staged_id: staged.value.id,
+          expires_at: staged.value.expires_at,
+          conflicts_with: staged.value.conflicts_with,
+        },
+      });
+    }
+
+    const written = await performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_assert",
+      action: "assert" as WriteResult["action"],
+      newFrontmatter,
+      commitMessage: `vault_assert: ${stanceRaw.value} on ${target.value.relPath} by ${principal}`,
+      baseVersion: target.value.contentHash,
+      access,
       ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
     });
-    if (!staged.ok) return staged;
+    if (!written.ok) return written;
     return ok({
-      path: target.value.relPath,
-      action: "staged" as const,
-      position: applied.newPosition,
-      superseded_position_id: applied.superseded?.id ?? null,
+      kind: "written" as const,
+      relPath: target.value.relPath,
+      title: fm.title,
+      applied,
       contested,
-      tension_ids: [],
-      commit: null,
-      committed: false,
-      staged_id: staged.value.id,
-      expires_at: staged.value.expires_at,
-      conflicts_with: staged.value.conflicts_with,
+      written: written.value,
     });
-  }
+  };
 
-  const written = await performFrontmatterWrite({
-    vaultRoot,
-    target: target.value,
-    agent: agent.value,
-    tool: "vault_assert",
-    action: "assert" as WriteResult["action"],
-    newFrontmatter,
-    commitMessage: `vault_assert: ${stanceRaw.value} on ${target.value.relPath} by ${principal}`,
-    baseVersion: undefined,
-    access,
-    ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
-  });
-  if (!written.ok) return written;
+  const attempt = await retryOnStale(attemptAssert);
+  if (!attempt.ok) return attempt;
+  if (attempt.value.kind === "staged") return ok(attempt.value.result);
+  const { relPath, title, applied, contested, written } = attempt.value;
 
   // R-5 + locked R-3: one binary tension per NEW conflicting pair, skipped
   // when an OPEN positional tension already names the same two ids on this
@@ -272,7 +309,7 @@ export async function vaultAssert(
       tensionError = existing.error.message;
     } else {
       const open = existing.value.filter(
-        (t) => t.kind === "positional" && !t.resolved && t.sourceA === target.value.relPath,
+        (t) => t.kind === "positional" && !t.resolved && t.sourceA === relPath,
       );
       const covered = (a: string, b: string): boolean =>
         open.some(
@@ -280,15 +317,15 @@ export async function vaultAssert(
             (t.positionA === a && t.positionB === b) || (t.positionA === b && t.positionB === a),
         );
       const claim = (p: Position): string =>
-        p.statement ?? `${fm.title} — ${p.stance} (${p.confidence})`;
+        p.statement ?? `${title} — ${p.stance} (${p.confidence})`;
       for (const pair of pairs) {
         if (covered(pair.a.id, pair.b.id)) continue;
         const minted = await addTension(vaultRoot, {
           kind: "positional",
-          title: `Positional: ${pair.a.principal} vs ${pair.b.principal} on ${fm.title}`,
-          sourceA: target.value.relPath,
+          title: `Positional: ${pair.a.principal} vs ${pair.b.principal} on ${title}`,
+          sourceA: relPath,
           claimA: claim(pair.a),
-          sourceB: target.value.relPath,
+          sourceB: relPath,
           claimB: claim(pair.b),
           positionA: pair.a.id,
           positionB: pair.b.id,
@@ -301,15 +338,15 @@ export async function vaultAssert(
   }
 
   return ok({
-    path: target.value.relPath,
+    path: relPath,
     action: "assert" as const,
     position: applied.newPosition,
     superseded_position_id: applied.superseded?.id ?? null,
     contested,
     tension_ids: tensionIds,
     ...(tensionError !== undefined ? { tension_error: tensionError } : {}),
-    commit: written.value.commit,
-    committed: written.value.committed,
+    commit: written.commit,
+    committed: written.committed,
   });
 }
 
@@ -449,68 +486,95 @@ export async function vaultConsolidate(
     return err(new Error(`access denied: role '${access.roleName}' cannot consolidate`));
   }
 
-  const target = await loadTargetDocument(vaultRoot, path.value, "vault_consolidate");
-  if (!target.ok) return target;
-  const fm = target.value.parsed.frontmatter;
-
-  const dissent = dissentIds(fm.positions ?? [], stanceRaw.value as Stance);
-
-  // LD-19: resolve_tension is validated BEFORE any write. The id must name
-  // an OPEN tension with kind "positional" and sourceA === this doc — never
-  // a backdoor generic resolver.
-  if (resolveTensionArg) {
-    const all = await listTensions(vaultRoot);
-    if (!all.ok) return all;
-    const t = all.value.find((x) => x.id === resolveTensionArg?.id);
-    if (!t || t.resolved || t.kind !== "positional" || t.sourceA !== target.value.relPath) {
-      return err(
-        new Error(
-          "vault_consolidate: resolve_tension does not name an open positional tension " +
-            "on this document",
-        ),
-      );
-    }
-    if (resolveTensionArg.kind === "accepted" && dissent.length === 0) {
-      return err(
-        new Error("vault_consolidate: resolve_tension kind 'accepted' requires standing dissent"),
-      );
-    }
-  }
-
-  const orgPosition: OrgPosition = {
-    stance: stanceRaw.value as Stance,
-    confidence: confidenceRaw.value as Confidence,
-    ratified_by: ratifier,
-    ratified_at: todayISO(),
-    dissent,
+  // Same read-modify-write discipline as vault_assert above: dissent and the
+  // contested flag are pure functions of the loaded positions, so the write
+  // declares its load-time contentHash and a stale attempt (a position
+  // asserted while this ratification was in flight) is reloaded and
+  // recomputed — never allowed to erase the interleaved position or ratify
+  // with a dissent list computed from a superseded snapshot.
+  type ConsolidateAttempt = {
+    relPath: string;
+    orgPosition: OrgPosition;
+    dissent: string[];
+    contested: boolean | null;
+    written: WriteResult;
   };
 
-  // LD-21: contested is re-derived from the live set, never touched by
-  // consolidate itself; a fully legacy doc (positions null) stays null.
-  const contested = fm.positions != null ? isContested(fm.positions) : null;
+  const attemptConsolidate = async (): Promise<Result<ConsolidateAttempt, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_consolidate");
+    if (!target.ok) return target;
+    const fm = target.value.parsed.frontmatter;
 
-  const newFrontmatter: Frontmatter = {
-    ...fm,
-    org_position: orgPosition,
-    confidence: confidenceRaw.value as Confidence, // the mirror — clears the R-9 cap
-    contested,
-    updated: todayISO(),
-    updated_by: agent.value,
+    const dissent = dissentIds(fm.positions ?? [], stanceRaw.value as Stance);
+
+    // LD-19: resolve_tension is validated BEFORE any write. The id must name
+    // an OPEN tension with kind "positional" and sourceA === this doc — never
+    // a backdoor generic resolver.
+    if (resolveTensionArg) {
+      const all = await listTensions(vaultRoot);
+      if (!all.ok) return all;
+      const t = all.value.find((x) => x.id === resolveTensionArg?.id);
+      if (!t || t.resolved || t.kind !== "positional" || t.sourceA !== target.value.relPath) {
+        return err(
+          new Error(
+            "vault_consolidate: resolve_tension does not name an open positional tension " +
+              "on this document",
+          ),
+        );
+      }
+      if (resolveTensionArg.kind === "accepted" && dissent.length === 0) {
+        return err(
+          new Error("vault_consolidate: resolve_tension kind 'accepted' requires standing dissent"),
+        );
+      }
+    }
+
+    const orgPosition: OrgPosition = {
+      stance: stanceRaw.value as Stance,
+      confidence: confidenceRaw.value as Confidence,
+      ratified_by: ratifier,
+      ratified_at: todayISO(),
+      dissent,
+    };
+
+    // LD-21: contested is re-derived from the live set, never touched by
+    // consolidate itself; a fully legacy doc (positions null) stays null.
+    const contested = fm.positions != null ? isContested(fm.positions) : null;
+
+    const newFrontmatter: Frontmatter = {
+      ...fm,
+      org_position: orgPosition,
+      confidence: confidenceRaw.value as Confidence, // the mirror — clears the R-9 cap
+      contested,
+      updated: todayISO(),
+      updated_by: agent.value,
+    };
+
+    const written = await performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_consolidate",
+      action: "consolidate" as WriteResult["action"],
+      newFrontmatter,
+      commitMessage: `vault_consolidate: ${stanceRaw.value} on ${target.value.relPath} ratified by ${ratifier}`,
+      baseVersion: target.value.contentHash,
+      access,
+      ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
+    });
+    if (!written.ok) return written;
+    return ok({
+      relPath: target.value.relPath,
+      orgPosition,
+      dissent,
+      contested,
+      written: written.value,
+    });
   };
 
-  const written = await performFrontmatterWrite({
-    vaultRoot,
-    target: target.value,
-    agent: agent.value,
-    tool: "vault_consolidate",
-    action: "consolidate" as WriteResult["action"],
-    newFrontmatter,
-    commitMessage: `vault_consolidate: ${stanceRaw.value} on ${target.value.relPath} ratified by ${ratifier}`,
-    baseVersion: undefined,
-    access,
-    ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
-  });
-  if (!written.ok) return written;
+  const attempt = await retryOnStale(attemptConsolidate);
+  if (!attempt.ok) return attempt;
+  const { relPath, orgPosition, dissent, contested, written } = attempt.value;
 
   // The doc write commits FIRST; a resolve failure afterward is reported as
   // resolve_error, not rolled back (LD-19 — mirror of Slice 1's tension_error
@@ -532,7 +596,7 @@ export async function vaultConsolidate(
   }
 
   return ok({
-    path: target.value.relPath,
+    path: relPath,
     action: "consolidate" as const,
     org_position: orgPosition,
     confidence: confidenceRaw.value as Confidence,
@@ -540,8 +604,8 @@ export async function vaultConsolidate(
     contested,
     resolved_tension_id: resolvedTensionId,
     ...(resolveError !== undefined ? { resolve_error: resolveError } : {}),
-    commit: written.value.commit,
-    committed: written.value.committed,
+    commit: written.commit,
+    committed: written.committed,
   });
 }
 
@@ -671,7 +735,10 @@ const assertToolDefinition: ToolDefinition = {
     "'write' proposal for ratification — nothing is written and no positional " +
     "tension is logged until the ratified write lands. The first assert on a " +
     "legacy doc (typed positions null) snapshots the doc's prior belief as " +
-    "pos-000 (principal 'unknown', system-authored, unforgeable).",
+    "pos-000 (principal 'unknown', system-authored, unforgeable). Under " +
+    "concurrent writes to the same doc the call retries once against the " +
+    "fresh state, then fails loudly ('locked' or 'stale write') — safe to " +
+    "re-call; no position is ever silently overwritten.",
   inputSchema: {
     type: "object",
     properties: {
@@ -784,7 +851,10 @@ const consolidateToolDefinition: ToolDefinition = {
     "same call via resolve_tension: validated before any write (must name an " +
     "open 'positional' tension whose sourceA is this doc; kind 'accepted' " +
     "requires standing dissent); the doc write commits first, and a resolve " +
-    "failure afterward is reported as resolve_error, never rolled back.",
+    "failure afterward is reported as resolve_error, never rolled back. Under " +
+    "concurrent writes to the same doc the call retries once against the " +
+    "fresh state (dissent recomputed), then fails loudly ('locked' or 'stale " +
+    "write') — safe to re-call.",
   inputSchema: {
     type: "object",
     properties: {

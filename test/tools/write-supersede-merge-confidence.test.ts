@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -302,6 +303,81 @@ describe("vault_merge", () => {
       expect(reacquired.ok).toBe(true);
     }
     lockDb.close();
+  }, 60_000);
+
+  it("authors the merge commit as the authenticated principal", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+    const result = await vaultMerge(
+      vault,
+      {
+        path_a: "pricing/a.md",
+        path_b: "pricing/b.md",
+        target_path: "pricing/merged.md",
+        body: "# Merged\n\nCombined content.\n",
+        agent: AGENT,
+      },
+      {
+        user: "alice",
+        roleName: "writer",
+        role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+      },
+    );
+    expect(result.ok).toBe(true);
+
+    const author = execFileSync("git", ["-C", vault, "log", "-1", "--format=%an"], {
+      encoding: "utf-8",
+    }).trim();
+    const body = execFileSync("git", ["-C", vault, "log", "-1", "--format=%B"], {
+      encoding: "utf-8",
+    }).trim();
+    expect(author).toBe("alice");
+    expect(body).toContain(`Daftari-Agent: ${AGENT}`);
+  }, 60_000);
+
+  it("records provenance and an accurate error when the merge commit fails", async () => {
+    await seed(vault, "pricing/a.md");
+    await seed(vault, "pricing/b.md");
+
+    // Put the vault repo into MERGING state (a half-resolved conflict): git
+    // refuses partial commits during a merge, so vault_merge's commit step
+    // fails deterministically AFTER all three files are durable on disk.
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-C", vault, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+        encoding: "utf-8",
+      });
+    const branch = g("symbolic-ref", "--short", "HEAD").trim();
+    g("checkout", "-q", "-b", "side");
+    writeFileSync(join(vault, "conflict.md"), "side version\n");
+    g("add", "--", "conflict.md");
+    g("commit", "-q", "-m", "side");
+    g("checkout", "-q", branch);
+    writeFileSync(join(vault, "conflict.md"), "main version\n");
+    g("add", "--", "conflict.md");
+    g("commit", "-q", "-m", "main");
+    expect(() => g("merge", "side")).toThrow(); // conflict → MERGING state
+
+    const result = await vaultMerge(vault, {
+      path_a: "pricing/a.md",
+      path_b: "pricing/b.md",
+      target_path: "pricing/merged.md",
+      body: "# Merged\n\nCombined content.\n",
+      agent: AGENT,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // The error says the files landed and the commit did not.
+    expect(result.error.message).toContain("written");
+    expect(result.error.message).toContain("commit failed");
+
+    // The three durable writes are in the ledger, flagged uncommitted.
+    const prov = await readProvenanceLog(vault);
+    expect(prov.ok).toBe(true);
+    if (!prov.ok) return;
+    for (const p of ["pricing/a.md", "pricing/b.md", "pricing/merged.md"]) {
+      const entry = prov.value.find((e) => e.file === p && e.tool === "vault_merge");
+      expect(entry?.reason).toContain("commit failed");
+    }
   }, 60_000);
 
   it("merges B into A when target equals path_a", async () => {

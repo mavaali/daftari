@@ -488,7 +488,9 @@ async function performWrite(params: {
               `stale: base_version ${shortHash(params.baseVersion)} != ` +
               `current ${currentHash ? shortHash(currentHash) : "<absent>"}`,
           });
-          return err(new Error(`stale write: ${params.relPath} changed since base_version`));
+          return err(
+            new Error(`${STALE_WRITE_PREFIX} ${params.relPath} changed since base_version`),
+          );
         }
       }
 
@@ -506,16 +508,23 @@ async function performWrite(params: {
       noteSelfWrite(params.absPath);
 
       let commitHash: string | null = null;
+      let commitError: Error | null = null;
       if (params.autoCommit) {
+        const identity = commitIdentity(params.agent, params.principal);
         const committed = await commit(
           params.vaultRoot,
           [params.relPath],
-          params.commitMessage,
-          params.agent,
+          params.commitMessage + identity.trailer,
+          identity.author,
           { gitDir: params.gitDir },
         );
-        if (!committed.ok) return committed;
-        commitHash = committed.value.hash;
+        if (committed.ok) commitHash = committed.value.hash;
+        // A commit failure does NOT short-circuit: the file is on disk and
+        // indexed, so the durable write still gets its provenance entry
+        // (flagged uncommitted via `reason`) and its consumes edges — a
+        // hole in the ledger where a real mutation happened is worse than a
+        // dirty-uncommitted window. The error is returned after.
+        else commitError = committed.error;
       }
 
       await recordProvenance(params.vaultRoot, {
@@ -527,6 +536,7 @@ async function performWrite(params: {
         ...(params.bodyChanged !== undefined ? { body_changed: params.bodyChanged } : {}),
         action: params.action,
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
+        ...(commitError ? { reason: `commit failed: ${commitError.message}` } : {}),
       });
 
       // #233: a run-correlated write compiles its input set — every path the
@@ -538,6 +548,15 @@ async function performWrite(params: {
           artifact: params.relPath,
           runId: params.runId,
         });
+      }
+
+      if (commitError) {
+        return err(
+          new Error(
+            `${params.relPath} was written and indexed but the git commit failed: ` +
+              commitError.message,
+          ),
+        );
       }
 
       return ok({
@@ -624,6 +643,48 @@ export function requireWriteAccess(
   return ok(undefined);
 }
 
+// Git history is the attribution layer, and the caller-supplied `agent`
+// string is advisory — any authenticated principal could claim any agent.
+// When an AccessContext exists the commit author is the AUTHENTICATED
+// principal (matching the provenance log's ground-truth `principal` field);
+// the claimed agent survives as a Daftari-Agent trailer so the advisory
+// identity stays in-history. With no access context (operator/stdio), the
+// agent is the only identity there is and authors the commit as before.
+export function commitIdentity(
+  agent: string,
+  principal?: string,
+): { author: string; trailer: string } {
+  if (!principal || principal === agent) return { author: agent, trailer: "" };
+  return { author: principal, trailer: `\n\nDaftari-Agent: ${agent}` };
+}
+
+// The one place the stale-rejection message prefix is defined: the producer
+// (performWrite's base_version check) and the classifier below must agree,
+// or retryOnStale silently stops retrying and the lost-update race returns.
+export const STALE_WRITE_PREFIX = "stale write:";
+
+// A stale-write rejection from performWrite (base_version mismatch, above).
+// The ONE retryable failure: the rejection proves nothing was written,
+// committed, or indexed, so reload-and-recompute is always safe.
+export function isStaleWriteError(e: Error): boolean {
+  return e.message.startsWith(STALE_WRITE_PREFIX);
+}
+
+// Runs `attempt` and, when it fails with a stale-write rejection, runs it
+// again (once). Each attempt must load its target fresh and recompute the
+// mutation from the reloaded document — sound only for tools whose new
+// frontmatter is a pure function of the load (assert/consolidate), never for
+// callers carrying externally-composed content, whose base_version conflicts
+// belong to the caller. Non-stale failures (lock contention stays fail-fast,
+// slice-3 §3.5) are returned unchanged.
+export async function retryOnStale<T>(
+  attempt: () => Promise<Result<T, Error>>,
+): Promise<Result<T, Error>> {
+  const first = await attempt();
+  if (first.ok || !isStaleWriteError(first.error)) return first;
+  return attempt();
+}
+
 // The target document as the frontmatter-only lifecycle tools (promote,
 // deprecate, set_confidence, set_tier, supersede) load it: canonical paths,
 // parsed document, and vault config, in the shared error order — resolve,
@@ -633,6 +694,12 @@ export interface TargetDocument {
   absPath: string;
   parsed: ParsedDocument;
   config: DaftariConfig;
+  // sha256 of the exact bytes this target was loaded from — the same token
+  // vault_read returns as `version`. Tools that compute a mutation from
+  // `parsed` (assert/consolidate) pass it as baseVersion so a write composed
+  // against a replaced file is rejected as stale instead of clobbering it
+  // (issue #14's guarantee, extended to the internal read-modify-write tools).
+  contentHash: string;
 }
 
 export async function loadTargetDocument(
@@ -661,6 +728,7 @@ export async function loadTargetDocument(
     absPath: resolved.value.absPath,
     parsed: parsed.value,
     config: config.value,
+    contentHash: sha256Hex(existing.value),
   });
 }
 
@@ -1810,6 +1878,7 @@ export async function vaultSupersede(
       absPath: resolvedOld.value.absPath,
       parsed: parsed.value,
       config: config.value,
+      contentHash: sha256Hex(existing.value),
     },
     agent: agent.value,
     tool: "vault_supersede",
@@ -2138,16 +2207,22 @@ export async function vaultMerge(
     }
 
     let commitHash: string | null = null;
+    let commitError: Error | null = null;
     if (config.value.autoCommit) {
+      const identity = commitIdentity(agent.value, access?.user);
       const committed = await commit(
         vaultRoot,
         writes.map((w) => w.relPath),
-        `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}`,
-        agent.value,
+        `vault_merge: ${pathA.value} + ${pathB.value} → ${targetPath.value} by ${agent.value}` +
+          identity.trailer,
+        identity.author,
         { gitDir: config.value.gitDir },
       );
-      if (!committed.ok) return committed;
-      commitHash = committed.value.hash;
+      if (committed.ok) commitHash = committed.value.hash;
+      // Same discipline as performWrite: all three files are durable on
+      // disk, so a commit failure must not skip their index rows and
+      // provenance entries — record them flagged uncommitted, error after.
+      else commitError = committed.error;
     }
 
     // Index each written doc and log provenance per file. Both are best-effort
@@ -2170,7 +2245,17 @@ export async function vaultMerge(
         // frontmatter stamps.
         body_changed: w.action === "merge",
         frontmatter_diff: frontmatterDiff(w.oldFrontmatter, w.newFrontmatter),
+        ...(commitError ? { reason: `commit failed: ${commitError.message}` } : {}),
       });
+    }
+
+    if (commitError) {
+      return err(
+        new Error(
+          `vault_merge: ${writes.length} files were written and indexed but the git commit ` +
+            `failed: ${commitError.message}`,
+        ),
+      );
     }
 
     return ok({

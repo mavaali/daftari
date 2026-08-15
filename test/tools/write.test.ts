@@ -1,15 +1,19 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
-import type { Frontmatter } from "../../src/frontmatter/types.js";
+import { err, type Frontmatter, ok } from "../../src/frontmatter/types.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultAssert } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import {
+  loadTargetDocument,
+  performFrontmatterWrite,
+  retryOnStale,
   serializeDocument,
   vaultAppend,
   vaultDeprecate,
@@ -18,6 +22,7 @@ import {
 } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
 import { isGitRepo, log } from "../../src/utils/git.js";
+import { sha256Hex } from "../../src/utils/hash.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -1009,6 +1014,217 @@ describe("write tools", () => {
       if (!final.ok) return;
       expect(final.value.content).toContain("B's revised pricing notes");
       expect(final.value.content).not.toContain("composed against the pre-B version");
+    }, 60_000);
+  });
+
+  // Git history is the attribution layer, and the free-text `agent` argument
+  // is spoofable: any authenticated principal could pass agent: "human:mihir"
+  // and git-blame would show Mihir. When an AccessContext exists, the commit
+  // author must be the AUTHENTICATED principal; the claimed agent survives as
+  // a Daftari-Agent trailer so the advisory identity stays in-history.
+  describe("commit authorship is the authenticated principal", () => {
+    const WRITER: AccessContext = {
+      user: "alice",
+      roleName: "writer",
+      role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+    };
+
+    function commitMeta(vaultRoot: string): { author: string; body: string } {
+      const author = execFileSync("git", ["-C", vaultRoot, "log", "-1", "--format=%an"], {
+        encoding: "utf-8",
+      }).trim();
+      const body = execFileSync("git", ["-C", vaultRoot, "log", "-1", "--format=%B"], {
+        encoding: "utf-8",
+      }).trim();
+      return { author, body };
+    }
+
+    it("authors the commit as the authenticated principal, keeping the claimed agent as a trailer", async () => {
+      const result = await vaultWrite(
+        vault,
+        {
+          path: "pricing/authored.md",
+          body: "# Authored\n\nBy alice.\n",
+          frontmatter: newFrontmatter({ title: "Authored" }),
+          agent: "agent:claude-code",
+        },
+        WRITER,
+      );
+      expect(result.ok).toBe(true);
+
+      const { author, body } = commitMeta(vault);
+      expect(author).toBe("alice");
+      expect(body).toContain("Daftari-Agent: agent:claude-code");
+    }, 60_000);
+
+    it("keeps the agent as author when no access context exists (operator path)", async () => {
+      const result = await vaultWrite(vault, {
+        path: "pricing/operator.md",
+        body: "# Operator\n\nNo access context.\n",
+        frontmatter: newFrontmatter({ title: "Operator" }),
+        agent: "agent:claude-code",
+      });
+      expect(result.ok).toBe(true);
+
+      const { author, body } = commitMeta(vault);
+      expect(author).toBe("agent:claude-code");
+      expect(body).not.toContain("Daftari-Agent:");
+    }, 60_000);
+  });
+
+  // The multi-user variant of issue #14: vault_assert / vault_consolidate load
+  // the target, compute frontmatter, and write with NO base_version — so a
+  // writer whose lease window does not overlap the winner's silently erases
+  // the winner's positions. The fix: TargetDocument carries the content hash
+  // it was loaded against, and the position tools pass it as baseVersion.
+  describe("TargetDocument load-time version (multi-user lost-update fix)", () => {
+    it("loadTargetDocument captures the on-disk content hash", async () => {
+      const path = "pricing/tdoc-hash.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Hash me\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Hash me" }),
+        agent: AGENT,
+      });
+
+      const target = await loadTargetDocument(vault, path, "test");
+      expect(target.ok).toBe(true);
+      if (!target.ok) return;
+      const onDisk = readFileSync(join(vault, path), "utf-8");
+      expect(target.value.contentHash).toBe(sha256Hex(onDisk));
+    }, 60_000);
+
+    it("rejects a performFrontmatterWrite composed against a replaced TargetDocument", async () => {
+      const path = "pricing/tdoc-stale.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Delayed writer\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Delayed writer" }),
+        agent: AGENT,
+      });
+
+      // 1. The delayed writer loads the target (the vault_assert shape).
+      const stale = await loadTargetDocument(vault, path, "vault_assert");
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+
+      // 2. Another principal's write lands in between — non-overlapping lease
+      //    windows, so no lock contention fires.
+      const between = await vaultWrite(vault, {
+        path,
+        body: "# Delayed writer\n\nv2 by the other principal.\n",
+        frontmatter: newFrontmatter({ title: "Delayed writer" }),
+        agent: "agent:other",
+      });
+      expect(between.ok).toBe(true);
+
+      // 3. The delayed writer now writes frontmatter serialized from its
+      //    pre-v2 snapshot, declaring the version it composed against. It
+      //    must be rejected — not silently clobber v2.
+      const replay = await performFrontmatterWrite({
+        vaultRoot: vault,
+        target: stale.value,
+        agent: AGENT,
+        tool: "vault_assert",
+        action: "update",
+        newFrontmatter: {
+          ...stale.value.parsed.frontmatter,
+          updated_by: "agent:delayed",
+        },
+        commitMessage: "stale replay from a pre-v2 snapshot",
+        baseVersion: stale.value.contentHash,
+      });
+      expect(replay.ok).toBe(false);
+      if (replay.ok) return;
+      expect(replay.error.message.startsWith("stale write:")).toBe(true);
+
+      // v2 survives on disk.
+      const final = await vaultRead(vault, path);
+      expect(final.ok).toBe(true);
+      if (!final.ok) return;
+      expect(final.value.content).toContain("v2 by the other principal");
+    }, 60_000);
+
+    it("retryOnStale re-runs a stale attempt once and returns its fresh result", async () => {
+      let calls = 0;
+      const result = await retryOnStale(async () => {
+        calls++;
+        if (calls === 1) return err(new Error("stale write: doc.md changed since base_version"));
+        return ok("fresh");
+      });
+      expect(calls).toBe(2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toBe("fresh");
+    });
+
+    it("retryOnStale does not retry non-stale failures", async () => {
+      let calls = 0;
+      const result = await retryOnStale(async () => {
+        calls++;
+        return err(new Error("file is locked by agent:other"));
+      });
+      expect(calls).toBe(1);
+      expect(result.ok).toBe(false);
+    });
+
+    it("retryOnStale gives up after the bounded retry and surfaces the stale error", async () => {
+      let calls = 0;
+      const result = await retryOnStale(async () => {
+        calls++;
+        return err(new Error("stale write: doc.md changed since base_version"));
+      });
+      expect(calls).toBe(2);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message.startsWith("stale write:")).toBe(true);
+    });
+  });
+
+  // Before this fix, a commit failure made performWrite return BEFORE
+  // recordProvenance: the write was durable on disk but absent from the
+  // provenance log, and the error said nothing about the file having been
+  // written. The write must be reported accurately and the ledger must not
+  // have a hole.
+  describe("commit failure after a durable write (serve-concurrency fix)", () => {
+    it("records provenance and an accurate error when the commit step fails", async () => {
+      const path = "pricing/commit-fail.md";
+      const first = await vaultWrite(vault, {
+        path,
+        body: "# Same bytes\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Same bytes" }),
+        agent: AGENT,
+      });
+      expect(first.ok).toBe(true);
+
+      // Byte-identical rewrite: the file write succeeds, `git commit` then
+      // fails with "nothing to commit" — a real commit failure after a
+      // durable write, with no mocking.
+      const second = await vaultWrite(vault, {
+        path,
+        body: "# Same bytes\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Same bytes" }),
+        agent: AGENT,
+      });
+      expect(second.ok).toBe(false);
+      if (second.ok) return;
+      // The error says the write landed and the commit did not — never a
+      // bare git error narrating failure over a durable write.
+      expect(second.error.message).toContain("written");
+      expect(second.error.message).toContain("commit failed");
+
+      // The durable write is in the provenance ledger, flagged uncommitted,
+      // with the SAME payload shape as a landed write — body_changed must
+      // survive, or tier-1/tier-2 consumers infer "body changed" for the
+      // exact entries that need auditing (changedFieldsFromProvenance
+      // over-approximates absent body_changed on update actions).
+      const prov = await readProvenanceLog(vault);
+      expect(prov.ok).toBe(true);
+      if (!prov.ok) return;
+      const entries = prov.value.filter((e) => e.file === path);
+      expect(entries.length).toBe(2);
+      expect(entries[1]?.reason).toContain("commit failed");
+      expect(entries[1]?.body_changed).toBe(false);
     }, 60_000);
   });
 
