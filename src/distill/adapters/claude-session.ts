@@ -8,8 +8,13 @@
 
 import type { NormalizedMessage, SourceAdapter } from "./types.js";
 
+// Top-level record types that carry human/assistant prose. Everything else
+// (progress, queue-operation, last-prompt, pr-link, system, unknown) is dropped.
 const KEPT_TYPES = new Set(["user", "assistant"]);
 
+// Pull human-facing prose out of a record's `.message.content`. A string is
+// used verbatim; an array keeps only `type:"text"` blocks (with a string
+// `.text`) in order, dropping tool_use / tool_result / thinking blocks (R3).
 function extractText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -45,7 +50,7 @@ export class ClaudeSessionAdapter implements SourceAdapter {
         if (parsed === null || typeof parsed !== "object") continue;
         rec = parsed as Record<string, unknown>;
       } catch {
-        continue;
+        continue; // malformed/truncated line — skip, never throw (R1)
       }
 
       const topType = rec.type;
@@ -58,6 +63,7 @@ export class ClaudeSessionAdapter implements SourceAdapter {
       if (message === null || typeof message !== "object") continue;
       const msg = message as Record<string, unknown>;
 
+      // R4: message.role wins when it names a valid sender, else the top-level type.
       const sender =
         msg.role === "user" || msg.role === "assistant" ? (msg.role as string) : topType;
 
