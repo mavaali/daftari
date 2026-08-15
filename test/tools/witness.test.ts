@@ -241,4 +241,37 @@ describe("vaultWitness tool", () => {
     const def = witnessTools.find((t) => t.name === "vault_witness");
     expect(def?.annotations?.readOnlyHint).toBe(true);
   });
+
+  it("full report carries the position book, legacyPositions, and both concentrations", async () => {
+    writeDoc("pricing/a.md");
+    await logWrite("pricing/a.md", "agent:alpha");
+
+    const r = await vaultWitness(vault, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const full = r.value as Record<string, unknown>;
+    expect(full.legacyPositions).toBe(0);
+    expect(full.positionConcentration).toEqual({ topPrincipal: null, topShare: 0 });
+    const principals = full.principals as Array<Record<string, unknown>>;
+    // Every record carries the positions sub-record, zeroed when none taken.
+    for (const p of principals) {
+      const book = p.positions as Record<string, unknown>;
+      expect(book).toBeDefined();
+      expect(book.taken).toBe(0);
+      expect(book.balance).toBe(0);
+    }
+  });
+
+  it("single-principal fetch carries the position book and both concentrations", async () => {
+    writeDoc("pricing/a.md");
+    await logWrite("pricing/a.md", "agent:alpha");
+
+    const one = await vaultWitness(vault, { principal: "agent:alpha" });
+    expect(one.ok).toBe(true);
+    if (!one.ok) return;
+    const v = one.value as Record<string, unknown>;
+    expect((v.principal as Record<string, unknown>).positions).toBeDefined();
+    expect(v.concentration).toBeDefined();
+    expect(v.positionConcentration).toBeDefined();
+  });
 });
