@@ -282,6 +282,30 @@ describe("the position wager book", () => {
     expect(bob.burned).toBe(WAGER_STAKES.medium); // dissent + corrected = one burn
   });
 
+  it("`consolidated` closes the contest but never grants immunity — dissent still burns", async () => {
+    // The pricing-composition pin: if anyone later "simplifies" the batch
+    // kind into `accepted`, dissenters stop burning and this fails.
+    writeClaimDoc("pricing/batch.md", {
+      positions: [
+        { id: "pos-001", principal: "alice", stance: "assert", confidence: "high" },
+        { id: "pos-002", principal: "bob", stance: "dispute", confidence: "medium" },
+      ],
+      orgPosition: { stance: "assert", ratified_at: TODAY, dissent: ["pos-002"] },
+    });
+    const t = await positionalTension("pricing/batch.md", "pos-001", "pos-002");
+    await resolve(t, "consolidated");
+
+    const w = await witness();
+    const bob = principal(w, "bob").positions;
+    expect(bob.contestedOpen).toBe(0); // the contest is adjudicated
+    expect(bob.standingDissent).toBe(0); // no accidental immunity
+    expect(bob.dissented).toBe(1);
+    expect(bob.burned).toBe(WAGER_STAKES.medium); // the dissent burn survives
+    const alice = principal(w, "alice").positions;
+    expect(alice.credited).toBe(POSITION_RATIFIED_CREDIT);
+    expect(alice.burned).toBe(0);
+  });
+
   it("superseded and invalid resolutions settle nothing", async () => {
     writeClaimDoc("pricing/nonevents.md", {
       positions: [

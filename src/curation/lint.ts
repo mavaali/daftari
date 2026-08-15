@@ -12,7 +12,13 @@ import { DISTILL_NUMERIC_DEFAULTS } from "../utils/config.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
-import { isContested, unsuperseded } from "./positions.js";
+import {
+  chainEnd,
+  isContested,
+  type PositionalTensionRef,
+  uncoveredConflictPairs,
+  unsuperseded,
+} from "./positions.js";
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
@@ -316,6 +322,26 @@ export async function runLint(
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
 
+  // Item 5(c): tension-log reconciliation inputs for the positionIntegrity
+  // sub-checks — one load, grouped per doc. Positional tensions are
+  // self-tensions (sourceA === sourceB), so doc visibility gates them the
+  // same way it gates the doc.
+  const allTensions = await listTensions(vaultRoot);
+  if (!allTensions.ok) return allTensions;
+  const positionalByDoc = new Map<string, PositionalTensionRef[]>();
+  for (const t of allTensions.value) {
+    if (t.kind !== "positional" || t.positionA === undefined || t.positionB === undefined) continue;
+    const refs = positionalByDoc.get(t.sourceA) ?? [];
+    refs.push({
+      id: t.id,
+      resolved: t.resolved,
+      ...(t.resolution ? { resolutionKind: t.resolution.kind } : {}),
+      positionA: t.positionA,
+      positionB: t.positionB,
+    });
+    positionalByDoc.set(t.sourceA, refs);
+  }
+
   for (const doc of docs) {
     const fm = doc.frontmatter;
 
@@ -443,6 +469,55 @@ export async function runLint(
           detail:
             `${unknownPositions.length} positions carry principal 'unknown' ` +
             `(expected at most 1, pos-000)`,
+        });
+      }
+
+      // Item 5(c): tension-log reconciliation. A live conflicting pair with
+      // no record — no open positional tension, no `accepted` (standing
+      // dissent the org keeps) or `consolidated` (adjudicated by a
+      // ratification) resolution — is the silent-mint-failure state
+      // vault_assert's tension_error channel cannot recover on its own.
+      // Advisory: the recovery is named, never performed.
+      const docTensions = positionalByDoc.get(doc.path) ?? [];
+      for (const pair of uncoveredConflictPairs(positions, docTensions)) {
+        checks.positionIntegrity.push({
+          path: doc.path,
+          detail:
+            pair.resolvedKinds.length === 0
+              ? `contested pair ${pair.a.id} (assert, ${pair.a.principal}) x ` +
+                `${pair.b.id} (dispute, ${pair.b.principal}) has no open positional ` +
+                `tension — mint may have failed silently (vault_assert ` +
+                `tension_error); a re-assert by either party will re-mint`
+              : `contested pair ${pair.a.id} x ${pair.b.id} was resolved ` +
+                `'${pair.resolvedKinds.join("', '")}' but both positions remain ` +
+                `live and opposed`,
+        });
+      }
+
+      // The moot residue: an OPEN positional tension whose chain-resolved
+      // ends no longer conflict (a stance flip left it with nothing to
+      // adjudicate — batch consolidate deliberately does not sweep these).
+      const byId = new Map(positions.map((p) => [p.id, p]));
+      for (const t of docTensions) {
+        if (t.resolved) continue;
+        const ea = chainEnd(byId, t.positionA);
+        const eb = chainEnd(byId, t.positionB);
+        const opposed =
+          ea !== null &&
+          eb !== null &&
+          ((ea.stance === "assert" && eb.stance === "dispute") ||
+            (ea.stance === "dispute" && eb.stance === "assert"));
+        if (opposed) continue;
+        const flipped = [
+          { named: t.positionA, end: ea },
+          { named: t.positionB, end: eb },
+        ].find((x) => x.end === null || x.end.id !== x.named || x.end.stance === "qualify");
+        checks.positionIntegrity.push({
+          path: doc.path,
+          detail:
+            `open positional tension ${t.id ?? "(no id)"} names ` +
+            `${flipped?.named ?? t.positionA} but the pair is no longer live and ` +
+            `opposed — resolve via vault_tension_resolve`,
         });
       }
     }
