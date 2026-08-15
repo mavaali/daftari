@@ -248,6 +248,61 @@ describe("loadConfig — schema extensions", () => {
       expect(good.value.server.tokens).toEqual([{ env: "T_A", user: "human:a", role: "analyst" }]);
     });
 
+    it("applies the ops-floor limit defaults when server.limits is absent", () => {
+      writeConfig("version: 1\nserver:\n  transport_security: external\n");
+      const good = loadConfig(dir);
+      expect(good.ok).toBe(true);
+      if (!good.ok) return;
+      expect(good.value.server.limits).toEqual({
+        ratePerMinute: 120,
+        burst: 40,
+        authFailureBurst: 10,
+        authFailuresPerMinute: 6,
+        maxInFlight: 32,
+      });
+      expect(good.value.server.audit).toBe(true);
+    });
+
+    it("parses server.limits overrides and server.audit", () => {
+      writeConfig(
+        "version: 1\nserver:\n  limits:\n    rate_per_minute: 30\n    burst: 5\n" +
+          "    auth_failure_burst: 3\n    auth_failures_per_minute: 2\n    max_in_flight: 8\n" +
+          "  audit: false\n",
+      );
+      const good = loadConfig(dir);
+      expect(good.ok).toBe(true);
+      if (!good.ok) return;
+      expect(good.value.server.limits).toEqual({
+        ratePerMinute: 30,
+        burst: 5,
+        authFailureBurst: 3,
+        authFailuresPerMinute: 2,
+        maxInFlight: 8,
+      });
+      expect(good.value.server.audit).toBe(false);
+    });
+
+    it("rejects malformed server.limits values loud — no magic zero", () => {
+      for (const [yaml, needle] of [
+        ["    rate_per_minute: 0\n", "server.limits.rate_per_minute"],
+        ["    burst: -1\n", "server.limits.burst"],
+        ["    max_in_flight: 1.5\n", "server.limits.max_in_flight"],
+        ['    burst: "40"\n', "server.limits.burst"],
+        ["    made_up: 3\n", "server.limits.made_up"],
+      ] as const) {
+        writeConfig(`version: 1\nserver:\n  limits:\n${yaml}`);
+        const bad = loadConfig(dir);
+        expect(bad.ok).toBe(false);
+        if (bad.ok) return;
+        expect(bad.error.message).toContain(needle);
+      }
+      writeConfig('version: 1\nserver:\n  audit: "yes"\n');
+      const bad = loadConfig(dir);
+      expect(bad.ok).toBe(false);
+      if (bad.ok) return;
+      expect(bad.error.message).toContain("server.audit");
+    });
+
     it("rejects a server token entry missing a field", () => {
       writeConfig(
         "version: 1\nserver:\n  auth:\n    tokens:\n      - env: T_A\n        user: human:a\n",

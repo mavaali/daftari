@@ -25,6 +25,7 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/staged-actions.jsonl
 .daftari/edges.jsonl
 .daftari/read-log.jsonl
+.daftari/auth-log.jsonl
 .daftari/consumes.jsonl
 .daftari/tier2-verdicts.jsonl
 .daftari/shadow-actions.jsonl
