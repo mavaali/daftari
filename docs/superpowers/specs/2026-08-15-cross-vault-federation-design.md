@@ -369,12 +369,23 @@ ship a hedged half-watcher in v1.
 
 ## Decision 8 — explicit v1 deferrals
 
-1. **Cross-vault edges** (`superseded_by` / `sources` / `derives_from`
-   across mounts). A cross-vault citation is a plain string in v1, per #297.
-   The gate for a later spec: cross-vault edges immediately create
-   cross-vault *blast*, which lands squarely in 2026-07-14 B′ coarsening
-   territory across two policy domains — that spec must be revisited first,
-   by name.
+1. **Cross-vault frontmatter edges** (`superseded_by` / `sources` across
+   mounts). These are frontmatter fields, so a cross-vault citation can
+   coherently exist as a plain string in v1, per #297 — it travels with the
+   document, consistent with Decision 5's documents-not-state rule; it just
+   isn't resolved or walked. The gate for a later spec: real cross-vault
+   edges immediately create cross-vault *blast*, which lands squarely in
+   2026-07-14 B′ coarsening territory across two policy domains — that spec
+   must be revisited first, by name.
+
+   `derives_from` is deliberately **not** in this list: it is not a
+   frontmatter field but an edge-graph relation (`.daftari/edges.jsonl`,
+   created only via `vault_edge_observe` / `vault_edge_contest`), and
+   Decisions 5 and 7 already refuse those tools — and `vault_edges` reads —
+   against federated paths. It has no plain-string form to defer; a
+   cross-vault derivation graph would be a separate loosening of the
+   documents-not-state boundary itself, not an extension of the citation
+   mechanism, and needs its own spec on top of the B′ revisit above.
 2. **Cross-vault tension detection / logging.** A tension between a local
    and a mounted doc is written where? The local log naming a foreign doc
    unreadable to others is a disclosure problem; the foreign log is
