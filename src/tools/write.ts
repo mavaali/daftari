@@ -624,6 +624,28 @@ export function requireWriteAccess(
   return ok(undefined);
 }
 
+// A stale-write rejection from performWrite (base_version mismatch, above).
+// The ONE retryable failure: the rejection proves nothing was written,
+// committed, or indexed, so reload-and-recompute is always safe.
+export function isStaleWriteError(e: Error): boolean {
+  return e.message.startsWith("stale write:");
+}
+
+// Runs `attempt` and, when it fails with a stale-write rejection, runs it
+// again (once). Each attempt must load its target fresh and recompute the
+// mutation from the reloaded document — sound only for tools whose new
+// frontmatter is a pure function of the load (assert/consolidate), never for
+// callers carrying externally-composed content, whose base_version conflicts
+// belong to the caller. Non-stale failures (lock contention stays fail-fast,
+// slice-3 §3.5) are returned unchanged.
+export async function retryOnStale<T>(
+  attempt: () => Promise<Result<T, Error>>,
+): Promise<Result<T, Error>> {
+  const first = await attempt();
+  if (first.ok || !isStaleWriteError(first.error)) return first;
+  return attempt();
+}
+
 // The target document as the frontmatter-only lifecycle tools (promote,
 // deprecate, set_confidence, set_tier, supersede) load it: canonical paths,
 // parsed document, and vault config, in the shared error order — resolve,
@@ -633,6 +655,12 @@ export interface TargetDocument {
   absPath: string;
   parsed: ParsedDocument;
   config: DaftariConfig;
+  // sha256 of the exact bytes this target was loaded from — the same token
+  // vault_read returns as `version`. Tools that compute a mutation from
+  // `parsed` (assert/consolidate) pass it as baseVersion so a write composed
+  // against a replaced file is rejected as stale instead of clobbering it
+  // (issue #14's guarantee, extended to the internal read-modify-write tools).
+  contentHash: string;
 }
 
 export async function loadTargetDocument(
@@ -661,6 +689,7 @@ export async function loadTargetDocument(
     absPath: resolved.value.absPath,
     parsed: parsed.value,
     config: config.value,
+    contentHash: sha256Hex(existing.value),
   });
 }
 
@@ -1810,6 +1839,7 @@ export async function vaultSupersede(
       absPath: resolvedOld.value.absPath,
       parsed: parsed.value,
       config: config.value,
+      contentHash: sha256Hex(existing.value),
     },
     agent: agent.value,
     tool: "vault_supersede",

@@ -4,12 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
-import type { Frontmatter } from "../../src/frontmatter/types.js";
+import { err, type Frontmatter, ok } from "../../src/frontmatter/types.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getDocument, openIndexDb } from "../../src/storage/index-db.js";
 import { vaultAssert } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import {
+  loadTargetDocument,
+  performFrontmatterWrite,
+  retryOnStale,
   serializeDocument,
   vaultAppend,
   vaultDeprecate,
@@ -18,6 +21,7 @@ import {
 } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
 import { isGitRepo, log } from "../../src/utils/git.js";
+import { sha256Hex } from "../../src/utils/hash.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -1010,6 +1014,115 @@ describe("write tools", () => {
       expect(final.value.content).toContain("B's revised pricing notes");
       expect(final.value.content).not.toContain("composed against the pre-B version");
     }, 60_000);
+  });
+
+  // The multi-user variant of issue #14: vault_assert / vault_consolidate load
+  // the target, compute frontmatter, and write with NO base_version — so a
+  // writer whose lease window does not overlap the winner's silently erases
+  // the winner's positions. The fix: TargetDocument carries the content hash
+  // it was loaded against, and the position tools pass it as baseVersion.
+  describe("TargetDocument load-time version (multi-user lost-update fix)", () => {
+    it("loadTargetDocument captures the on-disk content hash", async () => {
+      const path = "pricing/tdoc-hash.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Hash me\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Hash me" }),
+        agent: AGENT,
+      });
+
+      const target = await loadTargetDocument(vault, path, "test");
+      expect(target.ok).toBe(true);
+      if (!target.ok) return;
+      const onDisk = readFileSync(join(vault, path), "utf-8");
+      expect(target.value.contentHash).toBe(sha256Hex(onDisk));
+    }, 60_000);
+
+    it("rejects a performFrontmatterWrite composed against a replaced TargetDocument", async () => {
+      const path = "pricing/tdoc-stale.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Delayed writer\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Delayed writer" }),
+        agent: AGENT,
+      });
+
+      // 1. The delayed writer loads the target (the vault_assert shape).
+      const stale = await loadTargetDocument(vault, path, "vault_assert");
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+
+      // 2. Another principal's write lands in between — non-overlapping lease
+      //    windows, so no lock contention fires.
+      const between = await vaultWrite(vault, {
+        path,
+        body: "# Delayed writer\n\nv2 by the other principal.\n",
+        frontmatter: newFrontmatter({ title: "Delayed writer" }),
+        agent: "agent:other",
+      });
+      expect(between.ok).toBe(true);
+
+      // 3. The delayed writer now writes frontmatter serialized from its
+      //    pre-v2 snapshot, declaring the version it composed against. It
+      //    must be rejected — not silently clobber v2.
+      const replay = await performFrontmatterWrite({
+        vaultRoot: vault,
+        target: stale.value,
+        agent: AGENT,
+        tool: "vault_assert",
+        action: "update",
+        newFrontmatter: {
+          ...stale.value.parsed.frontmatter,
+          updated_by: "agent:delayed",
+        },
+        commitMessage: "stale replay from a pre-v2 snapshot",
+        baseVersion: stale.value.contentHash,
+      });
+      expect(replay.ok).toBe(false);
+      if (replay.ok) return;
+      expect(replay.error.message.startsWith("stale write:")).toBe(true);
+
+      // v2 survives on disk.
+      const final = await vaultRead(vault, path);
+      expect(final.ok).toBe(true);
+      if (!final.ok) return;
+      expect(final.value.content).toContain("v2 by the other principal");
+    }, 60_000);
+
+    it("retryOnStale re-runs a stale attempt once and returns its fresh result", async () => {
+      let calls = 0;
+      const result = await retryOnStale(async () => {
+        calls++;
+        if (calls === 1) return err(new Error("stale write: doc.md changed since base_version"));
+        return ok("fresh");
+      });
+      expect(calls).toBe(2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toBe("fresh");
+    });
+
+    it("retryOnStale does not retry non-stale failures", async () => {
+      let calls = 0;
+      const result = await retryOnStale(async () => {
+        calls++;
+        return err(new Error("file is locked by agent:other"));
+      });
+      expect(calls).toBe(1);
+      expect(result.ok).toBe(false);
+    });
+
+    it("retryOnStale gives up after the bounded retry and surfaces the stale error", async () => {
+      let calls = 0;
+      const result = await retryOnStale(async () => {
+        calls++;
+        return err(new Error("stale write: doc.md changed since base_version"));
+      });
+      expect(calls).toBe(2);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message.startsWith("stale write:")).toBe(true);
+    });
   });
 
   describe("schema extensions", () => {

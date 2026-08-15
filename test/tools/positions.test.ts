@@ -922,3 +922,51 @@ describe("vault_positions (U-5)", () => {
     expect((await vaultPositions(vault, { path: DOC, principal: "bob" }, ALICE)).ok).toBe(false);
   });
 });
+
+// The multi-user sovereignty invariant under serve-style concurrency: however
+// two racing asserts interleave, no position is EVER silently lost. Each call
+// either succeeds — and its position is live on disk afterward — or fails
+// LOUDLY (lease contention or a stale rejection that survived the one retry).
+// The deterministic stale-window case is pinned in write.test.ts ("rejects a
+// performFrontmatterWrite composed against a replaced TargetDocument"); this
+// test pins the invariant across whatever interleaving the scheduler picks.
+describe("concurrent asserts — no silent lost update", () => {
+  let vault: string;
+  beforeEach(async () => {
+    vault = makeTempVault();
+    await seedDoc(vault);
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("two racing asserts never silently drop a position", async () => {
+    const [a, b] = await Promise.all([
+      vaultAssert(vault, { path: DOC, stance: "assert", confidence: "high", agent: "a" }, ALICE),
+      vaultAssert(vault, { path: DOC, stance: "dispute", confidence: "medium", agent: "b" }, BOB),
+    ]);
+
+    // At least one side must land.
+    expect(a.ok || b.ok).toBe(true);
+
+    const onDisk = await vaultPositions(vault, { path: DOC }, ALICE);
+    expect(onDisk.ok).toBe(true);
+    if (!onDisk.ok) return;
+    const principals = onDisk.value.positions.map((p) => p.position.principal);
+
+    for (const [result, principal] of [
+      [a, "alice"],
+      [b, "bob"],
+    ] as const) {
+      if (result.ok) {
+        // A reported success whose position is not on disk is the silent
+        // lost-update bug this slice fixes.
+        expect(principals).toContain(principal);
+      } else {
+        // A loser must fail loudly — lease contention or a stale rejection —
+        // never a generic swallow.
+        expect(result.error.message).toMatch(/locked|stale/);
+      }
+    }
+  }, 60_000);
+});
