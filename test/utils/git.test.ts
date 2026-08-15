@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -193,6 +202,101 @@ describe("git", () => {
     await ensureGitRepo(vault);
     const result = await catFileBlob(vault, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     expect(result.ok).toBe(false);
+  });
+});
+
+// --- commit-path timeout hardening ------------------------------------------
+// git() runs with no timeout: a hung subprocess (a pre-commit hook that never
+// returns, a gpg passphrase prompt, an external .git/index.lock held forever)
+// used to wedge every subsequent commit queued behind it in withCommitLock,
+// not just the request that caused it. The commit path now bounds every
+// invocation with a timeout (default 60s, overridable for tests) and fails
+// fast instead of prompting for credentials in a headless server.
+//
+// Note on the hook fixture: git redirects a pre-commit hook's stdin from
+// /dev/null (verified empirically — `read`/`cat` in the hook return instant
+// EOF), so a hook that blocks on stdin does NOT reproduce a hang. A hook that
+// itself sleeps does — it is a real, if short-lived, subprocess that the git
+// invocation waits on. `sleep 3` outlives the 500ms injected timeout (so the
+// commit genuinely hangs past it) but self-terminates quickly afterward —
+// execFile's timeout only SIGTERMs the immediate `git` child, not the hook
+// grandchild, so the orphaned sleep is left to expire on its own.
+
+function writeHook(vault: string, name: string, script: string): string {
+  const hooksDir = join(vault, ".git", "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  const hookPath = join(hooksDir, name);
+  writeFileSync(hookPath, script);
+  chmodSync(hookPath, 0o755);
+  return hookPath;
+}
+
+describe("commit timeout hardening", () => {
+  let vault: string;
+
+  beforeEach(async () => {
+    vault = makeTempVault();
+    const ready = await ensureGitRepo(vault);
+    if (!ready.ok) throw ready.error;
+  });
+
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("times out a commit whose pre-commit hook hangs, naming the likely causes", async () => {
+    writeHook(vault, "pre-commit", "#!/bin/sh\nsleep 3\nexit 0\n");
+    await writeFile(join(vault, "note.md"), "hello\n", "utf-8");
+
+    const start = Date.now();
+    const result = await commit(vault, ["note.md"], "add note", "agent:tester", {
+      timeoutMs: 500,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toMatch(/timed out/i);
+    // Names at least one of the likely causes.
+    expect(result.error.message).toMatch(/hook|stdin|prompt|lock/i);
+    // Bounded by the injected timeout, not left hanging.
+    expect(elapsed).toBeLessThan(2000);
+  }, 3000);
+
+  it("the commit chain survives a timed-out commit: a later commit on the same vault succeeds", async () => {
+    writeHook(vault, "pre-commit", "#!/bin/sh\nsleep 3\nexit 0\n");
+    await writeFile(join(vault, "a.md"), "a\n", "utf-8");
+
+    const timedOut = await commit(vault, ["a.md"], "commit a", "agent:tester", {
+      timeoutMs: 500,
+    });
+    expect(timedOut.ok).toBe(false);
+
+    // Clear the hang, then prove the in-process chain link settled and a
+    // subsequent commit on the SAME vault (same chain key) still runs.
+    rmSync(join(vault, ".git", "hooks", "pre-commit"), { force: true });
+
+    const result = await commit(vault, ["a.md"], "commit a (retry)", "agent:tester");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const history = await log(vault);
+    expect(history.ok).toBe(true);
+    if (!history.ok) return;
+    expect(history.value[0]?.subject).toBe("commit a (retry)");
+  }, 5000);
+
+  it("sets GIT_TERMINAL_PROMPT=0 and a non-interactive GIT_ASKPASS on commit-path invocations", async () => {
+    const envDump = join(vault, "env-dump.txt");
+    writeHook(vault, "pre-commit", `#!/bin/sh\nenv > "${envDump}"\nexit 0\n`);
+    await writeFile(join(vault, "note.md"), "hello\n", "utf-8");
+
+    const result = await commit(vault, ["note.md"], "add note", "agent:tester");
+    expect(result.ok).toBe(true);
+
+    const dumped = readFileSync(envDump, "utf-8");
+    expect(dumped).toMatch(/^GIT_TERMINAL_PROMPT=0$/m);
+    expect(dumped).toMatch(/^GIT_ASKPASS=true$/m);
   });
 });
 

@@ -14,6 +14,28 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 
 const run = promisify(execFile);
 
+// Options for the internal git() helper. Read/plumbing callers (log, blame-
+// scale history walks on huge repos) pass none of this and keep today's
+// behavior — no timeout, no env override — so this change introduces no new
+// failure mode for them. Only the commit path (below) opts in.
+interface GitCallOpts {
+  // Bounds the subprocess with execFile's own `timeout`, which SIGTERMs the
+  // child if it outlives it. Node sets `killed: true` on the rejected error
+  // in that case (verified: no `code`, `signal: "SIGTERM"`), which is how we
+  // distinguish a timeout from an ordinary nonzero-exit git failure below.
+  timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+}
+
+function isTimeoutError(e: unknown): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "killed" in e &&
+    (e as { killed?: unknown }).killed === true
+  );
+}
+
 export interface GitCommitInfo {
   hash: string;
   author: string;
@@ -38,13 +60,29 @@ export function gitIdentity(identity: string): GitIdentity {
   };
 }
 
-async function git(vaultRoot: string, args: string[]): Promise<Result<string, Error>> {
+async function git(
+  vaultRoot: string,
+  args: string[],
+  opts: GitCallOpts = {},
+): Promise<Result<string, Error>> {
   try {
-    const { stdout } = await run("git", ["-C", vaultRoot, ...args], {
+    const execOpts: { maxBuffer: number; timeout?: number; env?: NodeJS.ProcessEnv } = {
       maxBuffer: 16 * 1024 * 1024,
-    });
+    };
+    if (opts.timeoutMs !== undefined) execOpts.timeout = opts.timeoutMs;
+    if (opts.env !== undefined) execOpts.env = opts.env;
+    const { stdout } = await run("git", ["-C", vaultRoot, ...args], execOpts);
     return ok(stdout);
   } catch (e) {
+    if (opts.timeoutMs !== undefined && isTimeoutError(e)) {
+      return err(
+        new Error(
+          `git ${args[0]} timed out after ${opts.timeoutMs}ms — likely causes: a hook ` +
+            `waiting on input or sleeping, a credential/passphrase prompt (e.g. gpg commit ` +
+            `signing), or an external .git/index.lock held by another process`,
+        ),
+      );
+    }
     const reason =
       e instanceof Error && "stderr" in e && typeof e.stderr === "string"
         ? e.stderr.trim() || e.message
@@ -55,8 +93,8 @@ async function git(vaultRoot: string, args: string[]): Promise<Result<string, Er
   }
 }
 
-export async function isGitRepo(vaultRoot: string): Promise<boolean> {
-  const result = await git(vaultRoot, ["rev-parse", "--is-inside-work-tree"]);
+export async function isGitRepo(vaultRoot: string, opts: GitCallOpts = {}): Promise<boolean> {
+  const result = await git(vaultRoot, ["rev-parse", "--is-inside-work-tree"], opts);
   return result.ok && result.value.trim() === "true";
 }
 
@@ -102,8 +140,9 @@ export async function blobExists(repoRoot: string, sha: string): Promise<boolean
 export async function ensureGitRepo(
   vaultRoot: string,
   gitDir?: string,
+  opts: GitCallOpts = {},
 ): Promise<Result<void, Error>> {
-  if (await isGitRepo(vaultRoot)) return ok(undefined);
+  if (await isGitRepo(vaultRoot, opts)) return ok(undefined);
 
   if (gitDir) {
     // A leftover `.git` FILE (e.g. synced from another device, pointing at a
@@ -116,12 +155,12 @@ export async function ensureGitRepo(
       // no .git present — fine
     }
     await mkdir(dirname(gitDir), { recursive: true });
-    const init = await git(vaultRoot, ["init", "--quiet", `--separate-git-dir=${gitDir}`]);
+    const init = await git(vaultRoot, ["init", "--quiet", `--separate-git-dir=${gitDir}`], opts);
     if (!init.ok) return init;
     return ok(undefined);
   }
 
-  const init = await git(vaultRoot, ["init", "--quiet"]);
+  const init = await git(vaultRoot, ["init", "--quiet"], opts);
   if (!init.ok) return init;
   return ok(undefined);
 }
@@ -161,6 +200,26 @@ function literalPathspecs(paths: string[]): string[] {
   return paths.map((p) => `:(literal)${p}`);
 }
 
+// A hung git subprocess on the commit path — a pre-commit hook that never
+// returns, a gpg passphrase prompt, an external .git/index.lock held by a
+// stuck process — wedges every commit queued behind it in withCommitLock's
+// in-process chain, not just the request that triggered it. Bound it: longer
+// than any sane commit, short enough that a wedged queue drains on its own.
+const DEFAULT_COMMIT_TIMEOUT_MS = 60_000;
+
+// A headless server has nobody to answer a credential/passphrase prompt, so
+// let git fail fast instead of hanging on one. GIT_TERMINAL_PROMPT=0 refuses
+// terminal prompts outright; GIT_ASKPASS points at a program that exits 0
+// with no output, so an askpass invocation (e.g. for a credential helper)
+// reads as an empty answer rather than opening a prompt.
+function noPromptEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "true",
+  };
+}
+
 // Stages the given vault-relative paths and creates a commit authored by
 // `identity`. The commit's committer is also set to `identity` (via `-c`
 // overrides) so commits land even in a repo with no configured user. The
@@ -172,35 +231,44 @@ export async function commit(
   paths: string[],
   message: string,
   identity: string,
-  opts: { gitDir?: string } = {},
+  opts: { gitDir?: string; timeoutMs?: number } = {},
 ): Promise<Result<{ hash: string }, Error>> {
   if (paths.length === 0) {
     return err(new Error("commit requires at least one path"));
   }
 
+  const commitGitOpts: GitCallOpts = {
+    timeoutMs: opts.timeoutMs ?? DEFAULT_COMMIT_TIMEOUT_MS,
+    env: noPromptEnv(),
+  };
+
   return withCommitLock(vaultRoot, async () => {
-    const ready = await ensureGitRepo(vaultRoot, opts.gitDir);
+    const ready = await ensureGitRepo(vaultRoot, opts.gitDir, commitGitOpts);
     if (!ready.ok) return ready;
 
-    const staged = await git(vaultRoot, ["add", "--", ...literalPathspecs(paths)]);
+    const staged = await git(vaultRoot, ["add", "--", ...literalPathspecs(paths)], commitGitOpts);
     if (!staged.ok) return staged;
 
     const id = gitIdentity(identity);
-    const committed = await git(vaultRoot, [
-      "-c",
-      `user.name=${id.name}`,
-      "-c",
-      `user.email=${id.email}`,
-      "commit",
-      `--author=${id.name} <${id.email}>`,
-      "-m",
-      message,
-      "--",
-      ...literalPathspecs(paths),
-    ]);
+    const committed = await git(
+      vaultRoot,
+      [
+        "-c",
+        `user.name=${id.name}`,
+        "-c",
+        `user.email=${id.email}`,
+        "commit",
+        `--author=${id.name} <${id.email}>`,
+        "-m",
+        message,
+        "--",
+        ...literalPathspecs(paths),
+      ],
+      commitGitOpts,
+    );
     if (!committed.ok) return committed;
 
-    const hash = await git(vaultRoot, ["rev-parse", "--short", "HEAD"]);
+    const hash = await git(vaultRoot, ["rev-parse", "--short", "HEAD"], commitGitOpts);
     if (!hash.ok) return hash;
     return ok({ hash: hash.value.trim() });
   });
