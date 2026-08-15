@@ -6,8 +6,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { vaultAssert } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultMerge, vaultSetTier, vaultWrite } from "../../src/tools/write.js";
+import { withInjectedRace } from "../helpers/inject-race.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -276,6 +278,108 @@ describe("tier write-protection (#141)", () => {
       });
       expect(result.ok).toBe(true);
     }, 60_000);
+
+    // The same lost-update class PR #399 fixed for vault_assert /
+    // vault_consolidate (and this task fixes for the other frontmatter-only
+    // lifecycle tools): vault_set_tier's read-modify-write over
+    // `{...oldFrontmatter, tier}` previously passed no base_version when the
+    // caller omitted one, silently last-write-wins clobbering a concurrent
+    // vault_assert's positions with a clean commit.
+    describe("optimistic concurrency", () => {
+      async function versionOf(vaultRoot: string, path: string): Promise<string> {
+        const read = await vaultRead(vaultRoot, path);
+        if (!read.ok) throw new Error(`could not read ${path}: ${read.error.message}`);
+        return read.value.version;
+      }
+
+      it("rejects an explicit stale base_version without retry — the caller must re-read", async () => {
+        seed(vault, "pricing/tier-stale.md", {});
+        const staleVersion = await versionOf(vault, "pricing/tier-stale.md");
+
+        // Another agent bumps the file.
+        const bumped = await vaultWrite(vault, {
+          path: "pricing/tier-stale.md",
+          body: "# Seeded Doc\n\nBumped by another agent.\n",
+          frontmatter: {},
+          agent: "agent:other",
+        });
+        expect(bumped.ok).toBe(true);
+
+        const stale = await vaultSetTier(vault, {
+          path: "pricing/tier-stale.md",
+          tier: "source",
+          reason: "stale attempt",
+          agent: AGENT,
+          base_version: staleVersion,
+        });
+        expect(stale.ok).toBe(false);
+        if (stale.ok) return;
+        expect(stale.error.message.startsWith("stale write:")).toBe(true);
+
+        // No retry happened — tier is still unset (vault_write always
+        // serializes an absent tier as explicit null), not silently "source".
+        const read = await vaultRead(vault, "pricing/tier-stale.md");
+        expect(read.ok && read.value.raw.tier).toBeNull();
+      }, 60_000);
+
+      it("accepts vault_set_tier with the current base_version", async () => {
+        seed(vault, "pricing/tier-current.md", {});
+        const version = await versionOf(vault, "pricing/tier-current.md");
+
+        const result = await vaultSetTier(vault, {
+          path: "pricing/tier-current.md",
+          tier: "source",
+          reason: "protecting the ingested copy",
+          agent: AGENT,
+          base_version: version,
+        });
+        expect(result.ok).toBe(true);
+      }, 60_000);
+
+      // Deterministic injected race (test/helpers/inject-race.ts): a bare
+      // Promise.all essentially never reaches the "arrived after release but
+      // read before the concurrent write landed" branch on this repo's
+      // fixture vault (measured directly — the winner holds the file lock
+      // for its whole transaction). This forces that exact interleave
+      // instead of hoping the scheduler produces it.
+      it("defaults base_version to the load-time contentHash and survives a genuinely concurrent position", async () => {
+        seed(vault, "pricing/tier-race.md", {});
+        const path = "pricing/tier-race.md";
+
+        const result = await withInjectedRace(
+          join(vault, path),
+          async () => {
+            const asserted = await vaultAssert(
+              vault,
+              { path, stance: "assert", confidence: "high", agent: "a" },
+              { user: "alice", roleName: "writer", role: { read: ["*"], write: ["*"] } },
+            );
+            if (!asserted.ok) throw asserted.error;
+          },
+          () =>
+            vaultSetTier(vault, {
+              path,
+              tier: "source",
+              reason: "protecting the ingested copy",
+              agent: AGENT,
+            }),
+        );
+
+        // Before this fix: vault_set_tier carried no baseVersion when the
+        // caller omitted one, so it landed last-write-wins and silently
+        // erased alice's position. After: the internally-defaulted
+        // baseVersion catches the mismatch, retries once, and both effects
+        // survive.
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+
+        const read = await vaultRead(vault, path);
+        expect(read.ok).toBe(true);
+        if (!read.ok) return;
+        expect(read.value.raw.tier).toBe("source");
+        expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+      }, 60_000);
+    });
   });
 
   describe("vault_merge tier guard on the target", () => {
