@@ -22,7 +22,7 @@ model.** A cortex, not a clipboard.
 
 **The rituals** — [The tools](#the-tools) · [Circadian memory](#circadian-memory) · [The viewer](#the-viewer) · [Tension Court](#tension-court) · [The principal interview](#the-principal-interview) · [Belief archaeology](#belief-archaeology) · [The vault as witness](#the-vault-as-witness--and-the-wager-layer) · [Coherence audit](#coherence-audit)
 
-**Running it** — [Access control](#access-control) · [Server mode](#server-mode-self-hosted) · [Storage backing](#storage-backing) · [Adopting a vault + OKF](#adopting-an-existing-vault)
+**Running it** — [Access control](#access-control) · [Cross-vault federation](#cross-vault-federation) · [Server mode](#server-mode-self-hosted) · [Storage backing](#storage-backing) · [Adopting a vault + OKF](#adopting-an-existing-vault)
 
 **Reference** — [What's not in v1](#whats-not-in-v1) · [Development](#development) · [Documentation](#documentation) · [Integrations](#integrations) · [Privacy](#privacy) · [License](#license)
 
@@ -658,6 +658,44 @@ roles:
 ```
 
 </details>
+
+## Cross-vault federation
+
+One process, one *writable* vault — but it can mount other vaults read-only
+and search across them. Reads and search compose over every mounted vault;
+writes, locks, git, and curation stay bound to the local one. The boundary in
+one line: **a mount exposes documents, not vault state** — you can read and
+search a mounted vault's markdown, but its tensions, edges, provenance, and
+lint never cross.
+
+Declare mounts in your own config:
+
+```yaml
+# your vault's .daftari/config.yaml
+federation:
+  mounts:
+    - alias: research
+      path: ../research-vault
+      index: lexical      # skip embeddings for this mount (default: full)
+```
+
+Access is granted by the *other* vault, in its own config, keyed by your
+authenticated identity — deny-all until its owner says otherwise:
+
+```yaml
+# the referenced vault's .daftari/config.yaml
+federation:
+  principals:
+    "human:mihir": { role: researcher }   # a role defined in THAT vault
+```
+
+Federated documents address as `research:notes/pricing.md`, every result
+carries a `vault` label, and `vault_search` fuses ranked hits across vaults
+(rank fusion, so differing corpus statistics can't skew scores). Nothing is
+ever written under a mounted vault — its search index lives inside *your*
+`.daftari/`, rebuilt from its markdown like any other derived cache. Mount
+freshness is checked at startup; `vault_reindex {mount: research}` refreshes
+on demand. stdio-only for now: `daftari serve` refuses a config with mounts.
 
 ## Server mode (self-hosted)
 
