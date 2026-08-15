@@ -362,6 +362,11 @@ describe("runDistill — value-taking flag with missing value", () => {
     expect(code).toBe(2);
   });
 
+  it("exits 2 when --source-type is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--source-type"]);
+    expect(code).toBe(2);
+  });
+
   it("writes a 'requires a value' message to stderr", async () => {
     const lines: string[] = [];
     const orig = process.stderr.write.bind(process.stderr);
@@ -415,15 +420,16 @@ const SAMPLE_JSONL_LINE = JSON.stringify({
   message: { role: "user", content: "hello there this is a real turn" },
 });
 
-let jsonlFile: string;
-
-beforeEach(() => {
-  // Write the JSONL fixture alongside the other fixtures.
-  jsonlFile = join(vault, "session.jsonl");
-  writeFileSync(jsonlFile, `${SAMPLE_JSONL_LINE}\n`, "utf-8");
-});
-
 describe("runDistill — source-type auto-detect and --source-type flag (R5)", () => {
+  let jsonlFile: string;
+
+  beforeEach(() => {
+    // Write the JSONL fixture alongside the other fixtures (scoped to this
+    // block so unrelated scenarios don't pay for a fixture they never read).
+    jsonlFile = join(vault, "session.jsonl");
+    writeFileSync(jsonlFile, `${SAMPLE_JSONL_LINE}\n`, "utf-8");
+  });
+
   it("auto-detects claude-session for .jsonl and reports ≥1 chunk in --plan output", async () => {
     const lines: string[] = [];
     const orig = process.stdout.write.bind(process.stdout);

@@ -41,8 +41,9 @@ Options:
   --source-id <id>     Stable identity of this source. Required when reading
                        from stdin; derived from the filename otherwise.
   --source-type <chat-transcript|claude-session>
-                       Override auto-detected adapter. Auto-detect: .jsonl →
-                       claude-session, all other paths/stdin → chat-transcript.
+                       Override auto-detected adapter. Auto-detect: a .jsonl
+                       extension (case-insensitive) → claude-session, all other
+                       paths/stdin → chat-transcript.
   --plan               Print a cost/call estimate without making any LLM calls.
                        This is the default when neither --plan nor --propose is given.
   --propose            Run the full pipeline: extract claims and stage proposals
