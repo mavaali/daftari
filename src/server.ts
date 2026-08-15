@@ -19,6 +19,8 @@ import {
   type Tool,
 } from "@modelcontextprotocol/server";
 import { type AccessContext, guestAccess } from "./access/rbac.js";
+import { federatedRefusal, scanArgsForFederatedPath } from "./federation/classification.js";
+import { getMountRegistry } from "./federation/mounts.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
 import { backlinksTools } from "./tools/backlinks.js";
 import { canonTools } from "./tools/canon.js";
@@ -327,6 +329,24 @@ export function createServer(
     }
     try {
       let args = (request.params.arguments ?? {}) as Record<string, unknown>;
+      // Federation refusal (#297, spec Decision 5): a non-allowlisted tool
+      // handed an alias-prefixed path refuses with its class's uniform copy.
+      // One scan here covers all 33 refusing tools AND doubles as the
+      // write-time collision guard — an alias-shadowing canonical file cannot
+      // be created because the path cannot be addressed by any write tool.
+      const registry = getMountRegistry();
+      if (registry) {
+        const fed = scanArgsForFederatedPath(args, registry);
+        if (fed) {
+          const refusal = federatedRefusal(name, fed.raw);
+          if (refusal !== null) {
+            return {
+              isError: true,
+              content: [{ type: "text" as const, text: `Error: ${refusal}` }],
+            };
+          }
+        }
+      }
       // vault_ratify without a decision speaks form-mode elicitation
       // (Decision 5). A direct call with the decision inline never enters
       // this branch — it keeps working for clients that don't do

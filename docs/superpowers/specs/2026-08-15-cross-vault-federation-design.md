@@ -1,7 +1,12 @@
 # Read-only cross-vault federation — design
 
-2026-08-15. Status: **proposed — awaiting Mihir's review; implementation not
-started.**
+2026-08-15. Status: **accepted — implementation in progress.** Slice 1
+(config surface, mount loading, principal-keyed RBAC, alias-path dispatch
+with collision guards, refusal classification + registry guard test,
+federated `vault_read`, `vault_status` federation block, serve refusal)
+is implemented; per-mount indexes and federated search/index/reindex
+(Decisions 3, 4, and the remaining allowlist behavior) are the follow-up
+slice.
 Issue: #297 (read-only cross-vault federation). Strategy pass run against the
 2026-07-14 existence-disclosure spec, the 2026-07-20 server-mode spec
 (Decisions 2–4), the 2026-08-08 slice-3 lock verdict, and the 2026-07-26

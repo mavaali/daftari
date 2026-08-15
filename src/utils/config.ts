@@ -207,6 +207,36 @@ export const DISTILL_NUMERIC_DEFAULTS: Omit<DistillConfig, "model"> = {
   inCallInputCap: 16000,
 };
 
+// `federation` block (#297, spec 2026-08-15). One block, two halves, each
+// read by a different party:
+//   - `mounts` is read by the CANONICAL vault: the read-only vaults this
+//     process composes over. Config-only by design — the mount set is policy.
+//   - `principals` is read by a REFERENCED vault: which authenticated
+//     principals of a mounting process may see this vault, and as which of
+//     THIS vault's roles. An unmapped principal resolves to the deny-all
+//     guest at mount load (never here — config load stays pure of identity).
+export interface FederationMountConfig {
+  alias: string;
+  path: string; // as declared; realpath/existence checks live at mount load
+  index: "full" | "lexical";
+  optional: boolean;
+}
+
+export interface FederationPrincipalConfig {
+  role: string;
+}
+
+export interface FederationConfig {
+  mounts: FederationMountConfig[];
+  principals: Record<string, FederationPrincipalConfig>;
+}
+
+// Alias grammar (spec Decision 1/5): lowercase, 2–32 chars. The 2-char
+// minimum rules out `c:`-style drive-letter ambiguity in the `alias:path`
+// addressing scheme; "local" is reserved as the canonical vault's label.
+export const MOUNT_ALIAS_PATTERN = /^[a-z][a-z0-9_-]{1,31}$/;
+export const RESERVED_MOUNT_ALIASES: readonly string[] = ["local"];
+
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
@@ -306,6 +336,10 @@ export interface DaftariConfig {
   // when the block is absent — distill refuses to run without an explicit
   // config (no silent default spend). Set to activate the pipeline.
   distill?: DistillConfig;
+  // Cross-vault federation (`federation` block, #297). Undefined when absent
+  // — no mounts, no principals grants. stdio-only in v1: `daftari serve`
+  // refuses to start on a config carrying a `mounts` list.
+  federation?: FederationConfig;
 }
 
 // A config with no roles and no extensions. Returned for a missing or empty
@@ -333,6 +367,7 @@ function emptyConfig(): DaftariConfig {
     jitAnchors: true,
     autoRepin: true,
     distill: undefined,
+    federation: undefined,
   };
 }
 
@@ -820,6 +855,116 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
     else out.inCallInputCap = v;
   }
   return ok(out);
+}
+
+// `federation` block (#297). Shape-only, like every block: realpath, nesting,
+// duplicate-real-path, missing-directory, and alias-prefix collision checks
+// all need the filesystem and live at mount load (src/federation/mounts.ts).
+// What IS decidable here fails loud here: alias grammar, reserved and
+// duplicate aliases, index mode, principals shape.
+const RECOGNISED_FEDERATION_KEYS = ["mounts", "principals"] as const;
+const RECOGNISED_MOUNT_KEYS = ["alias", "path", "index", "optional"] as const;
+const MOUNT_INDEX_MODES = ["full", "lexical"] as const;
+
+function validateFederation(raw: unknown): Result<FederationConfig | undefined, Error> {
+  if (raw === undefined) return ok(undefined);
+  const mapping = requireMapping(raw, "'federation'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_FEDERATION_KEYS, "federation");
+  if (!known.ok) return known;
+
+  const mounts: FederationMountConfig[] = [];
+  if (obj.mounts !== undefined) {
+    if (!Array.isArray(obj.mounts)) {
+      return err(new Error("'federation.mounts' must be a list"));
+    }
+    const seenAliases = new Set<string>();
+    for (let i = 0; i < obj.mounts.length; i++) {
+      const entry = requireMapping(obj.mounts[i], `'federation.mounts[${i}]'`);
+      if (!entry.ok) return entry;
+      const m = entry.value;
+      const mountKnown = rejectUnknownKeys(m, RECOGNISED_MOUNT_KEYS, `federation.mounts[${i}]`);
+      if (!mountKnown.ok) return mountKnown;
+
+      if (typeof m.alias !== "string" || !MOUNT_ALIAS_PATTERN.test(m.alias)) {
+        return err(
+          new Error(
+            `'federation.mounts[${i}].alias' must match ${MOUNT_ALIAS_PATTERN} ` +
+              `(lowercase, 2-32 chars) — got ${JSON.stringify(m.alias)}`,
+          ),
+        );
+      }
+      if (RESERVED_MOUNT_ALIASES.includes(m.alias)) {
+        return err(
+          new Error(
+            `'federation.mounts[${i}].alias' uses reserved alias "${m.alias}" — ` +
+              `"local" names the canonical vault`,
+          ),
+        );
+      }
+      if (seenAliases.has(m.alias)) {
+        return err(new Error(`'federation.mounts' declares alias "${m.alias}" twice`));
+      }
+      seenAliases.add(m.alias);
+
+      if (typeof m.path !== "string" || m.path.trim().length === 0) {
+        return err(new Error(`'federation.mounts[${i}].path' must be a non-empty string`));
+      }
+
+      let index: FederationMountConfig["index"] = "full";
+      if (m.index !== undefined) {
+        if (
+          typeof m.index !== "string" ||
+          !(MOUNT_INDEX_MODES as readonly string[]).includes(m.index)
+        ) {
+          return err(
+            new Error(
+              `'federation.mounts[${i}].index' must be one of ${MOUNT_INDEX_MODES.join(", ")} ` +
+                `(got ${JSON.stringify(m.index)})`,
+            ),
+          );
+        }
+        index = m.index as FederationMountConfig["index"];
+      }
+
+      let optional = false;
+      if (m.optional !== undefined) {
+        if (typeof m.optional !== "boolean") {
+          return err(new Error(`'federation.mounts[${i}].optional' must be true or false`));
+        }
+        optional = m.optional;
+      }
+
+      mounts.push({ alias: m.alias, path: m.path.trim(), index, optional });
+    }
+  }
+
+  // Null prototype for the same reason as OAuth subjects: a principal literally
+  // named "__proto__" must be stored, not swallowed by the inherited setter.
+  const principals: Record<string, FederationPrincipalConfig> = Object.create(null);
+  if (obj.principals !== undefined) {
+    const map = requireMapping(obj.principals, "'federation.principals'");
+    if (!map.ok) return map;
+    for (const [principal, entryRaw] of Object.entries(map.value)) {
+      const entry = requireMapping(entryRaw, `'federation.principals.${principal}'`);
+      if (!entry.ok) return entry;
+      const entryKnown = rejectUnknownKeys(
+        entry.value,
+        ["role"],
+        `federation.principals.${principal}`,
+      );
+      if (!entryKnown.ok) return entryKnown;
+      if (typeof entry.value.role !== "string" || entry.value.role.trim().length === 0) {
+        return err(
+          new Error(`'federation.principals.${principal}.role' must be a non-empty string`),
+        );
+      }
+      principals[principal] = { role: entry.value.role.trim() };
+    }
+  }
+
+  return ok({ mounts, principals });
 }
 
 const RECOGNISED_SERVER_KEYS = ["transport_security", "auth"] as const;
@@ -1316,6 +1461,11 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const distillConfig = validateDistill(root.distill);
   if (!distillConfig.ok) return err(new Error(`malformed config: ${distillConfig.error.message}`));
 
+  const federationConfig = validateFederation(root.federation);
+  if (!federationConfig.ok) {
+    return err(new Error(`malformed config: ${federationConfig.error.message}`));
+  }
+
   const toolsConfig = validateTools(root.tools);
   if (!toolsConfig.ok) return err(new Error(`malformed config: ${toolsConfig.error.message}`));
 
@@ -1411,5 +1561,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     jitAnchors,
     autoRepin,
     distill: distillConfig.value,
+    federation: federationConfig.value,
   });
 }

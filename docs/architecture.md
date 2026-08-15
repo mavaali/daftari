@@ -6,8 +6,12 @@ dozen agents have written to it, after half its facts have quietly gone out of
 date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
-Daftari is a single MCP server, started against one vault directory, running as
-one access identity for its lifetime, serving 39 tools over stdio. The rest of
+Daftari is a single MCP server, holding one writable vault under one process
+lock, running as one access identity for its lifetime, serving 39 tools over
+stdio. (Federation, #297, lets that process additionally mount other vaults
+read-only — the invariant is one *writable* vault, one lock, one identity, not
+one directory; mounts expose documents, never vault state, and nothing is ever
+written under a referenced root.) The rest of
 the surfaces are CLI-only — `daftari asof`, `audit`, `backfill`, `canary`,
 `consolidate`, `court`, `eval`, `import obsidian`, `interview`, `okf`, `serve`,
 `sleep` and `sync` — plus a one-shot `daftari --init` scaffolder; each is

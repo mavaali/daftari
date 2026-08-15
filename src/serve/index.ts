@@ -104,6 +104,17 @@ export function validateServeStartup(
   bind: string,
   env: NodeJS.ProcessEnv,
 ): { ok: true; tokens: ResolvedToken[] } | { ok: false; error: string } {
+  // Federation is stdio-only in v1 (#297, spec Decision 8): per-bearer
+  // identity would need per-request resolution against every mount's
+  // principals, and the "vault labels do not leak" disclosure ruling was
+  // derived for a single-identity process. Fail-loud like every policy
+  // conflict rather than silently serving without the mounts.
+  if (config.federation !== undefined && config.federation.mounts.length > 0) {
+    return {
+      ok: false,
+      error: "federation is stdio-only in v1; remove the federation block or run stdio",
+    };
+  }
   const authConfigured = config.server.tokens.length > 0 || config.server.oauth !== undefined;
   if (!isLoopbackBind(bind)) {
     if (!authConfigured) {
