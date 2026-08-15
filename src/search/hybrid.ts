@@ -41,6 +41,10 @@ export const DEFAULT_WEIGHTS: HybridWeights = { bm25: 0.5, vector: 0.5 };
 
 export interface HybridHit {
   path: string;
+  // #297: which vault served the hit — a federation mount alias, or "local"
+  // for the canonical vault. Set by the tool handler; for a mount hit `path`
+  // is the addressable `alias:relPath` form (the round-trip property).
+  vault?: string;
   title: string;
   collection: string;
   status: string;
@@ -525,6 +529,65 @@ export interface RelatedSearchResult {
   hits: HybridHit[];
 }
 
+// The seed representation a related search ranks against: the source
+// document's stored token list and the mean of its chunk embeddings. Split
+// out of relatedSearch (#297) so a seed extracted from one vault's index can
+// rank candidates in ANOTHER vault's index — coherent across vaults because
+// one embedding provider serves the whole process (spec Decision 3).
+export interface RelatedSeed {
+  tokens: string[];
+  queryEmbedding: Float32Array | null;
+}
+
+// Extracts the seed representation for `path` from `db`, or an error when the
+// document is not indexed there. Needs no embedding model — it reuses vectors
+// already stored in the index.
+export function extractRelatedSeed(db: IndexDb, path: string): Result<RelatedSeed, Error> {
+  const doc = getDocument(db, path);
+  if (!doc) {
+    return err(new Error(`document not indexed: ${path} (try vault_reindex)`));
+  }
+  const provider = getProvider();
+  const chunkVectors = getChunksForPath(db, path, provider.id, provider.dim)
+    .map((c) => c.embedding)
+    .filter((e): e is Float32Array => e !== null);
+  return ok({ tokens: doc.tokens, queryEmbedding: meanEmbedding(chunkVectors) });
+}
+
+// Ranks one index's documents against an already-extracted seed.
+// `excludePath` drops the seed itself in its home vault; pass null when
+// ranking a vault that cannot contain the seed.
+export function relatedSearchFromSeed(
+  db: IndexDb,
+  seed: RelatedSeed,
+  excludePath: string | null,
+  options: HybridSearchOptions = {},
+): { hits: HybridHit[]; vectorUsed: boolean } {
+  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const limit = options.limit ?? 10;
+  const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
+
+  // Build the FTS5 match string from the source document's stored token
+  // list (title + tags + body, tokenized at index time). Cap the token
+  // count: a long document's full token list produces a MATCH string that
+  // is mostly noise and forces FTS5 to do enormous work. The most
+  // informative terms are typically the rarer ones, but since we don't
+  // have IDF readily available here we use a simple truncate to the first
+  // N unique tokens — title + early body — which is the same heuristic the
+  // hand-rolled BM25 implicitly used.
+  const sourceTokens = [...new Set(seed.tokens)].slice(0, 64);
+  const matchQuery =
+    sourceTokens.length === 0 ? null : sourceTokens.map((t) => `${t}*`).join(" OR ");
+
+  return rankDocuments(db, matchQuery, seed.queryEmbedding, seed.tokens, {
+    weights,
+    limit: rankLimit,
+    ...(excludePath === null ? {} : { excludePath }),
+    lexicalGranularity: "document",
+    readableCollections: options.readableCollections,
+  });
+}
+
 // Finds documents related to an already-indexed document. The source document
 // itself is the query: its tokens drive an FTS5 MATCH for lexical
 // similarity, and the mean of its chunk embeddings drives semantic
@@ -536,41 +599,10 @@ export function relatedSearch(
   options: HybridSearchOptions = {},
 ): Result<RelatedSearchResult, Error> {
   const weights = options.weights ?? DEFAULT_WEIGHTS;
-  const limit = options.limit ?? 10;
-  // See hybridSearch: over-fetch lets the RBAC-filtering tool handler drop
-  // restricted hits before slicing to the user-facing limit.
-  const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
+  const seed = extractRelatedSeed(db, path);
+  if (!seed.ok) return seed;
 
-  const doc = getDocument(db, path);
-  if (!doc) {
-    return err(new Error(`document not indexed: ${path} (try vault_reindex)`));
-  }
-
-  const provider = getProvider();
-  const chunkVectors = getChunksForPath(db, path, provider.id, provider.dim)
-    .map((c) => c.embedding)
-    .filter((e): e is Float32Array => e !== null);
-  const queryEmbedding = meanEmbedding(chunkVectors);
-
-  // Build the FTS5 match string from the source document's stored token
-  // list (title + tags + body, tokenized at index time). Cap the token
-  // count: a long document's full token list produces a MATCH string that
-  // is mostly noise and forces FTS5 to do enormous work. The most
-  // informative terms are typically the rarer ones, but since we don't
-  // have IDF readily available here we use a simple truncate to the first
-  // N unique tokens — title + early body — which is the same heuristic the
-  // hand-rolled BM25 implicitly used.
-  const sourceTokens = [...new Set(doc.tokens)].slice(0, 64);
-  const matchQuery =
-    sourceTokens.length === 0 ? null : sourceTokens.map((t) => `${t}*`).join(" OR ");
-
-  const { hits, vectorUsed } = rankDocuments(db, matchQuery, queryEmbedding, doc.tokens, {
-    weights,
-    limit: rankLimit,
-    excludePath: path,
-    lexicalGranularity: "document",
-    readableCollections: options.readableCollections,
-  });
+  const { hits, vectorUsed } = relatedSearchFromSeed(db, seed.value, path, options);
 
   return ok({
     path,
