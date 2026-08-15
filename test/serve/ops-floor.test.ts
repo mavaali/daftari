@@ -106,7 +106,7 @@ describe("per-principal rate limit (429)", () => {
   let vault: string;
   let handle: ServeHandle;
   beforeAll(async () => {
-    vault = buildVault("  limits:\n    burst: 2\n    rate_per_minute: 60\n");
+    vault = buildVault("  limits:\n    burst: 2\n    rate_per_minute: 1\n");
     handle = await boot(vault);
   }, 60_000);
   afterAll(async () => {
@@ -182,7 +182,7 @@ describe("auth audit log", () => {
   let vault: string;
   let handle: ServeHandle;
   beforeAll(async () => {
-    vault = buildVault("  limits:\n    burst: 1\n    rate_per_minute: 60\n");
+    vault = buildVault("  limits:\n    burst: 1\n    rate_per_minute: 1\n");
     handle = await boot(vault);
   }, 60_000);
   afterAll(async () => {
