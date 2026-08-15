@@ -1157,13 +1157,18 @@ describe("write tools", () => {
       expect(second.error.message).toContain("written");
       expect(second.error.message).toContain("commit failed");
 
-      // The durable write is in the provenance ledger, flagged uncommitted.
+      // The durable write is in the provenance ledger, flagged uncommitted,
+      // with the SAME payload shape as a landed write — body_changed must
+      // survive, or tier-1/tier-2 consumers infer "body changed" for the
+      // exact entries that need auditing (changedFieldsFromProvenance
+      // over-approximates absent body_changed on update actions).
       const prov = await readProvenanceLog(vault);
       expect(prov.ok).toBe(true);
       if (!prov.ok) return;
       const entries = prov.value.filter((e) => e.file === path);
       expect(entries.length).toBe(2);
       expect(entries[1]?.reason).toContain("commit failed");
+      expect(entries[1]?.body_changed).toBe(false);
     }, 60_000);
   });
 

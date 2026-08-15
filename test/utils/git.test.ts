@@ -121,6 +121,20 @@ describe("git", () => {
     expect(bySubject.get("commit b")).toBe("agent:b");
   }, 60_000);
 
+  it("treats paths as literal names, never glob pathspecs", async () => {
+    await ensureGitRepo(vault);
+    // A doc whose NAME contains glob metacharacters, plus a sibling the
+    // glob would match. Without literal pathspecs, committing the first
+    // sweeps the second into the commit under the wrong author.
+    await writeFile(join(vault, "q3-*.md"), "glob-named\n", "utf-8");
+    await writeFile(join(vault, "q3-forecast.md"), "sibling\n", "utf-8");
+
+    const result = await commit(vault, ["q3-*.md"], "commit glob-named doc", "agent:a");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(commitFiles(result.value.hash)).toEqual(["q3-*.md"]);
+  }, 60_000);
+
   it("a commit never sweeps up a file some other flow left staged", async () => {
     await ensureGitRepo(vault);
     await writeFile(join(vault, "mine.md"), "mine\n", "utf-8");

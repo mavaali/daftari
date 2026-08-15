@@ -488,7 +488,9 @@ async function performWrite(params: {
               `stale: base_version ${shortHash(params.baseVersion)} != ` +
               `current ${currentHash ? shortHash(currentHash) : "<absent>"}`,
           });
-          return err(new Error(`stale write: ${params.relPath} changed since base_version`));
+          return err(
+            new Error(`${STALE_WRITE_PREFIX} ${params.relPath} changed since base_version`),
+          );
         }
       }
 
@@ -506,6 +508,7 @@ async function performWrite(params: {
       noteSelfWrite(params.absPath);
 
       let commitHash: string | null = null;
+      let commitError: Error | null = null;
       if (params.autoCommit) {
         const committed = await commit(
           params.vaultRoot,
@@ -514,29 +517,13 @@ async function performWrite(params: {
           params.agent,
           { gitDir: params.gitDir },
         );
-        if (!committed.ok) {
-          // The file IS on disk and indexed at this point — report that
-          // accurately, and record the durable write in the provenance
-          // ledger (flagged uncommitted) rather than leaving a hole where a
-          // real mutation happened.
-          await recordProvenance(params.vaultRoot, {
-            tool: params.tool,
-            file: params.relPath,
-            agent: params.agent,
-            ...(params.principal ? { principal: params.principal } : {}),
-            ...(params.runId ? { run_id: params.runId } : {}),
-            action: params.action,
-            frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
-            reason: `commit failed: ${committed.error.message}`,
-          });
-          return err(
-            new Error(
-              `${params.relPath} was written and indexed but the git commit failed: ` +
-                committed.error.message,
-            ),
-          );
-        }
-        commitHash = committed.value.hash;
+        if (committed.ok) commitHash = committed.value.hash;
+        // A commit failure does NOT short-circuit: the file is on disk and
+        // indexed, so the durable write still gets its provenance entry
+        // (flagged uncommitted via `reason`) and its consumes edges — a
+        // hole in the ledger where a real mutation happened is worse than a
+        // dirty-uncommitted window. The error is returned after.
+        else commitError = committed.error;
       }
 
       await recordProvenance(params.vaultRoot, {
@@ -548,6 +535,7 @@ async function performWrite(params: {
         ...(params.bodyChanged !== undefined ? { body_changed: params.bodyChanged } : {}),
         action: params.action,
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
+        ...(commitError ? { reason: `commit failed: ${commitError.message}` } : {}),
       });
 
       // #233: a run-correlated write compiles its input set — every path the
@@ -559,6 +547,15 @@ async function performWrite(params: {
           artifact: params.relPath,
           runId: params.runId,
         });
+      }
+
+      if (commitError) {
+        return err(
+          new Error(
+            `${params.relPath} was written and indexed but the git commit failed: ` +
+              commitError.message,
+          ),
+        );
       }
 
       return ok({
@@ -645,11 +642,16 @@ export function requireWriteAccess(
   return ok(undefined);
 }
 
+// The one place the stale-rejection message prefix is defined: the producer
+// (performWrite's base_version check) and the classifier below must agree,
+// or retryOnStale silently stops retrying and the lost-update race returns.
+export const STALE_WRITE_PREFIX = "stale write:";
+
 // A stale-write rejection from performWrite (base_version mismatch, above).
 // The ONE retryable failure: the rejection proves nothing was written,
 // committed, or indexed, so reload-and-recompute is always safe.
 export function isStaleWriteError(e: Error): boolean {
-  return e.message.startsWith("stale write:");
+  return e.message.startsWith(STALE_WRITE_PREFIX);
 }
 
 // Runs `attempt` and, when it fails with a stale-write rejection, runs it
@@ -2189,6 +2191,7 @@ export async function vaultMerge(
     }
 
     let commitHash: string | null = null;
+    let commitError: Error | null = null;
     if (config.value.autoCommit) {
       const committed = await commit(
         vaultRoot,
@@ -2197,8 +2200,11 @@ export async function vaultMerge(
         agent.value,
         { gitDir: config.value.gitDir },
       );
-      if (!committed.ok) return committed;
-      commitHash = committed.value.hash;
+      if (committed.ok) commitHash = committed.value.hash;
+      // Same discipline as performWrite: all three files are durable on
+      // disk, so a commit failure must not skip their index rows and
+      // provenance entries — record them flagged uncommitted, error after.
+      else commitError = committed.error;
     }
 
     // Index each written doc and log provenance per file. Both are best-effort
@@ -2221,7 +2227,17 @@ export async function vaultMerge(
         // frontmatter stamps.
         body_changed: w.action === "merge",
         frontmatter_diff: frontmatterDiff(w.oldFrontmatter, w.newFrontmatter),
+        ...(commitError ? { reason: `commit failed: ${commitError.message}` } : {}),
       });
+    }
+
+    if (commitError) {
+      return err(
+        new Error(
+          `vault_merge: ${writes.length} files were written and indexed but the git commit ` +
+            `failed: ${commitError.message}`,
+        ),
+      );
     }
 
     return ok({

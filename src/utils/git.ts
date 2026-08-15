@@ -8,7 +8,7 @@
 
 import { execFile } from "node:child_process";
 import { mkdir, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
@@ -137,17 +137,28 @@ export async function ensureGitRepo(
 const commitChains = new Map<string, Promise<unknown>>();
 
 function withCommitLock<T>(vaultRoot: string, fn: () => Promise<T>): Promise<T> {
-  const prev = commitChains.get(vaultRoot) ?? Promise.resolve();
-  const run = prev.then(fn, fn);
-  const link = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  commitChains.set(vaultRoot, link);
+  // Chain key is the RESOLVED path — trailing slashes or relative spellings
+  // of one vault must serialize on one chain (#127/#128 rule, applied to
+  // the vault root itself).
+  const key = resolve(vaultRoot);
+  // `prev` is always a stored `link`, which settles resolved by construction
+  // (the catch below) — so a failed commit never wedges the queue and a
+  // plain .then is enough to run after it.
+  const prev = commitChains.get(key) ?? Promise.resolve();
+  const run = prev.then(fn);
+  const link = run.catch(() => undefined);
+  commitChains.set(key, link);
   void link.then(() => {
-    if (commitChains.get(vaultRoot) === link) commitChains.delete(vaultRoot);
+    if (commitChains.get(key) === link) commitChains.delete(key);
   });
   return run;
+}
+
+// Vault paths are literal file names, never glob pathspecs: a doc named
+// `q3-*.md` must not sweep `q3-forecast.md` into its add or commit, and a
+// bracket-named doc must not silently match nothing.
+function literalPathspecs(paths: string[]): string[] {
+  return paths.map((p) => `:(literal)${p}`);
 }
 
 // Stages the given vault-relative paths and creates a commit authored by
@@ -171,7 +182,7 @@ export async function commit(
     const ready = await ensureGitRepo(vaultRoot, opts.gitDir);
     if (!ready.ok) return ready;
 
-    const staged = await git(vaultRoot, ["add", "--", ...paths]);
+    const staged = await git(vaultRoot, ["add", "--", ...literalPathspecs(paths)]);
     if (!staged.ok) return staged;
 
     const id = gitIdentity(identity);
@@ -185,7 +196,7 @@ export async function commit(
       "-m",
       message,
       "--",
-      ...paths,
+      ...literalPathspecs(paths),
     ]);
     if (!committed.ok) return committed;
 

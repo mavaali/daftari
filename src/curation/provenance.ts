@@ -39,8 +39,11 @@ export interface ProvenanceEntry {
   // existed — consumers treat absent as unknown, not as unchanged.
   body_changed?: boolean;
   frontmatter_diff?: FrontmatterDiff;
-  // Free-text explanation, set on rejected writes (e.g. the stale-version
-  // mismatch). Absent on writes that landed.
+  // Free-text explanation. Set on rejected writes (e.g. the stale-version
+  // mismatch) and on landed-but-uncommitted writes ("commit failed: ..." —
+  // the file is durable on disk and indexed, but absent from git history).
+  // Absent on writes that landed and committed. Rejection is signaled by the
+  // `rejected_*` actions, never by the presence of this field.
   reason?: string;
 }
 

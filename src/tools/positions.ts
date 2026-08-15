@@ -492,18 +492,15 @@ export async function vaultConsolidate(
   // asserted while this ratification was in flight) is reloaded and
   // recomputed — never allowed to erase the interleaved position or ratify
   // with a dissent list computed from a superseded snapshot.
-  const attemptConsolidate = async (): Promise<
-    Result<
-      {
-        relPath: string;
-        orgPosition: OrgPosition;
-        dissent: string[];
-        contested: boolean | null;
-        written: WriteResult;
-      },
-      Error
-    >
-  > => {
+  type ConsolidateAttempt = {
+    relPath: string;
+    orgPosition: OrgPosition;
+    dissent: string[];
+    contested: boolean | null;
+    written: WriteResult;
+  };
+
+  const attemptConsolidate = async (): Promise<Result<ConsolidateAttempt, Error>> => {
     const target = await loadTargetDocument(vaultRoot, path.value, "vault_consolidate");
     if (!target.ok) return target;
     const fm = target.value.parsed.frontmatter;
@@ -738,7 +735,10 @@ const assertToolDefinition: ToolDefinition = {
     "'write' proposal for ratification — nothing is written and no positional " +
     "tension is logged until the ratified write lands. The first assert on a " +
     "legacy doc (typed positions null) snapshots the doc's prior belief as " +
-    "pos-000 (principal 'unknown', system-authored, unforgeable).",
+    "pos-000 (principal 'unknown', system-authored, unforgeable). Under " +
+    "concurrent writes to the same doc the call retries once against the " +
+    "fresh state, then fails loudly ('locked' or 'stale write') — safe to " +
+    "re-call; no position is ever silently overwritten.",
   inputSchema: {
     type: "object",
     properties: {
@@ -851,7 +851,10 @@ const consolidateToolDefinition: ToolDefinition = {
     "same call via resolve_tension: validated before any write (must name an " +
     "open 'positional' tension whose sourceA is this doc; kind 'accepted' " +
     "requires standing dissent); the doc write commits first, and a resolve " +
-    "failure afterward is reported as resolve_error, never rolled back.",
+    "failure afterward is reported as resolve_error, never rolled back. Under " +
+    "concurrent writes to the same doc the call retries once against the " +
+    "fresh state (dissent recomputed), then fails loudly ('locked' or 'stale " +
+    "write') — safe to re-call.",
   inputSchema: {
     type: "object",
     properties: {
