@@ -19,6 +19,14 @@ import { TENSION_KINDS } from "../curation/tension.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
+import { ensureMountIndexFresh, reindexMount } from "../federation/mount-index.js";
+import {
+  federatedPathOf,
+  getMountRegistry,
+  type LoadedMount,
+  type MountRegistry,
+  parseFederatedPath,
+} from "../federation/mounts.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { contestedFor } from "../search/contested.js";
 import {
@@ -29,12 +37,15 @@ import {
 import { resolveCurrentSource } from "../search/current-source.js";
 import {
   DEFAULT_WEIGHTS,
+  extractRelatedSeed,
   type HybridHit,
   type HybridSearchResult,
   type HybridWeights,
   hybridSearch,
   type RelatedSearchResult,
+  type RelatedSeed,
   relatedSearch,
+  relatedSearchFromSeed,
 } from "../search/hybrid.js";
 import {
   getIndexStatus,
@@ -237,6 +248,184 @@ function validityForPath(db: IndexDb, path: string, at: string): ValidityReport 
   return computeValidity({ valid_from: doc.validFrom, valid_until: doc.validUntil }, at);
 }
 
+// ---------------------------------------------------------------------------
+// Federation (#297, spec Decision 4): scope resolution, per-mount pipelines,
+// and cross-vault RRF fusion.
+// ---------------------------------------------------------------------------
+
+interface FederationScope {
+  includeLocal: boolean;
+  mounts: LoadedMount[];
+}
+
+// Resolves the optional `vaults` argument against the mount registry. Absent
+// ⇒ local plus every available mount; an explicit list names exactly what it
+// wants ("local" and/or declared aliases) and fails loud on an unknown alias
+// or an explicitly named unavailable mount.
+function resolveVaultScope(
+  raw: unknown,
+  registry: MountRegistry | null,
+  tool: string,
+): Result<FederationScope, Error> {
+  if (registry === null) {
+    if (raw !== undefined) {
+      return err(new Error(`${tool} 'vaults' requires federation to be configured`));
+    }
+    return ok({ includeLocal: true, mounts: [] });
+  }
+  if (raw === undefined) {
+    return ok({
+      includeLocal: true,
+      mounts: [...registry.mounts.values()].filter((m) => m.state === "ok"),
+    });
+  }
+  if (
+    !Array.isArray(raw) ||
+    raw.length === 0 ||
+    !raw.every((v): v is string => typeof v === "string")
+  ) {
+    return err(
+      new Error(`${tool} 'vaults' must be a non-empty array of mount aliases (or "local")`),
+    );
+  }
+  const scope: FederationScope = { includeLocal: false, mounts: [] };
+  const seen = new Set<string>();
+  for (const name of raw) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (name === "local") {
+      scope.includeLocal = true;
+      continue;
+    }
+    const mount = registry.mounts.get(name);
+    if (!mount) {
+      return err(new Error(`${tool} 'vaults' names unknown mount alias "${name}"`));
+    }
+    if (mount.root === null) {
+      return err(new Error(`mount "${name}" is unavailable — its path was not found`));
+    }
+    scope.mounts.push(mount);
+  }
+  return ok(scope);
+}
+
+// The mount's principal-resolved identity in AccessContext shape, so the
+// per-mount pipeline reuses the same helpers (currentSource's restricted
+// degrade, readable-collection pushdown) the canonical path uses.
+function mountAccess(mount: LoadedMount, user: string | undefined): AccessContext {
+  return { user: user ?? "guest", roleName: mount.roleName, role: mount.role };
+}
+
+// Rewrites every addressable path a mount hit carries into `alias:path` form
+// — the round-trip property: any path a federated tool returns is directly
+// usable as the path argument to any federated read tool.
+function labelMountHit(hit: HybridHit, alias: string): void {
+  hit.vault = alias;
+  hit.path = federatedPathOf(alias, hit.path);
+  if (hit.currentSource?.kind === "resolved") {
+    hit.currentSource = {
+      ...hit.currentSource,
+      path: federatedPathOf(alias, hit.currentSource.path),
+    };
+  }
+  if (hit.validAtSource?.kind === "resolved") {
+    hit.validAtSource = {
+      ...hit.validAtSource,
+      path: federatedPathOf(alias, hit.validAtSource.path),
+    };
+  }
+}
+
+// Cross-vault fusion (spec Decision 4): RRF over the per-vault FINAL rank
+// lists. Rank fusion consumes only orderings, so it is indifferent to BM25
+// magnitude differences across corpora; there is no cross-provider score
+// problem because one embedding provider serves the whole process. Lists
+// arrive in priority order (canonical first), which is the deterministic
+// tiebreak for equal RRF scores.
+const RRF_K = 60;
+
+function rrfFuse(lists: HybridHit[][], limit: number): HybridHit[] {
+  const scored: { hit: HybridHit; score: number; listIdx: number; rank: number }[] = [];
+  lists.forEach((hits, listIdx) => {
+    hits.forEach((hit, rank) => {
+      scored.push({ hit, score: 1 / (RRF_K + rank + 1), listIdx, rank });
+    });
+  });
+  scored.sort((a, b) => b.score - a.score || a.listIdx - b.listIdx || a.rank - b.rank);
+  return scored.slice(0, limit).map((s) => s.hit);
+}
+
+// One mount's search pipeline: the same hybrid ranking, RBAC filtering,
+// validity pass, coverage pass, and current-source foregrounding the
+// canonical vault gets — under the MOUNT's granted role and against the
+// mount's own index. Deliberately absent: contested/structural annotations
+// and serve logging, which read or write vault state (documents only).
+async function searchMount(
+  mount: LoadedMount,
+  opts: {
+    query: string;
+    weights: HybridWeights;
+    limit: number;
+    validAt: string | null;
+    validOnly: boolean;
+    user: string | undefined;
+  },
+): Promise<Result<{ hits: HybridHit[]; vectorUsed: boolean }, Error>> {
+  if (mount.root === null) {
+    return err(new Error(`mount "${mount.alias}" is unavailable — its path was not found`));
+  }
+  const fresh = await ensureMountIndexFresh(mount);
+  if (!fresh.ok) return fresh;
+  const dbResult = openIndexForActiveProvider(mount.root);
+  if (!dbResult.ok) return dbResult;
+  const db = dbResult.value;
+  try {
+    const result = await hybridSearch(db, opts.query, {
+      weights: opts.weights,
+      limit: opts.limit,
+      overFetch: true,
+      readableCollections: readableCollections(mount.role),
+    });
+    if (!result.ok) return result;
+
+    let permitted = result.value.hits.filter((h) => canRead(mount.role, h.collection));
+    if (opts.validAt !== null) {
+      for (const hit of permitted) {
+        hit.validity = validityForPath(db, hit.path, opts.validAt);
+      }
+      if (opts.validOnly) {
+        permitted = permitted.filter(
+          (h) =>
+            h.validity == null ||
+            (h.validity.state !== "expired" && h.validity.state !== "not-yet"),
+        );
+      }
+    }
+    const ranked = permitted.slice(0, opts.limit);
+
+    const widened = applyCoveragePass(db, ranked, DEFAULT_COVERAGE_OPTIONS).filter((h) =>
+      h.viaCoverage ? canRead(mount.role, h.collection) : true,
+    );
+    const access = mountAccess(mount, opts.user);
+    for (const hit of widened) {
+      if (opts.validAt !== null && hit.validity === undefined) {
+        hit.validity = validityForPath(db, hit.path, opts.validAt);
+      }
+      const cs = resolveCurrentSource(db, hit.path, access);
+      if (cs) hit.currentSource = cs;
+      if (opts.validAt !== null) {
+        const vas = resolveValidAtSource(db, hit.path, opts.validAt, access);
+        if (vas) hit.validAtSource = vas;
+      }
+    }
+    const capped = enforceTokenCap(widened, DEFAULT_COVERAGE_OPTIONS);
+    for (const hit of capped) labelMountHit(hit, mount.alias);
+    return ok({ hits: capped, vectorUsed: result.value.vectorUsed });
+  } finally {
+    db.close();
+  }
+}
+
 export async function vaultSearch(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -279,6 +468,93 @@ export async function vaultSearch(
     };
   }
 
+  // Federation scope (#297). No registry ⇒ the canonical-only path below,
+  // byte-identical to pre-federation behavior apart from the vault labels.
+  const registry = getMountRegistry();
+  const scope = resolveVaultScope(args.vaults, registry, "vault_search");
+  if (!scope.ok) return scope;
+  const { includeLocal, mounts } = scope.value;
+
+  let localResult: HybridSearchResult | null = null;
+  if (includeLocal) {
+    const local = await searchLocalVault(vaultRoot, args, query, validAt, validOnly, access);
+    if (!local.ok) return local;
+    localResult = local.value;
+    for (const hit of localResult.hits) hit.vault = "local";
+  }
+  if (mounts.length === 0) {
+    return localResult
+      ? ok(localResult)
+      : err(new Error("vault_search 'vaults' selected no vault"));
+  }
+
+  // Per-vault pipelines, then RRF over the final rank lists (Decision 4).
+  const limit = parseLimit(args.limit);
+  const weights = parseWeights(args.weights);
+  const lists: HybridHit[][] = [];
+  if (localResult) lists.push(localResult.hits);
+  let vectorUsed = localResult?.vectorUsed ?? false;
+  for (const mount of mounts) {
+    const m = await searchMount(mount, {
+      query,
+      weights,
+      limit,
+      validAt,
+      validOnly,
+      user: access?.user,
+    });
+    if (!m.ok) return err(new Error(`mount "${mount.alias}": ${m.error.message}`));
+    lists.push(m.value.hits);
+    vectorUsed = vectorUsed || m.value.vectorUsed;
+  }
+  const fused = rrfFuse(lists, limit);
+
+  // #3 rerank over the SAME fused cross-vault ranking the hits came from,
+  // still excluding coverage additions (recall, not ranking).
+  const rerankK = parseRerankCandidates(args.rerank_candidates);
+  const rerank =
+    rerankK > 0
+      ? {
+          instructions: RERANK_INSTRUCTIONS,
+          candidates: fused
+            .filter((h) => !h.viaCoverage)
+            .slice(0, rerankK)
+            .map((h, i) => ({
+              rank: i + 1,
+              path: h.path,
+              title: h.title,
+              collection: h.collection,
+              status: h.status,
+              score: h.score,
+              bm25Score: h.bm25Score,
+              vectorScore: h.vectorScore,
+              snippet: h.snippet,
+            })),
+        }
+      : undefined;
+
+  return ok({
+    query,
+    count: fused.length,
+    vectorUsed,
+    weights: localResult?.weights ?? (vectorUsed ? weights : { bm25: 1, vector: 0 }),
+    hits: fused,
+    ...(rerank ? { rerank } : {}),
+  });
+}
+
+// The canonical vault's search pipeline — the pre-federation vault_search
+// body, unchanged: ranking, RBAC filter, validity pass, coverage, current-
+// source foregrounding, contested/structural enrichment, serve logging, and
+// the local rerank pool.
+async function searchLocalVault(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  query: string,
+  validAt: string | null,
+  validOnly: boolean,
+  access?: AccessContext,
+): Promise<Result<HybridSearchResult, Error>> {
   const ready = await ensureIndexReady(vaultRoot);
   if (!ready.ok) return ready;
 
@@ -448,37 +724,161 @@ export async function vaultSearchRelated(
     };
   }
 
-  const ready = await ensureIndexReady(vaultRoot);
-  if (!ready.ok) return ready;
+  const registry = getMountRegistry();
+  const scope = resolveVaultScope(args.vaults, registry, "vault_search_related");
+  if (!scope.ok) return scope;
+  const { includeLocal, mounts } = scope.value;
+  const fed = registry ? parseFederatedPath(path, registry) : null;
 
-  const dbResult = openIndexForActiveProvider(vaultRoot);
-  if (!dbResult.ok) return dbResult;
-  const db = dbResult.value;
-  try {
-    const limit = parseLimit(args.limit);
-    // Over-fetch, then RBAC-filter, then slice — same ordering as vaultSearch so
-    // restricted docs in the top-`limit` slots can't shrink the permitted page.
-    const result = relatedSearch(db, path, {
-      weights: parseWeights(args.weights),
-      limit,
-      overFetch: true,
-      readableCollections: access ? readableCollections(access.role) : undefined,
-    });
-    if (!result.ok) return result;
-    // RBAC: drop related hits in collections the role cannot read (when an
-    // access context is present), THEN slice to the user-facing limit. The slice
-    // runs unconditionally because over-fetch returned the full candidate set.
-    const permitted = access
-      ? result.value.hits.filter((h) => canRead(access.role, h.collection))
-      : result.value.hits;
-    const hits = permitted.slice(0, limit);
+  // Canonical seed, canonical-only scope: the pre-federation path, unchanged
+  // apart from the vault labels.
+  if (fed === null && mounts.length === 0) {
+    const ready = await ensureIndexReady(vaultRoot);
+    if (!ready.ok) return ready;
 
-    await annotateAndLogServedHits(vaultRoot, db, "vault_search_related", hits, access);
+    const dbResult = openIndexForActiveProvider(vaultRoot);
+    if (!dbResult.ok) return dbResult;
+    const db = dbResult.value;
+    try {
+      const limit = parseLimit(args.limit);
+      // Over-fetch, then RBAC-filter, then slice — same ordering as vaultSearch so
+      // restricted docs in the top-`limit` slots can't shrink the permitted page.
+      const result = relatedSearch(db, path, {
+        weights: parseWeights(args.weights),
+        limit,
+        overFetch: true,
+        readableCollections: access ? readableCollections(access.role) : undefined,
+      });
+      if (!result.ok) return result;
+      // RBAC: drop related hits in collections the role cannot read (when an
+      // access context is present), THEN slice to the user-facing limit. The slice
+      // runs unconditionally because over-fetch returned the full candidate set.
+      const permitted = access
+        ? result.value.hits.filter((h) => canRead(access.role, h.collection))
+        : result.value.hits;
+      const hits = permitted.slice(0, limit);
+      for (const hit of hits) hit.vault = "local";
 
-    return ok({ ...result.value, count: hits.length, hits });
-  } finally {
-    db.close();
+      await annotateAndLogServedHits(vaultRoot, db, "vault_search_related", hits, access);
+
+      return ok({ ...result.value, count: hits.length, hits });
+    } finally {
+      db.close();
+    }
   }
+
+  // Federated: extract the seed from its HOME vault, then rank every in-scope
+  // vault's candidates against it (Decision 4). Coherent across indexes
+  // because one embedding provider serves the whole process.
+  const limit = parseLimit(args.limit);
+  const weights = parseWeights(args.weights);
+
+  let seed: RelatedSeed;
+  if (fed !== null && registry !== null) {
+    const mount = registry.mounts.get(fed.alias);
+    if (!mount || mount.root === null) {
+      return err(new Error(`mount "${fed.alias}" is unavailable — its path was not found`));
+    }
+    const fresh = await ensureMountIndexFresh(mount);
+    if (!fresh.ok) return fresh;
+    const homeDbResult = openIndexForActiveProvider(mount.root);
+    if (!homeDbResult.ok) return homeDbResult;
+    const homeDb = homeDbResult.value;
+    try {
+      // Seed gate under the MOUNT's granted role — a caller must not use an
+      // unreadable mount doc as a query proxy.
+      const doc = getDocument(homeDb, fed.relPath);
+      if (!doc) {
+        return err(new Error(`document not indexed: ${path} (try vault_reindex)`));
+      }
+      if (!canRead(mount.role, doc.collection)) {
+        return err(
+          new Error(
+            `access denied: role '${mount.roleName}' cannot read collection '${doc.collection}'`,
+          ),
+        );
+      }
+      const extracted = extractRelatedSeed(homeDb, fed.relPath);
+      if (!extracted.ok) return extracted;
+      seed = extracted.value;
+    } finally {
+      homeDb.close();
+    }
+  } else {
+    const ready = await ensureIndexReady(vaultRoot);
+    if (!ready.ok) return ready;
+    const homeDbResult = openIndexForActiveProvider(vaultRoot);
+    if (!homeDbResult.ok) return homeDbResult;
+    const homeDb = homeDbResult.value;
+    try {
+      const extracted = extractRelatedSeed(homeDb, path);
+      if (!extracted.ok) return extracted;
+      seed = extracted.value;
+    } finally {
+      homeDb.close();
+    }
+  }
+
+  const lists: HybridHit[][] = [];
+  let vectorUsed = false;
+
+  if (includeLocal) {
+    const ready = await ensureIndexReady(vaultRoot);
+    if (!ready.ok) return ready;
+    const dbResult = openIndexForActiveProvider(vaultRoot);
+    if (!dbResult.ok) return dbResult;
+    const db = dbResult.value;
+    try {
+      const ranked = relatedSearchFromSeed(db, seed, fed === null ? path : null, {
+        weights,
+        limit,
+        overFetch: true,
+        readableCollections: access ? readableCollections(access.role) : undefined,
+      });
+      const permitted = access
+        ? ranked.hits.filter((h) => canRead(access.role, h.collection))
+        : ranked.hits;
+      const hits = permitted.slice(0, limit);
+      for (const hit of hits) hit.vault = "local";
+      await annotateAndLogServedHits(vaultRoot, db, "vault_search_related", hits, access);
+      lists.push(hits);
+      vectorUsed = vectorUsed || ranked.vectorUsed;
+    } finally {
+      db.close();
+    }
+  }
+
+  for (const mount of mounts) {
+    if (mount.root === null) continue;
+    const fresh = await ensureMountIndexFresh(mount);
+    if (!fresh.ok) return err(new Error(`mount "${mount.alias}": ${fresh.error.message}`));
+    const dbResult = openIndexForActiveProvider(mount.root);
+    if (!dbResult.ok) return err(new Error(`mount "${mount.alias}": ${dbResult.error.message}`));
+    const db = dbResult.value;
+    try {
+      const ranked = relatedSearchFromSeed(
+        db,
+        seed,
+        fed !== null && fed.alias === mount.alias ? fed.relPath : null,
+        { weights, limit, overFetch: true, readableCollections: readableCollections(mount.role) },
+      );
+      const hits = ranked.hits.filter((h) => canRead(mount.role, h.collection)).slice(0, limit);
+      for (const hit of hits) labelMountHit(hit, mount.alias);
+      lists.push(hits);
+      vectorUsed = vectorUsed || ranked.vectorUsed;
+    } finally {
+      db.close();
+    }
+  }
+
+  const fused = rrfFuse(lists, limit);
+  return ok({
+    path,
+    count: fused.length,
+    vectorUsed,
+    weights: vectorUsed ? weights : { bm25: 1, vector: 0 },
+    hits: fused,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +889,33 @@ export interface VaultReindexResult extends ReindexResult {
   vault: string;
 }
 
-export async function vaultReindex(vaultRoot: string): Promise<Result<VaultReindexResult, Error>> {
+export async function vaultReindex(
+  vaultRoot: string,
+  args: Record<string, unknown> = {},
+): Promise<Result<VaultReindexResult, Error>> {
+  // #297: `mount: <alias>` rebuilds one mount's index (under the canonical
+  // .daftari/federation/<alias>/ redirect) — the manual freshness lever for
+  // startup-only mounts. Named `mount`, not `vault`: the multi-vault router
+  // package reserves a `vault` input property on every routed tool. The
+  // default remains canonical-only, and the mount path deliberately bypasses
+  // the global IndexState, which tracks the canonical index's lifecycle.
+  if (args.mount !== undefined && args.mount !== "local") {
+    if (typeof args.mount !== "string") {
+      return err(new Error("vault_reindex 'mount' must be a mount alias string"));
+    }
+    const registry = getMountRegistry();
+    if (!registry) {
+      return err(new Error("vault_reindex 'mount' requires federation to be configured"));
+    }
+    const mount = registry.mounts.get(args.mount);
+    if (!mount) {
+      return err(new Error(`vault_reindex 'mount' names unknown mount alias "${args.mount}"`));
+    }
+    const rebuilt = await reindexMount(mount);
+    if (!rebuilt.ok) return rebuilt;
+    return ok({ ...rebuilt.value, vault: mount.alias });
+  }
+
   // Coalesce with any in-flight indexing pass — e.g. the startup-time
   // background reindex from main(). An agent that calls vault_reindex should
   // not get a busy error just because the server is finishing its own
@@ -627,7 +1053,18 @@ const contestedTensionSchema = {
 const hybridHitSchema = {
   type: "object",
   properties: {
-    path: { type: "string", description: "Vault-relative document path." },
+    path: {
+      type: "string",
+      description:
+        "Vault-relative document path; for a federation mount hit, the " +
+        "addressable '<alias>:<path>' form (#297).",
+    },
+    vault: {
+      type: "string",
+      description:
+        'Which vault served the hit: a federation mount alias, or "local" ' +
+        "for the canonical vault (#297).",
+    },
     title: { type: "string" },
     collection: { type: "string" },
     status: { type: "string" },
@@ -834,6 +1271,15 @@ export const searchTools: ToolDefinition[] = [
             "(max 30) with judging context so YOU reorder by answer quality. " +
             "Omit to skip.",
         },
+        vaults: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Federation scope (#297): which vaults to search — mount aliases " +
+            'and/or "local" for the canonical vault. Omit to search the local ' +
+            "vault plus every available mount. Requires federation to be " +
+            "configured.",
+        },
       },
       required: ["query"],
       additionalProperties: false,
@@ -897,13 +1343,24 @@ export const searchTools: ToolDefinition[] = [
       properties: {
         path: {
           type: "string",
-          description: "Vault-relative path of the reference document",
+          description:
+            "Vault-relative path of the reference document; with federation " +
+            "configured, an '<alias>:<path>' form seeds from that mounted " +
+            "vault (#297).",
         },
         limit: {
           type: "number",
           description: "Maximum results to return (default 10, max 50)",
         },
         weights: weightsSchema,
+        vaults: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Federation scope (#297): which vaults to rank candidates from — " +
+            'mount aliases and/or "local". Omit for the local vault plus ' +
+            "every available mount.",
+        },
       },
       required: ["path"],
       additionalProperties: false,
@@ -946,16 +1403,32 @@ export const searchTools: ToolDefinition[] = [
     description:
       "Rebuild the search index from the markdown files on disk. The index " +
       "is a derived cache; this clears and rebuilds it, re-embedding all " +
-      "document chunks. Run after bulk edits made outside Daftari.",
+      "document chunks. Run after bulk edits made outside Daftari. With " +
+      "federation configured, pass 'mount: <alias>' to rebuild one mount's " +
+      "index instead — the manual freshness lever for startup-only mounts (#297).",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        // Named `mount`, not `vault`: the multi-vault router package reserves
+        // a `vault` input property on every routed tool for its own dispatch.
+        mount: {
+          type: "string",
+          description:
+            "Federation mount alias to reindex instead of the local vault " +
+            '(#297). Omit (or pass "local") for the canonical vault.',
+        },
+      },
       additionalProperties: false,
     },
     outputSchema: {
       type: "object",
       properties: {
-        vault: { type: "string", description: "Absolute path of the reindexed vault root." },
+        vault: {
+          type: "string",
+          description:
+            "Absolute path of the reindexed vault root, or the mount alias " +
+            "for a federated reindex (#297).",
+        },
         documentCount: { type: "integer" },
         chunkCount: { type: "integer" },
         vectorEnabled: { type: "boolean" },
@@ -990,6 +1463,6 @@ export const searchTools: ToolDefinition[] = [
       ],
       additionalProperties: false,
     },
-    handler: (vaultRoot) => vaultReindex(vaultRoot),
+    handler: (vaultRoot, args) => vaultReindex(vaultRoot, args),
   },
 ];

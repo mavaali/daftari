@@ -48,7 +48,7 @@ import {
 } from "../frontmatter/types.js";
 import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider } from "../search/vector.js";
-import { countDimMismatches, openIndexDb } from "../storage/index-db.js";
+import { countDimMismatches, getMeta, openIndexDb } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
@@ -650,6 +650,9 @@ export interface VaultIndexFilters {
 
 export interface VaultIndexEntry {
   path: string;
+  // #297: set on federated listings — the mount alias; `path` is then the
+  // addressable `alias:relPath` form. Absent on canonical listings.
+  vault?: string;
   title: string;
   collection: string;
   domain: string;
@@ -752,6 +755,27 @@ export async function vaultIndex(
   // RBAC: drop documents in collections the role cannot read.
   const visible = access ? filterByReadPermission(access.role, entries) : entries;
   return ok({ count: visible.length, entries: visible });
+}
+
+// #297: one mount's listing, under the mount's granted role (plain omission
+// per the referenced vault's own policy — readable-subset only, never a
+// visible/total split). Paths come back in the addressable `alias:relPath`
+// form (the round-trip property).
+export async function vaultIndexMount(
+  mount: LoadedMount,
+  filters: VaultIndexFilters = {},
+): Promise<Result<VaultIndexResult, Error>> {
+  if (mount.root === null) {
+    return err(new Error(`mount "${mount.alias}" is unavailable — its path was not found`));
+  }
+  const docs = await scanVaultDocs(mount.root);
+  if (!docs.ok) return docs;
+  const entries = docs.value
+    .filter((d) => matchesIndexFilters(d, filters))
+    .map(toIndexEntry)
+    .filter((e) => mountCanRead(mount, e.collection))
+    .map((e) => ({ ...e, path: federatedPathOf(mount.alias, e.path), vault: mount.alias }));
+  return ok({ count: entries.length, entries });
 }
 
 // ---------------------------------------------------------------------------
@@ -951,11 +975,23 @@ export async function vaultStatus(
         ? mountScan.value.filter((d) => mountCanRead(mount, collectionOf(d.relPath, d.frontmatter)))
             .length
         : null;
+      // Last index build, from the mount index's own meta (the db lives under
+      // the canonical .daftari/federation/<alias>/ redirect). Null until the
+      // first build lands.
+      let lastRefresh: string | null = null;
+      const mountDb = openIndexForAccessOrNull(mount.root);
+      if (mountDb) {
+        try {
+          lastRefresh = getMeta(mountDb, "indexed_at");
+        } finally {
+          mountDb.close();
+        }
+      }
       federation.push({
         alias: mount.alias,
         state: "ok",
         readableDocCount: readable,
-        lastRefresh: null,
+        lastRefresh,
       });
     }
   }
@@ -1100,7 +1136,16 @@ const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
 const INDEX_ENTRY_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
-    path: { type: "string", description: "Vault-relative path" },
+    path: {
+      type: "string",
+      description:
+        "Vault-relative path; on a federated listing, the addressable " +
+        "'<alias>:<path>' form (#297)",
+    },
+    vault: {
+      type: "string",
+      description: "Federation mount alias, set only on federated listings (#297)",
+    },
     title: { type: "string" },
     collection: { type: "string" },
     domain: { type: "string", enum: [...DOMAINS] },
@@ -1465,6 +1510,14 @@ export const readTools: ToolDefinition[] = [
             "true: only documents with open questions in questions_raised; " +
             "false: only documents with none",
         },
+        // Named `mount`, not `vault`: the multi-vault router package reserves
+        // a `vault` input property on every routed tool for its own dispatch.
+        mount: {
+          type: "string",
+          description:
+            "Federation mount alias to list instead of the local vault " +
+            '(#297). Omit (or pass "local") for the canonical vault.',
+        },
       },
       additionalProperties: false,
     },
@@ -1480,18 +1533,31 @@ export const readTools: ToolDefinition[] = [
       },
       required: ["count", "entries"],
     },
-    handler: (vaultRoot, args, access) =>
-      vaultIndex(
-        vaultRoot,
-        {
-          collection: asString(args.collection),
-          status: asString(args.status),
-          domain: asString(args.domain),
-          tags: asStringArray(args.tags),
-          hasUnanswered: typeof args.has_unanswered === "boolean" ? args.has_unanswered : undefined,
-        },
-        access,
-      ),
+    handler: (vaultRoot, args, access) => {
+      const filters = {
+        collection: asString(args.collection),
+        status: asString(args.status),
+        domain: asString(args.domain),
+        tags: asStringArray(args.tags),
+        hasUnanswered: typeof args.has_unanswered === "boolean" ? args.has_unanswered : undefined,
+      };
+      if (args.mount !== undefined && args.mount !== "local") {
+        if (typeof args.mount !== "string") {
+          return Promise.resolve(
+            err(new Error("vault_index 'mount' must be a mount alias string")),
+          );
+        }
+        const registry = getMountRegistry();
+        const mount = registry?.mounts.get(args.mount);
+        if (!mount) {
+          return Promise.resolve(
+            err(new Error(`vault_index 'mount' names unknown mount alias "${args.mount}"`)),
+          );
+        }
+        return vaultIndexMount(mount, filters);
+      }
+      return vaultIndex(vaultRoot, filters, access);
+    },
   },
   {
     name: "vault_status",

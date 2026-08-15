@@ -22,6 +22,7 @@ import {
   type RoleConfig,
   type SchemaExtension,
 } from "../utils/config.js";
+import { clearIndexDirOverrides, setIndexDirOverride } from "./index-location.js";
 
 export type MountState = "ok" | "unavailable";
 
@@ -101,9 +102,19 @@ export function getMountRegistry(): MountRegistry | null {
 }
 
 // Test-only hook, mirroring clearConfigCache: suites that mount fixture
-// vaults must not leak the registry across cases.
+// vaults must not leak the registry across cases. Index-dir overrides are
+// registered per mount, so they clear with the registry.
 export function clearMountRegistry(): void {
   activeRegistry = null;
+  clearIndexDirOverrides();
+}
+
+// Where a mount's derived index lives: the CANONICAL vault's
+// `.daftari/federation/<alias>/` (spec Decision 3). Registered as an
+// index-location override at mount load, so every openIndexDb/reindex call
+// against the mount root lands here by construction.
+export function mountIndexDir(canonicalRoot: string, alias: string): string {
+  return join(canonicalRoot, ".daftari", "federation", alias);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +257,10 @@ export async function loadMounts(
         }
       }
     }
+
+    // Redirect the mount's derived index into the canonical tree BEFORE any
+    // code path could open an index for this root.
+    setIndexDirOverride(real, mountIndexDir(canonicalReal, decl.alias));
 
     mounts.set(decl.alias, {
       alias: decl.alias,

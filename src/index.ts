@@ -20,7 +20,8 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { GUEST_ROLE, resolveAccess } from "./access/rbac.js";
 import { materializeEdges } from "./curation/edges.js";
 import { materializeStagedActions } from "./curation/staged-actions.js";
-import { loadMounts, setMountRegistry } from "./federation/mounts.js";
+import { buildMountIndexes } from "./federation/mount-index.js";
+import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import {
   markIndexError,
@@ -217,6 +218,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     warmEmbeddings: config.value.warmEmbeddings,
     watch: config.value.watch,
   });
+
+  // Per-mount index builds run in the background after the canonical vault's
+  // services are up (#297, Decision 6): startup-only freshness, no watchers,
+  // failures degrade that mount's search rather than the server.
+  const mountRegistry = getMountRegistry();
+  if (mountRegistry) {
+    void buildMountIndexes(mountRegistry.mounts.values(), (line) =>
+      process.stderr.write(`daftari: ${line}\n`),
+    );
+  }
 }
 
 // The index/watcher bootstrap shared by stdio main() and `daftari serve`

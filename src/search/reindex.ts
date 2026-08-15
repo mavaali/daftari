@@ -235,6 +235,15 @@ export interface ReindexOptions {
   // per batch. Production uses EMBED_COMMIT_BATCH; tests shrink it to drive
   // the interrupted-build resume path without a large fixture.
   embedCommitBatch?: number;
+  // #297: skip the embedding pass entirely — the `index: lexical` mount mode.
+  // Documents and chunk rows still land, so FTS5 search works; vector ranking
+  // reports disabled for this index.
+  lexicalOnly?: boolean;
+  // #297: skip the staged-actions and derives_from index rebuilds. Those read
+  // the vault's `.daftari/*.jsonl` state, which for a federated mount is the
+  // REFERENCED vault's private state — mounts expose documents, not vault
+  // state, so a mount index must never ingest it.
+  skipVaultState?: boolean;
 }
 
 // #54: embeddings land in the durable content-addressed cache PER BATCH, not
@@ -470,7 +479,12 @@ export async function reindexVault(
 
     let vectorEnabled = true;
     let committedEmbeds = 0;
-    if (missTexts.length > 0) {
+    if (opts.lexicalOnly) {
+      // No embedding pass at all (#297 `index: lexical`): cheaper by design,
+      // and search against this index degrades to lexical exactly like a
+      // model-unavailable build.
+      vectorEnabled = false;
+    } else if (missTexts.length > 0) {
       const batchSize = opts.embedCommitBatch ?? EMBED_COMMIT_BATCH;
       for (let start = 0; start < missHashes.length; start += batchSize) {
         const sliceHashes = missHashes.slice(start, start + batchSize);
@@ -513,15 +527,17 @@ export async function reindexVault(
     const chunkCount = writeChunkRows(db, staged);
     const orphansRemoved = gcOrphanedEmbeddings(db);
 
-    // Rebuild the staged-actions index from its canonical jsonl. Like every
-    // table here it is a derived cache of an on-disk source of truth; this
-    // keeps it in sync after a cold start or a manual index wipe. Best-effort:
-    // the staging queue lives in the jsonl, so a rebuild miss never loses data.
-    rebuildStagedActionsIndex(db, vaultRoot);
+    if (!opts.skipVaultState) {
+      // Rebuild the staged-actions index from its canonical jsonl. Like every
+      // table here it is a derived cache of an on-disk source of truth; this
+      // keeps it in sync after a cold start or a manual index wipe. Best-effort:
+      // the staging queue lives in the jsonl, so a rebuild miss never loses data.
+      rebuildStagedActionsIndex(db, vaultRoot);
 
-    // Same posture for the derives_from edge store: the jsonl is canonical;
-    // this table is the loop's concurrent-read surface (spec §11.3).
-    rebuildEdgesIndex(db, vaultRoot);
+      // Same posture for the derives_from edge store: the jsonl is canonical;
+      // this table is the loop's concurrent-read surface (spec §11.3).
+      rebuildEdgesIndex(db, vaultRoot);
+    }
 
     // Rebuild the sqlite-vec mirror from the durable `embeddings` cache.
     // The cache is per-(model, content_hash) and is the source of truth;

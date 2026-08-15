@@ -1,12 +1,16 @@
 # Read-only cross-vault federation — design
 
-2026-08-15. Status: **accepted — implementation in progress.** Slice 1
-(config surface, mount loading, principal-keyed RBAC, alias-path dispatch
-with collision guards, refusal classification + registry guard test,
-federated `vault_read`, `vault_status` federation block, serve refusal)
-is implemented; per-mount indexes and federated search/index/reindex
-(Decisions 3, 4, and the remaining allowlist behavior) are the follow-up
-slice.
+2026-08-15. Status: **accepted — implemented.** Slice 1 shipped the config
+surface, mount loading, principal-keyed RBAC, alias-path dispatch with
+collision guards, refusal classification + registry guard test, federated
+`vault_read`, the `vault_status` federation block, and the serve refusal.
+Slice 2 shipped the rest of Decisions 3–4: per-mount indexes under the
+canonical `.daftari/federation/<alias>/` (index-location redirect,
+`index: lexical` skips embeddings, referenced-vault state never ingested),
+startup-only freshness with `vault_reindex {mount}` as the manual lever,
+federated `vault_search` / `vault_search_related` with cross-vault RRF
+fusion (k = 60, equal weights, canonical wins ties, post-passes per-vault),
+and the `vault_index` mount listing.
 Issue: #297 (read-only cross-vault federation). Strategy pass run against the
 2026-07-14 existence-disclosure spec, the 2026-07-20 server-mode spec
 (Decisions 2–4), the 2026-08-08 slice-3 lock verdict, and the 2026-07-26
@@ -342,9 +346,9 @@ Federation-aware in v1 (six):
 | `vault_search` | Decision 4. Hits labeled by vault; referenced hits' `path` is the prefixed id. |
 | `vault_search_related` | Seed may be any vault's doc; candidate pool spans scope. Coherent only because of the one-provider decision (Decision 3). Static weights, as today. |
 | `vault_read` | Full read of an `alias:` path: gated on the mapped role's `canRead` for that collection under the *referenced* vault's policy; frontmatter validation report computed against the *referenced* vault's `schema_extensions` (advisory, as always); `version` token still returned (it is just a hash); `currentSource` walk stays inside that vault. |
-| `vault_index` | Optional `vault` param; listings per vault, omission per that vault's policy. |
+| `vault_index` | Optional `mount` param (named `mount`, not `vault` — the multi-vault router package reserves a `vault` input on every routed tool); listings per vault, omission per that vault's policy. |
 | `vault_status` | Gains a `federation` block: per mount `alias`, `state: "ok" \| "unavailable" \| "indexing"`, readable-subset doc count, last-refresh timestamp. Never unfiltered counts (Decision 2, ruling 3). |
-| `vault_reindex` | Optional `vault: <alias>` rebuilds one mount's index under `.daftari/federation/`; default remains canonical-only. Also the manual freshness lever (Decision 6). |
+| `vault_reindex` | Optional `mount: <alias>` rebuilds one mount's index under `.daftari/federation/`; default remains canonical-only. Also the manual freshness lever (Decision 6). |
 
 **Everything else refuses a prefixed path.** The six tools above are a
 **closed allowlist**; every other registered tool — current or future —
@@ -402,7 +406,7 @@ material the canonical operator does not curate.
 Answering #297's first open question: **startup-only.** At startup each mount
 runs the existing manifest-vs-disk freshness check — the cheap O(vault) stat
 pass — against its own DB and reindexes drift. After that, the mount's index
-is refreshed only by an explicit `vault_reindex {vault: <alias>}`.
+is refreshed only by an explicit `vault_reindex {mount: <alias>}`.
 
 Rationale, in order of weight:
 

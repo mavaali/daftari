@@ -40,6 +40,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
+import { indexDirFor } from "../federation/index-location.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 
@@ -106,9 +107,12 @@ export interface IndexedChunk {
 }
 
 // The .daftari control directory is excluded from vault listings, so the index
-// file lives there without ever being mistaken for vault content.
+// file lives there without ever being mistaken for vault content. A federated
+// mount's index is REDIRECTED into the canonical vault's
+// `.daftari/federation/<alias>/` (#297, spec Decision 3): nothing is ever
+// created — WAL sidecars included — under a referenced root.
 export function indexDbPath(vaultRoot: string): string {
-  return join(vaultRoot, ".daftari", "index.db");
+  return join(indexDirFor(vaultRoot), "index.db");
 }
 
 // Non-virtual schema. Virtual tables (`documents_fts`, `embeddings_vec`) are
@@ -430,7 +434,9 @@ export function hasEmbeddingVec(
 // use `LOCAL_MINILM_DIM` from `src/search/providers/local-minilm.ts`.
 export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<IndexDb, Error> {
   try {
-    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    // The redirected dir for a mount, the vault's own .daftari otherwise —
+    // mkdir must target where the db actually lands.
+    mkdirSync(indexDirFor(vaultRoot), { recursive: true });
     const db = new Database(indexDbPath(vaultRoot));
     db.pragma("journal_mode = WAL");
 
