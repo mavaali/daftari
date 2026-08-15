@@ -563,6 +563,27 @@ it does *not* do:
   Daftari does not merge their changes.
 - **Per-file granularity.** The lock protects one file. A write that logically
   spans several documents is not atomic across them.
+- **Commit-chain queue time counts against the lease TTL.** `withCommitLock`
+  (`src/utils/git.ts`) serializes every commit to one vault through a per-vault,
+  in-process promise chain, so two writers' add/commit sequences can never
+  interleave (see "Auto-commit" above). But a write's file lease is acquired
+  *before* its commit enters that chain and held until commit returns — so
+  time spent waiting in the queue counts against the 60-second TTL just like
+  time spent doing the write's own git work. Under extreme queue depth, a
+  request queued far enough back can have its lease expire before its commit
+  even runs. Two things bound the exposure today, and one is new here: the
+  lock above never queues two writers on the *same* file — the second fails
+  fast instead of waiting — so the chain's depth tracks genuinely concurrent
+  writes to *different* files, not repeated contention on one; and every
+  commit is pathspec-scoped to its own paths, so a commit that lands late can
+  never sweep up, or misattribute, a file some other request wrote. New in
+  this pass: every git subprocess on the commit path is now bounded by a
+  timeout (60s default; see `commit()` in `src/utils/git.ts`), so a single
+  hung git call — a stuck hook, a credential prompt, an external
+  `.git/index.lock` — can no longer wedge the chain indefinitely and multiply
+  every queued request's exposure. Restructuring lease/commit ordering so
+  queue time stops counting against the TTL is a deliberately deferred design
+  question, not addressed here.
 
 This is sufficient for the common case — agents usually write to different
 documents — and it guarantees no write ever corrupts a file. But the lock

@@ -1,6 +1,6 @@
 // Decorrelation report math + fixture parsing (brief item 8).
 // Toy 5-pair fixture exercises every code path. The REAL ~50-pair hand-built
-// fixture lives in tests/fixtures/decorrelation-fixture.json and is the
+// fixture lives in test/fixtures/decorrelation-fixture.json and is the
 // subject of a separate session (chunk-6 handoff).
 
 import { describe, expect, it, vi } from "vitest";

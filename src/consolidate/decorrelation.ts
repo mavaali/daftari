@@ -5,7 +5,7 @@
 //
 // THE FIXTURE IS THE GATE — not this code. This module ships the math + the
 // CLI surface; the real ~50-pair hand-built fixture lives in
-// tests/fixtures/decorrelation-fixture.json and is built in a separate
+// test/fixtures/decorrelation-fixture.json and is built in a separate
 // session (see the chunk-6 handoff). Until it exists, the gate cannot fire
 // meaningfully and the report is exercise-only.
 //

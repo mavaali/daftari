@@ -1,0 +1,233 @@
+[
+  {
+    "id": "vd-001",
+    "domain": "synthetic-vornic",
+    "edgeClass": "backward-causal",
+    "fromPath": "vornic/long-path-drop.md",
+    "toPath": "vornic/drift-rules.md",
+    "fromContent": "A Vornic packet routed through a chain of relays longer than the gap between anchor resets will be discarded before it reaches its destination.",
+    "toContent": "In the Vornic protocol, every relay increments a packet's drift counter and discards any packet whose drift exceeds that relay's tolerance; only an anchor node resets the drift counter to zero.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "vd-002",
+    "domain": "synthetic-vornic",
+    "edgeClass": "backward-causal",
+    "fromPath": "vornic/anchor-hint-needed.md",
+    "toPath": "vornic/drift-rules.md",
+    "fromContent": "A Vornic sender whose chosen route is longer than the drift limit must insert an anchor hint, or its packet will not arrive.",
+    "toContent": "Vornic relays discard a packet once its accumulated drift exceeds the relay's tolerance, and only an anchor node resets drift to zero.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "gm-001",
+    "domain": "synthetic-glimmer",
+    "edgeClass": "backward-causal",
+    "fromPath": "glimmer/light-pollution-crash.md",
+    "toPath": "glimmer/navigation.md",
+    "fromContent": "Glimmer-moth numbers fall sharply in the skies above brightly lit cities.",
+    "toContent": "Glimmer moths navigate solely by the polarization pattern of moonlight, which artificial city lighting scrambles.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "gm-002",
+    "domain": "synthetic-glimmer",
+    "edgeClass": "backward-causal",
+    "fromPath": "glimmer/no-fern-no-moth.md",
+    "toPath": "glimmer/larval-diet.md",
+    "fromContent": "A valley where the saber fern has died out can no longer sustain any glimmer-moth population.",
+    "toContent": "Glimmer-moth larvae feed exclusively on the saber fern and can digest no other plant.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "cs-001",
+    "domain": "synthetic-castellan",
+    "edgeClass": "backward-causal",
+    "fromPath": "castellan/lone-warden-cannot-win.md",
+    "toPath": "castellan/warden-movement.md",
+    "fromContent": "In Castellan, a lone warden can never by itself force a winning trap of the enemy keep on an open board.",
+    "toContent": "The warden moves only diagonally, so it can ever reach tiles of a single colour; the keep can always step to an unthreatened tile of the opposite colour.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "tc-001",
+    "domain": "synthetic-tithe",
+    "edgeClass": "backward-causal",
+    "fromPath": "tithe/hoarding-loses.md",
+    "toPath": "tithe/decay-rule.md",
+    "fromContent": "In the tithe-credit economy, hoarding credits across many cycles is a guaranteed way to lose wealth.",
+    "toContent": "Any tithe-credit left unspent loses ten percent of its value at the end of each cycle.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "tc-002",
+    "domain": "synthetic-tithe",
+    "edgeClass": "backward-causal",
+    "fromPath": "tithe/overissue-inflation.md",
+    "toPath": "tithe/fixed-issue-face-value.md",
+    "fromContent": "When the council suddenly issues far more tithe-credits than usual, merchant prices rise.",
+    "toContent": "Merchants must accept tithe-credits at face value, and only the council may create them; with more credits chasing the same goods, sellers raise prices.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "lt-001",
+    "domain": "synthetic-lumen",
+    "edgeClass": "backward-causal",
+    "fromPath": "lumen/grows-in-dark.md",
+    "toPath": "lumen/infrared-photosynthesis.md",
+    "fromContent": "A lumen tree can keep growing through a months-long sunless polar winter, as long as the ground stays warm.",
+    "toContent": "Lumen trees photosynthesize from infrared (heat) radiation rather than visible light.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "kl-001",
+    "domain": "synthetic-korl",
+    "edgeClass": "backward-causal",
+    "fromPath": "korl/no-data-race.md",
+    "toPath": "korl/immutable-pure.md",
+    "fromContent": "A program written in the Korl language can never exhibit a data race between concurrent tasks.",
+    "toContent": "Korl has no mutable state: every value is immutable and every function is pure, with no shared cell a task could write.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "kl-002",
+    "domain": "synthetic-korl",
+    "edgeClass": "backward-causal",
+    "fromPath": "korl/infinite-list-ok.md",
+    "toPath": "korl/lazy-evaluation.md",
+    "fromContent": "In Korl, merely defining an infinite list does not by itself make the program hang.",
+    "toContent": "Korl evaluates lazily, computing each element of a structure only when some later step actually demands it.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "vd-003",
+    "domain": "synthetic-vornic",
+    "edgeClass": "forward-temporal",
+    "fromPath": "vornic/v2-priority-anchor.md",
+    "toPath": "vornic/drift-rules.md",
+    "fromContent": "Vornic v2 lets a high-priority packet request the next relay forward it to the nearest anchor before any other traffic.",
+    "toContent": "Because Vornic relays discard packets once drift exceeds tolerance and only anchors reset drift, reaching an anchor quickly is what keeps a packet alive.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "cs-002",
+    "domain": "synthetic-castellan",
+    "edgeClass": "forward-temporal",
+    "fromPath": "castellan/opening-theory-double-warden.md",
+    "toPath": "castellan/lone-warden-cannot-win.md",
+    "fromContent": "Standard Castellan opening theory tells players to develop a second warden early rather than push a single one forward.",
+    "toContent": "A lone warden cannot by itself force a winning trap of the enemy keep, because it only ever covers tiles of one colour.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "dv-001",
+    "domain": "daftari",
+    "edgeClass": "backward-causal",
+    "fromPath": "vault/architecture/index-loss-safe.md",
+    "toPath": "vault/architecture/index-is-projection.md",
+    "fromContent": "Deleting Daftari's .daftari/index.db file loses no vault data.",
+    "toContent": "The index.db is a rebuildable projection of the markdown files, which are the single source of truth for all vault content and metadata.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "dv-002",
+    "domain": "daftari",
+    "edgeClass": "backward-causal",
+    "fromPath": "vault/cortex/coldstart-stages.md",
+    "toPath": "vault/cortex/coldstart-budget-floor.md",
+    "fromContent": "At an empty cold start, every Daftari curation action stages for human approval rather than auto-writing.",
+    "toContent": "At cold start the action ledger is empty and every edge is a k=0 candidate, so the trust budget sits at its floor and no action can clear the auto-write gate.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "dv-003",
+    "domain": "daftari",
+    "edgeClass": "backward-causal",
+    "fromPath": "vault/cortex/within-session-no-recount.md",
+    "toPath": "vault/cortex/replay-guard.md",
+    "fromContent": "Two votes cast on the same edge by the same observer-and-axis within one Daftari session count as only one toward the edge's strength.",
+    "toContent": "Daftari's edge store replay-guards a repeated (observer, axis) pair, re-counting it only after EDGE_REPLAY_GAP_DAYS have passed.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "nv-001",
+    "domain": "ml-novel",
+    "edgeClass": "forward-temporal",
+    "fromPath": "thesis/rag-as-regularizer.md",
+    "toPath": "reading-notes/regularization-restricts.md",
+    "fromContent": "Retrieval-augmented generation acts as a regularizer on the retrieval inverse problem, injecting a low-rank prior that suppresses the unconstrained components that surface as hallucinations.",
+    "toContent": "Regularizing an ill-posed inverse problem works by adding a prior that restricts the solution to a lower-dimensional subspace, damping the components the data alone cannot determine.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "gm-003",
+    "domain": "synthetic-glimmer",
+    "edgeClass": "backward-causal",
+    "fromPath": "glimmer/spore-night-swarm.md",
+    "toPath": "glimmer/fern-spore-timing.md",
+    "fromContent": "Glimmer moths can only be seen swarming to lay eggs on the night of a full moon.",
+    "toContent": "The saber fern releases its spores only on full-moon nights, and glimmer moths lay their eggs in fresh saber-fern spore beds.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "tc-003",
+    "domain": "synthetic-tithe",
+    "edgeClass": "backward-causal",
+    "fromPath": "tithe/velocity-high.md",
+    "toPath": "tithe/decay-rule.md",
+    "fromContent": "Tithe-credits change hands far more often than an ordinary currency would.",
+    "toContent": "Unspent tithe-credits lose ten percent of their value each cycle, so holders rush to spend them.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "lt-002",
+    "domain": "synthetic-lumen",
+    "edgeClass": "backward-causal",
+    "fromPath": "lumen/bark-shedding-winter.md",
+    "toPath": "lumen/cold-bark-shed.md",
+    "fromContent": "You can tell a hard frost passed through a lumen grove by the carpet of shed bark on the ground.",
+    "toContent": "Lumen trees shed their outer bark whenever the temperature drops below freezing.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "kl-003",
+    "domain": "synthetic-korl",
+    "edgeClass": "backward-causal",
+    "fromPath": "korl/same-input-same-output.md",
+    "toPath": "korl/immutable-pure.md",
+    "fromContent": "Calling a Korl function twice with the same arguments always yields the same result, anywhere in the program.",
+    "toContent": "Every Korl function is pure: its output depends only on its arguments, with no hidden mutable state or side effects.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "vd-004",
+    "domain": "synthetic-vornic",
+    "edgeClass": "backward-causal",
+    "fromPath": "vornic/anchor-is-bottleneck.md",
+    "toPath": "vornic/drift-rules.md",
+    "fromContent": "If a region's only anchor node fails, long-distance Vornic traffic across that region collapses even though every relay is still working.",
+    "toContent": "Only anchor nodes reset a packet's drift counter; relays merely increment it and drop over-drifted packets.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  }
+]

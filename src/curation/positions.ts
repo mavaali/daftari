@@ -98,6 +98,100 @@ export function dissentIds(positions: Position[], stance: Stance): string[] {
     .map((p) => p.id);
 }
 
+// Minimal structural view of a positional tension, so the tools and lint can
+// share the predicates below without importing the tension module.
+export interface PositionalTensionRef {
+  id?: string;
+  resolved: boolean;
+  resolutionKind?: string;
+  positionA: string;
+  positionB: string;
+}
+
+// Follow a position's self-supersession chain to its unsuperseded end.
+// Sound because position supersession is always same-principal self-revision
+// (applyAssert + the foreign-position guard). Returns null on an unknown id,
+// a dangling link, or a cycle — corrupt shapes lint owns.
+export function chainEnd(byId: Map<string, Position>, id: string): Position | null {
+  let cur = byId.get(id);
+  if (!cur) return null;
+  const seen = new Set([cur.id]);
+  while (cur.superseded_by) {
+    const next = byId.get(cur.superseded_by);
+    if (!next || seen.has(next.id)) return null;
+    cur = next;
+    seen.add(cur.id);
+  }
+  return cur;
+}
+
+// The open positional tensions a ratification at `stance` adjudicates: both
+// chain ends resolve, exactly one end holds the ratified stance, and the
+// OTHER end's id is in the server-computed dissent. Moot pairs (a flip made
+// the ends same-stance or qualify) are deliberately NOT included — the
+// ratification did not adjudicate them, and consolidate must only record
+// what the ratification actually did.
+export function qualifyingDissentTensions(
+  positions: Position[],
+  stance: Stance,
+  dissent: string[],
+  tensions: PositionalTensionRef[],
+): string[] {
+  const byId = new Map(positions.map((p) => [p.id, p]));
+  const dissentSet = new Set(dissent);
+  const out: string[] = [];
+  for (const t of tensions) {
+    if (t.resolved || t.id === undefined) continue;
+    const ea = chainEnd(byId, t.positionA);
+    const eb = chainEnd(byId, t.positionB);
+    if (!ea || !eb) continue;
+    const aligned = [ea, eb].filter((p) => p.stance === stance);
+    if (aligned.length !== 1) continue;
+    const other = ea.stance === stance ? eb : ea;
+    if (dissentSet.has(other.id)) out.push(t.id);
+  }
+  return out;
+}
+
+// The live conflicting pairs (unsuperseded assert x dispute) with NO record:
+// no open positional tension names the pair, and no resolution of kinds
+// `accepted` (standing dissent the org chose to keep) or `consolidated`
+// (adjudicated by a ratification) covers it. `corrected`/`superseded`/
+// `invalid` resolutions predict the conflict dissolves — if both positions
+// are still live and opposed, the pair is uncovered again. The recovery
+// surface for vault_assert's silent tension_error.
+export function uncoveredConflictPairs(
+  positions: Position[],
+  tensions: PositionalTensionRef[],
+): Array<{ a: Position; b: Position; resolvedKinds: string[] }> {
+  const live = unsuperseded(positions);
+  const asserts = live.filter((p) => p.stance === "assert");
+  const disputes = live.filter((p) => p.stance === "dispute");
+  const covering = (a: string, b: string): PositionalTensionRef[] =>
+    tensions.filter(
+      (t) => (t.positionA === a && t.positionB === b) || (t.positionA === b && t.positionB === a),
+    );
+  const out: Array<{ a: Position; b: Position; resolvedKinds: string[] }> = [];
+  for (const a of asserts) {
+    for (const d of disputes) {
+      const named = covering(a.id, d.id);
+      const covered = named.some(
+        (t) =>
+          !t.resolved || t.resolutionKind === "accepted" || t.resolutionKind === "consolidated",
+      );
+      if (covered) continue;
+      out.push({
+        a,
+        b: d,
+        resolvedKinds: named
+          .map((t) => t.resolutionKind)
+          .filter((k): k is string => k !== undefined),
+      });
+    }
+  }
+  return out;
+}
+
 export interface AssertInput {
   principal: string;
   stance: Stance;

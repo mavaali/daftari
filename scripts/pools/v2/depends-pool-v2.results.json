@@ -1,0 +1,241 @@
+{
+  "pool": "scripts/pools/v2/depends-pool-v2.json",
+  "samples": 3,
+  "raters": [
+    "openai/gpt-4o",
+    "google/gemini-2.5-flash"
+  ],
+  "results": [
+    {
+      "id": "nd-001",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "depends",
+          "counts": {
+            "depends": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-002",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "depends",
+          "counts": {
+            "depends": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-003",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "depends",
+          "counts": {
+            "neither": 1,
+            "depends": 2
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-004",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-005",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-006",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-007",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-008",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-009",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-010",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "neither",
+          "counts": {
+            "neither": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 2,
+            "neither": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-011",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "depends",
+          "counts": {
+            "depends": 3
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "nd-012",
+      "proposed": "depends",
+      "pass": false,
+      "familyMaj": {
+        "openai/gpt-4o": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 2,
+            "neither": 1
+          }
+        },
+        "google/gemini-2.5-flash": {
+          "verdict": "derives",
+          "counts": {
+            "derives": 3
+          }
+        }
+      }
+    }
+  ]
+}

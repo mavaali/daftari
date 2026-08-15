@@ -31,6 +31,7 @@ import type { ShadowLintSummary } from "../curation/shadow.js";
 import { STAGED_ACTION_TYPES, sweepExpiredActions } from "../curation/staged-actions.js";
 import {
   addTension,
+  CALLER_RESOLUTION_KINDS,
   LOGGABLE_TENSION_KINDS,
   listTensions,
   RESOLUTION_KINDS,
@@ -169,9 +170,11 @@ export async function vaultTensionResolve(
   if (typeof kindRaw !== "string" || kindRaw.trim().length === 0) {
     return err(new Error("vault_tension_resolve requires a non-empty 'kind' argument"));
   }
-  if (!(RESOLUTION_KINDS as readonly string[]).includes(kindRaw)) {
+  if (!(CALLER_RESOLUTION_KINDS as readonly string[]).includes(kindRaw)) {
     return err(
-      new Error(`vault_tension_resolve 'kind' must be one of: ${RESOLUTION_KINDS.join(", ")}`),
+      new Error(
+        `vault_tension_resolve 'kind' must be one of: ${CALLER_RESOLUTION_KINDS.join(", ")}`,
+      ),
     );
   }
 
@@ -1216,10 +1219,11 @@ export const curationTools: ToolDefinition[] = [
         },
         kind: {
           type: "string",
-          enum: [...RESOLUTION_KINDS],
+          enum: [...CALLER_RESOLUTION_KINDS],
           description:
             "How the tension was resolved: 'superseded' | 'corrected' | " +
-            "'accepted' | 'invalid'.",
+            "'accepted' | 'invalid'. ('consolidated' is system-only, recorded " +
+            "by vault_consolidate's batch resolve.)",
         },
         rationale: {
           type: "string",

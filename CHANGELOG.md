@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-08-15
+
+### Added
+
+- **Read-only cross-vault federation** (#297; design spec #397, implemented in #398 and #400) — one daftari process can now mount other vaults read-only and compose reads and search over them, while everything that writes stays bound to the single canonical vault. Federation is read composition over sovereign vaults: **a mount exposes documents, not vault state** — tensions, edges, provenance, positions, lint, and themes never cross the boundary.
+  - **Mounting** — a `federation.mounts` list in the canonical vault's config (alias + path, `index: full|lexical`, `optional`), config-only by design. Startup fails loud on a missing required mount, a non-vault directory, nesting with the canonical root, a duplicate real path, or a canonical file shadowing a declared alias prefix. A mount takes no process lock, and nothing is ever created under a referenced root — its derived index (WAL sidecars included) lives under the canonical `.daftari/federation/<alias>/` via an index-location redirect.
+  - **Access** — the *referenced* vault's own config grants access via a `federation.principals` block keyed by authenticated principal, resolved to one of that vault's roles; an unmapped principal is the deny-all guest (with an operator stderr notice, never tool output). Only the granted role's `read` list is consulted; results are readable-subset only, per that vault's policy.
+  - **Addressing** — federated documents use `<alias>:<path>` form with an explicit `vault` label on every result. Dispatch matches declared aliases only, so ordinary `:`-containing POSIX filenames stay canonical; collision safety is enforced by a mount-time scan plus write-tool refusal, never assumed from filename rules.
+  - **Six tools federate** — `vault_search` and `vault_search_related` run per-vault pipelines under each vault's own policy (mounts are embedded with the canonical process's provider; `index: lexical` skips embeddings) and fuse with RRF across the per-vault rank lists, with an optional `vaults` scope parameter; `vault_read` serves mount documents validated against the referenced vault's schema extensions; `vault_index` and `vault_reindex` take a `mount: <alias>` parameter; `vault_status` gains a per-mount federation block. Every other tool refuses a federated target with one of two uniform errors, enforced by a registry guard test so a future tool cannot ship unclassified.
+  - **Freshness** — startup-only per mount (no watchers on mounts); `vault_reindex {mount}` is the manual lever, and `vault_read` always re-reads from disk so document reads are never stale.
+  - stdio-only in v1: `daftari serve` refuses a config with mounts. Cross-vault edges and tensions are deliberate v2 deferrals (see the spec's Decision 8).
+
 ## [3.5.0] - 2026-08-14
 
 ### Added

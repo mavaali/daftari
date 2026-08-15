@@ -1,0 +1,222 @@
+[
+  {
+    "id": "d2-001",
+    "domain": "astronomy",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/same-moon-face.md",
+    "toPath": "notes/tidal-locking.md",
+    "fromContent": "We always see the same face of the Moon from Earth.",
+    "toContent": "The Moon is tidally locked: it rotates exactly once per orbit, so the same hemisphere always points toward Earth.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-002",
+    "domain": "physics",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/bent-pencil.md",
+    "toPath": "notes/refraction.md",
+    "fromContent": "A straight pencil standing in a glass of water looks bent at the water's surface.",
+    "toContent": "Light refracts, changing direction, when it crosses between media of different optical density such as water and air.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-003",
+    "domain": "biology",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/etiolation.md",
+    "toPath": "notes/photosynthesis-light.md",
+    "fromContent": "Plants grown in complete darkness become tall, spindly, and pale.",
+    "toContent": "Without light a plant cannot photosynthesize or make chlorophyll, and it elongates abnormally while searching for a light source.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-004",
+    "domain": "chemistry",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/salt-melts-ice.md",
+    "toPath": "notes/freezing-point-depression.md",
+    "fromContent": "Spreading salt on icy roads makes the ice melt.",
+    "toContent": "Dissolved salt lowers the freezing point of water, so ice can melt at temperatures below 0 degrees Celsius.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-005",
+    "domain": "cs",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/mergesort-nlogn.md",
+    "toPath": "notes/mergesort-mechanism.md",
+    "fromContent": "Merge sort runs in O(n log n) time even in the worst case.",
+    "toContent": "Merge sort recursively splits the list in half, giving about log n levels, and merges each level with linear n work.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-006",
+    "domain": "economics",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/hyperinflation-savings.md",
+    "toPath": "notes/purchasing-power-collapse.md",
+    "fromContent": "Hyperinflation rapidly wipes out the value of people's cash savings.",
+    "toContent": "Under hyperinflation the price level rises so fast that a unit of currency loses most of its purchasing power within days.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-007",
+    "domain": "physics",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/iss-weightless.md",
+    "toPath": "notes/orbital-free-fall.md",
+    "fromContent": "Astronauts aboard the International Space Station float in apparent weightlessness.",
+    "toContent": "The station and everything in it are in continuous free fall around the Earth, so no normal force is felt as weight.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-008",
+    "domain": "biology",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/identical-twins-dna.md",
+    "toPath": "notes/monozygotic-split.md",
+    "fromContent": "Identical twins carry essentially the same DNA.",
+    "toContent": "Identical twins arise when a single fertilized egg splits into two embryos, each inheriting the same genome.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-009",
+    "domain": "daftari",
+    "edgeClass": "forward-temporal",
+    "fromPath": "vault/cortex/edge-reexamine-on-edit.md",
+    "toPath": "vault/cortex/event-clock-hash.md",
+    "fromContent": "When both endpoint documents of a Daftari edge are edited, the loop re-examines that edge.",
+    "toContent": "Editing a document changes its content hash, which the session-start event clock detects and uses to mark dependent edges due.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-010",
+    "domain": "math",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/divide-by-zero.md",
+    "toPath": "notes/division-as-inverse.md",
+    "fromContent": "Dividing a number by zero is undefined.",
+    "toContent": "Division is defined as the inverse of multiplication, but nothing multiplied by zero gives a nonzero product, so the inverse has no value.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-011",
+    "domain": "physics",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/metal-feels-colder.md",
+    "toPath": "notes/thermal-conductivity.md",
+    "fromContent": "At the same room temperature, a metal handle feels colder to the touch than a wooden one.",
+    "toContent": "Metal conducts heat away from your skin far faster than wood, drawing warmth from your hand more quickly even at equal temperature.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-012",
+    "domain": "chemistry",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/helium-balloon-rises.md",
+    "toPath": "notes/buoyancy-density.md",
+    "fromContent": "A helium-filled balloon rises upward when released in air.",
+    "toContent": "Helium is much less dense than the surrounding air, so the buoyant force exceeds the balloon's weight.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-013",
+    "domain": "cs",
+    "edgeClass": "forward-temporal",
+    "fromPath": "notes/https-eavesdropper.md",
+    "toPath": "notes/tls-encryption.md",
+    "fromContent": "HTTPS stops an eavesdropper on the network from reading the password you submit to a website.",
+    "toContent": "HTTPS encrypts the data in transit using TLS, so anyone intercepting the traffic sees only ciphertext.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-014",
+    "domain": "biology",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/raw-kidney-beans.md",
+    "toPath": "notes/phytohaemagglutinin.md",
+    "fromContent": "Eating raw or undercooked kidney beans can cause acute nausea and vomiting.",
+    "toContent": "Raw kidney beans contain the toxic lectin phytohaemagglutinin, which is destroyed only by thorough boiling.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-015",
+    "domain": "astronomy",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/solar-eclipse-new-moon.md",
+    "toPath": "notes/new-moon-alignment.md",
+    "fromContent": "A solar eclipse can happen only at the time of a new moon.",
+    "toContent": "A solar eclipse requires the Moon to pass directly between the Earth and the Sun, which is exactly the alignment that defines a new moon.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-016",
+    "domain": "economics",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/rate-hikes-curb-inflation.md",
+    "toPath": "notes/rates-reduce-spending.md",
+    "fromContent": "Central banks raise interest rates to bring down high inflation.",
+    "toContent": "Higher interest rates make borrowing costlier and saving more attractive, which reduces aggregate spending and cools price growth.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-017",
+    "domain": "physics",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/hear-around-corner.md",
+    "toPath": "notes/diffraction-wavelength.md",
+    "fromContent": "You can hear someone speaking around a corner even though you cannot see them around it.",
+    "toContent": "Sound's wavelength is comparable to everyday objects so it diffracts strongly around them, whereas light's far shorter wavelength diffracts negligibly.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-018",
+    "domain": "daftari",
+    "edgeClass": "backward-causal",
+    "fromPath": "vault/architecture/index-rebuildable.md",
+    "toPath": "vault/architecture/markdown-is-source.md",
+    "fromContent": "Daftari can fully rebuild its search index after the .daftari/index.db file is deleted.",
+    "toContent": "The markdown files retain all content and frontmatter, which is everything the indexer reads to construct the index.",
+    "truth": "derives",
+    "difficulty": "obvious"
+  },
+  {
+    "id": "d2-019",
+    "domain": "biology",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/stomach-not-self-digest.md",
+    "toPath": "notes/mucus-bicarbonate-layer.md",
+    "fromContent": "Stomach acid does not normally digest the stomach itself.",
+    "toContent": "The stomach lining secretes a protective mucus and bicarbonate layer that neutralizes the acid right at the stomach wall.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  },
+  {
+    "id": "d2-020",
+    "domain": "math",
+    "edgeClass": "backward-causal",
+    "fromPath": "notes/sqrt2-irrational.md",
+    "toPath": "notes/sqrt2-contradiction.md",
+    "fromContent": "The square root of 2 cannot be expressed as a ratio of two integers.",
+    "toContent": "Assuming sqrt(2) = a/b in lowest terms forces both a and b to be even, contradicting that the fraction was in lowest terms.",
+    "truth": "derives",
+    "difficulty": "subtle"
+  }
+]

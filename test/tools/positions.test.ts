@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import {
   getStagedActionById,
   stageActionWithConflictCheck,
 } from "../../src/curation/staged-actions.js";
-import { listTensions } from "../../src/curation/tension.js";
+import { listTensions, TENSIONS_LOCK_KEY } from "../../src/curation/tension.js";
 import { registeredToolNames } from "../../src/server.js";
 import { vaultAssert, vaultConsolidate, vaultPositions } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
@@ -924,6 +925,228 @@ describe("vault_positions (U-5)", () => {
   it("exactly one of path|principal is required", async () => {
     expect((await vaultPositions(vault, {}, ALICE)).ok).toBe(false);
     expect((await vaultPositions(vault, { path: DOC, principal: "bob" }, ALICE)).ok).toBe(false);
+  });
+});
+
+// Item 5: batch resolve within a ratified consolidation. The caller supplies
+// no ids and no kind — both are server-derived from the ratification, and the
+// recorded kind is the system-only `consolidated` (the disagreement persists,
+// carried as dissent in org_position — neither superseded nor corrected nor
+// blanket-accepted would be honest).
+describe("vault_consolidate resolve_tensions: 'dissent' (batch)", () => {
+  let vault: string;
+  beforeEach(async () => {
+    vault = makeTempVault();
+    await seedDoc(vault);
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("one ratification resolves every open positional tension adjudicated by its dissent", async () => {
+    const { snapshotPairId, alicePairId } = await contestedFixture(vault);
+
+    const r = await vaultConsolidate(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "c", resolve_tensions: "dissent" },
+      CAROL_RATIFIER,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.resolved_tension_ids.sort()).toEqual([snapshotPairId, alicePairId].sort());
+    expect(r.value.resolve_errors).toEqual([]);
+
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    for (const id of [snapshotPairId, alicePairId]) {
+      const t = tensions.value.find((x) => x.id === id);
+      expect(t?.resolved).toBe(true);
+      expect(t?.resolution?.kind).toBe("consolidated");
+      expect(t?.resolution?.resolved_by).toBe("carol");
+      expect(t?.resolution?.rationale).toContain("dissent carried");
+    }
+  });
+
+  it("chain-follows superseded dissent: same-stance re-mints qualify, stance flips stay open", async () => {
+    await contestedFixture(vault);
+    // bob re-mints the same dispute: pos-002 superseded by pos-003 (dispute).
+    // The old tensions name pos-002 — their live chain end is pos-003, still
+    // opposed and in dissent, so they qualify.
+    const remint = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "high", agent: "b" },
+      BOB,
+    );
+    expect(remint.ok).toBe(true);
+
+    const r = await vaultConsolidate(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "c", resolve_tensions: "dissent" },
+      CAROL_RATIFIER,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    const positional = tensions.value.filter((t) => t.kind === "positional");
+    // Every positional tension on the doc was adjudicated by this dissent.
+    expect(positional.every((t) => t.resolved)).toBe(true);
+    expect(positional.every((t) => t.resolution?.kind === "consolidated")).toBe(true);
+  });
+
+  it("a stance flip makes the old pair moot — left open, not swept", async () => {
+    await contestedFixture(vault);
+    // bob flips to qualify: his dispute chain END is no longer opposed.
+    const flip = await vaultAssert(
+      vault,
+      { path: DOC, stance: "qualify", confidence: "medium", agent: "b" },
+      BOB,
+    );
+    expect(flip.ok).toBe(true);
+
+    const r = await vaultConsolidate(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "c", resolve_tensions: "dissent" },
+      CAROL_RATIFIER,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // No live dispute → empty dissent → nothing qualifies; the moot pairs
+    // stay open for lint, because this ratification did not adjudicate them.
+    expect(r.value.resolved_tension_ids).toEqual([]);
+
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    expect(tensions.value.filter((t) => t.kind === "positional" && !t.resolved).length).toBe(2);
+  });
+
+  it("rejects resolve_tensions when ratifying 'qualify' — nothing is written", async () => {
+    await contestedFixture(vault);
+    const r = await vaultConsolidate(
+      vault,
+      { path: DOC, stance: "qualify", confidence: "low", agent: "c", resolve_tensions: "dissent" },
+      CAROL_RATIFIER,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("qualify");
+
+    const doc = await vaultRead(vault, DOC);
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+    expect(doc.value.frontmatter.org_position ?? null).toBeNull();
+  });
+
+  it("composes with the single resolve_tension: the named id keeps its deliberate kind", async () => {
+    const { snapshotPairId, alicePairId } = await contestedFixture(vault);
+
+    const r = await vaultConsolidate(
+      vault,
+      {
+        path: DOC,
+        stance: "assert",
+        confidence: "high",
+        agent: "c",
+        resolve_tension: { id: alicePairId, kind: "accepted" },
+        resolve_tensions: "dissent",
+      },
+      CAROL_RATIFIER,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.resolved_tension_id).toBe(alicePairId);
+    expect(r.value.resolved_tension_ids).toEqual([snapshotPairId]);
+
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    expect(tensions.value.find((t) => t.id === alicePairId)?.resolution?.kind).toBe("accepted");
+    expect(tensions.value.find((t) => t.id === snapshotPairId)?.resolution?.kind).toBe(
+      "consolidated",
+    );
+  });
+
+  it("reports per-id failures without unwinding the ratification", async () => {
+    const { snapshotPairId, alicePairId } = await contestedFixture(vault);
+
+    // A foreign holder pins the `__tensions__` lease; the injected sleep
+    // does NOT release it, so each batch resolve fails after its bounded
+    // retry — but the org_position write stands.
+    const lockDbResult = openLockDb(vault);
+    expect(lockDbResult.ok).toBe(true);
+    if (!lockDbResult.ok) return;
+    const lockDb = lockDbResult.value;
+    const held = acquireLock(lockDb, TENSIONS_LOCK_KEY, "foreign-holder");
+    expect(held.ok).toBe(true);
+
+    const r = await vaultConsolidate(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "c", resolve_tensions: "dissent" },
+      CAROL_RATIFIER,
+      { sleep: async () => {}, jitterMs: () => 100 },
+    );
+    releaseLock(lockDb, TENSIONS_LOCK_KEY, "foreign-holder");
+    lockDb.close();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.resolved_tension_ids).toEqual([]);
+    expect(r.value.resolve_errors.map((e) => e.id).sort()).toEqual(
+      [snapshotPairId, alicePairId].sort(),
+    );
+    expect(r.value.org_position.stance).toBe("assert");
+  });
+});
+
+// Item 5: the slice-3 §3.5 bounded jittered retry on `__tensions__` lease
+// contention, applied to vault_assert's system-generated tension mints.
+describe("vault_assert mint retry on tension-lease contention", () => {
+  let vault: string;
+  beforeEach(async () => {
+    vault = makeTempVault();
+    await seedDoc(vault);
+    await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "a" },
+      ALICE,
+    );
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("retries a contended mint once after a jittered sleep and succeeds", async () => {
+    const lockDbResult = openLockDb(vault);
+    expect(lockDbResult.ok).toBe(true);
+    if (!lockDbResult.ok) return;
+    const lockDb = lockDbResult.value;
+    const held = acquireLock(lockDb, TENSIONS_LOCK_KEY, "foreign-holder");
+    expect(held.ok).toBe(true);
+
+    const sleeps: number[] = [];
+    const r = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "b" },
+      BOB,
+      {
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+          releaseLock(lockDb, TENSIONS_LOCK_KEY, "foreign-holder");
+        },
+        jitterMs: () => 175,
+      },
+    );
+    lockDb.close();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.tension_error).toBeUndefined();
+    expect(r.value.tension_ids.length).toBeGreaterThan(0);
+    expect(sleeps).toEqual([175]);
   });
 });
 

@@ -40,6 +40,12 @@ export const WAGER_GONE_STAKE = 1;
 // Write-share above which track records are declared uninformative (idea 4's
 // kill condition: one author, flat curves).
 export const FLAT_CURVE_SHARE = 0.95;
+// Flat credit for a live position aligned with the org stance at ratify time
+// (created <= ratified_at — no bandwagoning onto an already-ratified stance).
+// Flat, mirroring WAGER_SURVIVAL_CREDIT: the asymmetry with stake-
+// proportional burns is deliberate — confidence inflation on the winning
+// side earns nothing extra, while confident wrongness costs 3x.
+export const POSITION_RATIFIED_CREDIT = 1;
 
 export function stakeFor(confidence: string): number {
   return WAGER_STAKES[confidence] ?? WAGER_GONE_STAKE;
@@ -72,12 +78,44 @@ export interface PrincipalRecord {
     pending: number;
   };
   tensionsLogged: number;
+  // The position wager book (multi-user contested beliefs). Same currency as
+  // the doc book (WAGER_STAKES over Position.confidence); settled by the
+  // CURRENT ratification only — org_position.dissent is the settlement
+  // carrier (server-computed at ratify time, LD-18), tension resolutions
+  // modulate it: `accepted` exempts (standing dissent — taxing it would make
+  // the book punish the keystone), `corrected` extends the burn to both
+  // parties, `superseded`/`invalid` settle nothing. Self-revision is
+  // structurally free: position supersession is always self-supersession
+  // (applyAssert + the foreign-position guard), so a superseded entry never
+  // stakes and never burns. pos-000 (principal "unknown") prices nothing.
+  positions: {
+    // Activity (the idea-9 longitudinal series for stance-taking).
+    taken: number; // all entries authored, live + superseded
+    live: number; // superseded_by == null
+    firstAt: string | null; // min Position.created
+    lastAt: string | null; // max Position.created
+    // The open book.
+    exposure: number; // sum of stakeFor(confidence) over live positions
+    contestedOpen: number; // live positions party to an unresolved positional tension
+    stakeAtRisk: number; // sum of stakes over those
+    // The settled book (current ratification only).
+    selfRevised: number; // superseded entries — honest updating, never taxed
+    dissented: number; // live ids in the current org_position.dissent
+    standingDissent: number; // subset under an `accepted` resolution — priced 0
+    corrected: number; // live party to a `corrected`-resolved positional tension
+    burned: number; // at most one burn per position (dissent/corrected deduped)
+    ratifiedAligned: number; // live, stance === org stance, created <= ratified_at
+    credited: number; // ratifiedAligned x POSITION_RATIFIED_CREDIT
+    balance: number; // credited − burned (advisory; provisional constants)
+  };
 }
 
 export interface WitnessResult {
   principals: PrincipalRecord[];
   unattributedDocs: number; // docs with no provenance history — nobody's record
+  legacyPositions: number; // pos-000 system snapshots — nobody's record
   concentration: { topPrincipal: string | null; topShare: number };
+  positionConcentration: { topPrincipal: string | null; topShare: number };
   flatCurveWarning: boolean;
 }
 
@@ -119,10 +157,15 @@ export async function buildWitness(
     if (!authorOf.has(e.file)) authorOf.set(e.file, identityOf(e));
   }
 
-  // Contested / corrected doc sets from the tension log.
+  // Contested / corrected doc sets from the tension log. Positional tensions
+  // are excluded — they price the POSITION holders (below), not the doc
+  // author: burning the scaffolder's doc stake for other principals' dispute
+  // is exactly the cross-wiring that makes the doc book noisy under
+  // multi-user, and the R-9 low-cap zeroes the contested doc's stake anyway.
   const contestedDocs = new Set<string>();
   const correctedDocs = new Set<string>();
   for (const t of visibleTensions) {
+    if (t.kind === "positional") continue;
     if (!t.resolved) {
       contestedDocs.add(t.sourceA);
       contestedDocs.add(t.sourceB);
@@ -130,6 +173,26 @@ export async function buildWitness(
       correctedDocs.add(t.sourceA);
       correctedDocs.add(t.sourceB);
     }
+  }
+
+  // Positional-tension settlement carriers, keyed by position id per doc.
+  // (Positional tensions are self-tensions: sourceA === sourceB === the doc.)
+  const openPositional = new Set<string>(); // `${doc} ${positionId}`
+  const acceptedPositional = new Set<string>();
+  const correctedPositional = new Set<string>();
+  const posKey = (doc: string, id: string): string => `${doc} ${id}`;
+  for (const t of visibleTensions) {
+    if (t.kind !== "positional" || !t.positionA || !t.positionB) continue;
+    const target = !t.resolved
+      ? openPositional
+      : t.resolution?.kind === "accepted"
+        ? acceptedPositional
+        : t.resolution?.kind === "corrected"
+          ? correctedPositional
+          : null;
+    if (!target) continue; // `superseded`/`invalid` resolutions settle nothing
+    target.add(posKey(t.sourceA, t.positionA));
+    target.add(posKey(t.sourceA, t.positionB));
   }
 
   const records = new Map<string, PrincipalRecord>();
@@ -153,6 +216,23 @@ export async function buildWitness(
         balance: 0,
         proposals: { total: 0, ratified: 0, rejected: 0, expired: 0, pending: 0 },
         tensionsLogged: 0,
+        positions: {
+          taken: 0,
+          live: 0,
+          firstAt: null,
+          lastAt: null,
+          exposure: 0,
+          contestedOpen: 0,
+          stakeAtRisk: 0,
+          selfRevised: 0,
+          dissented: 0,
+          standingDissent: 0,
+          corrected: 0,
+          burned: 0,
+          ratifiedAligned: 0,
+          credited: 0,
+          balance: 0,
+        },
       };
       records.set(principal, r);
     }
@@ -203,6 +283,102 @@ export async function buildWitness(
     }
   }
 
+  // The position pass: price each principal's stance-taking from visible
+  // frontmatter. pos-000 legacy snapshots (principal "unknown", LD-22
+  // unforgeable) price nothing and never materialize a record — counted once,
+  // vault-level, the exact analog of unattributedDocs.
+  let legacyPositions = 0;
+  for (const doc of visibleDocs) {
+    const fm = doc.frontmatter;
+    if (fm.positions == null) continue;
+    // Dead docs price nothing — the same gate as the doc book ("drafts/
+    // archived: no live claim, no wager"): a retired doc's frozen
+    // ratification must not keep paying credits or collecting burns.
+    if (fm.status !== "canonical") continue;
+    const org = fm.org_position ?? null;
+    const byId = new Map(fm.positions.map((p) => [p.id, p]));
+
+    // Resolve each dissent id through the self-supersession chain. A live
+    // descendant with the SAME stance is a re-mint of the dissent — the
+    // burn follows it (otherwise one no-op re-assert launders the loss); a
+    // stance change is a genuine revision and stays free. Standing
+    // (`accepted`) immunity attaches to any id along the chain.
+    const dissentLive = new Set<string>();
+    const standingLive = new Set<string>();
+    for (const id of org?.dissent ?? []) {
+      const origin = byId.get(id);
+      if (!origin) continue; // dangling dissent id — lint's territory
+      let cur = origin;
+      const seen = new Set<string>([cur.id]);
+      let standing = acceptedPositional.has(posKey(doc.path, cur.id));
+      while (cur.superseded_by) {
+        const next = byId.get(cur.superseded_by);
+        if (!next || seen.has(next.id)) break; // dangling or cyclic chain
+        cur = next;
+        seen.add(cur.id);
+        standing = standing || acceptedPositional.has(posKey(doc.path, cur.id));
+      }
+      if (cur.superseded_by !== null) continue; // no live end
+      if (cur.stance !== origin.stance) continue; // flipped — free
+      dissentLive.add(cur.id);
+      if (standing) standingLive.add(cur.id);
+    }
+
+    for (const p of fm.positions) {
+      if (p.principal === "unknown") {
+        legacyPositions += 1;
+        continue;
+      }
+      const book = recordFor(p.principal).positions;
+      book.taken += 1;
+      if (book.firstAt === null || p.created < book.firstAt) book.firstAt = p.created;
+      if (book.lastAt === null || p.created > book.lastAt) book.lastAt = p.created;
+
+      // Self-revision is free, full stop: a superseded entry is always the
+      // holder's own revision, so it neither stakes nor settles.
+      if (p.superseded_by !== null) {
+        book.selfRevised += 1;
+        continue;
+      }
+
+      const stake = stakeFor(p.confidence);
+      book.live += 1;
+      book.exposure += stake;
+
+      const key = posKey(doc.path, p.id);
+      if (openPositional.has(key)) {
+        book.contestedOpen += 1;
+        book.stakeAtRisk += stake;
+      }
+
+      // Settlement, by the current ratification. At most one burn per
+      // position (dissent and corrected dedupe), and standing immunity is
+      // absolute: dissent the org chose to keep (`accepted`) is priced 0
+      // even when another tension on the same position resolved
+      // `corrected` — taxing kept disagreement would make the book punish
+      // the keystone.
+      const standing = acceptedPositional.has(key) || standingLive.has(p.id);
+      let burns = false;
+      if (dissentLive.has(p.id)) {
+        book.dissented += 1;
+        if (standing) book.standingDissent += 1;
+        else burns = true;
+      }
+      if (correctedPositional.has(key)) {
+        book.corrected += 1;
+        if (!standing) burns = true;
+      }
+      if (burns) book.burned += stake;
+
+      // Alignment credit: live, same stance, and created at-or-before the
+      // ratification — no bandwagoning onto an already-ratified stance.
+      if (org && p.stance === org.stance && p.created <= org.ratified_at) {
+        book.ratifiedAligned += 1;
+        book.credited += POSITION_RATIFIED_CREDIT;
+      }
+    }
+  }
+
   for (const a of visibleActions) {
     const r = recordFor(a.proposedBy);
     r.proposals.total += 1;
@@ -212,24 +388,58 @@ export async function buildWitness(
     else r.proposals.pending += 1;
   }
 
+  // Positional tensions are system-minted as a side effect of vault_assert —
+  // counting them here would double-count every dispute as both a position
+  // and a deliberate curation act.
   for (const t of visibleTensions) {
+    if (t.kind === "positional") continue;
     if (t.loggedBy) recordFor(t.loggedBy).tensionsLogged += 1;
   }
 
   const principals = [...records.values()];
-  for (const r of principals) r.balance = r.creditEarned - r.burnedStake;
+  for (const r of principals) {
+    r.balance = r.creditEarned - r.burnedStake;
+    r.positions.balance = r.positions.credited - r.positions.burned;
+  }
   principals.sort((a, b) => b.writes - a.writes || a.principal.localeCompare(b.principal));
 
   const totalWrites = principals.reduce((n, r) => n + r.writes, 0);
   const top = principals[0];
   const topShare = totalWrites > 0 && top ? top.writes / totalWrites : 0;
 
+  // Concentration over LIVE positions: superseded self-revisions price
+  // nothing, so revision churn must not re-arm the flat-curve warning.
+  const totalPositions = principals.reduce((n, r) => n + r.positions.live, 0);
+  const posTop = [...principals].sort(
+    (a, b) => b.positions.live - a.positions.live || a.principal.localeCompare(b.principal),
+  )[0];
+  const posTopShare = totalPositions > 0 && posTop ? posTop.positions.live / totalPositions : 0;
+
   const unattributedDocs = visibleDocs.filter((d) => !authorOf.has(d.path)).length;
+
+  // Composite kill condition: the warning's contract is "track records are
+  // uninformative", not "writes are concentrated". In the expected
+  // multi-user regime — one scaffolding agent authors docs, many principals
+  // hold positions — the write curve is flat by design while the position
+  // curves carry the signal. Both concentrations are always reported, so
+  // the caller sees WHICH curve is flat.
+  const writesFlat = totalWrites > 0 && topShare >= FLAT_CURVE_SHARE;
+  const positionsFlat = posTopShare >= FLAT_CURVE_SHARE;
 
   return ok({
     principals,
     unattributedDocs,
-    concentration: { topPrincipal: top?.principal ?? null, topShare },
-    flatCurveWarning: totalWrites > 0 && topShare >= FLAT_CURVE_SHARE,
+    legacyPositions,
+    // topPrincipal is guarded on activity: a zero-write principal
+    // materialized by the position pass must not be named top writer.
+    concentration: {
+      topPrincipal: totalWrites > 0 ? (top?.principal ?? null) : null,
+      topShare,
+    },
+    positionConcentration: {
+      topPrincipal: totalPositions > 0 ? (posTop?.principal ?? null) : null,
+      topShare: posTopShare,
+    },
+    flatCurveWarning: writesFlat && (totalPositions === 0 || positionsFlat),
   });
 }

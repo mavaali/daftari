@@ -17,6 +17,7 @@ import {
   dissentIds,
   isContested,
   legacySnapshot,
+  qualifyingDissentTensions,
   unsuperseded,
 } from "../curation/positions.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -25,6 +26,8 @@ import {
   listTensions,
   type ResolutionKind,
   resolveTension,
+  retryOnTensionLease,
+  type TensionLeaseDeps,
   type TensionResolution,
 } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
@@ -97,6 +100,9 @@ export async function vaultAssert(
   vaultRoot: string,
   args: Record<string, unknown>,
   access?: AccessContext,
+  // Test-injectable retry timing for the §3.5 tension-lease retry; invisible
+  // to the MCP surface (the tool handler never passes it).
+  leaseDeps?: TensionLeaseDeps,
 ): Promise<Result<AssertResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
@@ -305,42 +311,42 @@ export async function vaultAssert(
   // R-5 + locked R-3: one binary tension per NEW conflicting pair, skipped
   // when an OPEN positional tension already names the same two ids on this
   // doc. loggedBy = the asserting principal (DN-3) — the loop-authored
-  // ratify gate (CONSOLIDATE_AGENT) never fires on these.
+  // ratify gate (CONSOLIDATE_AGENT) never fires on these. Each pair's
+  // list→covered→mint runs as one retryOnTensionLease attempt (slice-3
+  // §3.5's bounded jittered retry — this contention is system-generated,
+  // never caller-visible), with the coverage re-check INSIDE the attempt so
+  // a retry never double-mints.
   const tensionIds: string[] = [];
   let tensionError: string | undefined;
   const pairs = conflictPairs(applied.newPosition, applied.positions);
-  if (pairs.length > 0) {
-    const existing = await listTensions(vaultRoot);
-    if (!existing.ok) {
-      tensionError = existing.error.message;
-    } else {
-      const open = existing.value.filter(
-        (t) => t.kind === "positional" && !t.resolved && t.sourceA === relPath,
+  const claim = (p: Position): string => p.statement ?? `${title} — ${p.stance} (${p.confidence})`;
+  for (const pair of pairs) {
+    const minted = await retryOnTensionLease(async () => {
+      const existing = await listTensions(vaultRoot);
+      if (!existing.ok) return existing;
+      const covered = existing.value.some(
+        (t) =>
+          t.kind === "positional" &&
+          !t.resolved &&
+          t.sourceA === relPath &&
+          ((t.positionA === pair.a.id && t.positionB === pair.b.id) ||
+            (t.positionA === pair.b.id && t.positionB === pair.a.id)),
       );
-      const covered = (a: string, b: string): boolean =>
-        open.some(
-          (t) =>
-            (t.positionA === a && t.positionB === b) || (t.positionA === b && t.positionB === a),
-        );
-      const claim = (p: Position): string =>
-        p.statement ?? `${title} — ${p.stance} (${p.confidence})`;
-      for (const pair of pairs) {
-        if (covered(pair.a.id, pair.b.id)) continue;
-        const minted = await addTension(vaultRoot, {
-          kind: "positional",
-          title: `Positional: ${pair.a.principal} vs ${pair.b.principal} on ${title}`,
-          sourceA: relPath,
-          claimA: claim(pair.a),
-          sourceB: relPath,
-          claimB: claim(pair.b),
-          positionA: pair.a.id,
-          positionB: pair.b.id,
-          loggedBy: principal,
-        });
-        if (minted.ok) tensionIds.push(minted.value.id as string);
-        else tensionError = minted.error.message;
-      }
-    }
+      if (covered) return ok(null);
+      return addTension(vaultRoot, {
+        kind: "positional",
+        title: `Positional: ${pair.a.principal} vs ${pair.b.principal} on ${title}`,
+        sourceA: relPath,
+        claimA: claim(pair.a),
+        sourceB: relPath,
+        claimB: claim(pair.b),
+        positionA: pair.a.id,
+        positionB: pair.b.id,
+        loggedBy: principal,
+      });
+    }, leaseDeps);
+    if (!minted.ok) tensionError = minted.error.message;
+    else if (minted.value) tensionIds.push(minted.value.id as string);
   }
 
   return ok({
@@ -372,6 +378,11 @@ export interface ConsolidateResult {
   contested: boolean | null;
   resolved_tension_id: string | null;
   resolve_error?: string;
+  // Batch resolve (resolve_tensions: "dissent"): the open positional
+  // tensions this ratification adjudicated, resolved `consolidated`; per-id
+  // failures mirror the resolve_error channel. Both [] when not requested.
+  resolved_tension_ids: string[];
+  resolve_errors: Array<{ id: string; error: string }>;
   commit: string | null;
   committed: boolean;
 }
@@ -387,6 +398,8 @@ export async function vaultConsolidate(
   vaultRoot: string,
   args: Record<string, unknown>,
   access?: AccessContext,
+  // Test-injectable retry timing for the §3.5 tension-lease retry.
+  leaseDeps?: TensionLeaseDeps,
 ): Promise<Result<ConsolidateResult, Error>> {
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
@@ -440,6 +453,27 @@ export async function vaultConsolidate(
       kind: kindRes.value as ConsolidatableResolutionKind,
       ...(rationaleRes.value !== null ? { rationale: rationaleRes.value } : {}),
     };
+  }
+
+  // Batch resolve: no ids, no kind — both server-derived from the
+  // ratification itself, which is why this is not LD-19's "backdoor generic
+  // resolver": a resolver you cannot aim at an arbitrary tension is not a
+  // backdoor. A `qualify` ratification carries no dissent, so there is
+  // nothing for the batch to adjudicate — rejected loudly.
+  let batchDissent = false;
+  if (args.resolve_tensions !== undefined && args.resolve_tensions !== null) {
+    if (args.resolve_tensions !== "dissent") {
+      return err(new Error(`vault_consolidate: 'resolve_tensions' must be "dissent"`));
+    }
+    if (stanceRaw.value === "qualify") {
+      return err(
+        new Error(
+          "vault_consolidate: resolve_tensions with stance 'qualify' — qualify opposes " +
+            "nothing, so there is no dissent to adjudicate",
+        ),
+      );
+    }
+    batchDissent = true;
   }
 
   // LD-25: same identity shape as vault_assert's R-3 operator rule, but the
@@ -503,6 +537,7 @@ export async function vaultConsolidate(
     orgPosition: OrgPosition;
     dissent: string[];
     contested: boolean | null;
+    batchIds: string[];
     written: WriteResult;
   };
 
@@ -516,21 +551,53 @@ export async function vaultConsolidate(
     // LD-19: resolve_tension is validated BEFORE any write. The id must name
     // an OPEN tension with kind "positional" and sourceA === this doc — never
     // a backdoor generic resolver.
-    if (resolveTensionArg) {
+    let batchIds: string[] = [];
+    if (resolveTensionArg || batchDissent) {
       const all = await listTensions(vaultRoot);
       if (!all.ok) return all;
-      const t = all.value.find((x) => x.id === resolveTensionArg?.id);
-      if (!t || t.resolved || t.kind !== "positional" || t.sourceA !== target.value.relPath) {
-        return err(
-          new Error(
-            "vault_consolidate: resolve_tension does not name an open positional tension " +
-              "on this document",
-          ),
-        );
+      if (resolveTensionArg) {
+        const t = all.value.find((x) => x.id === resolveTensionArg?.id);
+        if (!t || t.resolved || t.kind !== "positional" || t.sourceA !== target.value.relPath) {
+          return err(
+            new Error(
+              "vault_consolidate: resolve_tension does not name an open positional tension " +
+                "on this document",
+            ),
+          );
+        }
+        if (resolveTensionArg.kind === "accepted" && dissent.length === 0) {
+          return err(
+            new Error(
+              "vault_consolidate: resolve_tension kind 'accepted' requires standing dissent",
+            ),
+          );
+        }
       }
-      if (resolveTensionArg.kind === "accepted" && dissent.length === 0) {
-        return err(
-          new Error("vault_consolidate: resolve_tension kind 'accepted' requires standing dissent"),
+      // The batch's qualifying set, computed from the SAME snapshot that
+      // computes dissent (so retryOnStale recomputes both together): open
+      // positional tensions on this doc whose chain-resolved losing end is
+      // in the dissent this ratification carries. The single resolve_tension
+      // id keeps its deliberate kind — the batch skips it.
+      if (batchDissent) {
+        const open = all.value.filter(
+          (t) =>
+            t.kind === "positional" &&
+            !t.resolved &&
+            t.sourceA === target.value.relPath &&
+            t.positionA !== undefined &&
+            t.positionB !== undefined &&
+            t.id !== resolveTensionArg?.id,
+        );
+        batchIds = qualifyingDissentTensions(
+          fm.positions ?? [],
+          stanceRaw.value as Stance,
+          dissent,
+          open.map((t) => ({
+            id: t.id,
+            resolved: t.resolved,
+            positionA: t.positionA as string,
+            positionB: t.positionB as string,
+          })),
         );
       }
     }
@@ -574,17 +641,18 @@ export async function vaultConsolidate(
       orgPosition,
       dissent,
       contested,
+      batchIds,
       written: written.value,
     });
   };
 
   const attempt = await retryOnStale(attemptConsolidate);
   if (!attempt.ok) return attempt;
-  const { relPath, orgPosition, dissent, contested, written } = attempt.value;
+  const { relPath, orgPosition, dissent, contested, batchIds, written } = attempt.value;
 
   // The doc write commits FIRST; a resolve failure afterward is reported as
   // resolve_error, not rolled back (LD-19 — mirror of Slice 1's tension_error
-  // channel).
+  // channel). Resolutions ride the §3.5 bounded tension-lease retry.
   let resolvedTensionId: string | null = null;
   let resolveError: string | undefined;
   if (resolveTensionArg) {
@@ -596,9 +664,37 @@ export async function vaultConsolidate(
         ? { rationale: resolveTensionArg.rationale }
         : {}),
     };
-    const resolved = await resolveTension(vaultRoot, resolveTensionArg.id, resolution);
+    const resolved = await retryOnTensionLease(
+      () => resolveTension(vaultRoot, resolveTensionArg.id, resolution),
+      leaseDeps,
+    );
     if (resolved.ok) resolvedTensionId = resolveTensionArg.id;
     else resolveError = resolved.error.message;
+  }
+
+  // The batch: each qualifying tension resolves `consolidated` — the honest
+  // record that the pairwise conflict is subsumed by this ratification, the
+  // dissent carried in org_position (never `superseded`: the disagreement
+  // persists; never blanket `accepted`: standing immunity stays a deliberate
+  // per-pair grant). Per-id failures never unwind the ratification.
+  const resolvedTensionIds: string[] = [];
+  const resolveErrors: Array<{ id: string; error: string }> = [];
+  for (const id of batchIds) {
+    const resolved = await retryOnTensionLease(
+      () =>
+        resolveTension(vaultRoot, id, {
+          resolved_at: new Date().toISOString(),
+          resolved_by: ratifier,
+          kind: "consolidated",
+          rationale:
+            `org_position ratified ${stanceRaw.value} by ${ratifier} ${todayISO()}; ` +
+            `dissent carried: ${dissent.join(", ")}`,
+          references: [relPath],
+        }),
+      leaseDeps,
+    );
+    if (resolved.ok) resolvedTensionIds.push(id);
+    else resolveErrors.push({ id, error: resolved.error.message });
   }
 
   return ok({
@@ -610,6 +706,8 @@ export async function vaultConsolidate(
     contested,
     resolved_tension_id: resolvedTensionId,
     ...(resolveError !== undefined ? { resolve_error: resolveError } : {}),
+    resolved_tension_ids: resolvedTensionIds,
+    resolve_errors: resolveErrors,
     commit: written.commit,
     committed: written.committed,
   });
@@ -857,10 +955,17 @@ const consolidateToolDefinition: ToolDefinition = {
     "same call via resolve_tension: validated before any write (must name an " +
     "open 'positional' tension whose sourceA is this doc; kind 'accepted' " +
     "requires standing dissent); the doc write commits first, and a resolve " +
-    "failure afterward is reported as resolve_error, never rolled back. Under " +
+    "failure afterward is reported as resolve_error, never rolled back. " +
+    "resolve_tensions: 'dissent' batch-resolves EVERY open positional tension " +
+    "this ratification adjudicates — chain-following superseded dissent — " +
+    "with the system-only kind 'consolidated' (the disagreement persists, " +
+    "carried as dissent in org_position; standing 'accepted' immunity stays " +
+    "a deliberate per-pair grant via resolve_tension, which composes and is " +
+    "skipped by the batch). Rejected when ratifying 'qualify' (no dissent to " +
+    "adjudicate); moot pairs (a stance flip) stay open for lint. Under " +
     "concurrent writes to the same doc the call retries once against the " +
-    "fresh state (dissent recomputed), then fails loudly ('locked' or 'stale " +
-    "write') — safe to re-call.",
+    "fresh state (dissent and the batch set recomputed), then fails loudly " +
+    "('locked' or 'stale write') — safe to re-call.",
   inputSchema: {
     type: "object",
     properties: {
@@ -886,6 +991,13 @@ const consolidateToolDefinition: ToolDefinition = {
         required: ["id", "kind"],
         additionalProperties: false,
       },
+      resolve_tensions: {
+        type: "string",
+        enum: ["dissent"],
+        description:
+          "Batch-resolve every open positional tension adjudicated by this " +
+          "ratification's dissent, recorded as kind 'consolidated'.",
+      },
     },
     required: ["path", "stance", "confidence", "agent"],
     additionalProperties: false,
@@ -901,6 +1013,20 @@ const consolidateToolDefinition: ToolDefinition = {
       contested: { type: ["boolean", "null"] },
       resolved_tension_id: { type: ["string", "null"] },
       resolve_error: { type: "string" },
+      resolved_tension_ids: {
+        type: "array",
+        items: { type: "string" },
+        description: "Batch-resolved tension ids; [] when resolve_tensions not requested",
+      },
+      resolve_errors: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { id: { type: "string" }, error: { type: "string" } },
+          required: ["id", "error"],
+          additionalProperties: false,
+        },
+      },
       commit: { type: ["string", "null"] },
       committed: { type: "boolean" },
     },
@@ -912,6 +1038,8 @@ const consolidateToolDefinition: ToolDefinition = {
       "dissent",
       "contested",
       "resolved_tension_id",
+      "resolved_tension_ids",
+      "resolve_errors",
       "commit",
       "committed",
     ],
