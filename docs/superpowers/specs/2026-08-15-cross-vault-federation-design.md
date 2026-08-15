@@ -267,9 +267,36 @@ machinery is per-query, not per-vault — untouched.
 **Path namespacing.** A referenced-vault document is addressed as
 `<alias>:<relPath>` — e.g. `research:notes/pricing.md`. Canonical-vault paths
 stay **unprefixed**: full backward compatibility, every existing agent
-transcript keeps working. `:` cannot appear in a Windows-legal relative path
-component, so the prefix cannot collide with a real on-disk path; the alias
-grammar's 2-character minimum rules out `c:`-style drive-letter ambiguity.
+transcript keeps working.
+
+Collision safety is **enforced, not assumed**. `:` is a legal filename
+character on POSIX (only Windows forbids it), and `canonicalRel`
+(`src/utils/paths.ts`) does no character validation — so a canonical vault
+can already contain a file named `notes:pricing.md`. Dispatch is therefore
+defined without any filesystem assumption: a path is parsed as federated
+**only when the text before its first `:` exactly matches a declared mount
+alias**; any other `:`-containing path stays a plain canonical path. That
+leaves exactly one ambiguous shape — a canonical file whose name begins with
+a declared alias plus `:` — and two fail-loud guards exclude it by
+construction:
+
+1. **Mount-time validation.** Startup (and reindex) fails if any
+   canonical-vault path begins with `<alias>:` for a declared alias. Error
+   copy: `mount "research": canonical vault contains "research:notes.md",
+   which shadows the mount's path prefix — rename the file or the alias`.
+   The scan is against declared aliases only, so ordinary `:`-containing
+   POSIX filenames remain untouched.
+2. **Write-time guard.** While federation is configured, `vault_write`'s
+   create path refuses a new canonical path that begins with a declared
+   alias plus `:`, so the collision cannot be introduced after startup
+   either.
+
+Rejected: banning `:` in vault paths outright — a breaking change for
+existing POSIX vaults with such filenames, disproportionate to a collision
+that only exists against declared aliases. Rejected: a heavier URI-style
+encoding (`alias://path`) — uglier in transcripts for a problem the two
+guards already close. The alias grammar's 2-character minimum still rules
+out `c:`-style drive-letter ambiguity on Windows.
 
 **Round-trip property (normative): any path a federated tool returns is
 directly usable as the path argument to any federated read tool.** Every
