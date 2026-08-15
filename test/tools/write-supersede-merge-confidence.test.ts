@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, openLockDb } from "../../src/access/locks.js";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { vaultAssert } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import {
   vaultMerge,
@@ -13,6 +14,7 @@ import {
   vaultWrite,
 } from "../../src/tools/write.js";
 import { log } from "../../src/utils/git.js";
+import { withInjectedRace } from "../helpers/inject-race.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -164,6 +166,108 @@ describe("vault_set_confidence", () => {
       ANALYST,
     );
     expect(result.ok).toBe(false);
+  });
+
+  // The same lost-update class PR #399 fixed for vault_assert / vault_consolidate
+  // (and this task fixes for the other frontmatter-only lifecycle tools):
+  // vault_set_confidence's read-modify-write over `{...oldFrontmatter,
+  // confidence}` previously passed no base_version when the caller omitted
+  // one, silently last-write-wins clobbering a concurrent vault_assert's
+  // positions with a clean commit.
+  describe("optimistic concurrency", () => {
+    async function versionOf(vaultRoot: string, path: string): Promise<string> {
+      const read = await vaultRead(vaultRoot, path);
+      if (!read.ok) throw new Error(`could not read ${path}: ${read.error.message}`);
+      return read.value.version;
+    }
+
+    it("rejects an explicit stale base_version without retry — the caller must re-read", async () => {
+      const path = "pricing/conf-stale.md";
+      await seed(vault, path, { confidence: "low" });
+      const staleVersion = await versionOf(vault, path);
+
+      // Another agent bumps the file (confidence stays low — still settable).
+      await vaultWrite(vault, {
+        path,
+        body: `# A Note\n\nBumped by another agent.\n`,
+        frontmatter: frontmatter({ confidence: "low" }),
+        agent: "agent:other",
+      });
+
+      const stale = await vaultSetConfidence(vault, {
+        path,
+        confidence: "high",
+        reason: "stale attempt",
+        agent: AGENT,
+        base_version: staleVersion,
+      });
+      expect(stale.ok).toBe(false);
+      if (stale.ok) return;
+      expect(stale.error.message.startsWith("stale write:")).toBe(true);
+
+      // No retry happened — confidence is still whatever the bump left it at,
+      // not silently "high".
+      const read = await vaultRead(vault, path);
+      expect(read.ok && read.value.frontmatter.confidence).toBe("low");
+    }, 60_000);
+
+    it("accepts vault_set_confidence with the current base_version", async () => {
+      const path = "pricing/conf-current.md";
+      await seed(vault, path, { confidence: "low" });
+      const version = await versionOf(vault, path);
+
+      const result = await vaultSetConfidence(vault, {
+        path,
+        confidence: "high",
+        reason: "calibration",
+        agent: AGENT,
+        base_version: version,
+      });
+      expect(result.ok).toBe(true);
+    }, 60_000);
+
+    // Deterministic injected race (test/helpers/inject-race.ts): a bare
+    // Promise.all essentially never reaches the "arrived after release but
+    // read before the concurrent write landed" branch on this repo's fixture
+    // vault (measured directly — the winner holds the file lock for its
+    // whole transaction). This forces that exact interleave instead of
+    // hoping the scheduler produces it.
+    it("defaults base_version to the load-time contentHash and survives a genuinely concurrent position", async () => {
+      const path = "pricing/conf-race.md";
+      await seed(vault, path, { confidence: "low" });
+
+      const result = await withInjectedRace(
+        join(vault, path),
+        async () => {
+          const asserted = await vaultAssert(
+            vault,
+            { path, stance: "assert", confidence: "high", agent: "a" },
+            { user: "alice", roleName: "writer", role: { read: ["*"], write: ["*"] } },
+          );
+          if (!asserted.ok) throw asserted.error;
+        },
+        () =>
+          vaultSetConfidence(vault, {
+            path,
+            confidence: "high",
+            reason: "calibration",
+            agent: AGENT,
+          }),
+      );
+
+      // Before this fix: vault_set_confidence carried no baseVersion when the
+      // caller omitted one, so it landed last-write-wins and silently erased
+      // alice's position. After: the internally-defaulted baseVersion catches
+      // the mismatch, retries once, and both effects survive.
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const read = await vaultRead(vault, path);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.frontmatter.confidence).toBe("high");
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    }, 60_000);
   });
 });
 

@@ -23,6 +23,7 @@ import {
 import { configPath } from "../../src/utils/config.js";
 import { isGitRepo, log } from "../../src/utils/git.js";
 import { sha256Hex } from "../../src/utils/hash.js";
+import { withInjectedRace } from "../helpers/inject-race.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:claude-code";
@@ -2060,5 +2061,312 @@ describe("vault_write protects pos-000 (U-12, C-2 guard 3/4)", () => {
     expect(r.ok).toBe(true);
     const read = await vaultRead(vault, legacyDoc);
     expect(read.ok && read.value.frontmatter.positions).toHaveLength(2);
+  });
+});
+
+// The same lost-update class PR #399 fixed for vault_assert / vault_consolidate
+// exists in the OTHER frontmatter-only lifecycle tools: vault_promote,
+// vault_deprecate, vault_set_confidence (write-supersede-merge-confidence.test.ts),
+// vault_set_tier (write-tier.test.ts), and vault_append. Each is a
+// read-modify-write over `{...oldFrontmatter, field}` that previously passed no
+// base_version when the caller omitted one — silently last-write-wins,
+// clobbering a concurrent vault_assert's positions array with a clean commit.
+// These tools now default baseVersion to the load-time contentHash and retry
+// once on a stale rejection (sound: their new frontmatter is a pure function of
+// the load) — UNLESS the caller supplied an explicit base_version, which must
+// still reject loudly without retry (existing "honors base_version" tests
+// above pin that half unchanged).
+describe("defaulted base_version — no silent lost update (lifecycle tools)", () => {
+  const ALICE_WRITER: AccessContext = {
+    user: "alice",
+    roleName: "writer",
+    role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+  };
+
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  // Seam test mirroring "rejects a performFrontmatterWrite composed against a
+  // replaced TargetDocument" above, but shaped like vault_promote's own write:
+  // proves the machinery vault_promote now relies on (an internally-defaulted
+  // baseVersion of the load-time contentHash) rejects a stale replay for
+  // promote's own newFrontmatter shape, not just a generic "update".
+  it("rejects a promote-shaped write replayed against a defaulted baseVersion once the file changed", async () => {
+    const path = "pricing/promote-seam.md";
+    await vaultWrite(vault, {
+      path,
+      body: "# Promote Seam\n\nv1.\n",
+      frontmatter: newFrontmatter({ title: "Promote Seam", status: "draft", confidence: "high" }),
+      agent: AGENT,
+    });
+
+    // The delayed writer loads the target the same way vaultPromote will.
+    const stale = await loadTargetDocument(vault, path, "vault_promote");
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+
+    // Another write lands in between — non-overlapping lease windows.
+    const between = await vaultAppend(vault, {
+      path,
+      section: "## Bumped\n\nBy another agent.",
+      agent: "agent:other",
+    });
+    expect(between.ok).toBe(true);
+
+    // The delayed writer replays promote's own newFrontmatter shape, declaring
+    // the load-time contentHash as baseVersion (what vaultPromote now does by
+    // default when the caller omits base_version).
+    const replay = await performFrontmatterWrite({
+      vaultRoot: vault,
+      target: stale.value,
+      agent: AGENT,
+      tool: "vault_promote",
+      action: "promote",
+      newFrontmatter: {
+        ...stale.value.parsed.frontmatter,
+        status: "canonical",
+        updated_by: "agent:delayed",
+      },
+      commitMessage: "stale promote replay from a pre-bump snapshot",
+      baseVersion: stale.value.contentHash,
+    });
+    expect(replay.ok).toBe(false);
+    if (replay.ok) return;
+    expect(replay.error.message.startsWith("stale write:")).toBe(true);
+
+    // The bump survives; the stale promote never landed.
+    const final = await vaultRead(vault, path);
+    expect(final.ok).toBe(true);
+    if (!final.ok) return;
+    expect(final.value.content).toContain("Bumped");
+    expect(final.value.frontmatter.status).toBe("draft");
+  }, 60_000);
+
+  it("vault_promote never silently drops a concurrent position (no base_version supplied)", async () => {
+    const path = "pricing/promote-race.md";
+    await vaultWrite(vault, {
+      path,
+      body: "# Promote Race\n\nv1.\n",
+      frontmatter: newFrontmatter({ title: "Promote Race", status: "draft", confidence: "high" }),
+      agent: AGENT,
+    });
+
+    const [assertResult, promoteResult] = await Promise.all([
+      vaultAssert(vault, { path, stance: "assert", confidence: "high", agent: "a" }, ALICE_WRITER),
+      vaultPromote(vault, { path, agent: AGENT }),
+    ]);
+
+    // At least one side must land.
+    expect(assertResult.ok || promoteResult.ok).toBe(true);
+
+    const read = await vaultRead(vault, path);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+
+    if (assertResult.ok) {
+      // A reported success whose position is not on disk is the silent
+      // lost-update bug this fix closes.
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    } else {
+      expect(assertResult.error.message).toMatch(/locked|stale/);
+    }
+
+    if (promoteResult.ok) {
+      expect(read.value.frontmatter.status).toBe("canonical");
+    } else {
+      expect(promoteResult.error.message).toMatch(/locked|stale/);
+    }
+  }, 60_000);
+
+  it("vault_deprecate never silently drops a concurrent position (no base_version supplied)", async () => {
+    const path = "pricing/deprecate-race.md";
+    await vaultWrite(vault, {
+      path,
+      body: "# Deprecate Race\n\nv1.\n",
+      frontmatter: newFrontmatter({ title: "Deprecate Race", status: "canonical" }),
+      agent: AGENT,
+    });
+
+    const [assertResult, deprecateResult] = await Promise.all([
+      vaultAssert(vault, { path, stance: "assert", confidence: "high", agent: "a" }, ALICE_WRITER),
+      vaultDeprecate(vault, { path, reason: "superseded elsewhere", agent: AGENT }),
+    ]);
+
+    expect(assertResult.ok || deprecateResult.ok).toBe(true);
+
+    const read = await vaultRead(vault, path);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+
+    if (assertResult.ok) {
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    } else {
+      expect(assertResult.error.message).toMatch(/locked|stale/);
+    }
+
+    if (deprecateResult.ok) {
+      expect(read.value.frontmatter.status).toBe("deprecated");
+    } else {
+      expect(deprecateResult.error.message).toMatch(/locked|stale/);
+    }
+  }, 60_000);
+
+  it("vault_append never silently drops a concurrent position (no base_version supplied)", async () => {
+    const path = "pricing/append-race.md";
+    await vaultWrite(vault, {
+      path,
+      body: "# Append Race\n\nv1.\n",
+      frontmatter: newFrontmatter({ title: "Append Race", status: "canonical" }),
+      agent: AGENT,
+    });
+
+    const [assertResult, appendResult] = await Promise.all([
+      vaultAssert(vault, { path, stance: "assert", confidence: "high", agent: "a" }, ALICE_WRITER),
+      vaultAppend(vault, { path, section: "## Appended\n\nConcurrent section.", agent: AGENT }),
+    ]);
+
+    expect(assertResult.ok || appendResult.ok).toBe(true);
+
+    const read = await vaultRead(vault, path);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+
+    if (assertResult.ok) {
+      // The append must not have silently wiped out the concurrently-written
+      // position: a success on the assert side must be visible on disk
+      // regardless of whether the append landed before or after it.
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    } else {
+      expect(assertResult.error.message).toMatch(/locked|stale/);
+    }
+
+    if (appendResult.ok) {
+      expect(read.value.content).toContain("Appended");
+    } else {
+      expect(appendResult.error.message).toMatch(/locked|stale/);
+    }
+  }, 60_000);
+
+  // The Promise.all races above are best-effort invariant tests — like
+  // "concurrent asserts" in positions.test.ts, they pin the invariant across
+  // whatever interleaving the scheduler picks, but measured against this
+  // repo's fixture vault the winner's write holds the file lock for its whole
+  // transaction, so a bare Promise.all essentially never reaches the
+  // interesting "arrived after release, but read before the concurrent write
+  // landed" branch — it collides on the lock instead (already loud, even
+  // before this fix). withInjectedRace (test/helpers/inject-race.ts) removes
+  // the timing dependency: it forces the tool's OWN internal load to precede
+  // a genuinely concurrent write, deterministically reproducing the
+  // non-overlapping-lease-window shape. Before this fix these fail (the tool
+  // silently clobbers the concurrent position); after, they pass.
+  describe("deterministic injected race — proves the internal default actually retries", () => {
+    it("vault_promote's internally-defaulted baseVersion survives a genuinely concurrent position", async () => {
+      const path = "pricing/promote-deterministic-race.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Promote Deterministic\n\nv1.\n",
+        frontmatter: newFrontmatter({
+          title: "Promote Deterministic",
+          status: "draft",
+          confidence: "high",
+        }),
+        agent: AGENT,
+      });
+
+      const result = await withInjectedRace(
+        join(vault, path),
+        async () => {
+          const asserted = await vaultAssert(
+            vault,
+            { path, stance: "assert", confidence: "high", agent: "a" },
+            ALICE_WRITER,
+          );
+          if (!asserted.ok) throw asserted.error;
+        },
+        () => vaultPromote(vault, { path, agent: AGENT }),
+      );
+
+      // Before this fix: promote's write carried no baseVersion, so it landed
+      // last-write-wins and silently erased alice's position. After: the
+      // internally-defaulted baseVersion catches the mismatch, retries once,
+      // and both effects survive.
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.status).toBe("canonical");
+
+      const read = await vaultRead(vault, path);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    }, 60_000);
+
+    it("vault_deprecate's internally-defaulted baseVersion survives a genuinely concurrent position", async () => {
+      const path = "pricing/deprecate-deterministic-race.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Deprecate Deterministic\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Deprecate Deterministic", status: "canonical" }),
+        agent: AGENT,
+      });
+
+      const result = await withInjectedRace(
+        join(vault, path),
+        async () => {
+          const asserted = await vaultAssert(
+            vault,
+            { path, stance: "assert", confidence: "high", agent: "a" },
+            ALICE_WRITER,
+          );
+          if (!asserted.ok) throw asserted.error;
+        },
+        () => vaultDeprecate(vault, { path, reason: "superseded elsewhere", agent: AGENT }),
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.status).toBe("deprecated");
+
+      const read = await vaultRead(vault, path);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    }, 60_000);
+
+    it("vault_append's internally-defaulted baseVersion survives a genuinely concurrent position", async () => {
+      const path = "pricing/append-deterministic-race.md";
+      await vaultWrite(vault, {
+        path,
+        body: "# Append Deterministic\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Append Deterministic", status: "canonical" }),
+        agent: AGENT,
+      });
+
+      const result = await withInjectedRace(
+        join(vault, path),
+        async () => {
+          const asserted = await vaultAssert(
+            vault,
+            { path, stance: "assert", confidence: "high", agent: "a" },
+            ALICE_WRITER,
+          );
+          if (!asserted.ok) throw asserted.error;
+        },
+        () => vaultAppend(vault, { path, section: "## Appended\n\nSection.", agent: AGENT }),
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const read = await vaultRead(vault, path);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.value.content).toContain("Appended");
+      expect(read.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+    }, 60_000);
   });
 });

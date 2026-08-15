@@ -685,6 +685,30 @@ export async function retryOnStale<T>(
   return attempt();
 }
 
+// The dispatcher for the other frontmatter-only lifecycle tools (promote,
+// deprecate, set_confidence, set_tier, append): each accepts an OPTIONAL
+// caller-supplied base_version, unlike assert/consolidate above which never
+// expose one. The two cases behave differently on purpose:
+//
+//   - explicit base_version: this is the CALLER's optimistic-concurrency
+//     token, composed against content the caller itself read. A stale
+//     rejection here is the caller's own mistake — it must fail loudly
+//     WITHOUT a hidden retry, so the caller re-reads and resubmits against
+//     the winner's content (retrying transparently would silently discard
+//     work the caller may have composed by hand).
+//   - omitted base_version: `attempt` fills it in internally from the
+//     load-time contentHash (TargetDocument.contentHash), and because these
+//     tools' new frontmatter is a pure function of that load, one transparent
+//     retry via retryOnStale is sound — the same guarantee assert/consolidate
+//     rely on above.
+export async function retryOnStaleIfDefaulted<T>(
+  explicitBaseVersion: string | undefined,
+  attempt: () => Promise<Result<T, Error>>,
+): Promise<Result<T, Error>> {
+  if (explicitBaseVersion !== undefined) return attempt();
+  return retryOnStale(attempt);
+}
+
 // The target document as the frontmatter-only lifecycle tools (promote,
 // deprecate, set_confidence, set_tier, supersede) load it: canonical paths,
 // parsed document, and vault config, in the shared error order — resolve,
@@ -1329,104 +1353,112 @@ export async function vaultAppend(
   const proposeGate = denyIfProposeOnly(access, "vault_append");
   if (!proposeGate.ok) return proposeGate;
 
-  const resolved = resolveVaultPath(vaultRoot, path.value);
-  if (!resolved.ok) return resolved;
+  // Read-modify-write over the loaded document — see retryOnStaleIfDefaulted
+  // above. An explicit base_version passes straight through (one attempt,
+  // loud stale rejection); an omitted one defaults to the load-time
+  // contentHash and gets one transparent retry, recomputing the appended
+  // body and frontmatter from the reload — sound because both are pure
+  // functions of the load — so a concurrent vault_assert's positions array is
+  // never silently erased, and two concurrent appends never silently drop
+  // one section.
+  type AppendAttempt = { written: WriteResult; domain: string };
 
-  const existing = await readFile(resolved.value.absPath);
-  if (!existing.ok) {
-    return err(new Error(`vault_append: document not found: ${path.value}`));
-  }
-  const parsed = parseDocument(existing.value);
-  if (!parsed.ok) return parsed;
+  const attemptAppend = async (): Promise<Result<AppendAttempt, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_append");
+    if (!target.ok) return target;
+    const extensions = target.value.config.schemaExtensions;
 
-  const config = loadConfig(vaultRoot);
-  if (!config.ok) return config;
-  const extensions = config.value.schemaExtensions;
+    const oldFrontmatter = target.value.parsed.frontmatter;
+    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    if (!rbac.ok) return rbac;
+    const newFrontmatter: Frontmatter = {
+      ...oldFrontmatter,
+      updated: todayISO(),
+      updated_by: agent.value,
+    };
+    const newBody = `${target.value.parsed.content.replace(/\s+$/, "")}\n\n${section.value.trim()}\n`;
 
-  const oldFrontmatter = parsed.value.frontmatter;
-  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
-  if (!rbac.ok) return rbac;
-  const newFrontmatter: Frontmatter = {
-    ...oldFrontmatter,
-    updated: todayISO(),
-    updated_by: agent.value,
+    // Pre-write transform hooks run before the pre_write validators; their
+    // Partial<Frontmatter> patch is merged Object.assign-style into the
+    // post-stamp frontmatter so the validators below see the transformed
+    // values. A transform throw or non-object return blocks the append.
+    const loadedTransformHooks = await loadPreWriteTransformHooks(
+      vaultRoot,
+      target.value.config.hooks.preWriteTransform,
+    );
+    if (!loadedTransformHooks.ok) return loadedTransformHooks;
+    const transformResult = runPreWriteTransformHooks(
+      loadedTransformHooks.value,
+      newFrontmatter as unknown as Record<string, unknown>,
+      { path: path.value, operation: "append" },
+    );
+    Object.assign(newFrontmatter, transformResult.merged);
+
+    // Pre-write hooks see the post-stamp, post-transform frontmatter (the
+    // same shape a subsequent vault_read would return). Issues block the
+    // append, same as for vault_write.
+    const loadedHooks = await loadHooks(vaultRoot, target.value.config.hooks.preWrite);
+    if (!loadedHooks.ok) return loadedHooks;
+    const hookIssues = runPreWriteHooks(
+      loadedHooks.value,
+      newFrontmatter as unknown as Record<string, unknown>,
+      { path: path.value, operation: "append" },
+    );
+    const appendIssues = [...transformResult.issues, ...hookIssues];
+    if (appendIssues.length > 0) {
+      const summary = appendIssues.map((i) => `${i.field}: ${i.message}`).join("; ");
+      return err(new Error(`invalid frontmatter: ${summary}`));
+    }
+
+    const written = await performWrite({
+      vaultRoot,
+      // Lock key, provenance, and commit path are all keyed on the CANONICAL
+      // relPath, never the raw caller string: aliased spellings of one file
+      // must contend on one lock (#127/#128).
+      relPath: target.value.relPath,
+      absPath: target.value.absPath,
+      agent: agent.value,
+      tool: "vault_append",
+      action: "append",
+      fileText: serializeDocument(newFrontmatter, newBody, extensions, target.value.parsed.raw),
+      newFrontmatter,
+      oldFrontmatter,
+      validation: target.value.parsed.validation,
+      commitMessage: `vault_append: ${path.value} by ${agent.value}`,
+      autoCommit: target.value.config.autoCommit,
+      gitDir: target.value.config.gitDir,
+      baseVersion: baseVersion.value ?? target.value.contentHash,
+      shadowMode: target.value.config.shadowMode,
+      principal: access?.user,
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
+      bodyChanged: true,
+    });
+    if (!written.ok) return written;
+    return ok({ written: written.value, domain: newFrontmatter.domain });
   };
-  const newBody = `${parsed.value.content.replace(/\s+$/, "")}\n\n${section.value.trim()}\n`;
 
-  // Pre-write transform hooks run before the pre_write validators; their
-  // Partial<Frontmatter> patch is merged Object.assign-style into the
-  // post-stamp frontmatter so the validators below see the transformed
-  // values. A transform throw or non-object return blocks the append.
-  const loadedTransformHooks = await loadPreWriteTransformHooks(
-    vaultRoot,
-    config.value.hooks.preWriteTransform,
-  );
-  if (!loadedTransformHooks.ok) return loadedTransformHooks;
-  const transformResult = runPreWriteTransformHooks(
-    loadedTransformHooks.value,
-    newFrontmatter as unknown as Record<string, unknown>,
-    { path: path.value, operation: "append" },
-  );
-  Object.assign(newFrontmatter, transformResult.merged);
-
-  // Pre-write hooks see the post-stamp, post-transform frontmatter (the same
-  // shape a subsequent vault_read would return). Issues block the append,
-  // same as for vault_write.
-  const loadedHooks = await loadHooks(vaultRoot, config.value.hooks.preWrite);
-  if (!loadedHooks.ok) return loadedHooks;
-  const hookIssues = runPreWriteHooks(
-    loadedHooks.value,
-    newFrontmatter as unknown as Record<string, unknown>,
-    { path: path.value, operation: "append" },
-  );
-  const appendIssues = [...transformResult.issues, ...hookIssues];
-  if (appendIssues.length > 0) {
-    const summary = appendIssues.map((i) => `${i.field}: ${i.message}`).join("; ");
-    return err(new Error(`invalid frontmatter: ${summary}`));
-  }
-
-  const appended = await performWrite({
-    vaultRoot,
-    // Lock key, provenance, and commit path are all keyed on the CANONICAL
-    // relPath (resolved.value.relPath), never the raw caller string: aliased
-    // spellings of one file must contend on one lock (#127/#128).
-    relPath: resolved.value.relPath,
-    absPath: resolved.value.absPath,
-    agent: agent.value,
-    tool: "vault_append",
-    action: "append",
-    fileText: serializeDocument(newFrontmatter, newBody, extensions, parsed.value.raw),
-    newFrontmatter,
-    oldFrontmatter,
-    validation: parsed.value.validation,
-    commitMessage: `vault_append: ${path.value} by ${agent.value}`,
-    autoCommit: config.value.autoCommit,
-    gitDir: config.value.gitDir,
-    baseVersion: baseVersion.value,
-    shadowMode: config.value.shadowMode,
-    principal: access?.user,
-    ...(runId.value !== undefined ? { runId: runId.value } : {}),
-    bodyChanged: true,
-  });
+  const attempt = await retryOnStaleIfDefaulted(baseVersion.value, attemptAppend);
+  if (!attempt.ok) return attempt;
+  const { written, domain } = attempt.value;
   // #4: an appended section can introduce body links into generative-domain
   // docs — same advisory channel as vault_write, scoped to what THIS append
   // added: only the new section is scanned (a doc that already leaned on
   // generative material warned at write time; re-warning on every later,
   // unrelated append would drown the signal), and sources are skipped
   // entirely because an append cannot change frontmatter.
-  if (!appended.ok || appended.value.shadow) return appended;
+  if (written.shadow) return ok(written);
   const appendWarnings = generativeDomainRefs(
     vaultRoot,
     {
-      domain: newFrontmatter.domain,
+      domain,
       sources: [],
       body: section.value,
-      relPath: resolved.value.relPath,
+      relPath: written.path,
     },
     access,
   );
-  if (appendWarnings === null) return appended;
-  return ok({ ...appended.value, domain_warnings: appendWarnings });
+  if (appendWarnings === null) return ok(written);
+  return ok({ ...written, domain_warnings: appendWarnings });
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,50 +1488,60 @@ export async function vaultPromote(
     return err(new Error(`access denied: role '${access.roleName}' cannot promote documents`));
   }
 
-  const target = await loadTargetDocument(vaultRoot, path.value, "vault_promote");
-  if (!target.ok) return target;
+  // Read-modify-write over the loaded frontmatter — see
+  // retryOnStaleIfDefaulted above. An explicit base_version passes straight
+  // through (one attempt, loud stale rejection); an omitted one defaults to
+  // the load-time contentHash and gets one transparent retry, so a concurrent
+  // vault_assert's positions array is never silently erased by a clean
+  // promote commit.
+  const attemptPromote = async (): Promise<Result<WriteResult, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_promote");
+    if (!target.ok) return target;
 
-  const oldFrontmatter = target.value.parsed.frontmatter;
-  if (oldFrontmatter.status !== "draft") {
-    return err(
-      new Error(
-        `vault_promote: only draft documents can be promoted ` +
-          `(${path.value} is '${oldFrontmatter.status}')`,
-      ),
-    );
-  }
-  if (!target.value.parsed.validation.valid) {
-    const summary = target.value.parsed.validation.issues
-      .map((i) => `${i.field}: ${i.message}`)
-      .join("; ");
-    return err(new Error(`vault_promote: frontmatter is incomplete: ${summary}`));
-  }
-  // `confidence set` — the document must declare a confidence explicitly, not
-  // ride on the validator's default.
-  const rawConfidence = target.value.parsed.raw.confidence;
-  if (
-    typeof rawConfidence !== "string" ||
-    !(CONFIDENCES as readonly string[]).includes(rawConfidence)
-  ) {
-    return err(new Error("vault_promote: confidence must be set before promotion"));
-  }
+    const oldFrontmatter = target.value.parsed.frontmatter;
+    if (oldFrontmatter.status !== "draft") {
+      return err(
+        new Error(
+          `vault_promote: only draft documents can be promoted ` +
+            `(${path.value} is '${oldFrontmatter.status}')`,
+        ),
+      );
+    }
+    if (!target.value.parsed.validation.valid) {
+      const summary = target.value.parsed.validation.issues
+        .map((i) => `${i.field}: ${i.message}`)
+        .join("; ");
+      return err(new Error(`vault_promote: frontmatter is incomplete: ${summary}`));
+    }
+    // `confidence set` — the document must declare a confidence explicitly, not
+    // ride on the validator's default.
+    const rawConfidence = target.value.parsed.raw.confidence;
+    if (
+      typeof rawConfidence !== "string" ||
+      !(CONFIDENCES as readonly string[]).includes(rawConfidence)
+    ) {
+      return err(new Error("vault_promote: confidence must be set before promotion"));
+    }
 
-  return performFrontmatterWrite({
-    vaultRoot,
-    target: target.value,
-    agent: agent.value,
-    tool: "vault_promote",
-    action: "promote",
-    newFrontmatter: {
-      ...oldFrontmatter,
-      status: "canonical",
-      updated: todayISO(),
-      updated_by: agent.value,
-    },
-    commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
-    baseVersion: baseVersion.value,
-    access,
-  });
+    return performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_promote",
+      action: "promote",
+      newFrontmatter: {
+        ...oldFrontmatter,
+        status: "canonical",
+        updated: todayISO(),
+        updated_by: agent.value,
+      },
+      commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
+      baseVersion: baseVersion.value ?? target.value.contentHash,
+      access,
+    });
+  };
+
+  return retryOnStaleIfDefaulted(baseVersion.value, attemptPromote);
 }
 
 // ---------------------------------------------------------------------------
@@ -1591,42 +1633,52 @@ export async function vaultDeprecate(
     supersededBy = args.superseded_by;
   }
 
-  const target = await loadTargetDocument(vaultRoot, path.value, "vault_deprecate");
-  if (!target.ok) return target;
+  // Read-modify-write over the loaded frontmatter — see
+  // retryOnStaleIfDefaulted above. An explicit base_version passes straight
+  // through (one attempt, loud stale rejection); an omitted one defaults to
+  // the load-time contentHash and gets one transparent retry, so a concurrent
+  // vault_assert's positions array is never silently erased by a clean
+  // deprecate commit.
+  const attemptDeprecate = async (): Promise<Result<WriteResult, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_deprecate");
+    if (!target.ok) return target;
 
-  const oldFrontmatter = target.value.parsed.frontmatter;
-  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
-  if (!rbac.ok) return rbac;
+    const oldFrontmatter = target.value.parsed.frontmatter;
+    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    if (!rbac.ok) return rbac;
 
-  // Same predecessor-only handoff as vault_supersede: this writes exactly the
-  // document being deprecated, which it already locks and commits.
-  let validUntil: string | null = null;
-  if (boundary.value !== null) {
-    const closing = closingUntil(oldFrontmatter, boundary.value, "vault_deprecate", path.value);
-    if (!closing.ok) return closing;
-    validUntil = closing.value;
-  }
+    // Same predecessor-only handoff as vault_supersede: this writes exactly
+    // the document being deprecated, which it already locks and commits.
+    let validUntil: string | null = null;
+    if (boundary.value !== null) {
+      const closing = closingUntil(oldFrontmatter, boundary.value, "vault_deprecate", path.value);
+      if (!closing.ok) return closing;
+      validUntil = closing.value;
+    }
 
-  const written = await performFrontmatterWrite({
-    vaultRoot,
-    target: target.value,
-    agent: agent.value,
-    tool: "vault_deprecate",
-    action: "deprecate",
-    newFrontmatter: {
-      ...oldFrontmatter,
-      status: "deprecated",
-      superseded_by: supersededBy,
-      ...(validUntil !== null ? { valid_until: validUntil } : {}),
-      updated: todayISO(),
-      updated_by: agent.value,
-    },
-    commitMessage:
-      `vault_deprecate: ${path.value} by ${agent.value} — ${reason.value}` +
-      (supersededBy ? ` (superseded by ${supersededBy})` : ""),
-    baseVersion: baseVersion.value,
-    access,
-  });
+    return performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_deprecate",
+      action: "deprecate",
+      newFrontmatter: {
+        ...oldFrontmatter,
+        status: "deprecated",
+        superseded_by: supersededBy,
+        ...(validUntil !== null ? { valid_until: validUntil } : {}),
+        updated: todayISO(),
+        updated_by: agent.value,
+      },
+      commitMessage:
+        `vault_deprecate: ${path.value} by ${agent.value} — ${reason.value}` +
+        (supersededBy ? ` (superseded by ${supersededBy})` : ""),
+      baseVersion: baseVersion.value ?? target.value.contentHash,
+      access,
+    });
+  };
+
+  const written = await retryOnStaleIfDefaulted(baseVersion.value, attemptDeprecate);
   if (!written.ok) return written;
   // Build the downstream dependents advisory (best-effort, never fails the write).
   const dependents = await buildDependentsAdvisory(vaultRoot, path.value, access);
@@ -1670,50 +1722,63 @@ export async function vaultSetConfidence(
   const baseVersion = readBaseVersion(args, "vault_set_confidence");
   if (!baseVersion.ok) return baseVersion;
 
-  const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_confidence");
-  if (!target.ok) return target;
+  // Read-modify-write over the loaded frontmatter — see
+  // retryOnStaleIfDefaulted above. An explicit base_version passes straight
+  // through (one attempt, loud stale rejection); an omitted one defaults to
+  // the load-time contentHash and gets one transparent retry, so a concurrent
+  // vault_assert's positions array is never silently erased by a clean
+  // confidence-set commit.
+  const attemptSetConfidence = async (): Promise<Result<WriteResult, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_confidence");
+    if (!target.ok) return target;
 
-  const oldFrontmatter = target.value.parsed.frontmatter;
-  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
-  if (!rbac.ok) return rbac;
+    const oldFrontmatter = target.value.parsed.frontmatter;
+    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    if (!rbac.ok) return rbac;
 
-  // No-op guard: a confidence already at the target would churn a commit for no
-  // change. Surface it as an error so a redundant staged confidence-up does not
-  // silently no-op (and a caller learns the value was already set). Compare
-  // against the *raw* on-disk value, not the validated frontmatter — the
-  // validator defaults a missing confidence to "low", so comparing the
-  // validated value would wrongly reject set_confidence(…, "low") on a doc that
-  // never declared one and never write the field (the trap vault_promote dodges
-  // the same way, via parsed.value.raw.confidence).
-  const rawConfidence = target.value.parsed.raw.confidence;
-  const currentConfidence =
-    typeof rawConfidence === "string" && (CONFIDENCES as readonly string[]).includes(rawConfidence)
-      ? rawConfidence
-      : undefined;
-  if (currentConfidence === confidence.value) {
-    return err(
-      new Error(`vault_set_confidence: ${path.value} confidence is already '${confidence.value}'`),
-    );
-  }
+    // No-op guard: a confidence already at the target would churn a commit for
+    // no change. Surface it as an error so a redundant staged confidence-up
+    // does not silently no-op (and a caller learns the value was already
+    // set). Compare against the *raw* on-disk value, not the validated
+    // frontmatter — the validator defaults a missing confidence to "low", so
+    // comparing the validated value would wrongly reject set_confidence(…,
+    // "low") on a doc that never declared one and never write the field (the
+    // trap vault_promote dodges the same way, via parsed.value.raw.confidence).
+    const rawConfidence = target.value.parsed.raw.confidence;
+    const currentConfidence =
+      typeof rawConfidence === "string" &&
+      (CONFIDENCES as readonly string[]).includes(rawConfidence)
+        ? rawConfidence
+        : undefined;
+    if (currentConfidence === confidence.value) {
+      return err(
+        new Error(
+          `vault_set_confidence: ${path.value} confidence is already '${confidence.value}'`,
+        ),
+      );
+    }
 
-  return performFrontmatterWrite({
-    vaultRoot,
-    target: target.value,
-    agent: agent.value,
-    tool: "vault_set_confidence",
-    action: "confidence-set",
-    newFrontmatter: {
-      ...oldFrontmatter,
-      confidence: confidence.value as Frontmatter["confidence"],
-      updated: todayISO(),
-      updated_by: agent.value,
-    },
-    commitMessage:
-      `vault_set_confidence: ${path.value} ${oldFrontmatter.confidence}→${confidence.value} ` +
-      `by ${agent.value} — ${reason.value}`,
-    baseVersion: baseVersion.value,
-    access,
-  });
+    return performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_set_confidence",
+      action: "confidence-set",
+      newFrontmatter: {
+        ...oldFrontmatter,
+        confidence: confidence.value as Frontmatter["confidence"],
+        updated: todayISO(),
+        updated_by: agent.value,
+      },
+      commitMessage:
+        `vault_set_confidence: ${path.value} ${oldFrontmatter.confidence}→${confidence.value} ` +
+        `by ${agent.value} — ${reason.value}`,
+      baseVersion: baseVersion.value ?? target.value.contentHash,
+      access,
+    });
+  };
+
+  return retryOnStaleIfDefaulted(baseVersion.value, attemptSetConfidence);
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,57 +1816,67 @@ export async function vaultSetTier(
   const baseVersion = readBaseVersion(args, "vault_set_tier");
   if (!baseVersion.ok) return baseVersion;
 
-  const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_tier");
-  if (!target.ok) return target;
+  // Read-modify-write over the loaded frontmatter — see
+  // retryOnStaleIfDefaulted above. An explicit base_version passes straight
+  // through (one attempt, loud stale rejection); an omitted one defaults to
+  // the load-time contentHash and gets one transparent retry, so a concurrent
+  // vault_assert's positions array is never silently erased by a clean
+  // tier-set commit.
+  const attemptSetTier = async (): Promise<Result<WriteResult, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_tier");
+    if (!target.ok) return target;
 
-  const oldFrontmatter = target.value.parsed.frontmatter;
-  const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
-  if (!rbac.ok) return rbac;
+    const oldFrontmatter = target.value.parsed.frontmatter;
+    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    if (!rbac.ok) return rbac;
 
-  // The manual consent boundary: only a human identity may lift `manual`.
-  if (
-    oldFrontmatter.tier === "manual" &&
-    newTier !== "manual" &&
-    !agent.value.startsWith("human:")
-  ) {
-    return err(
-      new Error(
-        `vault_set_tier: ${path.value} is tier 'manual' — moving it away from ` +
-          `'manual' requires a human:* identity (got '${agent.value}').`,
-      ),
-    );
-  }
+    // The manual consent boundary: only a human identity may lift `manual`.
+    if (
+      oldFrontmatter.tier === "manual" &&
+      newTier !== "manual" &&
+      !agent.value.startsWith("human:")
+    ) {
+      return err(
+        new Error(
+          `vault_set_tier: ${path.value} is tier 'manual' — moving it away from ` +
+            `'manual' requires a human:* identity (got '${agent.value}').`,
+        ),
+      );
+    }
 
-  // No-op guard, same shape as vault_set_confidence: compare against the raw
-  // on-disk value so an invalid raw tier (validated down to null) can still be
-  // set to any member.
-  const rawTier = target.value.parsed.raw.tier;
-  const currentTier =
-    typeof rawTier === "string" && (TIERS as readonly string[]).includes(rawTier)
-      ? rawTier
-      : undefined;
-  if (currentTier === newTier) {
-    return err(new Error(`vault_set_tier: ${path.value} tier is already '${newTier}'`));
-  }
+    // No-op guard, same shape as vault_set_confidence: compare against the
+    // raw on-disk value so an invalid raw tier (validated down to null) can
+    // still be set to any member.
+    const rawTier = target.value.parsed.raw.tier;
+    const currentTier =
+      typeof rawTier === "string" && (TIERS as readonly string[]).includes(rawTier)
+        ? rawTier
+        : undefined;
+    if (currentTier === newTier) {
+      return err(new Error(`vault_set_tier: ${path.value} tier is already '${newTier}'`));
+    }
 
-  return performFrontmatterWrite({
-    vaultRoot,
-    target: target.value,
-    agent: agent.value,
-    tool: "vault_set_tier",
-    action: "tier-set",
-    newFrontmatter: {
-      ...oldFrontmatter,
-      tier: newTier,
-      updated: todayISO(),
-      updated_by: agent.value,
-    },
-    commitMessage:
-      `vault_set_tier: ${path.value} ${oldFrontmatter.tier ?? "unset"}→${newTier} ` +
-      `by ${agent.value} — ${reason.value}`,
-    baseVersion: baseVersion.value,
-    access,
-  });
+    return performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_set_tier",
+      action: "tier-set",
+      newFrontmatter: {
+        ...oldFrontmatter,
+        tier: newTier,
+        updated: todayISO(),
+        updated_by: agent.value,
+      },
+      commitMessage:
+        `vault_set_tier: ${path.value} ${oldFrontmatter.tier ?? "unset"}→${newTier} ` +
+        `by ${agent.value} — ${reason.value}`,
+      baseVersion: baseVersion.value ?? target.value.contentHash,
+      access,
+    });
+  };
+
+  return retryOnStaleIfDefaulted(baseVersion.value, attemptSetTier);
 }
 
 // ---------------------------------------------------------------------------
@@ -2302,6 +2377,17 @@ const shadowNote =
   " If the vault runs shadow_mode, the write is computed and logged to the " +
   "shadow store but NOT applied; the result carries shadow: true.";
 
+// Appended to the description of every read-modify-write tool whose
+// base_version defaults internally (append, promote, deprecate,
+// set_confidence, set_tier): unlike vault_write, an omitted base_version here
+// is NOT last-write-wins — it defaults to the version this call itself read,
+// and a race is retried once before failing loudly.
+const staleRetryNote =
+  " If base_version is omitted, a concurrent change is retried once " +
+  "automatically before this fails loudly as stale; an explicitly supplied " +
+  "base_version that is stale is rejected immediately, with no retry — " +
+  "re-read and resubmit.";
+
 const baseVersionProperty = {
   type: "string",
   description:
@@ -2716,6 +2802,7 @@ export const writeTools: ToolDefinition[] = [
       "Appending links to generative-domain docs onto an accumulation-domain " +
       "doc returns advisory domain_warnings naming them; the append still " +
       "lands." +
+      staleRetryNote +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -2752,6 +2839,7 @@ export const writeTools: ToolDefinition[] = [
       "Promote a draft document to canonical status. Refuses unless the " +
       "document is currently a draft, its frontmatter is complete, and a " +
       "confidence level has been explicitly set. Auto-commits." +
+      staleRetryNote +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -2780,6 +2868,7 @@ export const writeTools: ToolDefinition[] = [
     description:
       "Mark a document deprecated. A reason is required; optionally record " +
       "the document that supersedes it. Auto-commits." +
+      staleRetryNote +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -2818,6 +2907,7 @@ export const writeTools: ToolDefinition[] = [
       "Change only a document's confidence level (low | medium | high), leaving " +
       "its status and body untouched. A reason is required and recorded. Rejects " +
       "if the confidence is already at the target. Auto-commits." +
+      staleRetryNote +
       shadowNote,
     inputSchema: {
       type: "object",
@@ -2862,6 +2952,7 @@ export const writeTools: ToolDefinition[] = [
       "logged for lint review), then write. Moving a doc away from 'manual' " +
       "requires a human:* identity. Rejects if the tier is already at the " +
       "target. Auto-commits." +
+      staleRetryNote +
       shadowNote,
     inputSchema: {
       type: "object",
