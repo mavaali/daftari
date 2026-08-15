@@ -6,14 +6,19 @@ import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../../src
 import {
   addTension,
   agingTier,
+  CALLER_RESOLUTION_KINDS,
+  isTensionLeaseContention,
   LOGGABLE_TENSION_KINDS,
   listTensions,
+  RESOLUTION_KINDS,
   resolveTension,
+  retryOnTensionLease,
   STALE_TIER_LINT_COPY,
   TENSIONS_LOCK_KEY,
   type TensionEntry,
   tensionsPath,
 } from "../../src/curation/tension.js";
+import { err, ok } from "../../src/frontmatter/types.js";
 import { vaultTensionLog } from "../../src/tools/curation.js";
 
 const sampleInput = {
@@ -721,5 +726,111 @@ describe("positional tension kind (U-3)", () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw resolved.error;
     expect(agingTier(resolved.value, new Date("2026-08-06"))).toBeNull();
+  });
+});
+
+// Item 5: the `consolidated` resolution kind (system-only — recorded by
+// vault_consolidate's batch resolve, never caller-pickable) and the
+// slice-3 §3.5 bounded jittered retry on `__tensions__` lease contention.
+describe("consolidated resolution kind + lease retry", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-tension5-"));
+  });
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  const positionalInput = {
+    title: "Positional: alice vs bob",
+    sourceA: "pricing/claim.md",
+    claimA: "assert (high)",
+    sourceB: "pricing/claim.md",
+    claimB: "dispute (medium)",
+    loggedBy: "alice",
+    kind: "positional" as const,
+    positionA: "pos-001",
+    positionB: "pos-002",
+  };
+
+  it("`consolidated` round-trips through render and parse", async () => {
+    const added = await addTension(vault, positionalInput);
+    expect(added.ok).toBe(true);
+    if (!added.ok) throw added.error;
+    const resolved = await resolveTension(vault, added.value.id as string, {
+      resolved_at: new Date().toISOString(),
+      resolved_by: "carol",
+      kind: "consolidated",
+      rationale: "org_position ratified assert by carol; dissent carried: pos-002",
+    });
+    expect(resolved.ok).toBe(true);
+
+    const listed = await listTensions(vault);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw listed.error;
+    expect(listed.value[0]?.resolution?.kind).toBe("consolidated");
+  });
+
+  it("CALLER_RESOLUTION_KINDS fences the caller vocabulary to the original four", () => {
+    expect([...CALLER_RESOLUTION_KINDS]).toEqual([
+      "superseded",
+      "corrected",
+      "accepted",
+      "invalid",
+    ]);
+    expect(RESOLUTION_KINDS).toContain("consolidated");
+  });
+
+  it("isTensionLeaseContention matches only the lease-contention wrap", () => {
+    expect(
+      isTensionLeaseContention(
+        new Error("cannot update tension log: file is locked by 123:x:agent:a"),
+      ),
+    ).toBe(true);
+    expect(isTensionLeaseContention(new Error("cannot read tension log: EACCES"))).toBe(false);
+    expect(isTensionLeaseContention(new Error("tension not found: t-9"))).toBe(false);
+  });
+
+  it("retryOnTensionLease retries contention once after a jittered sleep in [100,250]ms", async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const result = await retryOnTensionLease(
+      async () => {
+        calls++;
+        if (calls === 1) {
+          return err(new Error("cannot update tension log: file is locked by 1:x:b"));
+        }
+        return ok("minted");
+      },
+      { sleep: async (ms: number) => void sleeps.push(ms) },
+    );
+    expect(calls).toBe(2);
+    expect(result.ok).toBe(true);
+    expect(sleeps).toHaveLength(1);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(100);
+    expect(sleeps[0]).toBeLessThanOrEqual(250);
+  });
+
+  it("retryOnTensionLease passes non-contention errors through untouched", async () => {
+    let calls = 0;
+    const result = await retryOnTensionLease(async () => {
+      calls++;
+      return err(new Error("tension not found: t-9"));
+    });
+    expect(calls).toBe(1);
+    expect(result.ok).toBe(false);
+  });
+
+  it("retryOnTensionLease gives up after the bounded retry", async () => {
+    let calls = 0;
+    const result = await retryOnTensionLease(
+      async () => {
+        calls++;
+        return err(new Error("cannot update tension log: file is locked by 1:x:b"));
+      },
+      { sleep: async () => {} },
+    );
+    expect(calls).toBe(2);
+    expect(result.ok).toBe(false);
   });
 });

@@ -329,6 +329,7 @@ ${body}
         corrected: 0,
         accepted: 0,
         invalid: 0,
+        consolidated: 0,
       });
       expect(h.stableAcknowledged).toBe(0);
       expect(h.unspecifiedLegacy).toBe(0);
@@ -396,6 +397,7 @@ ${body}
         corrected: 1,
         accepted: 1,
         invalid: 0,
+        consolidated: 0,
       });
       expect(h.stableAcknowledged).toBe(1);
       expect(h.unspecifiedLegacy).toBe(1);
@@ -1232,6 +1234,20 @@ ${live("pos-002", "bob", "assert")}${live("pos-003", "bob", "dispute")}${live("p
         "contested: true\n",
       ).replace("confidence: high", "confidence: low"),
     );
+    // The pair carries its record — an open positional tension — so the
+    // reconciliation sub-check stays quiet.
+    const minted = await addTension(vault, {
+      kind: "positional",
+      title: "Positional: alice vs bob",
+      sourceA: "pricing/clean-contested.md",
+      claimA: "assert",
+      sourceB: "pricing/clean-contested.md",
+      claimB: "dispute",
+      positionA: "pos-001",
+      positionB: "pos-002",
+      loggedBy: "bob",
+    });
+    expect(minted.ok).toBe(true);
     const report = await runLint(vault);
     expect(report.ok).toBe(true);
     if (!report.ok) return;
@@ -1242,6 +1258,125 @@ ${live("pos-002", "bob", "assert")}${live("pos-003", "bob", "dispute")}${live("p
     expect(report.value.checks.positionIntegrity.every((f) => f.path.includes("positions"))).toBe(
       true,
     );
+  });
+
+  // Item 5(c): the tension-log reconciliation sub-checks — the recovery
+  // surface for vault_assert's silent tension_error.
+  const mintPair = async (docPath: string, a: string, b: string) => {
+    const minted = await addTension(vault, {
+      kind: "positional",
+      title: `Positional: ${a} vs ${b}`,
+      sourceA: docPath,
+      claimA: "assert",
+      sourceB: docPath,
+      claimB: "dispute",
+      positionA: a,
+      positionB: b,
+      loggedBy: "bob",
+    });
+    expect(minted.ok).toBe(true);
+    if (!minted.ok) throw minted.error;
+    return minted.value.id as string;
+  };
+
+  it("flags a contested pair with no positional tension — including partial coverage", async () => {
+    writeFileSync(
+      join(vault, "pricing", "silent-mint.md"),
+      doc(
+        `${live("pos-001", "alice", "assert")}${live("pos-002", "bob", "dispute")}${live("pos-003", "carol", "dispute")}`,
+        "contested: true\n",
+      ).replace("confidence: high", "confidence: low"),
+    );
+    // One of the two pairs got its tension; the other's mint failed silently.
+    await mintPair("pricing/silent-mint.md", "pos-001", "pos-002");
+
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const findings = report.value.checks.positionIntegrity.filter(
+      (f) => f.path === "pricing/silent-mint.md",
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.detail).toContain("pos-001");
+    expect(findings[0]?.detail).toContain("pos-003");
+    expect(findings[0]?.detail).toContain("no open positional tension");
+  });
+
+  it("stays quiet for pairs covered open, accepted, or consolidated — but not corrected", async () => {
+    for (const [name, kind] of [
+      ["covered-open.md", null],
+      ["covered-accepted.md", "accepted"],
+      ["covered-consolidated.md", "consolidated"],
+      ["covered-corrected.md", "corrected"],
+    ] as const) {
+      writeFileSync(
+        join(vault, "pricing", name),
+        doc(
+          `${live("pos-001", "alice", "assert")}${live("pos-002", "bob", "dispute")}`,
+          "contested: true\n",
+        ).replace("confidence: high", "confidence: low"),
+      );
+      const id = await mintPair(`pricing/${name}`, "pos-001", "pos-002");
+      if (kind) {
+        const resolved = await resolveTension(vault, id, {
+          resolved_at: new Date().toISOString(),
+          resolved_by: "carol",
+          kind,
+        });
+        expect(resolved.ok).toBe(true);
+      }
+    }
+
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const paths = report.value.checks.positionIntegrity
+      .filter((f) => f.detail.includes("resolved"))
+      .map((f) => f.path);
+    // corrected predicted the conflict dissolves; both sides are still live
+    // and opposed — the one uncovered state among the four.
+    expect(paths).toEqual(["pricing/covered-corrected.md"]);
+    expect(
+      report.value.checks.positionIntegrity.filter((f) => f.path.startsWith("pricing/covered-")),
+    ).toHaveLength(1);
+  });
+
+  it("flags an open positional tension made moot by a stance flip", async () => {
+    writeFileSync(
+      join(vault, "pricing", "moot.md"),
+      doc(
+        `  - id: pos-001
+    principal: alice
+    stance: assert
+    confidence: medium
+    created: 2026-08-01
+  - id: pos-002
+    principal: bob
+    stance: dispute
+    confidence: medium
+    created: 2026-08-01
+    superseded_by: pos-003
+  - id: pos-003
+    principal: bob
+    stance: qualify
+    confidence: medium
+    created: 2026-08-02
+`,
+        "contested: false\n",
+      ),
+    );
+    // The tension predates bob's flip to qualify: its live chain ends no
+    // longer conflict, so it lingers open with nothing to adjudicate it.
+    await mintPair("pricing/moot.md", "pos-001", "pos-002");
+
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const moot = report.value.checks.positionIntegrity.filter(
+      (f) => f.path === "pricing/moot.md" && f.detail.includes("no longer"),
+    );
+    expect(moot).toHaveLength(1);
+    expect(moot[0]?.detail).toContain("pos-002");
   });
 
   const org = (

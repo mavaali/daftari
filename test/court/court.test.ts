@@ -327,6 +327,36 @@ describe("runCourt (CLI)", () => {
     rmSync(outJson, { force: true });
   });
 
+  it("rejects the system-only 'consolidated' kind — a court ruling cannot mint one", async () => {
+    writeTensions([
+      tensionBlock({
+        id: "t-sys",
+        title: "Positional dispute",
+        date: daysAgo(5),
+        kind: "factual",
+        sourceA: "pricing/base.md",
+        sourceB: "pricing/base.md",
+      }),
+    ]);
+    const code = await runCourt([
+      "rule",
+      "t-sys",
+      "--vault",
+      vault,
+      "--kind",
+      "consolidated",
+      "--rationale",
+      "should be rejected",
+      "--by",
+      "human:test",
+    ]);
+    expect(code).not.toBe(0);
+    const tensions = await listTensions(vault);
+    expect(tensions.ok).toBe(true);
+    if (!tensions.ok) return;
+    expect(tensions.value.find((t) => t.id === "t-sys")?.resolved).toBe(false);
+  });
+
   it("rules a tension, and the ruling becomes precedent on the next docket", async () => {
     writeTensions([
       tensionBlock({
