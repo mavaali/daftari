@@ -43,6 +43,19 @@ import { createBackend, type StorageBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
+import { type AuthEvent, appendAuthEvent, tokenHint } from "./auth-log.js";
+import {
+  type Bucket,
+  chargePenalty,
+  makeBucket,
+  makePenaltyBox,
+  makeSlotGate,
+  penaltyAllows,
+  releaseSlot,
+  type SlotGate,
+  tryAcquireSlot,
+  tryTake,
+} from "./limits.js";
 
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_BIND = "127.0.0.1";
@@ -92,6 +105,10 @@ interface ResolvedToken {
 }
 
 const LOOPBACK_BINDS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+function remoteOf(req: IncomingMessage): string {
+  return req.socket.remoteAddress ?? "unknown";
+}
 
 export function isLoopbackBind(bind: string): boolean {
   return LOOPBACK_BINDS.has(bind);
@@ -261,6 +278,9 @@ export interface StartHttpServerOptions {
   // legacy fallback instead of rejecting them. Temporary, opt-in; removal
   // criterion lives in the issue.
   legacyHttp?: boolean;
+  // Test-only: inject the in-flight gate so tests can preload it to the
+  // ceiling instead of racing slow requests.
+  slotGate?: SlotGate;
 }
 
 export function startHttpServer(
@@ -273,6 +293,24 @@ export function startHttpServer(
 ): Promise<ServeHandle> {
   const oauth = config.server.oauth;
   const authConfigured = tokens.length > 0 || oauth !== undefined;
+
+  // The ops floor (multi-user item 6). Process-local in-memory state is
+  // correct by construction: one serve process per vault is the invariant
+  // (.daftari/process.lock), the principal set is config-declared and
+  // finite, and a restart re-arms the floor immediately.
+  const limits = config.server.limits;
+  const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
+  const principalBuckets = new Map<string, Bucket>();
+  const slotGate = opts.slotGate ?? makeSlotGate(limits.maxInFlight);
+  // Fire-and-forget: an audit write must never add latency or failure to a
+  // response. Errors surface once per failure on stderr.
+  const audit = (entry: Omit<AuthEvent, "ts">): void => {
+    if (!config.server.audit) return;
+    void appendAuthEvent(vaultRoot, entry).then((r) => {
+      if (!r.ok)
+        process.stderr.write(`daftari serve: auth-log append failed: ${r.error.message}\n`);
+    });
+  };
   // JWKS key set, created lazily on the first OAuth verification: jose
   // caches fetched keys, so the server stays stateless and offline-tolerant
   // after the first fetch (spec Decision 2, phase 2).
@@ -320,6 +358,16 @@ export function startHttpServer(
               ? oauth.subjects[subject]
               : undefined;
           if (mapped === undefined) {
+            // Authenticated but unauthorized: charge the penalty box and
+            // audit the subject so the operator can see who is knocking.
+            chargePenalty(penaltyBox, remoteOf(req), Date.now());
+            audit({
+              outcome: "deny-403",
+              ...(subject !== undefined ? { subject } : {}),
+              remote: remoteOf(req),
+              method: req.method ?? "",
+              path: "/mcp",
+            });
             writeJson(res, 403, {
               error: "forbidden",
               message: "authenticated subject has no declared role mapping",
@@ -333,6 +381,16 @@ export function startHttpServer(
         }
       }
     }
+    chargePenalty(penaltyBox, remoteOf(req), Date.now());
+    audit({
+      outcome: "deny-401",
+      // 8 hex of sha256(presented) — correlates repeated bad tokens, useless
+      // for reconstruction; successful bearers are never hashed in.
+      ...(bearerFrom(req) !== null ? { token_hint: tokenHint(bearerFrom(req) as string) } : {}),
+      remote: remoteOf(req),
+      method: req.method ?? "",
+      path: "/mcp",
+    });
     writeJson(res, 401, {
       error: "unauthorized",
       message: "a valid bearer token is required",
@@ -402,19 +460,86 @@ export function startHttpServer(
       return;
     }
 
+    // Ops floor, layer A — the pre-auth penalty box. CHECKED here so an
+    // unauthenticated flood cannot spend CPU on constant-time token matching
+    // or JWT verification; CHARGED only by a 401/403 outcome inside
+    // authenticate, so a legitimate authenticated client never touches it.
+    // Keyed on the socket address — never X-Forwarded-For (attacker-writable).
+    const remote = remoteOf(req);
+    const penalty = penaltyAllows(penaltyBox, remote, Date.now());
+    if (!penalty.allowed) {
+      res.setHeader("Retry-After", String(penalty.retryAfterSeconds));
+      audit({ outcome: "rate-limited", remote, method: req.method ?? "", path: "/mcp" });
+      writeJson(res, 429, {
+        error: "rate_limited",
+        message: "too many failed authentication attempts",
+      });
+      return;
+    }
+
     const access = await authenticate(req, res);
     if (access === null) return;
 
-    // toNodeHandler forwards req.auth as the handler's pass-through authInfo
-    // (it performs no verification of its own — ours ran above). The bearer
-    // is the credential; `_meta` client info is diagnostics, never identity.
-    (req as IncomingMessage & { auth?: AuthInfo }).auth = {
-      token: bearerFrom(req) ?? "",
-      clientId: access.user,
-      scopes: [],
-      extra: { access },
-    };
-    await nodeHandler(req, res);
+    // Layer B — the per-principal bucket, keyed on the VERIFIED identity.
+    let bucket = principalBuckets.get(access.user);
+    if (!bucket) {
+      bucket = makeBucket(limits.burst, limits.ratePerMinute, Date.now());
+      principalBuckets.set(access.user, bucket);
+    }
+    const take = tryTake(bucket, Date.now());
+    if (!take.allowed) {
+      res.setHeader("Retry-After", String(take.retryAfterSeconds));
+      audit({
+        outcome: "rate-limited",
+        principal: access.user,
+        remote,
+        method: req.method ?? "",
+        path: "/mcp",
+      });
+      writeJson(res, 429, { error: "rate_limited", message: "per-principal rate limit reached" });
+      return;
+    }
+
+    // The global in-flight ceiling: reject-don't-queue (a bounded HTTP queue
+    // would age read snapshots and inflate stale-write rejections — the file
+    // lease's own fail-fast property, one layer up).
+    if (!tryAcquireSlot(slotGate)) {
+      res.setHeader("Retry-After", "1");
+      audit({
+        outcome: "over-capacity",
+        principal: access.user,
+        remote,
+        method: req.method ?? "",
+        path: "/mcp",
+      });
+      writeJson(res, 503, { error: "over_capacity", message: "server is at its request ceiling" });
+      return;
+    }
+
+    // Exactly one audit outcome per request: "allow" means ADMITTED to the
+    // handler — a throttled or shed request logs its rejection alone.
+    audit({
+      outcome: "allow",
+      principal: access.user,
+      remote,
+      method: req.method ?? "",
+      path: "/mcp",
+    });
+
+    try {
+      // toNodeHandler forwards req.auth as the handler's pass-through authInfo
+      // (it performs no verification of its own — ours ran above). The bearer
+      // is the credential; `_meta` client info is diagnostics, never identity.
+      (req as IncomingMessage & { auth?: AuthInfo }).auth = {
+        token: bearerFrom(req) ?? "",
+        clientId: access.user,
+        scopes: [],
+        extra: { access },
+      };
+      await nodeHandler(req, res);
+    } finally {
+      releaseSlot(slotGate);
+    }
   }
 
   return new Promise((resolveStart, rejectStart) => {

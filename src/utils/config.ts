@@ -145,7 +145,29 @@ export interface ServerConfig {
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
   oauth?: OAuthConfig;
+  // The serve ops floor (multi-user item 6). Defaults ALWAYS apply in serve
+  // mode — an opt-in floor is still a missing floor. stdio ignores the
+  // whole block: single caller, single identity, no request boundary.
+  limits: ServeLimitsConfig;
+  // .daftari/auth-log.jsonl on/off (operator-only audit; serve only).
+  audit: boolean;
 }
+
+export interface ServeLimitsConfig {
+  ratePerMinute: number;
+  burst: number;
+  authFailureBurst: number;
+  authFailuresPerMinute: number;
+  maxInFlight: number;
+}
+
+export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
+  ratePerMinute: 120,
+  burst: 40,
+  authFailureBurst: 10,
+  authFailuresPerMinute: 6,
+  maxInFlight: 32,
+};
 
 // `storage` block (#6, spec 2026-07-20 Decision 3): a durable sync target
 // backing the canonical local working copy. Credentials never live here —
@@ -327,7 +349,7 @@ function emptyConfig(): DaftariConfig {
     lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
-    server: { tokens: [] },
+    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true },
     storage: undefined,
     codeRepos: {},
     jitAnchors: true,
@@ -822,7 +844,14 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
   return ok(out);
 }
 
-const RECOGNISED_SERVER_KEYS = ["transport_security", "auth"] as const;
+const RECOGNISED_SERVER_KEYS = ["transport_security", "auth", "limits", "audit"] as const;
+const RECOGNISED_SERVER_LIMITS_KEYS = [
+  "rate_per_minute",
+  "burst",
+  "auth_failure_burst",
+  "auth_failures_per_minute",
+  "max_in_flight",
+] as const;
 const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
 const RECOGNISED_OAUTH_KEYS = ["issuer", "audience", "jwks_uri", "subjects"] as const;
@@ -883,13 +912,49 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
 // things only serve startup can know (env var set? role exists? bind rules?)
 // are validated there, not here.
 function validateServer(raw: unknown): Result<ServerConfig, Error> {
-  if (raw === undefined) return ok({ tokens: [] });
+  if (raw === undefined) {
+    return ok({ tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true });
+  }
   const mapping = requireMapping(raw, "'server'");
   if (!mapping.ok) return mapping;
   const obj = mapping.value;
   const known = rejectUnknownKeys(obj, RECOGNISED_SERVER_KEYS, "server");
   if (!known.ok) return known;
-  const out: ServerConfig = { tokens: [] };
+  const out: ServerConfig = { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true };
+  if (obj.limits !== undefined) {
+    const limitsMapping = requireMapping(obj.limits, "'server.limits'");
+    if (!limitsMapping.ok) return limitsMapping;
+    const limits = limitsMapping.value;
+    const limitsKnown = rejectUnknownKeys(limits, RECOGNISED_SERVER_LIMITS_KEYS, "server.limits");
+    if (!limitsKnown.ok) return limitsKnown;
+    // Positive integers only — no magic `0 = unlimited`: an operator who
+    // wants no ceiling raises the number and owns that choice.
+    const numeric: Array<
+      [(typeof RECOGNISED_SERVER_LIMITS_KEYS)[number], keyof ServeLimitsConfig]
+    > = [
+      ["rate_per_minute", "ratePerMinute"],
+      ["burst", "burst"],
+      ["auth_failure_burst", "authFailureBurst"],
+      ["auth_failures_per_minute", "authFailuresPerMinute"],
+      ["max_in_flight", "maxInFlight"],
+    ];
+    for (const [key, field] of numeric) {
+      const v = limits[key];
+      if (v === undefined) continue;
+      if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+        return err(
+          new Error(`'server.limits.${key}' must be a positive integer (got ${JSON.stringify(v)})`),
+        );
+      }
+      out.limits[field] = v;
+    }
+  }
+  if (obj.audit !== undefined) {
+    if (typeof obj.audit !== "boolean") {
+      return err(new Error("'server.audit' must be true or false"));
+    }
+    out.audit = obj.audit;
+  }
   if (obj.transport_security !== undefined) {
     if (obj.transport_security !== "external") {
       return err(
