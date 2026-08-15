@@ -1,0 +1,82 @@
+[
+  {
+    "id": "tr-001",
+    "domain": "synthetic-vornic",
+    "fromPath": "vornic/more-relays-more-drops.md",
+    "toPath": "vornic/more-relays-slower.md",
+    "fromContent": "A Vornic packet that passes through more relays is dropped more often.",
+    "toContent": "A Vornic packet that passes through more relays takes longer to arrive.",
+    "truth": "neither",
+    "subtype": "TRAP — co-consequences of hop count (common cause), not one deriving from the other"
+  },
+  {
+    "id": "tr-002",
+    "domain": "synthetic-korl",
+    "fromPath": "korl/easy-to-test.md",
+    "toPath": "korl/easy-to-parallelize.md",
+    "fromContent": "Korl programs are unusually easy to unit-test.",
+    "toContent": "Korl programs are unusually easy to run in parallel across many cores.",
+    "truth": "neither",
+    "subtype": "TRAP — both are consequences of purity (common cause); neither is the other's premise"
+  },
+  {
+    "id": "tr-003",
+    "domain": "synthetic-tithe",
+    "fromPath": "tithe/prices-rise-cycle-end.md",
+    "toPath": "tithe/donations-spike-cycle-end.md",
+    "fromContent": "Market prices in tithe-credits climb in the final days of each cycle.",
+    "toContent": "Charitable donations of tithe-credits spike in the final days of each cycle.",
+    "truth": "neither",
+    "subtype": "TRAP — both driven by the decay rule (common cause: holders offloading), not one from the other"
+  },
+  {
+    "id": "tr-004",
+    "domain": "synthetic-castellan",
+    "fromPath": "castellan/two-wardens-early.md",
+    "toPath": "castellan/control-centre-early.md",
+    "fromContent": "Strong Castellan players almost always develop a second warden in the opening.",
+    "toContent": "Strong Castellan players almost always seize control of the board's centre in the opening.",
+    "truth": "neither",
+    "subtype": "TRAP — both are correlates of skilled play (common cause), not a derivation between the two habits"
+  },
+  {
+    "id": "tr-005",
+    "domain": "synthetic-vornic",
+    "fromPath": "vornic/busy-relay-higher-drift.md",
+    "toPath": "vornic/busy-relay-more-drops.md",
+    "fromContent": "Busier Vornic relays report a higher average drift on the packets they handle.",
+    "toContent": "Busier Vornic relays drop more packets per hour.",
+    "truth": "neither",
+    "subtype": "TRAP — both track traffic volume (common cause); higher average drift doesn't itself cause the drops"
+  },
+  {
+    "id": "tr-006",
+    "domain": "synthetic-lumen",
+    "fromPath": "lumen/glow-cold-nights.md",
+    "toPath": "lumen/shed-bark-cold-nights.md",
+    "fromContent": "Lumen trees give off a faint glow on cold nights.",
+    "toContent": "Lumen trees shed flakes of outer bark on cold nights.",
+    "truth": "neither",
+    "subtype": "TRAP — both triggered by cold (common cause); the glow and the bark-shedding are independent responses"
+  },
+  {
+    "id": "tr-007",
+    "domain": "synthetic-glimmer",
+    "fromPath": "glimmer/moths-peak-latesummer.md",
+    "toPath": "glimmer/owls-peak-latesummer.md",
+    "fromContent": "Glimmer-moth sightings reach their yearly peak in late summer.",
+    "toContent": "The night owls that hunt over the same meadows are also most active in late summer.",
+    "truth": "neither",
+    "subtype": "TRAP — both are seasonal (common cause); shared timing invites a false predator-prey derivation"
+  },
+  {
+    "id": "tr-008",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/bigger-vault-bigger-db.md",
+    "toPath": "vault/architecture/bigger-vault-slower-reindex.md",
+    "fromContent": "A Daftari vault with more documents has a larger .daftari/index.db file.",
+    "toContent": "A Daftari vault with more documents takes longer to reindex.",
+    "truth": "neither",
+    "subtype": "TRAP — both scale with document count (common cause); reindex reads the markdown, not the db, so db size isn't the premise"
+  }
+]

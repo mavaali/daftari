@@ -24,7 +24,7 @@ if (!API_KEY || !API_KEY.startsWith("sk-or-")) {
 }
 
 const MODEL = process.argv[3] ?? "anthropic/claude-haiku-4.5";
-const FIXTURE = process.argv[2] ?? "tests/fixtures/decorrelation-fixture.json";
+const FIXTURE = process.argv[2] ?? "test/fixtures/decorrelation-fixture.json";
 
 function stripCodeFence(s) {
   const m = s.match(/^```(?:json)?\n([\s\S]*?)\n```\s*$/);

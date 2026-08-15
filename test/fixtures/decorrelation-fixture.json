@@ -1,0 +1,483 @@
+{
+  "version": 1,
+  "edges": [
+    {
+      "id": "f-001",
+      "fromPath": "notes/higher-orbit-slower.md",
+      "toPath": "notes/circular-orbit-speed.md",
+      "fromContent": "A satellite in a higher circular orbit moves at a lower orbital speed than one in a lower circular orbit.",
+      "toContent": "For a circular orbit, gravity supplies the centripetal force, giving orbital speed v = sqrt(GM/r), which decreases as the radius r grows.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: physics. [orig d-002]"
+    },
+    {
+      "id": "f-002",
+      "fromPath": "notes/sickle-malaria.md",
+      "toPath": "notes/sickle-mechanism.md",
+      "fromContent": "People who carry one copy of the sickle-cell allele have increased resistance to malaria.",
+      "toContent": "The sickle haemoglobin variant distorts red blood cells under low oxygen, disrupting the Plasmodium parasite's life cycle inside the cell.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: biology. [orig d-003]"
+    },
+    {
+      "id": "f-003",
+      "fromPath": "notes/price-ceiling-shortage.md",
+      "toPath": "notes/below-equilibrium.md",
+      "fromContent": "A binding price ceiling set below the market equilibrium price produces a shortage of the good.",
+      "toContent": "At any price below equilibrium, the quantity consumers demand exceeds the quantity producers supply.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: economics. [orig d-004]"
+    },
+    {
+      "id": "f-004",
+      "fromPath": "thesis/rag-as-regularizer.md",
+      "toPath": "reading-notes/regularization-restricts.md",
+      "fromContent": "Retrieval-augmented generation acts as a regularizer on the retrieval inverse problem, injecting a low-rank prior that suppresses the unconstrained components that surface as hallucinations.",
+      "toContent": "Regularizing an ill-posed inverse problem works by adding a prior that restricts the solution to a lower-dimensional subspace, damping the components the data alone cannot determine.",
+      "truth": "derives",
+      "edgeClass": "forward-temporal",
+      "rationale": "DERIVES (subtle, forward-temporal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: ml-novel. [orig d-010]"
+    },
+    {
+      "id": "f-005",
+      "fromPath": "notes/gps-relativity-correction.md",
+      "toPath": "notes/relativity-clock-rates.md",
+      "fromContent": "GPS satellites apply a continuous relativistic correction to their onboard atomic clocks to stay synchronized with ground receivers.",
+      "toContent": "Clocks at higher gravitational potential and in relative motion tick at measurably different rates, as predicted by general and special relativity.",
+      "truth": "derives",
+      "edgeClass": "forward-temporal",
+      "rationale": "DERIVES (subtle, forward-temporal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: physics. [orig d-011]"
+    },
+    {
+      "id": "f-006",
+      "fromPath": "notes/antibiotic-resistance-spread.md",
+      "toPath": "notes/selection-pressure.md",
+      "fromContent": "Overuse of antibiotics accelerates the emergence and spread of resistant bacterial strains.",
+      "toContent": "Antibiotics impose a selection pressure under which rare resistant mutants survive and reproduce preferentially over susceptible bacteria.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: biology. [orig d-012]"
+    },
+    {
+      "id": "f-007",
+      "fromPath": "vault/cortex/coldstart-stages.md",
+      "toPath": "vault/cortex/coldstart-budget-floor.md",
+      "fromContent": "At an empty cold start, every Daftari curation action stages for human approval rather than auto-writing.",
+      "toContent": "At cold start the action ledger is empty and every edge is a k=0 candidate, so the trust budget sits at its floor and no action can clear the auto-write gate.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: daftari. [orig d-017]"
+    },
+    {
+      "id": "f-008",
+      "fromPath": "notes/moon-feather-hammer.md",
+      "toPath": "notes/equivalence-free-fall.md",
+      "fromContent": "A feather and a hammer released together on the Moon strike the ground at the same instant.",
+      "toContent": "With no air resistance, all objects fall with the same gravitational acceleration regardless of their mass.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: physics. [orig d-019]"
+    },
+    {
+      "id": "f-009",
+      "fromPath": "notes/sample-mean-unbiased.md",
+      "toPath": "notes/expectation-of-sample-mean.md",
+      "fromContent": "The sample mean is an unbiased estimator of the population mean.",
+      "toContent": "The expected value of the sample mean equals the population mean exactly, E[X-bar] = mu.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: statistics. [orig d-021]"
+    },
+    {
+      "id": "f-010",
+      "fromPath": "notes/salt-melts-ice.md",
+      "toPath": "notes/freezing-point-depression.md",
+      "fromContent": "Spreading salt on icy roads makes the ice melt.",
+      "toContent": "Dissolved salt lowers the freezing point of water, so ice can melt at temperatures below 0 degrees Celsius.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: chemistry. [orig d2-004]"
+    },
+    {
+      "id": "f-011",
+      "fromPath": "notes/mergesort-nlogn.md",
+      "toPath": "notes/mergesort-mechanism.md",
+      "fromContent": "Merge sort runs in O(n log n) time even in the worst case.",
+      "toContent": "Merge sort recursively splits the list in half, giving about log n levels, and merges each level with linear n work.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: cs. [orig d2-005]"
+    },
+    {
+      "id": "f-012",
+      "fromPath": "notes/hyperinflation-savings.md",
+      "toPath": "notes/purchasing-power-collapse.md",
+      "fromContent": "Hyperinflation rapidly wipes out the value of people's cash savings.",
+      "toContent": "Under hyperinflation the price level rises so fast that a unit of currency loses most of its purchasing power within days.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: economics. [orig d2-006]"
+    },
+    {
+      "id": "f-013",
+      "fromPath": "notes/iss-weightless.md",
+      "toPath": "notes/orbital-free-fall.md",
+      "fromContent": "Astronauts aboard the International Space Station float in apparent weightlessness.",
+      "toContent": "The station and everything in it are in continuous free fall around the Earth, so no normal force is felt as weight.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: physics. [orig d2-007]"
+    },
+    {
+      "id": "f-014",
+      "fromPath": "notes/metal-feels-colder.md",
+      "toPath": "notes/thermal-conductivity.md",
+      "fromContent": "At the same room temperature, a metal handle feels colder to the touch than a wooden one.",
+      "toContent": "Metal conducts heat away from your skin far faster than wood, drawing warmth from your hand more quickly even at equal temperature.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: physics. [orig d2-011]"
+    },
+    {
+      "id": "f-015",
+      "fromPath": "notes/helium-balloon-rises.md",
+      "toPath": "notes/buoyancy-density.md",
+      "fromContent": "A helium-filled balloon rises upward when released in air.",
+      "toContent": "Helium is much less dense than the surrounding air, so the buoyant force exceeds the balloon's weight.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: chemistry. [orig d2-012]"
+    },
+    {
+      "id": "f-016",
+      "fromPath": "notes/https-eavesdropper.md",
+      "toPath": "notes/tls-encryption.md",
+      "fromContent": "HTTPS stops an eavesdropper on the network from reading the password you submit to a website.",
+      "toContent": "HTTPS encrypts the data in transit using TLS, so anyone intercepting the traffic sees only ciphertext.",
+      "truth": "derives",
+      "edgeClass": "forward-temporal",
+      "rationale": "DERIVES (subtle, forward-temporal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: cs. [orig d2-013]"
+    },
+    {
+      "id": "f-017",
+      "fromPath": "notes/raw-kidney-beans.md",
+      "toPath": "notes/phytohaemagglutinin.md",
+      "fromContent": "Eating raw or undercooked kidney beans can cause acute nausea and vomiting.",
+      "toContent": "Raw kidney beans contain the toxic lectin phytohaemagglutinin, which is destroyed only by thorough boiling.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: biology. [orig d2-014]"
+    },
+    {
+      "id": "f-018",
+      "fromPath": "notes/rate-hikes-curb-inflation.md",
+      "toPath": "notes/rates-reduce-spending.md",
+      "fromContent": "Central banks raise interest rates to bring down high inflation.",
+      "toContent": "Higher interest rates make borrowing costlier and saving more attractive, which reduces aggregate spending and cools price growth.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (obvious, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind). Domain: economics. [orig d2-016]"
+    },
+    {
+      "id": "f-019",
+      "fromPath": "notes/stomach-not-self-digest.md",
+      "toPath": "notes/mucus-bicarbonate-layer.md",
+      "fromContent": "Stomach acid does not normally digest the stomach itself.",
+      "toContent": "The stomach lining secretes a protective mucus and bicarbonate layer that neutralizes the acid right at the stomach wall.",
+      "truth": "derives",
+      "edgeClass": "backward-causal",
+      "rationale": "DERIVES (subtle, backward-causal). DOC A's claim depends on DOC B as a load-bearing premise: if B were false, A loses its warrant; B stands without A. Cross-family gate: gpt-4o 2/3 + gemini 3/3 confirm 'derives' (blind). Domain: biology. [orig d2-019]"
+    },
+    {
+      "id": "f-020",
+      "fromPath": "notes/light-vs-sound-speed.md",
+      "toPath": "notes/lightning-before-thunder.md",
+      "fromContent": "Light travels roughly a million times faster than sound, so it reaches an observer almost instantly while sound is delayed.",
+      "toContent": "During a storm you see the lightning flash before you hear the thunder, even though they happen together.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: physics. [orig d-007 reversed]"
+    },
+    {
+      "id": "f-021",
+      "fromPath": "notes/even-definition.md",
+      "toPath": "notes/even-plus-even.md",
+      "fromContent": "An integer is even exactly when it can be written as 2k for some integer k.",
+      "toContent": "The sum of any two even integers is itself even.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: math. [orig d-008 reversed]"
+    },
+    {
+      "id": "f-022",
+      "fromPath": "vault/architecture/index-is-projection.md",
+      "toPath": "vault/architecture/index-loss-safe.md",
+      "fromContent": "The index.db is a rebuildable projection of the markdown files, which are the single source of truth for all vault content and metadata.",
+      "toContent": "Deleting Daftari's .daftari/index.db file loses no vault data.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: daftari. [orig d-015 reversed]"
+    },
+    {
+      "id": "f-023",
+      "fromPath": "notes/money-by-acceptance.md",
+      "toPath": "notes/fiat-money-value.md",
+      "fromContent": "Money's value rests on collective acceptance and legal-tender status, not on any intrinsic commodity backing.",
+      "toContent": "Fiat money holds its value even though it is not backed by gold or any other commodity.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: economics. [orig d-016 reversed]"
+    },
+    {
+      "id": "f-024",
+      "fromPath": "notes/full-valence-shell.md",
+      "toPath": "notes/noble-gas-inert.md",
+      "fromContent": "Noble gases have a full valence electron shell, leaving little tendency to gain, lose, or share electrons.",
+      "toContent": "The noble gases are largely chemically inert and rarely form compounds.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: chemistry. [orig d-018 reversed]"
+    },
+    {
+      "id": "f-025",
+      "fromPath": "notes/git-content-hashing.md",
+      "toPath": "notes/git-tamper-detection.md",
+      "fromContent": "Git names every stored object by a cryptographic hash of its contents, so any change to the contents produces a different object hash.",
+      "toContent": "Git can detect whether the contents of a committed file have been altered after the fact.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: cs. [orig d-020 reversed]"
+    },
+    {
+      "id": "f-026",
+      "fromPath": "notes/rbc-no-nucleus.md",
+      "toPath": "notes/rbc-no-division.md",
+      "fromContent": "During development, mature mammalian red blood cells expel their nucleus, losing the DNA that division and repair would require.",
+      "toContent": "Mature mammalian red blood cells cannot divide or repair their own DNA.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 2/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: biology. [orig d-022 reversed]"
+    },
+    {
+      "id": "f-027",
+      "fromPath": "notes/tidal-locking.md",
+      "toPath": "notes/same-moon-face.md",
+      "fromContent": "The Moon is tidally locked: it rotates exactly once per orbit, so the same hemisphere always points toward Earth.",
+      "toContent": "We always see the same face of the Moon from Earth.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: astronomy. [orig d2-001 reversed]"
+    },
+    {
+      "id": "f-028",
+      "fromPath": "notes/refraction.md",
+      "toPath": "notes/bent-pencil.md",
+      "fromContent": "Light refracts, changing direction, when it crosses between media of different optical density such as water and air.",
+      "toContent": "A straight pencil standing in a glass of water looks bent at the water's surface.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: physics. [orig d2-002 reversed]"
+    },
+    {
+      "id": "f-029",
+      "fromPath": "notes/diffraction-wavelength.md",
+      "toPath": "notes/hear-around-corner.md",
+      "fromContent": "Sound's wavelength is comparable to everyday objects so it diffracts strongly around them, whereas light's far shorter wavelength diffracts negligibly.",
+      "toContent": "You can hear someone speaking around a corner even though you cannot see them around it.",
+      "truth": "depends",
+      "rationale": "DEPENDS (direction probe). Presentation REVERSED vs the validated forward derivation: DOC A is the premise, DOC B the conclusion, so DOC B derives from DOC A -> 'depends'. The forward derivation was cross-family-confirmed (gpt-4o 3/3 + gemini 3/3 confirm 'derives' (blind) on the forward form). Tests whether the panel tracks direction; the reverse template should outperform forward. Domain: physics. [orig d2-017 reversed]"
+    },
+    {
+      "id": "f-030",
+      "fromPath": "vault/architecture/git-autocommit.md",
+      "toPath": "vault/architecture/index-db-ephemeral.md",
+      "fromContent": "Every Daftari write operation auto-commits to git; git is the version-control layer and there is no separate versioning subsystem.",
+      "toContent": "The .daftari/index.db SQLite file is ephemeral: it is the search/ACL index and can be rebuilt from the markdown files at any time.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence (proven f-006)). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: daftari. [orig c-001]"
+    },
+    {
+      "id": "f-031",
+      "fromPath": "vault/curation/vault-lint-advisory.md",
+      "toPath": "vault/curation/vault-tension-log-advisory.md",
+      "fromContent": "Daftari's vault_lint reports curation problems but never auto-fixes them; the curation engine is advisory.",
+      "toContent": "Daftari's vault_tension_log records tensions between documents but never resolves them; recording a tension does not act on it.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence common-cause siblings (proven f-008)). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: daftari. [orig c-002]"
+    },
+    {
+      "id": "f-032",
+      "fromPath": "vault/cortex/scheduler-halflife.md",
+      "toPath": "reading-notes/sm2-supermemo.md",
+      "fromContent": "The cortex scheduler ages each edge with an exponential half-life decay function f(strength); an edge left un-re-examined past its interval becomes due for revision.",
+      "toContent": "SuperMemo's SM-2 algorithm popularized spaced repetition using an ease factor that lengthens review intervals after each successful recall.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence citation-without-dependence (proven f-007)). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: daftari. [orig c-003]"
+    },
+    {
+      "id": "f-033",
+      "fromPath": "vault/architecture/write-locks.md",
+      "toPath": "vault/architecture/process-lock.md",
+      "fromContent": "Daftari's write locks are file-level, SQLite-backed, with a 60-second TTL; an expired lock is released automatically.",
+      "toContent": "Only one daftari process may hold a vault at a time; on startup the server SIGTERMs any live daftari holding the per-vault process lock and waits up to 3 seconds before taking over.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two locking mechanisms, different layers, orthogonal). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: daftari. [orig c-004]"
+    },
+    {
+      "id": "f-034",
+      "fromPath": "notes/multi-head-attention.md",
+      "toPath": "notes/positional-encoding.md",
+      "fromContent": "Multi-head attention lets a transformer attend to information from different representation subspaces in parallel by running several attention heads and concatenating their outputs.",
+      "toContent": "Transformers add positional encodings to token embeddings because self-attention is permutation-invariant and would otherwise be blind to token order.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two transformer components, embedding-near, neither a premise for the other). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: ml-transformers. [orig c-005]"
+    },
+    {
+      "id": "f-035",
+      "fromPath": "notes/tcp.md",
+      "toPath": "notes/udp.md",
+      "fromContent": "TCP provides reliable, in-order byte-stream delivery using sequence numbers, acknowledgments, and retransmission of lost segments.",
+      "toContent": "UDP is a connectionless transport that sends datagrams with no delivery guarantee, no ordering, and no built-in retransmission.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — sibling protocols, often compared, neither derives from the other). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: networking. [orig c-006]"
+    },
+    {
+      "id": "f-036",
+      "fromPath": "notes/dna-replication.md",
+      "toPath": "notes/transcription-translation.md",
+      "fromContent": "DNA replication is semiconservative: each daughter double helix retains one parental strand and one newly synthesized strand.",
+      "toContent": "In gene expression, DNA is transcribed into messenger RNA, which ribosomes then translate into a protein.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two molecular-biology processes sharing 'DNA', independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: biology. [orig c-007]"
+    },
+    {
+      "id": "f-037",
+      "fromPath": "notes/water-max-density.md",
+      "toPath": "notes/water-boiling.md",
+      "fromContent": "Liquid water reaches its maximum density at approximately 4 degrees Celsius.",
+      "toContent": "At sea-level atmospheric pressure, water boils at 100 degrees Celsius.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two physical constants of water, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: physics. [orig c-008]"
+    },
+    {
+      "id": "f-038",
+      "fromPath": "notes/gutenberg-type.md",
+      "toPath": "notes/gutenberg-fust.md",
+      "fromContent": "Gutenberg's printing press, developed around 1440, used reusable movable metal type cast in a hand mould.",
+      "toContent": "Gutenberg financed his printing enterprise partly through a large loan from the businessman Johann Fust, who later sued him.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two facts about Gutenberg's press, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: history. [orig c-009]"
+    },
+    {
+      "id": "f-039",
+      "fromPath": "notes/mars-moons.md",
+      "toPath": "notes/mars-color.md",
+      "fromContent": "Mars has two small, irregularly shaped moons, Phobos and Deimos, likely captured asteroids.",
+      "toContent": "Mars appears reddish because its surface is covered in iron-oxide (rust) dust.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two Mars facts, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: astronomy. [orig c-010]"
+    },
+    {
+      "id": "f-040",
+      "fromPath": "notes/english-germanic.md",
+      "toPath": "notes/english-french-borrowing.md",
+      "fromContent": "English is a West Germanic language within the Indo-European family, descended from the dialects of Anglo-Saxon settlers.",
+      "toContent": "After the 1066 Norman Conquest, English borrowed thousands of words from Norman French, especially in law, cuisine, and governance.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — genetic classification vs lexical borrowing, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: linguistics. [orig c-011]"
+    },
+    {
+      "id": "f-041",
+      "fromPath": "notes/conv-layers.md",
+      "toPath": "notes/pooling-layers.md",
+      "fromContent": "Convolutional layers share a small set of weights across all spatial positions, giving the network approximate translation equivariance.",
+      "toContent": "Pooling layers downsample feature maps, reducing spatial resolution and giving local translation invariance.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two CNN components, embedding-near, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: ml-cnn. [orig c-012]"
+    },
+    {
+      "id": "f-042",
+      "fromPath": "notes/carbon-allotropes.md",
+      "toPath": "notes/diamond-hardness.md",
+      "fromContent": "Graphite and diamond are both allotropes of carbon, differing only in how their carbon atoms are bonded and arranged.",
+      "toContent": "Diamond is the hardest known naturally occurring material, scoring 10 on the Mohs scale.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — same entity (carbon/diamond), but hardness not derived from allotropy). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: chemistry. [orig c-013]"
+    },
+    {
+      "id": "f-043",
+      "fromPath": "notes/adam.md",
+      "toPath": "notes/dropout.md",
+      "fromContent": "The Adam optimizer adapts a per-parameter learning rate using running estimates of the first and second moments of the gradients.",
+      "toContent": "Dropout regularizes a network by randomly zeroing a fraction of activations during each training step, reducing co-adaptation.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two training techniques, share 'training', independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: ml-training. [orig c-014]"
+    },
+    {
+      "id": "f-044",
+      "fromPath": "vault/architecture/rbac-config.md",
+      "toPath": "vault/architecture/markdown-frontmatter.md",
+      "fromContent": "Daftari's RBAC is config-driven: users and roles are declared in .daftari/config.yaml, and there is no separate user-management system.",
+      "toContent": "All Daftari content is markdown with YAML frontmatter; the frontmatter is the metadata layer and there is no separate metadata format.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — access-control config vs content format, orthogonal design decisions). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: daftari. [orig c-015]"
+    },
+    {
+      "id": "f-045",
+      "fromPath": "notes/comparative-advantage.md",
+      "toPath": "notes/absolute-advantage.md",
+      "fromContent": "Comparative advantage holds that a country gains from specializing in goods for which it has the lowest opportunity cost, even if it is worse at producing everything.",
+      "toContent": "Absolute advantage describes a country being able to produce a good using fewer inputs than another country.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two trade concepts, often compared, neither a premise for the other). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: economics. [orig c-016]"
+    },
+    {
+      "id": "f-046",
+      "fromPath": "notes/precision.md",
+      "toPath": "notes/recall.md",
+      "fromContent": "Precision is the fraction of predicted-positive items that are actually positive (true positives over predicted positives).",
+      "toContent": "Recall is the fraction of actually-positive items that are predicted positive (true positives over actual positives).",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — paired metrics, defined over the same confusion matrix, neither derives from the other). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: ml-eval. [orig c-017]"
+    },
+    {
+      "id": "f-047",
+      "fromPath": "notes/sound-speed-air.md",
+      "toPath": "notes/light-speed-vacuum.md",
+      "fromContent": "Sound travels through dry air at about 343 metres per second at 20 degrees Celsius.",
+      "toContent": "Light travels through a vacuum at about 299,792 kilometres per second, the universal speed limit c.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two wave-speed facts; shared theme 'speed of X', no derivation (control for loose topical match)). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: physics. [orig c-018]"
+    },
+    {
+      "id": "f-048",
+      "fromPath": "notes/jupiter-mass.md",
+      "toPath": "notes/jupiter-red-spot.md",
+      "fromContent": "Jupiter is the most massive planet in the solar system, more than twice the mass of all the others combined.",
+      "toContent": "Jupiter's Great Red Spot is a giant anticyclonic storm, larger than Earth, that has persisted for centuries.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two Jupiter facts, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: astronomy. [orig c2-001]"
+    },
+    {
+      "id": "f-049",
+      "fromPath": "notes/red-blood-cells.md",
+      "toPath": "notes/white-blood-cells.md",
+      "fromContent": "Red blood cells carry oxygen from the lungs to the body's tissues using haemoglobin.",
+      "toContent": "White blood cells defend the body against infection as part of the immune system.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two blood-cell types, embedding-near, independent roles). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: biology. [orig c2-002]"
+    },
+    {
+      "id": "f-050",
+      "fromPath": "notes/stack-lifo.md",
+      "toPath": "notes/queue-fifo.md",
+      "fromContent": "A stack is a last-in-first-out (LIFO) data structure: the most recently pushed item is the first popped.",
+      "toContent": "A queue is a first-in-first-out (FIFO) data structure: the earliest enqueued item is the first dequeued.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — sibling data structures, often compared, neither derives from the other). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: cs. [orig c2-003]"
+    },
+    {
+      "id": "f-051",
+      "fromPath": "notes/charge-repel-attract.md",
+      "toPath": "notes/coulomb-unit.md",
+      "fromContent": "Like electric charges repel each other and opposite charges attract.",
+      "toContent": "The SI unit of electric charge is the coulomb, defined via the ampere as one ampere-second.",
+      "truth": "neither",
+      "rationale": "NEITHER (co-occurrence — two facts about electric charge, independent). A and B share vocabulary/theme but neither is a load-bearing premise for the other — each claim stands if the other is false. Cross-family gate: gpt-4o 3/3 + gemini 3/3 confirm 'neither' (blind). Domain: physics. [orig c2-004]"
+    }
+  ]
+}

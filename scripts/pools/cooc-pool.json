@@ -1,0 +1,182 @@
+[
+  {
+    "id": "c-001",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/git-autocommit.md",
+    "toPath": "vault/architecture/index-db-ephemeral.md",
+    "fromContent": "Every Daftari write operation auto-commits to git; git is the version-control layer and there is no separate versioning subsystem.",
+    "toContent": "The .daftari/index.db SQLite file is ephemeral: it is the search/ACL index and can be rebuilt from the markdown files at any time.",
+    "truth": "neither",
+    "subtype": "co-occurrence (proven f-006)"
+  },
+  {
+    "id": "c-002",
+    "domain": "daftari",
+    "fromPath": "vault/curation/vault-lint-advisory.md",
+    "toPath": "vault/curation/vault-tension-log-advisory.md",
+    "fromContent": "Daftari's vault_lint reports curation problems but never auto-fixes them; the curation engine is advisory.",
+    "toContent": "Daftari's vault_tension_log records tensions between documents but never resolves them; recording a tension does not act on it.",
+    "truth": "neither",
+    "subtype": "co-occurrence common-cause siblings (proven f-008)"
+  },
+  {
+    "id": "c-003",
+    "domain": "daftari",
+    "fromPath": "vault/cortex/scheduler-halflife.md",
+    "toPath": "reading-notes/sm2-supermemo.md",
+    "fromContent": "The cortex scheduler ages each edge with an exponential half-life decay function f(strength); an edge left un-re-examined past its interval becomes due for revision.",
+    "toContent": "SuperMemo's SM-2 algorithm popularized spaced repetition using an ease factor that lengthens review intervals after each successful recall.",
+    "truth": "neither",
+    "subtype": "co-occurrence citation-without-dependence (proven f-007)"
+  },
+  {
+    "id": "c-004",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/write-locks.md",
+    "toPath": "vault/architecture/process-lock.md",
+    "fromContent": "Daftari's write locks are file-level, SQLite-backed, with a 60-second TTL; an expired lock is released automatically.",
+    "toContent": "Only one daftari process may hold a vault at a time; on startup the server SIGTERMs any live daftari holding the per-vault process lock and waits up to 3 seconds before taking over.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two locking mechanisms, different layers, orthogonal"
+  },
+  {
+    "id": "c-005",
+    "domain": "ml-transformers",
+    "fromPath": "notes/multi-head-attention.md",
+    "toPath": "notes/positional-encoding.md",
+    "fromContent": "Multi-head attention lets a transformer attend to information from different representation subspaces in parallel by running several attention heads and concatenating their outputs.",
+    "toContent": "Transformers add positional encodings to token embeddings because self-attention is permutation-invariant and would otherwise be blind to token order.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two transformer components, embedding-near, neither a premise for the other"
+  },
+  {
+    "id": "c-006",
+    "domain": "networking",
+    "fromPath": "notes/tcp.md",
+    "toPath": "notes/udp.md",
+    "fromContent": "TCP provides reliable, in-order byte-stream delivery using sequence numbers, acknowledgments, and retransmission of lost segments.",
+    "toContent": "UDP is a connectionless transport that sends datagrams with no delivery guarantee, no ordering, and no built-in retransmission.",
+    "truth": "neither",
+    "subtype": "co-occurrence — sibling protocols, often compared, neither derives from the other"
+  },
+  {
+    "id": "c-007",
+    "domain": "biology",
+    "fromPath": "notes/dna-replication.md",
+    "toPath": "notes/transcription-translation.md",
+    "fromContent": "DNA replication is semiconservative: each daughter double helix retains one parental strand and one newly synthesized strand.",
+    "toContent": "In gene expression, DNA is transcribed into messenger RNA, which ribosomes then translate into a protein.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two molecular-biology processes sharing 'DNA', independent"
+  },
+  {
+    "id": "c-008",
+    "domain": "physics",
+    "fromPath": "notes/water-max-density.md",
+    "toPath": "notes/water-boiling.md",
+    "fromContent": "Liquid water reaches its maximum density at approximately 4 degrees Celsius.",
+    "toContent": "At sea-level atmospheric pressure, water boils at 100 degrees Celsius.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two physical constants of water, independent"
+  },
+  {
+    "id": "c-009",
+    "domain": "history",
+    "fromPath": "notes/gutenberg-type.md",
+    "toPath": "notes/gutenberg-fust.md",
+    "fromContent": "Gutenberg's printing press, developed around 1440, used reusable movable metal type cast in a hand mould.",
+    "toContent": "Gutenberg financed his printing enterprise partly through a large loan from the businessman Johann Fust, who later sued him.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two facts about Gutenberg's press, independent"
+  },
+  {
+    "id": "c-010",
+    "domain": "astronomy",
+    "fromPath": "notes/mars-moons.md",
+    "toPath": "notes/mars-color.md",
+    "fromContent": "Mars has two small, irregularly shaped moons, Phobos and Deimos, likely captured asteroids.",
+    "toContent": "Mars appears reddish because its surface is covered in iron-oxide (rust) dust.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Mars facts, independent"
+  },
+  {
+    "id": "c-011",
+    "domain": "linguistics",
+    "fromPath": "notes/english-germanic.md",
+    "toPath": "notes/english-french-borrowing.md",
+    "fromContent": "English is a West Germanic language within the Indo-European family, descended from the dialects of Anglo-Saxon settlers.",
+    "toContent": "After the 1066 Norman Conquest, English borrowed thousands of words from Norman French, especially in law, cuisine, and governance.",
+    "truth": "neither",
+    "subtype": "co-occurrence — genetic classification vs lexical borrowing, independent"
+  },
+  {
+    "id": "c-012",
+    "domain": "ml-cnn",
+    "fromPath": "notes/conv-layers.md",
+    "toPath": "notes/pooling-layers.md",
+    "fromContent": "Convolutional layers share a small set of weights across all spatial positions, giving the network approximate translation equivariance.",
+    "toContent": "Pooling layers downsample feature maps, reducing spatial resolution and giving local translation invariance.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two CNN components, embedding-near, independent"
+  },
+  {
+    "id": "c-013",
+    "domain": "chemistry",
+    "fromPath": "notes/carbon-allotropes.md",
+    "toPath": "notes/diamond-hardness.md",
+    "fromContent": "Graphite and diamond are both allotropes of carbon, differing only in how their carbon atoms are bonded and arranged.",
+    "toContent": "Diamond is the hardest known naturally occurring material, scoring 10 on the Mohs scale.",
+    "truth": "neither",
+    "subtype": "co-occurrence — same entity (carbon/diamond), but hardness not derived from allotropy"
+  },
+  {
+    "id": "c-014",
+    "domain": "ml-training",
+    "fromPath": "notes/adam.md",
+    "toPath": "notes/dropout.md",
+    "fromContent": "The Adam optimizer adapts a per-parameter learning rate using running estimates of the first and second moments of the gradients.",
+    "toContent": "Dropout regularizes a network by randomly zeroing a fraction of activations during each training step, reducing co-adaptation.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two training techniques, share 'training', independent"
+  },
+  {
+    "id": "c-015",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/rbac-config.md",
+    "toPath": "vault/architecture/markdown-frontmatter.md",
+    "fromContent": "Daftari's RBAC is config-driven: users and roles are declared in .daftari/config.yaml, and there is no separate user-management system.",
+    "toContent": "All Daftari content is markdown with YAML frontmatter; the frontmatter is the metadata layer and there is no separate metadata format.",
+    "truth": "neither",
+    "subtype": "co-occurrence — access-control config vs content format, orthogonal design decisions"
+  },
+  {
+    "id": "c-016",
+    "domain": "economics",
+    "fromPath": "notes/comparative-advantage.md",
+    "toPath": "notes/absolute-advantage.md",
+    "fromContent": "Comparative advantage holds that a country gains from specializing in goods for which it has the lowest opportunity cost, even if it is worse at producing everything.",
+    "toContent": "Absolute advantage describes a country being able to produce a good using fewer inputs than another country.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two trade concepts, often compared, neither a premise for the other"
+  },
+  {
+    "id": "c-017",
+    "domain": "ml-eval",
+    "fromPath": "notes/precision.md",
+    "toPath": "notes/recall.md",
+    "fromContent": "Precision is the fraction of predicted-positive items that are actually positive (true positives over predicted positives).",
+    "toContent": "Recall is the fraction of actually-positive items that are predicted positive (true positives over actual positives).",
+    "truth": "neither",
+    "subtype": "co-occurrence — paired metrics, defined over the same confusion matrix, neither derives from the other"
+  },
+  {
+    "id": "c-018",
+    "domain": "physics",
+    "fromPath": "notes/sound-speed-air.md",
+    "toPath": "notes/light-speed-vacuum.md",
+    "fromContent": "Sound travels through dry air at about 343 metres per second at 20 degrees Celsius.",
+    "toContent": "Light travels through a vacuum at about 299,792 kilometres per second, the universal speed limit c.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two wave-speed facts; shared theme 'speed of X', no derivation (control for loose topical match)"
+  }
+]

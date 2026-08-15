@@ -1,0 +1,42 @@
+[
+  {
+    "id": "c2-001",
+    "domain": "astronomy",
+    "fromPath": "notes/jupiter-mass.md",
+    "toPath": "notes/jupiter-red-spot.md",
+    "fromContent": "Jupiter is the most massive planet in the solar system, more than twice the mass of all the others combined.",
+    "toContent": "Jupiter's Great Red Spot is a giant anticyclonic storm, larger than Earth, that has persisted for centuries.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two Jupiter facts, independent"
+  },
+  {
+    "id": "c2-002",
+    "domain": "biology",
+    "fromPath": "notes/red-blood-cells.md",
+    "toPath": "notes/white-blood-cells.md",
+    "fromContent": "Red blood cells carry oxygen from the lungs to the body's tissues using haemoglobin.",
+    "toContent": "White blood cells defend the body against infection as part of the immune system.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two blood-cell types, embedding-near, independent roles"
+  },
+  {
+    "id": "c2-003",
+    "domain": "cs",
+    "fromPath": "notes/stack-lifo.md",
+    "toPath": "notes/queue-fifo.md",
+    "fromContent": "A stack is a last-in-first-out (LIFO) data structure: the most recently pushed item is the first popped.",
+    "toContent": "A queue is a first-in-first-out (FIFO) data structure: the earliest enqueued item is the first dequeued.",
+    "truth": "neither",
+    "subtype": "co-occurrence — sibling data structures, often compared, neither derives from the other"
+  },
+  {
+    "id": "c2-004",
+    "domain": "physics",
+    "fromPath": "notes/charge-repel-attract.md",
+    "toPath": "notes/coulomb-unit.md",
+    "fromContent": "Like electric charges repel each other and opposite charges attract.",
+    "toContent": "The SI unit of electric charge is the coulomb, defined via the ampere as one ampere-second.",
+    "truth": "neither",
+    "subtype": "co-occurrence — two facts about electric charge, independent"
+  }
+]

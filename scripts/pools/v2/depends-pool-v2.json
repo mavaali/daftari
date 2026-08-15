@@ -1,0 +1,122 @@
+[
+  {
+    "id": "nd-001",
+    "domain": "synthetic-vornic",
+    "fromPath": "vornic/anchor-resets.md",
+    "toPath": "vornic/must-cross-anchor.md",
+    "fromContent": "In the Vornic protocol, only anchor nodes reset a packet's drift counter to zero; ordinary relays only increment it.",
+    "toContent": "To cross a wide Vornic region without being dropped, a packet must be routed through at least one anchor node along the way.",
+    "truth": "depends",
+    "note": "native depends: from=premise, to=conclusion that depends on it"
+  },
+  {
+    "id": "nd-002",
+    "domain": "synthetic-glimmer",
+    "fromPath": "glimmer/larval-diet.md",
+    "toPath": "glimmer/protect-fern-first.md",
+    "fromContent": "Glimmer-moth larvae feed exclusively on the saber fern and can eat no other plant.",
+    "toContent": "A program to save the glimmer moth from extinction must begin by protecting and replanting saber-fern groves.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-003",
+    "domain": "synthetic-korl",
+    "fromPath": "korl/pure-functions.md",
+    "toPath": "korl/safe-memoization.md",
+    "fromContent": "Every function in the Korl language is pure: its result is determined solely by its arguments, with no side effects.",
+    "toContent": "A Korl compiler may cache and reuse the result of any function call it has already evaluated, with no risk of a stale answer.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-004",
+    "domain": "synthetic-tithe",
+    "fromPath": "tithe/decay-rule.md",
+    "toPath": "tithe/convert-to-goods.md",
+    "fromContent": "An unspent tithe-credit loses ten percent of its value at the end of each cycle.",
+    "toContent": "Prudent tithe-credit holders convert their balances into durable goods before each cycle closes.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-005",
+    "domain": "synthetic-castellan",
+    "fromPath": "castellan/keep-avoids-threat.md",
+    "toPath": "castellan/pen-the-keep.md",
+    "fromContent": "In Castellan, the keep may never move onto a tile that an enemy warden threatens.",
+    "toContent": "A player can pen the enemy keep into a corner by posting two wardens to cover all of its escape tiles.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-006",
+    "domain": "synthetic-lumen",
+    "fromPath": "lumen/conductive-sap.md",
+    "toPath": "lumen/avoid-in-storms.md",
+    "fromContent": "The sap of a lumen tree conducts electricity readily.",
+    "toContent": "Experienced foresters never shelter beneath a lumen tree during a thunderstorm.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-007",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/git-autocommit.md",
+    "toPath": "vault/architecture/recover-any-state.md",
+    "fromContent": "Every Daftari write operation auto-commits to git.",
+    "toContent": "A user can recover any earlier state of a Daftari vault using ordinary git commands.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-008",
+    "domain": "synthetic-vornic",
+    "fromPath": "vornic/drop-over-drift.md",
+    "toPath": "vornic/drops-signal-long-route.md",
+    "fromContent": "A Vornic relay discards any packet whose accumulated drift exceeds the relay's tolerance.",
+    "toContent": "When a previously reliable Vornic route suddenly starts losing packets, it is a sign the path has grown longer than the drift limit allows.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-009",
+    "domain": "synthetic-korl",
+    "fromPath": "korl/lazy-eval.md",
+    "toPath": "korl/self-referential-stream.md",
+    "fromContent": "Korl evaluates every expression lazily, computing a value only at the moment some later step demands it.",
+    "toContent": "A Korl programmer can define a stream in terms of itself to build an infinite self-referential sequence that still runs.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-010",
+    "domain": "synthetic-glimmer",
+    "fromPath": "glimmer/polarized-navigation.md",
+    "toPath": "glimmer/track-with-beacons.md",
+    "fromContent": "Glimmer moths steer their flight solely by the polarization pattern of moonlight.",
+    "toContent": "Researchers can herd and track glimmer moths by setting out artificial polarized-light beacons.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-011",
+    "domain": "synthetic-tithe",
+    "fromPath": "tithe/face-value-acceptance.md",
+    "toPath": "tithe/always-spendable.md",
+    "fromContent": "Every merchant in the realm must accept tithe-credits at their full face value.",
+    "toContent": "A traveler carrying tithe-credits can always buy goods at any market stall without bargaining over whether the credits will be taken.",
+    "truth": "depends",
+    "note": "native depends"
+  },
+  {
+    "id": "nd-012",
+    "domain": "daftari",
+    "fromPath": "vault/architecture/lock-ttl.md",
+    "toPath": "vault/architecture/crash-self-heals.md",
+    "fromContent": "Daftari's write locks expire automatically after a 60-second time-to-live.",
+    "toContent": "A Daftari vault left locked by a crashed agent becomes writable again on its own within a minute, with no manual cleanup.",
+    "truth": "depends",
+    "note": "native depends"
+  }
+]

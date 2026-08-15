@@ -1,0 +1,938 @@
+{
+  "fixtureSize": 39,
+  "fixtureSource": "tests/fixtures/decorrelation-fixture-v2.json",
+  "axes": [
+    "forward",
+    "reverse",
+    "contrast"
+  ],
+  "model": "anthropic/claude-haiku-4.5",
+  "metrics": {
+    "singleVoteAccuracy": {
+      "forward": 0.6666666666666666,
+      "reverse": 0.5384615384615384,
+      "contrast": 0.8974358974358975
+    },
+    "majorityAccuracy": 0.6666666666666666,
+    "liftOverBestSingle": -0.23076923076923084,
+    "axisAgreementRate": 0.6153846153846154,
+    "errorCorrelation": 0.9230769230769231
+  },
+  "passes": false,
+  "perEdge": [
+    {
+      "id": "v2-001",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that packets are discarded along long relay chains depends on DOC B's mechanism: the drift counter increment and discard rule at each relay. DOC A describes the consequence (long chains cause discard), while DOC B establishes the load-bearing mechanism (relays increment drift and discard on tolerance exceeded). DOC A's central claim requires DOC B's drift-counter-based discard logic to be true; without that mechanism, the long-chain discard would not occur."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that long-path packets will be discarded depends on DOC B's mechanism as a load-bearing premise. DOC A asserts packets are discarded when chain length exceeds anchor-reset gaps, but this conclusion requires DOC B's rule that relays increment drift counters and discard packets exceeding tolerance. Without DOC B's drift-counter mechanism and anchor-reset behavior, DOC A's claim about why long paths fail would lack causal grounding."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim about long packet chains being discarded depends on DOC B's mechanism as a load-bearing premise. A describes the observable outcome (discard after exceeding gap), while B explains the underlying mechanism (drift counter incremented at each relay, discarded when tolerance exceeded, reset only at anchors). A's claim requires B's drift-based rejection rule to account for why packets are discarded at relay chains longer than anchor reset gaps."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-002",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that a sender must insert an anchor hint when the route exceeds the drift limit depends on DOC B's foundational claims about how drift accumulation works and how drift is reset. DOC A presupposes the drift mechanism described in DOC B (packets being discarded due to drift exceeding tolerance, anchor nodes resetting drift) as the load-bearing premise for why the anchor hint insertion is necessary. Without understanding DOC B's drift rules, DOC A's requirement would lack justification."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that a sender must insert an anchor hint when the route exceeds the drift limit depends on DOC B's foundational claim about how drift accumulation and reset work. DOC B establishes that drift accumulates, packets are discarded when drift exceeds tolerance, and only anchors reset drift. DOC A's solution (inserting an anchor hint) presupposes this drift mechanism from DOC B as the load-bearing premise explaining why the anchor hint is necessary in the first place."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that 'a sender must insert an anchor hint or its packet will not arrive' depends on DOC B's foundational rule that 'relays discard packets when drift exceeds tolerance and only anchor nodes reset drift.' DOC A prescribes a sender action based on understanding the drift-discard mechanism established in DOC B. Without DOC B's drift-tolerance-and-anchor-reset rule, the necessity of anchor hints would not follow."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-003",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's central claim (glimmer-moth numbers fall sharply in brightly lit cities) depends on DOC B's mechanistic explanation (artificial city lighting scrambles moonlight polarization patterns that moths use for navigation). DOC B provides the causal mechanism that makes DOC A's observation intelligible—without understanding how city lights disrupt navigation, the decline lacks a load-bearing explanation."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim (glimmer-moth population decline in lit cities) depends on DOC B's mechanism as a load-bearing premise. DOC B explains *why* the decline occurs—by showing that glimmer moths navigate via moonlight polarization, which artificial lighting disrupts. Without this causal mechanism from DOC B, DOC A's observation would lack explanatory grounding. The decline claim logically relies on understanding the navigation-disruption mechanism to be coherent."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "depends",
+          "reason": "DOC A's claim that glimmer-moth numbers fall sharply in brightly lit cities depends on DOC B's mechanistic explanation: that artificial lighting scrambles the polarization patterns moths use for navigation. The causal mechanism in B (navigation disruption) is the load-bearing premise that explains the population decline asserted in A. Without B's explanation of *why* the crash occurs, A's empirical claim stands alone; with B, A's claim gains its explanatory foundation."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-004",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "derives",
+          "reason": "DOC A's central claim (valleys without saber fern cannot sustain glimmer-moths) logically depends on DOC B's central claim (glimmer-moth larvae feed exclusively on saber fern and can digest no other plant) as a load-bearing premise. Without the exclusive dietary dependence established in DOC B, the causal link in DOC A would not hold."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim—that valleys without saber fern cannot sustain glimmer-moth populations—logically depends on DOC B's claim that glimmer-moth larvae feed exclusively on saber fern and can digest no other plant. Without the exclusive dietary dependence established in DOC B, the causal link between fern die-out and moth population collapse in DOC A would not hold. DOC B is a load-bearing premise for DOC A's conclusion."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's claim that a valley without saber fern cannot sustain glimmer-moths depends on DOC B's premise that glimmer-moth larvae feed exclusively on saber fern. The causal chain in A (no saber fern → no moth population) is a direct logical consequence of B's assertion that larvae can digest no other plant. A's central claim would not hold without B as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "derives",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-005",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that a lone warden cannot force a winning trap depends fundamentally on DOC B's claim about warden movement constraints. DOC B establishes that the warden can only reach tiles of one color while the keep can always escape to the opposite color—this is the load-bearing logical premise that makes DOC A's conclusion possible. Without the movement limitation described in DOC B, the claim in DOC A would not hold."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's claim that a lone warden cannot force a winning trap depends on DOC B's foundational premise that the warden moves only diagonally (restricting it to single-colour tiles) while the keep can move to opposite-colour tiles. This movement constraint is a load-bearing premise: without it, the proof that a lone warden cannot achieve checkmate would not hold. The warden's inability to win is directly consequent to these differential movement capabilities."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's claim that a lone warden cannot force a winning trap depends on DOC B's premise about warden movement. The warden's diagonal-only movement (which restricts it to a single colour) is a load-bearing reason why the keep can always escape to an unthreatened tile of the opposite colour, making it impossible for the warden alone to force a win. DOC B provides the mechanistic foundation that explains why DOC A's conclusion holds."
+        }
+      ],
+      "majorityVerdict": "derives",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-006",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that hoarding credits is a guaranteed way to lose wealth directly depends on DOC B's decay mechanism (10% value loss per cycle). Without the decay rule established in DOC B, the claim in DOC A would lack its load-bearing premise. The decay rule is the causal foundation that makes hoarding result in wealth loss."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that hoarding tithe-credits causes wealth loss depends on DOC B's mechanism as a load-bearing premise. DOC B explains the specific mechanism (ten percent decay per cycle) that makes DOC A's claim about guaranteed wealth loss true. Without DOC B's decay rule, DOC A's assertion would lack causal grounding."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that hoarding credits loses wealth is directly derived from DOC B's decay rule as a load-bearing premise. The 10% per-cycle loss mechanism in DOC B is the causal foundation that makes DOC A's claim about hoarding being a 'guaranteed way to lose wealth' logically true. Without the decay rule, the claim in A would not hold."
+        }
+      ],
+      "majorityVerdict": "derives",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-007",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's central claim (overissue causes price rises) depends on DOC B's load-bearing premises: that merchants must accept tithe-credits at face value and that the council has monopoly creation power. Without those institutional constraints, overissue alone would not necessarily produce the price-rise mechanism DOC A asserts. DOC B provides the causal scaffolding DOC A's claim rests on."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim (council overissuance causes price rises) depends on DOC B's premise that merchants must accept tithe-credits at face value and that only the council creates them. Without the mechanism established in DOC B—that more credits chasing the same goods forces sellers to raise prices—DOC A's causal link between overissuance and inflation would lack its load-bearing explanation. DOC B supplies the foundational economic mechanism that makes DOC A's claim intelligible."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "depends",
+          "reason": "DOC A's central claim (overissue causes price rises) depends on the foundational premises in DOC B: that merchants must accept tithe-credits at face value and that only the council can create them. Without these constraints established in B, the mechanism by which overissue leads to inflation would not hold. DOC B provides the load-bearing institutional rules that make A's causal claim about overissue-inflation possible."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-008",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that lumen trees can grow during sunless polar winters depends on DOC B's mechanism as a load-bearing premise. DOC A asserts the observable fact of growth in darkness, but this is only possible because of the mechanism in DOC B—that these trees use infrared radiation for photosynthesis rather than visible light. Without the infrared photosynthesis capability established in DOC B, the growth claim in DOC A would have no physiological basis."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that lumen trees can grow during a sunless polar winter logically depends on DOC B's claim that they photosynthesize from infrared radiation rather than visible light. Without the infrared photosynthesis mechanism established in DOC B, the growth described in DOC A during darkness would lack a causal explanation. The warm ground maintaining infrared radiation is the load-bearing premise that makes the claimed continuous growth possible."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that lumen trees can grow during sunless polar winters depends on DOC B's claim that they photosynthesize from infrared radiation. The ability to grow without visible light (in darkness) is load-bearing predicated on the mechanism of infrared photosynthesis presented in DOC B. DOC A's explanation only makes sense given the physiological capability described in DOC B."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-009",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that Korl programs cannot exhibit data races depends on DOC B's claim as a load-bearing premise. Data races require concurrent access to mutable shared state with at least one write. DOC B establishes the absence of mutable state and shared cells that could be written to, which is the fundamental mechanism that prevents data races. The no-data-race guarantee in DOC A is a direct logical consequence of the immutability and purity guarantees in DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's claim that Korl programs cannot exhibit data races between concurrent tasks depends on DOC B's claim that Korl has no mutable state and all functions are pure. The absence of mutable shared state is the load-bearing premise that prevents data races; without immutability and purity, concurrent tasks could write to shared cells, creating race conditions. DOC A's guarantee is logically grounded in DOC B's guarantee."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's claim that Korl programs cannot exhibit data races between concurrent tasks is a logical consequence of DOC B's claim that Korl has no mutable state and all functions are pure. Data races require concurrent access to shared mutable state; if no mutable state exists, data races cannot occur. DOC A's central claim depends on DOC B's architectural properties as a load-bearing premise."
+        }
+      ],
+      "majorityVerdict": "derives",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-010",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that defining an infinite list doesn't cause a hang depends on DOC B's central claim about lazy evaluation. Lazy evaluation is the load-bearing premise that enables infinite lists to be defined without hanging—if Korl evaluated eagerly instead, the program would hang attempting to compute all elements. The mechanism described in DOC B (computing elements only when demanded) is what allows DOC A's claim to be true."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's claim that defining an infinite list in Korl does not cause the program to hang depends fundamentally on DOC B's claim that Korl evaluates lazily. Lazy evaluation is the load-bearing premise that explains why an infinite list definition would not hang—without lazy evaluation, the central claim of DOC A would be false or meaningless. The infinite list doesn't cause a hang precisely because elements are only computed when demanded, not upon definition."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's claim that defining an infinite list doesn't cause the program to hang depends fundamentally on DOC B's claim about lazy evaluation. Without lazy evaluation (where elements are computed only when demanded), defining an infinite list would necessarily cause the program to hang. Lazy evaluation is the load-bearing premise that makes A's claim true."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-011",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that players should develop a second warden early derives from the underlying constraint established in DOC B: that a lone warden cannot win because it only covers one colour. The strategic recommendation in A (develop a second warden) is load-bearing premised on the limitation in B (one warden is insufficient). Without B's constraint, A's strategic prescription would lack its fundamental justification."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central recommendation to develop a second warden early depends on DOC B's claim that a lone warden cannot force a winning trap by itself. The limitation of single wardens (DOC B) is a load-bearing premise that justifies the opening theory of developing multiple wardens (DOC A). Without accepting that one warden is insufficient, the strategic recommendation loses its foundational rationale."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about opening strategy (developing a second warden early) and DOC B's claim about tactical limitations (a lone warden cannot force a winning trap) are related but not derivationally dependent. DOC B explains a weakness that might *motivate* the strategy in DOC A, but DOC A's central claim does not logically depend on DOC B as a load-bearing premise, nor vice versa. They are complementary observations about different aspects of the game rather than one deriving from the other."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-012",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that deleting index.db causes no data loss depends on DOC B's premise that index.db is a rebuildable projection rather than an independent store of data. Without the load-bearing assumption from DOC B—that markdown files are the single source of truth and the index is merely derived from them—DOC A's safety claim would not hold."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that deleting index.db causes no data loss is a direct logical consequence of DOC B's claim that index.db is a rebuildable projection with markdown files as the single source of truth. If the index is merely a projection (not primary storage), then losing it cannot result in permanent data loss. DOC B's characterization of the index's role is load-bearing for the safety claim in DOC A."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim (deleting index.db loses no vault data) depends on DOC B's foundational premise (index.db is a rebuildable projection with markdown files as the single source of truth). Without the load-bearing assumption from DOC B that the index is merely a derived artifact and not the authoritative storage, DOC A's claim would not hold. DOC B establishes the architectural principle that makes DOC A's claim valid."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-013",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that curation actions stage for human approval at cold start depends on DOC B's explanation of why this occurs: the empty action ledger, k=0 candidate status, and trust budget at floor prevent auto-write. DOC B provides the mechanistic premise that makes DOC A's constraint necessary."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that 'every Daftari curation action stages for human approval rather than auto-writing' at cold start depends on DOC B's load-bearing premise that 'no action can clear the auto-write gate' when the trust budget is at its floor. DOC B's explanation of why auto-write is blocked (trust budget at floor, all edges are k=0 candidates) is the mechanistic foundation that necessitates the staging behavior described in DOC A."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's claim that 'every Daftari curation action stages for human approval' depends on DOC B's explanation of the underlying mechanism: that the trust budget is at its floor due to an empty action ledger and k=0 candidates, which prevents actions from clearing the auto-write gate. DOC B provides the load-bearing premise (budget mechanism) that explains why DOC A's observed behavior (mandatory staging) occurs at cold start."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-014",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that RAG acts as a regularizer suppressing hallucinations relies on DOC B's foundational concept that regularization works by restricting solutions to lower-dimensional subspaces via priors. DOC A applies and specializes DOC B's theoretical framework (regularization via low-rank priors) to the specific problem of hallucinations in generation, but the load-bearing premise—that regularization dampens underdetermined components—comes from DOC B."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that 'RAG acts as a regularizer' depends on DOC B's conceptual framework that 'regularization works by adding a prior that restricts to a lower-dimensional subspace.' DOC A applies this mechanism from DOC B to a new domain (retrieval-augmented generation), using the principle of dimensionality reduction and prior injection as a load-bearing premise to explain how RAG suppresses hallucinations. Without DOC B's foundational definition of regularization's mechanism, DOC A's analogy lacks its logical scaffolding."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that RAG acts as a regularizer depends on DOC B's foundational premise about how regularization works on ill-posed inverse problems. DOC A applies the general principle from DOC B (regularization adds a prior that restricts solutions to lower-dimensional subspaces) to the specific case of RAG and hallucinations. DOC B provides the load-bearing conceptual framework that DOC A relies upon to support its claim."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-015",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "Doc A's central claim that tithe-credits change hands far more often depends on Doc B's central claim about the decay rule as a load-bearing premise. The decay rule (holders rush to spend before losing value) is the primary causal mechanism that would drive the high velocity of exchange described in Doc A. Without the decay rule, there would be no structural reason for tithe-credits to circulate more frequently than ordinary currency."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's claim that tithe-credits change hands far more often relies on DOC B's decay rule as a causal mechanism. The high velocity (DOC A) is a direct behavioral consequence of the ten-percent-per-cycle decay (DOC B) — holders rush to spend them precisely because they lose value otherwise. Without the decay rule, there would be no load-bearing reason for the elevated transaction frequency. The decay rule is the generative premise that explains the observed high velocity."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that tithe-credits change hands more often depends on DOC B's load-bearing premise. The decay rule (10% loss per cycle) is the causal mechanism that explains *why* holders rush to spend them, which directly produces the high velocity of exchange described in DOC A. Without the decay rule, there would be no mechanism forcing frequent spending and thus no reason to expect high velocity. A's claim about behavioral frequency derives from B's structural rule."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-016",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's central claim that bark shedding indicates a hard frost passed through depends on DOC B's claim that lumen trees shed bark when temperature drops below freezing. Without the mechanism described in DOC B (bark-shedding triggered by freezing temperatures), the observation in DOC A would lack its causal foundation. DOC A uses bark shedding as an observable indicator of frost, which presupposes the causal relationship DOC B establishes."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim—that shed bark on the ground indicates a hard frost—depends on DOC B's claim that lumen trees shed bark below freezing as a load-bearing premise. Without the mechanism established in DOC B (bark shedding triggered by below-freezing temperatures), the observation in DOC A (shed bark as a frost indicator) would lack its causal foundation."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "depends",
+          "reason": "DOC A's claim that you can identify a hard frost by shed bark depends on DOC B's load-bearing premise that lumen trees shed bark when temperatures drop below freezing. DOC A uses the bark-shedding phenomenon as evidence of frost, which presupposes DOC B's causal mechanism as a necessary foundation."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-017",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "derives",
+          "reason": "DOC A's claim that calling a Korl function twice with the same arguments yields the same result is a direct logical consequence of DOC B's claim that every Korl function is pure (output depends only on arguments, no hidden mutable state or side effects). Purity is the load-bearing premise that guarantees deterministic behavior across multiple invocations."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's claim that 'calling a Korl function twice with the same arguments always yields the same result' logically depends on DOC B's claim that 'every Korl function is pure' (output depends only on arguments, no hidden mutable state or side effects). Purity is the load-bearing premise that guarantees the deterministic, repeatable behavior described in DOC A. Without purity, the same input could produce different outputs due to mutable state or side effects."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's claim that calling a function with the same arguments always yields the same result is a direct logical consequence of DOC B's claim that functions are pure (output depends only on arguments, no hidden state or side effects). Purity is the load-bearing premise that guarantees reproducibility. A depends on B as a foundational requirement."
+        }
+      ],
+      "majorityVerdict": "derives",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-018",
+      "truth": "derives",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "depends",
+          "reason": "DOC A's claim that anchor node failure causes traffic collapse depends on DOC B's claim about how drift counters work. DOC B establishes the mechanism (only anchors reset drift counters, relays increment and drop) that makes anchors critical infrastructure. Without DOC B's rule, there would be no load-bearing reason why an anchor failure would cause the catastrophic collapse DOC A describes. DOC A assumes this drift-counter architecture as a prerequisite."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "depends",
+          "reason": "DOC A's central claim (traffic collapse when the sole anchor fails) depends on DOC B's premise that only anchor nodes reset drift counters. If relays could reset drift counters instead, traffic could continue without a functional anchor node. DOC B's rule about anchor-specific drift-counter reset is load-bearing to explaining why anchor failure causes collapse."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "derives",
+          "reason": "DOC A's central claim that anchor node failure causes long-distance traffic collapse depends on DOC B's premise that only anchor nodes reset drift counters. Without the load-bearing fact from B (that relays cannot reset drift and will drop over-drifted packets), the failure of an anchor node would not necessarily cause traffic collapse. B provides the mechanism that makes A's claim true: anchor nodes are critical because they alone prevent drift accumulation over long distances."
+        }
+      ],
+      "majorityVerdict": "depends",
+      "majorityCorrect": false
+    },
+    {
+      "id": "v2-019",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about drift counters in Vornic packets is independent of DOC B's claim about 128-bit node addresses. The drift counter mechanism does not logically depend on how addresses are allocated or their bit length. These are separate technical concerns in the Vornic protocol."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about drift counters in Vornic packets does not depend on DOC B's claim about 128-bit node addresses issued by registrars. The drift counter mechanism is independent of how addresses are allocated or structured. DOC A could be true whether or not addresses were 128 bits, distributed by registrars, or handled any other way."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's central claim concerns packet drift counters and relay behavior. DOC B's central claim concerns node address allocation and length. These are independent technical specifications with no load-bearing logical dependence between them. Neither claim requires the other as a premise."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-020",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "The central claim of DOC A (glimmer moths navigate by moonlight polarization) is independent of the central claim of DOC B (adult glimmer moths have a 4cm wingspan). Wingspan is a morphological fact that does not serve as a load-bearing premise for a claim about navigational mechanisms. These are separate biological properties with no derivation relationship."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about glimmer moth navigation via moonlight polarization does not depend on DOC B's claim about wingspan. The navigation mechanism functions independently of body size. Wingspan is a physical descriptor; the navigation behavior would remain true or false regardless of whether the wingspan is four centimeters or any other measurement. There is no load-bearing logical or empirical dependence."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about navigation via moonlight polarization is independent of DOC B's claim about wingspan measurement. Neither claim serves as a load-bearing premise for the other. They describe distinct physical properties of glimmer moths with no logical dependence."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-021",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about lazy evaluation of expressions is independent of DOC B's claim about indentation-based syntax. Lazy evaluation is a semantic property unrelated to syntactic delimiter choices. Neither claim serves as a load-bearing premise for the other."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about lazy evaluation is orthogonal to DOC B's claim about indentation-based syntax. Lazy evaluation is a semantic/runtime property, while indentation-based blocks are a syntactic property. Neither depends on the other as a load-bearing premise—a language could have indentation-based syntax without lazy evaluation, or lazy evaluation without indentation-based syntax."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "The central claim of DOC A (lazy evaluation strategy) and DOC B (indentation-based syntax) are independent design features of the Korl language. Neither claim logically depends on or derives from the other as a load-bearing premise. They describe orthogonal aspects of the language."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-022",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about tithe-credit depreciation (10% loss per cycle) is independent of DOC B's claim about their physical form (hexagonal copper tokens). The depreciation mechanism does not logically depend on or derive from the token's material composition or shape. These are separate attributes of the same object."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about value decay per cycle is independent of DOC B's claim about physical token form. The decay mechanism does not require or depend on the hexagonal copper construction—decay could apply to any tithe-credit form. These are parallel properties of the same system, not hierarchically dependent."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about tithe-credit value decay is independent of DOC B's claim about their physical form and minting process. The physical properties of the tokens do not serve as a load-bearing premise for the decay mechanism, nor does the decay mechanism depend on how the tokens are manufactured. These are parallel descriptive claims about different attributes of the same object."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-023",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "The warden's movement constraint (diagonal-only movement) is logically independent of the board's dimensions (9×9 grid). The movement rule does not depend on knowing the board size, nor does the board size depend on the movement mechanics. These are separate game specifications that do not have a load-bearing premise relationship."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "The central claim of DOC A (the warden piece moves only along diagonals) does not logically depend on the central claim of DOC B (a Castellan board has eighty-one tiles in a nine-by-nine grid) as a load-bearing premise. The movement rules of a piece are independent of the board's dimensions. One could understand warden diagonal movement on any board size or shape. The board dimensions might be relevant context for the game, but they are not necessary to establish or derive the warden's movement constraint."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about the warden piece's diagonal movement is independent of DOC B's claim about the board dimensions. The warden's movement rules do not logically depend on the board being 9x9, nor does the board size derive from movement mechanics. These are separate game design specifications."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-024",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about lumen trees photosynthesizing from infrared radiation is independent of DOC B's claim about lumen-tree wood's resonance properties. One addresses the tree's biological mechanism; the other addresses a material property of the wood. Neither claim logically depends on the other as a load-bearing premise."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about infrared photosynthesis in lumen trees is independent of DOC B's claim about the resonance properties of lumen-tree wood. The photosynthetic mechanism does not depend on acoustic properties as a load-bearing premise, nor vice versa. These are separate botanical and physical characteristics that could exist independently."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about infrared photosynthesis is a biological property of lumen trees. DOC B's claim about wood resonance is a material property valued by luthiers. While both concern lumen trees, B does not depend on A as a load-bearing premise, nor does A depend on B. The resonance quality could exist independently of the photosynthesis mechanism, and the photosynthesis mechanism does not necessitate particular acoustic properties. These are parallel observations about the same organism, not claims in logical dependence."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-025",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim concerns what resets a drift counter (anchor nodes), while DOC B's claim concerns how relays order packet forwarding (least-drift-first). Neither claim is a load-bearing premise for the other. They address different mechanisms in the Vornic protocol and could both be true independently. A mentions drift counters exist; B assumes they exist and uses them for ordering—but B does not support or refute A's specific claim about anchor nodes being the sole reset mechanism."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about anchor nodes resetting drift counters is independent of DOC B's claim about least-drift-first queue discipline. While both concern drift in Vornic packets, DOC A makes a statement about who resets drift (anchor nodes), and DOC B makes a statement about how packets are ordered in queues (by drift). The first does not logically depend on the second as a load-bearing premise. They operate at different levels: reset behavior vs. scheduling discipline."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about anchor nodes resetting drift counters is a specific mechanism rule. DOC B's claim about relay queue discipline (least-drift-first ordering) references drift as an ordering criterion but does not depend on A's mechanism as a load-bearing premise. While both concern 'drift' in Vornic packets, B does not require A's claim to be true for its own claim to hold — a least-drift-first queue could exist regardless of whether anchor nodes reset drift. Similarly, A does not derive from B. They are complementary design elements rather than dependent claims."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-026",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about glimmer-moth larvae diet specificity does not depend on DOC B's claim about the lunar-month lifecycle duration. These are independent biological facts about different aspects of the organism. Neither claim serves as a load-bearing premise for the other."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "The central claim of DOC A (glimmer-moth larvae feed only on saber fern) does not depend on DOC B's claim about the lunar-month lifecycle as a load-bearing premise. The dietary claim is independent and could be true regardless of lifecycle duration. While these facts might be thematically related in a broader study of glimmer moths, one does not logically require or support the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about glimmer-moth larvae feeding exclusively on saber fern is independent of DOC B's claim about the moth's lunar-month life cycle. Neither claim logically depends on the other as a load-bearing premise. They address separate biological facts—diet/host plant versus developmental timing—without causal or logical entailment between them."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-027",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim that every Korl function is pure does not depend on DOC B's claim about the size of the standard library. The purity of functions is an independent language design property, while the number of built-in functions is a separate fact about library scope. Neither is a load-bearing premise for the other."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim that every Korl function is pure does not depend on DOC B's claim about the number of built-in functions in the standard library. The purity property of functions is independent of how many functions exist. DOC B's fact about quantity does not serve as a load-bearing premise for DOC A's claim about a functional property."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A makes a claim about the nature of Korl functions (purity), while DOC B makes a claim about the quantity and scope of built-in functions in the standard library. Neither claim logically depends on the other as a load-bearing premise. They address orthogonal properties—one concerns functional purity, the other concerns library size."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-028",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim concerns the mandatory acceptance of tithe-credits at face value. DOC B's claim concerns the frequency and timing of council meetings to set issuance amounts. Neither claim is a load-bearing premise for the other—they address different operational aspects (price-acceptance vs. supply-management cadence) and could independently be true or false."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about merchant acceptance of tithe-credits at face value does not logically depend on DOC B's claim about when the tithe-council convenes. The timing of council meetings is not a load-bearing premise for a rule about face-value acceptance. These are independent regulatory or procedural statements."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about merchant acceptance of tithe-credits at face value is independent of DOC B's claim about the tithe-council's meeting schedule and issuance decisions. While both concern tithes, A does not depend on B as a load-bearing premise, nor does B depend on A. They address different regulatory aspects (acceptance rules vs. administrative cadence) and could stand alone."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-029",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about auto-commits to git as the version-control layer is independent of DOC B's claim about index.db being ephemeral and rebuildable. These describe separate architectural concerns (versioning vs. indexing/search) with no load-bearing dependency between them. DOC A does not require DOC B's premise to be true, nor vice versa."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's central claim about auto-committing writes to git is independent of DOC B's claim about index.db being ephemeral and rebuildable. Auto-commit architecture does not depend on the indexing strategy being ephemeral. These are separate architectural decisions that could exist in any combination."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim concerns auto-commit behavior and git as the version-control layer. DOC B's claim concerns the ephemeral nature of the index database and its rebuildability. These are independent architectural design decisions addressing different concerns (version control vs. indexing infrastructure). Neither claim serves as a load-bearing premise for the other; they could both be true or false independently."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-030",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about vault_lint being advisory (reports but doesn't auto-fix) and DOC B's claim about vault_tension_log being advisory (records but doesn't resolve) are parallel structural statements about different tools. Neither claim serves as a load-bearing premise for the other. They are independent assertions that happen to share a similar rhetorical pattern (X is advisory/non-interventional) but do not logically depend on one another."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "Both documents make parallel claims about Daftari's advisory-only nature (vault_lint and vault_tension_log respectively), but neither claim depends on the other as a load-bearing premise. They are independent observations about different subsystems sharing a common architectural property. DOC A's claim about vault_lint being advisory does not require DOC B's claim about vault_tension_log as a necessary foundation."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "Both documents make parallel claims about different Daftari subsystems (vault_lint vs vault_tension_log) following a similar structural pattern: each tool is advisory/passive and does not auto-correct/resolve problems. Neither claim logically depends on the other as a load-bearing premise. They are analogous statements about distinct systems, not a derivation relationship."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-031",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about bark-shedding in freezing temperatures is independent of DOC B's claim about electrically conductive sap. Neither claim serves as a load-bearing premise for the other. They describe distinct biological properties of lumen trees with no logical dependence relationship."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "The claim that lumen trees shed bark when temperature drops below freezing does not logically depend on the claim that their sap conducts electricity. These are independent biological properties with no causal or logical relationship. The bark-shedding mechanism does not require electrical conductivity as a load-bearing premise."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about bark shedding at freezing temperatures and DOC B's claim about conductive sap are independent observations about lumen trees. Neither claim depends on the other as a load-bearing premise. They could both be true or false independently, and neither logically derives from the other."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-032",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "The claim that more relays cause more drops (DOC A) does not logically depend on the claim that more relays cause slower arrival (DOC B). While both concern the effect of relay count on packet behavior, they address independent variables (drop rate vs. latency). One could be true without the other, and neither serves as a load-bearing premise for the other."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim that packets passing through more relays are dropped more often does not depend on DOC B's claim that such packets take longer to arrive. These are independent empirical observations about different packet behaviors (drop rate vs. latency). Neither serves as a necessary logical premise for the other—one could be true regardless of whether the other holds."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "The two claims address different causal mechanisms: DOC A concerns packet drop rates (a reliability/loss metric), while DOC B concerns latency (a timing metric). Neither claim logically depends on the other as a load-bearing premise. Both independently observe that increased relay count correlates with different negative outcomes, but the drop rate and arrival time are distinct phenomena without a derivation relationship."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-033",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "The claim that Korl programs are easy to unit-test is logically independent of the claim that Korl programs are easy to parallelize. Neither statement serves as a load-bearing premise for the other; they describe distinct properties of the language that could exist in isolation or combination."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "The central claim of DOC A (Korl programs are easy to unit-test) does not depend on the central claim of DOC B (Korl programs are easy to parallelize) as a load-bearing premise. These are independent claims about different properties of Korl. Unit-testability and parallelizability are distinct technical attributes that do not have an inherent logical dependency relationship."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "The two claims are independent assertions about different properties of Korl programs. DOC A claims ease of unit-testing; DOC B claims ease of parallelization. Neither claim logically depends on or derives from the other as a load-bearing premise. They are separate design advantages that could exist independently."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-034",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about price rises and DOC B's claim about donation spikes are independent observations about tithe-credit behavior. Neither claim logically depends on or derives from the other as a load-bearing premise. They describe parallel phenomena occurring in the same time window, but one does not anchor or necessitate the other."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim that market prices climb in tithe-credits during cycle-end is independent of DOC B's claim that charitable donations spike at that time. While both describe phenomena occurring in the same period, neither is a load-bearing premise for the other. Price movement does not logically depend on donation patterns, nor vice versa. They are parallel observations about different market behaviors."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "The central claims describe parallel phenomena (price increases vs. donation spikes) occurring in the same temporal window, but neither claim logically depends on or derives from the other as a load-bearing premise. They could be independent effects of the same underlying cause (e.g., end-of-cycle behavior), but neither is foundational to the other's truth."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-035",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about developing a second warden and DOC B's claim about seizing central board control are independent strategic observations. Neither is a load-bearing premise for the other. Both could be true or false independently, and one does not logically derive from or depend upon the other as a foundational assumption."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about developing a second warden is independent of DOC B's claim about controlling the board's centre. Both describe distinct strategic priorities for strong Castellan players in the opening, but neither serves as a necessary load-bearing premise for the other. They can both be true without one deriving from the other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "The two documents present independent strategic prescriptions for strong Castellan play. DOC A's claim about developing a second warden does not depend logically on DOC B's claim about seizing central control, nor vice versa. While both may be part of a coherent opening strategy, neither is a load-bearing premise for the other—they are parallel tactical recommendations."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-036",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about higher packet drift in busy relays and DOC B's claim about higher packet drops in busy relays are both observations about consequences of relay busyness, but neither depends on the other as a load-bearing premise. They are independent empirical claims about different failure modes (drift vs. drops) that both correlate with relay busyness. Neither claim logically requires the other to be true."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about higher average drift in busier relays and DOC B's claim about more packet drops in busier relays are independent observations about relay behavior. Neither claim serves as a necessary load-bearing premise for the other. Both describe separate phenomena that could occur independently or be caused by different underlying factors. There is no logical derivation relationship between them."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A claims busier relays have higher packet drift; DOC B claims busier relays drop more packets. These are independent observations about different failure modes of busy relays. Neither claim is a load-bearing premise for the other—they could both be true, both false, or one true and one false without logical dependence. Drift and packet loss are distinct phenomena, and no derivation relationship exists between them."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-037",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about faint glow on cold nights and DOC B's claim about bark shedding on cold nights are independent observations about lumen trees. Neither is a load-bearing premise for the other; they describe separate phenomena without logical dependency."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about Lumen trees glowing on cold nights does not depend on DOC B's claim about them shedding bark flakes. These are independent observations about the same phenomenon (cold nights) but neither is a load-bearing premise for the other. The glow could occur independent of bark shedding, and vice versa."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "The two documents describe independent phenomena in lumen trees during cold nights: bioluminescence (glowing) versus bark shedding. Neither claim logically depends on the other as a load-bearing premise. They are parallel observations about different biological processes, not derivations."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-038",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim about glimmer-moth sightings peaking in late summer is independent. DOC B's claim about owl activity in the same season is a separate observation. Neither is a load-bearing premise for the other; they are parallel seasonal facts that happen to align temporally but do not establish logical dependence."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim about moth sightings peaking in late summer does not depend on DOC B's claim about owl activity in late summer as a load-bearing premise. Both documents make independent observations about different species' seasonal patterns. The temporal coincidence (both occurring in late summer) does not create a dependence relationship—one claim does not require the other to be true or meaningful."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim about glimmer-moth sightings peaking in late summer is independent of DOC B's claim about night owl activity. While both documents describe late-summer activity in the same ecosystem, neither claim logically depends on or derives from the other as a load-bearing premise. They are parallel observations about different species, not a hierarchical logical relationship."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    },
+    {
+      "id": "v2-039",
+      "truth": "neither",
+      "votes": [
+        {
+          "axis": "forward",
+          "verdict": "neither",
+          "reason": "DOC A's claim concerns index database file size as a function of document count, while DOC B's claim concerns reindexing duration as a function of document count. These are independent empirical observations about different performance characteristics. Neither claim logically depends on or derives from the other; both could be true or false independently."
+        },
+        {
+          "axis": "reverse",
+          "verdict": "neither",
+          "reason": "DOC A's claim (larger vault → larger database file) and DOC B's claim (larger vault → longer reindexing time) are independent observations about different consequences of vault size. Neither claim is a load-bearing premise for the other. A larger database file does not logically require slower reindexing as a prerequisite, nor does slower reindexing explain or depend on the database file size. Both derive from a common factor (vault size) but not from each other."
+        },
+        {
+          "axis": "contrast",
+          "verdict": "neither",
+          "reason": "DOC A's claim concerns the size of the index database file as a function of document count. DOC B's claim concerns the duration of the reindexing process as a function of document count. While both relate document count to a performance characteristic, neither claim is a load-bearing premise for the other. They are independent observations about different consequences of vault size."
+        }
+      ],
+      "majorityVerdict": "neither",
+      "majorityCorrect": true
+    }
+  ],
+  "axisCounts": {
+    "forward": {
+      "correct": 26,
+      "wrong": 13,
+      "errored": 0
+    },
+    "reverse": {
+      "correct": 21,
+      "wrong": 18,
+      "errored": 0
+    },
+    "contrast": {
+      "correct": 35,
+      "wrong": 4,
+      "errored": 0
+    }
+  }
+}

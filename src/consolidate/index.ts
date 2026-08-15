@@ -121,7 +121,7 @@ Reports:
     6 if majority accuracy < CONSOLIDATE_DIRECTION_MIN_ACCURACY (the foundational
     prompt did not recover direction well enough — fix the elicitation/fixture).
     Requires the selected transport's API key. A real fixture lives at
-    tests/fixtures/decorrelation-fixture-v2.json.
+    test/fixtures/decorrelation-fixture-v2.json.
 
 Exit codes:
   0 — ran cleanly

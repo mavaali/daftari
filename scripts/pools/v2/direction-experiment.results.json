@@ -1,0 +1,86 @@
+{
+  "pairs": 30,
+  "rows": [
+    {
+      "model": "claude-haiku-4.5",
+      "method": "counterfactual",
+      "acc": 0.9833333333333333,
+      "bias": 0.5166666666666667,
+      "cons": 0.9666666666666667,
+      "trials": 60,
+      "errs": 0
+    },
+    {
+      "model": "claude-haiku-4.5",
+      "method": "foundational",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 60,
+      "errs": 0
+    },
+    {
+      "model": "claude-haiku-4.5",
+      "method": "direct",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 60,
+      "errs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "method": "counterfactual",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 60,
+      "errs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "method": "foundational",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 60,
+      "errs": 0
+    },
+    {
+      "model": "gpt-4o",
+      "method": "direct",
+      "acc": 0.9,
+      "bias": 0.4,
+      "cons": 0.9230769230769231,
+      "trials": 60,
+      "errs": 0
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "method": "counterfactual",
+      "acc": 1,
+      "bias": 0.49122807017543857,
+      "cons": 1,
+      "trials": 57,
+      "errs": 2
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "method": "foundational",
+      "acc": 1,
+      "bias": 0.5,
+      "cons": 1,
+      "trials": 58,
+      "errs": 2
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "method": "direct",
+      "acc": 0.9122807017543859,
+      "bias": 0.42105263157894735,
+      "cons": 0.8846153846153846,
+      "trials": 57,
+      "errs": 3
+    }
+  ]
+}
