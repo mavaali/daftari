@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -75,6 +76,69 @@ describe("git", () => {
     const result = await commit(vault, [], "empty", "agent:tester");
     expect(result.ok).toBe(false);
   });
+
+  // --- serve-concurrency commit serialization -------------------------------
+  // Two serve requests writing DIFFERENT files hold different leases, so
+  // their add/commit sequences interleaved freely: A's pathless `git commit`
+  // swallowed B's staged file under A's author and message, then B's commit
+  // failed "nothing to commit" (or died on .git/index.lock). commit() must
+  // serialize in-process and commit only its own paths.
+
+  // The file list of one commit, straight from git.
+  function commitFiles(hash: string): string[] {
+    return execFileSync("git", ["-C", vault, "show", "--name-only", "--format=", hash], {
+      encoding: "utf-8",
+    })
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0);
+  }
+
+  it("concurrent commits of different files each land as their own commit", async () => {
+    await writeFile(join(vault, "a.md"), "a\n", "utf-8");
+    await writeFile(join(vault, "b.md"), "b\n", "utf-8");
+
+    const [a, b] = await Promise.all([
+      commit(vault, ["a.md"], "commit a", "agent:a"),
+      commit(vault, ["b.md"], "commit b", "agent:b"),
+    ]);
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+
+    const history = await log(vault);
+    expect(history.ok).toBe(true);
+    if (!history.ok) return;
+    expect(history.value).toHaveLength(2);
+
+    // Each commit contains exactly its own file — no swallowing.
+    expect(commitFiles(a.value.hash)).toEqual(["a.md"]);
+    expect(commitFiles(b.value.hash)).toEqual(["b.md"]);
+    // And each is attributed to its own author.
+    const bySubject = new Map(history.value.map((c) => [c.subject, c.author]));
+    expect(bySubject.get("commit a")).toBe("agent:a");
+    expect(bySubject.get("commit b")).toBe("agent:b");
+  }, 60_000);
+
+  it("a commit never sweeps up a file some other flow left staged", async () => {
+    await ensureGitRepo(vault);
+    await writeFile(join(vault, "mine.md"), "mine\n", "utf-8");
+    await writeFile(join(vault, "theirs.md"), "theirs\n", "utf-8");
+    // Another flow staged its file but has not committed yet.
+    execFileSync("git", ["-C", vault, "add", "--", "theirs.md"]);
+
+    const result = await commit(vault, ["mine.md"], "commit mine", "agent:mine");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Only mine.md is in the commit; theirs.md is still staged, uncommitted.
+    expect(commitFiles(result.value.hash)).toEqual(["mine.md"]);
+    const staged = execFileSync("git", ["-C", vault, "diff", "--cached", "--name-only"], {
+      encoding: "utf-8",
+    }).trim();
+    expect(staged).toBe("theirs.md");
+  }, 60_000);
 
   // --- blob plumbing for JIT anchor pins (U3) -------------------------------
 

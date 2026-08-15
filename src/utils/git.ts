@@ -126,10 +126,36 @@ export async function ensureGitRepo(
   return ok(undefined);
 }
 
+// In-process commit serialization. The per-file write lease does NOT cover
+// git: two serve requests writing DIFFERENT files hold different leases, so
+// their add/commit sequences interleaved freely — one pathless `git commit`
+// swallowed the other's staged file under the wrong author, and the other
+// then failed "nothing to commit" (or died racing .git/index.lock). Keyed by
+// vaultRoot as given (one vault per process in practice; tests run many temp
+// vaults per worker). The stored chain link always settles resolved, so a
+// failed commit never wedges the queue; entries self-remove once idle.
+const commitChains = new Map<string, Promise<unknown>>();
+
+function withCommitLock<T>(vaultRoot: string, fn: () => Promise<T>): Promise<T> {
+  const prev = commitChains.get(vaultRoot) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const link = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  commitChains.set(vaultRoot, link);
+  void link.then(() => {
+    if (commitChains.get(vaultRoot) === link) commitChains.delete(vaultRoot);
+  });
+  return run;
+}
+
 // Stages the given vault-relative paths and creates a commit authored by
 // `identity`. The commit's committer is also set to `identity` (via `-c`
-// overrides) so commits land even in a repo with no configured user. Returns
-// the new commit's short hash.
+// overrides) so commits land even in a repo with no configured user. The
+// commit is pathspec-scoped to `paths` — belt and suspenders under the
+// serialization above, so it can never sweep up a file some other flow left
+// staged. Returns the new commit's short hash.
 export async function commit(
   vaultRoot: string,
   paths: string[],
@@ -137,32 +163,36 @@ export async function commit(
   identity: string,
   opts: { gitDir?: string } = {},
 ): Promise<Result<{ hash: string }, Error>> {
-  const ready = await ensureGitRepo(vaultRoot, opts.gitDir);
-  if (!ready.ok) return ready;
-
   if (paths.length === 0) {
     return err(new Error("commit requires at least one path"));
   }
 
-  const staged = await git(vaultRoot, ["add", "--", ...paths]);
-  if (!staged.ok) return staged;
+  return withCommitLock(vaultRoot, async () => {
+    const ready = await ensureGitRepo(vaultRoot, opts.gitDir);
+    if (!ready.ok) return ready;
 
-  const id = gitIdentity(identity);
-  const committed = await git(vaultRoot, [
-    "-c",
-    `user.name=${id.name}`,
-    "-c",
-    `user.email=${id.email}`,
-    "commit",
-    `--author=${id.name} <${id.email}>`,
-    "-m",
-    message,
-  ]);
-  if (!committed.ok) return committed;
+    const staged = await git(vaultRoot, ["add", "--", ...paths]);
+    if (!staged.ok) return staged;
 
-  const hash = await git(vaultRoot, ["rev-parse", "--short", "HEAD"]);
-  if (!hash.ok) return hash;
-  return ok({ hash: hash.value.trim() });
+    const id = gitIdentity(identity);
+    const committed = await git(vaultRoot, [
+      "-c",
+      `user.name=${id.name}`,
+      "-c",
+      `user.email=${id.email}`,
+      "commit",
+      `--author=${id.name} <${id.email}>`,
+      "-m",
+      message,
+      "--",
+      ...paths,
+    ]);
+    if (!committed.ok) return committed;
+
+    const hash = await git(vaultRoot, ["rev-parse", "--short", "HEAD"]);
+    if (!hash.ok) return hash;
+    return ok({ hash: hash.value.trim() });
+  });
 }
 
 // Per-file git provenance, used by `daftari backfill` (§11.1) to derive

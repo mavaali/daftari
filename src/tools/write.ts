@@ -514,7 +514,28 @@ async function performWrite(params: {
           params.agent,
           { gitDir: params.gitDir },
         );
-        if (!committed.ok) return committed;
+        if (!committed.ok) {
+          // The file IS on disk and indexed at this point — report that
+          // accurately, and record the durable write in the provenance
+          // ledger (flagged uncommitted) rather than leaving a hole where a
+          // real mutation happened.
+          await recordProvenance(params.vaultRoot, {
+            tool: params.tool,
+            file: params.relPath,
+            agent: params.agent,
+            ...(params.principal ? { principal: params.principal } : {}),
+            ...(params.runId ? { run_id: params.runId } : {}),
+            action: params.action,
+            frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
+            reason: `commit failed: ${committed.error.message}`,
+          });
+          return err(
+            new Error(
+              `${params.relPath} was written and indexed but the git commit failed: ` +
+                committed.error.message,
+            ),
+          );
+        }
         commitHash = committed.value.hash;
       }
 

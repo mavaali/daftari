@@ -1125,6 +1125,48 @@ describe("write tools", () => {
     });
   });
 
+  // Before this fix, a commit failure made performWrite return BEFORE
+  // recordProvenance: the write was durable on disk but absent from the
+  // provenance log, and the error said nothing about the file having been
+  // written. The write must be reported accurately and the ledger must not
+  // have a hole.
+  describe("commit failure after a durable write (serve-concurrency fix)", () => {
+    it("records provenance and an accurate error when the commit step fails", async () => {
+      const path = "pricing/commit-fail.md";
+      const first = await vaultWrite(vault, {
+        path,
+        body: "# Same bytes\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Same bytes" }),
+        agent: AGENT,
+      });
+      expect(first.ok).toBe(true);
+
+      // Byte-identical rewrite: the file write succeeds, `git commit` then
+      // fails with "nothing to commit" — a real commit failure after a
+      // durable write, with no mocking.
+      const second = await vaultWrite(vault, {
+        path,
+        body: "# Same bytes\n\nv1.\n",
+        frontmatter: newFrontmatter({ title: "Same bytes" }),
+        agent: AGENT,
+      });
+      expect(second.ok).toBe(false);
+      if (second.ok) return;
+      // The error says the write landed and the commit did not — never a
+      // bare git error narrating failure over a durable write.
+      expect(second.error.message).toContain("written");
+      expect(second.error.message).toContain("commit failed");
+
+      // The durable write is in the provenance ledger, flagged uncommitted.
+      const prov = await readProvenanceLog(vault);
+      expect(prov.ok).toBe(true);
+      if (!prov.ok) return;
+      const entries = prov.value.filter((e) => e.file === path);
+      expect(entries.length).toBe(2);
+      expect(entries[1]?.reason).toContain("commit failed");
+    }, 60_000);
+  });
+
   describe("schema extensions", () => {
     // The temp vault skips the .daftari control dir, so each test that needs
     // schema extensions writes its own config into the vault.
