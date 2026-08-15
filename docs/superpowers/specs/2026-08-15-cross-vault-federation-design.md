@@ -308,10 +308,15 @@ construction:
    which shadows the mount's path prefix — rename the file or the alias`.
    The scan is against declared aliases only, so ordinary `:`-containing
    POSIX filenames remain untouched.
-2. **Write-time guard.** While federation is configured, `vault_write`'s
-   create path refuses a new canonical path that begins with a declared
-   alias plus `:`, so the collision cannot be introduced after startup
-   either.
+2. **Write-time guard.** While federation is configured, creating a
+   canonical file at a caller-chosen path refuses a path that begins with a
+   declared alias plus `:`. The guard lives in the shared write-path
+   resolution, not in any one tool, because `vault_write`'s create branch is
+   not the only creator: `vault_merge` writes its `target_path` through its
+   own multi-file write-set and falls through to *create* the target when
+   it does not yet exist. Both create sites are guarded (and any future
+   create-at-caller-chosen-path tool inherits the guard by construction),
+   so the collision cannot be introduced after startup either.
 
 Rejected: banning `:` in vault paths outright — a breaking change for
 existing POSIX vaults with such filenames, disproportionate to a collision
@@ -353,8 +358,12 @@ load-bearing:
   `vault_consolidate`, `vault_stage_action`, `vault_ratify`,
   `vault_tension_log`, `vault_tension_resolve`, `vault_edge_observe`,
   `vault_edge_contest`, `vault_tier2_verdict` (it records verdicts and can
-  log tensions — write-shaped despite the read-sounding name), plus the
-  lock and anchor/pin/repin tools:
+  log tensions — write-shaped despite the read-sounding name). Write locks
+  and anchor/pin/repin are not separately registered tools — they are
+  sub-operations of the write tools above (`src/access/locks.ts` and
+  `src/tools/anchors.ts`/`pin-mint.ts`/`repin.ts` export helpers, not
+  registry entries) — so they are covered because their host tools refuse
+  first, and the registry guard test classifies registered tools only:
 
   > `federated mount is read-only: "research:notes/pricing.md" — writes apply only to the local vault`
 
