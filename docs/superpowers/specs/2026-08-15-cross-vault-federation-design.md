@@ -132,6 +132,28 @@ output:
 
 The operator's own stderr is not a disclosure surface; tool results are.
 
+This is deliberately the **opposite** posture from the serve-mode precedent
+this section otherwise borrows, and the difference must be stated, not
+assumed. 2026-07-20 Decision 2 (Phase 2 OAuth) rejects an
+authenticated-but-unmapped subject with a 403 — "never a guest session and
+never an implicit default role" — because there the mapping gap sits on a
+**live auth surface**: a remote caller has presented credentials and is
+about to receive a session whose tool list alone is a probe surface.
+Federation's unmapped principal has no analogous request to reject. The
+process *belongs to* the unmapped principal — the operator launched it,
+declared the mount in their own config, and is not an adversary probing
+someone else's server; the guest resolution exposes no session, no tool
+list, and (under omission) no observable difference from an empty grant.
+The 403-analog here would be refusing startup, and that is rejected on
+sovereignty grounds cutting the other way: it would make the canonical
+process's ability to *boot* contingent on a foreign vault's policy file,
+and pressure referenced-vault owners into granting something just to
+unblock a neighbor's startup. Deny-all-plus-stderr keeps the referenced
+vault's policy sovereign over its content while keeping the canonical
+process sovereign over its own lifecycle. A config error surfaces to the
+operator; a live credential never silently downgrades — the two specs are
+answering different threats.
+
 **Only the granted role's `read` list is consulted.** `write` / `promote` /
 `ratify` bits are ignored (warn at startup if set — confusing, not
 dangerous). The mount is read-only structurally (Decisions 3 and 5), not by
@@ -314,23 +336,38 @@ Federation-aware in v1 (six):
 | `vault_status` | Gains a `federation` block: per mount `alias`, `state: "ok" \| "unavailable" \| "indexing"`, readable-subset doc count, last-refresh timestamp. Never unfiltered counts (Decision 2, ruling 3). |
 | `vault_reindex` | Optional `vault: <alias>` rebuilds one mount's index under `.daftari/federation/`; default remains canonical-only. Also the manual freshness lever (Decision 6). |
 
-**Everything else refuses a prefixed path**, with two uniform error strings —
-the copy is load-bearing:
+**Everything else refuses a prefixed path.** The six tools above are a
+**closed allowlist**; every other registered tool — current or future —
+refuses a federated target, and each is assigned exactly one of two uniform
+error strings. The classification is exhaustive and mutually exclusive at
+spec time (no wildcards, no "and kin"), and it is enforced structurally: a
+registry guard test walks the tool registry and fails if any tool is
+neither in the federation allowlist nor assigned a refusal class, so a new
+tool cannot ship with undefined federated-path behavior. The copy is
+load-bearing:
 
-- Write-shaped tools (`vault_write`, `vault_append`, `vault_promote`,
+- **Write-shaped tools** — anything that mutates documents, vault state, or
+  records a verdict: `vault_write`, `vault_append`, `vault_promote`,
   `vault_deprecate`, `vault_supersede`, `vault_merge`,
-  `vault_set_confidence`, `vault_assert`, `vault_consolidate`,
-  `vault_stage_action`, `vault_ratify`, `vault_tension_log`,
-  `vault_tension_resolve`, `vault_edge_observe`, `vault_edge_contest`, locks,
-  anchors/pin/repin):
+  `vault_set_confidence`, `vault_set_tier`, `vault_assert`,
+  `vault_consolidate`, `vault_stage_action`, `vault_ratify`,
+  `vault_tension_log`, `vault_tension_resolve`, `vault_edge_observe`,
+  `vault_edge_contest`, `vault_tier2_verdict` (it records verdicts and can
+  log tensions — write-shaped despite the read-sounding name), plus the
+  lock and anchor/pin/repin tools:
 
   > `federated mount is read-only: "research:notes/pricing.md" — writes apply only to the local vault`
 
-- Vault-state read tools (`vault_provenance`, `vault_edges`,
-  `vault_tension_*`, `vault_positions`, `vault_backlinks`, `vault_themes`,
-  `vault_lint`, and kin):
+- **Vault-state read tools** — anything that reads the referenced
+  `.daftari/` state or curation/graph surfaces rather than documents:
+  `vault_provenance`, `vault_edges`, `vault_tension_clusters`,
+  `vault_tension_blast`, `vault_tension_triage` (the tension *reads* —
+  `vault_tension_log`/`vault_tension_resolve` are write-shaped, above),
+  `vault_positions`, `vault_backlinks`, `vault_themes`, `vault_lint`,
+  `vault_canon`, `vault_consumes`, `vault_receipt`, `vault_staleness`,
+  `vault_witness`, `vault_tier1`, `vault_tier2_queue`:
 
-  > `vault state (tensions, edges, provenance, positions) is not federated in v1 — mounts expose documents only`
+  > `vault state (tensions, edges, provenance, positions, curation and graph surfaces) is not federated in v1 — mounts expose documents only`
 
 That second line is the crisp v1 boundary, stated as principle: **a mount
 exposes documents, not vault state.** Markdown bodies and frontmatter cross
