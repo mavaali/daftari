@@ -40,6 +40,9 @@ Options:
   --vault <path>       Vault root (default: current directory).
   --source-id <id>     Stable identity of this source. Required when reading
                        from stdin; derived from the filename otherwise.
+  --source-type <chat-transcript|claude-session>
+                       Override auto-detected adapter. Auto-detect: .jsonl →
+                       claude-session, all other paths/stdin → chat-transcript.
   --plan               Print a cost/call estimate without making any LLM calls.
                        This is the default when neither --plan nor --propose is given.
   --propose            Run the full pipeline: extract claims and stage proposals
@@ -238,6 +241,20 @@ export async function runDistill(argv: string[]): Promise<number> {
   }
   const sourceIdFlag = sourceIdRes;
 
+  const sourceTypeRes = readString(argv, "--source-type");
+  if (sourceTypeRes === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --source-type requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  const sourceTypeFlag = sourceTypeRes;
+  if (sourceTypeFlag !== undefined && !(sourceTypeFlag in ADAPTER_REGISTRY)) {
+    process.stderr.write(
+      `daftari distill: unknown --source-type: ${sourceTypeFlag} ` +
+        `(known: ${Object.keys(ADAPTER_REGISTRY).join(", ")})\n\n${DISTILL_USAGE}`,
+    );
+    return 2;
+  }
+
   const transportRes2 = readString(argv, "--transport");
   if (transportRes2 === MISSING_FLAG_VALUE) {
     process.stderr.write(`daftari distill: --transport requires a value\n\n${DISTILL_USAGE}`);
@@ -291,6 +308,7 @@ export async function runDistill(argv: string[]): Promise<number> {
   const VALUE_FLAGS = new Set([
     "--vault",
     "--source-id",
+    "--source-type",
     "--transport",
     "--max-llm-calls",
     "--max-claims",
@@ -409,9 +427,14 @@ export async function runDistill(argv: string[]): Promise<number> {
   // Parse + chunk (both modes)
   // ---------------------------------------------------------------------------
 
-  // Adapter selection: v1 uses chat-transcript for all sources.
-  // Future adapters plug in here once the registry grows.
-  const adapter: SourceAdapter = ADAPTER_REGISTRY["chat-transcript"];
+  // Adapter selection (R5): explicit --source-type wins; else auto-detect by
+  // extension (.jsonl → claude-session), stdin/other → chat-transcript.
+  const sourceType =
+    sourceTypeFlag ??
+    (sourceArg !== "-" && sourceArg.toLowerCase().endsWith(".jsonl")
+      ? "claude-session"
+      : "chat-transcript");
+  const adapter: SourceAdapter = ADAPTER_REGISTRY[sourceType];
   const messages = adapter.parse(sourceContent);
   const chunks = chunkMessages(messages);
 

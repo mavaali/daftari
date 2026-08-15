@@ -403,3 +403,84 @@ describe("runDistill — extra positionals", () => {
     expect(lines.join("")).toMatch(/only one source/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scenario 9: --source-type flag + .jsonl auto-detect (R5)
+// ---------------------------------------------------------------------------
+
+/** A single-line JSONL fixture with one user turn. */
+const SAMPLE_JSONL_LINE = JSON.stringify({
+  type: "user",
+  timestamp: "2026-07-31T03:47:39.817Z",
+  message: { role: "user", content: "hello there this is a real turn" },
+});
+
+let jsonlFile: string;
+
+beforeEach(() => {
+  // Write the JSONL fixture alongside the other fixtures.
+  jsonlFile = join(vault, "session.jsonl");
+  writeFileSync(jsonlFile, `${SAMPLE_JSONL_LINE}\n`, "utf-8");
+});
+
+describe("runDistill — source-type auto-detect and --source-type flag (R5)", () => {
+  it("auto-detects claude-session for .jsonl and reports ≥1 chunk in --plan output", async () => {
+    const lines: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--plan", jsonlFile]);
+    } finally {
+      process.stdout.write = orig;
+    }
+    expect(code).toBe(0);
+    const out = lines.join("");
+    expect(out).toMatch(/chunks:\s+([1-9]\d*)/);
+  });
+
+  it("--source-type chat-transcript on a .jsonl source yields 0 chunks (no chat-transcript lines)", async () => {
+    const lines: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill([
+        "--vault",
+        vault,
+        "--plan",
+        "--source-type",
+        "chat-transcript",
+        jsonlFile,
+      ]);
+    } finally {
+      process.stdout.write = orig;
+    }
+    expect(code).toBe(0);
+    const out = lines.join("");
+    expect(out).toMatch(/chunks:\s+0/);
+  });
+
+  it("exits 2 and mentions source-type in stderr for unknown --source-type value", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--plan", "--source-type", "bogus", jsonlFile]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(code).toBe(2);
+    expect(lines.join("")).toMatch(/source-type/);
+  });
+});
