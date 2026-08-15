@@ -490,3 +490,106 @@ describe("runDistill — source-type auto-detect and --source-type flag (R5)", (
     expect(lines.join("")).toMatch(/source-type/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scenario 10: --sender filter (R6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Two-sender JSONL fixture: 30 user turns + 1 assistant turn = 31 messages.
+ * Unfiltered: ceil(31/30) = 2 chunks. User-only: 30 messages = 1 chunk.
+ * This ensures --sender user yields strictly fewer chunks than no filter.
+ */
+function makeTwoSenderJsonl(): string {
+  const lines: string[] = [];
+  for (let i = 0; i < 30; i++) {
+    lines.push(
+      JSON.stringify({
+        type: "user",
+        timestamp: `2026-07-31T03:${String(i).padStart(2, "0")}:00.000Z`,
+        message: { role: "user", content: `user turn ${i} with enough text to not be empty` },
+      }),
+    );
+  }
+  lines.push(
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-31T04:00:00.000Z",
+      message: { role: "assistant", content: "an assistant turn worth chunking here" },
+    }),
+  );
+  return lines.join("\n");
+}
+
+describe("runDistill — --sender filter (R6)", () => {
+  let twoSenderFile: string;
+
+  beforeEach(() => {
+    twoSenderFile = join(vault, "two-sender.jsonl");
+    writeFileSync(twoSenderFile, `${makeTwoSenderJsonl()}\n`, "utf-8");
+  });
+
+  it("--sender user yields fewer chunks than no --sender (and > 0)", async () => {
+    // Capture --plan stdout for the unfiltered run
+    const linesAll: string[] = [];
+    const origAll = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") linesAll.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", twoSenderFile]);
+    } finally {
+      process.stdout.write = origAll;
+    }
+    const outAll = linesAll.join("");
+    const matchAll = /chunks:\s+(\d+)/.exec(outAll);
+    expect(matchAll).not.toBeNull();
+    const chunksAll = Number.parseInt(matchAll?.[1], 10);
+
+    // Capture --plan stdout for the user-only run
+    const linesUser: string[] = [];
+    const origUser = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") linesUser.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", "--sender", "user", twoSenderFile]);
+    } finally {
+      process.stdout.write = origUser;
+    }
+    const outUser = linesUser.join("");
+    const matchUser = /chunks:\s+(\d+)/.exec(outUser);
+    expect(matchUser).not.toBeNull();
+    const chunksUser = Number.parseInt(matchUser?.[1], 10);
+
+    expect(chunksUser).toBeGreaterThan(0);
+    expect(chunksUser).toBeLessThan(chunksAll);
+  });
+
+  it("--sender robot exits 2 and stderr mentions sender", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--plan", "--sender", "robot", twoSenderFile]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(code).toBe(2);
+    expect(lines.join("")).toMatch(/sender/);
+  });
+});
+
+// Add --sender to Scenario 7's "value-taking flag with missing value" suite.
+describe("runDistill — --sender with missing value (R6)", () => {
+  it("exits 2 when --sender is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", "--sender"]);
+    expect(code).toBe(2);
+  });
+});

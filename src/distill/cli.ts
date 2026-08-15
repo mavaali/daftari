@@ -44,6 +44,10 @@ Options:
                        Override auto-detected adapter. Auto-detect: a .jsonl
                        extension (case-insensitive) → claude-session, all other
                        paths/stdin → chat-transcript.
+  --sender <user|assistant>
+                       Filter messages to a single sender before chunking.
+                       Absent → all senders (unchanged behavior). A single-sender
+                       pass yields claims of known provenance (R6).
   --plan               Print a cost/call estimate without making any LLM calls.
                        This is the default when neither --plan nor --propose is given.
   --propose            Run the full pipeline: extract claims and stage proposals
@@ -256,6 +260,19 @@ export async function runDistill(argv: string[]): Promise<number> {
     return 2;
   }
 
+  const senderRes = readString(argv, "--sender");
+  if (senderRes === MISSING_FLAG_VALUE) {
+    process.stderr.write(`daftari distill: --sender requires a value\n\n${DISTILL_USAGE}`);
+    return 2;
+  }
+  const senderFlag = senderRes;
+  if (senderFlag !== undefined && senderFlag !== "user" && senderFlag !== "assistant") {
+    process.stderr.write(
+      `daftari distill: --sender must be 'user' or 'assistant'\n\n${DISTILL_USAGE}`,
+    );
+    return 2;
+  }
+
   const transportRes2 = readString(argv, "--transport");
   if (transportRes2 === MISSING_FLAG_VALUE) {
     process.stderr.write(`daftari distill: --transport requires a value\n\n${DISTILL_USAGE}`);
@@ -310,6 +327,7 @@ export async function runDistill(argv: string[]): Promise<number> {
     "--vault",
     "--source-id",
     "--source-type",
+    "--sender",
     "--transport",
     "--max-llm-calls",
     "--max-claims",
@@ -436,7 +454,10 @@ export async function runDistill(argv: string[]): Promise<number> {
       ? "claude-session"
       : "chat-transcript");
   const adapter: SourceAdapter = ADAPTER_REGISTRY[sourceType];
-  const messages = adapter.parse(sourceContent);
+  let messages = adapter.parse(sourceContent);
+  if (senderFlag !== undefined) {
+    messages = messages.filter((m) => m.sender === senderFlag); // R6
+  }
   const chunks = chunkMessages(messages);
 
   // ---------------------------------------------------------------------------
