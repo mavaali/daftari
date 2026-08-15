@@ -33,6 +33,7 @@ export async function vaultWitness(
     return ok({
       principal: match,
       concentration: witness.value.concentration,
+      positionConcentration: witness.value.positionConcentration,
       flatCurveWarning: witness.value.flatCurveWarning,
     } as unknown as { principal: unknown });
   }
@@ -82,6 +83,55 @@ const principalRecordSchema: Record<string, unknown> = {
       additionalProperties: false,
     },
     tensionsLogged: { type: "integer" },
+    positions: {
+      type: "object",
+      description:
+        "The position wager book: stances staked by the same schedule, " +
+        "settled by the current ratification (dissent burns unless standing " +
+        "via an 'accepted' resolution; alignment at ratify time credits; " +
+        "self-revision is free). pos-000 legacy snapshots price nothing.",
+      properties: {
+        taken: { type: "integer", description: "All position entries, live + superseded" },
+        live: { type: "integer" },
+        firstAt: { type: ["string", "null"] },
+        lastAt: { type: ["string", "null"] },
+        exposure: { type: "number", description: "Σ stake(confidence) over live positions" },
+        contestedOpen: {
+          type: "integer",
+          description: "Live positions party to an unresolved positional tension",
+        },
+        stakeAtRisk: { type: "number" },
+        selfRevised: { type: "integer", description: "Superseded own entries — never taxed" },
+        dissented: { type: "integer", description: "Live ids in the current org dissent" },
+        standingDissent: {
+          type: "integer",
+          description: "Dissent kept via an 'accepted' resolution — priced 0",
+        },
+        corrected: { type: "integer" },
+        burned: { type: "number", description: "At most one burn per position" },
+        ratifiedAligned: { type: "integer" },
+        credited: { type: "number" },
+        balance: { type: "number", description: "credited − burned (advisory)" },
+      },
+      required: [
+        "taken",
+        "live",
+        "firstAt",
+        "lastAt",
+        "exposure",
+        "contestedOpen",
+        "stakeAtRisk",
+        "selfRevised",
+        "dissented",
+        "standingDissent",
+        "corrected",
+        "burned",
+        "ratifiedAligned",
+        "credited",
+        "balance",
+      ],
+      additionalProperties: false,
+    },
   },
   required: [
     "principal",
@@ -100,6 +150,7 @@ const principalRecordSchema: Record<string, unknown> = {
     "balance",
     "proposals",
     "tensionsLogged",
+    "positions",
   ],
   additionalProperties: false,
 };
@@ -117,6 +168,10 @@ const witnessOutputSchema: Record<string, unknown> = {
       type: "integer",
       description: "Docs with no provenance history — nobody's record",
     },
+    legacyPositions: {
+      type: "integer",
+      description: "pos-000 system snapshots (principal 'unknown') — nobody's record",
+    },
     concentration: {
       type: "object",
       properties: {
@@ -126,12 +181,25 @@ const witnessOutputSchema: Record<string, unknown> = {
       required: ["topPrincipal", "topShare"],
       additionalProperties: false,
     },
+    positionConcentration: {
+      type: "object",
+      properties: {
+        topPrincipal: { type: ["string", "null"] },
+        topShare: { type: "number", description: "Position share of the top principal, 0–1" },
+      },
+      required: ["topPrincipal", "topShare"],
+      additionalProperties: false,
+    },
     flatCurveWarning: {
       type: "boolean",
-      description: "True when one principal holds ≥95% of writes — records are uninformative",
+      description:
+        "True when the write curve is flat (one principal ≥95% of writes) AND " +
+        "positions carry no counter-signal (none taken, or equally " +
+        "concentrated) — records are uninformative. Both concentrations are " +
+        "always reported so the caller sees which curve is flat.",
     },
   },
-  required: ["concentration", "flatCurveWarning"],
+  required: ["concentration", "positionConcentration", "flatCurveWarning"],
   additionalProperties: false,
 };
 
@@ -150,11 +218,16 @@ export const witnessTools: ToolDefinition[] = [
       "authored, live claims with open exposure, contested claims with " +
       "stake at risk, the settled book (lost/burned vs survived/credited, " +
       "balance), proposal outcomes (ratified/rejected/expired), and tensions " +
-      "logged. Includes the flat-curve monitor: when one principal holds " +
-      "≥95% of writes, track records are declared uninformative rather than " +
-      "reported as signal. Read-only, deterministic, advisory — nothing is " +
-      "enforced and no document is touched. Pass 'principal' to fetch one " +
-      "record.",
+      "logged. Positions are priced by the same schedule into a per-principal " +
+      "position book: a live stance stakes by its confidence, dissent in the " +
+      "current ratification burns (unless kept standing via an 'accepted' " +
+      "resolution), alignment at ratify time earns flat credit, and " +
+      "self-revision is always free; pos-000 legacy snapshots price nothing. " +
+      "Includes the flat-curve monitor: when one principal holds ≥95% of " +
+      "writes AND positions carry no counter-signal, track records are " +
+      "declared uninformative rather than reported as signal. Read-only, " +
+      "deterministic, advisory — nothing is enforced and no document is " +
+      "touched. Pass 'principal' to fetch one record.",
     inputSchema: {
       type: "object",
       properties: {
