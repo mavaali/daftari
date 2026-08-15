@@ -21,7 +21,7 @@ import { writeFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { resolve } from "node:path";
 import {
-  RESOLUTION_KINDS,
+  CALLER_RESOLUTION_KINDS,
   type ResolutionKind,
   resolveTension,
   type TensionResolution,
@@ -149,9 +149,11 @@ async function runRule(argv: string[], vaultRoot: string): Promise<number> {
   }
 
   const kind = readStringArg(argv, "--kind");
-  if (!kind || !(RESOLUTION_KINDS as readonly string[]).includes(kind)) {
+  if (!kind || !(CALLER_RESOLUTION_KINDS as readonly string[]).includes(kind)) {
+    // `consolidated` is system-only: a court ruling of it would assert an
+    // org_position that may not exist.
     process.stderr.write(
-      `daftari court: rule requires --kind, one of: ${RESOLUTION_KINDS.join(", ")}\n`,
+      `daftari court: rule requires --kind, one of: ${CALLER_RESOLUTION_KINDS.join(", ")}\n`,
     );
     return 2;
   }

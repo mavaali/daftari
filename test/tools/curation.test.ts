@@ -133,6 +133,18 @@ describe("curation tools", () => {
       if (result.ok) return;
       expect(result.error.message).toContain("must be one of");
     });
+
+    it("vault_tension_resolve rejects the system-only 'consolidated' kind", async () => {
+      // `consolidated` is recorded only by vault_consolidate's batch resolve
+      // — a caller ruling it would assert an org_position that may not exist.
+      const result = await vaultTensionResolve(vault, {
+        id: "tension-001",
+        kind: "consolidated",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("must be one of");
+    });
   });
 
   describe("vault_tension_clusters", () => {

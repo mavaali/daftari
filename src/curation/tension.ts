@@ -72,8 +72,26 @@ export type LoggableTensionKind = (typeof LOGGABLE_TENSION_KINDS)[number];
 const ADDABLE_TENSION_KINDS = [...LOGGABLE_TENSION_KINDS, "inter-proposal", "positional"] as const;
 export type AddableTensionKind = (typeof ADDABLE_TENSION_KINDS)[number];
 
-export const RESOLUTION_KINDS = ["superseded", "corrected", "accepted", "invalid"] as const;
+// `consolidated` is system-only, mirroring the LOGGABLE/ADDABLE split above:
+// it records that a pairwise positional conflict was subsumed by a ratified
+// org_position (the dissent is carried there — the disagreement persists, on
+// the record, so neither `superseded` nor `corrected` would be honest, and
+// blanket `accepted` would grant standing-dissent immunity the ratifier never
+// deliberately chose). Only vault_consolidate's batch resolve writes it;
+// vault_tension_resolve and the court are fenced to CALLER_RESOLUTION_KINDS —
+// a caller ruling `consolidated` would assert an org_position that may not
+// exist.
+export const RESOLUTION_KINDS = [
+  "superseded",
+  "corrected",
+  "accepted",
+  "invalid",
+  "consolidated",
+] as const;
 export type ResolutionKind = (typeof RESOLUTION_KINDS)[number];
+
+export const CALLER_RESOLUTION_KINDS = ["superseded", "corrected", "accepted", "invalid"] as const;
+export type CallerResolutionKind = (typeof CALLER_RESOLUTION_KINDS)[number];
 
 export interface TensionResolution {
   resolved_at: string; // ISO 8601
@@ -170,6 +188,39 @@ function nextTensionId(existing: TensionEntry[]): string {
 
 // Appends a tension entry to .daftari/tensions.md. Auto-assigns an `id` if
 // the caller doesn't supply one (the normal path).
+// The wrap addTension/resolveTension put around a `__tensions__` lease
+// acquire failure — the ONE retryable tension failure (slice-3 §3.5: that
+// contention is system-generated, not caller-visible). Read failures and
+// missing ids are not contention and must never retry.
+const TENSION_LEASE_CONTENTION_PREFIX = "cannot update tension log:";
+
+export function isTensionLeaseContention(e: Error): boolean {
+  return e.message.startsWith(TENSION_LEASE_CONTENTION_PREFIX);
+}
+
+// One bounded, jittered retry on tension-lease contention (slice-3 §3.5's
+// blessed sugar: 100–250ms, exactly two attempts). Lives here rather than
+// inside addTension so caller-visible paths (vault_tension_log, the staged
+// inter-proposal check) keep their fail-fast contention behavior — only the
+// system-generated call sites opt in. `deps` is injectable for tests.
+export interface TensionLeaseDeps {
+  sleep?: (ms: number) => Promise<void>;
+  jitterMs?: () => number;
+}
+
+export async function retryOnTensionLease<T>(
+  attempt: () => Promise<Result<T, Error>>,
+  deps: TensionLeaseDeps = {},
+): Promise<Result<T, Error>> {
+  const first = await attempt();
+  if (first.ok || !isTensionLeaseContention(first.error)) return first;
+  const sleep =
+    deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const jitter = deps.jitterMs ?? (() => 100 + Math.random() * 150);
+  await sleep(jitter());
+  return attempt();
+}
+
 export async function addTension(
   vaultRoot: string,
   input: TensionInput,
