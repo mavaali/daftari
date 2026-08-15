@@ -3,7 +3,15 @@
 // lexical` skips embeddings, and the referenced vault's `.daftari` state is
 // never ingested.
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -90,8 +98,12 @@ describe("per-mount index location", () => {
     const mount = registry.mounts.get("research");
     if (!mount || mount.root === null) throw new Error("mount not loaded");
 
+    // loadMounts realpath-resolves the canonical root before deriving the
+    // mount's index directory (src/federation/mounts.ts); on macOS
+    // os.tmpdir() is under the /var/folders symlink to /private/var/folders,
+    // so the expected value must be canonicalized the same way (#127/#128).
     expect(indexDbPath(mount.root)).toBe(
-      join(canonical, ".daftari", "federation", "research", "index.db"),
+      join(realpathSync(canonical), ".daftari", "federation", "research", "index.db"),
     );
 
     const result = await reindexMount(mount);
