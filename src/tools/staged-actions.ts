@@ -35,6 +35,7 @@ import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 import { computeRepin } from "./repin.js";
 import {
+  isStaleWriteError,
   vaultDeprecate,
   vaultMerge,
   vaultPromote,
@@ -604,6 +605,15 @@ export async function vaultRatify(
           body: writePayload.body,
           agent: principal.value,
           ...(action.runId ? { run_id: action.runId } : {}),
+          // LD-13 ratify staleness guard: a 'write' proposal's frontmatter is a
+          // (possibly full-field) snapshot computed against the document as it
+          // stood when the proposal was staged. Passing that as base_version
+          // makes vaultWrite's existing stale-write check (write.ts) reject a
+          // replay against a document that changed since staging, instead of
+          // silently overwriting the change. Absent on
+          // proposals staged before this field existed — old records keep
+          // today's behavior (no staleness check, last-write-wins).
+          ...(action.baseVersion ? { base_version: action.baseVersion } : {}),
         },
         access,
       );
@@ -782,7 +792,27 @@ export async function vaultRatify(
       return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
   }
 
-  if (!dispatched.ok) return dispatched;
+  if (!dispatched.ok) {
+    // LD-13: a base_version mismatch means the document changed since this
+    // proposal was staged — the underlying rejection (write.ts) is correct
+    // but generic ("stale write: <path> changed since base_version"). Name
+    // the proposal and spell out the resolution here: a ratified diff is
+    // never recomputed automatically (it may no longer be a safe/valid
+    // mutation of the current document), so the fix is reject-and-re-propose,
+    // not retry. The action stays pending either way (no decision recorded).
+    if (isStaleWriteError(dispatched.error)) {
+      return err(
+        new Error(
+          `vault_ratify: staged action ${id.value} is stale — ${action.targetPath} changed ` +
+            `since this proposal was staged, so ratifying it now would silently discard that ` +
+            `change. The action stays pending: reject ${id.value} and ask the proposer to ` +
+            `re-propose against the current document (a ratified diff is never auto-recomputed). ` +
+            `(${dispatched.error.message})`,
+        ),
+      );
+    }
+    return dispatched;
+  }
 
   // Shadow mode (§11.5): the dispatch computed and shadow-logged the write but
   // applied nothing. Recording a `ratified` decision over a write that never

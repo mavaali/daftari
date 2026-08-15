@@ -1109,6 +1109,12 @@ export interface StagedActionRow {
   // Trace/run id from the proposal record (#235). JSONL-only, like
   // decided_by_principal — no sqlite column.
   run_id?: string | null;
+  // The target document's contentHash at proposal-compute time (LD-13 ratify
+  // staleness guard). JSONL-only, like decided_by_principal/run_id — no
+  // sqlite column; only ever populated on proposal records, and only for
+  // producers whose proposed_diff is a full-field snapshot (see
+  // StagedAction.baseVersion in curation/staged-actions.ts).
+  base_version?: string | null;
 }
 
 // Inserts or replaces a staged-action row by id. Used by the jsonl→sqlite
