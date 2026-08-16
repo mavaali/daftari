@@ -14,7 +14,11 @@ import { listStagedActions } from "../curation/staged-actions.js";
 import type { LlmTransport } from "../eval/llm-openrouter.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { vaultRatify } from "../tools/staged-actions.js";
-import { type DistillConfig, loadConfig } from "../utils/config.js";
+import {
+  DEFAULT_CORROBORATION_THRESHOLD,
+  type DistillConfig,
+  loadConfig,
+} from "../utils/config.js";
 import type { SourceAdapter } from "./adapters/types.js";
 import { chunkMessages } from "./chunk.js";
 import { buildReceipt, planDistill } from "./cost.js";
@@ -57,6 +61,13 @@ Options:
                        --yes is given. Mutually exclusive with --plan / --propose.
   --by <principal>     Reviewer principal recorded on each ratify (default: cli).
   --yes                Actually approve on --review (without it, --review lists only).
+                       Ratifies ALL matched proposals, ignoring corroboration.
+  --auto-safe          On --review, ratify only the corroborated subset
+                       (corroboration >= threshold); the rest stay queued for a
+                       human. Applies without --yes. If both are given, --yes wins.
+  --corroboration-threshold <T>
+                       Corroboration bar in [0,1] for --auto-safe (default:
+                       config distill.corroboration_threshold, else 0.8).
   --max-llm-calls <n>  Override config.maxLlmCalls for this run.
   --max-claims <n>     Override config.maxClaims for this run.
   --model <id>         Override config.model for this run.
@@ -235,8 +246,37 @@ export async function runDistill(argv: string[]): Promise<number> {
       return 2;
     }
     const principal = byRes ?? "cli";
-    const applied = argv.includes("--yes");
-    return await reviewRun(vaultRoot, reviewRes, principal, applied);
+
+    // R8: corroboration gate. --auto-safe ratifies only the corroborated
+    // subset; --corroboration-threshold overrides the config/default bar.
+    const autoSafe = argv.includes("--auto-safe");
+    const ctRes = readString(argv, "--corroboration-threshold");
+    if (ctRes === MISSING_FLAG_VALUE) {
+      process.stderr.write(
+        `daftari distill: --corroboration-threshold requires a value\n\n${DISTILL_USAGE}`,
+      );
+      return 2;
+    }
+    // Base bar: the vault's distill.corroborationThreshold when a distill:
+    // block is present, else the conservative default. A --review on a vault
+    // without a distill: block must still work using the default.
+    let threshold = DEFAULT_CORROBORATION_THRESHOLD;
+    const cfgForThreshold = resolveDistillConfig(vaultRoot);
+    if (cfgForThreshold.ok) threshold = cfgForThreshold.value.corroborationThreshold;
+    if (ctRes !== undefined) {
+      const t = Number.parseFloat(ctRes);
+      if (!Number.isFinite(t) || t < 0 || t > 1) {
+        process.stderr.write(
+          `daftari distill: --corroboration-threshold must be a number in [0,1]\n\n${DISTILL_USAGE}`,
+        );
+        return 2;
+      }
+      threshold = t;
+    }
+
+    const yes = argv.includes("--yes");
+    const applied = yes || autoSafe; // auto-safe implies apply the qualifying subset
+    return await reviewRun(vaultRoot, reviewRes, principal, applied, autoSafe, threshold, yes);
   }
 
   const sourceIdRes = readString(argv, "--source-id");
@@ -334,6 +374,7 @@ export async function runDistill(argv: string[]): Promise<number> {
     "--model",
     "--review",
     "--by",
+    "--corroboration-threshold",
   ]);
   const positionals: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -343,6 +384,7 @@ export async function runDistill(argv: string[]): Promise<number> {
       a === "--propose" ||
       a === "--zdr" ||
       a === "--yes" ||
+      a === "--auto-safe" ||
       a === "--help" ||
       a === "-h"
     ) {
@@ -625,6 +667,18 @@ function parseDistillRef(proposedDiff: unknown): { sourceId: string; claimKey: s
 }
 
 /**
+ * Read the corroboration score stamped onto a staged proposal's
+ * `proposedDiff` (propose.ts, R7). `proposedDiff` is `unknown` at the
+ * staged-action layer, so parse defensively: a missing/non-finite value
+ * yields 0, mirroring the write side's default-0 semantics.
+ */
+function parseCorroboration(proposedDiff: unknown): number {
+  if (typeof proposedDiff !== "object" || proposedDiff === null) return 0;
+  const c = (proposedDiff as Record<string, unknown>).corroboration;
+  return typeof c === "number" && Number.isFinite(c) ? c : 0;
+}
+
+/**
  * `daftari distill --review <run_id>` — review and batch-approve the pending
  * proposals emitted by a prior `--propose` run.
  *
@@ -635,6 +689,11 @@ function parseDistillRef(proposedDiff: unknown): { sourceId: string; claimKey: s
  * (F3: history per claim). After each successful land, the distill-state
  * landed map is advanced via recordLandedClaim (U5's mark-after-land hook).
  *
+ * R8 corroboration gate: with `autoSafe` (and without the stronger `--yes`),
+ * only proposals whose stamped corroboration meets `threshold` are ratified;
+ * the rest stay queued for a human. Plain `--yes` ratifies everything and
+ * ignores the threshold. When both are given, `--yes` wins (with a stderr note).
+ *
  * Exit codes: 0 = success (including empty match / dry-run); 4 = one or more
  * ratifies failed.
  */
@@ -643,6 +702,9 @@ async function reviewRun(
   runId: string,
   principal: string,
   applied: boolean,
+  autoSafe = false,
+  threshold = DEFAULT_CORROBORATION_THRESHOLD,
+  yes = false,
 ): Promise<number> {
   const listRes = await listStagedActions(vaultRoot, "pending");
   if (!listRes.ok) {
@@ -656,6 +718,18 @@ async function reviewRun(
     process.stdout.write(`distill --review ${runId}\n  no pending proposals for this run.\n`);
     return 0;
   }
+
+  // R8: --yes (plain) is the stronger signal — it ratifies everything and
+  // ignores the corroboration gate. --auto-safe (without --yes) ratifies only
+  // the corroborated subset. If both are given, --yes wins; note it once.
+  const yesAll = yes; // plain --yes ratifies all, threshold ignored
+  if (yes && autoSafe) {
+    process.stderr.write("daftari distill: --yes overrides --auto-safe; ratifying all proposals\n");
+  }
+  const toRatify =
+    autoSafe && !yesAll
+      ? matched.filter((a) => parseCorroboration(a.proposedDiff) >= threshold)
+      : matched;
 
   process.stdout.write(
     [
@@ -678,7 +752,7 @@ async function reviewRun(
 
   let approved = 0;
   let failed = 0;
-  for (const action of matched) {
+  for (const action of toRatify) {
     const ratifyRes = await vaultRatify(vaultRoot, {
       id: action.id,
       decision: "approve",
@@ -711,11 +785,15 @@ async function reviewRun(
     }
   }
 
+  // queued-below-threshold is only meaningful on the --auto-safe path, where
+  // the corroboration gate held some proposals back for a human.
+  const queued = matched.length - toRatify.length;
   process.stdout.write(
     [
       `distill --review complete`,
       `  run-id:     ${runId}`,
       `  approved:   ${approved}`,
+      ...(autoSafe && !yesAll ? [`  queued (below threshold): ${queued}`] : []),
       `  failed:     ${failed}`,
       ``,
     ].join("\n"),

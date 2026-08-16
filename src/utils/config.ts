@@ -220,13 +220,25 @@ export interface DistillConfig {
    * LLM in a single call (bounds per-call token spend).
    */
   inCallInputCap: number;
+  /**
+   * Corroboration gate (R8/R12): `distill --review --auto-safe` auto-ratifies
+   * only proposals whose stamped corroboration score meets this threshold; the
+   * rest stay queued for a human. A float in [0, 1].
+   */
+  corroborationThreshold: number;
 }
+
+// Conservative default: a high bar queues more for human review and
+// auto-ratifies less. Consumed by validateDistill and by the review CLI as
+// the fallback when no `distill:` block or `--corroboration-threshold` is set.
+export const DEFAULT_CORROBORATION_THRESHOLD = 0.8;
 
 export const DISTILL_NUMERIC_DEFAULTS: Omit<DistillConfig, "model"> = {
   maxLlmCalls: 100,
   maxClaims: 50,
   maxVerbatimChars: 8000,
   inCallInputCap: 16000,
+  corroborationThreshold: DEFAULT_CORROBORATION_THRESHOLD,
 };
 
 // `federation` block (#297, spec 2026-08-15). One block, two halves, each
@@ -842,6 +854,7 @@ const RECOGNISED_DISTILL_KEYS = [
   "max_claims",
   "max_verbatim_chars",
   "in_call_input_cap",
+  "corroboration_threshold",
 ] as const;
 
 function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error> {
@@ -875,6 +888,16 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
     else if (key === "max_claims") out.maxClaims = v;
     else if (key === "max_verbatim_chars") out.maxVerbatimChars = v;
     else out.inCallInputCap = v;
+  }
+
+  // corroboration_threshold is a float in [0, 1], so it needs its own branch —
+  // the positive-integer loop above would reject a fractional value.
+  const ct = obj.corroboration_threshold;
+  if (ct !== undefined) {
+    if (typeof ct !== "number" || !Number.isFinite(ct) || ct < 0 || ct > 1) {
+      return err(new Error("'distill.corroboration_threshold' must be a number in [0, 1]"));
+    }
+    out.corroborationThreshold = ct;
   }
   return ok(out);
 }
