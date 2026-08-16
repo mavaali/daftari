@@ -15,9 +15,10 @@
 //   readme.md                   root-level, no folder (rootSkipped)
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { cleanupVault as cleanupTempDir } from "./temp-vault.js";
 
 interface Commit {
   date: string; // YYYY-MM-DD
@@ -173,5 +174,6 @@ export function buildFrontmatterLessVault(): string {
 }
 
 export function cleanupVault(dir: string): void {
-  rmSync(dir, { recursive: true, force: true });
+  // Same CI teardown race as temp-vault.ts — reuse its hardened cleanup.
+  cleanupTempDir(dir);
 }

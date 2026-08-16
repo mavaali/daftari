@@ -99,6 +99,21 @@ export interface StagedAction {
   // Caller-supplied trace/run identifier stamped at stage time (#235). Like
   // decidedByPrincipal, JSONL-only — not in the sqlite staged_actions table.
   runId: string | null;
+  // LD-13: the target document's contentHash (sha256, the same
+  // token vault_read returns as `version`) at the moment the proposal was
+  // computed — NOT at stage-append time in general, but at the moment the
+  // caller last read the document to derive proposedDiff. Only producers whose
+  // proposed_diff carries a full-field snapshot (vault_assert's propose-only
+  // branch, vault_write's propose-only branch) set this; other staged action
+  // types (promote/deprecate/supersede/confidence-up/merge/repin) recompute
+  // their mutation from a FRESH load at ratify-dispatch time, so a stage-time
+  // base_version would not protect anything and is deliberately not captured
+  // for them. Optional and JSONL-only (no sqlite column, same as
+  // decidedByPrincipal/runId): an OLD proposal record written before this
+  // field existed collapses with baseVersion null, and ratify dispatch skips
+  // the staleness check for it exactly as it does today (backward compat —
+  // last-write-wins, unchanged).
+  baseVersion: string | null;
 }
 
 export interface StageActionInput {
@@ -114,6 +129,12 @@ export interface StageActionInput {
   // Override the proposal timestamp — only used by tests for deterministic
   // expiry math; production callers omit it and get the current clock.
   proposedAt?: string;
+  // The target document's contentHash at the moment proposedDiff was computed
+  // (see StagedAction.baseVersion doc comment for who should set this and
+  // why). Threaded onto the ratify dispatch as vaultWrite's base_version so a
+  // proposal replayed against a document that changed since staging fails
+  // loudly as a stale write instead of silently overwriting the change.
+  baseVersion?: string;
 }
 
 export interface DecisionInput {
@@ -174,6 +195,7 @@ interface RawRecord {
   ratification_reason?: string | null;
   decided_by_principal?: string | null;
   run_id?: string | null;
+  base_version?: string | null;
 }
 
 function readRawRecords(vaultRoot: string): RawRecord[] {
@@ -222,6 +244,7 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
         ratification_reason: null,
         decided_by_principal: null,
         run_id: rec.run_id ?? null,
+        base_version: rec.base_version ?? null,
       });
     } else {
       // Decision record — only meaningful if the proposal was already seen.
@@ -262,6 +285,7 @@ function rowToStagedAction(row: StagedActionRow): StagedAction {
     // yield null here.
     decidedByPrincipal: row.decided_by_principal ?? null,
     runId: row.run_id ?? null,
+    baseVersion: row.base_version ?? null,
   };
 }
 
@@ -339,6 +363,9 @@ function appendProposalRecord(
     rationale: input.rationale.trim(),
     proposed_diff: JSON.stringify(input.proposedDiff),
     ...(input.runId && input.runId.trim().length > 0 ? { run_id: input.runId.trim() } : {}),
+    ...(input.baseVersion && input.baseVersion.length > 0
+      ? { base_version: input.baseVersion }
+      : {}),
   };
   appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
   return { id, expires_at: expiresAt };

@@ -253,6 +253,12 @@ export async function vaultAssert(
           },
           body: target.value.parsed.content,
         },
+        // LD-13 ratify staleness guard: proposedDiff.frontmatter.positions is a
+        // FULL array snapshotted from `target` above. Anchor the proposal to
+        // the exact bytes it was computed from so a ratify replay against a
+        // document that changed since staging fails loudly (stale write)
+        // instead of silently overwriting whatever landed in between.
+        baseVersion: target.value.contentHash,
         ...(runIdArg.value !== null ? { runId: runIdArg.value } : {}),
       });
       if (!staged.ok) return staged;

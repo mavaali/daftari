@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
-import { getStagedActionById } from "../../src/curation/staged-actions.js";
+import {
+  getStagedActionById,
+  stageActionWithConflictCheck,
+} from "../../src/curation/staged-actions.js";
 import { listTensions, TENSIONS_LOCK_KEY } from "../../src/curation/tension.js";
 import { registeredToolNames } from "../../src/server.js";
 import { vaultAssert, vaultConsolidate, vaultPositions } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
+import { vaultRatify } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -1191,5 +1195,168 @@ describe("concurrent asserts — no silent lost update", () => {
         expect(result.error.message).toMatch(/locked|stale/);
       }
     }
+  }, 60_000);
+});
+
+// LD-13 ratify staleness guard (#recall-review): a propose-only assert stages
+// proposedDiff.frontmatter.positions as a FULL array snapshotted at stage
+// time. Without an anchor, vault_ratify replaying that snapshot through
+// vaultWrite with no base_version silently overwrites whatever landed on the
+// document between staging and ratification — deterministic, no concurrency
+// needed. vault_ratify here is deliberately called WITHOUT an AccessContext
+// (operator/stdio mode): that is the exact carve-out the LD-13
+// foreign-position guard in write.ts does not cover ("Operator servers (no
+// access) bypass"), and is also how every other vault_ratify test in
+// test/tools/staged-actions.test.ts calls it — the default, not an edge case.
+describe("vault_ratify — LD-13 base_version staleness guard", () => {
+  let vault: string;
+  beforeEach(async () => {
+    vault = makeTempVault();
+    await seedDoc(vault);
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("stale ratify is rejected loudly and never overwrites the intervening direct assert", async () => {
+    // Monday: carol (propose-only) proposes. The snapshot she stages carries
+    // pos-000 (legacy) + her own pos-001 — computed against the doc as it
+    // stands right now, before bob ever touches it.
+    const staged = await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "a" },
+      PROPOSER,
+    );
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const stagedAction = await getStagedActionById(vault, staged.value.staged_id as string);
+    expect(stagedAction.ok).toBe(true);
+    if (!stagedAction.ok) throw stagedAction.error;
+    // The proposal is anchored to the doc's contentHash at stage time.
+    expect(stagedAction.value?.baseVersion).toEqual(expect.any(String));
+
+    // Tuesday: bob asserts directly. The doc has no proposals applied to it
+    // yet, so bob's write lands at the same slot (pos-001) carol's stage-time
+    // snapshot claimed — this is the collision that makes the clobber silent
+    // rather than merely a length mismatch.
+    const direct = await vaultAssert(
+      vault,
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "b" },
+      BOB,
+    );
+    expect(direct.ok).toBe(true);
+    if (!direct.ok) throw direct.error;
+
+    const beforeRatify = await vaultRead(vault, DOC);
+    expect(beforeRatify.ok).toBe(true);
+    if (!beforeRatify.ok) throw beforeRatify.error;
+    expect(beforeRatify.value.frontmatter.positions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ principal: "bob", stance: "dispute" })]),
+    );
+
+    // Wednesday: a ratifier (operator mode, no access) approves carol's stale
+    // Monday proposal.
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.staged_id,
+      decision: "approve",
+      principal: "dave",
+    });
+    expect(ratified.ok).toBe(false);
+    if (ratified.ok) return;
+    expect(ratified.error.message).toContain("stale");
+    // Actionable: names the proposal id and says the doc changed since staging.
+    expect(ratified.error.message).toContain(staged.value.staged_id as string);
+    expect(ratified.error.message).toMatch(/changed since/);
+
+    // The action stays pending — no decision was recorded.
+    const afterAction = await getStagedActionById(vault, staged.value.staged_id as string);
+    expect(afterAction.ok && afterAction.value?.status).toBe("pending");
+
+    // Bob's position is still live on disk — this is the actual regression
+    // check: on main (no base_version), this same sequence silently replaces
+    // it with carol's stale snapshot instead of rejecting.
+    const after = await vaultRead(vault, DOC);
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw after.error;
+    expect(after.value.frontmatter.positions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ principal: "bob", stance: "dispute" })]),
+    );
+  }, 60_000);
+
+  it("ratify of an unchanged doc still applies cleanly with base_version present", async () => {
+    const staged = await vaultAssert(
+      vault,
+      { path: DOC, stance: "assert", confidence: "high", agent: "a" },
+      PROPOSER,
+    );
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    // Nothing else touches the document between staging and ratification.
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.staged_id,
+      decision: "approve",
+      principal: "dave",
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const after = await vaultRead(vault, DOC);
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw after.error;
+    expect(after.value.frontmatter.positions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ principal: "carol", stance: "assert" })]),
+    );
+  }, 60_000);
+
+  it("a legacy staged action without base_version still ratifies (backward compat)", async () => {
+    const before = await vaultRead(vault, DOC);
+    expect(before.ok).toBe(true);
+    if (!before.ok) throw before.error;
+
+    // Simulate a proposal staged before this field existed: no baseVersion in
+    // the input, so the durable record carries none (append-only — old jsonl
+    // lines never gain one retroactively).
+    const staged = await stageActionWithConflictCheck(vault, {
+      actionType: "write",
+      targetPath: DOC,
+      proposedBy: "agent:legacy",
+      rationale: "legacy proposal predating the base_version field",
+      proposedDiff: { frontmatter: { tags: ["legacy-update"] }, body: before.value.content },
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) throw staged.error;
+
+    const stagedAction = await getStagedActionById(vault, staged.value.id);
+    expect(stagedAction.ok).toBe(true);
+    if (!stagedAction.ok) throw stagedAction.error;
+    expect(stagedAction.value?.baseVersion).toBeNull();
+
+    // The document changes AFTER staging (same shape as the clobber
+    // scenario) — with no base_version captured, today's last-write-wins
+    // behavior must be preserved: ratify still applies instead of rejecting.
+    const drift = await vaultWrite(vault, {
+      path: DOC,
+      body: "# Retry storms\n\nA drifted claim.\n",
+      frontmatter: { title: "Retry storms (drifted)" },
+      agent: "agent:drift",
+    });
+    expect(drift.ok).toBe(true);
+
+    const ratified = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: "dave",
+    });
+    expect(ratified.ok).toBe(true);
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const after = await vaultRead(vault, DOC);
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw after.error;
+    expect(after.value.frontmatter.tags).toEqual(["legacy-update"]);
   }, 60_000);
 });

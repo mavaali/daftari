@@ -1027,6 +1027,13 @@ export async function vaultWrite(
           ? args.reason.trim()
           : `propose-only role '${access.roleName}': write staged for ratification`,
       proposedDiff: { frontmatter: rawFrontmatter, body },
+      // LD-13 ratify staleness guard (same one-line capture as vault_assert's
+      // propose-only branch): anchor to the bytes `onDisk` was read from above,
+      // so a ratify replay against a document that changed since staging fails
+      // loudly as a stale write instead of silently overwriting the change.
+      // Undefined for a create (onDisk not ok — no prior version to anchor to;
+      // create-vs-create races are out of scope here, same as today).
+      ...(onDisk.ok ? { baseVersion: sha256Hex(onDisk.value) } : {}),
       ...(runId.value !== undefined ? { runId: runId.value } : {}),
     });
     if (!staged.ok) return staged;
