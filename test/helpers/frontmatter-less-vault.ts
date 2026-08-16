@@ -173,5 +173,8 @@ export function buildFrontmatterLessVault(): string {
 }
 
 export function cleanupVault(dir: string): void {
-  rmSync(dir, { recursive: true, force: true });
+  // maxRetries: a commit's detached background auto-gc (or a late
+  // fire-and-forget append) can still be writing under the vault while
+  // rmSync walks it — ENOTEMPTY teardown races seen on CI.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
