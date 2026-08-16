@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { configPath, loadConfig, malformedCommentHint } from "../../src/utils/config.js";
+import {
+  configPath,
+  DEFAULT_CORROBORATION_THRESHOLD,
+  loadConfig,
+  malformedCommentHint,
+} from "../../src/utils/config.js";
 
 // Writes a .daftari/config.yaml into a throwaway directory and loads it.
 // Returns the loadConfig Result so a test can assert on either branch.
@@ -915,6 +920,40 @@ describe("loadConfig — schema extensions", () => {
     it("rejects an empty agent", () => {
       writeConfig('tension_scan:\n  agent: ""\n');
       expect(loadConfig(dir).ok).toBe(false);
+    });
+  });
+
+  describe("distill.corroboration_threshold (R12)", () => {
+    it("parses a declared corroboration_threshold in [0, 1]", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  corroboration_threshold: 0.7\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.corroborationThreshold).toBe(0.7);
+    });
+
+    it("defaults to DEFAULT_CORROBORATION_THRESHOLD when the key is absent", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.corroborationThreshold).toBe(DEFAULT_CORROBORATION_THRESHOLD);
+    });
+
+    it("rejects a corroboration_threshold above 1", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  corroboration_threshold: 1.5\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("corroboration_threshold");
+    });
+
+    it("rejects a negative corroboration_threshold", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  corroboration_threshold: -0.1\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("corroboration_threshold");
     });
   });
 

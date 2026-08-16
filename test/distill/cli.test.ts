@@ -362,6 +362,11 @@ describe("runDistill — value-taking flag with missing value", () => {
     expect(code).toBe(2);
   });
 
+  it("exits 2 when --source-type is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", sampleFile, "--source-type"]);
+    expect(code).toBe(2);
+  });
+
   it("writes a 'requires a value' message to stderr", async () => {
     const lines: string[] = [];
     const orig = process.stderr.write.bind(process.stderr);
@@ -401,5 +406,192 @@ describe("runDistill — extra positionals", () => {
       process.stderr.write = orig;
     }
     expect(lines.join("")).toMatch(/only one source/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 9: --source-type flag + .jsonl auto-detect (R5)
+// ---------------------------------------------------------------------------
+
+/** A single-line JSONL fixture with one user turn. */
+const SAMPLE_JSONL_LINE = JSON.stringify({
+  type: "user",
+  timestamp: "2026-07-31T03:47:39.817Z",
+  message: { role: "user", content: "hello there this is a real turn" },
+});
+
+describe("runDistill — source-type auto-detect and --source-type flag (R5)", () => {
+  let jsonlFile: string;
+
+  beforeEach(() => {
+    // Write the JSONL fixture alongside the other fixtures (scoped to this
+    // block so unrelated scenarios don't pay for a fixture they never read).
+    jsonlFile = join(vault, "session.jsonl");
+    writeFileSync(jsonlFile, `${SAMPLE_JSONL_LINE}\n`, "utf-8");
+  });
+
+  it("auto-detects claude-session for .jsonl and reports ≥1 chunk in --plan output", async () => {
+    const lines: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--plan", jsonlFile]);
+    } finally {
+      process.stdout.write = orig;
+    }
+    expect(code).toBe(0);
+    const out = lines.join("");
+    expect(out).toMatch(/chunks:\s+([1-9]\d*)/);
+  });
+
+  it("--source-type chat-transcript on a .jsonl source yields 0 chunks (no chat-transcript lines)", async () => {
+    const lines: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill([
+        "--vault",
+        vault,
+        "--plan",
+        "--source-type",
+        "chat-transcript",
+        jsonlFile,
+      ]);
+    } finally {
+      process.stdout.write = orig;
+    }
+    expect(code).toBe(0);
+    const out = lines.join("");
+    expect(out).toMatch(/chunks:\s+0/);
+  });
+
+  it("exits 2 and mentions source-type in stderr for unknown --source-type value", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--plan", "--source-type", "bogus", jsonlFile]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(code).toBe(2);
+    expect(lines.join("")).toMatch(/source-type/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 10: --sender filter (R6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Two-sender JSONL fixture: 30 user turns + 1 assistant turn = 31 messages.
+ * Unfiltered: ceil(31/30) = 2 chunks. User-only: 30 messages = 1 chunk.
+ * This ensures --sender user yields strictly fewer chunks than no filter.
+ */
+function makeTwoSenderJsonl(): string {
+  const lines: string[] = [];
+  for (let i = 0; i < 30; i++) {
+    lines.push(
+      JSON.stringify({
+        type: "user",
+        timestamp: `2026-07-31T03:${String(i).padStart(2, "0")}:00.000Z`,
+        message: { role: "user", content: `user turn ${i} with enough text to not be empty` },
+      }),
+    );
+  }
+  lines.push(
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-31T04:00:00.000Z",
+      message: { role: "assistant", content: "an assistant turn worth chunking here" },
+    }),
+  );
+  return lines.join("\n");
+}
+
+describe("runDistill — --sender filter (R6)", () => {
+  let twoSenderFile: string;
+
+  beforeEach(() => {
+    twoSenderFile = join(vault, "two-sender.jsonl");
+    writeFileSync(twoSenderFile, `${makeTwoSenderJsonl()}\n`, "utf-8");
+  });
+
+  it("--sender user yields fewer chunks than no --sender (and > 0)", async () => {
+    // Capture --plan stdout for the unfiltered run
+    const linesAll: string[] = [];
+    const origAll = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") linesAll.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", twoSenderFile]);
+    } finally {
+      process.stdout.write = origAll;
+    }
+    const outAll = linesAll.join("");
+    const matchAll = /chunks:\s+(\d+)/.exec(outAll);
+    expect(matchAll).not.toBeNull();
+    const chunksAll = Number.parseInt(matchAll?.[1], 10);
+
+    // Capture --plan stdout for the user-only run
+    const linesUser: string[] = [];
+    const origUser = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: unknown) => {
+      if (typeof chunk === "string") linesUser.push(chunk);
+      return true;
+    };
+    try {
+      await runDistill(["--vault", vault, "--plan", "--sender", "user", twoSenderFile]);
+    } finally {
+      process.stdout.write = origUser;
+    }
+    const outUser = linesUser.join("");
+    const matchUser = /chunks:\s+(\d+)/.exec(outUser);
+    expect(matchUser).not.toBeNull();
+    const chunksUser = Number.parseInt(matchUser?.[1], 10);
+
+    // Exact geometry (pins filter-before-chunk placement): 31 msgs → 2 chunks
+    // unfiltered; 30 user msgs → exactly 1 chunk (CHUNK_WINDOW = 30).
+    expect(chunksAll).toBe(2);
+    expect(chunksUser).toBe(1);
+  });
+
+  it("--sender robot exits 2 and stderr mentions sender", async () => {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      if (typeof chunk === "string") lines.push(chunk);
+      return true;
+    };
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--plan", "--sender", "robot", twoSenderFile]);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(code).toBe(2);
+    expect(lines.join("")).toMatch(/sender/);
+  });
+});
+
+// --sender with no value is a usage error, like the other value-taking flags.
+describe("runDistill — --sender with missing value (R6)", () => {
+  it("exits 2 when --sender is the last token with no value", async () => {
+    const code = await runDistill(["--vault", vault, "--plan", "--sender"]);
+    expect(code).toBe(2);
   });
 });

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listStagedActions } from "../../src/curation/staged-actions.js";
 import type { ExtractedClaim } from "../../src/distill/extract.js";
-import type { ProposeOutcome } from "../../src/distill/propose.js";
+import type { OverlapHint, ProposeOutcome } from "../../src/distill/propose.js";
 import {
   type ClaimAction,
   type DistillUpsertOutcome,
@@ -337,7 +337,10 @@ describe("distillUpsert (U5 idempotency)", () => {
     const knownPath = "knowledge/alice-prefers-tea.md";
 
     // Stub: returns a single known path for any query.
-    const overlapSearch = async (_statement: string): Promise<string[]> => [knownPath];
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => ({
+      paths: [knownPath],
+      topScore: 0.5,
+    });
 
     const res = await distillUpsert(vault, {
       sourceId: SOURCE_ID,

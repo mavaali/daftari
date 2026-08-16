@@ -48,14 +48,29 @@ export const OVERLAP_HINT_TOP_K = 3;
 // ---------------------------------------------------------------------------
 
 /**
- * A function that, given a claim statement, returns the vault-relative paths
- * of documents that are likely to overlap with the claim (no LLM, no tension
- * scan — pure local index query). An empty return means no overlaps found.
+ * The result of an overlap search (U8 + R7): the vault-relative paths of the
+ * top-K likely-overlapping documents AND the fused search score of the single
+ * top neighbor. The paths feed the proposal's rationale (advisory context for
+ * the ratifier); the top score is the corroboration signal stamped onto the
+ * staged proposal (R7) that the confidence gate reads later.
+ */
+export interface OverlapHint {
+  /** Vault-relative paths of the top-K likely-overlapping documents. */
+  paths: string[];
+  /** Fused search score of the top neighbor, min-normalized to [0,1]; 0 if none. */
+  topScore: number;
+}
+
+/**
+ * A function that, given a claim statement, returns an OverlapHint: the
+ * vault-relative paths of documents likely to overlap with the claim, plus the
+ * top neighbor's fused search score (no LLM, no tension scan — pure local index
+ * query). An empty `paths` array with `topScore: 0` means no overlaps found.
  *
  * Errors thrown by this function are caught by proposeAllClaims and cause a
- * graceful no-hint degradation (the claim still stages).
+ * graceful no-hint degradation (the claim still stages, corroboration 0).
  */
-export type OverlapSearchFn = (statement: string) => Promise<string[]>;
+export type OverlapSearchFn = (statement: string) => Promise<OverlapHint>;
 
 /**
  * Build an overlap-search function backed by the vault's hybrid search index.
@@ -67,18 +82,26 @@ export type OverlapSearchFn = (statement: string) => Promise<string[]>;
  * correct primitive — confirmed deviation from the plan's `vault_search_related`
  * wording.
  *
+ * The returned top score is `hits[0].score` — the fused BM25/vector score,
+ * already min-normalized to [0,1] by the hybrid ranker. It becomes the
+ * proposal's corroboration signal (R7).
+ *
  * @param vaultRoot Absolute path to the vault root.
  * @param access    Optional RBAC context forwarded to vaultSearch.
  */
 export function makeOverlapHinter(vaultRoot: string, access?: AccessContext): OverlapSearchFn {
-  return async (statement: string): Promise<string[]> => {
+  return async (statement: string): Promise<OverlapHint> => {
     const result = await vaultSearch(
       vaultRoot,
       { query: statement, limit: OVERLAP_HINT_TOP_K },
       access,
     );
-    if (!result.ok) return [];
-    return result.value.hits.slice(0, OVERLAP_HINT_TOP_K).map((h) => h.path);
+    if (!result.ok) return { paths: [], topScore: 0 };
+    const hits = result.value.hits.slice(0, OVERLAP_HINT_TOP_K);
+    return {
+      paths: hits.map((h) => h.path),
+      topScore: hits.length > 0 ? hits[0].score : 0,
+    };
   };
 }
 
@@ -190,32 +213,52 @@ function assembleBody(
 }
 
 // ---------------------------------------------------------------------------
-// Rationale builder (U8)
+// Proposal metadata builder (U8 rationale + R7 corroboration)
 // ---------------------------------------------------------------------------
 
-// Build the proposal rationale, optionally appending an overlap-hint line.
-// The statement is always the lead so stageActionWithConflictCheck's
-// firstSentence() extraction and the ratifier's first read both land on the
-// claim itself. A non-empty overlap list appends a "Possible overlaps: ..."
-// line separated by a blank line. An empty list or a throwing overlapSearch
-// produces the statement alone — no "Possible overlaps:" line at all.
-async function buildRationale(statement: string, overlapSearch?: OverlapSearchFn): Promise<string> {
-  if (!overlapSearch) return statement;
-  let raw: string[] | undefined;
+/**
+ * Build the proposal's rationale AND corroboration score in one pass over the
+ * overlap search.
+ *
+ * Rationale (U8, unchanged behavior): the statement is always the lead so
+ * stageActionWithConflictCheck's firstSentence() extraction and the ratifier's
+ * first read both land on the claim itself. A non-empty overlap `paths` list
+ * appends a "Possible overlaps: ..." line separated by a blank line. An empty
+ * list, a missing hinter, or a throwing overlapSearch produces the statement
+ * alone — no "Possible overlaps:" line at all.
+ *
+ * Corroboration (R7): the top neighbor's fused search score, min-normalized to
+ * [0,1]. Defaults to 0 when there is no hinter, no neighbor, a search error, or
+ * a non-finite score. This is the confidence-gate signal a later review pass
+ * reads off `proposedDiff.corroboration` — never computed or thresholded here.
+ */
+async function buildProposalMeta(
+  statement: string,
+  overlapSearch?: OverlapSearchFn,
+): Promise<{ rationale: string; corroboration: number }> {
+  if (!overlapSearch) return { rationale: statement, corroboration: 0 };
+  let hint: OverlapHint;
   try {
-    raw = await overlapSearch(statement);
+    hint = await overlapSearch(statement);
   } catch {
     // Degrade to no-hint: a search failure must never block staging.
-    return statement;
+    return { rationale: statement, corroboration: 0 };
   }
-  // Surface non-array / unexpected returns rather than silently swallowing them.
-  if (!raw || raw.length === 0) return statement;
-  const paths = raw.slice(0, OVERLAP_HINT_TOP_K);
-  // Sanitize newlines in paths — a path containing \r or \n would break the
-  // "statement is the lead" invariant that stageActionWithConflictCheck's
-  // firstSentence() relies on.
-  const safePaths = paths.map((p) => p.replace(/[\r\n]+/g, " "));
-  return `${statement}\n\nPossible overlaps: ${safePaths.join(", ")}`;
+  const corroboration = Number.isFinite(hint.topScore) ? hint.topScore : 0;
+  // No neighbors ⇒ statement-only rationale, but keep the (well-defined) score.
+  if (!hint.paths || hint.paths.length === 0) {
+    return { rationale: statement, corroboration };
+  }
+  const safePaths = hint.paths
+    .slice(0, OVERLAP_HINT_TOP_K)
+    // Sanitize newlines in paths — a path containing \r or \n would break the
+    // "statement is the lead" invariant that stageActionWithConflictCheck's
+    // firstSentence() relies on.
+    .map((p) => p.replace(/[\r\n]+/g, " "));
+  return {
+    rationale: `${statement}\n\nPossible overlaps: ${safePaths.join(", ")}`,
+    corroboration,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -294,19 +337,23 @@ export async function proposeAllClaims(
 
     const body = assembleBody(claim, frontmatter, ids);
 
-    // U8/R5: overlap-hint. Attach top-K likely-collision neighbor paths to
-    // the rationale so the ratifier can see possible overlaps at a glance.
-    // No LLM or tension-scan runs here — overlapSearch is a pure local index
-    // query injected by the caller. A missing or throwing overlapSearch
-    // degrades to no-hint (claim still stages, original rationale preserved).
-    const rationale = await buildRationale(claim.statement, overlapSearch);
+    // U8/R5 + R7: overlap-hint. Attach top-K likely-collision neighbor paths to
+    // the rationale so the ratifier can see possible overlaps at a glance, and
+    // stamp the top neighbor's fused search score as `corroboration`. No LLM or
+    // tension-scan runs here — overlapSearch is a pure local index query
+    // injected by the caller. A missing or throwing overlapSearch degrades to
+    // no-hint (claim still stages, original rationale preserved, corroboration 0).
+    const { rationale, corroboration } = await buildProposalMeta(claim.statement, overlapSearch);
 
     const staged = await stageActionWithConflictCheck(vaultRoot, {
       actionType: "write",
       targetPath,
       proposedBy: DISTILL_AGENT,
       rationale,
-      proposedDiff: { frontmatter, body },
+      // R7 carrier key: corroboration ∈ [0,1]. `proposedDiff` is `unknown` at
+      // the staged-action type level, so this extra key is non-breaking; the
+      // review-side reader parses it defensively.
+      proposedDiff: { frontmatter, body, corroboration },
       runId: ids.runId,
     });
 

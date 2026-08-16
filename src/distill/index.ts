@@ -20,6 +20,7 @@
 
 export type { DistillConfig } from "../utils/config.js";
 export { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
+export { ClaudeSessionAdapter } from "./adapters/claude-session.js";
 export type { MessageType, NormalizedMessage, SourceAdapter } from "./adapters/types.js";
 export { CHUNK_WINDOW, type Chunk, chunkMessages } from "./chunk.js";
 export {
@@ -42,6 +43,7 @@ import {
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { type DistillConfig, loadConfig } from "../utils/config.js";
 import { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
+import { ClaudeSessionAdapter } from "./adapters/claude-session.js";
 import type { SourceAdapter } from "./adapters/types.js";
 import { type Chunk, chunkMessages } from "./chunk.js";
 import type { ExtractedClaim } from "./extract.js";
@@ -53,6 +55,7 @@ import type { ExtractedClaim } from "./extract.js";
 /** Built-in adapter registry, keyed by sourceId(). */
 export const ADAPTER_REGISTRY: Record<string, SourceAdapter> = {
   "chat-transcript": new ChatTranscriptAdapter(),
+  "claude-session": new ClaudeSessionAdapter(),
 };
 
 // ---------------------------------------------------------------------------

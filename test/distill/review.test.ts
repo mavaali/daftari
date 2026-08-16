@@ -49,6 +49,36 @@ async function stageRun(
   return map;
 }
 
+/**
+ * Stage a run whose proposals carry a controlled corroboration score, driven
+ * by an injected overlapSearch stub keyed on the claim statement. `hiScore`
+ * statements get a high topScore (≥0.8), everything else gets a low one — so
+ * `--auto-safe --corroboration-threshold 0.8` splits them cleanly.
+ */
+async function stageRunWithCorroboration(
+  vault: string,
+  sourceId: string,
+  runId: string,
+  claims: ExtractedClaim[],
+  hiStatements: Set<string>,
+): Promise<Record<string, string>> {
+  const overlapSearch = async (statement: string) =>
+    hiStatements.has(statement)
+      ? { paths: ["decisions/existing.md"], topScore: 0.9 }
+      : { paths: [], topScore: 0.1 };
+  const outcome = await proposeAllClaims(
+    vault,
+    claims,
+    { sourceId, runId },
+    undefined,
+    overlapSearch,
+  );
+  expect(outcome.errors).toHaveLength(0);
+  const map: Record<string, string> = {};
+  for (const r of outcome.results) map[r.claim_key] = r.targetPath;
+  return map;
+}
+
 /** Capture stdout for the duration of `fn`. */
 async function captureStdout(fn: () => Promise<number>): Promise<{ code: number; out: string }> {
   const chunks: string[] = [];
@@ -171,5 +201,75 @@ describe("daftari distill --review (U9)", () => {
     expect(pending.ok).toBe(true);
     if (!pending.ok) return;
     expect(pending.value).toHaveLength(1);
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Scenario 4 (R8): --auto-safe ratifies only the corroborated subset
+  // -------------------------------------------------------------------------
+
+  it("--auto-safe ratifies only proposals at/above the corroboration threshold", async () => {
+    const runA = "distill-run-eeee";
+    const hiClaim = makeClaim("hi-corroborated-claim", "eeeeee01");
+    const loClaim = makeClaim("lo-corroborated-claim", "eeeeee02");
+    const map = await stageRunWithCorroboration(
+      vault,
+      "chat-e",
+      runA,
+      [hiClaim, loClaim],
+      new Set([hiClaim.statement]),
+    );
+    const hiPath = map[hiClaim.claim_key];
+    const loPath = map[loClaim.claim_key];
+
+    const { code } = await captureStdout(() =>
+      runDistill([
+        "--vault",
+        vault,
+        "--review",
+        runA,
+        "--auto-safe",
+        "--corroboration-threshold",
+        "0.8",
+      ]),
+    );
+
+    expect(code).toBe(0);
+
+    // The HI proposal ratified (no longer pending); the LO one stays queued.
+    const pending = await listStagedActions(vault, "pending");
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) return;
+    const stillPending = pending.value.filter((a) => a.runId === runA).map((a) => a.targetPath);
+    expect(stillPending).toContain(loPath);
+    expect(stillPending).not.toContain(hiPath);
+  }, 60_000);
+
+  // -------------------------------------------------------------------------
+  // Scenario 5 (R8): plain --yes ratifies everything, threshold ignored
+  // -------------------------------------------------------------------------
+
+  it("--yes ratifies all proposals regardless of corroboration", async () => {
+    const runB = "distill-run-ffff";
+    const hiClaim = makeClaim("another-hi-claim", "ffffff01");
+    const loClaim = makeClaim("another-lo-claim", "ffffff02");
+    await stageRunWithCorroboration(
+      vault,
+      "chat-f",
+      runB,
+      [hiClaim, loClaim],
+      new Set([hiClaim.statement]),
+    );
+
+    const { code } = await captureStdout(() =>
+      runDistill(["--vault", vault, "--review", runB, "--yes"]),
+    );
+
+    expect(code).toBe(0);
+
+    // Both gone from pending — plain --yes ignores the corroboration gate.
+    const pending = await listStagedActions(vault, "pending");
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) return;
+    expect(pending.value.filter((a) => a.runId === runB)).toHaveLength(0);
   }, 60_000);
 });

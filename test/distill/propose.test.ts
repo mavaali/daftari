@@ -20,6 +20,7 @@ import { listStagedActions } from "../../src/curation/staged-actions.js";
 import type { ExtractedClaim } from "../../src/distill/extract.js";
 import {
   DISTILL_COLLECTION,
+  type OverlapHint,
   type ProposeOutcome,
   proposeAllClaims,
 } from "../../src/distill/propose.js";
@@ -247,5 +248,110 @@ describe("proposeAllClaims (U4)", () => {
     expect(outcome.proposed).toBe(0);
     expect(outcome.errors).toHaveLength(0);
     expect(outcome.results).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // R7: corroboration — the top neighbor's search score is stamped onto the
+  // staged proposal's proposedDiff.corroboration; rationale is unchanged.
+  // -------------------------------------------------------------------------
+
+  it("stamps proposedDiff.corroboration with the hinter's topScore and keeps rationale behavior", async () => {
+    const runId = "run-corr-topscore";
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => ({
+      paths: ["decisions/x.md"],
+      topScore: 0.82,
+    });
+
+    const claim = makeClaim({
+      claim_key: "chunk-r7:corroboration-topscore-11aa22bb",
+      statement: "The team chose Postgres for the new service.",
+      proposed_frontmatter: { title: "Corroboration topscore" },
+    });
+
+    const outcome = await proposeAllClaims(
+      vault,
+      [claim],
+      { sourceId: "chat-export-1", runId },
+      undefined,
+      overlapSearch,
+    );
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const corroboration = (action.proposedDiff as Record<string, unknown>).corroboration;
+    expect(corroboration).toBeCloseTo(0.82, 6);
+
+    // Rationale behavior must be identical to U8: statement lead + overlaps line.
+    expect(action.rationale.split("\n")[0]).toBe(claim.statement);
+    expect(action.rationale).toContain("Possible overlaps: decisions/x.md");
+  });
+
+  it("defaults proposedDiff.corroboration to 0 when no hinter is passed", async () => {
+    const runId = "run-corr-nohinter";
+    const claim = makeClaim({
+      claim_key: "chunk-r7:corroboration-nohinter-33cc44dd",
+      statement: "A claim with no overlap hinter.",
+      proposed_frontmatter: { title: "Corroboration no hinter" },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-1",
+      runId,
+    });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const corroboration = (action.proposedDiff as Record<string, unknown>).corroboration;
+    expect(corroboration).toBe(0);
+  });
+
+  it("defaults corroboration to 0 and rationale to the statement when the hinter throws", async () => {
+    const runId = "run-corr-throws";
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => {
+      throw new Error("index unavailable");
+    };
+
+    const claim = makeClaim({
+      claim_key: "chunk-r7:corroboration-throws-55ee66ff",
+      statement: "A claim whose hinter explodes.",
+      proposed_frontmatter: { title: "Corroboration throws" },
+    });
+
+    const outcome = await proposeAllClaims(
+      vault,
+      [claim],
+      { sourceId: "chat-export-1", runId },
+      undefined,
+      overlapSearch,
+    );
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const corroboration = (action.proposedDiff as Record<string, unknown>).corroboration;
+    expect(corroboration).toBe(0);
+
+    // Rationale is exactly the statement — no "Possible overlaps" line.
+    expect(action.rationale).toBe(claim.statement);
+    expect(action.rationale).not.toMatch(/Possible overlaps:/);
   });
 });
