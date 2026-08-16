@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { generateAttestKeys, verifyBytes } from "../../src/attest/sign.js";
 import { addTension } from "../../src/curation/tension.js";
 import { MAX_RECEIPT_PATHS, receiptTools, vaultReceipt } from "../../src/tools/receipt.js";
 import { commit } from "../../src/utils/git.js";
@@ -366,5 +368,62 @@ describe("receipt tool definition", () => {
     expect(def).toBeDefined();
     expect(def?.annotations?.readOnlyHint).toBe(true);
     expect(def?.inputSchema).toMatchObject({ required: ["paths"] });
+  });
+});
+
+// #298: operator-key receipt signing. When DAFTARI_ATTEST_KEY names a usable
+// Ed25519 key, the receipt carries a signature over the exact payload bytes
+// already hashed into receiptHash; unset, the output is byte-unchanged.
+describe("receipt signing (#298)", () => {
+  let vault: string;
+  let keyDir: string;
+  const prevEnv = process.env.DAFTARI_ATTEST_KEY;
+  beforeEach(() => {
+    vault = makeTempVault();
+    keyDir = mkdtempSync(join(tmpdir(), "daftari-receiptkeys-"));
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+    rmSync(keyDir, { recursive: true, force: true });
+    if (prevEnv === undefined) delete process.env.DAFTARI_ATTEST_KEY;
+    else process.env.DAFTARI_ATTEST_KEY = prevEnv;
+  });
+
+  it("signs the payload when the key env is set, verifiably", async () => {
+    const made = generateAttestKeys(keyDir);
+    expect(made.ok).toBe(true);
+    if (!made.ok) return;
+    process.env.DAFTARI_ATTEST_KEY = made.value.keyPath;
+
+    writeDoc(vault, "pricing/signed.md");
+    const result = await vaultReceipt(vault, { paths: ["pricing/signed.md"] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const { receiptHash, signature, ...payload } = result.value as Record<string, unknown> & {
+      receiptHash: string;
+      signature?: { algorithm: string; keyId: string; publicKey: string; value: string };
+    };
+    expect(signature).toBeDefined();
+    if (!signature) return;
+    expect(signature.algorithm).toBe("ed25519");
+    expect(signature.keyId).toMatch(/^[0-9a-f]{16}$/);
+    const bytes = JSON.stringify(payload);
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(receiptHash);
+    expect(verifyBytes(signature.publicKey, bytes, signature.value)).toBe(true);
+  });
+
+  it("is byte-unchanged without the env, and loud when the key is unusable", async () => {
+    delete process.env.DAFTARI_ATTEST_KEY;
+    writeDoc(vault, "pricing/unsigned.md");
+    const unsigned = await vaultReceipt(vault, { paths: ["pricing/unsigned.md"] });
+    expect(unsigned.ok).toBe(true);
+    if (!unsigned.ok) return;
+    expect((unsigned.value as { signature?: unknown }).signature).toBeUndefined();
+
+    process.env.DAFTARI_ATTEST_KEY = join(keyDir, "does-not-exist.key");
+    const broken = await vaultReceipt(vault, { paths: ["pricing/unsigned.md"] });
+    expect(broken.ok).toBe(false);
+    if (broken.ok) return;
+    expect(broken.error.message).toContain("DAFTARI_ATTEST_KEY");
   });
 });

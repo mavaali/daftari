@@ -34,6 +34,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
+import { loadAttestKey } from "../attest/sign.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
@@ -149,6 +150,18 @@ export function validateServeStartup(
           `refusing to bind ${bind}: declare server.transport_security: ` +
           `"external" to acknowledge that TLS terminates upstream (or the ` +
           `network is trusted); daftari never terminates TLS itself`,
+      };
+    }
+  }
+  // #298: a set-but-unusable attestation key refuses startup — a server
+  // that silently serves unsigned receipts while the operator believes
+  // signing is on is the failure mode this gate exists for.
+  if (typeof env.DAFTARI_ATTEST_KEY === "string" && env.DAFTARI_ATTEST_KEY.length > 0) {
+    const attestKey = loadAttestKey(env.DAFTARI_ATTEST_KEY);
+    if (!attestKey.ok) {
+      return {
+        ok: false,
+        error: `DAFTARI_ATTEST_KEY is set but unusable: ${attestKey.error.message}`,
       };
     }
   }

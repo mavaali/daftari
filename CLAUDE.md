@@ -24,6 +24,7 @@ Concepts and layer boundaries: docs/architecture.md. Where things live:
 - `src/interview/` — principal interview: question sheet from tensions/staleness/open questions, verbatim transcript (`daftari interview`)
 - `src/backfill/`, `src/import/`, `src/okf/` — adoption paths: metadata backfill, foreign-vault import, OKF export/import
 - `src/serve/` — server mode over Streamable HTTP (`daftari serve`); `src/sync/` — push/restore against storage backends
+- `src/attest/` — signed attestation bundles (`daftari attest`): operator-key Ed25519 over a manifest derived from markdown + git; operator-only, never MCP-exposed (#298)
 - `src/hooks/` — vault-supplied hook module loading
 - `src/themes/` — clustering primitives for vault_themes
 - `src/utils/` — config.yaml loading, git plumbing, paths, hashing

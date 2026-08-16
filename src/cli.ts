@@ -39,6 +39,7 @@ Usage:
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
+  daftari attest [verify|keygen]      Signed vault attestation bundles (see: daftari attest --help)
   daftari import obsidian <v>        Adopt an Obsidian vault in place (see: daftari import --help)
   daftari interview [ask] [options]   Interview the principal on what the vault finds unclear (see: daftari interview --help)
   daftari okf <export|import> ...     Bridge a vault and the Open Knowledge Format (see: daftari okf --help)
@@ -302,6 +303,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "sync") {
     const { runSync } = await import("./sync/index.js");
     process.exitCode = await runSync(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "attest") {
+    const { runAttest } = await import("./attest/index.js");
+    process.exitCode = await runAttest(argv.slice(1));
     return;
   }
 
