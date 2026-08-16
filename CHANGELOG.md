@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-08-16
+
+The multi-user hardening release (#399, #402–#411): single-user correctness is table stakes — this release is about what breaks when there are many users, and stopping it.
+
+### Added
+
+- **`daftari attest`** (#409; closes #298) — signed vault attestation bundles: an operator-only CLI producing an Ed25519-signed manifest (per-doc content hashes, contested/ratified status, open-tension counts, per-path git history, anchored to the full HEAD sha) derived entirely from markdown + git, verifiable offline with `daftari attest verify` — whose exit codes distinguish *forged* (1) from *stale* (4) — plus `daftari attest keygen`. The key rides `DAFTARI_ATTEST_KEY`, never config. When the key is configured, `vault_receipt` results carry an operator signature over the exact payload bytes `receiptHash` already covers. Threat model stated in the module headers: the signer is the operator; per-principal commit signing is deferred with recorded kill conditions.
+- **The witness prices positions** (#402) — each principal's track record gains a position wager book in the doc book's currency, settled by the current ratification: live positions stake by confidence, dissent burns (resolved through the self-supersession chain, so re-minting the same stance never launders a burn while a genuine flip stays free), `accepted` standing dissent is priced 0 absolutely, alignment at ratify time earns flat credit with no bandwagoning, and pos-000 prices nothing. Positional tensions leave the doc book, and the flat-curve warning becomes composite over live positions.
+- **Positional-tension lifecycle at N principals** (#402) — `vault_consolidate` accepts `resolve_tensions: "dissent"`: one ratification batch-resolves every open positional tension it adjudicated (chain-following superseded dissent; moot pairs stay open), recorded with the new **system-only resolution kind `consolidated`** — callers and the court stay fenced to the original four kinds. Plus a bounded jittered retry on `__tensions__` lease contention for system-generated mints, and `positionIntegrity` reconciliation lint for silently-failed mints and moot open tensions.
+- **Serve multi-tenant ops floor** (#402) — a pre-auth per-IP penalty box charged only by auth failures, per-principal token buckets on the verified identity (429 + Retry-After), a global in-flight ceiling that rejects rather than queues (503), and an operator-only auth audit log (`.daftari/auth-log.jsonl`) with per-process-salted token hints. Config under `server.limits` / `server.audit`; defaults always apply in serve mode; stdio unaffected.
+
+### Fixed
+
+- **The assert/consolidate lost-update window** (#399, #402) — `vault_assert` and `vault_consolidate` wrote with no optimistic-concurrency token, so a writer whose lease window did not overlap the winner's silently erased another principal's position. `TargetDocument` now carries its load-time content hash, the position tools declare it, and a stale rejection reloads and recomputes once. Extended to `vault_promote`/`vault_deprecate`/`vault_set_confidence`/`vault_set_tier`/`vault_append` (#407), with a deterministic race-injection test seam and a mutation-verified end-to-end pin (#410).
+- **Unserialized auto-commit** (#399, #405) — concurrent serve requests writing different files interleaved their `git add`/`git commit` sequences: one commit swallowed the other's staged file under the wrong author while the loser failed "nothing to commit". Commits are now serialized in-process, pathspec-scoped with literal pathspecs, bounded by a timeout (`GIT_TERMINAL_PROMPT=0` — a headless server never prompts), and a commit failure records provenance and reports accurately. Git author is the **authenticated principal** when an access context exists, with the claimed agent kept as a `Daftari-Agent` trailer (#399).
+- **Stale ratify replays** (#406) — staged write proposals are anchored to the doc version they were computed from; ratifying after the doc moved fails loudly naming the proposal instead of clobbering interim positions.
+- **Shadow mode leaked real tension mutations** (#404) — with `shadow_mode: true`, `vault_assert`/`vault_consolidate` no longer really mint or resolve tensions for doc writes that were shadowed no-ops.
+- Federation mount-index test realpath flake on macOS (#403); suite-wide self-diagnosing vault teardown (retry loop + survivor listing) retiring a class of CI teardown races.
+
 ## [3.6.0] - 2026-08-15
 
 ### Added
