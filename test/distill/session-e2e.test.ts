@@ -1,0 +1,189 @@
+// test/distill/session-e2e.test.ts
+//
+// End-to-end integration test for the R9 distill Claude-session
+// confidence-gate flow. This proves the GATE WIRING (not the LLM): a session
+// distilled in two sender-partitioned passes lands user-sourced knowledge
+// wholesale, while assistant-inferred knowledge is gated by corroboration.
+//
+// The two passes are modelled by STAGING proposals directly via
+// proposeAllClaims with two distinct runIds and sourceIds (s-user,
+// s-assistant), mirroring review.test.ts. The real LLM extraction stage is not
+// involved — corroboration is controlled deterministically by an injected
+// overlapSearch stub keyed on the claim statement. The flow:
+//   1. USER pass  → auto-ratified wholesale via `--review <user-run> --yes`.
+//   2. ASSISTANT pass → gated via `--review <asst-run> --auto-safe
+//      --corroboration-threshold 0.8`: corroborated (0.9) auto-ratifies, novel
+//      (0.1) stays queued for a human.
+
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listStagedActions } from "../../src/curation/staged-actions.js";
+import { runDistill } from "../../src/distill/cli.js";
+import type { ExtractedClaim } from "../../src/distill/extract.js";
+import { proposeAllClaims } from "../../src/distill/propose.js";
+import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
+
+// ---------------------------------------------------------------------------
+// Fixtures + helpers (mirrors review.test.ts)
+// ---------------------------------------------------------------------------
+
+function makeClaim(slug: string, hash8: string): ExtractedClaim {
+  return {
+    claim_key: `chunk-001:${slug}-${hash8}`,
+    statement: `${slug.replace(/-/g, " ")}.`,
+    proposed_frontmatter: { title: `${slug.replace(/-/g, " ")}.` },
+  };
+}
+
+/** Stage a run's proposals; return claim_key → targetPath for later assertions. */
+async function stageRun(
+  vault: string,
+  sourceId: string,
+  runId: string,
+  claims: ExtractedClaim[],
+): Promise<Record<string, string>> {
+  const outcome = await proposeAllClaims(vault, claims, { sourceId, runId });
+  expect(outcome.errors).toHaveLength(0);
+  const map: Record<string, string> = {};
+  for (const r of outcome.results) map[r.claim_key] = r.targetPath;
+  return map;
+}
+
+/**
+ * Stage a run whose proposals carry a controlled corroboration score, driven
+ * by an injected overlapSearch stub keyed on the claim statement. `hiStatements`
+ * get a high topScore (0.9), everything else gets a low one (0.1) — so
+ * `--auto-safe --corroboration-threshold 0.8` splits them cleanly.
+ */
+async function stageRunWithCorroboration(
+  vault: string,
+  sourceId: string,
+  runId: string,
+  claims: ExtractedClaim[],
+  hiStatements: Set<string>,
+): Promise<Record<string, string>> {
+  const overlapSearch = async (statement: string) =>
+    hiStatements.has(statement)
+      ? { paths: ["decisions/existing.md"], topScore: 0.9 }
+      : { paths: [], topScore: 0.1 };
+  const outcome = await proposeAllClaims(
+    vault,
+    claims,
+    { sourceId, runId },
+    undefined,
+    overlapSearch,
+  );
+  expect(outcome.errors).toHaveLength(0);
+  const map: Record<string, string> = {};
+  for (const r of outcome.results) map[r.claim_key] = r.targetPath;
+  return map;
+}
+
+/** Capture stdout for the duration of `fn` (silences noisy CLI output). */
+async function captureStdout(fn: () => Promise<number>): Promise<{ code: number; out: string }> {
+  const chunks: string[] = [];
+  const spyOut = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => {
+    chunks.push(String(c));
+    return true;
+  });
+  const spyErr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    const code = await fn();
+    return { code, out: chunks.join("") };
+  } finally {
+    spyOut.mockRestore();
+    spyErr.mockRestore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test
+// ---------------------------------------------------------------------------
+
+describe("daftari distill session E2E — sender-partitioned + corroboration gate (R9)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("lands the user pass wholesale and gates the assistant pass by corroboration", async () => {
+    // --- Pass 1: USER run. Two claims; corroboration irrelevant (--yes). -----
+    const userRun = "run-user";
+    const userMap = await stageRun(vault, "s-user", userRun, [
+      makeClaim("mihir-prefers-vitest", "11111101"),
+      makeClaim("mihir-uses-biome", "11111102"),
+    ]);
+
+    // --- Pass 2: ASSISTANT run. One HI (0.9), one LO/novel (0.1). -----------
+    const asstRun = "run-asst";
+    const hiClaim = makeClaim("assistant-corroborated-inference", "22222201");
+    const loClaim = makeClaim("assistant-novel-inference", "22222202");
+    const asstMap = await stageRunWithCorroboration(
+      vault,
+      "s-assistant",
+      asstRun,
+      [hiClaim, loClaim],
+      new Set([hiClaim.statement]),
+    );
+    const hiPath = asstMap[hiClaim.claim_key];
+    const loPath = asstMap[loClaim.claim_key];
+
+    // R9 provenance intent: the two passes are independent. Distinct sourceIds
+    // → distinct source-group folders → disjoint target-path sets.
+    const userPaths = new Set(Object.values(userMap));
+    const asstPaths = new Set(Object.values(asstMap));
+    for (const p of userPaths) expect(asstPaths.has(p)).toBe(false);
+    for (const p of asstPaths) expect(userPaths.has(p)).toBe(false);
+
+    // --- Step 3: user pass ratified wholesale via --yes. --------------------
+    const user = await captureStdout(() =>
+      runDistill(["--vault", vault, "--review", userRun, "--yes"]),
+    );
+    expect(user.code).toBe(0);
+
+    // --- Step 4: assistant pass gated by --auto-safe + threshold. -----------
+    const asst = await captureStdout(() =>
+      runDistill([
+        "--vault",
+        vault,
+        "--review",
+        asstRun,
+        "--auto-safe",
+        "--corroboration-threshold",
+        "0.8",
+      ]),
+    );
+    expect(asst.code).toBe(0);
+
+    // --- Step 5: assert the gate outcomes via pending state. ----------------
+    const pending = await listStagedActions(vault, "pending");
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) return;
+    const stillPending = pending.value;
+    const pendingPaths = stillPending.map((a) => a.targetPath);
+
+    // None of the user run's proposals remain pending (all ratified by --yes).
+    expect(stillPending.filter((a) => a.runId === userRun)).toHaveLength(0);
+
+    // Assistant HI claim (0.9 ≥ 0.8) ratified → no longer pending.
+    expect(pendingPaths).not.toContain(hiPath);
+
+    // Assistant LO/novel claim (0.1 < 0.8) still queued for a human.
+    expect(pendingPaths).toContain(loPath);
+    expect(stillPending.filter((a) => a.runId === asstRun).map((a) => a.targetPath)).toEqual([
+      loPath,
+    ]);
+
+    // Ratified docs landed on disk: both user docs + the corroborated assistant doc.
+    for (const path of Object.values(userMap)) {
+      expect(existsSync(join(vault, path))).toBe(true);
+    }
+    expect(existsSync(join(vault, hiPath))).toBe(true);
+  }, 60_000);
+});
