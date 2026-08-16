@@ -14,14 +14,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listStagedActions } from "../../src/curation/staged-actions.js";
 import type { ExtractedClaim } from "../../src/distill/extract.js";
 import {
   makeOverlapHinter,
   OVERLAP_HINT_TOP_K,
+  type OverlapHint,
   proposeAllClaims,
 } from "../../src/distill/propose.js";
+import { ok } from "../../src/frontmatter/types.js";
+import * as searchMod from "../../src/tools/search.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -57,7 +60,10 @@ describe("overlap-hint (U8) — scenario 1: near doc appears in hint", () => {
     const nearPath = "knowledge/append-only-logging.md";
 
     // Injected stub: returns a known nearby path for any query.
-    const overlapSearch = async (_statement: string): Promise<string[]> => [nearPath];
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => ({
+      paths: [nearPath],
+      topScore: 0.5,
+    });
 
     const claim = makeClaim();
     const outcome = await proposeAllClaims(vault, [claim], IDS, undefined, overlapSearch);
@@ -89,7 +95,10 @@ describe("overlap-hint (U8) — scenario 1: near doc appears in hint", () => {
   it("caps overlap hints at OVERLAP_HINT_TOP_K paths", async () => {
     // Return more paths than the cap.
     const manyPaths = Array.from({ length: 10 }, (_, i) => `knowledge/doc-${i}.md`);
-    const overlapSearch = async (_statement: string): Promise<string[]> => manyPaths;
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => ({
+      paths: manyPaths,
+      topScore: 0.5,
+    });
 
     const claim = makeClaim({
       claim_key: "chunk-u8:cap-test-claim-ccdd3344",
@@ -129,7 +138,10 @@ describe("overlap-hint (U8) — scenario 2: novel claim, no hits", () => {
   });
 
   it("stages the claim without a Possible overlaps line when search returns empty", async () => {
-    const overlapSearch = async (_statement: string): Promise<string[]> => [];
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => ({
+      paths: [],
+      topScore: 0,
+    });
 
     const claim = makeClaim({
       claim_key: "chunk-u8:novel-claim-eeff5566",
@@ -172,7 +184,7 @@ describe("overlap-hint (U8) — scenario 3: search error degrades gracefully", (
   });
 
   it("stages the claim without hints when overlapSearch throws", async () => {
-    const overlapSearch = async (_statement: string): Promise<string[]> => {
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => {
       throw new Error("index unavailable");
     };
 
@@ -201,7 +213,7 @@ describe("overlap-hint (U8) — scenario 3: search error degrades gracefully", (
   });
 
   it("stages the claim without hints when overlapSearch returns a rejected promise", async () => {
-    const overlapSearch = (_statement: string): Promise<string[]> =>
+    const overlapSearch = (_statement: string): Promise<OverlapHint> =>
       Promise.reject(new Error("async failure"));
 
     const claim = makeClaim({
@@ -269,6 +281,10 @@ describe("overlap-hint (U8) — backward-compat: no overlapSearch injected", () 
 // ---------------------------------------------------------------------------
 
 describe("overlap-hint (U8) — makeOverlapHinter export", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("makeOverlapHinter is a function that returns a function", () => {
     // We just check the public shape — the real vaultSearch wiring requires a
     // reindexed vault which this unit-test suite doesn't build. The CLI wires
@@ -278,6 +294,43 @@ describe("overlap-hint (U8) — makeOverlapHinter export", () => {
     // Calling it with a temp path should return a function (the hinter).
     const hinter = makeOverlapHinter("/tmp/nonexistent-vault");
     expect(typeof hinter).toBe("function");
+  });
+
+  // R7: the hinter must surface BOTH the top-K paths AND the top neighbor's
+  // fused search score. We spy on vaultSearch so the top hit carries a known
+  // score without building a reindexed vault (the CLI wires the live path).
+  it("returns { paths, topScore } with topScore equal to the top hit's score", async () => {
+    vi.spyOn(searchMod, "vaultSearch").mockResolvedValue(
+      ok({
+        query: "q",
+        count: 2,
+        vectorUsed: false,
+        weights: { bm25: 1, vector: 0 },
+        hits: [
+          { path: "decisions/top.md", score: 0.77 },
+          { path: "decisions/second.md", score: 0.41 },
+        ],
+      } as never) as never,
+    );
+
+    const hinter = makeOverlapHinter("/tmp/some-vault");
+    const hint: OverlapHint = await hinter("any statement");
+
+    expect(hint.paths[0]).toBe("decisions/top.md");
+    expect(hint.topScore).toBe(0.77);
+  });
+
+  it("returns { paths: [], topScore: 0 } when search fails", async () => {
+    vi.spyOn(searchMod, "vaultSearch").mockResolvedValue({
+      ok: false,
+      error: new Error("index unavailable"),
+    } as never);
+
+    const hinter = makeOverlapHinter("/tmp/some-vault");
+    const hint = await hinter("any statement");
+
+    expect(hint.paths).toEqual([]);
+    expect(hint.topScore).toBe(0);
   });
 });
 
@@ -299,7 +352,10 @@ describe("overlap-hint (U8) — newline sanitization in paths", () => {
   it("strips newlines from overlap paths so the statement remains the first line", async () => {
     // A path that contains an embedded newline — must not break the rationale.
     const pathWithNewline = "knowledge/some\ndoc.md";
-    const overlapSearch = async (_statement: string): Promise<string[]> => [pathWithNewline];
+    const overlapSearch = async (_statement: string): Promise<OverlapHint> => ({
+      paths: [pathWithNewline],
+      topScore: 0.5,
+    });
 
     const claim = makeClaim({
       claim_key: "chunk-u8:newline-path-test-ff001122",
@@ -348,9 +404,9 @@ describe("overlap-hint (U8) — newline sanitization in paths", () => {
 describe("overlap-hint (U8) — no LLM/tension at distill time", () => {
   it("overlapSearch stub is a plain async function — no LLM or tension involved", async () => {
     let callCount = 0;
-    const pureStub = async (_statement: string): Promise<string[]> => {
+    const pureStub = async (_statement: string): Promise<OverlapHint> => {
       callCount++;
-      return ["knowledge/some-neighbor.md"];
+      return { paths: ["knowledge/some-neighbor.md"], topScore: 0.5 };
     };
 
     const vault = mkdtempSync(join(tmpdir(), "daftari-u8-nollm-"));
