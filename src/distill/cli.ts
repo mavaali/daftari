@@ -50,8 +50,10 @@ Options:
                        paths/stdin → chat-transcript.
   --sender <user|assistant>
                        Filter messages to a single sender before chunking.
-                       Absent → all senders (unchanged behavior). A single-sender
-                       pass yields claims of known provenance (R6).
+                       Targets session logs (claude-session), whose senders are
+                       "user"/"assistant"; on a chat-transcript source (senders
+                       are display names) this matches nothing. Absent → all
+                       senders. A single-sender pass yields known-provenance claims (R6).
   --plan               Print a cost/call estimate without making any LLM calls.
                        This is the default when neither --plan nor --propose is given.
   --propose            Run the full pipeline: extract claims and stage proposals
