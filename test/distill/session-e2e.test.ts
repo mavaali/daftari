@@ -164,7 +164,7 @@ describe("daftari distill session E2E — sender-partitioned + corroboration gat
     // --- Step 5: assert the gate outcomes via pending state. ----------------
     const pending = await listStagedActions(vault, "pending");
     expect(pending.ok).toBe(true);
-    if (!pending.ok) return;
+    if (!pending.ok) return; // narrows the Result type for pending.value below
     const stillPending = pending.value;
     const pendingPaths = stillPending.map((a) => a.targetPath);
 
@@ -174,16 +174,20 @@ describe("daftari distill session E2E — sender-partitioned + corroboration gat
     // Assistant HI claim (0.9 ≥ 0.8) ratified → no longer pending.
     expect(pendingPaths).not.toContain(hiPath);
 
-    // Assistant LO/novel claim (0.1 < 0.8) still queued for a human.
-    expect(pendingPaths).toContain(loPath);
-    expect(stillPending.filter((a) => a.runId === asstRun).map((a) => a.targetPath)).toEqual([
-      loPath,
-    ]);
+    // Assistant LO/novel claim (0.1 < 0.8) still queued for a human — and it is
+    // the ONLY assistant proposal left pending. Order-independent assertions.
+    const asstPending = stillPending.filter((a) => a.runId === asstRun);
+    expect(asstPending).toHaveLength(1);
+    expect(asstPending.map((a) => a.targetPath)).toContain(loPath);
 
     // Ratified docs landed on disk: both user docs + the corroborated assistant doc.
     for (const path of Object.values(userMap)) {
       expect(existsSync(join(vault, path))).toBe(true);
     }
     expect(existsSync(join(vault, hiPath))).toBe(true);
+
+    // The queued (novel) claim must NOT have been written to the vault — "still
+    // pending" must map cleanly to "not yet on disk".
+    expect(existsSync(join(vault, loPath))).toBe(false);
   }, 60_000);
 });
