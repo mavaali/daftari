@@ -306,6 +306,10 @@ describe("overlap-hint (U8) — makeOverlapHinter export", () => {
         count: 2,
         vectorUsed: false,
         weights: { bm25: 1, vector: 0 },
+        // Only path + score are set: makeOverlapHinter reads nothing else off a
+        // hit, so the other HybridHit fields are intentionally omitted (the
+        // `as never` casts absorb the partial shape). If the hinter ever reads
+        // another field, add it here rather than widening the cast.
         hits: [
           { path: "decisions/top.md", score: 0.77 },
           { path: "decisions/second.md", score: 0.41 },
