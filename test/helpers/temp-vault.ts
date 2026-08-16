@@ -4,7 +4,8 @@
 // in parallel, so any test that builds an index works on its own throwaway
 // copy to avoid clobbering a shared index file.
 
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -24,8 +25,35 @@ export function makeTempVault(): string {
 }
 
 export function cleanupVault(dir: string): void {
-  // maxRetries: a commit's detached background auto-gc (or a late
-  // fire-and-forget append) can still be writing under the vault while
-  // rmSync walks it — ENOTEMPTY teardown races seen on CI.
-  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // CI teardown races: SOMETHING keeps writing under the vault while rmSync
+  // walks it (ENOTEMPTY under .git/ and .daftari/ on loaded runners), and
+  // rmSync's internal maxRetries alone did not absorb it. Outer loop with
+  // real backoff; on final failure, NAME the survivors so the CI log
+  // identifies the straggler writer instead of leaving us theorizing.
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      return;
+    } catch (e) {
+      lastError = e;
+      try {
+        execFileSync("sleep", ["0.12"]);
+      } catch {
+        // sleep unavailable — spin via a bounded no-op loop below
+      }
+    }
+  }
+  let survivors: string[] = [];
+  try {
+    survivors = (readdirSync(dir, { recursive: true }) as string[]).slice(0, 25);
+  } catch {
+    survivors = ["<unlistable>"];
+  }
+  throw new Error(
+    `cleanupVault: ${dir} still busy after ~5s of retries; ` +
+      `surviving entries: ${survivors.join(", ")} — a straggler process or ` +
+      `async write is recreating files during teardown`,
+    { cause: lastError },
+  );
 }
