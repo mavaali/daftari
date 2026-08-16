@@ -145,6 +145,16 @@ describe("validateServeStartup (pure gating)", () => {
     expect(r.error).toContain("transport_security");
   });
 
+  it("refuses a set-but-unusable DAFTARI_ATTEST_KEY (#298)", () => {
+    const r = validateServeStartup(loadedConfig(vault), "127.0.0.1", {
+      ...process.env,
+      DAFTARI_ATTEST_KEY: "/nonexistent/attest.key",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("DAFTARI_ATTEST_KEY");
+  });
+
   it("refuses when a token env var is unset or a role is undeclared", () => {
     const cfg = loadedConfig(vault);
     const r = validateServeStartup(cfg, "127.0.0.1", { DAFTARI_TEST_TOKEN_ADMIN: "x" });

@@ -1280,7 +1280,7 @@ function validateTools(raw: unknown): Result<ToolsConfig, Error> {
   return ok({ tier, include: include.value, exclude: exclude.value });
 }
 
-function dataHome(): string {
+export function dataHome(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".local", "share");
 }

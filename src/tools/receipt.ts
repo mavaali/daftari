@@ -15,6 +15,7 @@
 // never interpolated into any Daftari-authored text.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
+import { loadAttestKey, signBytes } from "../attest/sign.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   AGING_TIERS,
@@ -100,6 +101,10 @@ export interface VaultReceiptResult {
   // SHA-256 over the canonical JSON of every field above. Recomputable by
   // anyone holding the receipt.
   receiptHash: string;
+  // #298: present when the server holds a usable DAFTARI_ATTEST_KEY — an
+  // Ed25519 signature over the same payload bytes receiptHash covers. The
+  // operator's attestation of the snapshot, not the caller's.
+  signature?: { algorithm: "ed25519"; keyId: string; publicKey: string; value: string };
 }
 
 // A document's collection: frontmatter `collection`, falling back to the
@@ -301,8 +306,44 @@ export async function vaultReceipt(
   const claim = args.claim !== undefined && args.claim.length > 0 ? args.claim : null;
   const generatedAt = new Date().toISOString();
   const payload = { claim, sources, summary, vaultHead, generatedAt };
+  const payloadBytes = JSON.stringify(payload);
+  const receiptHash = sha256Hex(payloadBytes);
 
-  return ok({ ...payload, receiptHash: sha256Hex(JSON.stringify(payload)) });
+  // #298: operator-key receipt signing. When DAFTARI_ATTEST_KEY names a
+  // usable Ed25519 key, the receipt carries a signature over the EXACT
+  // payload bytes already hashed above — zero new canonicalization. Under
+  // serve, every principal's receipt is signed by the one operator key:
+  // the signature means "the operator's server attests this snapshot",
+  // never "the caller attests it". The payload is RBAC-filtered before
+  // signing, so the signature discloses nothing new. Set-but-unusable key
+  // is a loud failure, never a silent unsigned receipt.
+  const keyPath = process.env.DAFTARI_ATTEST_KEY;
+  if (keyPath !== undefined && keyPath.length > 0) {
+    const key = loadAttestKey(keyPath);
+    if (!key.ok) {
+      // Detail (which names the operator's filesystem path) goes to stderr,
+      // never into an MCP-facing error body.
+      process.stderr.write(`vault_receipt: attestation key unusable: ${key.error.message}\n`);
+      return err(
+        new Error(
+          "vault_receipt: the server's DAFTARI_ATTEST_KEY is set but unusable — " +
+            "ask the operator to check it",
+        ),
+      );
+    }
+    return ok({
+      ...payload,
+      receiptHash,
+      signature: {
+        algorithm: "ed25519" as const,
+        keyId: key.value.keyId,
+        publicKey: key.value.publicKeyPem,
+        value: signBytes(key.value, payloadBytes),
+      },
+    });
+  }
+
+  return ok({ ...payload, receiptHash });
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +528,21 @@ export const receiptTools: ToolDefinition[] = [
             "the vault is not a git repository (or has no commits yet)",
         },
         generatedAt: { type: "string", description: "ISO 8601" },
+        signature: {
+          type: "object",
+          description:
+            "Present when the server holds an attestation key (#298): an " +
+            "ed25519 signature over the same payload bytes receiptHash " +
+            "covers — the operator's attestation of this snapshot.",
+          properties: {
+            algorithm: { type: "string", enum: ["ed25519"] },
+            keyId: { type: "string" },
+            publicKey: { type: "string" },
+            value: { type: "string" },
+          },
+          required: ["algorithm", "keyId", "publicKey", "value"],
+          additionalProperties: false,
+        },
         receiptHash: {
           type: "string",
           description: "SHA-256 over the canonical JSON of every field above",

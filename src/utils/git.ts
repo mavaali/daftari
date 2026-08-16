@@ -274,6 +274,82 @@ export async function commit(
   });
 }
 
+// --- attestation plumbing (#298) -------------------------------------------
+
+// `git status --porcelain` lines, for the attest clean-tree gate. Read-only.
+export async function statusPorcelain(vaultRoot: string): Promise<Result<string[], Error>> {
+  const out = await git(vaultRoot, ["status", "--porcelain"]);
+  if (!out.ok) return out;
+  return ok(
+    out.value
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .filter((l) => l.length > 0),
+  );
+}
+
+// The FULL head sha (commit() returns the short form; an attestation anchors
+// the unabbreviated one).
+export async function headFullSha(vaultRoot: string): Promise<Result<string, Error>> {
+  const out = await git(vaultRoot, ["rev-parse", "HEAD"]);
+  if (!out.ok) return out;
+  return ok(out.value.trim());
+}
+
+export interface PathHistory {
+  firstCommitDate: string;
+  lastCommit: string;
+  lastAuthor: string;
+  lastDate: string;
+  commitCount: number;
+}
+
+// Per-path history from ONE full-history walk (fileGitMeta is two
+// subprocesses per file — unacceptable at attestation scale). Oldest-first,
+// so the first sighting of a path sets firstCommitDate and each later
+// sighting overwrites the last-commit fields.
+export async function historyByPath(
+  vaultRoot: string,
+): Promise<Result<Map<string, PathHistory>, Error>> {
+  const out = await git(vaultRoot, [
+    "log",
+    "--reverse",
+    "--name-only",
+    "--pretty=format:%x1e%H%x1f%aN%x1f%cs",
+  ]);
+  if (!out.ok) return out;
+  const byPath = new Map<string, PathHistory>();
+  let commit: { hash: string; author: string; date: string } | null = null;
+  for (const raw of out.value.split("\n")) {
+    const line = raw.trimEnd();
+    // \x1e (record separator) opens each commit header. A tracked FILE
+    // whose name starts with a control byte is shown quoted by git
+    // (core.quotePath), so a raw \x1e line can only be our header.
+    if (line.startsWith("\u001e")) {
+      const [hash, author, date] = line.slice(1).split("\u001f");
+      commit = { hash: hash ?? "", author: author ?? "", date: date ?? "" };
+      continue;
+    }
+    if (line.length === 0 || commit === null) continue;
+    const existing = byPath.get(line);
+    if (existing) {
+      existing.lastCommit = commit.hash;
+      existing.lastAuthor = commit.author;
+      existing.lastDate = commit.date;
+      existing.commitCount += 1;
+    } else {
+      byPath.set(line, {
+        firstCommitDate: commit.date,
+        lastCommit: commit.hash,
+        lastAuthor: commit.author,
+        lastDate: commit.date,
+        commitCount: 1,
+      });
+    }
+  }
+  return ok(byPath);
+}
+
 // Per-file git provenance, used by `daftari backfill` (§11.1) to derive
 // frontmatter dates and authorship from history. Each field is null when git
 // has nothing to say about the file — no repo, an empty/shallow history, or a
