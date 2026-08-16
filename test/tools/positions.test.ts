@@ -1196,6 +1196,42 @@ describe("concurrent asserts — no silent lost update", () => {
       }
     }
   }, 60_000);
+
+  it("the forced delayed-writer race: assert's stale first attempt retries and both positions survive", async () => {
+    // The deterministic end-to-end test #399 shipped without (in-process
+    // racing lease windows always overlap, so Promise.all only exercises the
+    // loud lock-contention path): bob's assert lands INSIDE alice's first
+    // load, so alice's write is composed against pre-bob bytes with the
+    // lease free — the exact silent-clobber window. The contentHash wire +
+    // retryOnStale must reload and recompute, never erase bob.
+    const { join } = await import("node:path");
+    const { withInjectedRace } = await import("../helpers/inject-race.js");
+    const result = await withInjectedRace(
+      join(vault, DOC),
+      async () => {
+        const bob = await vaultAssert(
+          vault,
+          { path: DOC, stance: "dispute", confidence: "medium", agent: "b" },
+          BOB,
+        );
+        if (!bob.ok) throw bob.error;
+      },
+      () =>
+        vaultAssert(vault, { path: DOC, stance: "assert", confidence: "high", agent: "a" }, ALICE),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const onDisk = await vaultPositions(vault, { path: DOC }, ALICE);
+    expect(onDisk.ok).toBe(true);
+    if (!onDisk.ok) return;
+    const principals = onDisk.value.positions.map((p) => p.position.principal).sort();
+    // Both live — bob's interleaved dispute was never clobbered — and the
+    // recomputed second attempt saw it: contested, with the tension minted.
+    expect(principals).toEqual(["alice", "bob", "unknown"]);
+    expect(result.value.contested).toBe(true);
+    expect(result.value.tension_ids.length).toBeGreaterThan(0);
+  }, 60_000);
 });
 
 // LD-13 ratify staleness guard (#recall-review): a propose-only assert stages
