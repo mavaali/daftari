@@ -921,6 +921,10 @@ npm test
 Design tenets: functions and types, no classes; tool handlers return
 `Result<T, Error>` rather than throwing; tests mirror the `src/` structure.
 
+The build board: the chain currently under construction — the derived-content
+critical path — is tracked with live progress in
+[#428](https://github.com/mavaali/daftari/issues/428).
+
 ## Documentation
 
 - <docs/getting-started.md> — scaffold, write, search, lint, promote, deprecate
