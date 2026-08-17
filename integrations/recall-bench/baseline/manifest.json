@@ -1,0 +1,30 @@
+{
+  "name": "rb-ea180d-frozen-baseline",
+  "frozen": "2026-08-17",
+  "epic": "MAV-155 / MAV-160",
+  "corpus": {
+    "repo": "https://github.com/Stevenic/recall",
+    "commit": "8f9340cb7cbc4a8728c774e57c1255dbee870283",
+    "daysDir": "packages/recall-bench/personas/executive-assistant/memories-180d",
+    "daysCount": 180,
+    "daysSha256": "c8bd863f0c21bba4404da82126d908a9b5f8f848aed93b92a7f7bf890ecb4835",
+    "qaFile": "packages/recall-bench/personas/executive-assistant/qa-180d/deep-verification.jsonl",
+    "qaSha256": "ee06b4a7a9e3176d5d7eeff34d2d6112a78ff26625f44135ec2f0d0b988a2188"
+  },
+  "questionFilter": {
+    "verdict": "ANSWERABLE",
+    "note": "273 of 316 questions pass; recall metrics are computed only for questions with a non-empty relevant_days (negative-recall questions are recorded but excluded from recall curves, matching the 2026-06-21 analysis)."
+  },
+  "vault": {
+    "baseDate": "2026-01-01",
+    "collection": "notes",
+    "tags": ["daily"],
+    "note": "day-N maps to baseDate + (N-1) days; frontmatter and titles are inert exactly as in prep-vault.mjs so ranking is driven by body text."
+  },
+  "retrieval": {
+    "seedLimit": 10,
+    "sweepLimit": 180,
+    "budgets": [0, 1, 2, 3, 4, 5, 10, 15, 20, 30, 50, 90, 170],
+    "weights": "hybridSearch defaults (bm25 0.5 / vector 0.5); when the embedding model cannot load, search degrades to lexical-only and the run records vectorUsed=false — arms are only comparable to arms with the same vectorUsed value"
+  }
+}
