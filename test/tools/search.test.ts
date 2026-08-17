@@ -9,6 +9,7 @@ import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
 import { setCoverageEnabled } from "../../src/search/coverage.js";
+import { setSuppressSuperseded } from "../../src/search/suppression.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -341,6 +342,62 @@ function bareVault(
   }
   return dir;
 }
+
+describe("vault_search supersession suppression (MAV-161)", () => {
+  // old.md matches the query strongly and is superseded by new.md, which
+  // shares no query terms — the RB failure shape (the stale doc outranks the
+  // current value). The pass must foreground new.md and demote old.md.
+  let vault: string;
+  beforeAll(async () => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-suppress-"));
+    mkdirSync(join(vault, "notes"), { recursive: true });
+    const write = (name: string, supersededBy: string | null, body: string) =>
+      writeFileSync(
+        join(vault, "notes", name),
+        `---\ntitle: ${name}\ncollection: notes\ndomain: accumulation\nstatus: canonical\nconfidence: high\ncreated: 2026-03-01\nupdated: 2026-03-01\nsuperseded_by: ${supersededBy === null ? "null" : supersededBy}\ntags: []\n---\n\n${body}\n`,
+      );
+    write("old.md", "notes/new.md", "condor purchase price range initial estimate");
+    write("new.md", null, "revised figure after diligence");
+    write("noise.md", null, "condor purchase price commentary aside");
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+  }, 60_000);
+  afterAll(() => {
+    setSuppressSuperseded(false);
+    cleanupVault(vault);
+  });
+
+  it("is inert by default: stale hit keeps its rank, head stays absent", async () => {
+    const res = await vaultSearch(vault, { query: "condor purchase price range", limit: 2 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.some((h) => h.path === "notes/new.md")).toBe(false);
+    const stale = res.value.hits.find((h) => h.path === "notes/old.md");
+    expect(stale).toBeDefined();
+    expect(stale?.demoted).toBeUndefined();
+    expect(stale?.currentSource?.kind).toBe("resolved"); // annotation unchanged
+  });
+
+  it("opted in: pulls the head into the stale slot and demotes the stale hit", async () => {
+    setSuppressSuperseded(true);
+    try {
+      const res = await vaultSearch(vault, { query: "condor purchase price range", limit: 2 });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const paths = res.value.hits.map((h) => h.path);
+      const head = res.value.hits.find((h) => h.path === "notes/new.md");
+      const stale = res.value.hits.find((h) => h.path === "notes/old.md");
+      expect(head).toBeDefined();
+      expect(head?.viaForeground).toBe(true);
+      expect(stale?.demoted).toBe("superseded");
+      // The head sits where the stale doc ranked; the stale doc is at the tail.
+      expect(paths.indexOf("notes/new.md")).toBeLessThan(paths.indexOf("notes/old.md"));
+      expect(paths[paths.length - 1]).toBe("notes/old.md");
+    } finally {
+      setSuppressSuperseded(false);
+    }
+  });
+});
 
 describe("vault_search coverage pass", () => {
   let posVault: string; // muon-a/b match the query; muon-c shares the tag but not the terms

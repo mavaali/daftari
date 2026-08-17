@@ -54,6 +54,12 @@ surface instead of per-child snapshots:
 - `edge-ceiling.mjs` — MAV-154's $0 reachability-ceiling arm: can one hop over
   {all | trigger-bearing | tensions} edges even reach what the seeds missed,
   vs rank-extension at the same add budget.
+- `gen-supersession-vault.mjs` + `suppression-bench.mjs` — MAV-161's
+  deterministic bench: chains where stale versions lexically outrank their
+  current heads (the shape RB cannot exercise — it has no `superseded_by`),
+  measuring head-in-context, head-above-stale, and the span-recall guard with
+  the `search.suppress_superseded` pass off vs on. The hallucination arm
+  consumes these candidate sets, gated on `ANTHROPIC_API_KEY`.
 - `knn-sweep.mjs` — MAV-159's recall-vs-K curve over the same frozen corpus:
   sweeps `search.vec_knn_k` (the vector-arm chunk fan-out, historically fixed
   at 64) across {16..512} at matched budgets. Refuses to run lexical-only —

@@ -83,6 +83,10 @@ export interface HybridHit {
   retiredStillLinked?: boolean;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
+  // MAV-161 supersession suppression (src/search/suppression.ts). Both are
+  // set by the tool handler's post-pass, never the ranker.
+  viaForeground?: boolean; // a current head pulled into the stale doc's rank slot
+  demoted?: "superseded"; // moved to the tail: a readable current head exists
 }
 
 // #3: one entry of the agent-as-judge rerank pool. A compact judging record

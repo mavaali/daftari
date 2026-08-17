@@ -388,14 +388,20 @@ export interface DaftariConfig {
 export interface SearchTuningConfig {
   coverage: boolean;
   vecKnnK: number;
+  // MAV-161: supersession suppression in vault_search — demote hits whose
+  // superseded_by chain resolves to a readable current head, pulling that
+  // head into the list when absent. Default off until the hallucination-
+  // judged bench decides; the deterministic mechanics ship gated.
+  suppressSuperseded: boolean;
 }
 
 export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   coverage: false,
   vecKnnK: 64,
+  suppressSuperseded: false,
 };
 
-const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k"] as const;
+const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k", "suppress_superseded"] as const;
 
 // Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
 // larger than any realistic per-query candidate need and the config is more
@@ -1669,6 +1675,14 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
         return err(new Error("malformed config: 'search.coverage' must be true or false"));
       }
       search.coverage = block.coverage;
+    }
+    if (block.suppress_superseded !== undefined) {
+      if (typeof block.suppress_superseded !== "boolean") {
+        return err(
+          new Error("malformed config: 'search.suppress_superseded' must be true or false"),
+        );
+      }
+      search.suppressSuperseded = block.suppress_superseded;
     }
     if (block.vec_knn_k !== undefined) {
       if (
