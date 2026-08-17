@@ -9,6 +9,18 @@
 # to be a human (bots — including the nightly sweep — can file issues but
 # can never delegate them). The human act of labeling is the review of the
 # work order; the human act of merging remains the review of the work.
+#
+# Mechanics the agent depends on:
+# - claude_args grants the tool allowlist. Agent mode allows nothing that
+#   prompts by default — without this list the session runs, gets denied
+#   every edit/bash call, and exits "success" having done nothing (the
+#   failure mode of the first two live runs, 2026-08-15).
+# - GH_TOKEN gives `gh` the workflow token for issue/PR reads, the PR
+#   creation, and the issue comment. GitHub never lets events created by
+#   this token trigger the PR's own workflows, so the prompt has the agent
+#   arm the checks with one empty-commit push afterwards: git pushes
+#   authenticate as the Claude app (the action rewrites the remote URL),
+#   and an app's synchronize event does start CI/review/security-review.
 
 name: Delegate
 
@@ -44,8 +56,15 @@ jobs:
 
       - name: Implement the delegated issue
         uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Scoped to what the prompt's procedure needs: read/implement/test,
+          # branch/commit/push, PR + issue-comment plumbing. Deliberately
+          # absent: gh label/merge/edit (labels authorize, merging is the
+          # human's), gh api (no raw API), and unscoped Bash.
+          claude_args: '--allowed-tools "Edit,Write,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr create:*),Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(git branch:*),Bash(git checkout:*),Bash(git switch:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(npm ci),Bash(npm run lint:*),Bash(npm run lint),Bash(npm run build),Bash(npm test),Bash(npx vitest run:*)"'
           prompt: |
             REPO: ${{ github.repository }}
             ISSUE: ${{ github.event.issue.number }}
@@ -63,11 +82,20 @@ jobs:
                decisions throughout.
             2. Implement the smallest change that resolves the issue, with
                tests (tests mirror src/; every tool gets a test file).
-            3. Run the gates — `npm run lint`, `npm run build`, `npm test` —
-               and fix what they catch before pushing.
-            4. Open a PR that references the issue ("Closes #N"), with a
-               clear summary and test plan per the PR template.
-            5. Comment on the issue with a one-line link to the PR.
+            3. Run the gates — `npm ci`, then `npm run lint`,
+               `npm run build`, `npm test` — and fix what they catch
+               before pushing.
+            4. Commit on a new branch (never main), push it, and open a
+               PR that references the issue ("Closes #N"), with a clear
+               summary and test plan per the PR template. Not a draft —
+               draft PRs skip the review gates.
+            5. Arm the PR's checks. The PR you just created cannot start
+               its own workflows (its open event comes from the workflow
+               token). Push exactly one empty commit to the branch —
+               `git commit --allow-empty -m "chore: arm PR checks"`, then
+               push — which fires the synchronize event that starts CI,
+               code review, and security review.
+            6. Comment on the issue with a one-line link to the PR.
 
             Refuse-and-explain instead of implementing — comment on the
             issue and stop — when any of these hold:

@@ -13,16 +13,34 @@ name: Security Review
 # Runs once when the PR is opened or leaves draft — not on every push.
 # Findings can go stale on a heavily-reworked PR; re-run manually from the
 # Actions tab if the diff changes substantially after review.
+#
+# Exception: bot-authored PRs (the delegate.yml lane) also run on
+# synchronize. Their open event is created with the workflow token, which
+# GitHub never lets trigger workflows — without this, agent-authored PRs
+# would be the ONLY PRs that skip security review, inverting the intent.
+# The delegate prompt arms the checks with a single empty-commit push;
+# later agent pushes to the same PR re-run the review, which is accepted
+# (agent PRs are rare and small, and re-review after a rework is a
+# feature there, not a cost).
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, synchronize]
 
 jobs:
   security-review:
     # Skipped for Dependabot PRs: GitHub doesn't forward repo secrets to
     # Dependabot-triggered runs, so ANTHROPIC_API_KEY would be empty and
-    # the job fails before doing anything useful.
-    if: ${{ !github.event.pull_request.draft && github.actor != 'dependabot[bot]' }}
+    # the job fails before doing anything useful. (The synchronize arm
+    # also excludes dependabot[bot]-AUTHORED PRs: a human updating such a
+    # branch would otherwise pay a review per update.)
+    if: >
+      ${{
+        !github.event.pull_request.draft &&
+        github.actor != 'dependabot[bot]' &&
+        (github.event.action != 'synchronize' ||
+         (github.event.pull_request.user.type == 'Bot' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'))
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
