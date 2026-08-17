@@ -143,6 +143,10 @@ jobs:
       # or an issue comment posted after this run started (dedupe pointer,
       # refusal, or blocked-run report all count). No trace = red, so a
       # silent no-op can never look like a finished delegation again.
+      # Both probes are scoped to createdAt >= run start: a pre-existing
+      # open PR referencing the issue is NOT this run's trace (the dedupe
+      # path proves itself with the pointer comment, which is), otherwise
+      # one stale PR would green-light every future no-op on the issue.
       - name: Verify the session left a trace
         env:
           GH_TOKEN: ${{ github.token }}
@@ -151,12 +155,17 @@ jobs:
           STARTED: ${{ steps.mark.outputs.started }}
         run: |
           PRS="$(gh pr list -R "$REPO" --state open \
-            --search "$ISSUE in:body" --json number --jq length)" || {
+            --search "$ISSUE in:body" --json number,createdAt \
+            --jq "[.[] | select(.createdAt >= \"$STARTED\")] | length")" || {
             echo "::error::PR listing failed — cannot verify the run" >&2
             exit 1
           }
+          # Author-scoped too: the session comments through GH_TOKEN, so its
+          # comments are authored by github-actions — a human (or another
+          # bot) commenting during the run window is not this run's trace.
           COMMENTS="$(gh issue view "$ISSUE" -R "$REPO" --json comments \
-            --jq "[.comments[] | select(.createdAt >= \"$STARTED\")] | length")" || {
+            --jq "[.comments[] | select(.createdAt >= \"$STARTED\"
+              and (.author.login | startswith(\"github-actions\")))] | length")" || {
             echo "::error::comment listing failed — cannot verify the run" >&2
             exit 1
           }
