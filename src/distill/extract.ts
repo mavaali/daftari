@@ -86,7 +86,10 @@ export interface ExtractOpts {
 
 // --- prompt ------------------------------------------------------------------
 
-const EXTRACT_SYSTEM = `You extract discrete claims from a chat transcript window.
+// Exported so the reader-provenance fingerprint (src/distill/reader-fingerprint.ts)
+// can hash the EFFECTIVE extraction prompt contract — a change to this system
+// text revs reader_prompt_version. Do not inline this back to a bare const.
+export const EXTRACT_SYSTEM = `You extract discrete claims from a chat transcript window.
 
 A claim is a decision, commitment, factual statement, or stated preference that
 would be worth remembering after the conversation ends. Each claim must be a
@@ -100,7 +103,12 @@ transcript excerpt. Do not copy long verbatim spans from the window. If a short
 exact quote is genuinely necessary, keep it brief and enclose only the quoted
 words in double quotes.`;
 
-const EXTRACT_SCHEMA = {
+// Exported alongside EXTRACT_SYSTEM: this schema object is what llm.ts's
+// completeJsonWithRetry injects verbatim into the system prompt
+// (`Return JSON matching:\n${JSON.stringify(opts.schema, null, 2)}`), so it is
+// part of the effective prompt contract the reader fingerprint hashes. A schema
+// change here revs reader_prompt_version.
+export const EXTRACT_SCHEMA = {
   type: "object",
   properties: {
     claims: {

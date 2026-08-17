@@ -16,6 +16,16 @@ export interface LoadedDoc {
   path: string;
   frontmatter: Frontmatter;
   content: string;
+  // The frontmatter exactly as parsed from YAML, before coercion (mirrors
+  // ParsedDocument.raw). Declared-optional schema extensions (e.g. the f3h
+  // reader_* / readers fields) are NOT copied into the coerced `frontmatter`
+  // — they only exist here — so any consumer that needs a reader fingerprint
+  // (6mf.3's canon projection) must read it off `raw`, not `frontmatter`.
+  // OPTIONAL so existing hand-built LoadedDoc literals (tests, other call
+  // sites that don't carry a reader fingerprint) don't have to synthesize it;
+  // loadDocuments always populates it from the parse pass. A consumer reading
+  // reader fields off a raw-less doc simply sees no reader provenance.
+  raw?: Record<string, unknown>;
   // The schema-validation report from the SAME parse pass that produced
   // `frontmatter`. Carried so downstream consumers (e.g. the consolidate
   // envelope's provenance check) can tell schema-valid from schema-invalid
@@ -129,6 +139,7 @@ async function refresh(vaultRoot: string, c: VaultCache): Promise<Result<LoadedD
       path: relPath,
       frontmatter: parsed.value.frontmatter,
       content: parsed.value.content,
+      raw: parsed.value.raw,
       validation: parsed.value.validation,
     };
     if (fp) nextEntries.set(relPath, { mtimeMs: fp.mtimeMs, size: fp.size, doc });

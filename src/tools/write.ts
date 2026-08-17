@@ -2136,6 +2136,55 @@ export async function vaultMerge(
     updated: todayISO(),
     updated_by: agent.value,
   };
+
+  // Reader parentage fusion (6mf.1). targetRaw inherits path_a's raw, so it
+  // currently carries ONLY path_a's `readers` set and path_a's scalar reader_*
+  // fields — a false single-parent claim that silently drops path_b's reader.
+  // Fuse instead: the merged `readers` is the DEDUPED UNION of both sources'
+  // sets (A's entries first, then B's new ones — order-stable). Entries are
+  // already-encoded opaque strings (reader-fingerprint.ts#encodeReader); we
+  // union the strings, we never re-encode. Then:
+  //   - union has exactly ONE distinct reader ⇒ keep path_a's scalar reader_*
+  //     fields (already inherited into targetRaw — nothing to do).
+  //   - union has MORE THAN ONE ⇒ the merged belief must not claim single
+  //     parentage: DROP every scalar reader_* from targetRaw and keep only the
+  //     unioned `readers` set as the authoritative parentage. Dropping = delete
+  //     the key from targetRaw; since serializeDocument reads reader_* only from
+  //     this raw record, omission here removes them from the written frontmatter.
+  //   - neither source has a `readers` set (legacy) ⇒ no `readers` key at all,
+  //     no scalar changes, no empty-array placeholder.
+  // This block only touches reader provenance — RBAC, body, and the superseded
+  // source writes below are untouched.
+  const readersA = Array.isArray(parsedA.value.raw.readers)
+    ? (parsedA.value.raw.readers as unknown[]).filter((r): r is string => typeof r === "string")
+    : [];
+  const readersB = Array.isArray(parsedB.value.raw.readers)
+    ? (parsedB.value.raw.readers as unknown[]).filter((r): r is string => typeof r === "string")
+    : [];
+  const unionReaders: string[] = [];
+  for (const r of [...readersA, ...readersB]) {
+    if (!unionReaders.includes(r)) unionReaders.push(r);
+  }
+  const READER_SCALAR_FIELDS = [
+    "reader_model",
+    "reader_served_model",
+    "reader_temperature",
+    "reader_via_retry",
+    "reader_prompt_version",
+    "reader_chunk_window",
+    "reader_input_cap",
+  ];
+  if (unionReaders.length === 0) {
+    // Legacy on both sides: carry no parentage set (avoid an empty placeholder).
+    delete targetRaw.readers;
+  } else {
+    targetRaw.readers = unionReaders;
+    if (unionReaders.length > 1) {
+      // Mixed parentage: drop every single-parent scalar claim.
+      for (const field of READER_SCALAR_FIELDS) delete targetRaw[field];
+    }
+  }
+
   const { frontmatter: targetFm, report: targetReport } = validateFrontmatter(
     targetRaw,
     extensions,

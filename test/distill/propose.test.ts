@@ -17,13 +17,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listStagedActions } from "../../src/curation/staged-actions.js";
-import type { ExtractedClaim } from "../../src/distill/extract.js";
+import type { ClaimRunMeta, ExtractedClaim } from "../../src/distill/extract.js";
 import {
   DISTILL_COLLECTION,
   type OverlapHint,
   type ProposeOutcome,
   proposeAllClaims,
 } from "../../src/distill/propose.js";
+import { encodeReader, READER_PROMPT_VERSION } from "../../src/distill/reader-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -34,6 +35,18 @@ function makeClaim(overrides: Partial<ExtractedClaim> = {}): ExtractedClaim {
     claim_key: "chunk-001:the-team-chose-postgres-a1b2c3d4",
     statement: "The team chose Postgres for the new service.",
     proposed_frontmatter: { title: "The team chose Postgres for the new service." },
+    ...overrides,
+  };
+}
+
+function makeRunMeta(overrides: Partial<ClaimRunMeta> = {}): ClaimRunMeta {
+  return {
+    requestedModel: "claude-opus-4",
+    servedModel: "claude-opus-4-20260101",
+    effectiveTemperature: 0,
+    viaRetry: false,
+    chunkWindow: 12,
+    inputCap: 8000,
     ...overrides,
   };
 }
@@ -353,5 +366,156 @@ describe("proposeAllClaims (U4)", () => {
     // Rationale is exactly the statement — no "Possible overlaps" line.
     expect(action.rationale).toBe(claim.statement);
     expect(action.rationale).not.toMatch(/Possible overlaps:/);
+  });
+
+  // -------------------------------------------------------------------------
+  // f3h: reader provenance stamping
+  // -------------------------------------------------------------------------
+
+  it("stamps all reader_* fields + readers on the frontmatter when the claim carries run_meta", async () => {
+    const runId = "run-reader-full";
+    const runMeta = makeRunMeta();
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-full-aabbccdd",
+      statement: "A claim that carries full reader run metadata.",
+      proposed_frontmatter: { title: "Reader full" },
+      run_meta: runMeta,
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect(fm.reader_model).toBe("claude-opus-4");
+    expect(fm.reader_served_model).toBe("claude-opus-4-20260101");
+    expect(fm.reader_temperature).toBe(0);
+    expect(fm.reader_via_retry).toBe(false);
+    expect(fm.reader_prompt_version).toBe(READER_PROMPT_VERSION);
+    expect(fm.reader_chunk_window).toBe(12);
+    expect(fm.reader_input_cap).toBe(8000);
+    expect(fm.readers).toEqual([encodeReader(runMeta, READER_PROMPT_VERSION)]);
+
+    // The body's Provenance section mirrors the reader fields.
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).toContain("### Reader");
+    expect(body).toContain("claude-opus-4-20260101");
+    expect(body).toContain("does not guarantee bit-identical re-extraction");
+  });
+
+  it("uses the 'unreported' served-model sentinel (never null) when servedModel is undefined", async () => {
+    const runId = "run-reader-sentinel";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-sentinel-11223344",
+      statement: "A claim whose provider did not report a served model.",
+      proposed_frontmatter: { title: "Reader sentinel" },
+      run_meta: makeRunMeta({ servedModel: undefined }),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect(fm.reader_served_model).toBe("unreported");
+    expect(fm.reader_served_model).not.toBeNull();
+  });
+
+  it("omits reader_temperature entirely when effectiveTemperature is undefined", async () => {
+    const runId = "run-reader-no-temp";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-notemp-55667788",
+      statement: "A claim whose call sent no temperature.",
+      proposed_frontmatter: { title: "Reader no temp" },
+      run_meta: makeRunMeta({ effectiveTemperature: undefined }),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect("reader_temperature" in fm).toBe(false);
+    // The 'na' sentinel surfaces only inside the encoded readers SET element.
+    expect((fm.readers as string[])[0]).toContain("@na|");
+  });
+
+  it("defaults reader_via_retry to false when viaRetry is undefined", async () => {
+    const runId = "run-reader-retry-default";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-retrydef-99aabbcc",
+      statement: "A claim whose run_meta omits viaRetry.",
+      proposed_frontmatter: { title: "Reader retry default" },
+      run_meta: makeRunMeta({ viaRetry: undefined }),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect(fm.reader_via_retry).toBe(false);
+  });
+
+  it("produces NO reader_* fields and does not crash when the claim has no run_meta", async () => {
+    const runId = "run-reader-absent";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-absent-ddeeff00",
+      statement: "A legacy claim with no run metadata at all.",
+      proposed_frontmatter: { title: "Reader absent" },
+      // run_meta intentionally omitted.
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    for (const key of Object.keys(fm)) {
+      expect(key.startsWith("reader_")).toBe(false);
+    }
+    expect("readers" in fm).toBe(false);
+
+    // Body has the base Provenance section but no Reader subsection.
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).toContain("## Provenance");
+    expect(body).not.toContain("### Reader");
   });
 });

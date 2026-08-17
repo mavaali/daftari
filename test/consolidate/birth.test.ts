@@ -102,7 +102,13 @@ function stubEdge(from: string, to: string) {
 interface Harness {
   deps: BirthDeps;
   observed: Array<{ from: string; to: string; premiseVote?: string }>;
-  tensions: Array<{ title: string; kind: string; loggedBy: string }>;
+  tensions: Array<{
+    title: string;
+    kind: string;
+    loggedBy: string;
+    readerA?: string;
+    readerB?: string;
+  }>;
   traceRows: unknown[];
   admitCalls: Array<{ action: string; fromPath: string; toPath: string }>;
 }
@@ -140,7 +146,13 @@ function makeDeps(overrides: Partial<BirthDeps>): Harness {
       overrides.recordTension ??
       // biome-ignore lint/suspicious/noExplicitAny: structural test capture
       (async (t: any) => {
-        tensions.push({ title: t.title, kind: t.kind, loggedBy: t.loggedBy });
+        tensions.push({
+          title: t.title,
+          kind: t.kind,
+          loggedBy: t.loggedBy,
+          readerA: t.readerA,
+          readerB: t.readerB,
+        });
         return ok(undefined);
       }),
     recordBirthTrace:
@@ -271,6 +283,78 @@ describe("birthOne — symmetric / contested → pending edge + tension", () => 
       expect(r.ok).toBe(true);
       expect(observed).toEqual([{ from: "a.md", to: "z.md", premiseVote: "symmetric" }]);
       expect(tensions[0]?.title).toContain("contested");
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  // 6mf.2: the direction-pending tension records each side's reader fingerprint,
+  // read from that side's frontmatter (reader_model, fallback readers[0]). A
+  // cross-reader pair yields distinct readerA/readerB; a legacy side (no reader
+  // fields) yields undefined for that side — no crash.
+  it("records readerA/readerB from each side's frontmatter (cross-reader tension)", async () => {
+    const root = tmpVault();
+    try {
+      const docContent = [
+        "---",
+        "title: Doc A",
+        "reader_model: modelA",
+        "---",
+        "",
+        "Claim A body.",
+      ].join("\n");
+      const neighborContent = [
+        "---",
+        "title: Doc Z",
+        "reader_model: modelB",
+        "---",
+        "",
+        "Claim Z body.",
+      ].join("\n");
+      const { deps, tensions } = makeDeps({
+        llm: mockLlm(V.symmetric()),
+        searchNeighbors: async () => ok(["z.md"]),
+        loadNeighborContent: async () => ok(neighborContent),
+      });
+      const r = await birthOne({ relPath: "a.md", content: docContent }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(r.ok).toBe(true);
+      expect(tensions).toHaveLength(1);
+      expect(tensions[0]?.readerA).toBe("modelA");
+      expect(tensions[0]?.readerB).toBe("modelB");
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("leaves a side's reader undefined when that side is legacy (no crash)", async () => {
+    const root = tmpVault();
+    try {
+      const docContent = [
+        "---",
+        "title: Doc A",
+        "reader_model: modelA",
+        "---",
+        "",
+        "Claim A body.",
+      ].join("\n");
+      // Neighbor is legacy: no reader fields at all.
+      const neighborContent = ["---", "title: Doc Z", "---", "", "Claim Z body."].join("\n");
+      const { deps, tensions } = makeDeps({
+        llm: mockLlm(V.symmetric()),
+        searchNeighbors: async () => ok(["z.md"]),
+        loadNeighborContent: async () => ok(neighborContent),
+      });
+      const r = await birthOne({ relPath: "a.md", content: docContent }, deps, {
+        ...baseOpts,
+        vaultRoot: root,
+      });
+      expect(r.ok).toBe(true);
+      expect(tensions).toHaveLength(1);
+      expect(tensions[0]?.readerA).toBe("modelA");
+      expect(tensions[0]?.readerB).toBeUndefined();
     } finally {
       cleanup(root);
     }
