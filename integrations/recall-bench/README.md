@@ -34,6 +34,29 @@ RB_INTEGRATION=1 npx vitest run integrations/recall-bench/src # + integration (l
 `reindexVault` + retrieval; on a red, re-check the known MiniLM load flake before
 treating it as a regression.
 
+## Frozen baseline (MAV-160)
+
+The multi-hop retrieval epic (MAV-155) scores every child against one pinned
+surface instead of per-child snapshots:
+
+- `baseline/manifest.json` — the freeze: corpus repo + commit + SHA-256 over the
+  180 day-files and the QA label file, question filter, vault parameters, budget
+  grid. `baseline-runner.mjs` refuses a corpus whose hashes drift.
+- `baseline-runner.mjs` — builds the vault, sweeps rank-extension and coverage
+  arms over the budget grid, and records **distractor load next to recall**
+  (added-relevant / added-distractor / precision per arm per budget).
+  `RB_CORPUS=<recall clone> node baseline-runner.mjs` (`--smoke` for 25 questions).
+- `gen-edgehop-vault.mjs` — deterministic edge-bearing labeled corpus: the only
+  surface with BOTH a labeled multi-hop relevant set and an edge graph (written
+  through the real `observeEdge`/`addTension` stores, trigger-bearing split,
+  deliberate lineage-noise edges). Synthetic — validates harness mechanics, not
+  edge-alignment in the wild.
+- `edge-ceiling.mjs` — MAV-154's $0 reachability-ceiling arm: can one hop over
+  {all | trigger-bearing | tensions} edges even reach what the seeds missed,
+  vs rank-extension at the same add budget.
+
+Results note: `docs/superpowers/results/2026-08-17-mav160-frozen-baseline.md`.
+
 ## Known follow-up before the gated benchmark run (Tasks 6–7)
 
 - **Add a real `satisfies MemorySystemAdapter` typecheck.** The adapter shape is
