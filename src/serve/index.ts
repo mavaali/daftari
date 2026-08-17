@@ -38,6 +38,8 @@ import { loadAttestKey } from "../attest/sign.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
+import { setCoverageEnabled } from "../search/coverage.js";
+import { setVecKnnK } from "../search/hybrid.js";
 import { setProvider } from "../search/vector.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
 import { createBackend, type StorageBackend } from "../storage/backend.js";
@@ -700,6 +702,10 @@ export async function runServe(argv: string[]): Promise<number> {
     process.stderr.write(`daftari serve: ${e instanceof Error ? e.message : String(e)}\n`);
     return 3;
   }
+  // Retrieval tuning (`search` block): validated by loadConfig, applied once
+  // per process, same lifecycle as the provider above.
+  setCoverageEnabled(config.value.search.coverage);
+  setVecKnnK(config.value.search.vecKnnK);
 
   // Startup warnings mirror stdio's: unknown tool names in the tools block.
   for (const name of resolveToolExposure(config.value.tools).unknown) {

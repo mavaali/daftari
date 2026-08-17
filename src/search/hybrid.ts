@@ -26,6 +26,7 @@ import {
   getDocumentsByPaths,
   type IndexDb,
 } from "../storage/index-db.js";
+import { SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
@@ -121,9 +122,19 @@ const SNIPPET_RADIUS = 140;
 // best-per-document. A multiple of the user-facing limit keeps the hybrid
 // fusion honest — if we only fetched `limit` chunks we'd risk every one
 // belonging to the same document and starving the rest of the candidate set.
-// 64 is empirically generous for typical limit ≤ 10; bump if vault chunk
-// counts grow into the millions.
-const VEC_KNN_K = 64;
+// 64 is empirically generous for typical limit ≤ 10; configurable since
+// MAV-159 (`search.vec_knn_k` in config.yaml, applied at startup like
+// setProvider) so the recall-vs-K curve can be measured rather than assumed.
+// Config validation owns the bounds; this setter stays dumb.
+let vecKnnK = SEARCH_TUNING_DEFAULTS.vecKnnK;
+
+export function setVecKnnK(k: number): void {
+  vecKnnK = k;
+}
+
+export function getVecKnnK(): number {
+  return vecKnnK;
+}
 
 // Pulls a readable excerpt from a document body, centred on the earliest
 // occurrence of any query term. Falls back to the document head when no term
@@ -262,7 +273,7 @@ function vecRanking(
           AND v.k = ?${collectionFilter}
         ORDER BY v.distance`,
     )
-    .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+    .all(queryBlob, modelId, vecKnnK, ...(readableCollections ?? [])) as {
     path: string;
     distance: number;
   }[];

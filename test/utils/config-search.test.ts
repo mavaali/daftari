@@ -1,0 +1,95 @@
+// Config parsing for the `search` retrieval-tuning block (MAV-156 / MAV-159).
+//
+// `search.coverage` re-enables the retired date-window coverage pass;
+// `search.vec_knn_k` sets the vector-arm KNN fan-out. Absent block = the
+// defaults (coverage off, fan-out 64). Malformed values are hard config
+// errors, matching the rest of the loader's trust model.
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { configPath, loadConfig } from "../../src/utils/config.js";
+
+describe("loadConfig — search tuning block", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-config-search-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  it("defaults to coverage off / fan-out 64 when no config file exists", () => {
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.search).toEqual({ coverage: false, vecKnnK: 64 });
+  });
+
+  it("defaults when the search block is omitted", () => {
+    writeConfig("auto_commit: true\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.search).toEqual({ coverage: false, vecKnnK: 64 });
+  });
+
+  it("parses an explicit opt-in and fan-out", () => {
+    writeConfig("search:\n  coverage: true\n  vec_knn_k: 256\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.search).toEqual({ coverage: true, vecKnnK: 256 });
+  });
+
+  it("accepts a partial block, defaulting the other knob", () => {
+    writeConfig("search:\n  vec_knn_k: 128\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.search).toEqual({ coverage: false, vecKnnK: 128 });
+  });
+
+  it("rejects a non-mapping search block", () => {
+    writeConfig("search: fast\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("'search' must be a mapping");
+  });
+
+  it("rejects a typo'd key instead of silently defaulting", () => {
+    // The exact trap rejectUnknownKeys exists for: an operator opting the
+    // retired pass back in with a misspelled key must get an error, not a
+    // silent coverage=false.
+    writeConfig("search:\n  vec_knn_k: 256\n  coverge: true\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("'search.coverge' is not a recognised setting");
+  });
+
+  it("rejects a non-boolean coverage", () => {
+    writeConfig("search:\n  coverage: sometimes\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("'search.coverage' must be true or false");
+  });
+
+  it.each([["0"], ["-4"], ["1.5"], ["8192"], ['"64"']])("rejects vec_knn_k = %s", (bad) => {
+    writeConfig(`search:\n  vec_knn_k: ${bad}\n`);
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("'search.vec_knn_k' must be an integer");
+  });
+});

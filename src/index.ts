@@ -23,6 +23,8 @@ import { materializeStagedActions } from "./curation/staged-actions.js";
 import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
+import { setCoverageEnabled } from "./search/coverage.js";
+import { setVecKnnK } from "./search/hybrid.js";
 import {
   markIndexError,
   markIndexing,
@@ -113,6 +115,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exitCode = 1;
     return;
   }
+  // Retrieval tuning (`search` block): validated by loadConfig, applied once
+  // per process, same lifecycle as the provider above.
+  setCoverageEnabled(config.value.search.coverage);
+  setVecKnnK(config.value.search.vecKnnK);
 
   // Resolve the access identity. With no --role the server runs as the
   // deny-all guest; an unknown role name resolves the same way.

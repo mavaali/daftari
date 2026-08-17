@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyCoveragePass,
   computeWindow,
+  coverageEnabled,
   DEFAULT_COVERAGE_OPTIONS,
   detectSharedEntity,
   enforceTokenCap,
+  setCoverageEnabled,
 } from "../../src/search/coverage.js";
 import type { CurrentSource } from "../../src/search/current-source.js";
 import type { HybridHit } from "../../src/search/hybrid.js";
@@ -196,6 +198,25 @@ describe("applyCoveragePass", () => {
     expect(applyCoveragePass(db, hits, DEFAULT_COVERAGE_OPTIONS)).toEqual(hits);
   });
 
+  it("a bare call (no opts) obeys the runtime gate — the structural retirement", () => {
+    // Same fixture as the firing test below: with explicit opts the pass adds
+    // c.md. A bare call must resolve `enabled` from the runtime flag, so a
+    // future production call site that omits opts cannot silently reactivate
+    // the retired pass.
+    insertDocument(db, doc({ path: "a.md", tags: ["spectral"], created: "2026-03-10" }));
+    insertDocument(db, doc({ path: "b.md", tags: ["spectral"], created: "2026-03-12" }));
+    insertDocument(db, doc({ path: "c.md", tags: ["spectral"], created: "2026-03-11" }));
+    const hits = [hit("a.md"), hit("b.md")];
+    expect(coverageEnabled()).toBe(false); // retired default
+    expect(applyCoveragePass(db, hits)).toEqual(hits);
+    setCoverageEnabled(true);
+    try {
+      expect(applyCoveragePass(db, hits).map((h) => h.path)).toEqual(["a.md", "b.md", "c.md"]);
+    } finally {
+      setCoverageEnabled(false);
+    }
+  });
+
   it("appends same-entity in-window docs not already present, flagged viaCoverage", () => {
     insertDocument(db, doc({ path: "a.md", tags: ["spectral"], created: "2026-03-10" }));
     insertDocument(db, doc({ path: "b.md", tags: ["spectral"], created: "2026-03-12" }));
@@ -304,5 +325,25 @@ describe("enforceTokenCap", () => {
       tokenCapChars: 60,
     });
     expect(out.map((h) => h.path)).toEqual(["a.md", "dangling.md"]);
+  });
+});
+
+// The product gate (MAV-156 retirement): vault_search consults this runtime
+// flag; the mechanism's own `enabled` option (exercised above with explicit
+// opts) is unchanged so experiment harnesses keep full control.
+describe("coverage runtime gate", () => {
+  afterEach(() => {
+    setCoverageEnabled(false);
+  });
+
+  it("defaults to off — the pass is retired", () => {
+    expect(coverageEnabled()).toBe(false);
+  });
+
+  it("round-trips the opt-in", () => {
+    setCoverageEnabled(true);
+    expect(coverageEnabled()).toBe(true);
+    setCoverageEnabled(false);
+    expect(coverageEnabled()).toBe(false);
   });
 });

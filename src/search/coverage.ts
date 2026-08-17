@@ -10,6 +10,7 @@ import {
   type IndexDb,
   type IndexedDocument,
 } from "../storage/index-db.js";
+import { SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { HybridHit } from "./hybrid.js";
 
@@ -30,6 +31,26 @@ export const DEFAULT_COVERAGE_OPTIONS: CoverageOptions = {
   maxSpanDays: 90, // matches EDGE_HALF_LIFE_DAYS in curation/edges.ts
   tokenCapChars: 6000,
 };
+
+// Whether vault_search runs the pass at all — the product gate, distinct from
+// DEFAULT_COVERAGE_OPTIONS.enabled (the mechanism's own parameter, which
+// experiment harnesses invoke explicitly). Default OFF: the date-window
+// mechanism lost to naive rank-extension at every retrieval budget on Recall
+// Bench (2026-06-22 kill, reconfirmed on the frozen 3.7.0 baseline —
+// docs/superpowers/results/2026-08-17-mav160-frozen-baseline.md) while adding
+// ~4.6 distractors per fire at ~8% precision. The discriminating-tag half is
+// untested on a native vault, so `search.coverage: true` in config.yaml opts
+// back in rather than the code being deleted. Mirrors the setProvider pattern:
+// startup applies the config once, per-process.
+let coverageEnabledRuntime = SEARCH_TUNING_DEFAULTS.coverage;
+
+export function setCoverageEnabled(v: boolean): void {
+  coverageEnabledRuntime = v;
+}
+
+export function coverageEnabled(): boolean {
+  return coverageEnabledRuntime;
+}
 
 // The dominant frontmatter tag shared by >=2 of the top-seedK hits. Reads tags
 // from the index (HybridHit carries none). Highest seed-count wins; ties break
@@ -143,18 +164,24 @@ function coverageHit(d: IndexedDocument): HybridHit {
 
 // The Stage 1 coverage pass. Returns hits unchanged unless a shared entity (>=2
 // seeds) + a date window + at least one new in-window same-entity doc all hold.
+//
+// Omitting `opts` resolves `enabled` from the runtime gate — the structural
+// form of the MAV-156 retirement: a production call site that just calls
+// applyCoveragePass(db, hits) is gated, and only a caller passing explicit
+// options (the experiment harnesses, deliberately) can force the mechanism on.
 export function applyCoveragePass(
   db: IndexDb,
   hits: HybridHit[],
-  opts: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+  opts?: CoverageOptions,
 ): HybridHit[] {
-  if (!opts.enabled || hits.length < 2) return hits;
-  const entity = detectSharedEntity(db, hits, opts.seedK);
+  const resolved = opts ?? { ...DEFAULT_COVERAGE_OPTIONS, enabled: coverageEnabled() };
+  if (!resolved.enabled || hits.length < 2) return hits;
+  const entity = detectSharedEntity(db, hits, resolved.seedK);
   if (!entity) return hits;
-  const window = computeWindow(db, hits, entity, opts);
+  const window = computeWindow(db, hits, entity, resolved);
   if (!window) return hits;
   const exclude = new Set(hits.map((h) => h.path));
-  const added = gatherCandidates(db, entity, window, exclude, opts);
+  const added = gatherCandidates(db, entity, window, exclude, resolved);
   if (added.length === 0) return hits;
   return [...hits, ...added.map(coverageHit)];
 }
