@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { DEFAULT_WEIGHTS, hybridSearch, relatedSearch } from "../../src/search/hybrid.js";
+import {
+  DEFAULT_WEIGHTS,
+  getVecKnnK,
+  hybridSearch,
+  relatedSearch,
+  setVecKnnK,
+} from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { reindexVault } from "../../src/search/reindex.js";
 import * as indexDb from "../../src/storage/index-db.js";
@@ -720,5 +726,23 @@ Additional filler content for padding the vault retrieval set.
     if (!res.ok) return;
     expect(res.value.hits[0]?.path).toBe("bodywin.md");
     expect(res.value.hits.some((h) => h.path === "titlecoincidence.md")).toBe(true);
+  });
+});
+
+// MAV-159: the KNN fan-out knob. Config validation owns the bounds; the
+// setter itself is a dumb per-process value, so the contract to pin here is
+// the default and the round-trip.
+describe("vec KNN fan-out knob", () => {
+  afterEach(() => {
+    setVecKnnK(64);
+  });
+
+  it("defaults to the historical 64", () => {
+    expect(getVecKnnK()).toBe(64);
+  });
+
+  it("round-trips a configured value", () => {
+    setVecKnnK(256);
+    expect(getVecKnnK()).toBe(256);
   });
 });

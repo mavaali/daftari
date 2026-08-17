@@ -303,6 +303,15 @@ export interface DaftariConfig {
   // providers preserves both side's rows — the new provider populates a
   // fresh row set on first reindex, and switching back reuses the old.
   embeddingProvider: EmbeddingProviderId;
+  // Retrieval tuning (`search` block). `coverage` re-enables the date-window
+  // coverage pass in vault_search — retired to default-off after losing to
+  // naive rank-extension at every budget on Recall Bench (2026-06-22 kill,
+  // reconfirmed on the frozen 3.7.0 baseline, MAV-156); the discriminating-tag
+  // half is untested on native vaults, so opting back in stays supported.
+  // `vecKnnK` is the vector-arm KNN fan-out (chunks fetched before the
+  // best-chunk-per-doc collapse) — fixed at 64 since the first release; made
+  // configurable for the recall-vs-K sweep (MAV-159).
+  search: SearchTuningConfig;
   // Optional git-author → identity mapping consumed by `daftari backfill`
   // (§11.1) when deriving the `updated_by` frontmatter field from a doc's git
   // history. Keys are raw git author names (`%aN`); values are Daftari
@@ -376,6 +385,21 @@ export interface DaftariConfig {
   federation?: FederationConfig;
 }
 
+export interface SearchTuningConfig {
+  coverage: boolean;
+  vecKnnK: number;
+}
+
+export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
+  coverage: false,
+  vecKnnK: 64,
+};
+
+// Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
+// larger than any realistic per-query candidate need and the config is more
+// likely a typo (e.g. a chunk count pasted in) than an intent.
+const VEC_KNN_K_MAX = 4096;
+
 // A config with no roles and no extensions. Returned for a missing or empty
 // config file — both are valid, not malformed.
 function emptyConfig(): DaftariConfig {
@@ -387,6 +411,7 @@ function emptyConfig(): DaftariConfig {
     watch: true,
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
+    search: { ...SEARCH_TUNING_DEFAULTS },
     backfillIdentityMap: {},
     holderAliases: {},
     shadowMode: false,
@@ -1627,6 +1652,37 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     );
   }
 
+  // Retrieval tuning. Absent block = the defaults (coverage off — MAV-156
+  // retirement; KNN fan-out 64, the historical constant).
+  const search: SearchTuningConfig = { ...SEARCH_TUNING_DEFAULTS };
+  if (root.search !== undefined) {
+    if (root.search === null || typeof root.search !== "object" || Array.isArray(root.search)) {
+      return err(new Error("malformed config: 'search' must be a mapping"));
+    }
+    const block = root.search as Record<string, unknown>;
+    if (block.coverage !== undefined) {
+      if (typeof block.coverage !== "boolean") {
+        return err(new Error("malformed config: 'search.coverage' must be true or false"));
+      }
+      search.coverage = block.coverage;
+    }
+    if (block.vec_knn_k !== undefined) {
+      if (
+        typeof block.vec_knn_k !== "number" ||
+        !Number.isInteger(block.vec_knn_k) ||
+        block.vec_knn_k < 1 ||
+        block.vec_knn_k > VEC_KNN_K_MAX
+      ) {
+        return err(
+          new Error(
+            `malformed config: 'search.vec_knn_k' must be an integer between 1 and ${VEC_KNN_K_MAX}`,
+          ),
+        );
+      }
+      search.vecKnnK = block.vec_knn_k;
+    }
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
@@ -1635,6 +1691,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     watch,
     warmEmbeddings,
     embeddingProvider,
+    search,
     backfillIdentityMap: backfillIdentityMap.value,
     holderAliases: holderAliases.value,
     shadowMode,

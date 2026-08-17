@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyCoveragePass,
   computeWindow,
+  coverageEnabled,
   DEFAULT_COVERAGE_OPTIONS,
   detectSharedEntity,
   enforceTokenCap,
+  setCoverageEnabled,
 } from "../../src/search/coverage.js";
 import type { CurrentSource } from "../../src/search/current-source.js";
 import type { HybridHit } from "../../src/search/hybrid.js";
@@ -304,5 +306,25 @@ describe("enforceTokenCap", () => {
       tokenCapChars: 60,
     });
     expect(out.map((h) => h.path)).toEqual(["a.md", "dangling.md"]);
+  });
+});
+
+// The product gate (MAV-156 retirement): vault_search consults this runtime
+// flag; the mechanism's own `enabled` option (exercised above with explicit
+// opts) is unchanged so experiment harnesses keep full control.
+describe("coverage runtime gate", () => {
+  afterEach(() => {
+    setCoverageEnabled(false);
+  });
+
+  it("defaults to off — the pass is retired", () => {
+    expect(coverageEnabled()).toBe(false);
+  });
+
+  it("round-trips the opt-in", () => {
+    setCoverageEnabled(true);
+    expect(coverageEnabled()).toBe(true);
+    setCoverageEnabled(false);
+    expect(coverageEnabled()).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
+import { setCoverageEnabled } from "../../src/search/coverage.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -389,10 +390,27 @@ describe("vault_search coverage pass", () => {
     if (!r1.ok) throw r1.error;
     const r2 = await vaultReindex(quietVault);
     if (!r2.ok) throw r2.error;
+    // The pass is retired to default-off (MAV-156); these tests exercise the
+    // opted-in behavior a `search.coverage: true` vault gets.
+    setCoverageEnabled(true);
   }, 60_000);
   afterAll(() => {
+    setCoverageEnabled(false);
     cleanupVault(posVault);
     cleanupVault(quietVault);
+  });
+
+  it("stays entirely quiet when retired (the default-off product gate)", async () => {
+    setCoverageEnabled(false);
+    try {
+      const res = await vaultSearch(posVault, { query: "muon spectral scaling laws", limit: 2 });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.hits.some((h) => h.viaCoverage)).toBe(false);
+      expect(res.value.hits.find((h) => h.path === "notes/muon-c.md")).toBeUndefined();
+    } finally {
+      setCoverageEnabled(true);
+    }
   });
 
   it("adds the same-tag in-window doc that ranking missed, flagged viaCoverage", async () => {

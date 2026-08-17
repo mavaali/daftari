@@ -31,6 +31,7 @@ import { err, ok, type Result } from "../frontmatter/types.js";
 import { contestedFor } from "../search/contested.js";
 import {
   applyCoveragePass,
+  coverageEnabled,
   DEFAULT_COVERAGE_OPTIONS,
   enforceTokenCap,
 } from "../search/coverage.js";
@@ -403,9 +404,10 @@ async function searchMount(
     }
     const ranked = permitted.slice(0, opts.limit);
 
-    const widened = applyCoveragePass(db, ranked, DEFAULT_COVERAGE_OPTIONS).filter((h) =>
-      h.viaCoverage ? canRead(mount.role, h.collection) : true,
-    );
+    const widened = applyCoveragePass(db, ranked, {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      enabled: coverageEnabled(),
+    }).filter((h) => (h.viaCoverage ? canRead(mount.role, h.collection) : true));
     const access = mountAccess(mount, opts.user);
     for (const hit of widened) {
       if (opts.validAt !== null && hit.validity === undefined) {
@@ -617,10 +619,16 @@ async function searchLocalVault(
     const ranked = permittedRanked.slice(0, limit);
 
     // Coverage pass: conditionally widen the ranked set with same-entity docs in
-    // the seeds' date window. Quiet (returns `ranked` unchanged) when no signal
-    // fires. RBAC-filter the added docs identically — a coverage pull must never
-    // surface a doc the caller could not retrieve directly.
-    const widened = applyCoveragePass(db, ranked, DEFAULT_COVERAGE_OPTIONS);
+    // the seeds' date window. Retired to default-off (MAV-156 — the date-window
+    // mechanism lost to rank-extension at every budget); `search.coverage: true`
+    // in config.yaml opts back in. Quiet (returns `ranked` unchanged) when off
+    // or when no signal fires. RBAC-filter the added docs identically — a
+    // coverage pull must never surface a doc the caller could not retrieve
+    // directly.
+    const widened = applyCoveragePass(db, ranked, {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      enabled: coverageEnabled(),
+    });
     const permitted = access
       ? widened.filter((h) => (h.viaCoverage ? canRead(access.role, h.collection) : true))
       : widened;

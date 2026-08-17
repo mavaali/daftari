@@ -54,6 +54,11 @@ surface instead of per-child snapshots:
 - `edge-ceiling.mjs` — MAV-154's $0 reachability-ceiling arm: can one hop over
   {all | trigger-bearing | tensions} edges even reach what the seeds missed,
   vs rank-extension at the same add budget.
+- `knn-sweep.mjs` — MAV-159's recall-vs-K curve over the same frozen corpus:
+  sweeps `search.vec_knn_k` (the vector-arm chunk fan-out, historically fixed
+  at 64) across {16..512} at matched budgets. Refuses to run lexical-only —
+  K only affects the vector arm, so it needs a machine that can load the
+  embedding model.
 
 Results note: `docs/superpowers/results/2026-08-17-mav160-frozen-baseline.md`.
 
