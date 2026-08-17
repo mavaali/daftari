@@ -395,6 +395,8 @@ export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   vecKnnK: 64,
 };
 
+const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k"] as const;
+
 // Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
 // larger than any realistic per-query candidate need and the config is more
 // likely a typo (e.g. a chunk count pasted in) than an intent.
@@ -1660,6 +1662,8 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       return err(new Error("malformed config: 'search' must be a mapping"));
     }
     const block = root.search as Record<string, unknown>;
+    const unknown = rejectUnknownKeys(block, RECOGNISED_SEARCH_KEYS, "search");
+    if (!unknown.ok) return err(new Error(`malformed config: ${unknown.error.message}`));
     if (block.coverage !== undefined) {
       if (typeof block.coverage !== "boolean") {
         return err(new Error("malformed config: 'search.coverage' must be true or false"));

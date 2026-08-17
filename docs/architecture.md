@@ -1061,13 +1061,17 @@ quietly settled. That is the entire product, in one fact's lifetime.
 4. (`vault_search` only) Two additive, lossless post-passes run on the
    RBAC-filtered hit list — never re-ranking, never leaking content from
    denied collections:
-   - **Coverage pass.** When the top seeds share a frontmatter tag with
+   - **Coverage pass** (retired to default-off — opt back in with
+     `search.coverage: true` in config.yaml; the date-window mechanism
+     lost to naive rank-extension at every retrieval budget on Recall
+     Bench, see `docs/superpowers/results/2026-08-17-coverage-retirement-knn-knob.md`).
+     When enabled and the top seeds share a frontmatter tag with
      at least two of the top-K, the index is queried for other docs
      carrying that tag inside the seeds' `created`-date window
      (padded, span-capped) and they are *appended* — `viaCoverage: true`,
      `coverageReason: "entity-window"` — bounded by a doc-count and a
      token-budget cap (stale-first eviction). The pass stays silent when
-     no signal fires, so single-fact queries are unaffected.
+     off or when no signal fires, so single-fact queries are unaffected.
    - **Current-source foregrounding.** For any hit (ranked or
      coverage-added) whose document carries `superseded_by`, the chain is
      walked to its terminal-current head; the hit gains a structured

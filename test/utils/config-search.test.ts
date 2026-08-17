@@ -66,6 +66,17 @@ describe("loadConfig — search tuning block", () => {
     expect(result.error.message).toContain("'search' must be a mapping");
   });
 
+  it("rejects a typo'd key instead of silently defaulting", () => {
+    // The exact trap rejectUnknownKeys exists for: an operator opting the
+    // retired pass back in with a misspelled key must get an error, not a
+    // silent coverage=false.
+    writeConfig("search:\n  vec_knn_k: 256\n  coverge: true\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("'search.coverge' is not a recognised setting");
+  });
+
   it("rejects a non-boolean coverage", () => {
     writeConfig("search:\n  coverage: sometimes\n");
     const result = loadConfig(dir);

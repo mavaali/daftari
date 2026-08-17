@@ -164,18 +164,24 @@ function coverageHit(d: IndexedDocument): HybridHit {
 
 // The Stage 1 coverage pass. Returns hits unchanged unless a shared entity (>=2
 // seeds) + a date window + at least one new in-window same-entity doc all hold.
+//
+// Omitting `opts` resolves `enabled` from the runtime gate — the structural
+// form of the MAV-156 retirement: a production call site that just calls
+// applyCoveragePass(db, hits) is gated, and only a caller passing explicit
+// options (the experiment harnesses, deliberately) can force the mechanism on.
 export function applyCoveragePass(
   db: IndexDb,
   hits: HybridHit[],
-  opts: CoverageOptions = DEFAULT_COVERAGE_OPTIONS,
+  opts?: CoverageOptions,
 ): HybridHit[] {
-  if (!opts.enabled || hits.length < 2) return hits;
-  const entity = detectSharedEntity(db, hits, opts.seedK);
+  const resolved = opts ?? { ...DEFAULT_COVERAGE_OPTIONS, enabled: coverageEnabled() };
+  if (!resolved.enabled || hits.length < 2) return hits;
+  const entity = detectSharedEntity(db, hits, resolved.seedK);
   if (!entity) return hits;
-  const window = computeWindow(db, hits, entity, opts);
+  const window = computeWindow(db, hits, entity, resolved);
   if (!window) return hits;
   const exclude = new Set(hits.map((h) => h.path));
-  const added = gatherCandidates(db, entity, window, exclude, opts);
+  const added = gatherCandidates(db, entity, window, exclude, resolved);
   if (added.length === 0) return hits;
   return [...hits, ...added.map(coverageHit)];
 }
