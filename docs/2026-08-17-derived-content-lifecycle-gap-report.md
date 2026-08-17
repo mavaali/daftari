@@ -65,7 +65,17 @@ Two design decisions in the tree bear directly on any fix:
 
 ### Design direction (reviewed by strategist)
 
-<!-- STRATEGIST-DESIGN -->
+**Recommendation: compute it, never persist it.** Add one class to `EdgeStalenessClass`: **`unverifiable`** — deliberately not `pending-*`, because that prefix promises a re-check can clear it and this one can't. It is computed in `classifyEdge` *before* the `writes === 0` short-circuit: if the unit is not in the caller-visible doc set, classify `unverifiable` regardless of provenance counts. That single predicate at the choke point fixes the inversion (§1b) and propagates for free to every consumer — `vault_read` banner, search annotations, `vault_staleness` — because they all flow through `compiledUpstreamStaleness`/`classifyEdge`.
+
+**RBAC story.** `unverifiable` fires on "unit ∉ caller-visible universe" — the *same* predicate for hidden, worktree-deleted, and history-erased. This is the existing house rule (`tier0.ts:81-85`) extended to edges, not a compromise: the caller learns only "you cannot verify this derivation," true in every case, and the unit pointer is already disclosed in the readable downstream doc's own metadata. The reason string must never say "deleted" — say "source not in your readable vault." Distinguishing gone from hidden on the MCP path would be an existence oracle (violates the 2026-07-14 edge-graph spec's rejections). Accepted cost: an operator with full read sees `current` where a narrow role sees `unverifiable` — lint is already caller-relative by design (#217), and the verdict is epistemically true from the caller's vantage.
+
+**Gone-recoverable vs. gone-forever** (the §1g three-strengths distinction) stays off the MCP read path: it needs a git-history probe (cost, and probing history confirms a hidden doc once existed). Refine it operator-side only — lint detail / `daftari audit` / sleep report, and only when the caller can read the path's collection: "missing from worktree, last seen at `<sha>` (recoverable via asof)" vs. "never in history / external `distill:*` (permanent)." [HYPOTHESIS] "Unverifiable" alone is decision-sufficient for agents. Kill condition: an agent-facing flow emerges that must propose a restore (needs the sha) — then promote the probe to the read path, gated on `canRead`.
+
+**Rejected: a persisted deletion tombstone** (provenance action or reindex-diff record). Three independent disqualifiers: (a) machine-dependence — `provenance`/`edges.jsonl` are local-only, so a fresh clone has no tombstone and the inversion silently returns; two clones would give different verdicts for identical vault state. (b) It is exactly the verdict-store-that-goes-stale the parked 2026-08-04 spec §2 rejects — a `git revert` restoring the doc makes the tombstone lie. (c) The provenance log records writes daftari performed; daftari never deletes, so a tombstone records an event daftari only witnessed *if awake* — watcher down during the deletion means no tombstone ever. Existence must be computed, not remembered.
+
+**Rejected as state carrier, kept as remedy: frontmatter.** Unverifiability is a property of the derivation graph at query time, not of the downstream doc's lifecycle — do not grow the doc `status` enum, and a persisted flag re-imports the tombstone's staleness problem in the one place it becomes portable and hard to retract. But for the *permanent* class, a sleep/lint sweep may **stage** a proposal against the downstream doc (confidence downgrade, or an annotation naming the unverifiable source) through the normal `vault_stage_action`/`vault_ratify` flow: the durable mark is a normal, human-ratified, git-committed frontmatter write — advisory until ratified, so the advisory-only and no-auto-write constraints are untouched.
+
+**`distill:*` refs: keep R10, flip silent-by-design to labeled-by-design.** Blocking is incoherent with Posture A — distill-and-discard means the source is gone by contract, and you cannot block an external deletion that already happened. These refs are **born unverifiable**: give them their own reason string ("external source, discarded by design — re-derivation means re-presenting the source," near-verbatim R10), keep the `isPathLike` skip in `brokenSourceRefs` (correct — they were never resolvable), surface the label on read/lint, and add the missing R10 honesty clause to PRIVACY.md. Trust degradation is already handled at landing (`confidence: low` / `provenance: synthesized`, R3). [HYPOTHESIS] Labeling suffices because ratifiers see the label at decision time. Kill condition: `daftari eval` shows distill-descended canonical docs scoring materially worse on judge accuracy than source-backed canon — then revisit with a promotion-gate *advisory* (refusing, not auto-fixing) on unverifiable-source fraction.
 
 ---
 
@@ -95,10 +105,70 @@ Two design decisions in the tree bear directly on any fix:
 
 ## 6. Priority & sequencing
 
-<!-- STRATEGIST-PRIORITY -->
+Order: **I1 → I3 → I4 → I5 → I6 → I7 → I8 → I2**, plus one decision record (I0). Rationale:
+
+1. **The `current`-on-deletion inversion first (I1).** It is the only item where daftari asserts a *positive falsehood* ("current — unchanged since baseline") into the model-facing content channel; everything else is missing signal, this is inverted signal. And because task 4's verdict is (a), the wrong signal is being actively served, not idly stored. The fix is one predicate at one choke point that repairs `vault_read`, search, and `vault_staleness` simultaneously.
+2. **Silent misattribution next (I3, basename re-point).** Same severity class — a dangling ref quietly resolves to an unrelated same-named doc on the trust surface — and a small fix.
+3. **The plain bug (I4, consolidate eternal requeue).** Unbounded retry, independent of any design question.
+4. **The irreversibility gate (I5, erase dependents advisory).** Not urgent — `vault_erase` has no exposure surface today, so its blast radius is zero until someone exposes it — but it must be a hard precondition on exposure, because the asymmetry (the only irreversible operation is the only one without the advisory) bites once, permanently.
+5. Then honesty-of-silence (I6), the wake-queue blind spot (I7), labeled-by-design distill refs (I8), and vintage/receipts (I2) — I2 lowest because it is a reproducibility investment, not a live wrong signal; but do the two-line runId join whenever the file is touched, since it is what makes future receipt persistence possible at all.
+
+Nothing in the program needs new persisted state: it is one predicate + surface wording + one bug fix + one exposure gate.
 
 ---
 
 ## 7. Issue drafts
 
-<!-- ISSUE-DRAFTS -->
+Eight drafts plus one decision record, in priority order. Each is copy-ready for the tracker.
+
+### I1 — Edge staleness misclassifies a deleted upstream as `current`; add an `unverifiable` class
+
+**Problem.** `classifyEdge` counts provenance-log writes since the compile baseline (`src/curation/edge-staleness.ts:96-109`); deletion writes no provenance, so a deleted unit yields `writes === 0` → `staleness: "current", reason: "unchanged since baseline"` (`edge-staleness.ts:167-174`). The falsehood is served live: `vault_read` banner, `vault_search` annotations, `vault_staleness`.
+**Proposal.** New `EdgeStalenessClass` value `unverifiable` (not `pending-*`), computed before the `writes === 0` short-circuit: unit ∉ caller-visible doc set ⇒ `unverifiable`. Reason string: "source not in your readable vault" — never "deleted" (no existence leak; same predicate for hidden/deleted/erased, per `tier0.ts:81-85`). Banner parity with `pending-broken` in `read.ts:368-386` and the search hit buckets; summary counts in `vault_staleness`.
+**Acceptance.** A dependent of a deleted unit reports `unverifiable` on read/search/staleness; RBAC-hidden units report identically to deleted ones; existing `pending-*` behavior unchanged; tests alongside `test/tools/edge-staleness.test.ts`.
+
+### I2 — Model vintage: persist the distill receipt, fix the runId join, stamp provenance on artifacts
+
+**Problem.** No artifact carries a model id (`src/frontmatter/types.ts:138-163`); `DistillReceipt` has one but is stdout-only (`src/distill/cli.ts:604-620`) and its `runId` is an unrelated `randomUUID()` (`src/distill/cost.ts:257`) vs. the `makeRunId()` stamped on artifacts (`cli.ts:553`) — unjoinable even if persisted. A model swap is invisible to the staleness engine (`BOOKKEEPING_FIELDS`, `tier1.ts:35`). The consolidate replay-guard dedup key `${by}\n${axis}` collides two different models under the hardcoded agent identity (`edges.ts:370,399` vs. the claim at `:90-92`).
+**Proposal.** (a) Two-line fix: thread the staging runId into `buildReceipt`. (b) Persist receipts operator-side (they record provider/ZDR facts, R10 — never MCP-exposed). (c) Add model id to the distill body provenance block and consider a `compiled_with` frontmatter extension. (d) Vary `observedBy` (or fold the model id into the dedup key) in consolidate voting.
+**Acceptance.** A distill receipt on disk joins to its artifacts by runId; a re-derivation by a different model is distinguishable from a replay.
+
+### I3 — Basename fallback silently re-points dangling `sources` refs
+
+**Problem.** `resolveLink` falls back to `byBasename.get(base)` (`src/curation/vault-docs.ts:199-200`): when a source doc is deleted and any surviving doc shares its basename, every dangling ref silently re-targets the unrelated doc — no finding, wrong edge, on the trust surface (blast radius, backlinks, wake queue, lint all consume `resolveLink`).
+**Proposal.** On basename fallback where the literal path fails to resolve, either require uniqueness + emit an advisory finding, or resolve but flag `re-pointed` in lint. No silent success.
+**Acceptance.** Deleting `a/foo.md` while `b/foo.md` exists produces a lint finding for every doc whose `sources` cited `a/foo.md`; blast/wake computations no longer silently transfer to `b/foo.md`.
+
+### I4 — Consolidate loop requeues edges with vanished endpoints forever
+
+**Problem.** A committed deletion makes dependents event-due, `loadDoc` fails against the live doc set, the loop stderr-logs and continues (`src/consolidate/index.ts:632-669`), and the decay backstop re-queues the same edge every cycle (`clocks.ts:33-55`) — unbounded retry, never resolved, never surfaced.
+**Proposal.** On `loadDoc` failure for a missing endpoint, mark the pair terminally skipped for the run and surface it in the cycle report (count + paths). Do not auto-revoke (that is I1/I6 territory); just stop the eternal requeue and make the condition visible.
+**Acceptance.** A vault with a deleted edge endpoint completes consolidate cycles without re-erroring on the same pair; the report names it once.
+
+### I5 — Exposure gate: `vault_erase` must ship a downstream-dependents advisory before any MCP/CLI exposure
+
+**Problem.** The only irreversible operation (git history rewrite, `src/utils/git-erase.ts:171-241`) is the only retirement path with no dependents check (`src/tools/erase.ts:79-169`), while reversible deprecate/supersede have `buildDependentsAdvisory` (`write.ts:1558-1600`) and a ratify gate (`tier0.ts:233-255`). `source_ref` mode also resolves against the current worktree only.
+**Proposal.** Hard precondition on exposure (currently deferred, CHANGELOG:63): before erase executes, compute the same dependents advisory (`computeBlast` over reverse source/link maps) and include it in the confirm flow; a nonzero advisory requires explicit acknowledgment. Not a blocker — an advisory, parity with the softer path.
+**Acceptance.** Erasing a doc with downstream dependents surfaces them pre-scrub; documented in erasure-protocol.md.
+
+### I6 — Uninstrumented vault is indistinguishable from all-fresh
+
+**Problem.** No `run_id` on writes → empty `consumes.jsonl` → `loadCompiledStaleContext` short-circuits (`edge-staleness.ts:216`) → `upstream_staleness: null` everywhere, identical to a healthy fully-verified vault. Fresh clones hit the same path (jsonl substrate is gitignored). This also caps I1: `unverifiable` can never fire for compiled edges on an uninstrumented vault.
+**Proposal.** Surface instrumentation coverage distinctly from freshness: `vault_staleness` summary and sleep report say "no compiled-edge data (N docs uninstrumented)" instead of implying all-current; a lint monitor row for compiled-edge coverage.
+**Acceptance.** A vault with zero consumes edges reports "no data," not silence; a fresh clone of an instrumented vault is visibly distinguishable from a verified one.
+
+### I7 — Wake queue never wakes dependents of a *deleted* source
+
+**Problem.** The nightly wake list keys on live docs whose status is deprecated/superseded (`src/sleep/cycle.ts:110-114,146-153`); a deleted source is in neither set, so its dependents never wake — while dependents of a merely deprecated source wake nightly.
+**Proposal.** Reuse I1's existence predicate in the sleep sweep: docs whose `sources`/compiled units resolve to nothing enter the wake list under a `source-vanished` reason, ranked by the same blast radius. Advisory + recompute only (honors the parked 2026-08-04 spec §2); operator-side, so the gone-recoverable ("last seen at `<sha>`, recoverable via asof") vs. gone-forever detail is allowed here, gated on collection readability.
+**Acceptance.** Deleting a source with canonical dependents puts those dependents on the next wake list with the vanished-source reason and, where readable, the last-seen sha.
+
+### I8 — Label `distill:*` refs as born-unverifiable; add the R10 honesty clause to PRIVACY.md
+
+**Problem.** `distill:<source-id>#<claim-key>` refs are skipped by `brokenSourceRefs` (`isPathLike`, `tier0.ts:60-62`) and carry no label anywhere — dangling-by-design (spec R10) but silent. PRIVACY.md still claims "no network calls in default configuration" with zero mention of distill (R10's honesty clause: ABSENT).
+**Proposal.** Keep the `isPathLike` skip (correct — never resolvable) and keep R10's dangling-acceptable stance; add a distinct reason string on read/lint surfaces: "external source, discarded by design — re-derivation means re-presenting the source." Update PRIVACY.md per R10. Optional later (kill-condition-gated, see §2): promotion-gate advisory counting unverifiable sources.
+**Acceptance.** Reading a distill-derived doc surfaces the born-unverifiable label; PRIVACY.md describes the distill transport honestly.
+
+### I0 — Decision record (won't-fix): no persisted deletion tombstones
+
+Record — as a docs/superpowers decision, so it doesn't get re-proposed as the convenient option later — that deletion detection is **computed, never remembered**: no `delete`/`gone` provenance action, no reindex-diff tombstone. Grounds: (a) tombstones are machine-local (`.daftari/` is gitignored), so a fresh clone loses them and the inversion returns — two clones, two verdicts, same vault; (b) a tombstone is a verdict store that goes stale (git revert restores the doc, tombstone now lies) — exactly what the 2026-08-04 spec §2 rejects; (c) daftari never deletes, so a tombstone records an event it only witnessed if the watcher was up — event capture cannot be the mechanism for out-of-band events.
