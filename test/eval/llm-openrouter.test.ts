@@ -83,6 +83,22 @@ describe("complete", () => {
     ]);
   });
 
+  it("surfaces servedModel from the response body and the effective temperature sent", async () => {
+    const body = {
+      // OpenRouter echoes the served model at the top level of the response.
+      model: "anthropic/claude-3-5-haiku",
+      choices: [{ message: { content: "hi" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    };
+    const fetchImpl = vi.fn(async () => fakeRes(200, body));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await client.complete({ ...OPTS, temperature: 0.2 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.servedModel).toBe("anthropic/claude-3-5-haiku");
+    expect(r.value.effectiveTemperature).toBe(0.2);
+  });
+
   it("omits temperature when not set (provider default applies)", async () => {
     const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
     const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });

@@ -41,10 +41,27 @@ export interface CompleteResult {
   input_tokens: number;
   output_tokens: number;
   stop_reason: string;
+  // --- Optional LLM run metadata (6mf.6) ---------------------------------
+  // Additive + optional so every existing caller and hand-rolled mock stays
+  // type-valid. Surfaced here (not consumed here) so a later bead can stamp
+  // it onto emitted beliefs. Never load-bearing for control flow.
+  //
+  // The model string the provider actually SERVED for this call — distinct
+  // from the requested `opts.model`. Undefined when the transport did not
+  // report one.
+  servedModel?: string;
+  // The temperature ACTUALLY sent to the API for this call. Undefined when no
+  // temperature was sent (provider default applies). On completeJsonWithRetry's
+  // retry path this is the bumped value (0.2), not the requested temp.
+  effectiveTemperature?: number;
 }
 
 export interface CompleteJsonResult extends CompleteResult {
   parsed: unknown;
+  // True iff this JSON value was salvaged via completeJsonWithRetry's bounded
+  // reprompt branch (temp bumped off 0). Only completeJsonWithRetry sets it;
+  // undefined elsewhere. false ⇒ first-try success.
+  viaRetry?: boolean;
 }
 
 export interface CompleteWithToolsResult extends CompleteResult {
@@ -84,6 +101,10 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
         input_tokens: res.usage.input_tokens,
         output_tokens: res.usage.output_tokens,
         stop_reason: res.stop_reason ?? "unknown",
+        // The served model the API returned (distinct from opts.model) and the
+        // temperature we actually sent (undefined ⇒ none sent). Metadata only.
+        servedModel: res.model,
+        effectiveTemperature: opts.temperature,
       });
     });
   };
@@ -275,7 +296,10 @@ export async function completeJsonWithRetry(
   const first = await complete({ ...opts, system: sysWithSchema });
   if (!first.ok) return first;
   try {
-    return ok({ ...first.value, parsed: parseModelJson(first.value.text) });
+    // First-try success: viaRetry:false, effective temp = the requested temp
+    // (which is exactly what the underlying complete() reported). servedModel
+    // carries from the call that produced the returned value (this one).
+    return ok({ ...first.value, parsed: parseModelJson(first.value.text), viaRetry: false });
   } catch {
     // First reply was unparseable — fall through to one bounded reprompt.
   }
@@ -285,7 +309,10 @@ export async function completeJsonWithRetry(
   const second = await complete({ ...opts, system: retrySys, temperature: retryTemp });
   if (!second.ok) return second;
   try {
-    return ok({ ...second.value, parsed: parseModelJson(second.value.text) });
+    // Salvaged via retry: viaRetry:true. effectiveTemperature is the bumped
+    // temp the retry call actually sent (second.value.effectiveTemperature),
+    // NOT the requested temp; servedModel carries from this second call.
+    return ok({ ...second.value, parsed: parseModelJson(second.value.text), viaRetry: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return err({

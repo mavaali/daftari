@@ -335,6 +335,13 @@ export async function proposeAllClaims(
       continue;
     }
 
+    // 6mf.6 handoff: the producing extraction call's run metadata is available
+    // here as `claim.run_meta` (ClaimRunMeta | undefined) — servedModel,
+    // effectiveTemperature, viaRetry, requestedModel, chunkWindow, inputCap.
+    // It reaches this point untouched via the upsert join. A later bead (f3h)
+    // will read it to stamp per-belief provenance frontmatter. This bead makes
+    // NO behavior change: run_meta is not written into `frontmatter` here.
+
     const body = assembleBody(claim, frontmatter, ids);
 
     // U8/R5 + R7: overlap-hint. Attach top-K likely-collision neighbor paths to

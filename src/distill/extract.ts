@@ -19,6 +19,32 @@ import type { Chunk } from "./chunk.js";
 
 // --- public surface ----------------------------------------------------------
 
+/**
+ * Per-claim LLM extraction run metadata (6mf.6). Attached to every claim by
+ * the producing chunk's `completeJson` call, so a later bead (f3h) can stamp
+ * each emitted belief with the run that compiled it.
+ *
+ * Optional on ExtractedClaim and every field carries its own source's value —
+ * two claims from different chunks may carry different metadata (e.g. one chunk
+ * salvaged via retry at temp 0.2, another a clean first-try at 0). Additive and
+ * consumed by nothing in this bead: propose.ts only needs to be able to READ
+ * it; it does NOT yet write frontmatter from it.
+ */
+export interface ClaimRunMeta {
+  /** Model the provider actually served (distinct from requestedModel). */
+  servedModel?: string;
+  /** Temperature actually sent for the producing call (0.2 iff salvaged via retry). */
+  effectiveTemperature?: number;
+  /** True iff the producing call went through completeJsonWithRetry's retry branch. */
+  viaRetry?: boolean;
+  /** The model this run requested (ExtractOpts.model). */
+  requestedModel: string;
+  /** Number of messages in the producing chunk's window. */
+  chunkWindow: number;
+  /** The per-call input character cap in effect for this run (ExtractOpts.inCallInputCap). */
+  inputCap: number;
+}
+
 /** One extracted claim, keyed for idempotent upsert (U5). */
 export interface ExtractedClaim {
   /** Stable within-source key: `<chunk anchor>:<statement slug>-<hash8>`. */
@@ -30,6 +56,13 @@ export interface ExtractedClaim {
    * title here by design — do not grow this into the full staged-action.
    */
   proposed_frontmatter: { title: string };
+  /**
+   * Optional per-claim LLM extraction run metadata (6mf.6). Populated by
+   * extractClaims from the producing chunk's call; flows unchanged through the
+   * upsert join into proposeAllClaims' inputs so a later bead can stamp it.
+   * Optional so every existing constructor / mock stays valid.
+   */
+  run_meta?: ClaimRunMeta;
 }
 
 export interface ExtractOutcome {
@@ -186,6 +219,20 @@ export async function extractClaims(
       continue;
     }
 
+    // 6mf.6: capture the producing call's run metadata once per chunk and
+    // attach it to every claim this chunk produced. servedModel /
+    // effectiveTemperature / viaRetry come off the CompleteJsonResult (undefined
+    // on mocks that don't set them); requestedModel / chunkWindow / inputCap are
+    // the run's own knobs.
+    const runMeta: ClaimRunMeta = {
+      servedModel: res.value.servedModel,
+      effectiveTemperature: res.value.effectiveTemperature,
+      viaRetry: res.value.viaRetry,
+      requestedModel: opts.model,
+      chunkWindow: chunk.endIndex - chunk.startIndex + 1,
+      inputCap: opts.inCallInputCap,
+    };
+
     for (const statement of statements) {
       if (claims.length >= opts.maxClaims) break;
       const key = claimKey(chunk.anchor, statement);
@@ -195,6 +242,7 @@ export async function extractClaims(
         claim_key: key,
         statement,
         proposed_frontmatter: { title: titleOf(statement) },
+        run_meta: runMeta,
       });
     }
   }

@@ -36,13 +36,17 @@ const TRANSCRIPT: NormalizedMessage[] = [
 
 const OPTS = { model: "test-model", maxClaims: 50, inCallInputCap: 16000 };
 
-function jsonOk(parsed: unknown): Result<CompleteJsonResult, CortexEvalError> {
+function jsonOk(
+  parsed: unknown,
+  meta?: { servedModel?: string; effectiveTemperature?: number; viaRetry?: boolean },
+): Result<CompleteJsonResult, CortexEvalError> {
   return ok({
     text: JSON.stringify(parsed),
     input_tokens: 1,
     output_tokens: 1,
     stop_reason: "end_turn",
     parsed,
+    ...meta,
   });
 }
 
@@ -197,6 +201,85 @@ describe("extractClaims — budget exhaustion", () => {
     expect(out.budget_exhausted).toBe(false);
     expect(out.claims).toEqual([]);
     expect(out.chunkErrors).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-claim run metadata threading (6mf.6)
+// ---------------------------------------------------------------------------
+
+describe("extractClaims — per-claim run metadata", () => {
+  // A mock client whose completeJson returns the given (parsed, meta) pairs in
+  // order — lets a test give different chunks different run metadata.
+  function mockLlmWithMeta(
+    entries: Array<{
+      parsed: unknown;
+      meta?: { servedModel?: string; effectiveTemperature?: number; viaRetry?: boolean };
+    }>,
+  ): LlmClient {
+    let calls = 0;
+    return {
+      complete: () => {
+        throw new Error("not used");
+      },
+      completeWithTools: () => {
+        throw new Error("not used");
+      },
+      completeJson: async () => {
+        const e = entries[Math.min(calls, entries.length - 1)];
+        calls++;
+        return jsonOk(e.parsed, e.meta);
+      },
+    } as unknown as LlmClient;
+  }
+
+  it("attaches the producing call's run metadata to each claim", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4); // single chunk
+    const llm = mockLlmWithMeta([
+      {
+        parsed: { claims: [{ statement: "Use postgres for the new service" }] },
+        meta: { servedModel: "claude-served-1", effectiveTemperature: 0, viaRetry: false },
+      },
+    ]);
+
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims).toHaveLength(1);
+    const rm = out.claims[0].run_meta;
+    expect(rm).toBeDefined();
+    if (!rm) return;
+    expect(rm.servedModel).toBe("claude-served-1");
+    expect(rm.effectiveTemperature).toBe(0);
+    expect(rm.viaRetry).toBe(false);
+    // requestedModel + run knobs are the run's config values, stamped per claim.
+    expect(rm.requestedModel).toBe(OPTS.model);
+    expect(rm.chunkWindow).toBe(chunks[0].endIndex - chunks[0].startIndex + 1);
+    expect(rm.inputCap).toBe(OPTS.inCallInputCap);
+  });
+
+  it("carries viaRetry:true through to the claims of a retried chunk", async () => {
+    // Two chunks: first chunk's call was salvaged via retry (temp bumped to
+    // 0.2), second was a clean first-try. The claims must carry their own
+    // chunk's metadata, not a single run-wide value.
+    const chunks = chunkMessages(TRANSCRIPT, 2); // 2 chunks
+    const llm = mockLlmWithMeta([
+      {
+        parsed: { claims: [{ statement: "Retried chunk claim" }] },
+        meta: { servedModel: "served-retry", effectiveTemperature: 0.2, viaRetry: true },
+      },
+      {
+        parsed: { claims: [{ statement: "Clean chunk claim" }] },
+        meta: { servedModel: "served-clean", effectiveTemperature: 0, viaRetry: false },
+      },
+    ]);
+
+    const out = await extractClaims(chunks, llm, OPTS);
+    const byStatement = new Map(out.claims.map((c) => [c.statement, c.run_meta]));
+    const retried = byStatement.get("Retried chunk claim");
+    const clean = byStatement.get("Clean chunk claim");
+    expect(retried?.viaRetry).toBe(true);
+    expect(retried?.effectiveTemperature).toBe(0.2);
+    expect(clean?.viaRetry).toBe(false);
+    expect(clean?.effectiveTemperature).toBe(0);
   });
 });
 
