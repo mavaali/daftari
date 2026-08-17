@@ -70,6 +70,118 @@ describe("temperature passthrough", () => {
   });
 });
 
+describe("run metadata — anthropic complete()", () => {
+  function makeClientWith(create: ReturnType<typeof vi.fn>) {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    // biome-ignore lint/suspicious/noExplicitAny: minimal SDK stand-in
+    const client = createAnthropicClient({ messages: { create } } as any);
+    if (prev) process.env.ANTHROPIC_API_KEY = prev;
+    else delete process.env.ANTHROPIC_API_KEY;
+    return client;
+  }
+
+  it("surfaces servedModel from the SDK response and the effective temperature sent", async () => {
+    const create = vi.fn(async () => ({
+      // The served model the API actually returned — distinct from requested.
+      model: "claude-3-5-sonnet-20241022",
+      content: [{ type: "text", text: "ok", citations: null }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+      stop_reason: "end_turn",
+    }));
+    const client = makeClientWith(create);
+    const r = await client.complete({
+      model: "claude-sonnet-latest",
+      system: "s",
+      user: "u",
+      temperature: 0,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.servedModel).toBe("claude-3-5-sonnet-20241022");
+    expect(r.value.effectiveTemperature).toBe(0);
+  });
+
+  it("reports effectiveTemperature undefined when no temperature was sent", async () => {
+    const create = vi.fn(async () => ({
+      model: "claude-3-5-sonnet-20241022",
+      content: [{ type: "text", text: "ok", citations: null }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+      stop_reason: "end_turn",
+    }));
+    const client = makeClientWith(create);
+    const r = await client.complete({ model: "m", system: "s", user: "u" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.effectiveTemperature).toBeUndefined();
+  });
+});
+
+describe("run metadata — completeJsonWithRetry", () => {
+  const okText = (text: string, servedModel = "served-x") =>
+    ok({
+      text,
+      input_tokens: 1,
+      output_tokens: 1,
+      stop_reason: "end_turn",
+      servedModel,
+      // The underlying complete() reports the temp it actually sent.
+      effectiveTemperature: 0,
+    });
+  const jsonOpts = {
+    model: "m",
+    system: "s",
+    user: "u",
+    schema: { type: "object" },
+    temperature: 0,
+  };
+
+  it("first-try success sets viaRetry false and effectiveTemperature = requested temp", async () => {
+    const complete = vi.fn(async () => okText('{"claims":[]}'));
+    const r = await completeJsonWithRetry(complete, jsonOpts);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.viaRetry).toBe(false);
+    expect(r.value.effectiveTemperature).toBe(0);
+    expect(r.value.servedModel).toBe("served-x");
+  });
+
+  it("retry path sets viaRetry true and effectiveTemperature 0.2, carrying servedModel from the retry call", async () => {
+    const complete = vi
+      .fn()
+      // First reply is garbage; underlying complete reports temp 0.
+      .mockResolvedValueOnce(
+        ok({
+          text: "say",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          servedModel: "served-first",
+          effectiveTemperature: 0,
+        }),
+      )
+      // Retry reply parses; underlying complete reports the bumped temp 0.2.
+      .mockResolvedValueOnce(
+        ok({
+          text: '{"claims":[{"statement":"x"}]}',
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          servedModel: "served-retry",
+          effectiveTemperature: 0.2,
+        }),
+      );
+    const r = await completeJsonWithRetry(complete, jsonOpts);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.viaRetry).toBe(true);
+    // Salvaged via retry ⇒ effective temp is the bumped 0.2, NOT the requested 0.
+    expect(r.value.effectiveTemperature).toBe(0.2);
+    // servedModel comes from the retry call that produced the returned value.
+    expect(r.value.servedModel).toBe("served-retry");
+  });
+});
+
 describe("stripCodeFence", () => {
   it("strips a ```json fenced block", () => {
     expect(stripCodeFence('```json\n{"a":1}\n```')).toBe('{"a":1}');

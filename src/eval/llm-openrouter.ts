@@ -62,6 +62,10 @@ interface OpenRouterToolCall {
 }
 
 interface OpenRouterChatResponse {
+  // The model the provider actually served — echoed at the top level of the
+  // OpenAI-compatible response. Distinct from the requested model. Surfaced as
+  // CompleteResult.servedModel (6mf.6); undefined when the provider omits it.
+  model?: string;
   choices?: Array<{
     message?: { content?: unknown; tool_calls?: OpenRouterToolCall[] };
     finish_reason?: string | null;
@@ -191,6 +195,10 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
         input_tokens: json.value.usage?.prompt_tokens ?? 0,
         output_tokens: json.value.usage?.completion_tokens ?? 0,
         stop_reason: finish ? (FINISH_TO_STOP[finish] ?? finish) : "unknown",
+        // Served model echoed by the provider (distinct from o.model) and the
+        // temperature we actually sent (undefined ⇒ none). Metadata only (6mf.6).
+        servedModel: json.value.model,
+        effectiveTemperature: o.temperature,
       });
     });
   };
