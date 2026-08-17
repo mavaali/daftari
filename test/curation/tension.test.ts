@@ -834,3 +834,85 @@ describe("consolidated resolution kind + lease retry", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+// 6mf.2: tension entries record the reader on each side, so a consumer can tell
+// a CROSS-reader tension (readerA != readerB) from a SAME-reader one without
+// opening both docs. The fields are OPTIONAL — legacy entries lack them and must
+// round-trip with readerA/readerB undefined (no crash, no placeholder).
+describe("tension — reader fields (6mf.2)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-tension-reader-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("persists distinct readerA/readerB and reads them back (cross-reader tension)", async () => {
+    const logged = await addTension(vault, {
+      ...sampleInput,
+      readerA: "modelA",
+      readerB: "modelB",
+    });
+    expect(logged.ok).toBe(true);
+    if (!logged.ok) return;
+    expect(logged.value.readerA).toBe("modelA");
+    expect(logged.value.readerB).toBe("modelB");
+
+    const listed = await listTensions(vault);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const entry = listed.value.find((e) => e.id === logged.value.id);
+    expect(entry?.readerA).toBe("modelA");
+    expect(entry?.readerB).toBe("modelB");
+    // A consumer distinguishes cross-reader from same-reader without opening
+    // either doc.
+    expect(entry?.readerA !== entry?.readerB).toBe(true);
+  });
+
+  it("a legacy entry without reader fields round-trips with readerA/readerB undefined (no crash)", async () => {
+    // A hand-written legacy block predating the reader fields.
+    const legacy = [
+      "## 2026-05-01 — Legacy tension",
+      "- **Id:** tension-042",
+      "- **Kind:** factual",
+      "- **Source A:** pricing/a.md says A",
+      "- **Source B:** pricing/b.md says B",
+      "- **Status:** unresolved",
+      "- **Logged by:** agent:legacy",
+      "",
+    ].join("\n");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(tensionsPath(vault), `\n${legacy}`);
+
+    const listed = await listTensions(vault);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const entry = listed.value.find((e) => e.id === "tension-042");
+    expect(entry).toBeDefined();
+    expect(entry?.readerA).toBeUndefined();
+    expect(entry?.readerB).toBeUndefined();
+  });
+
+  it("omits reader lines from the rendered block when unset (no empty placeholders)", async () => {
+    const logged = await addTension(vault, { ...sampleInput });
+    expect(logged.ok).toBe(true);
+    const raw = readFileSync(tensionsPath(vault), "utf-8");
+    expect(raw).not.toContain("Reader A");
+    expect(raw).not.toContain("Reader B");
+  });
+
+  it("persists only readerA when only one side has a reader", async () => {
+    const logged = await addTension(vault, { ...sampleInput, readerA: "modelA" });
+    expect(logged.ok).toBe(true);
+    if (!logged.ok) return;
+    const listed = await listTensions(vault);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const entry = listed.value.find((e) => e.id === logged.value.id);
+    expect(entry?.readerA).toBe("modelA");
+    expect(entry?.readerB).toBeUndefined();
+  });
+});

@@ -21,8 +21,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, posix } from "node:path";
 import type { DerivesFromEdge, ObserveEdgeInput } from "../curation/edges.js";
-import type { TensionInput } from "../curation/tension.js";
+import { readerOf, type TensionInput } from "../curation/tension.js";
 import type { LlmClient } from "../eval/llm.js";
+import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { CONSOLIDATE_AGENT, type ConsolidatePromptTemplate } from "./constants.js";
 import {
@@ -216,6 +217,17 @@ function claimSnippet(content: string, fallback: string): string {
   return snip.length > 0 ? snip : `(no readable content: ${fallback})`;
 }
 
+// 6mf.2: the reader fingerprint of one side of a direction-pending tension,
+// parsed from that side's full markdown (frontmatter included). readerOf reads
+// reader_model, falling back to readers[0], and returns undefined for a legacy
+// side with no reader fields. A parse failure (malformed YAML) is treated as no
+// reader — the tension still logs; the reader annotation is advisory.
+function readerFromContent(content: string): string | undefined {
+  const parsed = parseDocument(content);
+  if (!parsed.ok) return undefined;
+  return readerOf(parsed.value.raw);
+}
+
 // --- birth pass --------------------------------------------------------------
 
 export async function birthOne(
@@ -387,6 +399,11 @@ export async function birthOne(
       continue;
     }
     observations.push({ from, to });
+    // 6mf.2: annotate each side with its reader fingerprint (sourceA=doc,
+    // sourceB=neighbor) so a consumer can tell a cross-reader tension from a
+    // same-reader one without opening either doc. Undefined for a legacy side.
+    const readerA = readerFromContent(doc.content);
+    const readerB = readerFromContent(nc.value);
     const tension = await deps.recordTension({
       title: `direction-pending (${which}): ${from} ↔ ${to}`,
       kind: "interpretive",
@@ -395,6 +412,8 @@ export async function birthOne(
       sourceB: neighbor,
       claimB: claimSnippet(nc.value, neighbor),
       loggedBy: opts.agent,
+      ...(readerA !== undefined ? { readerA } : {}),
+      ...(readerB !== undefined ? { readerB } : {}),
     });
     if (!tension.ok) {
       verdicts.push({ neighbor, error: `tension failed: ${tension.error.message}` });

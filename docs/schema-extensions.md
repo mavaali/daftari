@@ -173,6 +173,60 @@ What the schema enforces here:
 - `stakeholders` must be a list of strings if present; it is optional.
 - `ratified` is optional; a document written without it gets `ratified: false`.
 
+## Worked example — Distill reader provenance
+
+The distill ingest pipeline can stamp each compiled belief with a **reader
+fingerprint**: the LLM run configuration that extracted it (which model was
+requested and served, the effective temperature, whether it took the retry
+path, a short hash of the extraction prompt contract, the chunk window and
+input cap, plus a `readers` parentage set a later merge unions). These land only
+if the vault declares them. Declare all eight as **optional** extensions — they
+are advisory, they never block a write, and they are absent on any document
+distill did not touch:
+
+`.daftari/config.yaml`:
+
+```yaml
+version: 1
+vault_name: my-vault
+
+schema_extensions:
+  reader_model:
+    type: string
+  reader_served_model:
+    type: string
+  reader_temperature:
+    type: number
+  reader_via_retry:
+    type: boolean
+  reader_prompt_version:
+    type: string
+  reader_chunk_window:
+    type: number
+  reader_input_cap:
+    type: number
+  readers:
+    type: array
+    items: string
+```
+
+Notes on the field semantics distill writes:
+
+- Every field is **optional** — a claim whose run metadata is unknown (an older
+  extraction path, or a mock) is stamped with none of them, and that is valid.
+- `reader_served_model` carries the sentinel string `"unreported"` when the
+  provider did not report a served model. Distill never writes `null` here,
+  because a `null` on a declared extension **deletes** the field.
+- `reader_temperature` is a `number`, so it cannot carry a sentinel: distill
+  **omits** the field entirely when no temperature was sent, rather than writing
+  a placeholder.
+- `reader_via_retry` is a `boolean` that is often `false`. `false` serializes
+  and round-trips like any value — only `null`/absent is dropped — so a
+  first-try extraction keeps `reader_via_retry: false` across later
+  frontmatter edits (promote, set_tier, …).
+- `readers` holds one entry at ingest; a later merge unions the sets from the
+  merged beliefs. Each entry is a compact single-line encoding of one reader.
+
 ## Back-compat for existing vaults
 
 Schema extensions are opt-in. A vault whose `.daftari/config.yaml` has no

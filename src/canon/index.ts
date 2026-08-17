@@ -16,7 +16,7 @@ import type { AccessContext } from "../access/rbac.js";
 import { canRead } from "../access/rbac.js";
 import { listEdges } from "../curation/edges.js";
 import { listTensions } from "../curation/tension.js";
-import { loadDocuments } from "../curation/vault-docs.js";
+import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { buildRegistry, resolveHolder } from "../holders/registry.js";
 import { type VaultReceiptResult, vaultReceipt } from "../tools/receipt.js";
@@ -38,6 +38,33 @@ export type ComputeCanonResult = CanonResult & { receipt: VaultReceiptResult | n
 // collection frontmatter is absent (mirrors receipt.ts's topCollection).
 function topCollection(relPath: string): string {
   return relPath.split("/")[0] ?? "";
+}
+
+// Project a loaded vault doc into a CanonDoc (6mf.3). Reader provenance
+// (reader_model + the `readers` parentage set) is read off the doc's RAW
+// frontmatter — those declared-optional schema extensions are never coerced
+// into the typed `frontmatter`, so raw is the only place they live. Both are
+// OPTIONAL and defensively typed: a non-string reader_model or a non-array
+// readers is treated as absent rather than projected as a misleading value.
+// Exported for direct unit testing of the projection.
+export function toCanonDoc(path: string, doc: LoadedDoc): CanonDoc {
+  const raw = doc.raw ?? {};
+  const rawModel = raw.reader_model;
+  const rawReaders = raw.readers;
+  const cd: CanonDoc = {
+    path,
+    holder: doc.frontmatter.updated_by || "unknown:unattributed",
+    valid_from: doc.frontmatter.valid_from,
+    valid_until: doc.frontmatter.valid_until,
+    updated: doc.frontmatter.updated,
+    collection: doc.frontmatter.collection || topCollection(path),
+  };
+  if (typeof rawModel === "string" && rawModel.length > 0) cd.readerModel = rawModel;
+  if (Array.isArray(rawReaders)) {
+    const readers = rawReaders.filter((r): r is string => typeof r === "string");
+    if (readers.length > 0) cd.readers = readers;
+  }
+  return cd;
 }
 
 export async function computeCanon(
@@ -71,14 +98,7 @@ export async function computeCanon(
   for (const path of candidateSet) {
     const doc = allDocsMap.get(path);
     if (!doc) continue;
-    candidateDocs.push({
-      path,
-      holder: doc.frontmatter.updated_by || "unknown:unattributed",
-      valid_from: doc.frontmatter.valid_from,
-      valid_until: doc.frontmatter.valid_until,
-      updated: doc.frontmatter.updated,
-      collection: doc.frontmatter.collection || topCollection(path),
-    });
+    candidateDocs.push(toCanonDoc(path, doc));
   }
 
   // Pre-RBAC set: all topic candidate paths that exist in the vault.

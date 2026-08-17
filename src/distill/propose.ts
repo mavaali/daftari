@@ -23,8 +23,9 @@ import type { AccessContext } from "../access/rbac.js";
 import { type StageOutcome, stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { slugifyKey } from "../import/langgraph-store.js";
 import { vaultSearch } from "../tools/search.js";
-import type { ExtractedClaim } from "./extract.js";
+import type { ClaimRunMeta, ExtractedClaim } from "./extract.js";
 import { refuseRawDistillOutput } from "./output-fence.js";
+import { encodeReader, READER_PROMPT_VERSION } from "./reader-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -187,13 +188,97 @@ function derivePath(claim: ExtractedClaim, sourceId: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Reader provenance frontmatter (f3h)
+// ---------------------------------------------------------------------------
+
+/**
+ * The reader_* frontmatter fields stamped from a claim's run_meta. Every field
+ * is a DECLARED-OPTIONAL schema extension (see docs/schema-extensions.md); the
+ * fields land typed in a vault whose config declares them, untyped-but-preserved
+ * otherwise, and never block a write (optional, advisory).
+ *
+ * null is never written for any field — a null on a declared extension DELETES
+ * it (serializeDocument treats null as absent). So a value that would be null is
+ * either given a sentinel (served_model → "unreported") or the field is OMITTED
+ * (temperature, which is a number and cannot carry a sentinel).
+ */
+export interface ReaderFrontmatter {
+  reader_model: string;
+  reader_served_model: string;
+  reader_temperature?: number;
+  reader_via_retry: boolean;
+  reader_prompt_version: string;
+  reader_chunk_window: number;
+  reader_input_cap: number;
+  readers: string[];
+}
+
+/**
+ * Build the reader_* frontmatter fields from a claim's run_meta. The prompt
+ * version is READER_PROMPT_VERSION (the hash of the effective extraction prompt
+ * contract at this build). `readers` carries exactly ONE entry at ingest — the
+ * parentage SET a later merge bead unions.
+ *
+ * Locked field rules (see the bead spec):
+ *   - reader_served_model uses the "unreported" sentinel when servedModel is
+ *     undefined — NEVER null (null deletes the field).
+ *   - reader_temperature is OMITTED when effectiveTemperature is undefined — a
+ *     number field cannot hold a sentinel.
+ *   - reader_via_retry defaults to false when viaRetry is undefined.
+ */
+export function buildReaderFrontmatter(runMeta: ClaimRunMeta): ReaderFrontmatter {
+  const fm: ReaderFrontmatter = {
+    reader_model: runMeta.requestedModel,
+    reader_served_model: runMeta.servedModel ?? "unreported",
+    reader_via_retry: runMeta.viaRetry ?? false,
+    reader_prompt_version: READER_PROMPT_VERSION,
+    reader_chunk_window: runMeta.chunkWindow,
+    reader_input_cap: runMeta.inputCap,
+    readers: [encodeReader(runMeta, READER_PROMPT_VERSION)],
+  };
+  // Omit reader_temperature entirely when unknown: a number can't hold a
+  // sentinel and null would delete a declared extension.
+  if (runMeta.effectiveTemperature !== undefined) {
+    fm.reader_temperature = runMeta.effectiveTemperature;
+  }
+  return fm;
+}
+
+// ---------------------------------------------------------------------------
 // Note assembly (mirrors langgraph-store.ts deriveNotes)
 // ---------------------------------------------------------------------------
+
+// Human-readable "Reader" subsection of the Provenance body, mirroring the
+// reader_* frontmatter. Returns [] (no subsection) when the claim carries no
+// run_meta, so a claim without reader provenance produces the original body.
+function readerProvenanceLines(reader: ReaderFrontmatter | null): string[] {
+  if (reader === null) return [];
+  return [
+    "",
+    "### Reader",
+    "",
+    `- **Model (requested):** \`${reader.reader_model}\``,
+    `- **Model (served):** \`${reader.reader_served_model}\``,
+    ...(reader.reader_temperature !== undefined
+      ? [`- **Effective temperature:** \`${reader.reader_temperature}\``]
+      : []),
+    `- **Via retry:** \`${reader.reader_via_retry}\``,
+    `- **Prompt version:** \`${reader.reader_prompt_version}\``,
+    `- **Chunk window:** \`${reader.reader_chunk_window}\``,
+    `- **Input cap:** \`${reader.reader_input_cap}\``,
+    `- **Readers:** \`${reader.readers.join(", ")}\``,
+    "",
+    "_This fingerprint identifies the run configuration; it does not guarantee " +
+      "bit-identical re-extraction (temperature 0 is not seeded; provider/quantization " +
+      "variance)._",
+  ];
+}
 
 function assembleBody(
   claim: ExtractedClaim,
   frontmatter: Record<string, unknown>,
   ids: DistillIds,
+  reader: ReaderFrontmatter | null,
 ): string {
   return [
     "---",
@@ -208,6 +293,7 @@ function assembleBody(
     `- **Claim key:** \`${claim.claim_key}\``,
     `- **Run id:** \`${ids.runId}\``,
     `- **Source ref:** \`distill:${ids.sourceId}#${claim.claim_key}\``,
+    ...readerProvenanceLines(reader),
     "",
   ].join("\n");
 }
@@ -335,14 +421,17 @@ export async function proposeAllClaims(
       continue;
     }
 
-    // 6mf.6 handoff: the producing extraction call's run metadata is available
-    // here as `claim.run_meta` (ClaimRunMeta | undefined) — servedModel,
-    // effectiveTemperature, viaRetry, requestedModel, chunkWindow, inputCap.
-    // It reaches this point untouched via the upsert join. A later bead (f3h)
-    // will read it to stamp per-belief provenance frontmatter. This bead makes
-    // NO behavior change: run_meta is not written into `frontmatter` here.
+    // f3h: the producing extraction call's run metadata reaches this point as
+    // `claim.run_meta` (ClaimRunMeta | undefined) — servedModel,
+    // effectiveTemperature, viaRetry, requestedModel, chunkWindow, inputCap. When
+    // present, stamp the reader fingerprint onto the belief's frontmatter as
+    // declared-optional schema_extensions (reader_*/readers). When ABSENT (older
+    // paths, mocks that omit it), skip every reader field entirely — they are
+    // optional and must not crash or write empty/null placeholders.
+    const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta) : null;
+    if (reader) Object.assign(frontmatter, reader);
 
-    const body = assembleBody(claim, frontmatter, ids);
+    const body = assembleBody(claim, frontmatter, ids, reader);
 
     // U8/R5 + R7: overlap-hint. Attach top-K likely-collision neighbor paths to
     // the rationale so the ratifier can see possible overlaps at a glance, and
