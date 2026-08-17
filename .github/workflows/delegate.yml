@@ -186,3 +186,28 @@ jobs:
           path: ${{ runner.temp }}/claude-execution-output.json
           retention-days: 7
           if-no-files-found: ignore
+
+      # Also print the diagnosis INTO the job log: errored tool results
+      # (permission denials land here) and the session's final message.
+      # The artifact alone is not enough — artifact downloads go through
+      # blob storage, which some operator environments can't reach, while
+      # job logs are readable through the plain GitHub API. Best-effort:
+      # jq errors must never mask the real failure, hence the || true.
+      - name: Print denial digest
+        if: failure()
+        run: |
+          F="${{ runner.temp }}/claude-execution-output.json"
+          if [ ! -f "$F" ]; then echo "no execution output file"; exit 0; fi
+          echo "=== errored tool results (denials surface here) ==="
+          jq -r '
+            .. | objects
+            | select(.type? == "tool_result" and .is_error == true)
+            | .content
+            | if type == "array" then (.[] | .text? // empty)
+              elif type == "string" then . else tojson end
+          ' "$F" 2>/dev/null | head -100 || true
+          echo "=== final assistant message ==="
+          jq -r '
+            [.. | objects | select(.type? == "assistant")] | last
+            | .message.content[]? | .text? // empty
+          ' "$F" 2>/dev/null | tail -50 || true
