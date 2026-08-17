@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  completeJsonWithRetry,
   createAnthropicClient,
   type LlmClient,
+  parseModelJson,
   retry,
   stripCodeFence,
 } from "../../src/eval/llm.js";
 import type { CortexEvalError } from "../../src/eval/types.js";
-import { ok, type Result } from "../../src/frontmatter/types.js";
+import { err, ok, type Result } from "../../src/frontmatter/types.js";
 
 describe("LlmClient interface", () => {
   it("a mock client satisfies the interface", async () => {
@@ -77,6 +79,95 @@ describe("stripCodeFence", () => {
   });
   it("returns the input unchanged when there is no fence", () => {
     expect(stripCodeFence('{"a":1}')).toBe('{"a":1}');
+  });
+});
+
+describe("parseModelJson", () => {
+  it("parses clean JSON with no wrapper", () => {
+    expect(parseModelJson('{"claims":[{"statement":"x"}]}')).toEqual({
+      claims: [{ statement: "x" }],
+    });
+  });
+
+  it("parses a whole-string ```json fenced block", () => {
+    expect(parseModelJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+
+  it("parses a bare ``` fenced block", () => {
+    expect(parseModelJson('```\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+
+  it("recovers JSON from a fenced block with leading prose (the Ollama case)", () => {
+    const text = 'Here is the JSON you asked for:\n\n```json\n{"claims":[{"statement":"y"}]}\n```';
+    expect(parseModelJson(text)).toEqual({ claims: [{ statement: "y" }] });
+  });
+
+  it("recovers a bare object preceded by reasoning preamble", () => {
+    const text = 'Sure — my analysis is done.\n{"a":1,"b":2}';
+    expect(parseModelJson(text)).toEqual({ a: 1, b: 2 });
+  });
+
+  it("recovers an object with trailing prose after it", () => {
+    expect(parseModelJson('{"a":1}\n\nHope that helps!')).toEqual({ a: 1 });
+  });
+
+  it("recovers a fenced block that has no trailing newline before the closing fence", () => {
+    expect(parseModelJson('```json\n{"a":1}```')).toEqual({ a: 1 });
+  });
+
+  it("parses a top-level array", () => {
+    expect(parseModelJson('```json\n[{"statement":"z"}]\n```')).toEqual([{ statement: "z" }]);
+  });
+
+  it("throws when no JSON can be recovered", () => {
+    expect(() => parseModelJson("there is no json in this reply at all")).toThrow();
+  });
+});
+
+describe("completeJsonWithRetry", () => {
+  const okText = (text: string) =>
+    ok({ text, input_tokens: 1, output_tokens: 1, stop_reason: "end_turn" });
+  const jsonOpts = { model: "m", system: "s", user: "u", schema: { type: "object" } };
+
+  it("parses on the first try when JSON is valid (no retry)", async () => {
+    const complete = vi.fn(async () => okText('{"claims":[]}'));
+    const r = await completeJsonWithRetry(complete, jsonOpts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ claims: [] });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries once with a reprompt and recovers when the first reply is unparseable", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(okText("say")) // degenerate garbage generation
+      .mockResolvedValueOnce(okText('{"claims":[{"statement":"x"}]}'));
+    const r = await completeJsonWithRetry(complete, jsonOpts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ claims: [{ statement: "x" }] });
+    expect(complete).toHaveBeenCalledTimes(2);
+    // the retry nudges temperature off 0 (temp 0 would repeat the garbage) and
+    // reprompts for raw JSON.
+    const retryOpts = complete.mock.calls[1][0];
+    expect(retryOpts.temperature).toBeGreaterThan(0);
+    expect(retryOpts.system).toMatch(/ONLY the raw JSON/i);
+  });
+
+  it("returns a parse error after the retry also fails", async () => {
+    const complete = vi.fn(async () => okText("still not json"));
+    const r = await completeJsonWithRetry(complete, jsonOpts);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/after retry/i);
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry when the underlying complete call errors", async () => {
+    const complete = vi.fn(async () =>
+      err<CortexEvalError>({ kind: "llm", message: "boom", retryable: false }),
+    );
+    const r = await completeJsonWithRetry(complete, jsonOpts);
+    expect(r.ok).toBe(false);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -88,30 +88,12 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
     });
   };
 
-  const completeJson = async (
-    opts: CompleteJsonOpts,
-  ): Promise<Result<CompleteJsonResult, CortexEvalError>> => {
-    // The schema is embedded in the system prompt as a hint to the LLM, then
-    // the response goes through JSON.parse + a manual shape check by the
-    // caller (see generate.ts and score.ts). This is NOT strict JSON Schema
-    // validation — there is no schema validator dep in v1. Callers must
-    // verify required fields exist after parse. If we ever need strict
-    // validation, add `ajv` and validate `parsed` here.
-    const sysWithSchema = `${opts.system}\n\nReturn JSON matching:\n${JSON.stringify(opts.schema, null, 2)}\nReturn ONLY JSON, no prose.`;
-    const r = await complete({ ...opts, system: sysWithSchema });
-    if (!r.ok) return r;
-    try {
-      const parsed = JSON.parse(stripCodeFence(r.value.text));
-      return ok({ ...r.value, parsed });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return err({
-        kind: "llm",
-        message: `JSON parse: ${msg} — output was: ${r.value.text.slice(0, 200)}`,
-        retryable: false,
-      });
-    }
-  };
+  // The schema is embedded in the system prompt as a hint to the LLM (see
+  // completeJsonWithRetry), then the response goes through parseModelJson + a
+  // manual shape check by the caller (see generate.ts and score.ts). This is
+  // NOT strict JSON Schema validation — there is no schema validator dep in v1.
+  // Callers must verify required fields exist after parse.
+  const completeJson = (opts: CompleteJsonOpts) => completeJsonWithRetry(complete, opts);
 
   const completeWithTools = async (
     opts: CompleteWithToolsOpts,
@@ -233,4 +215,83 @@ export async function retry<T>(
 export function stripCodeFence(s: string): string {
   const m = s.match(/^```(?:json)?\n([\s\S]*?)\n```\s*$/);
   return m ? m[1] : s;
+}
+
+// Narrow a noisy completion to its most likely JSON payload: prefer the first
+// fenced ```json block anywhere in the text, else the raw text; then slice to
+// the outermost object/array (`{..}` or `[..]`), which drops leading reasoning
+// preamble and trailing prose. For already-clean JSON this returns it verbatim.
+function extractJsonCandidate(text: string): string {
+  const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/i);
+  const body = (fence ? fence[1] : text).trim();
+  const objAt = body.indexOf("{");
+  const arrAt = body.indexOf("[");
+  let start = -1;
+  let closer = "";
+  if (objAt !== -1 && (arrAt === -1 || objAt < arrAt)) {
+    start = objAt;
+    closer = "}";
+  } else if (arrAt !== -1) {
+    start = arrAt;
+    closer = "]";
+  }
+  if (start === -1) return body;
+  const end = body.lastIndexOf(closer);
+  return end > start ? body.slice(start, end + 1) : body.slice(start);
+}
+
+/**
+ * Parse JSON from a model completion, tolerating the wrappers that local /
+ * OpenAI-compatible models (e.g. Ollama) add. Strict path first — stripCodeFence
+ * + JSON.parse, the historical behavior, unchanged for clean or whole-string
+ * fenced output. On failure, a lenient fallback recovers JSON from a fenced
+ * block placed after reasoning preamble, or a bare object/array surrounded by
+ * prose. Throws when no valid JSON can be recovered; the caller classifies it.
+ */
+export function parseModelJson(text: string): unknown {
+  try {
+    return JSON.parse(stripCodeFence(text));
+  } catch {
+    // Strict parse failed — fall through to lenient recovery below.
+  }
+  return JSON.parse(extractJsonCandidate(text));
+}
+
+/**
+ * Run a `completeJson` exchange with one bounded reprompt on parse failure.
+ * Local / OpenAI-compatible models (e.g. Ollama) occasionally emit a degenerate
+ * ("say") or truncated generation that no parser can recover. A single retry
+ * that (a) reminds the model to return ONLY raw JSON and (b) nudges temperature
+ * off 0 — temp 0 is deterministic, so a plain retry would repeat the same broken
+ * output — recovers most of that tail. Both LlmClient transports delegate here
+ * so the schema-hint + retry contract cannot drift between them.
+ */
+export async function completeJsonWithRetry(
+  complete: (opts: CompleteOpts) => Promise<Result<CompleteResult, CortexEvalError>>,
+  opts: CompleteJsonOpts,
+): Promise<Result<CompleteJsonResult, CortexEvalError>> {
+  const sysWithSchema = `${opts.system}\n\nReturn JSON matching:\n${JSON.stringify(opts.schema, null, 2)}\nReturn ONLY JSON, no prose.`;
+
+  const first = await complete({ ...opts, system: sysWithSchema });
+  if (!first.ok) return first;
+  try {
+    return ok({ ...first.value, parsed: parseModelJson(first.value.text) });
+  } catch {
+    // First reply was unparseable — fall through to one bounded reprompt.
+  }
+
+  const retrySys = `${sysWithSchema}\n\nYour previous reply was NOT valid JSON. Return ONLY the raw JSON value — no prose, no explanation, no markdown code fences.`;
+  const retryTemp = (opts.temperature ?? 0) === 0 ? 0.2 : opts.temperature;
+  const second = await complete({ ...opts, system: retrySys, temperature: retryTemp });
+  if (!second.ok) return second;
+  try {
+    return ok({ ...second.value, parsed: parseModelJson(second.value.text) });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return err({
+      kind: "llm",
+      message: `JSON parse (after retry): ${msg} — output was: ${second.value.text.slice(0, 200)}`,
+      retryable: false,
+    });
+  }
 }
