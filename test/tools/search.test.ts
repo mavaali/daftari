@@ -393,6 +393,27 @@ describe("vault_search supersession suppression (MAV-161)", () => {
       // The head sits where the stale doc ranked; the stale doc is at the tail.
       expect(paths.indexOf("notes/new.md")).toBeLessThan(paths.indexOf("notes/old.md"));
       expect(paths[paths.length - 1]).toBe("notes/old.md");
+      // Pinned: the pull-in widens limit:2 to exactly 3 served docs — the
+      // documented coverage-style widening posture, bounded by the shared
+      // synthetic token cap in enforceTokenCap.
+      expect(paths.length).toBe(3);
+    } finally {
+      setSuppressSuperseded(false);
+    }
+  });
+
+  it("never runs on valid_at queries — a superseded doc can be the past's answer", async () => {
+    setSuppressSuperseded(true);
+    try {
+      const res = await vaultSearch(vault, {
+        query: "condor purchase price range",
+        limit: 2,
+        valid_at: "2026-03-05",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.hits.some((h) => h.viaForeground)).toBe(false);
+      for (const h of res.value.hits) expect(h.demoted).toBeUndefined();
     } finally {
       setSuppressSuperseded(false);
     }

@@ -423,8 +423,12 @@ async function searchMount(
     // MAV-161 suppression, demotion-only for mounts: pulling a cross-mount
     // head in would need alias path rewriting, and a mount exposes documents,
     // not vault state — v1 keeps that out. currentSource is already resolved
-    // above, so the pass reuses it.
-    const suppressed = applySupersededSuppression(db, widened, access, { pullIn: false });
+    // above, so the pass reuses it. Skipped for `valid_at` queries — a doc
+    // superseded today can be the right answer for a past date.
+    const suppressed =
+      opts.validAt === null
+        ? applySupersededSuppression(db, widened, access, { pullIn: false })
+        : { hits: widened, demoted: 0, pulledIn: [] };
     const capped = enforceTokenCap(suppressed.hits, DEFAULT_COVERAGE_OPTIONS);
     for (const hit of capped) labelMountHit(hit, mount.alias);
     return ok({ hits: capped, vectorUsed: result.value.vectorUsed });
@@ -657,7 +661,15 @@ async function searchLocalVault(
     // enrichment so pulled-in heads receive the full annotation set below; the
     // pass caches currentSource on the hits it inspects, so the loop's
     // `?? resolveCurrentSource` does not re-walk those chains.
-    const suppression = applySupersededSuppression(db, permitted, access, { pullIn: true });
+    //
+    // Skipped entirely for `valid_at` queries: a doc superseded TODAY can be
+    // exactly the right answer for a past date, so demoting it (or pulling in
+    // the current head) would answer the wrong question — per-date chain
+    // resolution is validAtSource's job below.
+    const suppression =
+      validAt === null
+        ? applySupersededSuppression(db, permitted, access, { pullIn: true })
+        : { hits: permitted, demoted: 0, pulledIn: [] };
     const served = suppression.hits;
 
     if (validAt !== null) {

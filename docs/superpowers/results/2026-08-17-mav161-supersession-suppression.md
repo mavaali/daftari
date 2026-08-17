@@ -18,6 +18,7 @@ The 2026-06-21 placebo proved co-ranked stale distractors are *causally* halluci
   - Only `kind: "resolved"` chains participate: dangling/cycle/restricted chains have no head to offer, and demoting without a successor could bury the only readable copy.
   - Federation mounts get demotion only — pulling a cross-mount head would need alias path rewriting; documents-not-state keeps that out of v1.
 - **The gate**: `search.suppress_superseded` in config.yaml, default **off**, applied at startup like the other retrieval knobs, resolved *inside* the pass so a future call site cannot forget it (the same structural-gate lesson the coverage retirement review taught).
+- **Two boundaries** (added per review): the pass never runs on `valid_at` queries — a doc superseded today can be exactly the right answer for a past date, and per-date chain resolution is `validAtSource`'s job — and pulled-in heads share the coverage pass's token-cap budget in `enforceTokenCap` (evicted last, position-preserving), so the served set is bounded.
 - RBAC is inherited from `resolveCurrentSource`: a chain with any unreadable hop degrades to `restricted` and never participates, so a pulled-in head is readable by construction.
 
 ## Deterministic bench [DATA]

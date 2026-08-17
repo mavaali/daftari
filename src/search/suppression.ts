@@ -24,6 +24,12 @@
 // in config.yaml opts in. Same runtime-gate lifecycle as the coverage pass:
 // startup applies the config once, and a bare product call consults the
 // gate so a future call site cannot forget it.
+//
+// Two boundaries the tool layer owns: the pass never runs on `valid_at`
+// queries (a doc superseded today can be the right answer for a past date —
+// per-date resolution is validAtSource's job), and pulled-in heads share the
+// coverage pass's token-cap budget in enforceTokenCap (evicted last — they
+// carry the current value), so the served set cannot grow unboundedly.
 
 import type { AccessContext } from "../access/rbac.js";
 import { getDocument, type IndexDb } from "../storage/index-db.js";
@@ -43,21 +49,24 @@ export function suppressSuperseded(): boolean {
 
 // Builds the hit for a pulled-in current head. Score 0 keeps it honest — it
 // did not earn a rank; its POSITION (the stale hit's slot) is the signal.
-// Snippet is the head's leading content, verbatim from the index (daftari
-// authors the relation, never the value).
-function foregroundHit(db: IndexDb, path: string): HybridHit | null {
-  const doc = getDocument(db, path);
+// Title and snippet come from the already-resolved chain (resolveCurrentSource
+// computed them via previewSnippet); the getDocument call supplies only the
+// fields the chain walk does not carry (collection, status).
+function foregroundHit(
+  db: IndexDb,
+  cs: { path: string; title: string; snippet: string },
+): HybridHit | null {
+  const doc = getDocument(db, cs.path);
   if (!doc) return null;
-  const collapsed = doc.content.replace(/\s+/g, " ").trim();
   return {
-    path: doc.path,
-    title: doc.title,
+    path: cs.path,
+    title: cs.title,
     collection: doc.collection,
     status: doc.status,
     score: 0,
     bm25Score: 0,
     vectorScore: 0,
-    snippet: collapsed.length > 280 ? `${collapsed.slice(0, 280)}…` : collapsed,
+    snippet: cs.snippet,
     decay: null,
     viaForeground: true,
   };
@@ -104,7 +113,7 @@ export function applySupersededSuppression(
     }
     // The stale doc's rank slot goes to its head when the head is absent.
     if (opts.pullIn && !present.has(cs.path)) {
-      const head = foregroundHit(db, cs.path);
+      const head = foregroundHit(db, cs);
       if (head) {
         present.add(head.path);
         pulledIn.push(head);
