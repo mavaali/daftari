@@ -340,6 +340,16 @@ describe("vaultStatus", () => {
     expect(result.value.invalidCount).toBe(1);
   });
 
+  it("reports the running daftari version so in-session agents can read it", async () => {
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf-8")) as {
+      version: string;
+    };
+    const result = await vaultStatus(VAULT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.serverVersion).toBe(manifest.version);
+  });
+
   it("buckets every file into a staleness distribution", async () => {
     const result = await vaultStatus(VAULT);
     expect(result.ok).toBe(true);

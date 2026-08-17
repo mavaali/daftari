@@ -23,6 +23,7 @@ import { main, parseFlag } from "./index.js";
 import { reindexVault, reindexWarnings } from "./search/reindex.js";
 import { commit } from "./utils/git.js";
 import { VAULT_GITIGNORE } from "./utils/vault-gitignore.js";
+import { DAFTARI_VERSION } from "./version.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,10 @@ Server options:
   --user <username>    Identity the server runs as (default: guest)
   --role <rolename>    RBAC role from .daftari/config.yaml (default: deny-all guest)
   --reindex            Rebuild the SQLite index from scratch, then exit
+
+Other:
+  --version, -v        Print the daftari version and exit
+  --help, -h           Show this usage screen
 
 Examples:
   npx daftari --init ./my-vault
@@ -339,6 +344,11 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "distill") {
     const { runDistill } = await import("./distill/cli.js");
     process.exitCode = await runDistill(argv.slice(1));
+    return;
+  }
+
+  if (argv.includes("--version") || argv.includes("-v")) {
+    process.stdout.write(`${DAFTARI_VERSION}\n`);
     return;
   }
 
