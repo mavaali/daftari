@@ -78,3 +78,15 @@ Each child names a recall/hallucination hypothesis against no common snapshot. R
 **Correct order:** `.0` → (`.2a` + `.3` quantity frontier) + suppression child → `.1` $0 ceiling → `.1` build (only if ceiling clears) → `.4`.
 
 **GO-WITH-CHANGES** — the span-recall diagnosis is sound and freshly re-verifiable, but as scoped the epic would spend its most expensive child first, against no runnable kill condition, while ignoring the second lever its own experiments proved causal.
+
+---
+
+## Addendum — reconciliation against the Linear beads (2026-08-17, post-review)
+
+The review above was written from the packet's summary of the children; the actual beads (Linear `MAV-155` epic; children `MAV-154` = `.1`, `MAV-156` = `.2`, `MAV-159` = `.3`, `MAV-157` = `.5`, `MAV-158` = `.4`) were read afterward. The packet summary was faithful — **no verdict changes**. Deltas worth recording:
+
+- **`MAV-156` (.2) is better than the packet suggested:** its acceptance criteria already specify the three-arm A/B (coverage-off+rank-extend vs coverage-on vs edge-guided), so the rank-extend arm is not in fact blocked by `.1` in the bead itself — only the edge-guided arm is, and that arm still needs the edge-bearing corpus from `.0`. Finding 6's split stands; the bead is already halfway there.
+- **`MAV-158` (.4) already names the staleness guard** ("guard against stale-artifact false positives via staleness signal") — finding 7 should be read as *sharpening* that guard (hard gate: staleness-pass ∧ no open tensions ∧ not superseded) and as changing the scoreboard: the bead measures recall/precision delta; the placebo evidence says the metric that decides `.4` must be hallucination.
+- **The epic body already says** "rerun recall bench as the shared eval harness for every child" — so finding 9's `.0` is partially anticipated, but the bead-level gap remains: no frozen snapshot, no hallucination/distractor scoring in the harness, and no edge-bearing labeled corpus, which is what actually makes the kill conditions comparable and `.1`'s runnable.
+- **Confirmed missing in the beads, as the review claims:** no `.0` baseline child, and no distractor-suppression child — the epic's children are all recall-widening.
+- Bookkeeping: the five children are not linked as sub-issues or blockers of `MAV-155` in Linear (no parent/relations set), so the `.2b`-depends-on-`.1` ordering exists only in prose.
