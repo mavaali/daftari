@@ -5,47 +5,58 @@
 // caller role cannot read (R17, R18). Denied findings are OMITTED entirely —
 // no count, no placeholder.
 //
-// Collection resolution: collectionForPath(null, path) from
-// src/storage/index-db.ts — the same function the rest of the codebase uses.
-// With db=null it falls back to path.split("/")[0], which is correct because
-// every vault path is collection/rest.md by structural convention. This keeps
-// RBAC consistent with the search and tension-access layers.
+// Collection resolution: uses openIndexForAccessOrNull (from tools/search.ts)
+// to open the index for the active embedding provider, then calls
+// collectionForPath(db, path). This resolves the INDEXED collection
+// (frontmatter.collection) exactly as search.ts does — avoiding the RBAC
+// inconsistency where collectionForPath(null, path) uses path-prefix only,
+// while the indexed collection may differ (daftari allows frontmatter.collection
+// != path-prefix). Falls back to path-prefix only when db is null (degraded:
+// index unavailable). The db handle is opened once per list/reproduces call
+// and closed in a finally block, mirroring the read.ts / tension-access.ts
+// pattern.
 //
 // Discriminator decisions (per-check, see R2):
 //
-//   All 15 checks produce at most ONE LintFinding per path in the current
-//   implementation of runLint. The tier-0 checks (brokenSourceRefs,
-//   lifecycleConflicts, domainLeaks) aggregate multiple offenders into one
-//   detail string. orphanFiles, staleFiles, oldDrafts, stagnantLowConfidence,
-//   retiredStillLinked, unansweredQuestions, schemaInvalid, validityConflicts,
-//   verbatimQuoteOverrun each push at most one entry per doc-pass.
+//   verbatimQuoteOverrun pushes TWO distinct findings per path when BOTH the
+//   char-overrun condition AND the no-attribution condition fire. The adapter
+//   parses a stable token from the detail string:
+//     "char-overrun"   — detail contains "verbatim-quoted chars exceed cap"
+//     "no-attribution" — detail contains "no sources[] attribution"
+//   These tokens are derived from stable substrings (not volatile numbers),
+//   so the discriminator is stable across reconcile runs. Two independent
+//   Finding cards are emitted; resolving one does not affect the other.
 //
-//   tierDemotions, positionIntegrity, malformedPins CAN push multiple entries
-//   for the same path (one per provenance log entry / per position issue / per
-//   malformed describes entry). However:
-//     - tierDemotions detail contains a volatile timestamp → cannot be used as
-//       stable discriminator (R2). Multiple entries for the same path collapse
-//       to one Finding. TODO: if sub-path-granularity is needed, a stable
-//       provenance entry id would need to be added to the provenance log.
-//     - positionIntegrity detail contains position IDs (stable) but the
-//       detail string is long and complex. Conservative: no discriminator.
-//       TODO: could split on position ID if the adapter were restructured to
-//       receive structured (not string) position findings.
-//     - malformedPins: the describes entry string is stable, but conservative:
-//       no discriminator. TODO: if per-entry identity is needed, the raw
-//       describes entry string is a valid stable discriminator.
+//   malformedPins pushes one finding per malformed describes entry. The raw
+//   entry string appears in the detail after "malformed pin suffix in describes
+//   entry: ". That suffix is stable (it's the raw describes entry text), so
+//   the adapter uses it as the discriminator. Each malformed entry gets its
+//   own Finding card.
 //
-//   For all checks: no discriminator. One Finding per (check, path).
-//   If runLint emits multiple LintFindings for the same (check, path), only
-//   the LAST one is kept (later evidence overwrites earlier for same identity).
-//   This is acceptable: the fingerprint will reflect the last detail seen, and
-//   the ledger will re-triage if it drifts.
+//   tierDemotions detail contains a volatile timestamp → cannot be used as
+//   stable discriminator (R2). Multiple entries for the same path collapse
+//   to one Finding. TODO: if sub-path-granularity is needed, a stable
+//   provenance entry id would need to be added to the provenance log.
+//
+//   positionIntegrity CAN push multiple entries for the same path (one per
+//   position issue). KNOWN R27 LIMITATION: these all fold to one Finding
+//   (last-wins dedup by identity_key). A clean fix requires restructured
+//   (non-string) lint output so stable position IDs can be extracted without
+//   brittle string parsing of the complex detail strings. A follow-up bead
+//   tracks this. The header note below documents it explicitly.
+//
+//   All other checks: no discriminator. One Finding per (check, path).
+//   If runLint emits multiple LintFindings for the same (check, path) and
+//   no discriminator is assigned, only the LAST one is kept (later evidence
+//   overwrites earlier for same identity). The fingerprint will reflect the
+//   last detail seen, and the ledger will re-triage if it drifts.
 
 import type { AccessContext } from "../../access/rbac.js";
 import { canRead } from "../../access/rbac.js";
 import { type LintCheckName, runLint, TIER0_LINT_CHECKS } from "../../curation/lint.js";
 import type { Confidence } from "../../frontmatter/types.js";
 import { collectionForPath } from "../../storage/index-db.js";
+import { openIndexForAccessOrNull } from "../../tools/search.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { Finding, FindingSourceAdapter, LintTarget } from "../types.js";
 
@@ -84,18 +95,43 @@ const SUGGESTED_ACTIONS: Record<LintCheckName, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// discriminatorFor — stable per-finding discriminator token.
+//
+// Returns a stable string for findings that can produce multiple entries per
+// path under the same check, or undefined for checks where one finding per
+// (check, path) is correct.
+// ---------------------------------------------------------------------------
+
+function discriminatorFor(checkName: LintCheckName, detail: string): string | undefined {
+  switch (checkName) {
+    case "verbatimQuoteOverrun":
+      // runLint can push TWO findings per path: a char-overrun AND a
+      // no-attribution. Parse a stable token from the stable substring of each.
+      if (detail.includes("verbatim-quoted chars exceed cap")) return "char-overrun";
+      if (detail.includes("no sources[] attribution")) return "no-attribution";
+      // Defensive fallback: unknown verbatimQuoteOverrun detail → no discriminator.
+      return undefined;
+
+    case "malformedPins": {
+      // Detail format: "malformed pin suffix in describes entry: <raw-entry>"
+      // The raw describes entry is stable — use it as the discriminator.
+      const PREFIX = "malformed pin suffix in describes entry: ";
+      const idx = detail.indexOf(PREFIX);
+      if (idx !== -1) return detail.slice(idx + PREFIX.length).trim();
+      return undefined;
+    }
+
+    default:
+      // All other checks: no discriminator. One Finding per (check, path).
+      return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // lintAdapter — the FindingSourceAdapter for the "lint" source
 // ---------------------------------------------------------------------------
 
-export const lintAdapter: FindingSourceAdapter & {
-  list(vaultRoot: string, access: AccessContext, now?: Date): Promise<Finding[]>;
-  reproduces(
-    identity_key: string,
-    vaultRoot: string,
-    access: AccessContext,
-    now?: Date,
-  ): Promise<boolean>;
-} = {
+export const lintAdapter: FindingSourceAdapter = {
   /**
    * Enumerate all current lint findings, filtered by RBAC.
    *
@@ -115,52 +151,65 @@ export const lintAdapter: FindingSourceAdapter & {
     const report = result.value;
     const nowIso = nowDate.toISOString();
 
-    // Collect findings: one per (checkName, path). If runLint emits multiple
-    // LintFindings for the same path under the same check, last one wins
-    // (map key collision). See discriminator decisions in the file header.
-    const rawFindings: Finding[] = [];
-    const seen = new Map<string, Finding>();
+    // RBAC: open the index to resolve frontmatter.collection, mirroring
+    // exactly how search.ts resolves collection for RBAC decisions. Falls back
+    // to the path-prefix rule when the index is unavailable (db is null).
+    const db = openIndexForAccessOrNull(vaultRoot);
 
-    for (const checkName of Object.keys(report.checks) as LintCheckName[]) {
-      for (const lintFinding of report.checks[checkName]) {
-        const { path, detail } = lintFinding;
+    try {
+      // Collect findings: one per (checkName, path, discriminator?).
+      // verbatimQuoteOverrun and malformedPins can produce multiple entries per
+      // path — they get distinct discriminators so each is a separate card.
+      // All other checks: last entry for same (check, path) wins (map collision).
+      // See discriminator decisions in the file header.
+      const seen = new Map<string, Finding>();
 
-        // RBAC: resolve collection for path and check read permission.
-        const collection = collectionForPath(null, path);
-        if (!canRead(access.role, collection)) {
-          continue; // omit entirely — no placeholder, no count (R18)
+      for (const checkName of Object.keys(report.checks) as LintCheckName[]) {
+        for (const lintFinding of report.checks[checkName]) {
+          const { path, detail } = lintFinding;
+
+          // RBAC: resolve collection from the index (frontmatter), falling back
+          // to path-prefix when the index is unavailable. This matches the
+          // resolution search.ts uses, preventing divergence between the board
+          // adapter's RBAC decision and the search tool's RBAC decision.
+          const collection = collectionForPath(db, path);
+          if (!canRead(access.role, collection)) {
+            continue; // omit entirely — no placeholder, no count (R18)
+          }
+
+          const target: LintTarget = { kind: "lint", path };
+          const discriminator = discriminatorFor(checkName, detail);
+          const identity_key = deriveIdentity("lint", checkName, target, discriminator);
+          const evidence: Record<string, unknown> = { detail };
+          const fp = fingerprint(evidence);
+
+          const finding: Finding = {
+            identity_key,
+            source: "lint",
+            check: checkName,
+            target,
+            ...(discriminator !== undefined ? { discriminator } : {}),
+            fingerprint: fp,
+            certainty: certaintyFor(checkName),
+            evidence,
+            suggested_action: SUGGESTED_ACTIONS[checkName],
+            verify_predicate: `lint:${checkName} on ${path}`,
+            owner: "",
+            first_seen: nowIso,
+            last_seen: nowIso,
+            disposition: "new",
+            history: [],
+          };
+
+          // Dedup by identity_key — last entry for same (check, path, discriminator?) wins.
+          seen.set(identity_key, finding);
         }
-
-        const target: LintTarget = { kind: "lint", path };
-        // No discriminator for any check (see file header).
-        const identity_key = deriveIdentity("lint", checkName, target);
-        const evidence: Record<string, unknown> = { detail };
-        const fp = fingerprint(evidence);
-
-        const finding: Finding = {
-          identity_key,
-          source: "lint",
-          check: checkName,
-          target,
-          // discriminator: undefined — no check requires a discriminator
-          fingerprint: fp,
-          certainty: certaintyFor(checkName),
-          evidence,
-          suggested_action: SUGGESTED_ACTIONS[checkName],
-          verify_predicate: `lint:${checkName} on ${path}`,
-          owner: "",
-          first_seen: nowIso,
-          last_seen: nowIso,
-          disposition: "new",
-          history: [],
-        };
-
-        // Dedup by identity_key — last entry for same (check, path) wins.
-        seen.set(identity_key, finding);
       }
-    }
 
-    return [...seen.values()];
+      return [...seen.values()];
+    } finally {
+      db?.close();
+    }
   },
 
   /**

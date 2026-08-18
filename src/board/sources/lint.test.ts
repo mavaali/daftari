@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../access/rbac.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
+import type { FindingSourceAdapter } from "../types.js";
 import { SOURCE_ADAPTERS } from "./index.js";
 import { lintAdapter } from "./lint.js";
 
@@ -576,6 +577,230 @@ describe("lintAdapter", () => {
         expect(typeof f.last_seen).toBe("string");
         expect(new Date(f.last_seen).toISOString()).toBe(f.last_seen);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 9 (C1): verbatimQuoteOverrun — two conditions fire on same doc
+  // → two DISTINCT Findings with distinct identity_keys and discriminators.
+  // Resolving/removing one finding (by its identity_key) leaves the other.
+  // -------------------------------------------------------------------------
+  describe("Scenario 9 (C1): verbatimQuoteOverrun yields two independent findings", () => {
+    const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
+
+    beforeEach(() => {
+      // Trigger BOTH verbatimQuoteOverrun conditions:
+      //   1. char-overrun: totalChars > 8000 (DISTILL_NUMERIC_DEFAULTS.maxVerbatimChars)
+      //   2. no-attribution: provenance=synthesized, sources=[], has verbatim quotes
+      //
+      // Build a body with 8001+ chars of verbatim-quoted text.
+      // verbatimQuotes() matches "quoted text" and curly "quoted text" patterns.
+      // Use straight-double-quoted spans, each on its own line.
+      const oneQuote = '"' + "x".repeat(200) + '"'; // 202 chars per quote
+      const manyQuotes = Array.from({ length: 41 }, () => oneQuote).join("\n"); // 41*202=8282 chars
+      writeDoc(
+        vaultRoot,
+        "notes/verbatim-both.md",
+        frontmatter({
+          title: "Verbatim Both",
+          collection: "notes",
+          provenance: "synthesized",
+          sources: [],
+          updated: "2025-01-01",
+        }) +
+          "# Verbatim Both\n\n" +
+          manyQuotes +
+          "\n",
+      );
+    });
+
+    it("emits exactly two verbatimQuoteOverrun findings for the doc", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      const vqFindings = findings.filter(
+        (f) =>
+          f.check === "verbatimQuoteOverrun" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/verbatim-both.md",
+      );
+      expect(vqFindings.length).toBe(2);
+    });
+
+    it("the two findings have distinct identity_keys", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      const vqFindings = findings.filter(
+        (f) =>
+          f.check === "verbatimQuoteOverrun" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/verbatim-both.md",
+      );
+      expect(vqFindings.length).toBe(2);
+      const keys = vqFindings.map((f) => f.identity_key);
+      expect(keys[0]).not.toBe(keys[1]);
+    });
+
+    it("one finding has discriminator 'char-overrun' and the other 'no-attribution'", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      const vqFindings = findings.filter(
+        (f) =>
+          f.check === "verbatimQuoteOverrun" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/verbatim-both.md",
+      );
+      const discriminators = new Set(vqFindings.map((f) => f.discriminator));
+      expect(discriminators).toContain("char-overrun");
+      expect(discriminators).toContain("no-attribution");
+    });
+
+    it("each finding's identity_key matches deriveIdentity with its discriminator", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      const vqFindings = findings.filter(
+        (f) =>
+          f.check === "verbatimQuoteOverrun" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/verbatim-both.md",
+      );
+      for (const f of vqFindings) {
+        const expected = deriveIdentity("lint", "verbatimQuoteOverrun", f.target, f.discriminator);
+        expect(f.identity_key).toBe(expected);
+      }
+    });
+
+    it("removing one finding by identity_key leaves the other intact", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      const vqFindings = findings.filter(
+        (f) =>
+          f.check === "verbatimQuoteOverrun" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/verbatim-both.md",
+      );
+      expect(vqFindings.length).toBe(2);
+
+      // Simulate "resolving" the char-overrun finding (filter it out).
+      const charOverrunKey = vqFindings.find(
+        (f) => f.discriminator === "char-overrun",
+      )?.identity_key;
+      const noAttrKey = vqFindings.find((f) => f.discriminator === "no-attribution")?.identity_key;
+      expect(charOverrunKey).toBeDefined();
+      expect(noAttrKey).toBeDefined();
+
+      // After removing the char-overrun finding, the no-attribution one is still present.
+      const remaining = findings.filter((f) => f.identity_key !== charOverrunKey);
+      expect(remaining.some((f) => f.identity_key === noAttrKey)).toBe(true);
+
+      // After removing the no-attribution finding, the char-overrun one is still present.
+      const remaining2 = findings.filter((f) => f.identity_key !== noAttrKey);
+      expect(remaining2.some((f) => f.identity_key === charOverrunKey)).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 10 (I1): malformedPins — two malformed describes entries on the
+  // same doc → two DISTINCT Findings with distinct identity_keys.
+  // -------------------------------------------------------------------------
+  describe("Scenario 10 (I1): malformedPins yields distinct findings per malformed entry", () => {
+    beforeEach(() => {
+      // Two malformed pin entries: pin suffix end < start.
+      // Format: "repo:path#L<start>-<end>@<sha>"  (no brackets — see describes.ts PIN_SUFFIX)
+      // SHA must be 7-40 lowercase hex chars.
+      const sha = "a".repeat(40);
+      writeDoc(
+        vaultRoot,
+        "notes/malformed-pins-doc.md",
+        frontmatter({
+          title: "Malformed Pins",
+          collection: "notes",
+          updated: "2025-01-01",
+          describes: [
+            // end (5) < start (10) → malformed
+            `myrepo:src/foo.ts#L10-5@${sha}`,
+            // end (3) < start (20) → malformed (different entry)
+            `myrepo:src/bar.ts#L20-3@${sha}`,
+          ],
+        }) + "# Malformed Pins\n",
+      );
+    });
+
+    it("emits exactly two malformedPins findings for the doc", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess);
+      const mpFindings = findings.filter(
+        (f) =>
+          f.check === "malformedPins" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/malformed-pins-doc.md",
+      );
+      expect(mpFindings.length).toBe(2);
+    });
+
+    it("the two malformedPins findings have distinct identity_keys", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess);
+      const mpFindings = findings.filter(
+        (f) =>
+          f.check === "malformedPins" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/malformed-pins-doc.md",
+      );
+      expect(mpFindings.length).toBe(2);
+      expect(mpFindings[0]!.identity_key).not.toBe(mpFindings[1]!.identity_key);
+    });
+
+    it("each malformedPins finding has a discriminator derived from its describes entry", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess);
+      const mpFindings = findings.filter(
+        (f) =>
+          f.check === "malformedPins" &&
+          f.target.kind === "lint" &&
+          f.target.path === "notes/malformed-pins-doc.md",
+      );
+      for (const f of mpFindings) {
+        expect(typeof f.discriminator).toBe("string");
+        expect((f.discriminator as string).length).toBeGreaterThan(0);
+      }
+      // The two discriminators must differ.
+      expect(mpFindings[0]!.discriminator).not.toBe(mpFindings[1]!.discriminator);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 11 (I3): FindingSourceAdapter interface carries now parameter.
+  // A FindingSourceAdapter-typed variable accepts lintAdapter and can call
+  // list/reproduces with now injected — confirming the engine can inject now
+  // through the interface type without requiring an intersection-type hack.
+  // -------------------------------------------------------------------------
+  describe("Scenario 11 (I3): FindingSourceAdapter interface supports now injection", () => {
+    beforeEach(() => {
+      writeDoc(
+        vaultRoot,
+        "notes/interface-check.md",
+        frontmatter({ title: "Interface Check", collection: "notes", updated: "2020-01-01" }) +
+          "# Interface Check\n",
+      );
+    });
+
+    it("lintAdapter is assignable to FindingSourceAdapter (no intersection hack needed)", () => {
+      // If lintAdapter required an intersection type to carry now, this
+      // assignment would fail at the TypeScript level. The fact that this test
+      // file compiles confirms the interface itself carries now.
+      const adapter: FindingSourceAdapter = lintAdapter;
+      expect(typeof adapter.list).toBe("function");
+      expect(typeof adapter.reproduces).toBe("function");
+    });
+
+    it("engine can inject now via FindingSourceAdapter interface", async () => {
+      const adapter: FindingSourceAdapter = lintAdapter;
+      const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
+      // Call list with now through the interface type — this would be a type
+      // error if FindingSourceAdapter.list didn't carry now?.
+      const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      // We just care that the call compiles and returns an array.
+      expect(Array.isArray(findings)).toBe(true);
+    });
+
+    it("engine can inject now via reproduces through the interface", async () => {
+      const adapter: FindingSourceAdapter = lintAdapter;
+      const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
+      // reproduces called through the interface with now — type-level proof.
+      const result = await adapter.reproduces("nonexistent-key", vaultRoot, adminAccess, FIXED_NOW);
+      expect(result).toBe(false);
     });
   });
 });

@@ -251,8 +251,13 @@ export interface Finding {
 // ---------------------------------------------------------------------------
 
 export interface FindingSourceAdapter {
-  list(vaultRoot: string, access: AccessContext): Promise<Finding[]>;
+  list(vaultRoot: string, access: AccessContext, now?: Date): Promise<Finding[]>;
   identityOf(raw: Finding): string;
   fingerprintOf(raw: Finding): string;
-  reproduces(identity_key: string, vaultRoot: string, access: AccessContext): Promise<boolean>;
+  reproduces(
+    identity_key: string,
+    vaultRoot: string,
+    access: AccessContext,
+    now?: Date,
+  ): Promise<boolean>;
 }
