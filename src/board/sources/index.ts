@@ -10,10 +10,21 @@
 //
 // Ordering:
 //   Lint first — the most structurally certain source (tier-0 checks are
-//   certain failures). Later units append staleness, tension, staged, tier2.
+//   certain failures). Then staleness adapters (U6): TTL staleness and edge
+//   staleness. Later units append tension, staged, tier2.
+//
+// MAP key notes (U6):
+//   "staleness" → ttlStalenessAdapter  (TTL-decay findings; StalenessTarget)
+//   "tier2"     → edgeStalenessAdapter (edge-staleness findings; Tier2Target)
+//   Both adapters emit source:"staleness" but are distinguished by their
+//   check name ("ttl-staleness" vs "edge-staleness") and target kind
+//   ("staleness" vs "tier2"). The dispose tool (U11) will use the map key
+//   that matches a finding's target.kind for adapter resolution — this
+//   assignment is intentional and documented here for U11.
 
 import type { FindingSource, FindingSourceAdapter } from "../types.js";
 import { lintAdapter } from "./lint.js";
+import { edgeStalenessAdapter, ttlStalenessAdapter } from "./staleness.js";
 
 /**
  * Ordered registry of all active FindingSourceAdapters.
@@ -23,7 +34,11 @@ import { lintAdapter } from "./lint.js";
  *
  * To add a new source adapter: import it here and append it to this array.
  */
-export const SOURCE_ADAPTERS: FindingSourceAdapter[] = [lintAdapter];
+export const SOURCE_ADAPTERS: FindingSourceAdapter[] = [
+  lintAdapter,
+  ttlStalenessAdapter,
+  edgeStalenessAdapter,
+];
 
 /**
  * Map from FindingSource name to its adapter, for O(1) lookup.
@@ -32,4 +47,6 @@ export const SOURCE_ADAPTERS: FindingSourceAdapter[] = [lintAdapter];
  */
 export const SOURCE_ADAPTER_MAP = new Map<FindingSource, FindingSourceAdapter>([
   ["lint", lintAdapter],
+  ["staleness", ttlStalenessAdapter],
+  ["tier2", edgeStalenessAdapter],
 ]);
