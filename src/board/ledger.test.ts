@@ -1050,3 +1050,78 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(disp.expiry).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// U3 descriptor round-trip — FindingDescriptor (incl. rbacPaths) survives
+// the appendEvent → loadLedger cycle intact.
+// Protects the ledger.ts descriptor spread from regression.
+// ---------------------------------------------------------------------------
+
+describe("appendEvent — descriptor (incl. rbacPaths) round-trip", () => {
+  it("descriptor with rbacPaths is preserved exactly through appendEvent + loadLedger", async () => {
+    const descriptor = {
+      source: "tension" as const,
+      check: "unresolved-tension",
+      target: { kind: "tension" as const, tensionId: "t-abc-123" },
+      label: "Tension between notes/a.md and decisions/b.md",
+      rbacPaths: ["notes/a.md", "decisions/b.md"],
+    };
+
+    await appendEvent(vaultRoot, {
+      finding_id: "f-desc-rt",
+      event: "accept",
+      by: "human:alice",
+      principal_type: "human",
+      at: "2024-06-01T10:00:00Z",
+      against_fingerprint: "fp-rt",
+      descriptor,
+    });
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-desc-rt");
+    expect(events).toBeDefined();
+    expect(events).toHaveLength(1);
+
+    const evt = events![0]!;
+    expect(evt.descriptor).toBeDefined();
+    expect(evt.descriptor?.source).toBe("tension");
+    expect(evt.descriptor?.check).toBe("unresolved-tension");
+    expect(evt.descriptor?.target).toEqual({ kind: "tension", tensionId: "t-abc-123" });
+    expect(evt.descriptor?.label).toBe("Tension between notes/a.md and decisions/b.md");
+    expect(evt.descriptor?.rbacPaths).toEqual(["notes/a.md", "decisions/b.md"]);
+  });
+
+  it("descriptor without rbacPaths (legacy) round-trips with rbacPaths absent (not null, not [])", async () => {
+    const descriptor = {
+      source: "lint" as const,
+      check: "orphanFiles",
+      target: { kind: "lint" as const, path: "notes/orphan.md" },
+      label: "Orphan doc",
+      // rbacPaths intentionally absent
+    };
+
+    await appendEvent(vaultRoot, {
+      finding_id: "f-desc-legacy",
+      event: "accept",
+      by: "human:alice",
+      principal_type: "human",
+      at: "2024-06-01T10:00:00Z",
+      against_fingerprint: "fp-legacy",
+      descriptor,
+    });
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-desc-legacy");
+    expect(events).toBeDefined();
+    const evt = events![0]!;
+    expect(evt.descriptor).toBeDefined();
+    // rbacPaths must be absent (undefined), not null or empty array
+    expect(evt.descriptor?.rbacPaths).toBeUndefined();
+  });
+});

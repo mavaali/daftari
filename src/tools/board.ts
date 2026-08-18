@@ -22,13 +22,13 @@
 //   We look up the finding's descriptor from its ledger events (loadLedger →
 //   byFinding). If no prior events → reject. Extract descriptor from the
 //   most recent event that carries one; RBAC-check the target using the same
-//   primitives the adapters use (sourceReadable / canRead / canSeeTension).
+//   primitives the adapters use (sourceReadable via rbacPaths on descriptor).
 //   If not readable → reject with a non-disclosing error.
 //
 // Registration: boardTools array is imported by src/server.ts (same pattern
 //   as tier2Tools, stagedActionTools, etc.).
 
-import { type AccessContext, canDispose, canRead } from "../access/rbac.js";
+import { type AccessContext, canDispose } from "../access/rbac.js";
 import { type BoardFilters, type BoardResult, listBoard } from "../board/board.js";
 import { appendEvent, loadLedger } from "../board/ledger.js";
 import { isConfiguredPrincipal } from "../board/principals.js";
@@ -133,6 +133,17 @@ export async function vaultBoardDispose(
   const { finding_id, event, rationale, expiry, owner } = args;
 
   // -------------------------------------------------------------------
+  // Input validation: finding_id must be a non-empty string.
+  // This is an argument-level error (not a per-finding disclosure) — the
+  // message names the argument, not any finding's existence.
+  // -------------------------------------------------------------------
+  if (typeof finding_id !== "string" || finding_id.trim().length === 0) {
+    return err(
+      new Error("vault_board_dispose: finding_id is required and must be a non-empty string"),
+    );
+  }
+
+  // -------------------------------------------------------------------
   // Gate 1 (R13/R16): canDispose capability check — FIRST, unconditionally.
   // An agent's role lacks dispose:true, so this is the human/agent boundary.
   // -------------------------------------------------------------------
@@ -196,7 +207,38 @@ export async function vaultBoardDispose(
   // Gate 4: Build and stamp the descriptor from the live finding.
   // This is mandatory on ALL human dispose events so the reconciler can
   // render resolved-and-absent findings without the live finding (U4).
+  //
+  // rbacPaths: denormalise the RBAC-relevant paths into the descriptor so
+  // vault_board_resolve can enforce the same gate even when the live
+  // finding is absent. ALL paths must be readable (AND rule, R19/R20).
+  // Filter out any undefined/empty entries defensively.
   // -------------------------------------------------------------------
+  const rbacPathsForTarget = ((): string[] => {
+    const { target } = liveFinding;
+    switch (target.kind) {
+      case "lint":
+      case "staleness":
+        return [target.path];
+      case "tier2":
+        return [target.artifact, target.unit];
+      case "tension": {
+        // sourceA and sourceB live in evidence (populated by the tension adapter).
+        const ev = liveFinding.evidence as Record<string, unknown>;
+        const a = typeof ev.sourceA === "string" ? ev.sourceA : undefined;
+        const b = typeof ev.sourceB === "string" ? ev.sourceB : undefined;
+        return [a, b].filter((p): p is string => typeof p === "string" && p.length > 0);
+      }
+      case "staged": {
+        // targetPath lives in evidence (populated by the staged adapter).
+        const ev = liveFinding.evidence as Record<string, unknown>;
+        const p = typeof ev.targetPath === "string" ? ev.targetPath : undefined;
+        return p !== undefined ? [p] : [];
+      }
+      default:
+        return [];
+    }
+  })();
+
   const descriptor: FindingDescriptor = {
     source: liveFinding.source,
     check: liveFinding.check,
@@ -205,6 +247,12 @@ export async function vaultBoardDispose(
       liveFinding.suggested_action.length > 0
         ? liveFinding.suggested_action
         : `${liveFinding.source}/${liveFinding.check}`,
+    // rbacPaths: always present and non-empty for known kinds (see above).
+    // Carry it unconditionally so resolve can enforce the gate without a
+    // canRead("*") fallback. Empty array means "no paths to check" — for
+    // unknown future kinds this is conservative (no paths = open); the
+    // unknown-kind branch above returns [] only as a defensive fallback.
+    rbacPaths: rbacPathsForTarget,
   };
 
   // -------------------------------------------------------------------
@@ -247,6 +295,17 @@ export async function vaultBoardResolve(
   const { finding_id } = args;
 
   // -------------------------------------------------------------------
+  // Input validation: finding_id must be a non-empty string.
+  // This is an argument-level error (not a per-finding disclosure) — the
+  // message names the argument, not any finding's existence.
+  // -------------------------------------------------------------------
+  if (typeof finding_id !== "string" || finding_id.trim().length === 0) {
+    return err(
+      new Error("vault_board_resolve: finding_id is required and must be a non-empty string"),
+    );
+  }
+
+  // -------------------------------------------------------------------
   // Step 1: Load ledger for this finding. If no prior events → reject
   // (nothing to resolve; no existence signal).
   // -------------------------------------------------------------------
@@ -286,22 +345,50 @@ export async function vaultBoardResolve(
     } finally {
       if (db) db.close();
     }
+  } else {
+    // No descriptor on any prior event (pre-U11 ledger data / missing descriptor).
+    // FAIL CLOSED — reject with the same non-disclosing error.
+    // Do NOT proceed to the reproduces check: a distinguishable still_reproduces:true
+    // response would leak existence via the different ok-result shape.
+    // Document: callers must re-dispose the finding via dispose (which stamps rbacPaths)
+    // before resolve can be used against pre-U11 ledger entries.
+    return err(noResolveTargetError());
   }
-  // If no descriptor exists (legacy), we allow the resolve attempt to proceed —
-  // the reproduces check will tell us if it's still live.
 
   // -------------------------------------------------------------------
   // Step 3 (R14): The reproduces gate.
   // Call resolveAdapterForIdentity — if it returns a non-null adapter,
   // the finding STILL reproduces → do NOT write resolved.
   // If it returns null → the condition is gone → append resolved.
+  //
+  // Wrapped in try/catch (FIX 2): adapters open vault files and can throw.
+  // The function's contract is Result, not throw — surface errors as a
+  // non-disclosing err Result rather than letting exceptions propagate.
   // -------------------------------------------------------------------
   const effectiveNow = now ?? new Date();
-  const adapter = await resolveAdapterForIdentity(finding_id, vaultRoot, access, effectiveNow);
+  let adapter: Awaited<ReturnType<typeof resolveAdapterForIdentity>>;
+  try {
+    adapter = await resolveAdapterForIdentity(finding_id, vaultRoot, access, effectiveNow);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return err(new Error(`vault_board_resolve: adapter error: ${reason}`));
+  }
 
   if (adapter !== null) {
     // Still reproduces — do not write resolved (R14).
     return ok({ resolved: false, still_reproduces: true });
+  }
+
+  // -------------------------------------------------------------------
+  // Step 3b (FIX 4): Double-resolve guard — idempotency.
+  // If the latest event is already "resolved", do NOT write a second one.
+  // A second call on an already-resolved+gone finding is a no-op.
+  // Return resolved:false / still_reproduces:false to signal idempotency
+  // (the condition is gone, the finding is already resolved, nothing to do).
+  // -------------------------------------------------------------------
+  const currentLatest = priorEvents[priorEvents.length - 1]!;
+  if (currentLatest.event === "resolved") {
+    return ok({ resolved: false, still_reproduces: false });
   }
 
   // No longer reproduces — append a system-authored resolved event.
@@ -332,11 +419,22 @@ export async function vaultBoardResolve(
 // ---------------------------------------------------------------------------
 // isTargetReadable — RBAC check for a descriptor's target.
 //
-// Mirrors the per-adapter gate:
-//   - lint / staleness (path targets): sourceReadable(db, access, path)
-//   - tension: canSeeTension(db, access, sourceA, sourceB) from evidence
-//   - staged: sourceReadable on the staged action's target_path from descriptor target
-//   - tier2: sourceReadable on BOTH artifact and unit
+// Primary path (U11+): descriptor.rbacPaths is present → require ALL paths
+// to pass sourceReadable (AND rule). This covers all source kinds including
+// tension (sourceA + sourceB) and staged (targetPath) which could not be
+// checked without the denormalised paths.
+//
+// Legacy path (pre-U11): descriptor.rbacPaths is absent → FAIL CLOSED.
+// The caller (vaultBoardResolve) must reject before reaching this function
+// when no descriptor exists; this inner guard is defence-in-depth.
+//
+// Kind-specific fallback (rbacPaths present but empty): fail closed for
+// unknown future kinds — an empty path set means we cannot verify access.
+//
+// The canRead(role,"*") fallback for tension/staged has been REMOVED.
+// That fallback prevented scoped roles from ever resolving tension/staged
+// findings (even when they could fully read both sides) while silently
+// passing wildcard roles without verifying the actual paths.
 // ---------------------------------------------------------------------------
 
 function isTargetReadable(
@@ -344,51 +442,36 @@ function isTargetReadable(
   access: AccessContext,
   descriptor: FindingDescriptor,
 ): boolean {
-  const { target } = descriptor;
-  switch (target.kind) {
-    case "lint":
-    case "staleness":
-      return sourceReadable(db, access, target.path);
-
-    case "tension": {
-      // For tension, we need sourceA + sourceB from the descriptor.
-      // The descriptor carries the target (tensionId), but for RBAC we
-      // need the full source paths. Since a descriptor has only the tensionId,
-      // we fall back to canRead("*") check — a caller with wildcard read passes.
-      // If the role is wildcard-read, canRead(role, anything) is true.
-      // If the role is scoped, we must be conservative: use canRead on "tension"
-      // as the collection name (tensions don't have a collection in the
-      // traditional sense — they cross two documents).
-      //
-      // Best available: check canRead on the "tension" pseudo-collection. If the
-      // role grants wildcard ("*"), this passes. If scoped, it will fail unless
-      // "tension" is in the read list.
-      //
-      // NOTE: The tension adapter uses canSeeTension(db, access, sourceA, sourceB).
-      // Without the source paths on the descriptor, we cannot replicate that check
-      // exactly. We err on the side of restriction: if the role has wildcard read,
-      // we allow; otherwise we deny (safer than disclosing).
-      //
-      // A more precise check would require storing sourceA/sourceB in the descriptor,
-      // which is a U12/future enhancement. This is the documented edge case.
-      return canRead(access.role, "*");
+  // Primary path: use denormalised rbacPaths if present.
+  if (descriptor.rbacPaths !== undefined) {
+    // Empty rbacPaths for a known kind is unexpected — fail closed to be safe.
+    if (descriptor.rbacPaths.length === 0) {
+      // Defensive: an unknown future kind landed with an empty path set.
+      // Fall through to the kind-specific logic below (which also fails closed
+      // for unknown kinds via the default branch).
+      const { target } = descriptor;
+      switch (target.kind) {
+        case "lint":
+        case "staleness":
+        case "tension":
+        case "staged":
+        case "tier2":
+          // Known kinds should always have non-empty rbacPaths — empty is a
+          // coding error; fail closed.
+          return false;
+        default:
+          return false;
+      }
     }
-
-    case "staged": {
-      // Staged actions target a vault-relative path (in evidence.target_path).
-      // The descriptor has the stagedActionId; without the path we fall back to
-      // wildcard check (same reasoning as tension above).
-      return canRead(access.role, "*");
-    }
-
-    case "tier2":
-      // Both artifact and unit must be readable.
-      return sourceReadable(db, access, target.artifact) && sourceReadable(db, access, target.unit);
-
-    default:
-      // Unknown target kind — fail closed.
-      return false;
+    // ALL paths must be readable (AND rule, R19/R20).
+    return descriptor.rbacPaths.every((p) => sourceReadable(db, access, p));
   }
+
+  // Legacy path: no rbacPaths on descriptor.
+  // isTargetReadable should only be called when a descriptor exists (the
+  // resolve path returns early if descriptor is undefined). If we reach here
+  // with rbacPaths absent, fail closed — do not fall back to canRead("*").
+  return false;
 }
 
 // ---------------------------------------------------------------------------

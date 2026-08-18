@@ -88,6 +88,22 @@ export interface FindingDescriptor {
   target: FindingTarget;
   /** Short human-readable summary of the finding. */
   label: string;
+  /**
+   * The set of vault-relative paths whose readability gates this finding.
+   * ALL paths must be readable for the finding to be accessible (AND, not OR).
+   * Populated by U11's dispose tool from the live finding at dispose time.
+   *
+   * Purpose: denormalises the RBAC-relevant paths into the descriptor so that
+   * vault_board_resolve can enforce the same gate even when the live finding
+   * is no longer present (resolved/absent case). Without this, resolve had to
+   * fall back to canRead(role,"*") for tension/staged — preventing scoped roles
+   * from resolving findings they can fully read while silently passing wildcard
+   * roles without actually checking the relevant paths.
+   *
+   * Missing/absent rbacPaths (pre-U11 ledger data): resolve FAILS CLOSED —
+   * treated as RBAC-hidden and rejected with the non-disclosing error.
+   */
+  rbacPaths?: string[];
 }
 
 // ---------------------------------------------------------------------------

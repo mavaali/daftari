@@ -978,3 +978,250 @@ describe("descriptor stamped on dispose events", () => {
     expect(desc!.label.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R20 resolve — RBAC non-disclosure (byte-identical error for hidden vs. nonexistent)
+// Also covers: legacy descriptor (no rbacPaths) fails closed.
+// ---------------------------------------------------------------------------
+
+describe("vault_board_resolve — R20 RBAC non-disclosure + legacy fail-closed", () => {
+  let vaultRoot: string;
+  let config: DaftariConfig;
+
+  beforeEach(() => {
+    vaultRoot = seedMultiCollectionVault();
+    config = makeConfig(
+      {
+        human: humanRole,
+        scoped: scopedHumanRole,
+        agent: agentRole,
+      },
+      ["human:operator", "human:scoped"],
+    );
+  });
+
+  afterEach(() => {
+    rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  it("resolve: error for RBAC-hidden finding is byte-identical to error for nonexistent finding_id", async () => {
+    // Admin accepts the restricted finding so there IS a ledger entry for it.
+    const adminList = await vaultBoardList(vaultRoot, humanAccess, config, undefined, FIXED_NOW);
+    expect(adminList.ok).toBe(true);
+    if (!adminList.ok) return;
+
+    const restrictedFinding = adminList.value.all.find(
+      (f) =>
+        f.target.kind === "lint" && "path" in f.target && f.target.path.startsWith("restricted/"),
+    );
+    expect(restrictedFinding).toBeDefined();
+    if (!restrictedFinding) return;
+
+    // Human accepts it — creates ledger event with descriptor.rbacPaths pointing to restricted/
+    await vaultBoardDispose(vaultRoot, humanAccess, config, {
+      finding_id: restrictedFinding.identity_key,
+      event: "accept",
+      rationale: "admin seed",
+    });
+
+    // Scoped role tries to resolve the restricted finding (visible to admin, not to scoped)
+    const hiddenResult = await vaultBoardResolve(
+      vaultRoot,
+      scopedHumanAccess,
+      config,
+      { finding_id: restrictedFinding.identity_key },
+      FIXED_NOW,
+    );
+
+    // Scoped role tries to resolve a completely nonexistent finding_id
+    const nonexistentResult = await vaultBoardResolve(
+      vaultRoot,
+      scopedHumanAccess,
+      config,
+      { finding_id: "totally-nonexistent-finding-id-xyz" },
+      FIXED_NOW,
+    );
+
+    expect(hiddenResult.ok).toBe(false);
+    expect(nonexistentResult.ok).toBe(false);
+    if (hiddenResult.ok || nonexistentResult.ok) return;
+
+    // Byte-identical error messages — no existence disclosure (R20).
+    expect(hiddenResult.error.message).toBe(nonexistentResult.error.message);
+    // Neither message must contain the finding_id
+    expect(hiddenResult.error.message).not.toContain(restrictedFinding.identity_key);
+    expect(nonexistentResult.error.message).not.toContain("totally-nonexistent");
+  });
+
+  it("resolve: legacy descriptor (no rbacPaths) fails closed — same non-disclosing error", async () => {
+    // Build a ledger entry with a descriptor that has NO rbacPaths field (pre-U11 data).
+    const { appendEvent: _appendEvent } = await import("../board/ledger.js");
+    const legacyFindingId = "legacy-finding-no-rbac-paths";
+
+    // Write a ledger event with a descriptor that omits rbacPaths (legacy).
+    const legacyDescriptor = {
+      source: "lint" as const,
+      check: "orphanFiles",
+      target: { kind: "lint" as const, path: "notes/orphan-doc.md" },
+      label: "Orphan document",
+      // rbacPaths intentionally absent — simulates pre-U11 data
+    };
+    await _appendEvent(vaultRoot, {
+      finding_id: legacyFindingId,
+      event: "accept",
+      by: "human:operator",
+      principal_type: "human",
+      at: FIXED_NOW.toISOString(),
+      against_fingerprint: "fp-legacy",
+      descriptor: legacyDescriptor,
+    });
+
+    // Even the wildcard-read scoped role cannot resolve a legacy-no-rbacPaths descriptor.
+    // The behavior: fail closed with the same non-disclosing error.
+    const legacyResult = await vaultBoardResolve(
+      vaultRoot,
+      scopedHumanAccess,
+      config,
+      { finding_id: legacyFindingId },
+      FIXED_NOW,
+    );
+
+    const nonexistentResult = await vaultBoardResolve(
+      vaultRoot,
+      scopedHumanAccess,
+      config,
+      { finding_id: "totally-nonexistent-xyz-789" },
+      FIXED_NOW,
+    );
+
+    expect(legacyResult.ok).toBe(false);
+    expect(nonexistentResult.ok).toBe(false);
+    if (legacyResult.ok || nonexistentResult.ok) return;
+
+    // Must be byte-identical (same non-disclosing error).
+    expect(legacyResult.error.message).toBe(nonexistentResult.error.message);
+  });
+
+  it("scoped role CAN resolve a lint finding it can fully read via rbacPaths", async () => {
+    // Get the notes finding (scoped role CAN read "notes" collection)
+    const scopedList = await vaultBoardList(
+      vaultRoot,
+      scopedHumanAccess,
+      config,
+      undefined,
+      FIXED_NOW,
+    );
+    expect(scopedList.ok).toBe(true);
+    if (!scopedList.ok) return;
+
+    const notesFinding = scopedList.value.all.find(
+      (f) => f.target.kind === "lint" && "path" in f.target && f.target.path.startsWith("notes/"),
+    );
+    expect(notesFinding).toBeDefined();
+    if (!notesFinding) return;
+
+    // Scoped role accepts it first (creates ledger event with rbacPaths for notes/)
+    const disposeResult = await vaultBoardDispose(vaultRoot, scopedHumanAccess, config, {
+      finding_id: notesFinding.identity_key,
+      event: "accept",
+      rationale: "accepting notes finding",
+    });
+    expect(disposeResult.ok).toBe(true);
+
+    // Now try resolve — it will return still_reproduces (orphan doc still exists)
+    // but it must NOT be rejected due to RBAC (scoped role CAN read this).
+    const resolveResult = await vaultBoardResolve(
+      vaultRoot,
+      scopedHumanAccess,
+      config,
+      { finding_id: notesFinding.identity_key },
+      FIXED_NOW,
+    );
+
+    // Must succeed (ok=true) — RBAC gate passed; result is still_reproduces=true (doc still there)
+    expect(resolveResult.ok).toBe(true);
+    if (!resolveResult.ok) return;
+    expect(resolveResult.value.still_reproduces).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 4 — double-resolve exact count
+// ---------------------------------------------------------------------------
+
+describe("vault_board_resolve — double-resolve writes exactly ONE resolved event", () => {
+  let vaultRoot: string;
+  let config: DaftariConfig;
+
+  beforeEach(() => {
+    vaultRoot = seedLintVault({
+      human: { read: ["*"], write: ["*"], promote: true, ratify: true, dispose: true },
+      agent: { read: ["*"], write: ["*"] },
+    });
+    config = makeConfig({ human: humanRole, agent: agentRole });
+  });
+
+  afterEach(() => {
+    rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  it("resolving twice on a gone finding yields exactly ONE resolved event in the ledger", async () => {
+    const listResult = await vaultBoardList(vaultRoot, humanAccess, config, undefined, FIXED_NOW);
+    expect(listResult.ok).toBe(true);
+    if (!listResult.ok) return;
+
+    const finding = listResult.value.all.find((f) => f.source === "lint");
+    expect(finding).toBeDefined();
+    if (!finding) return;
+
+    // Accept so there are prior events
+    await vaultBoardDispose(vaultRoot, humanAccess, config, {
+      finding_id: finding.identity_key,
+      event: "accept",
+      rationale: "seed",
+    });
+
+    // Delete the doc so the finding no longer reproduces
+    const target = finding.target;
+    if (target.kind === "lint") {
+      const docPath = join(vaultRoot, target.path);
+      rmSync(docPath, { force: true });
+    }
+
+    // First resolve — should write resolved
+    const r1 = await vaultBoardResolve(
+      vaultRoot,
+      humanAccess,
+      config,
+      { finding_id: finding.identity_key },
+      FIXED_NOW,
+    );
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    expect(r1.value.resolved).toBe(true);
+
+    // Second resolve on the same already-resolved finding
+    const r2 = await vaultBoardResolve(
+      vaultRoot,
+      humanAccess,
+      config,
+      { finding_id: finding.identity_key },
+      FIXED_NOW,
+    );
+
+    // Exactly ONE resolved event regardless of second call outcome
+    const resolvedEvents = readLedgerEvents(vaultRoot).filter(
+      (e) => e.event === "resolved" && e.finding_id === finding.identity_key,
+    );
+    expect(resolvedEvents).toHaveLength(1);
+
+    // The second call should be a no-op write: it should not add a second resolved.
+    // If it returns ok=true with resolved=true, that's a double-write bug.
+    // If it returns ok=false or still_reproduces=true (already resolved = treated as no-op), that's correct.
+    if (r2.ok && r2.value.resolved) {
+      // This would indicate a double-write — the assertion above already catches it,
+      // but make the expectation explicit for clear test output.
+      expect(resolvedEvents).toHaveLength(1); // already asserted above; repeated for clarity
+    }
+  });
+});
