@@ -554,3 +554,87 @@ describe("vaultSupersede — lineage-inert (6mf.4 R5)", () => {
     expect(succ.value.raw.reader_lineage).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 7 (6mf.4 R8): lazy backfill — readers[] → synthesized ingest lineage
+// ---------------------------------------------------------------------------
+
+describe("vaultWrite — lazy reader-lineage backfill from readers[] (6mf.4 R8)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("doc with readers[] but no reader_lineage: update op synthesizes ingest entries at doc.created, then appends update entry", async () => {
+    const DOC_CREATED = "2026-01-01";
+    // Seed a doc with readers[] but NO reader_lineage (pre-lineage legacy doc)
+    await seedDoc(vault, "pricing/backfill-a.md", {
+      readers: [READER_1, READER_2],
+      // reader_lineage intentionally absent
+      created: DOC_CREATED,
+    });
+
+    // Update with a new reader entry (simulates an update op adding R2's lineage)
+    const updated = await vaultWrite(vault, {
+      path: "pricing/backfill-a.md",
+      body: "# A Note\n\nRevised.\n",
+      frontmatter: frontmatter({
+        readers: [READER_2],
+        reader_lineage: [LINEAGE_UPDATE_R2],
+        created: DOC_CREATED,
+      }),
+      agent: AGENT,
+    });
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) throw updated.error;
+
+    const doc = await vaultRead(vault, "pricing/backfill-a.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const raw = doc.value.raw;
+    const lineage = Array.isArray(raw.reader_lineage) ? (raw.reader_lineage as string[]) : [];
+
+    // Must have backfilled ingest entries for both prior readers at doc.created
+    const expectedIngestR1 = encodeLineageEntry(`${DOC_CREATED}T00:00:00Z`, "ingest", READER_1);
+    const expectedIngestR2 = encodeLineageEntry(`${DOC_CREATED}T00:00:00Z`, "ingest", READER_2);
+    expect(lineage).toEqual(expect.arrayContaining([expectedIngestR1, expectedIngestR2]));
+
+    // Must also have the new update entry
+    expect(lineage).toEqual(expect.arrayContaining([LINEAGE_UPDATE_R2]));
+
+    // LINEAGE_UPDATE_R2 is (update, READER_2); expectedIngestR2 is (ingest, READER_2)
+    // — different (op, reader) keys, so both must appear
+    expect(lineage.length).toBe(3);
+  });
+
+  it("doc with no readers[] and no reader_lineage (legacy/human doc): NO fabricated ingest entries added", async () => {
+    // Seed a human-authored doc with neither readers nor lineage
+    await seedDoc(vault, "pricing/backfill-b.md", {});
+
+    // Update with a lineage entry
+    const updated = await vaultWrite(vault, {
+      path: "pricing/backfill-b.md",
+      body: "# A Note\n\nRevised.\n",
+      frontmatter: frontmatter({
+        readers: [READER_1],
+        reader_lineage: [LINEAGE_INGEST_R1],
+      }),
+      agent: AGENT,
+    });
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) throw updated.error;
+
+    const doc = await vaultRead(vault, "pricing/backfill-b.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const raw = doc.value.raw;
+    const lineage = Array.isArray(raw.reader_lineage) ? (raw.reader_lineage as string[]) : [];
+    // Only the supplied lineage entry — no backfill fabrication
+    expect(lineage).toEqual([LINEAGE_INGEST_R1]);
+  });
+});

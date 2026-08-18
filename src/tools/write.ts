@@ -35,7 +35,11 @@ import {
   outgoingLinkTargets,
   resolveLink,
 } from "../curation/vault-docs.js";
-import { readersFromLineage, unionLineage } from "../distill/reader-fingerprint.js";
+import {
+  encodeLineageEntry,
+  readersFromLineage,
+  unionLineage,
+} from "../distill/reader-fingerprint.js";
 import { type ParsedDocument, parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import {
@@ -1151,9 +1155,23 @@ export async function vaultWrite(
       }
 
       // Union reader_lineage[]
-      const existingLineage = Array.isArray(merged.reader_lineage)
+      let existingLineage = Array.isArray(merged.reader_lineage)
         ? (merged.reader_lineage as unknown[]).filter((e): e is string => typeof e === "string")
         : []; // malformed (non-array) treated as absent (R7)
+
+      // Lazy backfill (6mf.4 R8): if the existing doc has readers[] but NO
+      // reader_lineage yet, synthesize one `ingest` entry per reader at
+      // doc.created so the lineage history isn't blank. Only when lineage is
+      // absent — docs that already have lineage are not re-synthesized. Docs
+      // with no readers at all (human/legacy) get no fabricated ingest entries.
+      if (existingLineage.length === 0 && existingReaders.length > 0) {
+        const createdTs =
+          typeof merged.created === "string" && merged.created.length >= 10
+            ? `${merged.created.slice(0, 10)}T00:00:00Z`
+            : new Date().toISOString();
+        existingLineage = existingReaders.map((r) => encodeLineageEntry(createdTs, "ingest", r));
+      }
+
       const payloadLineage =
         "reader_lineage" in rawFrontmatter && Array.isArray(rawFrontmatter.reader_lineage)
           ? (rawFrontmatter.reader_lineage as unknown[]).filter(
