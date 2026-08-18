@@ -48,7 +48,12 @@ for (const row of rows) byDoc.set(`${row.docPath}\n${row.contentHash}`, row);
 // prior replay) are skipped so the script is idempotent.
 const existing = await listEdges(VAULT, {}, new Date());
 if (!existing.ok) throw new Error(`listEdges: ${existing.error.message}`);
-const seen = new Set(existing.value.map((e) => `${e.fromPath}\n${e.toPath}`));
+// Two sets on purpose: `preExisting` stays a frozen snapshot of the store
+// before this run (so the skip counters can tell "already persisted" from
+// "duplicate pair within this trace"), while `seen` accumulates this run's
+// confirmed writes on top of it.
+const preExisting = new Set(existing.value.map((e) => `${e.fromPath}\n${e.toPath}`));
+const seen = new Set(preExisting);
 
 let observed = 0;
 let skippedExisting = 0;
@@ -88,11 +93,10 @@ for (const row of byDoc.values()) {
 
     const key = `${from}\n${to}`;
     if (seen.has(key)) {
-      if (v.gated) skippedDup++;
-      else skippedExisting++;
+      if (preExisting.has(key)) skippedExisting++;
+      else skippedDup++;
       continue;
     }
-    seen.add(key);
 
     const obs = await observeEdge(VAULT, {
       fromPath: from,
@@ -108,6 +112,10 @@ for (const row of byDoc.values()) {
       console.error(`observe failed ${from} <- ${to}: ${obs.error.message}`);
       continue;
     }
+    // Marked seen only on a confirmed write: a failed observe leaves the key
+    // unmarked so the pair's reciprocal occurrence later in the trace retries
+    // instead of being skipped as a duplicate of an edge that never landed.
+    seen.add(key);
     observed++;
   }
 }
