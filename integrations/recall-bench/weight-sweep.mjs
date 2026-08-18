@@ -145,6 +145,13 @@ for (const bm25 of BM25_GRID) {
       weights,
     });
     if (!res.ok) throw new Error(`search failed on ${q.id}: ${res.error.message}`);
+    // Per-query guard, mirroring knn-sweep.mjs: a silent lexical fallback on
+    // one question would blend ranking modes inside a single arm's mean. The
+    // bm25=1.0 arm legitimately reports vectorUsed=false (vector weight 0).
+    if (res.value.vectorUsed !== weights.vector > 0)
+      throw new Error(
+        `vectorUsed=${res.value.vectorUsed} on ${q.id} contradicts weights ${JSON.stringify(weights)} — the model dropped out mid-sweep`,
+      );
     const rel = q.relevant_days;
     const relevantSet = new Set(rel);
     const budgets = {};
