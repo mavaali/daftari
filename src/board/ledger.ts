@@ -69,6 +69,9 @@ export async function appendEvent(
     ...(event.rationale !== undefined ? { rationale: event.rationale } : {}),
     ...(event.expiry !== undefined ? { expiry: event.expiry } : {}),
     ...(event.owner !== undefined ? { owner: event.owner } : {}),
+    // descriptor — display snapshot stamped by U11's dispose/resolve tools so
+    // resolved-and-absent findings can be rendered without the live finding (U4).
+    ...(event.descriptor !== undefined ? { descriptor: event.descriptor } : {}),
   };
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });

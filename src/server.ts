@@ -22,6 +22,7 @@ import { federatedRefusal, scanArgsForFederatedPath } from "./federation/classif
 import { getMountRegistry } from "./federation/mounts.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
 import { backlinksTools } from "./tools/backlinks.js";
+import { boardTools } from "./tools/board.js";
 import { canonTools } from "./tools/canon.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
@@ -63,6 +64,7 @@ const allTools: ToolDefinition[] = [
   ...tier1Tools,
   ...tier2Tools,
   ...edgeStalenessTools,
+  ...boardTools,
 ];
 
 export function registeredToolNames(): string[] {
