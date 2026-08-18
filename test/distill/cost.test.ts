@@ -387,23 +387,6 @@ describe("buildReceipt — approx cost", () => {
     expect(r.approxCostUSD).toBe(0);
   });
 
-  it("receipt carries the caller-supplied runId (not a fresh random UUID)", () => {
-    const outcome: ExtractOutcome = {
-      claims: [],
-      budget_exhausted: false,
-      llmCalls: 0,
-      chunkErrors: [],
-    };
-    const r = buildReceipt({
-      outcome,
-      config: CONFIG,
-      provider: "anthropic",
-      zdr: false,
-      runId: "distill-2026-08-17T00-00-00-000Z-abc123",
-    });
-    expect(r.runId).toBe("distill-2026-08-17T00-00-00-000Z-abc123");
-  });
-
   it("uses the caller's staging runId so the receipt joins to its artifacts", () => {
     const outcome: ExtractOutcome = {
       claims: [],
