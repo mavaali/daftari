@@ -24,6 +24,7 @@ import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import { setCoverageEnabled } from "./search/coverage.js";
+import { setGraphExpandConfig } from "./search/graph-expansion.js";
 import { setVecKnnK } from "./search/hybrid.js";
 import {
   markIndexError,
@@ -121,6 +122,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   setCoverageEnabled(config.value.search.coverage);
   setVecKnnK(config.value.search.vecKnnK);
   setSuppressSuperseded(config.value.search.suppressSuperseded);
+  setGraphExpandConfig(config.value.search.graphExpand);
 
   // Resolve the access identity. With no --role the server runs as the
   // deny-all guest; an unknown role name resolves the same way.

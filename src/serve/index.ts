@@ -39,6 +39,7 @@ import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
+import { setGraphExpandConfig } from "../search/graph-expansion.js";
 import { setVecKnnK } from "../search/hybrid.js";
 import { setSuppressSuperseded } from "../search/suppression.js";
 import { setProvider } from "../search/vector.js";
@@ -708,6 +709,7 @@ export async function runServe(argv: string[]): Promise<number> {
   setCoverageEnabled(config.value.search.coverage);
   setVecKnnK(config.value.search.vecKnnK);
   setSuppressSuperseded(config.value.search.suppressSuperseded);
+  setGraphExpandConfig(config.value.search.graphExpand);
 
   // Startup warnings mirror stdio's: unknown tool names in the tools block.
   for (const name of resolveToolExposure(config.value.tools).unknown) {
