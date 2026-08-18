@@ -272,18 +272,29 @@ function readBody(req: IncomingMessage): Promise<string | null> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    let settled = false;
     const LIMIT = 1_048_576; // 1 MiB
     req.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > LIMIT) {
+        if (settled) return; // size-limit path: prevent double-resolve
+        settled = true;
         resolve(null);
         req.destroy();
       } else {
         chunks.push(chunk);
       }
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", () => resolve(null));
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    req.on("error", () => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    });
   });
 }
 
@@ -409,10 +420,16 @@ export function startHttpServer(
   //     (authenticated, not authorized), NEVER guest;
   //   - anything else is 401. With no auth at all (startup gating
   //     guarantees loopback) every request runs as the deny-all guest.
+  //
+  // `auditPath` is the route pathname threaded in by the caller so that
+  // board-route auth failures log the actual board path (e.g. "/api/board")
+  // rather than the hardcoded "/mcp". Defaults to the request's own URL path.
   const authenticate = async (
     req: IncomingMessage,
     res: ServerResponse,
+    auditPath?: string,
   ): Promise<AccessContext | null> => {
+    const effectiveAuditPath = auditPath ?? new URL(req.url ?? "/", "http://localhost").pathname;
     if (!authConfigured) {
       return resolveAccess(config, "guest", GUEST_ROLE);
     }
@@ -446,7 +463,7 @@ export function startHttpServer(
               ...(subject !== undefined ? { subject } : {}),
               remote: remoteOf(req),
               method: req.method ?? "",
-              path: "/mcp",
+              path: effectiveAuditPath,
             });
             writeJson(res, 403, {
               error: "forbidden",
@@ -469,7 +486,7 @@ export function startHttpServer(
       ...(bearerFrom(req) !== null ? { token_hint: tokenHint(bearerFrom(req) as string) } : {}),
       remote: remoteOf(req),
       method: req.method ?? "",
-      path: "/mcp",
+      path: effectiveAuditPath,
     });
     writeJson(res, 401, {
       error: "unauthorized",
@@ -558,8 +575,58 @@ export function startHttpServer(
       url.pathname === "/api/board/resolve";
 
     if (isBoardPath) {
-      const boardAccess = await authenticate(req, res);
+      // Board routes share the SAME pre-auth penalty-box and per-principal
+      // rate-limit admission as /mcp — a flood of invalid-bearer requests to
+      // /api/board/* is penalised and locked out exactly as /mcp is.
+      //
+      // Layer A (pre-auth): penalty box keyed on socket address. An
+      // unauthenticated flood cannot spend CPU on constant-time token matching
+      // or JWT verification. Charged only by a 401/403 outcome inside
+      // authenticate, so a legitimate client never touches it.
+      const boardRemote = remoteOf(req);
+      const boardPenalty = penaltyAllows(penaltyBox, boardRemote, Date.now());
+      if (!boardPenalty.allowed) {
+        res.setHeader("Retry-After", String(boardPenalty.retryAfterSeconds));
+        audit({
+          outcome: "rate-limited",
+          remote: boardRemote,
+          method: req.method ?? "",
+          path: url.pathname,
+        });
+        writeJson(res, 429, {
+          error: "rate_limited",
+          message: "too many failed authentication attempts",
+        });
+        return;
+      }
+
+      // authenticate() charges the penalty box on 401/403 and logs the real
+      // board path (not "/mcp") via the auditPath argument.
+      const boardAccess = await authenticate(req, res, url.pathname);
       if (boardAccess === null) return; // authenticate() already wrote the rejection
+
+      // Layer B (post-auth): per-principal token-bucket, same as /mcp.
+      let boardBucket = principalBuckets.get(boardAccess.user);
+      if (!boardBucket) {
+        boardBucket = makeBucket(limits.burst, limits.ratePerMinute, Date.now());
+        principalBuckets.set(boardAccess.user, boardBucket);
+      }
+      const boardTake = tryTake(boardBucket, Date.now());
+      if (!boardTake.allowed) {
+        res.setHeader("Retry-After", String(boardTake.retryAfterSeconds));
+        audit({
+          outcome: "rate-limited",
+          principal: boardAccess.user,
+          remote: boardRemote,
+          method: req.method ?? "",
+          path: url.pathname,
+        });
+        writeJson(res, 429, {
+          error: "rate_limited",
+          message: "per-principal rate limit reached",
+        });
+        return;
+      }
 
       const filters = filtersFromQuery(url.searchParams);
       const hasFilters = Object.keys(filters).length > 0;
@@ -618,10 +685,19 @@ export function startHttpServer(
           if (isInputError) {
             writeJson(res, 400, { error: "bad_request", message: msg });
           } else if (isCapabilityError) {
+            // Capability check fires BEFORE any finding lookup (Gate 1 in
+            // vaultBoardDispose). The role-naming message here is therefore
+            // identical whether the finding exists or not — it carries no
+            // existence information, so emitting it does not create an oracle.
+            // This is deliberately different from the non-disclosure branch
+            // below, which emits the fixed "not found or not permitted" body
+            // for both "finding absent" and "RBAC-hidden" to prevent those
+            // two outcomes from being distinguished by their HTTP bodies.
             writeJson(res, 403, { error: "forbidden", message: msg });
           } else {
             // "not found or not permitted" — the non-disclosing error from the tool.
-            // Always 403, never 404, so no existence oracle.
+            // Always 403, never 404, so existence (present-but-hidden vs absent)
+            // is indistinguishable to the caller.
             writeJson(res, 403, { error: "forbidden", message: msg });
           }
           return;
@@ -692,7 +768,7 @@ export function startHttpServer(
       return;
     }
 
-    const access = await authenticate(req, res);
+    const access = await authenticate(req, res, "/mcp");
     if (access === null) return;
 
     // Layer B — the per-principal bucket, keyed on the VERIFIED identity.
