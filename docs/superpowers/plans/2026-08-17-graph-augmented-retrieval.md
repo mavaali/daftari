@@ -220,6 +220,46 @@ git commit -m "feat(config): search.graph_expand block, default off (off.1)"
 
 ---
 
+## Task 2b: startup runtime setter (match the coverage/vecKnnK convention)
+
+The handler must NOT `loadConfig(vaultRoot)` per query (re-reads/parses `config.yaml` on every search). The codebase resolves search tuning ONCE at startup via module-level setters — `setCoverageEnabled(...)` / `setVecKnnK(...)` are called from `src/index.ts` (~line 121) and `src/serve/index.ts` (~line 708) with the loaded `config.search.*`. Graph expansion follows the same pattern: a module-level config holder in `graph-expansion.ts`, set at both startup sites, read by the pass at serve time.
+
+**Files:**
+- Modify: `src/search/graph-expansion.ts` (add the holder — this task lands it even though the file is created in Task 3; if executing in order, MERGE this into Task 3's file creation and defer the two startup-site edits + this task's commit to here)
+- Modify: `src/index.ts` (~line 121, beside the `setCoverageEnabled`/`setVecKnnK` calls)
+- Modify: `src/serve/index.ts` (~line 708, same)
+
+- [ ] **Step 1: Add the module-level holder to `graph-expansion.ts`**
+
+```typescript
+import { SEARCH_TUNING_DEFAULTS, type GraphExpandConfig } from "../utils/config.js";
+
+let graphExpandCfg: GraphExpandConfig = { ...SEARCH_TUNING_DEFAULTS.graphExpand };
+export function setGraphExpandConfig(cfg: GraphExpandConfig): void {
+  graphExpandCfg = cfg;
+}
+export function graphExpandConfig(): GraphExpandConfig {
+  return graphExpandCfg;
+}
+```
+
+- [ ] **Step 2: Wire both startup sites**
+
+In `src/index.ts` next to the existing `setCoverageEnabled(config.search.coverage)` call (~121), add `setGraphExpandConfig(config.search.graphExpand)`. Do the identical addition in `src/serve/index.ts` (~708). Import `setGraphExpandConfig` from `./search/graph-expansion.js` (adjust relative path per file).
+
+- [ ] **Step 3: Typecheck + commit**
+
+Run: `npx tsc --noEmit` → PASS.
+
+```bash
+git add src/search/graph-expansion.ts src/index.ts src/serve/index.ts
+git commit -m "feat(search): graph-expand runtime config setter, wired at startup (off.1)"
+```
+
+Confirm the exact call sites by grepping first: `rg -n "setCoverageEnabled|setVecKnnK" src/index.ts src/serve/index.ts` — place the new setter beside them so it shares the one startup config resolution.
+
+---
+
 ## Task 3: pure selection core `selectExpansion`
 
 The heart of the mechanism, with zero I/O so it is hermetically testable. Given seeds, their candidate set, per-seed neighbor lists (with edge type), an affinity score for each neighbor, and `{cap, tau}`, it returns the injected hits in descending-affinity order, deduped against candidates and across seeds, capped.
@@ -396,7 +436,7 @@ Add to `src/search/graph-expansion.ts`:
 
 ```typescript
 import { getChunksForPath, type IndexDb } from "../storage/index-db.js";
-import type { EmbeddingProvider } from "./vector.js";
+import type { EmbeddingProvider } from "./embedding-provider.js"; // NOT re-exported by vector.js
 import { cosineSimilarity } from "./vector.js";
 
 // Max cosine of any of a document's chunk embeddings to the query embedding.
@@ -419,7 +459,7 @@ export function maxChunkCosine(
 }
 ```
 
-Confirm the exact `getProvider()` return type / `EmbeddingProvider` export name in `src/search/vector.ts` and adjust the `Pick<...>` import to match (it may already export a provider interface; use it).
+`EmbeddingProvider` lives in `src/search/embedding-provider.js` (vector.ts imports it type-only and does not re-export it). `getProvider()` returns exactly that type, so `Pick<EmbeddingProvider,"id"|"dim">` is valid with the corrected import path.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -662,33 +702,34 @@ Expected: FAIL — expansion not wired.
 
 - [ ] **Step 3: Wire the call**
 
-After the coverage pass + its RBAC filter (search.ts:640-643), add the graph-expansion pass. Load the config once (the handler already resolves a config somewhere upstream — reuse it; if not, `loadConfig(vaultRoot)`), then:
+After the coverage pass + its RBAC filter (search.ts:640-643, where `permitted` is defined), add the graph-expansion pass. Config comes from the startup runtime setter (Task 2b), NOT a per-query `loadConfig`. Embed the query ONCE and share it between the pass's gate and the affinity closure.
+
+New imports to add to `src/tools/search.ts` (only `getProvider` is already imported, line 61):
+`embedQuery` from `../search/vector.js`; `applyGraphExpansion`, `maxChunkCosine`, `loadGraphForSubset`, `graphExpandConfig` from `../search/graph-expansion.js`.
 
 ```typescript
     // off.1/MAV-154: one-hop edge-expansion post-pass (default off). Same shape
-    // as the coverage pass — resolves its gate internally, returns `permitted`
-    // unchanged when off, injected hits flagged viaEdge and RBAC-filtered.
-    const provider = getProvider();
-    const expanded = await applyGraphExpansion(db, vaultRoot, query, permitted, {
-      config: cfg.search.graphExpand,
-      loadGraph: loadGraphForSubset,
-      embedQuery: async (q) => {
-        const r = await embedQuery(q);
-        return r.ok ? r.value : null;
-      },
-      affinity: (path) => {
-        const qEmb = /* the embedding computed once above; hoist it */ QEMB;
-        return maxChunkCosine(db, path, qEmb, provider);
-      },
-    });
-    const permittedExpanded = access
-      ? expanded.filter((h) => (h.viaEdge ? canRead(access.role, h.collection) : true))
-      : expanded;
+    // as the coverage pass — gated by the startup-resolved config, returns
+    // `permitted` unchanged when off, injected hits flagged viaEdge + RBAC-filtered.
+    const geCfg = graphExpandConfig();
+    let permittedExpanded = permitted;
+    if (geCfg.enabled) {
+      const provider = getProvider();
+      const qEmbRes = await embedQuery(query);
+      const qEmb = qEmbRes.ok ? qEmbRes.value : null;
+      const expanded = await applyGraphExpansion(db, vaultRoot, query, permitted, {
+        config: geCfg,
+        loadGraph: loadGraphForSubset,
+        embedQuery: async () => qEmb, // embedded once, shared
+        affinity: (path) => (qEmb ? maxChunkCosine(db, path, qEmb, provider) : 0),
+      });
+      permittedExpanded = access
+        ? expanded.filter((h) => (h.viaEdge ? canRead(access.role, h.collection) : true))
+        : expanded;
+    }
 ```
 
-Cleaner shape (avoid embedding the query twice inside the pass AND the affinity closure): embed the query ONCE in the handler, pass a resolved `embedQuery: async () => qEmbOrNull` and an `affinity` that closes over the same `qEmb`. Structure it so the query is embedded a single time for this pass. Then continue the handler with `permittedExpanded` where it currently continues with `permitted`.
-
-Confirm the exact downstream variable name the handler feeds into enrichment (contested/structural/rerank) and swap `permitted` → `permittedExpanded` at that seam only.
+Then continue the handler with `permittedExpanded` wherever it currently continues with `permitted` (the enrichment seam — contested/structural/rerank/slice). Grep to confirm the single downstream consumer of `permitted` and swap it there: `rg -n "permitted" src/tools/search.ts`. The `if (geCfg.enabled)` guard keeps the entire pass — including the extra query embed — out of the hot path for the default-off case (zero added cost for callers who do not opt in).
 
 - [ ] **Step 4: Run to verify it passes**
 
