@@ -29,6 +29,7 @@ The multi-user hardening release (#399, #402–#411): single-user correctness is
 - **Stale ratify replays** (#406) — staged write proposals are anchored to the doc version they were computed from; ratifying after the doc moved fails loudly naming the proposal instead of clobbering interim positions.
 - **Shadow mode leaked real tension mutations** (#404) — with `shadow_mode: true`, `vault_assert`/`vault_consolidate` no longer really mint or resolve tensions for doc writes that were shadowed no-ops.
 - Federation mount-index test realpath flake on macOS (#403); suite-wide self-diagnosing vault teardown (retry loop + survivor listing) retiring a class of CI teardown races.
+- **Edge staleness: new `unverifiable` class** (#416) — a dependent whose `compiled`/`declared`/`earned` upstream the caller can no longer verify (deleted, or evicted from a readable collection) previously reported a false `current`; it now reports `unverifiable` on `vault_read`, `vault_search`, and `vault_staleness`. RBAC-hidden upstreams are indistinguishable from deleted ones (no existence oracle); the reason string is always "source not in your readable vault". No persisted state — deletion is computed, never remembered.
 
 ## [3.6.0] - 2026-08-15
 

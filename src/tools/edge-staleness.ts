@@ -36,7 +36,7 @@ import {
 import { listEdges } from "../curation/edges.js";
 import { readProvenanceLog } from "../curation/provenance.js";
 import { readReadLog } from "../curation/read-log.js";
-import { sourceReadable } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { readTier2Verdicts } from "../curation/tier2.js";
 import { parseDocument } from "../frontmatter/parser.js";
@@ -92,7 +92,7 @@ async function artifactReport(
     summary: summarizeUpstream([]),
   });
 
-  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  const db = openIndexForAccessOrNull(vaultRoot);
   try {
     // Unreadable anchor: the empty report, byte-identical to a document with
     // no upstream edges — nothing below is computed, so the response cannot
@@ -135,6 +135,7 @@ async function artifactReport(
       declaredUnits,
       earned,
       verdicts: verdicts.value,
+      isVerifiable: (unit) => sourceVerifiable(db, access, unit),
     });
 
     const { visible, hiddenPending } = access
@@ -236,7 +237,13 @@ const upstreamStalenessSchema: Record<string, unknown> = {
     },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+      enum: [
+        "current",
+        "pending-unchecked",
+        "pending-compatible",
+        "pending-broken",
+        "unverifiable",
+      ],
       description: "Compatibility class of the change since this edge's baseline",
     },
     baseline: {
@@ -287,8 +294,15 @@ const artifactStalenessSchema: Record<string, unknown> = {
         pending_unchecked: { type: "integer" },
         pending_compatible: { type: "integer" },
         pending_broken: { type: "integer" },
+        unverifiable: { type: "integer" },
       },
-      required: ["current", "pending_unchecked", "pending_compatible", "pending_broken"],
+      required: [
+        "current",
+        "pending_unchecked",
+        "pending_compatible",
+        "pending_broken",
+        "unverifiable",
+      ],
     },
   },
   required: ["mode", "artifact", "edges", "hidden_pending", "summary"],

@@ -19,7 +19,7 @@ import { recordRead } from "../curation/read-log.js";
 import { computeStaleness } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation/tension.js";
-import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable, visibleTensions } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import {
@@ -115,6 +115,10 @@ export interface UpstreamReadStaleness {
   // Pending-broken count among the VISIBLE edges (hidden ones only ever
   // surface through the coarse bucket above).
   pending_broken: number;
+  // Count of VISIBLE upstream edges whose unit the caller can no longer
+  // verify (deleted, or — for a readable collection — evicted). Unreadable
+  // units never enter this count; they fold into hidden_pending (#217).
+  unverifiable: number;
   banner: string | null;
 }
 
@@ -359,23 +363,39 @@ export async function vaultRead(
     // existence leak). Collapses to null when there is nothing to report,
     // which is byte-identical to a document with no compiled edges at all.
     if (rows && rows.length > 0) {
+      const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
+      const verifiedRows = staleCtx
+        ? compiledUpstreamStaleness(
+            resolved.value.relPath,
+            staleCtx.consumes,
+            staleCtx.provenance,
+            isVerifiable,
+          )
+        : rows;
       const {
         visible,
         hiddenPending,
       }: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = access
-        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
-        : { visible: rows, hiddenPending: "none" };
+        ? splitUpstreamVisibility(verifiedRows, (unit) => sourceReadable(db, access, unit))
+        : { visible: verifiedRows, hiddenPending: "none" };
       if (visible.length > 0 || hiddenPending !== "none") {
         const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
-        const notes: string[] = [];
+        const unverifiable = visible.filter((r) => r.staleness === "unverifiable").length;
+        const clauses: string[] = [];
         if (pendingBroken > 0) {
-          notes.push(
+          clauses.push(
             `${pendingBroken} compiled upstream input${pendingBroken === 1 ? " has" : "s have"} ` +
-              `changed incompatibly since this document was compiled`,
+              `changed incompatibly since this document was compiled — this content may predate them`,
+          );
+        }
+        if (unverifiable > 0) {
+          clauses.push(
+            `${unverifiable} upstream input${unverifiable === 1 ? "" : "s"} can no longer be ` +
+              `verified (source not in your readable vault)`,
           );
         }
         if (hiddenPending !== "none") {
-          notes.push(
+          clauses.push(
             `${hiddenPending} upstream inputs outside your read scope have pending changes`,
           );
         }
@@ -383,7 +403,8 @@ export async function vaultRead(
           edges: visible,
           hidden_pending: hiddenPending,
           pending_broken: pendingBroken,
-          banner: notes.length > 0 ? `${notes.join("; ")} — this content may predate them.` : null,
+          unverifiable,
+          banner: clauses.length > 0 ? `${clauses.join("; ")}.` : null,
         };
       }
     }
@@ -1126,7 +1147,13 @@ const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
     edge_class: { type: "string", enum: ["compiled", "declared", "earned"] },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+      enum: [
+        "current",
+        "pending-unchecked",
+        "pending-compatible",
+        "pending-broken",
+        "unverifiable",
+      ],
     },
     baseline: {
       type: ["string", "null"],
@@ -1345,9 +1372,16 @@ export const readTools: ToolDefinition[] = [
               minimum: 0,
               description: "Pending-broken count among the VISIBLE edges only",
             },
+            unverifiable: {
+              type: "integer",
+              minimum: 0,
+              description:
+                "Count among the VISIBLE edges whose upstream unit the caller " +
+                "can no longer verify (deleted, or evicted from a readable collection)",
+            },
             banner: { type: ["string", "null"] },
           },
-          required: ["edges", "hidden_pending", "pending_broken", "banner"],
+          required: ["edges", "hidden_pending", "pending_broken", "unverifiable", "banner"],
         },
         // Null when healthy — same contract as `decay`.
         structural: {
