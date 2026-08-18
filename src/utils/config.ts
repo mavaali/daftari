@@ -1666,7 +1666,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   }
 
   // Retrieval tuning. Absent block = the defaults (coverage off — MAV-156
-  // retirement; KNN fan-out 64, the historical constant).
+  // retirement; KNN fan-out 256, the MAV-159 measured saturation point).
   const search: SearchTuningConfig = { ...SEARCH_TUNING_DEFAULTS };
   if (root.search !== undefined) {
     if (root.search === null || typeof root.search !== "object" || Array.isArray(root.search)) {
