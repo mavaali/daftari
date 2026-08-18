@@ -90,6 +90,9 @@ export interface HybridHit {
   // #234: pending changes (any class, severity withheld) on compiled
   // upstream edges to units the caller cannot read. Absent = none.
   hiddenPendingUpstream?: "some" | "many";
+  // Coarse bucket of VISIBLE upstream inputs the caller can no longer verify
+  // (deleted, or evicted from a readable collection). Never an exact count (#217/#416).
+  unverifiableUpstream?: "some" | "many";
   // #8 structural decay, coarse per-hit booleans (linker names live on
   // vault_read's structural field, not here). Computed from the caller's
   // vantage — hidden linkers neither count nor leak. Absent = healthy.

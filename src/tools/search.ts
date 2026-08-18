@@ -16,7 +16,7 @@ import {
 import { recordReads } from "../curation/read-log.js";
 import { structuralDecay } from "../curation/structural.js";
 import { TENSION_KINDS } from "../curation/tension.js";
-import { sourceReadable } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import { ensureMountIndexFresh, reindexMount } from "../federation/mount-index.js";
@@ -214,7 +214,8 @@ async function annotateAndLogServedHits(
   for (const hit of hits) {
     let broken: number | undefined;
     if (staleCtx) {
-      const rows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
+      const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
+      const rows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance, isVerifiable);
       broken = rows.filter((r) => r.staleness === "pending-broken").length;
       // `db` is the caller's already-open index handle — the same one the
       // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
@@ -225,6 +226,9 @@ async function annotateAndLogServedHits(
       const brokenBucket = bucketHiddenDownstream(visibleBroken);
       if (brokenBucket !== "none") hit.pendingBrokenUpstream = brokenBucket;
       if (hiddenPending !== "none") hit.hiddenPendingUpstream = hiddenPending;
+      const visibleUnverifiable = visible.filter((r) => r.staleness === "unverifiable").length;
+      const unverifiableBucket = bucketHiddenDownstream(visibleUnverifiable);
+      if (unverifiableBucket !== "none") hit.unverifiableUpstream = unverifiableBucket;
     }
     entries.push({
       tool,
@@ -1129,6 +1133,13 @@ const hybridHitSchema = {
       description:
         "Coarse bucket of pending changes on upstream edges the caller cannot read; " +
         "severity is withheld. Absent = none.",
+    },
+    unverifiableUpstream: {
+      type: "string",
+      enum: ["some", "many"],
+      description:
+        "Coarse bucket of VISIBLE upstream inputs the caller can no longer " +
+        "verify (deleted/evicted). Never an exact count (#217/#416).",
     },
     orphan: { type: "boolean", description: "No inbound links from the caller's vantage." },
     retiredStillLinked: { type: "boolean" },

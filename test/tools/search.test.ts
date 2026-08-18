@@ -10,7 +10,8 @@ import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
 import { setCoverageEnabled } from "../../src/search/coverage.js";
 import { setSuppressSuperseded } from "../../src/search/suppression.js";
-import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
+import { deleteDocument } from "../../src/storage/index-db.js";
+import { openIndexForActiveProvider, vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -790,6 +791,63 @@ describe("upstream staleness annotations (#234)", () => {
     expect(hit).toBeDefined();
     expect(hit?.pendingBrokenUpstream).toBeUndefined();
     expect(hit?.hiddenPendingUpstream).toBe("some");
+  });
+});
+
+describe("unverifiable upstream bucket (#416)", () => {
+  // Mirrors the upstream staleness annotations (#234) harness exactly, then
+  // evicts the upstream unit from the index so it becomes unverifiable.
+  let vault: string;
+
+  beforeAll(async () => {
+    vault = makeTempVault();
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+    const read = await recordRead(vault, {
+      tool: "vault_read",
+      file: "competitive-intel/vega-insight-positioning.md",
+      run_id: "run-unverifiable",
+    });
+    if (!read.ok) throw read.error;
+    const minted = await mintConsumesEdges(vault, {
+      artifact: "pricing/helios-consumption-pricing.md",
+      runId: "run-unverifiable",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    if (!minted.ok) throw minted.error;
+    // Record a provenance write so the upstream edge has a post-compile change,
+    // but since we are about to delete the upstream from the index the staleness
+    // classifier will see it as unverifiable rather than pending-broken.
+    const changed = await recordProvenance(vault, {
+      tool: "vault_write",
+      file: "competitive-intel/vega-insight-positioning.md",
+      agent: "agent:test",
+      action: "update",
+      body_changed: true,
+    });
+    if (!changed.ok) throw changed.error;
+    // Evict the upstream unit from the index — the dependent hit should now
+    // carry unverifiableUpstream rather than pendingBrokenUpstream.
+    const dbRes = openIndexForActiveProvider(vault);
+    if (!dbRes.ok) throw dbRes.error;
+    try {
+      deleteDocument(dbRes.value, "competitive-intel/vega-insight-positioning.md");
+    } finally {
+      dbRes.value.close();
+    }
+  }, 60_000);
+  afterAll(() => cleanupVault(vault));
+
+  it("hit carries unverifiableUpstream bucket when upstream is evicted from the index", async () => {
+    const result = await vaultSearch(vault, {
+      query: "Helios compute credit consumption pricing",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+    expect(hit).toBeDefined();
+    expect(hit?.unverifiableUpstream).toMatch(/^(some|many)$/);
+    expect(hit?.pendingBrokenUpstream).toBeUndefined();
   });
 });
 
