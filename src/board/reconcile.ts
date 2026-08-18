@@ -331,15 +331,18 @@ export function reconcile(
       continue;
     }
 
-    // Fix 2: reopened branch must not fall through to the silent-drop path below if new
-    // cases are ever inserted. The `continue` makes intent explicit; suppression preserves it.
     // For "reopened" latest event + absent: the finding reproduced then disappeared.
     // Treat like accepted (the human intent was to fix it) → emit resolved.
+    // Fix 2: the continue below makes control flow explicit so future insertions after this
+    // block cannot accidentally reach the silent-drop path. Suppressed because biome flags
+    // it as useless (it is semantically a no-op today, but guards against future edits).
     if (disp.event === "reopened") {
       // Carry the descriptor forward so the resolved card keeps its display identity.
       const desc = latestDescriptor(events);
       emit.push(buildSystemEvent(identity_key, "resolved", disp.against_fingerprint, now, desc));
       findings.push(skeletonFinding(identity_key, events));
+      // biome-ignore lint/complexity/noUselessContinue: explicit guard against future fall-through
+      continue;
     }
 
     // dismiss / defer / new / reassign — absent from live set → drop silently.
