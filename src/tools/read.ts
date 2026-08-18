@@ -1139,7 +1139,7 @@ const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
     edge_class: { type: "string", enum: ["compiled", "declared", "earned"] },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken", "unverifiable"],
     },
     baseline: {
       type: ["string", "null"],
@@ -1358,9 +1358,16 @@ export const readTools: ToolDefinition[] = [
               minimum: 0,
               description: "Pending-broken count among the VISIBLE edges only",
             },
+            unverifiable: {
+              type: "integer",
+              minimum: 0,
+              description:
+                "Count among the VISIBLE edges whose upstream unit the caller " +
+                "can no longer verify (deleted, or evicted from a readable collection)",
+            },
             banner: { type: ["string", "null"] },
           },
-          required: ["edges", "hidden_pending", "pending_broken", "banner"],
+          required: ["edges", "hidden_pending", "pending_broken", "unverifiable", "banner"],
         },
         // Null when healthy — same contract as `decay`.
         structural: {
