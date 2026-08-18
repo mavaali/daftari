@@ -194,6 +194,31 @@ describe("R27 — per-finding card independence", () => {
     expect(html).toContain("check-B");
     expect(html).toContain("check-C");
   });
+
+  it("3 findings on the same path produce exactly 3 board-card elements (no group-collapse)", () => {
+    const path = "notes/shared.md";
+    const f1 = baseFinding({ disposition: "new", target: { kind: "lint", path } });
+    const f2 = baseFinding({ disposition: "new", target: { kind: "lint", path } });
+    const f3 = baseFinding({ disposition: "new", target: { kind: "lint", path } });
+    const html = renderBoardPage(boardWith([f1, f2, f3]));
+    const cardCount = (html.match(/class="board-card"/g) ?? []).length;
+    expect(cardCount).toBe(3);
+  });
+
+  it("staged finding with no evidence.target_path renders staged:id tag without a /doc/ link", () => {
+    const f = baseFinding({
+      source: "staged",
+      target: { kind: "staged", stagedActionId: "sa-no-path" },
+      evidence: {}, // no target_path
+      disposition: "new",
+    });
+    const html = renderBoardPage(boardWith([f]));
+    // Must render the tag
+    expect(html).toContain("staged:sa-no-path");
+    // Must NOT render a broken /doc/ href for this finding
+    expect(html).not.toContain('href="/doc/undefined"');
+    expect(html).not.toContain('href="/doc/"');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -480,6 +505,46 @@ describe("XSS escaping", () => {
     const html = renderBoardPage(boardWith([f]));
     expect(html).not.toContain('<script>alert("check")');
     expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — Attribute-context XSS: double-quote breakout + javascript: scheme
+// ---------------------------------------------------------------------------
+
+describe("attribute-context XSS safety", () => {
+  it("double-quote in target path does not break out of href attribute", () => {
+    // A path containing a double-quote followed by an event-handler payload.
+    const f = baseFinding({
+      target: { kind: "lint", path: 'notes/x" onmouseover="alert(1)' },
+      disposition: "new",
+    });
+    const html = renderBoardPage(boardWith([f]));
+    // The raw breakout sequence must never appear in the output.
+    expect(html).not.toContain('" onmouseover="alert(1)');
+    // The quote must be percent-encoded inside the href (encodeURI encodes " as %22).
+    expect(html).toContain("%22");
+  });
+
+  it("javascript: path renders as /doc/... relative href, not a live javascript: scheme", () => {
+    // A path whose text begins with "javascript:" in a lint/staleness target.
+    const f = baseFinding({
+      target: { kind: "staleness", path: "javascript:alert(1)" },
+      disposition: "new",
+    });
+    const html = renderBoardPage(boardWith([f]));
+    // href must start with /doc/ (relative), never with javascript:
+    expect(html).not.toContain('href="javascript:');
+    expect(html).toContain('href="/doc/javascript:alert(1)"');
+  });
+
+  it("XSS payload in document filter value is escaped in the form input", () => {
+    const filters: BoardFilters = { document: '"><script>alert(1)</script>' };
+    const html = renderBoardPage(emptyBoard(), filters);
+    // Raw breakout must not appear.
+    expect(html).not.toContain('"><script>alert(1)</script>');
+    // Each hazardous character must be entity-escaped.
+    expect(html).toContain("&quot;&gt;&lt;script&gt;");
   });
 });
 
