@@ -331,6 +331,8 @@ export function reconcile(
       continue;
     }
 
+    // Fix 2: reopened branch must not fall through to the silent-drop path below if new
+    // cases are ever inserted. The `continue` makes intent explicit; suppression preserves it.
     // For "reopened" latest event + absent: the finding reproduced then disappeared.
     // Treat like accepted (the human intent was to fix it) → emit resolved.
     if (disp.event === "reopened") {
