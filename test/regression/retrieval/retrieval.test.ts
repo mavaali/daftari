@@ -11,13 +11,29 @@ import { ok, type Result } from "../../../src/frontmatter/types.js";
 import type { EmbeddingProvider } from "../../../src/search/embedding-provider.js";
 import { hybridSearch } from "../../../src/search/hybrid.js";
 import { reindexVault } from "../../../src/search/reindex.js";
+import {
+  meanOf,
+  ndcgAtK,
+  recallAtK,
+  reciprocalRank,
+} from "../../../src/search/retrieval-metrics.js";
 import { resetProviderForTests, setProviderForTests } from "../../../src/search/vector.js";
 import { type IndexDb, openIndexDb } from "../../../src/storage/index-db.js";
 import { type Baseline, diffBaseline } from "../helpers/baseline.js";
 
 const FIXTURE = resolve("test/regression/fixtures/native-vault");
 const BASELINE = resolve("test/regression/baselines/retrieval.json");
+// Aggregate recall@k / MRR / nDCG@k per arm — the named retrieval metrics of
+// issue #301, gated as an exact golden alongside the per-query hit@k booleans.
+// k matches the suite's search limit; nDCG@10 over real-semantic content is the
+// deferred sample-vault follow-up. Means rounded to 6dp so the golden is
+// portable across platforms: nDCG's log2 is deterministic, but rounding keeps
+// this exact-diff rather than tolerance-banded — the Tier-1 philosophy.
+const METRICS_BASELINE = resolve("test/regression/baselines/retrieval-metrics.json");
+const K = 5;
 const LEX = { bm25: 1, vector: 0 };
+
+const round6 = (v: number | null): number | null => (v === null ? null : Math.round(v * 1e6) / 1e6);
 
 // Stub provider: reindex embeds every chunk through this instead of loading
 // MiniLM. Zero vectors are fine — the suite never ranks by vector (weight 0).
@@ -51,6 +67,15 @@ describe("retrieval regression (lexical BM25, native-shape vault)", () => {
   const outcomes: Baseline = {};
   // Populated per query by the beforeAll sweep; invariant + golden tests read it.
   const docHit1: Record<string, boolean> = {};
+  // Per-arm per-query metric samples, meaned into the aggregate golden below.
+  const samples: Record<
+    "document" | "chunk",
+    { recall: (number | null)[]; rr: (number | null)[]; ndcg: (number | null)[] }
+  > = {
+    document: { recall: [], rr: [], ndcg: [] },
+    chunk: { recall: [], rr: [], ndcg: [] },
+  };
+  const aggregate: Baseline = {};
 
   beforeAll(async () => {
     setProviderForTests(stubProvider);
@@ -83,6 +108,14 @@ describe("retrieval regression (lexical BM25, native-shape vault)", () => {
           hit1: hits[0]?.path === q.relevantPath,
           hit5: hits.slice(0, 5).some((h) => h.path === q.relevantPath),
         };
+        // Same ranked list, scored by the #301 ranking metrics. relevant is a
+        // singleton here, so recall@k mirrors hit@k while MRR/nDCG add the
+        // within-top-k rank sensitivity the booleans discard.
+        const ranked = hits.map((h) => h.path);
+        const relevant = [q.relevantPath];
+        samples[granularity].recall.push(recallAtK(ranked, relevant, K));
+        samples[granularity].rr.push(reciprocalRank(ranked, relevant));
+        samples[granularity].ndcg.push(ndcgAtK(ranked, relevant, K));
       }
       docHit1[q.id] = arms.document.hit1;
       outcomes[q.id] = {
@@ -93,6 +126,15 @@ describe("retrieval regression (lexical BM25, native-shape vault)", () => {
         chunkHit5: arms.chunk.hit5,
       };
     }
+
+    for (const arm of ["document", "chunk"] as const) {
+      aggregate[arm] = {
+        [`recall@${K}`]: round6(meanOf(samples[arm].recall)),
+        mrr: round6(meanOf(samples[arm].rr)),
+        [`ndcg@${K}`]: round6(meanOf(samples[arm].ndcg)),
+      };
+    }
+    console.log("[retrieval #301 metrics]", JSON.stringify(aggregate));
   }, 120_000);
 
   afterAll(() => {
@@ -111,5 +153,12 @@ describe("retrieval regression (lexical BM25, native-shape vault)", () => {
   it("goldens: per-query hit@1/hit@5 under both granularities match baselines/retrieval.json", () => {
     expect(Object.keys(outcomes)).toHaveLength(300);
     expect(diffBaseline(BASELINE, outcomes)).toEqual([]);
+  });
+
+  it(`goldens: aggregate recall@${K} / MRR / nDCG@${K} per arm match baselines/retrieval-metrics.json`, () => {
+    // #301: track the named retrieval metrics as a regression gate. Deterministic
+    // lexical BM25 → exact golden-diff, no tolerance (Tier-1 philosophy).
+    expect(Object.keys(aggregate)).toEqual(["document", "chunk"]);
+    expect(diffBaseline(METRICS_BASELINE, aggregate)).toEqual([]);
   });
 });
