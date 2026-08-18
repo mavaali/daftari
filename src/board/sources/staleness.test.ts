@@ -34,7 +34,7 @@ import type { UpstreamStaleness } from "../../curation/edge-staleness.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { FindingSourceAdapter, Tier2Target } from "../types.js";
-import { SOURCE_ADAPTER_MAP, SOURCE_ADAPTERS } from "./index.js";
+import { resolveAdapterForIdentity, SOURCE_ADAPTERS } from "./index.js";
 import {
   edgeStalenessAdapter,
   makeEdgeStalenessAdapter,
@@ -887,7 +887,7 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
 });
 
 // ---------------------------------------------------------------------------
-// Registry tests — both adapters in SOURCE_ADAPTERS / SOURCE_ADAPTER_MAP
+// Registry tests — SOURCE_ADAPTERS array
 // ---------------------------------------------------------------------------
 
 describe("SOURCE_ADAPTERS registry (R22) after U6", () => {
@@ -899,21 +899,6 @@ describe("SOURCE_ADAPTERS registry (R22) after U6", () => {
     expect(SOURCE_ADAPTERS).toContain(edgeStalenessAdapter);
   });
 
-  it("SOURCE_ADAPTER_MAP has 'staleness' key for ttlStalenessAdapter", () => {
-    expect(SOURCE_ADAPTER_MAP.get("staleness")).toBe(ttlStalenessAdapter);
-  });
-
-  it("SOURCE_ADAPTER_MAP has 'tier2' key for edgeStalenessAdapter", () => {
-    // edgeStalenessAdapter is registered under "tier2" source key because its
-    // findings use Tier2Target — the map lookup key matches the Finding.source
-    // for adapter dispatch (U11 dispose / reproduces path).
-    // Note: edgeStalenessAdapter emits source:"staleness" but is looked up via
-    // "tier2" in the map so the dispose tool can find the right adapter by
-    // the finding's target kind. See U11 for the full dispatch contract.
-    expect(SOURCE_ADAPTER_MAP.has("tier2")).toBe(true);
-    expect(SOURCE_ADAPTER_MAP.get("tier2")).toBe(edgeStalenessAdapter);
-  });
-
   it("every adapter in SOURCE_ADAPTERS has all FindingSourceAdapter methods", () => {
     for (const adapter of SOURCE_ADAPTERS) {
       expect(typeof adapter.list).toBe("function");
@@ -921,5 +906,200 @@ describe("SOURCE_ADAPTERS registry (R22) after U6", () => {
       expect(typeof adapter.fingerprintOf).toBe("function");
       expect(typeof adapter.reproduces).toBe("function");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12: resolveAdapterForIdentity (C1)
+//   Two adapters share source:"staleness" — a source→adapter map cannot
+//   disambiguate. The resolver iterates SOURCE_ADAPTERS and returns the FIRST
+//   adapter whose reproduces() recognises the key; an unknown key → null.
+// ---------------------------------------------------------------------------
+
+describe("resolveAdapterForIdentity (C1)", () => {
+  let vaultRoot: string;
+  const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
+  const staleDate = new Date(new Date("2026-01-01T00:00:00Z").getTime() - 200 * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  beforeEach(() => {
+    vaultRoot = mkdtempSync(join(tmpdir(), "daftari-resolver-test-"));
+    writeConfig(vaultRoot, {
+      admin: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    });
+    // Expired TTL doc → produces a ttlStalenessAdapter identity_key
+    writeDoc(
+      vaultRoot,
+      "notes/expired-for-resolver.md",
+      frontmatter({
+        title: "Expired Resolver",
+        collection: "notes",
+        updated: staleDate,
+        ttl_days: 90,
+      }) + "# Expired\n",
+    );
+  });
+
+  afterEach(() => {
+    rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  it("identity_key from ttlStalenessAdapter resolves to ttlStalenessAdapter (not edgeStalenessAdapter)", async () => {
+    const findings = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+    const f = findings.find((f) => f.check === "ttl-staleness" && f.target.kind === "staleness");
+    expect(f).toBeDefined();
+
+    const resolved = await resolveAdapterForIdentity(
+      f!.identity_key,
+      vaultRoot,
+      adminAccess,
+      FIXED_NOW,
+    );
+    expect(resolved).toBe(ttlStalenessAdapter);
+    expect(resolved).not.toBe(edgeStalenessAdapter);
+  });
+
+  it("edge-staleness identity_key for phantom paths resolves to null (not ttlStalenessAdapter)", async () => {
+    // Build an edge-staleness identity_key manually — the identity is derived
+    // purely from source/check/target. The docs don't actually exist in the
+    // vault, so no adapter will reproduce this key.
+    // Key validation: the resolver must NOT return ttlStalenessAdapter for an
+    // edge-staleness key (the two adapters share source:"staleness" but their
+    // identity_key namespaces are distinct).
+    const target: Tier2Target = {
+      kind: "tier2",
+      artifact: "notes/artifact-does-not-exist.md",
+      unit: "notes/unit-does-not-exist.md",
+      edgeClass: "declared",
+    };
+    const edgeIdentityKey = deriveIdentity("staleness", "edge-staleness", target);
+
+    const resolved = await resolveAdapterForIdentity(
+      edgeIdentityKey,
+      vaultRoot,
+      adminAccess,
+      FIXED_NOW,
+    );
+    // No real pending-broken row exists for these phantom paths → null.
+    // Critically: it must NOT be ttlStalenessAdapter (wrong adapter).
+    expect(resolved).toBeNull();
+    expect(resolved).not.toBe(ttlStalenessAdapter);
+  });
+
+  it("an unknown identity_key resolves to null", async () => {
+    const resolved = await resolveAdapterForIdentity(
+      "staleness:completely-unknown-identity-key-xyz",
+      vaultRoot,
+      adminAccess,
+      FIXED_NOW,
+    );
+    expect(resolved).toBeNull();
+  });
+
+  it("ttl identity_key does NOT resolve to edgeStalenessAdapter — disambiguates correctly", async () => {
+    // Both adapters emit source:"staleness" — a map keyed by source cannot
+    // distinguish them. The resolver must not return the wrong adapter.
+    const findings = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+    const f = findings.find((f) => f.check === "ttl-staleness");
+    expect(f).toBeDefined();
+
+    // edgeStalenessAdapter.reproduces should return false for a ttl key.
+    const edgeReproduces = await edgeStalenessAdapter.reproduces(
+      f!.identity_key,
+      vaultRoot,
+      adminAccess,
+      FIXED_NOW,
+    );
+    expect(edgeReproduces).toBe(false);
+
+    // Only ttlStalenessAdapter.reproduces should return true.
+    const ttlReproduces = await ttlStalenessAdapter.reproduces(
+      f!.identity_key,
+      vaultRoot,
+      adminAccess,
+      FIXED_NOW,
+    );
+    expect(ttlReproduces).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 13: edgeStalenessAdapter production smoke test (I1)
+//   Exercises the real load path (readProvenanceLog / readTier2Verdicts /
+//   listEdges / loadDocuments / upstreamStaleness) on a real temp vault.
+//   Goal: a wiring bug (wrong import, wrong arg order) must not hide behind
+//   injected-fn tests.
+//
+//   Vault seeded with: one doc + a minimal provenance log (no edges).
+//   Expected: list() returns an array (possibly empty) WITHOUT throwing.
+//   We do NOT seed a full edge because constructing a valid provenance/
+//   consumes/edges fixture for the declared-edge path is disproportionate for
+//   a smoke test; the injected-fn tests cover that mapping logic exhaustively.
+// ---------------------------------------------------------------------------
+
+describe("edgeStalenessAdapter production smoke test (I1)", () => {
+  let vaultRoot: string;
+  const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
+
+  beforeEach(() => {
+    vaultRoot = mkdtempSync(join(tmpdir(), "daftari-edge-smoke-test-"));
+    writeConfig(vaultRoot, {
+      admin: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    });
+    // One doc with sources: [] (no declared upstream)
+    writeDoc(
+      vaultRoot,
+      "notes/smoke-doc.md",
+      frontmatter({
+        title: "Smoke",
+        collection: "notes",
+        updated: "2025-06-01",
+        sources: [],
+      }) + "# Smoke\n",
+    );
+    // Minimal provenance log: one entry for smoke-doc (no upstream to be stale on)
+    const daftariDir = join(vaultRoot, ".daftari");
+    mkdirSync(daftariDir, { recursive: true });
+    const provenanceEntry = JSON.stringify({
+      file: "notes/smoke-doc.md",
+      action: "write",
+      timestamp: "2025-06-01T00:00:00.000Z",
+      changed_fields: ["body"],
+    });
+    writeFileSync(join(daftariDir, "curation-log.jsonl"), provenanceEntry + "\n", "utf-8");
+    // Note: no edges.jsonl and no tier2-verdicts.jsonl seeded — these are
+    // optional (absent-file is treated as "no entries" by the loaders).
+  });
+
+  afterEach(() => {
+    rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  it("production edgeStalenessAdapter.list() runs without throwing on a vault with a provenance log", async () => {
+    // The real load path must complete without error even when edges/verdicts
+    // are absent. Result is [] (no declared sources → no rows to classify).
+    let findings: import("../types.js").Finding[] | undefined;
+    await expect(
+      (async () => {
+        findings = await edgeStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      })(),
+    ).resolves.not.toThrow();
+    expect(Array.isArray(findings)).toBe(true);
+  });
+
+  it("production edgeStalenessAdapter.list() returns an array (zero or more findings)", async () => {
+    const findings = await edgeStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+    // With sources:[] and no edges, no pending-broken rows exist → empty array.
+    expect(Array.isArray(findings)).toBe(true);
+    expect(findings.length).toBe(0);
+  });
+
+  it("production wiring loads without error — identityOf and fingerprintOf are functions", () => {
+    // Basic structural check: the production singleton exports correct methods.
+    expect(typeof edgeStalenessAdapter.list).toBe("function");
+    expect(typeof edgeStalenessAdapter.identityOf).toBe("function");
+    expect(typeof edgeStalenessAdapter.fingerprintOf).toBe("function");
+    expect(typeof edgeStalenessAdapter.reproduces).toBe("function");
   });
 });

@@ -36,8 +36,9 @@
 //   "pending-compatible" — cosmetic, not an incident; not surfaced.
 //   "pending-unchecked"  — incomplete information; surfaced by the tier-2
 //                          queue tool (U8), not here, to avoid double cards.
-//   "unverifiable"       — unit deleted/invisible; RBAC/existence oracle risk
-//                          if named; not surfaced here.
+//   "unverifiable"       — unit deleted/invisible; classified correctly by
+//                          upstreamStaleness (via isVerifiable) and deliberately
+//                          NOT surfaced here (RBAC/existence oracle risk if named).
 //   Conservative choice: pending-broken is the only state that constitutes a
 //   known-wrong read incident per the edge-staleness spec (#234).
 //
@@ -55,6 +56,7 @@ import { type UpstreamStaleness, upstreamStaleness } from "../../curation/edge-s
 import { listEdges } from "../../curation/edges.js";
 import { readProvenanceLog } from "../../curation/provenance.js";
 import { computeStaleness } from "../../curation/staleness.js";
+import { sourceVerifiable } from "../../curation/tension-access.js";
 import { readTier2Verdicts } from "../../curation/tier2.js";
 import { loadDocuments } from "../../curation/vault-docs.js";
 import { collectionForPath } from "../../storage/index-db.js";
@@ -155,8 +157,67 @@ export const ttlStalenessAdapter: FindingSourceAdapter = {
 };
 
 // ---------------------------------------------------------------------------
-// Edge staleness adapter — factory + production singleton
+// Edge staleness adapter — shared helper, factory + production singleton
 // ---------------------------------------------------------------------------
+
+/**
+ * buildEdgeStalenessFindings — pure helper shared by both the injected-fn
+ * adapter (makeEdgeStalenessAdapter) and the production singleton.
+ *
+ * Given the artifact path, the upstreamStaleness rows for that artifact, and
+ * the current ISO timestamp, maps rows to Findings. Only "pending-broken" rows
+ * produce a Finding; all other states are skipped.
+ */
+function buildEdgeStalenessFindings(
+  artifact: string,
+  rows: UpstreamStaleness[],
+  nowIso: string,
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const row of rows) {
+    if (row.staleness !== "pending-broken") continue;
+
+    const target: Tier2Target = {
+      kind: "tier2",
+      artifact,
+      unit: row.unit,
+      edgeClass: row.edge_class,
+    };
+    const identity_key = deriveIdentity("staleness", "edge-staleness", target);
+    // Fingerprint covers volatile fields: the staleness state can change
+    // when a tier-2 verdict lands; changed_fields and baseline are its
+    // descriptive context.
+    const evidence: Record<string, unknown> = {
+      staleness: row.staleness,
+      changed_fields: row.changed_fields,
+      baseline: row.baseline,
+      reason: row.reason,
+    };
+    // fingerprint covers all evidence fields. staleness/changed_fields/baseline
+    // are the volatile parts; reason is included too. fingerprintOf must use
+    // the same set — calling fingerprint(raw.evidence) is correct because
+    // evidence == {staleness, changed_fields, baseline, reason}.
+    const fp = fingerprint(evidence);
+
+    findings.push({
+      identity_key,
+      source: "staleness",
+      check: "edge-staleness",
+      target,
+      fingerprint: fp,
+      certainty: "medium",
+      evidence,
+      suggested_action: `Review ${row.unit} — upstream change may have broken ${artifact}`,
+      verify_predicate: `staleness:edge-staleness artifact=${artifact} unit=${row.unit} class=${row.edge_class}`,
+      owner: "",
+      first_seen: nowIso,
+      last_seen: nowIso,
+      disposition: "new",
+      history: [],
+    });
+  }
+  return findings;
+}
 
 /**
  * Type of the injectable upstream-staleness function.
@@ -194,50 +255,7 @@ export function makeEdgeStalenessAdapter(upstreamFn: UpstreamStalenessFn): Findi
 
           // Get upstream staleness rows for this artifact via the injected fn.
           const rows = upstreamFn(artifact);
-
-          for (const row of rows) {
-            // Only surface pending-broken (see "surfaced states" in file header).
-            if (row.staleness !== "pending-broken") continue;
-
-            const target: Tier2Target = {
-              kind: "tier2",
-              artifact,
-              unit: row.unit,
-              edgeClass: row.edge_class,
-            };
-            const identity_key = deriveIdentity("staleness", "edge-staleness", target);
-            // Fingerprint covers volatile fields: the staleness state can change
-            // when a tier-2 verdict lands; changed_fields and baseline are its
-            // descriptive context.
-            const evidence: Record<string, unknown> = {
-              staleness: row.staleness,
-              changed_fields: row.changed_fields,
-              baseline: row.baseline,
-              reason: row.reason,
-            };
-            // fingerprint covers all evidence fields. staleness/changed_fields/baseline
-            // are the volatile parts; reason is included too. fingerprintOf must use
-            // the same set — calling fingerprint(raw.evidence) is correct because
-            // evidence == {staleness, changed_fields, baseline, reason}.
-            const fp = fingerprint(evidence);
-
-            findings.push({
-              identity_key,
-              source: "staleness",
-              check: "edge-staleness",
-              target,
-              fingerprint: fp,
-              certainty: "medium",
-              evidence,
-              suggested_action: `Review ${row.unit} — upstream change may have broken ${artifact}`,
-              verify_predicate: `staleness:edge-staleness artifact=${artifact} unit=${row.unit} class=${row.edge_class}`,
-              owner: "",
-              first_seen: nowIso,
-              last_seen: nowIso,
-              disposition: "new",
-              history: [],
-            });
-          }
+          findings.push(...buildEdgeStalenessFindings(artifact, rows, nowIso));
         }
 
         return findings;
@@ -275,7 +293,15 @@ export function makeEdgeStalenessAdapter(upstreamFn: UpstreamStalenessFn): Findi
  *
  * Because loading is async but makeEdgeStalenessAdapter's upstreamFn is sync,
  * the production adapter is built separately — it does the async loading
- * inside list() and feeds the result into the same mapping logic.
+ * inside list() and feeds the result into the shared buildEdgeStalenessFindings
+ * helper (same mapping logic as the injected-fn path).
+ *
+ * isVerifiable: a unit is verifiable iff it exists in the vault index and the
+ * caller can read its collection (mirrors tools/edge-staleness.ts). This
+ * means upstreamStaleness correctly classifies absent units as "unverifiable"
+ * rather than accidentally treating them as "current". Unverifiable rows are
+ * classified correctly then deliberately NOT surfaced (RBAC/existence oracle
+ * risk if named — the "unverifiable" exclusion is intentional, not accidental).
  */
 export const edgeStalenessAdapter: FindingSourceAdapter = {
   async list(vaultRoot: string, access: AccessContext, now?: Date): Promise<Finding[]> {
@@ -308,6 +334,11 @@ export const edgeStalenessAdapter: FindingSourceAdapter = {
     try {
       const findings: Finding[] = [];
 
+      // Build isVerifiable from the index: a unit is verifiable iff it exists
+      // in the vault and the caller can read its collection. Mirrors
+      // tools/edge-staleness.ts (sourceVerifiable(db, access, unit)).
+      const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
+
       for (const doc of loaded.value) {
         const artifact = doc.path;
 
@@ -327,43 +358,10 @@ export const edgeStalenessAdapter: FindingSourceAdapter = {
           declaredUnits: doc.frontmatter.sources,
           earned: earnedByArtifact.get(artifact) ?? [],
           verdicts: verdictsResult.value,
+          isVerifiable,
         });
 
-        for (const row of rows) {
-          if (row.staleness !== "pending-broken") continue;
-
-          const target: Tier2Target = {
-            kind: "tier2",
-            artifact,
-            unit: row.unit,
-            edgeClass: row.edge_class,
-          };
-          const identity_key = deriveIdentity("staleness", "edge-staleness", target);
-          const evidence: Record<string, unknown> = {
-            staleness: row.staleness,
-            changed_fields: row.changed_fields,
-            baseline: row.baseline,
-            reason: row.reason,
-          };
-          const fp = fingerprint(evidence);
-
-          findings.push({
-            identity_key,
-            source: "staleness",
-            check: "edge-staleness",
-            target,
-            fingerprint: fp,
-            certainty: "medium",
-            evidence,
-            suggested_action: `Review ${row.unit} — upstream change may have broken ${artifact}`,
-            verify_predicate: `staleness:edge-staleness artifact=${artifact} unit=${row.unit} class=${row.edge_class}`,
-            owner: "",
-            first_seen: nowIso,
-            last_seen: nowIso,
-            disposition: "new",
-            history: [],
-          });
-        }
+        findings.push(...buildEdgeStalenessFindings(artifact, rows, nowIso));
       }
 
       return findings;

@@ -1,28 +1,27 @@
-// index.ts — U5: Source adapter registry.
+// index.ts — U5/U6: Source adapter registry.
 //
 // SOURCE_ADAPTERS is the ordered registry array of FindingSourceAdapter that
 // the board engine iterates. Each unit that adds a new source adapter appends
 // to this array. The engine is source-agnostic: it calls list/identityOf/
 // fingerprintOf/reproduces on each adapter without knowing which source it is.
 //
-// SOURCE_ADAPTER_MAP provides O(1) lookup by FindingSource name, for the U11
-// dispose tool's resolve path (and any other caller that needs adapter-by-name).
+// resolveAdapterForIdentity (C1): identity-key-based adapter lookup for U11.
+//   A source→adapter map cannot work when two adapters share the same source
+//   ("staleness") — ttlStalenessAdapter and edgeStalenessAdapter both emit
+//   source:"staleness" but produce distinct identity_key namespaces. A map
+//   keyed by source is therefore ambiguous and cannot disambiguate.
+//   Instead, resolveAdapterForIdentity iterates SOURCE_ADAPTERS and returns
+//   the first adapter whose reproduces() returns true for the given
+//   identity_key. Because identity_keys are namespaced by (source, check,
+//   target) in the hash, a given identity_key can be produced by at most ONE
+//   adapter — this lookup is unambiguous. U11's resolve tool uses this.
 //
 // Ordering:
 //   Lint first — the most structurally certain source (tier-0 checks are
 //   certain failures). Then staleness adapters (U6): TTL staleness and edge
 //   staleness. Later units append tension, staged, tier2.
-//
-// MAP key notes (U6):
-//   "staleness" → ttlStalenessAdapter  (TTL-decay findings; StalenessTarget)
-//   "tier2"     → edgeStalenessAdapter (edge-staleness findings; Tier2Target)
-//   Both adapters emit source:"staleness" but are distinguished by their
-//   check name ("ttl-staleness" vs "edge-staleness") and target kind
-//   ("staleness" vs "tier2"). The dispose tool (U11) will use the map key
-//   that matches a finding's target.kind for adapter resolution — this
-//   assignment is intentional and documented here for U11.
 
-import type { FindingSource, FindingSourceAdapter } from "../types.js";
+import type { AccessContext, FindingSourceAdapter } from "../types.js";
 import { lintAdapter } from "./lint.js";
 import { edgeStalenessAdapter, ttlStalenessAdapter } from "./staleness.js";
 
@@ -41,12 +40,27 @@ export const SOURCE_ADAPTERS: FindingSourceAdapter[] = [
 ];
 
 /**
- * Map from FindingSource name to its adapter, for O(1) lookup.
- * Used by the dispose tool (U11) to resolve which adapter handles a given
- * finding's source when verifying or reproducing it.
+ * Resolve the adapter that produced a given identity_key, by asking each
+ * adapter whether it reproduces that key. Returns the first adapter that does,
+ * or null if no adapter recognises the key.
+ *
+ * Rationale: SOURCE_ADAPTER_MAP (keyed by FindingSource) cannot disambiguate
+ * two adapters that share the same source string (e.g. "staleness") — both
+ * ttlStalenessAdapter and edgeStalenessAdapter emit source:"staleness". An
+ * identity_key, by contrast, is namespaced by (source, check, target) in the
+ * hash, so a given key can be produced by at most ONE adapter. This lookup is
+ * therefore unambiguous. Used by U11's dispose/resolve tool.
  */
-export const SOURCE_ADAPTER_MAP = new Map<FindingSource, FindingSourceAdapter>([
-  ["lint", lintAdapter],
-  ["staleness", ttlStalenessAdapter],
-  ["tier2", edgeStalenessAdapter],
-]);
+export async function resolveAdapterForIdentity(
+  identity_key: string,
+  vaultRoot: string,
+  access: AccessContext,
+  now?: Date,
+): Promise<FindingSourceAdapter | null> {
+  for (const adapter of SOURCE_ADAPTERS) {
+    if (await adapter.reproduces(identity_key, vaultRoot, access, now)) {
+      return adapter;
+    }
+  }
+  return null;
+}
