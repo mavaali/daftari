@@ -72,11 +72,6 @@ function foregroundHit(
   };
 }
 
-export interface SuppressionResult {
-  hits: HybridHit[];
-  demoted: number;
-}
-
 // The pass. Reads each hit's `currentSource` (computing and caching it on
 // the hit when absent, so the caller's enrichment loop does not resolve the
 // chain twice), then rebuilds the list as:
@@ -90,10 +85,8 @@ export function applySupersededSuppression(
   hits: HybridHit[],
   access: AccessContext | undefined,
   opts: { pullIn: boolean },
-): SuppressionResult {
-  if (!suppressSuperseded() || hits.length === 0) {
-    return { hits, demoted: 0 };
-  }
+): HybridHit[] {
+  if (!suppressSuperseded() || hits.length === 0) return hits;
 
   const present = new Set(hits.map((h) => h.path));
   const kept: HybridHit[] = [];
@@ -121,8 +114,9 @@ export function applySupersededSuppression(
     demotedHits.push(hit);
   }
 
-  // Pulled-in heads carry `viaForeground` and sit in `hits` at their slots;
-  // the caller's ordinary enrichment loop over the returned list annotates
-  // them like any other hit — no dedicated second pass needed.
-  return { hits: [...kept, ...demotedHits], demoted: demotedHits.length };
+  // Pulled-in heads carry `viaForeground` and demoted hits their `demoted`
+  // flag, both readable off the returned list — the caller's ordinary
+  // enrichment loop annotates them like any other hit, and the summary
+  // counts them by flag; no side-channel counters needed.
+  return [...kept, ...demotedHits];
 }

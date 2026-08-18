@@ -428,8 +428,8 @@ async function searchMount(
     const suppressed =
       opts.validAt === null
         ? applySupersededSuppression(db, widened, access, { pullIn: false })
-        : { hits: widened, demoted: 0 };
-    const capped = enforceTokenCap(suppressed.hits, DEFAULT_COVERAGE_OPTIONS);
+        : widened;
+    const capped = enforceTokenCap(suppressed, DEFAULT_COVERAGE_OPTIONS);
     for (const hit of capped) labelMountHit(hit, mount.alias);
     return ok({ hits: capped, vectorUsed: result.value.vectorUsed });
   } finally {
@@ -521,14 +521,16 @@ export async function vaultSearch(
   const fused = rrfFuse(lists, limit);
 
   // #3 rerank over the SAME fused cross-vault ranking the hits came from,
-  // still excluding coverage additions (recall, not ranking).
+  // still excluding synthetic additions — coverage widening and suppression
+  // pull-ins alike (recall, not ranking; a score-0 pulled-in head never
+  // earned a rank to be judged at).
   const rerankK = parseRerankCandidates(args.rerank_candidates);
   const rerank =
     rerankK > 0
       ? {
           instructions: RERANK_INSTRUCTIONS,
           candidates: fused
-            .filter((h) => !h.viaCoverage)
+            .filter((h) => !h.viaCoverage && !h.viaForeground)
             .slice(0, rerankK)
             .map((h, i) => ({
               rank: i + 1,
@@ -666,11 +668,10 @@ async function searchLocalVault(
     // exactly the right answer for a past date, so demoting it (or pulling in
     // the current head) would answer the wrong question — per-date chain
     // resolution is validAtSource's job below.
-    const suppression =
+    const served =
       validAt === null
         ? applySupersededSuppression(db, permitted, access, { pullIn: true })
-        : { hits: permitted, demoted: 0 };
-    const served = suppression.hits;
+        : permitted;
 
     if (validAt !== null) {
       for (const hit of served) {

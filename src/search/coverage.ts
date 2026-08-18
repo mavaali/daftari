@@ -190,7 +190,7 @@ export function applyCoveragePass(
 // Original ranked hits are never evicted (we never displace the caller's
 // top-N). Among coverage docs, evict stale first (those SP-A flagged with a
 // currentSource), then oldest, until the added snippet chars fit tokenCapChars.
-export function enforceTokenCap(hits: HybridHit[], opts: CoverageOptions): HybridHit[] {
+export function enforceTokenCap(hits: HybridHit[], opts: { tokenCapChars: number }): HybridHit[] {
   // Synthetic additions — coverage widening AND suppression pull-ins
   // (MAV-161) — share one character budget; the caller's ranked hits are
   // never evicted. A pulled-in head with no cap of its own would let the

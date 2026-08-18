@@ -72,9 +72,9 @@ describe("applySupersededSuppression", () => {
     insertDocument(db, doc({ path: "new.md" }));
     const hits = [hit("old.md")];
     const out = applySupersededSuppression(db, hits, undefined, { pullIn: true });
-    expect(out.hits).toEqual(hits);
-    expect(out.demoted).toBe(0);
-    expect(out.hits.some((h) => h.viaForeground)).toBe(false);
+    expect(out).toEqual(hits);
+    expect(out.filter((h) => h.demoted).length).toBe(0);
+    expect(out.some((h) => h.viaForeground)).toBe(false);
   });
 
   it("pulls the absent head into the stale hit's slot and demotes the stale hit", () => {
@@ -85,12 +85,12 @@ describe("applySupersededSuppression", () => {
       pullIn: true,
     });
     // Head occupies old.md's rank slot; old.md moves to the tail, flagged.
-    expect(out.hits.map((h) => h.path)).toEqual(["new.md", "other.md", "old.md"]);
-    expect(out.hits[0].viaForeground).toBe(true);
-    expect(out.hits[0].score).toBe(0);
-    expect(out.hits[0].snippet).toContain("the current value");
-    expect(out.hits[2].demoted).toBe("superseded");
-    expect(out.demoted).toBe(1);
+    expect(out.map((h) => h.path)).toEqual(["new.md", "other.md", "old.md"]);
+    expect(out[0].viaForeground).toBe(true);
+    expect(out[0].score).toBe(0);
+    expect(out[0].snippet).toContain("the current value");
+    expect(out[2].demoted).toBe("superseded");
+    expect(out.filter((h) => h.demoted).length).toBe(1);
   });
 
   it("demotes without duplicating when the head is already ranked", () => {
@@ -99,9 +99,9 @@ describe("applySupersededSuppression", () => {
     const out = applySupersededSuppression(db, [hit("old.md"), hit("new.md")], undefined, {
       pullIn: true,
     });
-    expect(out.hits.map((h) => h.path)).toEqual(["new.md", "old.md"]);
-    expect(out.hits.filter((h) => h.viaForeground)).toEqual([]);
-    expect(out.hits[1].demoted).toBe("superseded");
+    expect(out.map((h) => h.path)).toEqual(["new.md", "old.md"]);
+    expect(out.filter((h) => h.viaForeground)).toEqual([]);
+    expect(out[1].demoted).toBe("superseded");
   });
 
   it("pulls a shared head once for two stale hits", () => {
@@ -111,9 +111,9 @@ describe("applySupersededSuppression", () => {
     const out = applySupersededSuppression(db, [hit("a.md"), hit("b.md")], undefined, {
       pullIn: true,
     });
-    expect(out.hits.map((h) => h.path)).toEqual(["head.md", "a.md", "b.md"]);
-    expect(out.hits.filter((h) => h.viaForeground).length).toBe(1);
-    expect(out.demoted).toBe(2);
+    expect(out.map((h) => h.path)).toEqual(["head.md", "a.md", "b.md"]);
+    expect(out.filter((h) => h.viaForeground).length).toBe(1);
+    expect(out.filter((h) => h.demoted).length).toBe(2);
   });
 
   it("walks a multi-hop chain to the terminal head", () => {
@@ -121,7 +121,7 @@ describe("applySupersededSuppression", () => {
     insertDocument(db, doc({ path: "v2.md", supersededBy: "v3.md" }));
     insertDocument(db, doc({ path: "v3.md" }));
     const out = applySupersededSuppression(db, [hit("v1.md")], undefined, { pullIn: true });
-    expect(out.hits.map((h) => h.path)).toEqual(["v3.md", "v1.md"]);
+    expect(out.map((h) => h.path)).toEqual(["v3.md", "v1.md"]);
   });
 
   it("leaves dangling and cyclic chains untouched — no head to offer", () => {
@@ -130,9 +130,9 @@ describe("applySupersededSuppression", () => {
     insertDocument(db, doc({ path: "loop-b.md", supersededBy: "loop-a.md" }));
     const hits = [hit("dangling.md"), hit("loop-a.md")];
     const out = applySupersededSuppression(db, hits, undefined, { pullIn: true });
-    expect(out.hits.map((h) => h.path)).toEqual(["dangling.md", "loop-a.md"]);
-    expect(out.demoted).toBe(0);
-    for (const h of out.hits) expect(h.demoted).toBeUndefined();
+    expect(out.map((h) => h.path)).toEqual(["dangling.md", "loop-a.md"]);
+    expect(out.filter((h) => h.demoted).length).toBe(0);
+    for (const h of out) expect(h.demoted).toBeUndefined();
   });
 
   it("pullIn: false (the mount posture) demotes but never adds", () => {
@@ -142,9 +142,9 @@ describe("applySupersededSuppression", () => {
     const out = applySupersededSuppression(db, [hit("old.md"), hit("other.md")], undefined, {
       pullIn: false,
     });
-    expect(out.hits.map((h) => h.path)).toEqual(["other.md", "old.md"]);
-    expect(out.hits.some((h) => h.viaForeground)).toBe(false);
-    expect(out.hits[1].demoted).toBe("superseded");
+    expect(out.map((h) => h.path)).toEqual(["other.md", "old.md"]);
+    expect(out.some((h) => h.viaForeground)).toBe(false);
+    expect(out[1].demoted).toBe("superseded");
   });
 
   it("caches currentSource on inspected hits so enrichment need not re-walk", () => {
