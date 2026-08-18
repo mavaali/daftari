@@ -214,6 +214,10 @@ describe("vault_staleness (#234)", () => {
     expect(gated.value.edges).toEqual([]);
     expect(gated.value.hidden_pending).toBe("some");
     expect(gated.value.summary.pending_broken).toBe(0);
+    // No-oracle (#416): a hidden upstream classifies unverifiable for the narrow
+    // role but is filtered by the visibility split — it must NOT appear as a
+    // named row or in the visible summary; it stays only in the coarse bucket.
+    expect(gated.value.summary.unverifiable).toBe(0);
 
     // The same split on vault_read directly — the broken (incident) class
     // must not be derivable from the hidden upstream through the read
