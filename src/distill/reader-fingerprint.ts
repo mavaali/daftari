@@ -71,3 +71,98 @@ export function encodeReader(runMeta: ClaimRunMeta, promptVersion: string): stri
   const retry = runMeta.viaRetry ?? false;
   return `${runMeta.requestedModel}@${effTemp}|prompt=${promptVersion}|retry=${retry}`;
 }
+
+// ---------------------------------------------------------------------------
+// Reader lineage (6mf.4)
+// ---------------------------------------------------------------------------
+
+/** Discriminant for the operation that produced a lineage entry. */
+export type LineageOp = "ingest" | "update" | "revision";
+
+/** A parsed lineage entry. `reader` is the full `encodeReader` string (may contain pipes). */
+export interface ParsedLineageEntry {
+  ts: string;
+  op: string;
+  reader: string;
+}
+
+/**
+ * Encode one lineage entry as `<ts>|<op>|<reader>`.
+ * `reader` is an already-encoded reader string (may itself contain pipes);
+ * the first two pipes are the field delimiters — all further pipes belong to reader.
+ */
+export function encodeLineageEntry(ts: string, op: LineageOp, reader: string): string {
+  return `${ts}|${op}|${reader}`;
+}
+
+/**
+ * Parse a lineage entry produced by `encodeLineageEntry`.
+ * Splits on the FIRST two `|` only so the reader (which may contain pipes) is preserved.
+ * Returns null for malformed input (fewer than 2 separators or empty string).
+ */
+export function parseLineageEntry(entry: string): ParsedLineageEntry | null {
+  if (!entry) return null;
+  const first = entry.indexOf("|");
+  if (first === -1) return null;
+  const second = entry.indexOf("|", first + 1);
+  if (second === -1) return null;
+  const ts = entry.slice(0, first);
+  const op = entry.slice(first + 1, second);
+  const reader = entry.slice(second + 1);
+  if (!ts || !op || !reader) return null;
+  return { ts, op, reader };
+}
+
+/**
+ * Materialise the SET-projection of a lineage: the deduplicated list of reader
+ * strings, in first-seen order. Malformed entries are silently skipped.
+ */
+export function readersFromLineage(lineage: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of lineage) {
+    const parsed = parseLineageEntry(entry);
+    if (!parsed) continue;
+    if (!seen.has(parsed.reader)) {
+      seen.add(parsed.reader);
+      result.push(parsed.reader);
+    }
+  }
+  return result;
+}
+
+/**
+ * Append-only union of two lineages.
+ * Starts from `existing` (order preserved, never re-sorted).
+ * For each entry in `incoming`, appends iff no existing entry shares the same `(op, reader)` pair
+ * (timestamp is ignored for dedup — a duplicate re-append is declined).
+ */
+export function unionLineage(existing: string[], incoming: string[]): string[] {
+  // Build a set of (op,reader) keys from existing
+  const existingKeys = new Set<string>();
+  for (const entry of existing) {
+    const parsed = parseLineageEntry(entry);
+    if (parsed) existingKeys.add(`${parsed.op}\x00${parsed.reader}`);
+  }
+  const result = [...existing];
+  for (const entry of incoming) {
+    const parsed = parseLineageEntry(entry);
+    if (!parsed) continue;
+    const key = `${parsed.op}\x00${parsed.reader}`;
+    if (!existingKeys.has(key)) {
+      existingKeys.add(key);
+      result.push(entry);
+    }
+  }
+  return result;
+}
+
+/**
+ * Encode a revision-panel reader fingerprint.
+ * Shape: `<model>@na|prompt=<hash8(SYSTEM_BASE+templates)>|retry=false`
+ * The prompt hash here is the READER_PROMPT_VERSION (extraction contract),
+ * re-used as the closest stable contract identifier for the revision panel.
+ */
+export function encodeRevisionReader(model: string): string {
+  return `${model}@${TEMP_NA}|prompt=${READER_PROMPT_VERSION}|retry=false`;
+}
