@@ -324,6 +324,14 @@ export function upstreamStaleness(input: {
 // none/some/many bucket over their pending edges — never an exact count,
 // never a severity class. vault_read, vault_search, and vault_staleness all
 // call this one helper so the invariant cannot drift between surfaces.
+//
+// Unverifiable rows (deleted units) are ALWAYS coarsened into the hidden
+// bucket for RBAC-scoped callers, regardless of path-prefix readability.
+// A deleted doc's collection can only be guessed from its path (frontmatter
+// is gone); that guess can diverge from the collection it had while alive,
+// which would make "deleted" distinguishable from "RBAC-hidden" — an
+// existence oracle (#416). The operator (no-access) path bypasses this
+// split entirely and still receives named rows.
 export function splitUpstreamVisibility(
   rows: UpstreamStaleness[],
   isReadable: (unit: string) => boolean,
@@ -331,6 +339,17 @@ export function splitUpstreamVisibility(
   const visible: UpstreamStaleness[] = [];
   let hiddenPendingCount = 0;
   for (const r of rows) {
+    // Unverifiable units (deleted, or unreadable) must never be NAMED to an
+    // RBAC-scoped caller: a deleted doc's collection can only be guessed from
+    // its path prefix (its frontmatter is gone), which can diverge from the
+    // collection it had while alive — naming it would distinguish "deleted"
+    // from "hidden", an existence oracle (#416/#217). They fold into the
+    // coarse bucket, identical to a hidden-but-alive unit. The operator
+    // (no-access) path bypasses this split and still sees named rows.
+    if (r.staleness === "unverifiable") {
+      hiddenPendingCount += 1;
+      continue;
+    }
     if (isReadable(r.unit)) visible.push(r);
     else if (r.staleness !== "current") hiddenPendingCount += 1;
   }

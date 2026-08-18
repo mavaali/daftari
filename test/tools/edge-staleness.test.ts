@@ -330,4 +330,37 @@ describe("vault_staleness (#234)", () => {
     expect(gated.value.upstream_staleness?.hidden_pending).toBe("some");
     expect(gated.value.upstream_staleness?.unverifiable ?? 0).toBe(0);
   }, 60_000);
+
+  it("a deleted upstream whose frontmatter collection diverges from its path is not named to a narrow role (no existence oracle)", async () => {
+    // Upstream physically at pricing/… but frontmatter-tagged to competitive-intel:
+    // a pricing-only role cannot see it ALIVE. After deletion its collection can
+    // only be guessed from the path prefix (pricing = readable) — it must still
+    // NOT become a named unverifiable row, or deleted becomes distinguishable
+    // from hidden.
+    const upstream = await vaultWrite(vault, {
+      path: "pricing/divergent.md", body: "# D\n",
+      frontmatter: frontmatter({ title: "D", collection: "competitive-intel" }), agent: AGENT,
+    });
+    if (!upstream.ok) throw upstream.error;
+    await vaultRead(vault, "pricing/divergent.md", undefined, "run-div");
+    const consumer = await vaultWrite(vault, {
+      path: "pricing/consumer-div.md", body: "# C\n",
+      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }), agent: AGENT, run_id: "run-div",
+    });
+    if (!consumer.ok) throw consumer.error;
+
+    // Evict the upstream (out-of-band deletion).
+    const db = openIndexForAccessOrNull(vault);
+    try { deleteDocument(db!, "pricing/divergent.md"); } finally { db?.close(); }
+
+    const pricingOnly = { user: "human:n", roleName: "pricing-only", role: { read: ["pricing"], write: [], promote: false, ratify: false } };
+    const gated = await vaultRead(vault, "pricing/consumer-div.md", pricingOnly);
+    if (!gated.ok) throw gated.error;
+    // Must NOT name the deleted upstream, and must NOT count it as visible unverifiable.
+    const edges = gated.value.upstream_staleness?.edges ?? [];
+    expect(edges.every((e) => e.unit !== "pricing/divergent.md")).toBe(true);
+    expect(gated.value.upstream_staleness?.unverifiable ?? 0).toBe(0);
+    // It still surfaces through the coarse bucket.
+    expect(gated.value.upstream_staleness?.hidden_pending).toBe("some");
+  }, 60_000);
 });
