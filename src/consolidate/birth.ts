@@ -348,6 +348,7 @@ export async function birthOne(
         observedBy: opts.agent,
         blind: true,
         axis: "prompt",
+        model: opts.model,
         premiseVote: "to",
         note: `birth: ${reason}`,
       });
@@ -391,6 +392,7 @@ export async function birthOne(
       observedBy: opts.agent,
       blind: true,
       axis: "prompt",
+      model: opts.model,
       premiseVote: "symmetric",
       note: `birth/symmetric(${which}): ${reason}`,
     });
