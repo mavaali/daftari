@@ -34,10 +34,21 @@ const { listEdges, observeEdge } = await import(join(ROOT, "dist/curation/edges.
 const { CONSOLIDATE_AGENT } = await import(join(ROOT, "dist/consolidate/constants.js"));
 const { birthTracePath } = await import(join(ROOT, "dist/consolidate/birth.js"));
 
-const rows = readFileSync(birthTracePath(VAULT), "utf8")
-  .split("\n")
-  .filter(Boolean)
-  .map(JSON.parse);
+// Parse per-line, skipping corrupt rows: the script exists to recover from
+// interrupted runs, and a process killed mid-append can leave a torn last
+// line — one bad row must not abort recovery of the thousands of good ones
+// (same posture as readRawRecords in src/curation/edges.ts).
+let malformedTraceLines = 0;
+const rows = [];
+for (const line of readFileSync(birthTracePath(VAULT), "utf8").split("\n")) {
+  if (!line) continue;
+  try {
+    rows.push(JSON.parse(line));
+  } catch {
+    malformedTraceLines++;
+    console.error(`skipping malformed trace line: ${line.slice(0, 120)}`);
+  }
+}
 
 // Last row per (docPath, contentHash) wins — a restarted run re-traces the
 // docs it redid, and the newest row reflects the verdicts that were current.
@@ -48,11 +59,16 @@ for (const row of rows) byDoc.set(`${row.docPath}\n${row.contentHash}`, row);
 // prior replay) are skipped so the script is idempotent.
 const existing = await listEdges(VAULT, {}, new Date());
 if (!existing.ok) throw new Error(`listEdges: ${existing.error.message}`);
+// Dedup keys are the UNORDERED pair — the store's own durable edge identity
+// (canonPair in src/curation/edges.ts): listEdges returns the derived output
+// orientation, which can differ from the orientation a verdict computes for
+// the same underlying edge, so orientation-sensitive keys would miss matches.
+const pairKey = (a, b) => (a <= b ? `${a}\n${b}` : `${b}\n${a}`);
 // Two sets on purpose: `preExisting` stays a frozen snapshot of the store
 // before this run (so the skip counters can tell "already persisted" from
 // "duplicate pair within this trace"), while `seen` accumulates this run's
 // confirmed writes on top of it.
-const preExisting = new Set(existing.value.map((e) => `${e.fromPath}\n${e.toPath}`));
+const preExisting = new Set(existing.value.map((e) => pairKey(e.fromPath, e.toPath)));
 const seen = new Set(preExisting);
 
 let observed = 0;
@@ -91,7 +107,7 @@ for (const row of byDoc.values()) {
       note = `birth/symmetric(replay): ${v.reason}`;
     }
 
-    const key = `${from}\n${to}`;
+    const key = pairKey(from, to);
     if (seen.has(key)) {
       if (preExisting.has(key)) skippedExisting++;
       else skippedDup++;
@@ -126,6 +142,7 @@ console.log(
     {
       vault: VAULT,
       traceRows: rows.length,
+      malformedTraceLines,
       docsAfterDedup: byDoc.size,
       observed,
       skippedExisting,
