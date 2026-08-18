@@ -2271,6 +2271,41 @@ export async function vaultMerge(
     }
   }
 
+  // reader_lineage fusion (6mf.4 R4). Mirror the readers fusion above:
+  // union A's lineage entries then B's not-already-present (dedup key =
+  // (op, reader) — same as the Task 2 land-time union). Neither source having
+  // a lineage ⇒ no key at all (avoids an empty-array placeholder).
+  const lineageA = Array.isArray(parsedA.value.raw.reader_lineage)
+    ? (parsedA.value.raw.reader_lineage as unknown[]).filter(
+        (e): e is string => typeof e === "string",
+      )
+    : [];
+  const lineageB = Array.isArray(parsedB.value.raw.reader_lineage)
+    ? (parsedB.value.raw.reader_lineage as unknown[]).filter(
+        (e): e is string => typeof e === "string",
+      )
+    : [];
+  if (lineageA.length > 0 || lineageB.length > 0) {
+    targetRaw.reader_lineage = unionLineage(lineageA, lineageB);
+    // Keep readers[] consistent with the fused lineage (invariant: readers[] ==
+    // dedupe(reader-part of lineage)). Only overwrite if we actually have lineage.
+    const lineageDerivedReaders = readersFromLineage(targetRaw.reader_lineage as string[]);
+    if (lineageDerivedReaders.length > 0) {
+      // Union any readers already in targetRaw that aren't in the lineage
+      // (e.g., from the readers-only path above) to avoid narrowing the set.
+      const combined = [...lineageDerivedReaders];
+      for (const r of unionReaders) {
+        if (!combined.includes(r)) combined.push(r);
+      }
+      targetRaw.readers = combined;
+      if (combined.length > 1) {
+        for (const field of READER_SCALAR_FIELDS) delete targetRaw[field];
+      }
+    }
+  } else {
+    delete targetRaw.reader_lineage;
+  }
+
   const { frontmatter: targetFm, report: targetReport } = validateFrontmatter(
     targetRaw,
     extensions,

@@ -13,7 +13,7 @@ import {
   unionLineage,
 } from "../../src/distill/reader-fingerprint.js";
 import { vaultRead } from "../../src/tools/read.js";
-import { vaultWrite } from "../../src/tools/write.js";
+import { vaultMerge, vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:test";
@@ -245,7 +245,7 @@ describe("vaultWrite — reader_lineage land-time union (6mf.4 R2)", () => {
     expect(raw.reader_lineage).toEqual(expect.arrayContaining([LINEAGE_INGEST_R1]));
   });
 
-  it("verifies readers[] == dedupe(reader-part of lineage) across a round-trip", async () => {
+  it("verifies readers[] == dedupe(reader-part of lineage) across a round-trip (invariant)", async () => {
     // This is a global invariant test
     const lineage = [LINEAGE_INGEST_R1, LINEAGE_UPDATE_R2];
     const expectedReaders = readersFromLineage(lineage);
@@ -276,5 +276,210 @@ describe("vaultWrite — reader_lineage land-time union (6mf.4 R2)", () => {
     const actualReaders = Array.isArray(raw.readers) ? (raw.readers as string[]) : [];
     expect(actualReaders).toEqual(computedReaders);
     expect(computedReaders).toEqual(expectedReaders);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 (6mf.4 R4): vault_merge lineage fusion
+// ---------------------------------------------------------------------------
+
+describe("vaultMerge — reader_lineage fusion (6mf.4 R4)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("merge(A,B) → reader_lineage is A's entries then B's not-already-present", async () => {
+    await seedDoc(vault, "pricing/ma.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    await seedDoc(vault, "pricing/mb.md", {
+      readers: [READER_2],
+      reader_lineage: [LINEAGE_UPDATE_R2],
+    });
+
+    const merged = await vaultMerge(vault, {
+      path_a: "pricing/ma.md",
+      path_b: "pricing/mb.md",
+      target_path: "pricing/mc.md",
+      body: "# Merged\n\nBody.\n",
+      frontmatter: frontmatter(),
+      agent: AGENT,
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw merged.error;
+
+    const doc = await vaultRead(vault, "pricing/mc.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const raw = doc.value.raw;
+    const lineage = Array.isArray(raw.reader_lineage) ? (raw.reader_lineage as string[]) : [];
+    // Both lineage entries must be present
+    expect(lineage).toEqual(expect.arrayContaining([LINEAGE_INGEST_R1, LINEAGE_UPDATE_R2]));
+    expect(lineage.length).toBe(2);
+    // A's entry comes first (order-stable: A then B's new entries)
+    expect(lineage[0]).toBe(LINEAGE_INGEST_R1);
+    expect(lineage[1]).toBe(LINEAGE_UPDATE_R2);
+  });
+
+  it("merge(A,B) → no duplicate lineage entries when both share an entry", async () => {
+    // Both docs have LINEAGE_INGEST_R1; B also has LINEAGE_UPDATE_R2
+    await seedDoc(vault, "pricing/na.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    await seedDoc(vault, "pricing/nb.md", {
+      readers: [READER_1, READER_2],
+      reader_lineage: [LINEAGE_INGEST_R1, LINEAGE_UPDATE_R2],
+    });
+
+    const merged = await vaultMerge(vault, {
+      path_a: "pricing/na.md",
+      path_b: "pricing/nb.md",
+      target_path: "pricing/nc.md",
+      body: "# Merged\n\nBody.\n",
+      frontmatter: frontmatter(),
+      agent: AGENT,
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw merged.error;
+
+    const doc = await vaultRead(vault, "pricing/nc.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const raw = doc.value.raw;
+    const lineage = Array.isArray(raw.reader_lineage) ? (raw.reader_lineage as string[]) : [];
+    // LINEAGE_INGEST_R1 should appear exactly once (deduped by (op, reader))
+    const ingestCount = lineage.filter((e) => e === LINEAGE_INGEST_R1).length;
+    expect(ingestCount).toBe(1);
+    expect(lineage.length).toBe(2);
+  });
+
+  it("merge(A,B) → legacy-both-sides (neither has lineage) → no reader_lineage key", async () => {
+    // Neither doc has reader_lineage
+    await seedDoc(vault, "pricing/la.md", {});
+    await seedDoc(vault, "pricing/lb.md", {});
+
+    const merged = await vaultMerge(vault, {
+      path_a: "pricing/la.md",
+      path_b: "pricing/lb.md",
+      target_path: "pricing/lc.md",
+      body: "# Merged\n\nBody.\n",
+      frontmatter: frontmatter(),
+      agent: AGENT,
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw merged.error;
+
+    const doc = await vaultRead(vault, "pricing/lc.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    // No reader_lineage key when neither source has one
+    expect(doc.value.raw.reader_lineage).toBeUndefined();
+  });
+
+  it("merge(A,B) → one-sided (only A has lineage) → lineage from A only", async () => {
+    await seedDoc(vault, "pricing/oa.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    await seedDoc(vault, "pricing/ob.md", {}); // no lineage
+
+    const merged = await vaultMerge(vault, {
+      path_a: "pricing/oa.md",
+      path_b: "pricing/ob.md",
+      target_path: "pricing/oc.md",
+      body: "# Merged\n\nBody.\n",
+      frontmatter: frontmatter(),
+      agent: AGENT,
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw merged.error;
+
+    const doc = await vaultRead(vault, "pricing/oc.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const raw = doc.value.raw;
+    const lineage = Array.isArray(raw.reader_lineage) ? (raw.reader_lineage as string[]) : [];
+    expect(lineage).toEqual([LINEAGE_INGEST_R1]);
+  });
+
+  it("merge(A,B) → no synthetic 'merge' lineage entry added by the tool itself", async () => {
+    await seedDoc(vault, "pricing/sa.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    await seedDoc(vault, "pricing/sb.md", {
+      readers: [READER_2],
+      reader_lineage: [LINEAGE_UPDATE_R2],
+    });
+
+    const merged = await vaultMerge(vault, {
+      path_a: "pricing/sa.md",
+      path_b: "pricing/sb.md",
+      target_path: "pricing/sc.md",
+      body: "# Merged\n\nBody.\n",
+      frontmatter: frontmatter(),
+      agent: AGENT,
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw merged.error;
+
+    const doc = await vaultRead(vault, "pricing/sc.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const lineage = Array.isArray(doc.value.raw.reader_lineage)
+      ? (doc.value.raw.reader_lineage as string[])
+      : [];
+    // Exactly 2 entries (A's + B's), no extra synthetic entry
+    expect(lineage.length).toBe(2);
+    // The union of lineage drives readers
+    const computedReaders = readersFromLineage(lineage);
+    const actualReaders = Array.isArray(doc.value.raw.readers)
+      ? (doc.value.raw.readers as string[])
+      : [];
+    expect(actualReaders).toEqual(expect.arrayContaining(computedReaders));
+  });
+
+  it("merge(A,B) with lineage union → readers[] matches dedupe(reader-part of lineage)", async () => {
+    await seedDoc(vault, "pricing/ia.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    await seedDoc(vault, "pricing/ib.md", {
+      readers: [READER_2],
+      reader_lineage: [LINEAGE_UPDATE_R2],
+    });
+
+    const merged = await vaultMerge(vault, {
+      path_a: "pricing/ia.md",
+      path_b: "pricing/ib.md",
+      target_path: "pricing/ic.md",
+      body: "# Merged\n\nBody.\n",
+      frontmatter: frontmatter(),
+      agent: AGENT,
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw merged.error;
+
+    const doc = await vaultRead(vault, "pricing/ic.md");
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+
+    const raw = doc.value.raw;
+    const lineage = Array.isArray(raw.reader_lineage) ? (raw.reader_lineage as string[]) : [];
+    const computedReaders = readersFromLineage(lineage);
+    const actualReaders = Array.isArray(raw.readers) ? (raw.readers as string[]) : [];
+    // Invariant: readers[] == dedupe(reader-part of lineage)
+    expect(actualReaders.sort()).toEqual(computedReaders.sort());
   });
 });
