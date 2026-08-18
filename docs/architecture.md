@@ -788,8 +788,9 @@ argument: as $\Delta t$ grows, the half-life factor drives $S \to 0$ no matter h
 many votes the edge once earned — strength keeps *no* memory of past votes beyond
 the decaying trail, so an un-retested edge drops out on its own and entrenchment
 is structurally impossible, not merely discouraged. A replayed attestation (same
-observer, same axis) counts again only after a minimum gap, so one caller can't
-pump strength in a single sitting.
+observer, same model, same axis) counts again only after a minimum gap, so one
+caller can't pump strength in a single sitting; observations from a different
+model on the same edge in the same sitting count as an independent vote.
 
 The tools split producer from consumer the same way the staged queue does:
 `vault_edge_observe` records sightings (the producer — normally the loop);
@@ -799,6 +800,10 @@ re-earn it; `vault_edges` lists edges with their live aged strength. Storage
 mirrors staged actions: an append-only log at `.daftari/edges.jsonl` is the
 source of truth, with a derived `derives_from_edges` table in the ephemeral index
 (rebuilt on reindex, materialized at startup) for the loop's traversal engine.
+Distill run receipts (provider, ZDR, cost, model, and the staging `runId` that
+joins to produced artifacts) are persisted separately to
+`.daftari/distill-receipts.jsonl` — operator-local and gitignored, never exposed
+through MCP tools.
 
 ## The consolidation loop
 

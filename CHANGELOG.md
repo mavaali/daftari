@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Version discovery** — `daftari --version` (and `-v`) prints the running version and exits. The version is also surfaced in-band: `vault_status` now returns a `serverVersion` field, so an agent already connected over MCP — which never sees the `initialize`-handshake `serverInfo` — can read the running version through a callable tool.
+- **Distill receipts** (#423) — `buildReceipt` now carries the run's staging `runId` (the id stamped into artifact bodies) instead of a throwaway UUID, and each receipt is persisted to `.daftari/distill-receipts.jsonl` (operator-local, gitignored, never MCP-exposed) — so a run's provider/ZDR/cost facts join to the claims it produced.
+
+### Fixed
+
+- **Consolidate voting dedup** (#423) — the edge replay-guard dedup key now includes the observing model, so two different models re-deriving the same edge in one sitting count as independent votes instead of colliding as a replay.
 
 ## [3.7.0] - 2026-08-16
 
