@@ -363,20 +363,27 @@ describe("createOpenRouterClient — completeWithTools", () => {
     };
   }
 
+  // Shape of the OpenAI-compatible request body captured off the mocked
+  // fetch, just the fields these tests assert on.
+  type ChatRequestBody = {
+    tools?: Array<{ type: string; function: { name: string } }>;
+    messages: Array<{ role: string; content?: unknown; tool_call_id?: string }>;
+  };
+
   it("executes tool calls and returns the final answer with accumulated usage", async () => {
-    const bodies: any[] = [];
+    const bodies: ChatRequestBody[] = [];
     const fetchImpl = vi
       .fn()
-      .mockImplementationOnce(async (_url: string, init: any) => {
-        bodies.push(JSON.parse(init.body));
+      .mockImplementationOnce(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
         return fakeRes(200, toolCallBody("vault_read", '{"path":"a.md"}', "call_1"));
       })
-      .mockImplementationOnce(async (_url: string, init: any) => {
-        bodies.push(JSON.parse(init.body));
+      .mockImplementationOnce(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
         return fakeRes(200, okBody("final answer", 60, 30));
       });
     const handler = vi.fn().mockResolvedValue({ content: "doc body" });
-    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler });
     expect(r.ok).toBe(true);
@@ -394,11 +401,11 @@ describe("createOpenRouterClient — completeWithTools", () => {
 
     // Round 1 request carries OpenAI-style tools; round 2 echoes the
     // assistant tool_calls turn and the role:"tool" result.
-    expect(bodies[0].tools[0]).toMatchObject({
+    expect(bodies[0].tools?.[0]).toMatchObject({
       type: "function",
       function: { name: "vault_read" },
     });
-    const roles = bodies[1].messages.map((m: any) => m.role);
+    const roles = bodies[1].messages.map((m) => m.role);
     expect(roles).toEqual(["system", "user", "assistant", "tool"]);
     expect(bodies[1].messages[3]).toMatchObject({
       tool_call_id: "call_1",
@@ -412,7 +419,7 @@ describe("createOpenRouterClient — completeWithTools", () => {
       .mockImplementationOnce(async () => fakeRes(200, toolCallBody("vault_read", "{not json")))
       .mockImplementationOnce(async () => fakeRes(200, okBody("done")));
     const handler = vi.fn().mockResolvedValue("ok");
-    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler });
     expect(r.ok).toBe(true);
@@ -424,7 +431,7 @@ describe("createOpenRouterClient — completeWithTools", () => {
       .fn()
       .mockImplementation(async () => fakeRes(200, toolCallBody("vault_read", "{}")));
     const handler = vi.fn().mockResolvedValue("ok");
-    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler, maxRounds: 3 });
     expect(r.ok).toBe(false);
@@ -439,7 +446,7 @@ describe("createOpenRouterClient — completeWithTools", () => {
       .mockImplementationOnce(async () => fakeRes(200, toolCallBody("vault_read", "{}")))
       .mockImplementationOnce(async () => fakeRes(200, okBody("recovered")));
     const handler = vi.fn().mockRejectedValue(new Error("boom"));
-    const client = createOpenRouterClient({ fetchImpl: fetchImpl as any });
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const r = await client.completeWithTools({ ...TOOL_OPTS, toolHandler: handler });
     expect(r.ok).toBe(true);
