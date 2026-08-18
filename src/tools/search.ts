@@ -428,7 +428,7 @@ async function searchMount(
     const suppressed =
       opts.validAt === null
         ? applySupersededSuppression(db, widened, access, { pullIn: false })
-        : { hits: widened, demoted: 0, pulledIn: [] };
+        : { hits: widened, demoted: 0 };
     const capped = enforceTokenCap(suppressed.hits, DEFAULT_COVERAGE_OPTIONS);
     for (const hit of capped) labelMountHit(hit, mount.alias);
     return ok({ hits: capped, vectorUsed: result.value.vectorUsed });
@@ -669,7 +669,7 @@ async function searchLocalVault(
     const suppression =
       validAt === null
         ? applySupersededSuppression(db, permitted, access, { pullIn: true })
-        : { hits: permitted, demoted: 0, pulledIn: [] };
+        : { hits: permitted, demoted: 0 };
     const served = suppression.hits;
 
     if (validAt !== null) {

@@ -74,7 +74,7 @@ describe("applySupersededSuppression", () => {
     const out = applySupersededSuppression(db, hits, undefined, { pullIn: true });
     expect(out.hits).toEqual(hits);
     expect(out.demoted).toBe(0);
-    expect(out.pulledIn).toEqual([]);
+    expect(out.hits.some((h) => h.viaForeground)).toBe(false);
   });
 
   it("pulls the absent head into the stale hit's slot and demotes the stale hit", () => {
@@ -91,7 +91,6 @@ describe("applySupersededSuppression", () => {
     expect(out.hits[0].snippet).toContain("the current value");
     expect(out.hits[2].demoted).toBe("superseded");
     expect(out.demoted).toBe(1);
-    expect(out.pulledIn.map((h) => h.path)).toEqual(["new.md"]);
   });
 
   it("demotes without duplicating when the head is already ranked", () => {
@@ -101,7 +100,7 @@ describe("applySupersededSuppression", () => {
       pullIn: true,
     });
     expect(out.hits.map((h) => h.path)).toEqual(["new.md", "old.md"]);
-    expect(out.pulledIn).toEqual([]);
+    expect(out.hits.filter((h) => h.viaForeground)).toEqual([]);
     expect(out.hits[1].demoted).toBe("superseded");
   });
 
@@ -113,7 +112,7 @@ describe("applySupersededSuppression", () => {
       pullIn: true,
     });
     expect(out.hits.map((h) => h.path)).toEqual(["head.md", "a.md", "b.md"]);
-    expect(out.pulledIn.length).toBe(1);
+    expect(out.hits.filter((h) => h.viaForeground).length).toBe(1);
     expect(out.demoted).toBe(2);
   });
 
@@ -144,7 +143,7 @@ describe("applySupersededSuppression", () => {
       pullIn: false,
     });
     expect(out.hits.map((h) => h.path)).toEqual(["other.md", "old.md"]);
-    expect(out.pulledIn).toEqual([]);
+    expect(out.hits.some((h) => h.viaForeground)).toBe(false);
     expect(out.hits[1].demoted).toBe("superseded");
   });
 
