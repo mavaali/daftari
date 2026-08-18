@@ -273,6 +273,20 @@ describe("vault_staleness (#234)", () => {
     expect(read.value.upstream_staleness?.banner).not.toContain("deleted");
   }, 60_000);
 
+  it("vault_staleness reports a deleted upstream as unverifiable in edges + summary", async () => {
+    await seedNeighborhood(vault);
+    const db = openIndexForAccessOrNull(vault);
+    try { deleteDocument(db!, "pricing/metric.md"); } finally { db?.close(); }
+
+    const res = await vaultStaleness(vault, { artifact: "pricing/artifact.md" });
+    if (!res.ok) throw res.error;
+    if (res.value.mode !== "artifact") throw new Error("expected artifact mode");
+    expect(res.value.edges[0]?.staleness).toBe("unverifiable");
+    expect(res.value.edges[0]?.reason).toBe("source not in your readable vault");
+    expect(res.value.summary.unverifiable).toBe(1);
+    expect(res.value.summary.current).toBe(0);
+  }, 60_000);
+
   it("RBAC-hidden upstream is indistinguishable from a deleted one (coarse bucket, no leak)", async () => {
     await seedNeighborhood(vault);
     const secret = await vaultWrite(vault, {
