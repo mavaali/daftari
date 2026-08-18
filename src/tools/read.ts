@@ -53,6 +53,7 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
+import { DAFTARI_VERSION } from "../version.js";
 import { ANCHOR_PIN_CAP, type AnchorState, classifyPin } from "./anchors.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -831,6 +832,10 @@ export interface FederationMountStatus {
 
 export interface VaultStatusResult {
   vault: string;
+  // The running daftari version. An agent already connected over MCP can't see
+  // the initialize-handshake serverInfo, so this surfaces the version through a
+  // callable tool.
+  serverVersion: string;
   fileCount: number;
   collections: { collection: string; count: number }[];
   invalidCount: number;
@@ -998,6 +1003,7 @@ export async function vaultStatus(
 
   return ok({
     vault: vaultRoot,
+    serverVersion: DAFTARI_VERSION,
     fileCount: indexEntries.count,
     collections,
     invalidCount,
@@ -1564,9 +1570,10 @@ export const readTools: ToolDefinition[] = [
     title: "Vault health dashboard",
     annotations: { readOnlyHint: true },
     description:
-      "Vault health dashboard: total file count, per-collection counts, " +
-      "count of documents with invalid frontmatter, a staleness distribution " +
-      "(fresh/aging/stale), unresolved tensions, and recent write history.",
+      "Vault health dashboard: the running daftari version, total file count, " +
+      "per-collection counts, count of documents with invalid frontmatter, a " +
+      "staleness distribution (fresh/aging/stale), unresolved tensions, and " +
+      "recent write history.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -1576,6 +1583,10 @@ export const readTools: ToolDefinition[] = [
       type: "object",
       properties: {
         vault: { type: "string", description: "Absolute path of the vault root" },
+        serverVersion: {
+          type: "string",
+          description: "The running daftari version (matches the package version)",
+        },
         fileCount: {
           type: "integer",
           minimum: 0,
@@ -1665,6 +1676,7 @@ export const readTools: ToolDefinition[] = [
       },
       required: [
         "vault",
+        "serverVersion",
         "fileCount",
         "collections",
         "invalidCount",

@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Version discovery** — `daftari --version` (and `-v`) prints the running version and exits. The version is also surfaced in-band: `vault_status` now returns a `serverVersion` field, so an agent already connected over MCP — which never sees the `initialize`-handshake `serverInfo` — can read the running version through a callable tool.
+
 ## [3.7.0] - 2026-08-16
 
 The multi-user hardening release (#399, #402–#411): single-user correctness is table stakes — this release is about what breaks when there are many users, and stopping it.
