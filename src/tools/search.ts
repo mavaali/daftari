@@ -412,6 +412,10 @@ async function searchMount(
     const ranked = permitted.slice(0, opts.limit);
 
     // Bare call = gated by the runtime coverage flag (MAV-156 retirement).
+    // off.1/MAV-154 graph expansion is intentionally NOT run here: it resolves
+    // edges against a single local vaultRoot and would need alias path rewriting
+    // to cross a mount (same reason MAV-161 suppression is local-only below).
+    // Cross-mount edge traversal is out of scope for v1.
     const widened = applyCoveragePass(db, ranked).filter((h) =>
       h.viaCoverage ? canRead(mount.role, h.collection) : true,
     );
