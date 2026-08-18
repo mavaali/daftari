@@ -68,7 +68,8 @@ export type EdgeStalenessClass =
   | "current"
   | "pending-unchecked"
   | "pending-compatible"
-  | "pending-broken";
+  | "pending-broken"
+  | "unverifiable";
 
 export interface UpstreamStaleness {
   unit: string;
@@ -88,6 +89,7 @@ export interface UpstreamStalenessSummary {
   pending_unchecked: number;
   pending_compatible: number;
   pending_broken: number;
+  unverifiable: number;
 }
 
 // The unit's content writes since the baseline, folded to one changed-field
@@ -322,12 +324,14 @@ export function summarizeUpstream(rows: UpstreamStaleness[]): UpstreamStalenessS
     pending_unchecked: 0,
     pending_compatible: 0,
     pending_broken: 0,
+    unverifiable: 0,
   };
   for (const r of rows) {
     if (r.staleness === "current") summary.current += 1;
     else if (r.staleness === "pending-unchecked") summary.pending_unchecked += 1;
     else if (r.staleness === "pending-compatible") summary.pending_compatible += 1;
-    else summary.pending_broken += 1;
+    else if (r.staleness === "pending-broken") summary.pending_broken += 1;
+    else summary.unverifiable += 1;
   }
   return summary;
 }
