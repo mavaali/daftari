@@ -73,11 +73,29 @@ export type FindingTarget =
   | Tier2Target;
 
 // ---------------------------------------------------------------------------
+// FindingDescriptor — a display snapshot carried on LedgerEvents so that
+// resolved-and-absent findings can be rendered without the live finding.
+//
+// U11's dispose tool stamps this on ALL human events (accept/defer/dismiss/
+// reassign) from the live finding. The reconciler reads it from whichever
+// event has it (typically human disposition events) when rebuilding a
+// skeleton for the Resolved column.
+// ---------------------------------------------------------------------------
+
+export interface FindingDescriptor {
+  source: FindingSource;
+  check: string;
+  target: FindingTarget;
+  /** Short human-readable summary of the finding. */
+  label: string;
+}
+
+// ---------------------------------------------------------------------------
 // LedgerEvent — one append-only record in a finding's disposition history.
 //
 // Spec shape:
 //   { finding_id, event, by, principal_type, at, rationale?, expiry?,
-//     against_fingerprint, owner?, identity_scheme_version }
+//     against_fingerprint, owner?, identity_scheme_version, descriptor? }
 //
 // Human-authored events: accept | defer | dismiss | reassign.
 // System-authored events: new | resolved | reopened.
@@ -122,6 +140,14 @@ export interface LedgerEvent {
    * Allows safe migration if the hashing scheme ever changes.
    */
   identity_scheme_version: string;
+  /**
+   * Optional display snapshot of the finding at the time of this event.
+   * U11's dispose tool stamps this on human disposition events (accept/defer/
+   * dismiss/reassign) from the live finding. The reconciler reads it when
+   * rebuilding skeleton resolved findings so the Resolved column can render
+   * the real source/check/target/label without access to the live finding.
+   */
+  descriptor?: FindingDescriptor;
 }
 
 // ---------------------------------------------------------------------------

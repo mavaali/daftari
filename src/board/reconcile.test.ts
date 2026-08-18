@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { IDENTITY_SCHEME_VERSION } from "./identity.js";
 import { reconcile } from "./reconcile.js";
-import type { BoardColumn, Finding, LedgerEvent } from "./types.js";
+import type { BoardColumn, Finding, FindingDescriptor, LedgerEvent } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Fixture factories
@@ -64,6 +64,7 @@ function makeEvent(
     ...(overrides.rationale !== undefined ? { rationale: overrides.rationale } : {}),
     ...(overrides.expiry !== undefined ? { expiry: overrides.expiry } : {}),
     ...(overrides.owner !== undefined ? { owner: overrides.owner } : {}),
+    ...(overrides.descriptor !== undefined ? { descriptor: overrides.descriptor } : {}),
   };
 }
 
@@ -568,6 +569,234 @@ describe("Multiple findings — mixed cases in one reconcile call", () => {
     expect(emit).toHaveLength(1);
     expect(emit[0]!.event).toBe("resolved");
     expect(emit[0]!.finding_id).toBe("f-mix-absent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// priorHumanDisposition — reversion for defer and dismiss prior states
+// ---------------------------------------------------------------------------
+
+describe("priorHumanDisposition reversion — defer and dismiss prior states", () => {
+  it("prior human event is defer → column 'waiting' when resolved finding reappears", () => {
+    // Sequence: defer → resolved (system) → finding reappears in live set → reopened
+    const finding = makeFinding({ identity_key: "f-phd-defer", fingerprint: "fp-phd-defer" });
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-phd-defer",
+        event: "defer",
+        against_fingerprint: "fp-phd-defer",
+        expiry: "2099-01-01T00:00:00Z",
+      }),
+      makeEvent({
+        finding_id: "f-phd-defer",
+        event: "resolved",
+        against_fingerprint: "fp-phd-defer",
+        by: "system",
+        principal_type: "system",
+      }),
+    ]);
+
+    const { findings, emit } = reconcile([finding], ledger, NOW);
+
+    // Reopened emitted
+    expect(emit).toHaveLength(1);
+    expect(emit[0]!.event).toBe("reopened");
+    // Column reverts to 'waiting' (prior human was defer)
+    expect(findings[0]!.disposition).toBe<BoardColumn>("waiting");
+  });
+
+  it("prior human event is dismiss, then resolved, then finding reappears → column 'dismissed'", () => {
+    // Sequence: dismiss → resolved (system) → finding reappears → should revert to dismissed
+    const finding = makeFinding({ identity_key: "f-phd-dismiss", fingerprint: "fp-phd-dismiss" });
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-phd-dismiss",
+        event: "dismiss",
+        against_fingerprint: "fp-phd-dismiss",
+      }),
+      makeEvent({
+        finding_id: "f-phd-dismiss",
+        event: "resolved",
+        against_fingerprint: "fp-phd-dismiss",
+        by: "system",
+        principal_type: "system",
+      }),
+    ]);
+
+    const { findings, emit } = reconcile([finding], ledger, NOW);
+
+    // Reopened emitted
+    expect(emit).toHaveLength(1);
+    expect(emit[0]!.event).toBe("reopened");
+    // Column reverts to 'dismissed' (prior human was dismiss)
+    expect(findings[0]!.disposition).toBe<BoardColumn>("dismissed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CASE C — descriptor-backed resolved findings
+// ---------------------------------------------------------------------------
+
+describe("CASE C — descriptor-backed resolved findings", () => {
+  const realDescriptor: FindingDescriptor = {
+    source: "tension",
+    check: "unresolvedTension",
+    target: { kind: "tension", tensionId: "t-123" },
+    label: "Unresolved tension between belief A and belief B",
+  };
+
+  it("resolved skeleton uses REAL source/check/target/label when descriptor is present", () => {
+    // An accept event carries a descriptor (as U11 will stamp)
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-desc-c1",
+        event: "accept",
+        against_fingerprint: "fp-desc-c1",
+        descriptor: realDescriptor,
+      }),
+    ]);
+
+    const { findings } = reconcile([], ledger, NOW);
+
+    const resolved = findings.find((f) => f.identity_key === "f-desc-c1");
+    expect(resolved).toBeDefined();
+    expect(resolved!.disposition).toBe<BoardColumn>("resolved");
+    // Real values from descriptor, not placeholders
+    expect(resolved!.source).toBe("tension");
+    expect(resolved!.check).toBe("unresolvedTension");
+    expect(resolved!.target).toEqual({ kind: "tension", tensionId: "t-123" });
+  });
+
+  it("skeleton falls back to sentinel source 'staleness' when NO event has a descriptor", () => {
+    // Older-style event with no descriptor at all
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-desc-c2",
+        event: "accept",
+        against_fingerprint: "fp-desc-c2",
+        // No descriptor
+      }),
+    ]);
+
+    const { findings } = reconcile([], ledger, NOW);
+
+    const resolved = findings.find((f) => f.identity_key === "f-desc-c2");
+    expect(resolved).toBeDefined();
+    expect(resolved!.disposition).toBe<BoardColumn>("resolved");
+    // Sentinel, not "lint" (which would be misleading)
+    expect(resolved!.source).toBe("staleness");
+    expect(resolved!.check).toBe("unknown");
+  });
+
+  it("reconcile picks the LATEST descriptor-bearing event (not just the first)", () => {
+    const olderDescriptor: FindingDescriptor = {
+      source: "lint",
+      check: "orphanFiles",
+      target: { kind: "lint", path: "old/path.md" },
+      label: "Old label",
+    };
+    const newerDescriptor: FindingDescriptor = {
+      source: "tension",
+      check: "unresolvedTension",
+      target: { kind: "tension", tensionId: "t-999" },
+      label: "Updated label after reassign",
+    };
+
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-desc-c3",
+        event: "accept",
+        against_fingerprint: "fp-desc-c3-v1",
+        descriptor: olderDescriptor,
+      }),
+      makeEvent({
+        finding_id: "f-desc-c3",
+        event: "defer",
+        against_fingerprint: "fp-desc-c3-v2",
+        descriptor: newerDescriptor,
+        expiry: "2099-01-01T00:00:00Z",
+      }),
+    ]);
+
+    // currentDisposition will return "defer" so finding is absent-and-deferred → dropped.
+    // Override: use accept as the latest to trigger resolved path.
+    // Instead build a scenario where latest is accept with updated descriptor.
+    const ledger2 = buildLedger([
+      makeEvent({
+        finding_id: "f-desc-c3b",
+        event: "new",
+        against_fingerprint: "fp-c3b",
+        descriptor: olderDescriptor,
+      }),
+      makeEvent({
+        finding_id: "f-desc-c3b",
+        event: "accept",
+        against_fingerprint: "fp-c3b",
+        descriptor: newerDescriptor,
+      }),
+    ]);
+
+    const { findings } = reconcile([], ledger2, NOW);
+    const resolved = findings.find((f) => f.identity_key === "f-desc-c3b");
+    expect(resolved).toBeDefined();
+    // Should use the newest (accept event) descriptor
+    expect(resolved!.source).toBe("tension");
+    expect(resolved!.check).toBe("unresolvedTension");
+  });
+
+  it("emitted 'resolved' event carries the descriptor forward", () => {
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-desc-emit",
+        event: "accept",
+        against_fingerprint: "fp-desc-emit",
+        descriptor: realDescriptor,
+      }),
+    ]);
+
+    const { emit } = reconcile([], ledger, NOW);
+
+    expect(emit).toHaveLength(1);
+    expect(emit[0]!.event).toBe("resolved");
+    expect(emit[0]!.descriptor).toBeDefined();
+    expect(emit[0]!.descriptor!.source).toBe("tension");
+    expect(emit[0]!.descriptor!.check).toBe("unresolvedTension");
+    expect(emit[0]!.descriptor!.label).toBe("Unresolved tension between belief A and belief B");
+  });
+
+  it("idempotency: second run with descriptor still produces zero emits and same resolved output", () => {
+    const ledger = buildLedger([
+      makeEvent({
+        finding_id: "f-desc-idem",
+        event: "accept",
+        against_fingerprint: "fp-desc-idem",
+        descriptor: realDescriptor,
+      }),
+    ]);
+
+    // First run — emits resolved event
+    const run1 = reconcile([], ledger, NOW);
+    expect(run1.emit).toHaveLength(1);
+    expect(run1.emit[0]!.event).toBe("resolved");
+    const ledger2 = applyEmits(ledger, run1.emit);
+
+    // Second run — resolved event now in ledger, still absent from live → ZERO new emits
+    const run2 = reconcile([], ledger2, NOW);
+    expect(run2.emit).toHaveLength(0);
+
+    // Resolved finding still present on second run with real descriptor data (not sentinel)
+    const resolved1 = run1.findings.find((f) => f.identity_key === "f-desc-idem");
+    const resolved2 = run2.findings.find((f) => f.identity_key === "f-desc-idem");
+    expect(resolved1).toBeDefined();
+    expect(resolved2).toBeDefined();
+    expect(resolved2!.disposition).toBe<BoardColumn>("resolved");
+    expect(resolved2!.source).toBe("tension");
+    expect(resolved2!.check).toBe("unresolvedTension");
+    // Both runs produce the same identity_key, source, check, target (descriptor is deterministic)
+    expect(resolved1!.identity_key).toBe(resolved2!.identity_key);
+    expect(resolved1!.source).toBe(resolved2!.source);
+    expect(resolved1!.check).toBe(resolved2!.check);
+    expect(JSON.stringify(resolved1!.target)).toBe(JSON.stringify(resolved2!.target));
   });
 });
 

@@ -32,7 +32,7 @@
 
 import { IDENTITY_SCHEME_VERSION } from "./identity.js";
 import { currentDisposition, eventTimestamps } from "./ledger.js";
-import type { BoardColumn, Finding, LedgerEvent } from "./types.js";
+import type { BoardColumn, Finding, FindingDescriptor, LedgerEvent } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // ReconcileResult
@@ -150,6 +150,7 @@ function buildSystemEvent(
   event: "resolved" | "reopened",
   against_fingerprint: string,
   now: Date,
+  descriptor?: FindingDescriptor,
 ): LedgerEvent {
   return {
     finding_id,
@@ -159,31 +160,93 @@ function buildSystemEvent(
     at: now.toISOString(),
     against_fingerprint,
     identity_scheme_version: IDENTITY_SCHEME_VERSION,
+    ...(descriptor !== undefined ? { descriptor } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// latestDescriptor — walks events BACKWARD to find the latest descriptor.
+//
+// Returns the descriptor from the most recent event that carries one, or
+// undefined if no event in the list has a descriptor. This is needed because
+// U11 stamps descriptors on human disposition events; system events
+// (new/resolved/reopened) may or may not carry one (they forward from the
+// latest human-stamped event). Walk backward so we find the newest first.
+// ---------------------------------------------------------------------------
+
+function latestDescriptor(events: LedgerEvent[]): FindingDescriptor | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const evt = events[i]!;
+    if (evt.descriptor !== undefined) {
+      return evt.descriptor;
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
 // skeletonFinding — minimal Finding for a resolved-but-absent finding.
 //
-// See CASE C design decision at the top of this file. Fields that only the
-// source adapter knows are filled with placeholder values. U9 may enrich
-// these from a persisted findings cache.
+// See CASE C design decision at the top of this file. When a descriptor is
+// present on any ledger event, the real source/check/target/label are used.
+// If NO event carries a descriptor (older/edge data), a sentinel source
+// "staleness" is used (not "lint") so callers can detect the placeholder
+// rather than assuming a misleading check category. U9 may enrich these
+// skeletons from a persisted findings cache.
 // ---------------------------------------------------------------------------
 
 function skeletonFinding(identity_key: string, events: LedgerEvent[]): Finding {
   const ts = eventTimestamps(events);
   const lastEvent = events[events.length - 1]!;
+
+  // Walk backward to find the latest owner from any reassign event, or fall
+  // back to the last event's owner field.
+  let owner: string | undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const evt = events[i]!;
+    if (evt.owner !== undefined) {
+      owner = evt.owner;
+      break;
+    }
+  }
+
+  const desc = latestDescriptor(events);
+
+  if (desc !== undefined) {
+    return {
+      identity_key,
+      source: desc.source,
+      check: desc.check,
+      target: desc.target,
+      fingerprint: lastEvent.against_fingerprint,
+      certainty: "medium", // not stored in descriptor; placeholder is acceptable
+      evidence: {},
+      suggested_action: "",
+      verify_predicate: "",
+      owner: owner ?? "",
+      first_seen: ts.first_seen,
+      last_seen: ts.last_seen,
+      disposition: "resolved",
+      history: events,
+    };
+  }
+
+  // No descriptor on any event (older/edge data). Use explicit sentinel values
+  // so callers can distinguish "no descriptor available" from a real finding.
+  // "staleness" is used as the sentinel source (NOT "lint") so it is visually
+  // distinguishable and does not mislead renderers into treating the skeleton
+  // as a lint finding. U9 may override these from a persisted findings cache.
   return {
     identity_key,
-    source: "lint", // placeholder — adapter-specific, not known from ledger alone
-    check: "unknown", // placeholder
-    target: { kind: "lint", path: identity_key }, // placeholder
+    source: "staleness", // sentinel — real source not recoverable; no descriptor on ledger
+    check: "unknown", // placeholder — real check not recoverable without descriptor
+    target: { kind: "staleness", path: identity_key }, // placeholder
     fingerprint: lastEvent.against_fingerprint,
     certainty: "medium", // placeholder
     evidence: {},
     suggested_action: "",
     verify_predicate: "",
-    owner: lastEvent.owner ?? "",
+    owner: owner ?? "",
     first_seen: ts.first_seen,
     last_seen: ts.last_seen,
     disposition: "resolved",
@@ -226,7 +289,9 @@ export function reconcile(
     const { column, shouldEmitReopen } = columnForLiveWithLedger(finding, events, now);
 
     if (shouldEmitReopen) {
-      emit.push(buildSystemEvent(finding.identity_key, "reopened", finding.fingerprint, now));
+      // Carry the descriptor forward so the reopened card keeps its display identity.
+      const desc = latestDescriptor(events);
+      emit.push(buildSystemEvent(finding.identity_key, "reopened", finding.fingerprint, now, desc));
     }
 
     findings.push({
@@ -251,7 +316,9 @@ export function reconcile(
 
     if (disp.event === "accept") {
       // Accepted finding no longer reproduces → emit resolved (CASE C, authorized-fix path).
-      emit.push(buildSystemEvent(identity_key, "resolved", disp.against_fingerprint, now));
+      // Carry the descriptor forward so the resolved card can render its display identity.
+      const desc = latestDescriptor(events);
+      emit.push(buildSystemEvent(identity_key, "resolved", disp.against_fingerprint, now, desc));
       // Include a skeleton resolved finding so the board can show a Resolved column.
       findings.push(skeletonFinding(identity_key, events));
       continue;
@@ -267,7 +334,9 @@ export function reconcile(
     // For "reopened" latest event + absent: the finding reproduced then disappeared.
     // Treat like accepted (the human intent was to fix it) → emit resolved.
     if (disp.event === "reopened") {
-      emit.push(buildSystemEvent(identity_key, "resolved", disp.against_fingerprint, now));
+      // Carry the descriptor forward so the resolved card keeps its display identity.
+      const desc = latestDescriptor(events);
+      emit.push(buildSystemEvent(identity_key, "resolved", disp.against_fingerprint, now, desc));
       findings.push(skeletonFinding(identity_key, events));
     }
 
