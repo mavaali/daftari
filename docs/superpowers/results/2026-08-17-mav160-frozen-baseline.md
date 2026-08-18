@@ -43,9 +43,28 @@ Trigger-bearing-only reaches 0.60 on hub-hop (exactly the constructed half), ten
 
 **These synthetic numbers are harness validation, not field evidence.** The edges are constructed to align with the questions, so hub-hop's ceiling=1.0 is true by construction — it demonstrates the *instrument*, not the *bet*. MAV-154's real gate runs this same script on a corpus whose edges were birthed by the consolidation loop (embedding-neighbor candidates), where alignment is the open question the Fable review flagged.
 
+## The vector arm (2026-08-18 — the freeze's second half) [DATA]
+
+The identical run on the operator's machine (local MiniLM, `vectorUsed: true`, `vecKnnK: 256` per the MAV-159 flip, daftari `a410f0a`) completes the freeze. Multi-day subset (n=191), rank-extension recall, lexical-only vs vector-armed:
+
+| add budget m | lexical-only | vector-armed (K=256) | delta |
+|---|---|---|---|
+| 0 | 0.224 | 0.218 | −0.7pp |
+| 5 | 0.300 | 0.292 | −0.8pp |
+| 10 | 0.379 | 0.354 | −2.4pp |
+| 15 | 0.436 | 0.413 | −2.3pp |
+| 20 | 0.473 | 0.458 | −1.5pp |
+| 30 | 0.540 | 0.546 | +0.6pp |
+| 50 | 0.696 | 0.676 | −2.1pp |
+| 90 | 0.856 | 0.842 | −1.4pp |
+
+- **The 0.5/0.5 fusion hurts multi-day recall on this corpus.** Confirmed across the full budget grid, consistent with the MAV-159 sweep's by-product at every K. The vector arm is not merely failing to help; at default weights it costs 0.7–2.4pp nearly everywhere. Fusion weights are the open lever — see `2026-08-18-mav159-knn-sweep.md` and the `weight-sweep.mjs` runner.
+- **The coverage retirement survives, with one nuance.** Under the vector arm, coverage edges rank-extension at small budgets (+0.3pp at 5, +1.35pp at 10, tie at 15) before rank-extension dominates from 20 up and coverage plateaus at 0.53. The 2026-06-22 kill gate required coverage ≥5pp *above*; its best showing is +1.35pp, inside the ~±2pp noise floor. Retirement stands — but "strictly dominated at every budget" should now be read as "never within 3.5pp of its resurrection gate."
+- **Cross-validation:** this run's multi-day recall at budget 0 (0.2176) matches the MAV-159 sweep's K=256 cell exactly — independent runs, same config, identical number.
+
 ## Honest assessment
 
-- **Lexical-only.** The container cannot reach huggingface.co, so the vector arm never engaged. The manifest and outputs carry `vectorUsed`, and the identical run on a machine with the model is the missing half of the freeze — until it exists, children should quote lexical-only numbers against this run only.
+- ~~Lexical-only~~ **Resolved 2026-08-18**: both halves of the freeze now exist (lexical-only in-container; vector-armed above). Children must quote arms of matching `vectorUsed`/`vecKnnK`, both stamped in the summaries.
 - **273 vs 1,489 questions.** The June analyses used the full generated run set; the frozen set is the upstream-pinned 316/273. The shape agreement (0.224 vs 0.22 seed recall; same dominance ordering) says the smaller set measures the same phenomenon, but point estimates differ in the second decimal and should not be cross-quoted.
 - **The consolidation-birthed edge corpus is the remaining gap.** Running `daftari consolidate --mode birth` over the RB vault needs an LLM; it is the one MAV-160 deliverable that cannot be produced offline. Until it lands, MAV-154's $0 ceiling can run only on the synthetic corpus (mechanism check) — its go/no-go still needs the birthed graph.
 
