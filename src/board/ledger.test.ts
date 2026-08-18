@@ -249,9 +249,9 @@ describe("currentDisposition — accept → defer → dismiss folds to dismissed
 
     expect(disp.event).toBe("dismiss");
     expect(disp.against_fingerprint).toBe("fp-2");
-    // The prior defer set a standing expiry; a plain dismiss (no expiry field)
-    // does NOT clear it — only accept/resolved do. So the standing expiry survives.
-    expect(disp.expiry).toBe("2024-06-01T00:00:00Z");
+    // A plain dismiss (no expiry field) establishes a new disposition with no timer:
+    // it REPLACES the prior defer's standing expiry — permanent dismissal carries no timer.
+    expect(disp.expiry).toBeUndefined();
   });
 
   it("full ordered history is preserved — same state survives reload (R30)", async () => {
@@ -765,10 +765,12 @@ describe("loadLedger — structural guard for against_fingerprint and at", () =>
 // ---------------------------------------------------------------------------
 // 10. currentDisposition — standing-expiry fold semantics
 //
-// Definitive rules:
-//   - expiry is set by the most recent defer/dismiss event that carries one.
+// Definitive rules (U3 correction, #455):
+//   - defer or dismiss UNCONDITIONALLY sets the standing expiry to that event's
+//     expiry field (present → that value; absent → undefined / cleared).
+//     A new defer/dismiss is a fresh disposition; it owns its own timer.
 //   - accept or resolved CLEARS the standing expiry.
-//   - reassign, reopened, new do NOT clear a standing expiry.
+//   - reassign, reopened, and new do NOT change the standing expiry.
 // ---------------------------------------------------------------------------
 
 describe("currentDisposition — standing-expiry fold semantics", () => {
@@ -907,6 +909,144 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     const events = loaded.value.byFinding.get("f-stand-d")!;
     const disp = currentDisposition(events);
     // resolved must clear the standing expiry
+    expect(disp.expiry).toBeUndefined();
+  });
+
+  // --- New tests for the #455 unconditional-replace rule ---
+
+  it("defer(expiry) → dismiss(NO expiry): standing expiry is undefined — permanent dismiss (R9)", async () => {
+    // A plain dismiss with no expiry field must REPLACE (clear) the prior defer's expiry.
+    // This is the key R9 invariant: a permanent dismissal must not inherit a prior defer timer.
+    const deferExpiry = "2099-06-01T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-e",
+        event: "defer",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry: deferExpiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-e",
+        event: "dismiss",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+        // No expiry field — permanent dismissal
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-e")!;
+    const disp = currentDisposition(events, new Date("2099-07-01T00:00:00Z"));
+    // dismiss with no expiry must unconditionally replace — standing expiry is now undefined
+    expect(disp.expiry).toBeUndefined();
+    // and therefore not expired (no timer to expire)
+    expect(disp.expired).toBe(false);
+  });
+
+  it("defer(expiry1) → dismiss(expiry2): standing expiry is expiry2", async () => {
+    const expiry1 = "2099-06-01T00:00:00Z";
+    const expiry2 = "2099-12-31T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-f",
+        event: "defer",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry: expiry1,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-f",
+        event: "dismiss",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry: expiry2,
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-f")!;
+    const disp = currentDisposition(events);
+    // dismiss's expiry must replace the defer's expiry
+    expect(disp.expiry).toBe(expiry2);
+  });
+
+  it("defer(expiry) → reassign: expiry survives (reassign does not touch the timer)", async () => {
+    // Already covered in f-stand-a above, but explicit here for the new rule suite.
+    const expiry = "2099-06-01T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-g",
+        event: "defer",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-g",
+        event: "reassign",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+        owner: "dave",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-g")!;
+    const disp = currentDisposition(events);
+    expect(disp.expiry).toBe(expiry);
+  });
+
+  it("defer(expiry) → accept: expiry is cleared (accept closes the disposition)", async () => {
+    // Mirror of f-stand-b above; kept here so the new rule suite is self-contained.
+    const expiry = "2099-06-01T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-h",
+        event: "defer",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-h",
+        event: "accept",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-h")!;
+    const disp = currentDisposition(events);
     expect(disp.expiry).toBeUndefined();
   });
 });

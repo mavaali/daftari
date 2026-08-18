@@ -203,16 +203,19 @@ export function currentDisposition(events: LedgerEvent[], now?: Date): CurrentDi
   // Scan events in order to derive:
   //   owner   — updated on each reassign event (last reassign wins).
   //   expiry  — standing deferral/dismissal timer:
-  //               • set by the most recent defer or dismiss that carries an expiry.
-  //               • cleared by accept or resolved (item is no longer waiting/dismissed).
-  //               • NOT cleared by reassign, reopened, or new.
+  //               • defer or dismiss UNCONDITIONALLY sets the standing expiry to
+  //                 that event's expiry field (present → that value; absent → undefined).
+  //                 A fresh defer/dismiss establishes a new disposition and owns its
+  //                 own timer — a permanent dismiss or open-ended defer carries no timer.
+  //               • accept or resolved CLEARS the standing expiry.
+  //               • reassign, reopened, and new do NOT change the standing expiry.
   let owner: string | undefined;
   let expiry: string | undefined;
   for (const evt of events) {
     if (evt.event === "reassign" && evt.owner !== undefined) {
       owner = evt.owner;
     }
-    if ((evt.event === "defer" || evt.event === "dismiss") && evt.expiry !== undefined) {
+    if (evt.event === "defer" || evt.event === "dismiss") {
       expiry = evt.expiry;
     }
     if (evt.event === "accept" || evt.event === "resolved") {
