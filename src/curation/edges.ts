@@ -142,6 +142,13 @@ export interface ObserveEdgeInput {
   // Which endpoint this observation judged the premise (foundational ordering).
   // Optional: legacy/unscored observes omit it and don't affect directionVerdict.
   premiseVote?: PremiseVote;
+  /**
+   * The model that cast this observation (#423). Recorded so two different
+   * models voting on the same (observer, axis) in one sitting count as
+   * independent re-derivations rather than colliding as a replay. Optional:
+   * omitted records keep the pre-#423 dedup behavior exactly.
+   */
+  model?: string;
   // Test-only timestamp override for deterministic aging math.
   at?: string;
 }
@@ -210,6 +217,7 @@ interface RawEdgeRecord {
   note?: string;
   reason?: string;
   premiseVote?: string;
+  model?: string;
 }
 
 function readRawRecords(vaultRoot: string): RawEdgeRecord[] {
@@ -529,6 +537,7 @@ export async function observeEdge(
     axis: input.axis ?? null,
     ...(input.note ? { note: input.note } : {}),
     ...(input.premiseVote ? { premiseVote: input.premiseVote } : {}),
+    ...(input.model ? { model: input.model.trim() } : {}),
   };
 
   try {

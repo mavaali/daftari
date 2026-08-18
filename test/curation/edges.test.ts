@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -721,6 +721,17 @@ describe("sql-authoritative edge reads", () => {
     } finally {
       chmodSync(daftariDir, 0o755);
     }
+  });
+
+  it("serializes the observing model into the edge record", async () => {
+    const res = await observeEdge(vault, {
+      fromPath: "a.md", toPath: "b.md", observedBy: BY, blind: true,
+      axis: "prompt", model: "claude-opus-4-6", at: T1,
+    });
+    expect(res.ok).toBe(true);
+    const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8").trim().split("\n");
+    const rec = JSON.parse(raw[raw.length - 1]!);
+    expect(rec.model).toBe("claude-opus-4-6");
   });
 
   it("trail extras survive the sql read path", async () => {
