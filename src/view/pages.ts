@@ -199,7 +199,7 @@ export function layout(title: string, bodyHtml: string, query = ""): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escHtml(title)}</title><style>${CSS}</style></head>
 <body><div class="wrap"><div class="topbar"><a class="brand" href="/">daftari · vault</a>` +
-    `<nav class="nav"><a href="/docs">documents</a><a href="/graph">graph</a></nav>` +
+    `<nav class="nav"><a href="/docs">documents</a><a href="/graph">graph</a><a href="/board">board</a></nav>` +
     `${searchBox(query)}</div>${bodyHtml}</div></body></html>`
   );
 }
@@ -348,6 +348,17 @@ export function renderDocPage(args: {
           )
           .join("")}</ul></nav>`
       : "";
+  // R28 (admin-loopback convenience): a static link from the doc page into the
+  // board filtered to this document. No data fetch — purely a link construction.
+  // encodeURIComponent encodes slashes and special chars in the path, producing
+  // a valid query-string value. The board's RBAC-correct surface is in U12;
+  // this is a convenience shortcut for admins browsing the viewer.
+  const boardLink =
+    `<div class="backlinks" style="margin-top:12px;">` +
+    `<h2>Open findings</h2>` +
+    `<p style="font-size:13px;">` +
+    `<a href="/board?document=${encodeURIComponent(args.path)}">Open findings for this document →</a>` +
+    `</p></div>`;
   const body =
     `<h1>${escHtml(fm.title || args.path)}</h1>` +
     standing +
@@ -357,7 +368,8 @@ export function renderDocPage(args: {
     tensionsPanel +
     tocPanel +
     `<div class="body">${args.bodyHtml}</div>` +
-    `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>`;
+    `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>` +
+    boardLink;
   return layout(fm.title || args.path, body);
 }
 
