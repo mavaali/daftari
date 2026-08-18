@@ -190,16 +190,22 @@ export function applyCoveragePass(
 // Original ranked hits are never evicted (we never displace the caller's
 // top-N). Among coverage docs, evict stale first (those SP-A flagged with a
 // currentSource), then oldest, until the added snippet chars fit tokenCapChars.
-export function enforceTokenCap(hits: HybridHit[], opts: CoverageOptions): HybridHit[] {
-  const original = hits.filter((h) => !h.viaCoverage);
-  const coverage = hits.filter((h) => h.viaCoverage);
-  if (coverage.length === 0) return hits;
+export function enforceTokenCap(hits: HybridHit[], opts: { tokenCapChars: number }): HybridHit[] {
+  // Synthetic additions — coverage widening AND suppression pull-ins
+  // (MAV-161) — share one character budget; the caller's ranked hits are
+  // never evicted. A pulled-in head with no cap of its own would let the
+  // served set grow unboundedly past the requested limit.
+  const isSynthetic = (h: HybridHit) => h.viaCoverage === true || h.viaForeground === true;
+  const synthetic = hits.filter(isSynthetic);
+  if (synthetic.length === 0) return hits;
 
-  // Eviction priority: stale before fresh, then oldest first. The survivors are
-  // taken from the opposite end. Coverage docs arrive recency-first, so index
-  // order is newest→oldest; a stable sort by (fresh?0:1) puts stale last for the
-  // "drop from the end" loop below.
-  const ordered = [...coverage].sort((a, b) => {
+  // Eviction priority: stale before fresh, then oldest first; pulled-in
+  // heads are by construction current (no currentSource), so they sort into
+  // the fresh group and are evicted LAST — they carry the current value the
+  // suppression pass exists to serve. Coverage docs arrive recency-first, so
+  // index order is newest→oldest; a stable sort by (fresh?0:1) puts stale
+  // last for the "drop from the end" loop below.
+  const ordered = [...synthetic].sort((a, b) => {
     const aStale = a.currentSource?.kind === "resolved" ? 1 : 0;
     const bStale = b.currentSource?.kind === "resolved" ? 1 : 0;
     return aStale - bStale; // fresh first, stale last; stable keeps recency within group
@@ -211,7 +217,9 @@ export function enforceTokenCap(hits: HybridHit[], opts: CoverageOptions): Hybri
     used -= dropped?.snippet.length ?? 0;
   }
 
-  // Re-emit in the original arrival order, minus evicted coverage docs.
+  // Re-emit in the original arrival order, minus evicted synthetic docs —
+  // position-preserving, so a head inserted at a stale hit's rank slot keeps
+  // that slot.
   const keep = new Set(ordered.map((h) => h.path));
-  return [...original, ...coverage.filter((h) => keep.has(h.path))];
+  return hits.filter((h) => !isSynthetic(h) || keep.has(h.path));
 }

@@ -31,7 +31,11 @@ describe("loadConfig — search tuning block", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.search).toEqual({ coverage: false, vecKnnK: 64 });
+    expect(result.value.search).toEqual({
+      coverage: false,
+      vecKnnK: 64,
+      suppressSuperseded: false,
+    });
   });
 
   it("defaults when the search block is omitted", () => {
@@ -39,7 +43,11 @@ describe("loadConfig — search tuning block", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.search).toEqual({ coverage: false, vecKnnK: 64 });
+    expect(result.value.search).toEqual({
+      coverage: false,
+      vecKnnK: 64,
+      suppressSuperseded: false,
+    });
   });
 
   it("parses an explicit opt-in and fan-out", () => {
@@ -47,7 +55,11 @@ describe("loadConfig — search tuning block", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.search).toEqual({ coverage: true, vecKnnK: 256 });
+    expect(result.value.search).toEqual({
+      coverage: true,
+      vecKnnK: 256,
+      suppressSuperseded: false,
+    });
   });
 
   it("accepts a partial block, defaulting the other knob", () => {
@@ -55,7 +67,11 @@ describe("loadConfig — search tuning block", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.search).toEqual({ coverage: false, vecKnnK: 128 });
+    expect(result.value.search).toEqual({
+      coverage: false,
+      vecKnnK: 128,
+      suppressSuperseded: false,
+    });
   });
 
   it("rejects a non-mapping search block", () => {
@@ -75,6 +91,22 @@ describe("loadConfig — search tuning block", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("'search.coverge' is not a recognised setting");
+  });
+
+  it("parses the suppression opt-in", () => {
+    writeConfig("search:\n  suppress_superseded: true\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.search.suppressSuperseded).toBe(true);
+  });
+
+  it("rejects a non-boolean suppress_superseded", () => {
+    writeConfig("search:\n  suppress_superseded: maybe\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("'search.suppress_superseded' must be true or false");
   });
 
   it("rejects a non-boolean coverage", () => {

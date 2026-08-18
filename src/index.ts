@@ -37,6 +37,7 @@ import {
   reindexVault,
   reindexWarnings,
 } from "./search/reindex.js";
+import { setSuppressSuperseded } from "./search/suppression.js";
 import { setProvider, warmModel } from "./search/vector.js";
 import { startWatcher, type VaultWatcher } from "./search/watcher.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "./server.js";
@@ -119,6 +120,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // per process, same lifecycle as the provider above.
   setCoverageEnabled(config.value.search.coverage);
   setVecKnnK(config.value.search.vecKnnK);
+  setSuppressSuperseded(config.value.search.suppressSuperseded);
 
   // Resolve the access identity. With no --role the server runs as the
   // deny-all guest; an unknown role name resolves the same way.

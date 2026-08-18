@@ -56,6 +56,7 @@ import {
   onceIndexReady,
 } from "../search/index-state.js";
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
+import { applySupersededSuppression } from "../search/suppression.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
 import { getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
@@ -419,7 +420,16 @@ async function searchMount(
         if (vas) hit.validAtSource = vas;
       }
     }
-    const capped = enforceTokenCap(widened, DEFAULT_COVERAGE_OPTIONS);
+    // MAV-161 suppression, demotion-only for mounts: pulling a cross-mount
+    // head in would need alias path rewriting, and a mount exposes documents,
+    // not vault state — v1 keeps that out. currentSource is already resolved
+    // above, so the pass reuses it. Skipped for `valid_at` queries — a doc
+    // superseded today can be the right answer for a past date.
+    const suppressed =
+      opts.validAt === null
+        ? applySupersededSuppression(db, widened, access, { pullIn: false })
+        : widened;
+    const capped = enforceTokenCap(suppressed, DEFAULT_COVERAGE_OPTIONS);
     for (const hit of capped) labelMountHit(hit, mount.alias);
     return ok({ hits: capped, vectorUsed: result.value.vectorUsed });
   } finally {
@@ -511,14 +521,16 @@ export async function vaultSearch(
   const fused = rrfFuse(lists, limit);
 
   // #3 rerank over the SAME fused cross-vault ranking the hits came from,
-  // still excluding coverage additions (recall, not ranking).
+  // still excluding synthetic additions — coverage widening and suppression
+  // pull-ins alike (recall, not ranking; a score-0 pulled-in head never
+  // earned a rank to be judged at).
   const rerankK = parseRerankCandidates(args.rerank_candidates);
   const rerank =
     rerankK > 0
       ? {
           instructions: RERANK_INSTRUCTIONS,
           candidates: fused
-            .filter((h) => !h.viaCoverage)
+            .filter((h) => !h.viaCoverage && !h.viaForeground)
             .slice(0, rerankK)
             .map((h, i) => ({
               rank: i + 1,
@@ -645,14 +657,30 @@ async function searchLocalVault(
     // and are deliberately NOT subject to valid_only: coverage is a recall
     // lever answering a different question, and silently filtering its
     // additions would make the widening non-deterministic.
+    // MAV-161 supersession suppression (default off; `search.suppress_superseded`
+    // opts in): demote hits whose chain resolves to a readable current head,
+    // pulling the head into the stale hit's rank slot when absent. Runs before
+    // enrichment so pulled-in heads receive the full annotation set below; the
+    // pass caches currentSource on the hits it inspects, so the loop's
+    // `?? resolveCurrentSource` does not re-walk those chains.
+    //
+    // Skipped entirely for `valid_at` queries: a doc superseded TODAY can be
+    // exactly the right answer for a past date, so demoting it (or pulling in
+    // the current head) would answer the wrong question — per-date chain
+    // resolution is validAtSource's job below.
+    const served =
+      validAt === null
+        ? applySupersededSuppression(db, permitted, access, { pullIn: true })
+        : permitted;
+
     if (validAt !== null) {
-      for (const hit of permitted) {
+      for (const hit of served) {
         if (hit.validity === undefined) hit.validity = validityForPath(db, hit.path, validAt);
       }
     }
 
-    for (const hit of permitted) {
-      const cs = resolveCurrentSource(db, hit.path, access);
+    for (const hit of served) {
+      const cs = hit.currentSource ?? resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
       // Foreground the chain member covering `valid_at` when this hit's own
       // interval does not. No-ops when the hit covers the date itself.
@@ -674,7 +702,7 @@ async function searchLocalVault(
 
     // Token-cap backstop: evict coverage-added docs (stale first, then oldest) if
     // their combined snippets exceed the budget. Never drops ranked hits.
-    const capped = enforceTokenCap(permitted, DEFAULT_COVERAGE_OPTIONS);
+    const capped = enforceTokenCap(served, DEFAULT_COVERAGE_OPTIONS);
 
     await annotateAndLogServedHits(vaultRoot, db, "vault_search", capped, access);
 
@@ -1109,6 +1137,17 @@ const hybridHitSchema = {
       description: "True when the coverage pass added this doc rather than the ranker.",
     },
     coverageReason: { type: "string", enum: ["edge", "entity-window"] },
+    viaForeground: {
+      type: "boolean",
+      description:
+        "True when the suppression pass pulled this current head into a superseded hit's rank slot (search.suppress_superseded).",
+    },
+    demoted: {
+      type: "string",
+      enum: ["superseded"],
+      description:
+        "Set when the suppression pass moved this hit to the tail: a readable current head exists (see currentSource).",
+    },
   },
   required: [
     "path",
@@ -1196,6 +1235,10 @@ function annotationNote(hits: HybridHit[]): string | null {
   if (coverage > 0) parts.push(`${coverage} added by the coverage pass`);
   const sourced = hits.filter((h) => h.currentSource !== undefined).length;
   if (sourced > 0) parts.push(`${sourced} superseded, current source attached`);
+  const demoted = hits.filter((h) => h.demoted === "superseded").length;
+  if (demoted > 0) parts.push(`${demoted} demoted below the fold as superseded`);
+  const foregrounded = hits.filter((h) => h.viaForeground).length;
+  if (foregrounded > 0) parts.push(`${foregrounded} current head(s) foregrounded`);
   return parts.length > 0 ? `(${parts.join("; ")} — see structuredContent)` : null;
 }
 

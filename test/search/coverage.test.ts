@@ -347,3 +347,43 @@ describe("coverage runtime gate", () => {
     expect(coverageEnabled()).toBe(false);
   });
 });
+
+// MAV-161: pulled-in heads share the synthetic-additions token budget. Heads
+// have no currentSource (they ARE current), so they sort into the fresh group
+// and are evicted last; survivors keep their original positions.
+describe("enforceTokenCap with foregrounded heads", () => {
+  const base = (path: string, snippet: string): HybridHit => ({
+    path,
+    title: path,
+    collection: "notes",
+    status: "canonical",
+    score: 1,
+    bm25Score: 1,
+    vectorScore: 0,
+    snippet,
+    decay: null,
+  });
+
+  it("evicts coverage docs before heads and preserves the head's slot", () => {
+    const head: HybridHit = { ...base("head.md", "H".repeat(50)), score: 0, viaForeground: true };
+    const ranked = base("ranked.md", "R".repeat(50));
+    const cov: HybridHit = { ...base("cov.md", "C".repeat(50)), score: 0, viaCoverage: true };
+    // head sits at the front (a stale hit's slot); budget fits only one
+    // synthetic addition → the coverage doc goes, the head stays put.
+    const out = enforceTokenCap([head, ranked, cov], {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      tokenCapChars: 60,
+    });
+    expect(out.map((h) => h.path)).toEqual(["head.md", "ranked.md"]);
+  });
+
+  it("under extreme pressure evicts heads too — ranked hits never", () => {
+    const head: HybridHit = { ...base("head.md", "H".repeat(50)), score: 0, viaForeground: true };
+    const ranked = base("ranked.md", "R".repeat(500));
+    const out = enforceTokenCap([head, ranked], {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      tokenCapChars: 10,
+    });
+    expect(out.map((h) => h.path)).toEqual(["ranked.md"]);
+  });
+});
