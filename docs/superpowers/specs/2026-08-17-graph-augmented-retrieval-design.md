@@ -66,9 +66,14 @@ graphAugmentedSearch(db, vaultRoot, query, opts)
 - **Edge loading** — `listEdges` + `listTensions` (existing curation stores), filtered to
   the configured subset. Passed *into* the pure `topicEgoGraphFrom` (no I/O inside traversal).
 - **Neighbor affinity** — a focused index helper: for a set of neighbor paths and a query
-  embedding, return each path's maximum chunk cosine. This is the only new index I/O. It
-  reuses the sqlite-vec chunk store `hybrid.ts` already reads; it does not reuse the global
-  KNN scan (neighbors are, by construction, outside the KNN top set).
+  embedding, return each path's maximum chunk cosine. This is the only new index I/O. Intended
+  primitives (all existing): `getChunksForPath` (`src/search/index-db.ts`) for a path's chunk
+  embeddings, `cosineSimilarity` (`src/search/vector.ts`) for the score, and `embedQuery`
+  (`src/search/vector.ts`) so the orchestrator embeds the query itself. It reads the plain
+  `embeddings` table, NOT the `embeddings_vec` KNN virtual table `hybrid.ts` scans — a known
+  neighbor set does not need (and by construction sits outside) the global KNN top set. This
+  means the query is embedded twice per call (once inside `hybridSearch`, once here);
+  `hybridSearch` deliberately does not return its query embedding and is not modified to.
 - **`hybridSearch`** — unchanged. Consumed through its existing interface.
 - **`vault_search` tool handler** — calls `graphAugmentedSearch` instead of `hybridSearch`
   when `search.graph_expand.enabled`; the post-rank `canRead` RBAC filter continues to run
@@ -98,9 +103,12 @@ fan-out cap in v1 (YAGNI; add if one hub-like seed monopolizes the budget).
 ### Output shape
 
 Native ranked hits first (order unchanged), expansion docs appended in descending affinity.
-Each injected hit carries `viaEdge: { seed, edgeType }` mirroring the existing `viaCoverage`
-transparency flag, so a caller (and the reranker) can see a doc entered via graph expansion
-rather than lexical/vector match.
+Each injected hit carries `viaEdge: { seed, edgeType }`, a NEW field that supplements — does
+not replace — the existing `viaCoverage` / `coverageReason` transparency contract. Transparency
+rule: an edge-injected hit sets `viaEdge` and is NOT given a `coverageReason` (they are distinct
+recall passes; a hit came in via graph expansion xor via the coverage window, never labeled
+both). This keeps one consistent signal for downstream consumers and the reranker: `viaEdge`
+present ⇒ graph expansion, `coverageReason` present ⇒ coverage pass, neither ⇒ native rank.
 
 ### Config
 
