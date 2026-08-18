@@ -394,7 +394,9 @@ export async function vaultRead(
           );
         }
         if (hiddenPending !== "none") {
-          clauses.push(`${hiddenPending} upstream inputs outside your read scope have pending changes`);
+          clauses.push(
+            `${hiddenPending} upstream inputs outside your read scope have pending changes`,
+          );
         }
         upstream = {
           edges: visible,
@@ -1139,7 +1141,13 @@ const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
     edge_class: { type: "string", enum: ["compiled", "declared", "earned"] },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken", "unverifiable"],
+      enum: [
+        "current",
+        "pending-unchecked",
+        "pending-compatible",
+        "pending-broken",
+        "unverifiable",
+      ],
     },
     baseline: {
       type: ["string", "null"],

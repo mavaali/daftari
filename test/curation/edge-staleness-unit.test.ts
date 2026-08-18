@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { compiledUpstreamStaleness, summarizeUpstream, type UpstreamStaleness } from "../../src/curation/edge-staleness.js";
 import type { ConsumesEdge } from "../../src/curation/consumes.js";
+import {
+  compiledUpstreamStaleness,
+  summarizeUpstream,
+  type UpstreamStaleness,
+} from "../../src/curation/edge-staleness.js";
 
 function row(staleness: UpstreamStaleness["staleness"]): UpstreamStaleness {
-  return { unit: "u", edge_class: "compiled", staleness, baseline: null, changed_fields: [], reason: "" };
+  return {
+    unit: "u",
+    edge_class: "compiled",
+    staleness,
+    baseline: null,
+    changed_fields: [],
+    reason: "",
+  };
 }
 
 describe("summarizeUpstream — unverifiable", () => {

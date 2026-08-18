@@ -222,7 +222,12 @@ async function annotateAndLogServedHits(
       const bareRows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
       broken = bareRows.filter((r) => r.staleness === "pending-broken").length;
       const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
-      const rows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance, isVerifiable);
+      const rows = compiledUpstreamStaleness(
+        hit.path,
+        staleCtx.consumes,
+        staleCtx.provenance,
+        isVerifiable,
+      );
       // `db` is the caller's already-open index handle — the same one the
       // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
       const { visible, hiddenPending } = access

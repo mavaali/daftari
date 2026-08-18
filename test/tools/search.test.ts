@@ -11,7 +11,12 @@ import { clearContestedCache } from "../../src/search/contested.js";
 import { setCoverageEnabled } from "../../src/search/coverage.js";
 import { setSuppressSuperseded } from "../../src/search/suppression.js";
 import { deleteDocument } from "../../src/storage/index-db.js";
-import { openIndexForActiveProvider, vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
+import {
+  openIndexForActiveProvider,
+  vaultReindex,
+  vaultSearch,
+  vaultSearchRelated,
+} from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 

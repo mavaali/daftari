@@ -271,7 +271,12 @@ export function upstreamStaleness(input: {
   verdicts?: Tier2Verdict[];
   isVerifiable?: (unit: string) => boolean;
 }): UpstreamStaleness[] {
-  const rows = compiledUpstreamStaleness(input.artifact, input.consumes, input.provenance, input.isVerifiable);
+  const rows = compiledUpstreamStaleness(
+    input.artifact,
+    input.consumes,
+    input.provenance,
+    input.isVerifiable,
+  );
 
   // Declared baseline: the artifact's own latest landed write.
   const artifactWrites = input.provenance.filter(

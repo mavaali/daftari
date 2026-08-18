@@ -237,7 +237,13 @@ const upstreamStalenessSchema: Record<string, unknown> = {
     },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken", "unverifiable"],
+      enum: [
+        "current",
+        "pending-unchecked",
+        "pending-compatible",
+        "pending-broken",
+        "unverifiable",
+      ],
       description: "Compatibility class of the change since this edge's baseline",
     },
     baseline: {
@@ -290,7 +296,13 @@ const artifactStalenessSchema: Record<string, unknown> = {
         pending_broken: { type: "integer" },
         unverifiable: { type: "integer" },
       },
-      required: ["current", "pending_unchecked", "pending_compatible", "pending_broken", "unverifiable"],
+      required: [
+        "current",
+        "pending_unchecked",
+        "pending_compatible",
+        "pending_broken",
+        "unverifiable",
+      ],
     },
   },
   required: ["mode", "artifact", "edges", "hidden_pending", "summary"],

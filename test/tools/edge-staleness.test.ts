@@ -265,7 +265,11 @@ describe("vault_staleness (#234)", () => {
     await seedNeighborhood(vault);
     // Evict the compiled upstream from the index (simulates out-of-band deletion).
     const db = openIndexForAccessOrNull(vault);
-    try { deleteDocument(db!, "pricing/metric.md"); } finally { db?.close(); }
+    try {
+      deleteDocument(db!, "pricing/metric.md");
+    } finally {
+      db?.close();
+    }
 
     const read = await vaultRead(vault, "pricing/artifact.md");
     if (!read.ok) throw read.error;
@@ -280,7 +284,11 @@ describe("vault_staleness (#234)", () => {
   it("vault_staleness reports a deleted upstream as unverifiable in edges + summary", async () => {
     await seedNeighborhood(vault);
     const db = openIndexForAccessOrNull(vault);
-    try { deleteDocument(db!, "pricing/metric.md"); } finally { db?.close(); }
+    try {
+      deleteDocument(db!, "pricing/metric.md");
+    } finally {
+      db?.close();
+    }
 
     const res = await vaultStaleness(vault, { artifact: "pricing/artifact.md" });
     if (!res.ok) throw res.error;
@@ -294,18 +302,27 @@ describe("vault_staleness (#234)", () => {
   it("RBAC-hidden upstream is indistinguishable from a deleted one (coarse bucket, no leak)", async () => {
     await seedNeighborhood(vault);
     const secret = await vaultWrite(vault, {
-      path: "competitive-intel/secret2.md", body: "# S\n",
-      frontmatter: frontmatter({ title: "S", collection: "competitive-intel" }), agent: AGENT,
+      path: "competitive-intel/secret2.md",
+      body: "# S\n",
+      frontmatter: frontmatter({ title: "S", collection: "competitive-intel" }),
+      agent: AGENT,
     });
     if (!secret.ok) throw secret.error;
     await vaultRead(vault, "competitive-intel/secret2.md", undefined, "run-9");
     const consumer = await vaultWrite(vault, {
-      path: "pricing/consumer9.md", body: "# C\n",
-      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }), agent: AGENT, run_id: "run-9",
+      path: "pricing/consumer9.md",
+      body: "# C\n",
+      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }),
+      agent: AGENT,
+      run_id: "run-9",
     });
     if (!consumer.ok) throw consumer.error;
 
-    const pricingOnly = { user: "human:n", roleName: "pricing-only", role: { read: ["pricing"], write: [], promote: false, ratify: false } };
+    const pricingOnly = {
+      user: "human:n",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
     const gated = await vaultRead(vault, "pricing/consumer9.md", pricingOnly);
     if (!gated.ok) throw gated.error;
     // Hidden upstream never becomes a named row and never an exact count.
