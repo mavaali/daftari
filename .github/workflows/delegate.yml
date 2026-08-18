@@ -15,12 +15,15 @@
 #   prompts by default — without this list the session runs, gets denied
 #   every edit/bash call, and exits "success" having done nothing (the
 #   failure mode of the first two live runs, 2026-08-15).
-# - GH_TOKEN gives `gh` the workflow token for issue/PR reads, the PR
-#   creation, and the issue comment. GitHub never lets events created by
-#   this token trigger the PR's own workflows, so the prompt has the agent
-#   arm the checks with one empty-commit push afterwards: git pushes
-#   authenticate as the Claude app (the action rewrites the remote URL),
-#   and an app's synchronize event does start CI/review/security-review.
+# - GH_TOKEN provides a fallback token for `gh`; in practice the action
+#   supplies its own Claude-app credentials to the session, so the PR is
+#   created (and the branch pushed) AS the Claude app — and app-created
+#   events, unlike GITHUB_TOKEN-created ones, do trigger the PR's own
+#   CI/review/security-review on open (verified live on the 2026-08-17
+#   run: all lanes fired on the opened event).
+# - Keep agent pushes to the PR branch to the minimum: each claude[bot]
+#   push lands a synchronize run that the repo's Actions approval gate
+#   holds as action_required until a human approves or re-runs it.
 
 name: Delegate
 
@@ -91,17 +94,14 @@ jobs:
             3. Run the gates — `npm ci`, then `npm run lint`,
                `npm run build`, `npm test` — and fix what they catch
                before pushing.
-            4. Commit on a new branch (never main), push it, and open a
-               PR that references the issue ("Closes #N"), with a clear
-               summary and test plan per the PR template. Not a draft —
-               draft PRs skip the review gates.
-            5. Arm the PR's checks. The PR you just created cannot start
-               its own workflows (its open event comes from the workflow
-               token). Push exactly one empty commit to the branch —
-               `git commit --allow-empty -m "chore: arm PR checks"`, then
-               push — which fires the synchronize event that starts CI,
-               code review, and security review.
-            6. Comment on the issue with a one-line link to the PR.
+            4. Commit on a new branch (never main), push it ONCE, and
+               open a PR that references the issue ("Closes #N"), with a
+               clear summary and test plan per the PR template. Not a
+               draft — draft PRs skip the review gates. Do not push
+               again after opening the PR unless a review or CI failure
+               requires a fix: your pushes need human approval to run
+               checks, so extra commits stall the PR.
+            5. Comment on the issue with a one-line link to the PR.
 
             Refuse-and-explain instead of implementing — comment on the
             issue and stop — when any of these hold:
