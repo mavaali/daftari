@@ -741,6 +741,26 @@ describe("sql-authoritative edge reads", () => {
     expect(rec.model).toBe("claude-opus-4-6");
   });
 
+  it("a whitespace-only model is persisted as absent, not empty (dedup-key contract)", async () => {
+    const res = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "   ",
+      at: T1,
+    });
+    expect(res.ok).toBe(true);
+    const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8")
+      .trim()
+      .split("\n");
+    const rec = JSON.parse(raw[raw.length - 1]!);
+    // Not model:"" — an empty model must be indistinguishable from a legacy
+    // no-model record so the `rec.model ?? ""` dedup key stays consistent.
+    expect("model" in rec).toBe(false);
+  });
+
   it("trail extras survive the sql read path", async () => {
     await seedAndVote(vault);
     await contestEdge(vault, {

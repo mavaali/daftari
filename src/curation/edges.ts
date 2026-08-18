@@ -528,6 +528,10 @@ export async function observeEdge(
     return err(new Error(`observeEdge 'premiseVote' must be one of: ${PREMISE_VOTES.join(", ")}`));
   }
 
+  // Trim before the presence check so a whitespace-only model persists as
+  // absent, not as model:"" — the collapse dedup key uses `rec.model ?? ""`,
+  // so an empty string must be indistinguishable from a legacy no-model record.
+  const model = input.model?.trim();
   const record = {
     kind: "observe",
     from: input.fromPath.trim(),
@@ -538,7 +542,7 @@ export async function observeEdge(
     axis: input.axis ?? null,
     ...(input.note ? { note: input.note } : {}),
     ...(input.premiseVote ? { premiseVote: input.premiseVote } : {}),
-    ...(input.model ? { model: input.model.trim() } : {}),
+    ...(model ? { model } : {}),
   };
 
   try {
