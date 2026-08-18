@@ -49,7 +49,7 @@ import {
   isModelPriced,
 } from "./constants.js";
 import { formatDecorrelationReport, loadFixture, runDecorrelation } from "./decorrelation.js";
-import { makeContest, makeObserve } from "./edge-write.js";
+import { makeAppendReaderLineage, makeContest, makeObserve } from "./edge-write.js";
 import { prioritize } from "./priority.js";
 import {
   appendRevisionTrace,
@@ -646,6 +646,9 @@ async function runRevisionLoop(
     budgetRemaining: Number.POSITIVE_INFINITY,
     model,
   };
+  // 6mf.4 R3: live appender (shadow mode is false here — runRevisionLoop is only
+  // called in live mode; the caller's shadow-mode gate excludes this path).
+  const appendReaderLineage = makeAppendReaderLineage({ vaultRoot, shadowMode: false });
   for (const item of edgeItems) {
     const key = `${canon(item.fromPath)}\n${canon(item.toPath)}`;
     const edge = edgeByKey.get(key);
@@ -658,7 +661,7 @@ async function runRevisionLoop(
     if (edge.directionVerdict === "symmetric") continue;
     const out = await revisionPanel(
       edge,
-      { llm, loadDoc, admit, observe, contest, recordRevisionTrace },
+      { llm, loadDoc, admit, observe, contest, recordRevisionTrace, appendReaderLineage },
       opts,
     );
     if (!out.ok) {

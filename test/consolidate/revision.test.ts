@@ -117,6 +117,7 @@ describe("revisionPanel — majority decides, once", () => {
           return ok({ ...dueEdge });
         },
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
@@ -153,6 +154,7 @@ describe("revisionPanel — majority decides, once", () => {
           return ok({ ...dueEdge });
         },
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
@@ -186,6 +188,7 @@ describe("revisionPanel — majority decides, once", () => {
           return ok({ ...dueEdge });
         },
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 3 });
       if (!r.ok) throw r.error;
@@ -220,6 +223,7 @@ describe("revisionPanel — majority decides, once", () => {
           return ok({ ...dueEdge });
         },
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 3 });
       if (!r.ok) throw r.error;
@@ -259,6 +263,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
           return ok({ ...dueEdge });
         },
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
@@ -298,6 +303,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
           return ok({ ...dueEdge });
         },
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 3 });
       if (!r.ok) throw r.error;
@@ -329,6 +335,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
         },
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
@@ -359,6 +366,7 @@ describe("revisionPanel — envelope admit (gate consulted once per panel decisi
         observe: async () => ok({ ...dueEdge }),
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       if (!r.ok) throw r.error;
@@ -403,6 +411,7 @@ describe("revisionPanel — independence by axis (§11.3 replay-gap)", () => {
         observe: async () => ok({ ...dueEdge }),
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 2 });
       if (!r.ok) throw r.error;
@@ -428,6 +437,7 @@ describe("revisionPanel — budget + stop", () => {
         observe: async () => ok({ ...dueEdge }),
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, {
         ...baseOpts,
@@ -457,6 +467,7 @@ describe("revisionPanel — budget + stop", () => {
         observe: async () => ok({ ...dueEdge }),
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, {
         ...baseOpts,
@@ -490,6 +501,7 @@ describe("revisionPanel — trace", () => {
           rows.push(r);
           return ok(undefined);
         },
+        appendReaderLineage: async () => ok(undefined),
       };
       await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root });
       expect(rows.length).toBe(1);
@@ -521,6 +533,7 @@ describe("revisionPanel — trace", () => {
         },
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ({ ok: false, error: new Error("disk full") }),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 1 });
       if (!r.ok) throw r.error;
@@ -557,6 +570,7 @@ describe("revisionPanel — path canonicalization", () => {
         },
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       await revisionPanel(aliased, deps, { ...baseOpts, vaultRoot: root, panelSize: 1 });
       expect(loaded).toEqual(["pricing/a.md", "research/b.md"]);
@@ -578,6 +592,7 @@ describe("revisionPanel — write failure post-vote (observe/contest disk error)
         observe: async () => ({ ok: false, error: new Error("edges.jsonl disk full") }),
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 1 });
       if (!r.ok) throw r.error;
@@ -629,6 +644,7 @@ describe("revisionPanel — LLM failures", () => {
         },
         contest: async () => ok({ ...dueEdge }),
         recordRevisionTrace: async () => ok(undefined),
+        appendReaderLineage: async () => ok(undefined),
       };
       const r = await revisionPanel(dueEdge, deps, { ...baseOpts, vaultRoot: root, panelSize: 2 });
       if (!r.ok) throw r.error;
