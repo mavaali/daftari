@@ -249,8 +249,9 @@ describe("currentDisposition — accept → defer → dismiss folds to dismissed
 
     expect(disp.event).toBe("dismiss");
     expect(disp.against_fingerprint).toBe("fp-2");
-    // No expiry on a plain dismiss
-    expect(disp.expiry).toBeUndefined();
+    // The prior defer set a standing expiry; a plain dismiss (no expiry field)
+    // does NOT clear it — only accept/resolved do. So the standing expiry survives.
+    expect(disp.expiry).toBe("2024-06-01T00:00:00Z");
   });
 
   it("full ordered history is preserved — same state survives reload (R30)", async () => {
@@ -657,5 +658,255 @@ describe("appendEvent — optional field preservation", () => {
     const events = loaded.value.byFinding.get("f-opts")!;
     expect(events[0]!.rationale).toBe("waiting on upstream fix");
     expect(events[0]!.expiry).toBe("2025-03-01T00:00:00Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. loadLedger — structural guard: lines missing against_fingerprint or at
+//    are skipped; other valid events in the same file still load.
+// ---------------------------------------------------------------------------
+
+describe("loadLedger — structural guard for against_fingerprint and at", () => {
+  it("a valid-JSON line missing against_fingerprint is skipped; other events load", async () => {
+    const { appendFileSync, mkdirSync: mkdirSyncFs } = await import("node:fs");
+    const { join: joinPath } = await import("node:path");
+    const filePath = boardDispositionsPath(vaultRoot);
+
+    // Manually ensure .daftari dir exists
+    mkdirSyncFs(joinPath(vaultRoot, ".daftari"), { recursive: true });
+
+    // Write a valid event first via appendEvent
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-guard-good1",
+        event: "new",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-ok",
+      }),
+    );
+
+    // Inject a JSON line that parses but has no against_fingerprint
+    appendFileSync(
+      filePath,
+      JSON.stringify({
+        finding_id: "f-guard-bad1",
+        event: "new",
+        by: "human:alice",
+        principal_type: "human",
+        at: "2024-01-02T00:00:00Z",
+        // against_fingerprint intentionally omitted
+        identity_scheme_version: "v1",
+      }) + "\n",
+    );
+
+    // Write another valid event after the bad line
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-guard-good2",
+        event: "accept",
+        at: "2024-01-03T00:00:00Z",
+        against_fingerprint: "fp-ok2",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    // The line missing against_fingerprint must be skipped
+    expect(loaded.value.byFinding.has("f-guard-bad1")).toBe(false);
+    // Valid events still present
+    expect(loaded.value.byFinding.has("f-guard-good1")).toBe(true);
+    expect(loaded.value.byFinding.has("f-guard-good2")).toBe(true);
+    // Flat list has exactly 2 events (bad line dropped)
+    expect(loaded.value.flat).toHaveLength(2);
+  });
+
+  it("a valid-JSON line missing at is skipped; other events load", async () => {
+    const { appendFileSync } = await import("node:fs");
+    const filePath = boardDispositionsPath(vaultRoot);
+
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-guard-at-good",
+        event: "new",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-ok",
+      }),
+    );
+
+    // Inject a JSON line that parses but has no at field
+    appendFileSync(
+      filePath,
+      JSON.stringify({
+        finding_id: "f-guard-at-bad",
+        event: "new",
+        by: "human:alice",
+        principal_type: "human",
+        // at intentionally omitted
+        against_fingerprint: "fp-missing-at",
+        identity_scheme_version: "v1",
+      }) + "\n",
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    expect(loaded.value.byFinding.has("f-guard-at-bad")).toBe(false);
+    expect(loaded.value.byFinding.has("f-guard-at-good")).toBe(true);
+    expect(loaded.value.flat).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. currentDisposition — standing-expiry fold semantics
+//
+// Definitive rules:
+//   - expiry is set by the most recent defer/dismiss event that carries one.
+//   - accept or resolved CLEARS the standing expiry.
+//   - reassign, reopened, new do NOT clear a standing expiry.
+// ---------------------------------------------------------------------------
+
+describe("currentDisposition — standing-expiry fold semantics", () => {
+  it("defer(expiry) → reassign: expiry survives (reassign does not un-defer)", async () => {
+    const expiry = "2099-06-01T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-a",
+        event: "new",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-a",
+        event: "defer",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-a",
+        event: "reassign",
+        at: "2024-01-03T00:00:00Z",
+        against_fingerprint: "fp-1",
+        owner: "bob",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-a")!;
+    const disp = currentDisposition(events);
+    // Expiry set by defer must survive the subsequent reassign
+    expect(disp.expiry).toBe(expiry);
+  });
+
+  it("defer(expiry) → accept: expiry is cleared", async () => {
+    const expiry = "2099-06-01T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-b",
+        event: "defer",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-b",
+        event: "accept",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-b")!;
+    const disp = currentDisposition(events);
+    // accept must clear the expiry from the prior defer
+    expect(disp.expiry).toBeUndefined();
+  });
+
+  it("dismiss(expiry) → reopened: expiry survives (reopened does not clear)", async () => {
+    const expiry = "2099-12-31T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-c",
+        event: "dismiss",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-c",
+        event: "reopened",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-c")!;
+    const disp = currentDisposition(events);
+    // reopened must NOT clear the standing expiry from dismiss
+    expect(disp.expiry).toBe(expiry);
+  });
+
+  it("defer(expiry) → resolved: expiry is cleared", async () => {
+    const expiry = "2099-06-01T00:00:00Z";
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-d",
+        event: "defer",
+        at: "2024-01-01T00:00:00Z",
+        against_fingerprint: "fp-1",
+        expiry,
+      }),
+    );
+    await appendEvent(
+      vaultRoot,
+      makeEvent({
+        finding_id: "f-stand-d",
+        event: "resolved",
+        at: "2024-01-02T00:00:00Z",
+        against_fingerprint: "fp-1",
+      }),
+    );
+
+    const loaded = await loadLedger(vaultRoot);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    const events = loaded.value.byFinding.get("f-stand-d")!;
+    const disp = currentDisposition(events);
+    // resolved must clear the standing expiry
+    expect(disp.expiry).toBeUndefined();
   });
 });

@@ -124,9 +124,15 @@ export async function loadLedger(vaultRoot: string): Promise<Result<LedgerData, 
       // Corrupt line — skip it, keep the rest (failure isolation).
       continue;
     }
-    // Basic structural guard: a line without finding_id or event is not a
-    // valid LedgerEvent; skip rather than propagating a broken object.
-    if (typeof evt.finding_id !== "string" || typeof evt.event !== "string") {
+    // Structural guard: require the four fields currentDisposition reads
+    // directly. A line missing any of them is skipped (failure isolation
+    // preserved — one bad write cannot destroy the rest of the history).
+    if (
+      typeof evt.finding_id !== "string" ||
+      typeof evt.event !== "string" ||
+      typeof evt.against_fingerprint !== "string" ||
+      typeof evt.at !== "string"
+    ) {
       continue;
     }
     const existing = byFinding.get(evt.finding_id);
@@ -154,7 +160,12 @@ export interface CurrentDispositionResult {
   event: LedgerEventType;
   /** Fingerprint from the latest disposition event (R10). */
   against_fingerprint: string;
-  /** Expiry from the latest event that carries one (defer / dismiss with expiry). */
+  /**
+   * The standing deferral/dismissal timer — set by the most recent defer or
+   * dismiss event that carries an expiry; cleared when an accept or resolved
+   * event arrives (the item is no longer waiting/dismissed). reassign,
+   * reopened, and new do NOT clear a standing expiry.
+   */
   expiry?: string;
   /** Latest owner from the most recent reassign event, if any. */
   owner?: string;
@@ -189,15 +200,26 @@ export function currentDisposition(events: LedgerEvent[], now?: Date): CurrentDi
   // so the last element is the most recent.
   const latest = events[events.length - 1]!;
 
-  // Track the most recent owner across all reassign events.
+  // Scan events in order to derive:
+  //   owner   — updated on each reassign event (last reassign wins).
+  //   expiry  — standing deferral/dismissal timer:
+  //               • set by the most recent defer or dismiss that carries an expiry.
+  //               • cleared by accept or resolved (item is no longer waiting/dismissed).
+  //               • NOT cleared by reassign, reopened, or new.
   let owner: string | undefined;
+  let expiry: string | undefined;
   for (const evt of events) {
     if (evt.event === "reassign" && evt.owner !== undefined) {
       owner = evt.owner;
     }
+    if ((evt.event === "defer" || evt.event === "dismiss") && evt.expiry !== undefined) {
+      expiry = evt.expiry;
+    }
+    if (evt.event === "accept" || evt.event === "resolved") {
+      expiry = undefined;
+    }
   }
 
-  const expiry = latest.expiry;
   const expired =
     expiry !== undefined && now !== undefined ? Date.parse(expiry) < now.getTime() : false;
 
