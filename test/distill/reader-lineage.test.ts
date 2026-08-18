@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { listStagedActions } from "../../src/curation/staged-actions.js";
+import type { ClaimRunMeta, ExtractedClaim } from "../../src/distill/extract.js";
+import { proposeAllClaims } from "../../src/distill/propose.js";
 import {
   encodeLineageEntry,
   parseLineageEntry,
@@ -81,5 +87,98 @@ describe("reader lineage codec", () => {
   it("readersFromLineage filters malformed entries gracefully", () => {
     const valid = encodeLineageEntry("t1", "ingest", "r1");
     expect(readersFromLineage(["garbage", valid])).toEqual(["r1"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: Distill stamps ingest vs update op (R1)
+// ---------------------------------------------------------------------------
+
+function makeClaim(overrides: Partial<ExtractedClaim> = {}): ExtractedClaim {
+  return {
+    claim_key: "chunk-001:some-statement-a1b2c3d4",
+    statement: "Some statement.",
+    proposed_frontmatter: { title: "Some statement." },
+    ...overrides,
+  };
+}
+
+function makeRunMeta(overrides: Partial<ClaimRunMeta> = {}): ClaimRunMeta {
+  return {
+    requestedModel: "claude-opus-4",
+    servedModel: "claude-opus-4-20260101",
+    effectiveTemperature: 0,
+    viaRetry: false,
+    chunkWindow: 12,
+    inputCap: 8000,
+    ...overrides,
+  };
+}
+
+describe("proposeAllClaims — lineage op stamp (6mf.4 Task 3)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-lineage-op-"));
+  });
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("a new claim (no pathOverrides) produces reader_lineage with op=ingest", async () => {
+    const claim = makeClaim({ run_meta: makeRunMeta() });
+    await proposeAllClaims(vault, [claim], { sourceId: "src-1", runId: "run-1" });
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.value).toHaveLength(1);
+
+    const diff = listed.value[0]!.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+
+    expect(Array.isArray(fm.reader_lineage)).toBe(true);
+    const lineage = fm.reader_lineage as string[];
+    expect(lineage).toHaveLength(1);
+    const parsed = parseLineageEntry(lineage[0]!);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.op).toBe("ingest");
+  });
+
+  it("an update claim (pathOverrides has the claim_key) produces reader_lineage with op=update", async () => {
+    const claim = makeClaim({ run_meta: makeRunMeta() });
+    const pathOverrides: Record<string, string> = {
+      [claim.claim_key]: "accumulation/distilled/some-existing.md",
+    };
+    await proposeAllClaims(vault, [claim], { sourceId: "src-1", runId: "run-2" }, pathOverrides);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.value).toHaveLength(1);
+
+    const diff = listed.value[0]!.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+
+    expect(Array.isArray(fm.reader_lineage)).toBe(true);
+    const lineage = fm.reader_lineage as string[];
+    expect(lineage).toHaveLength(1);
+    const parsed = parseLineageEntry(lineage[0]!);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.op).toBe("update");
+  });
+
+  it("a claim with no run_meta does not produce reader_lineage", async () => {
+    const claim = makeClaim(); // no run_meta
+    await proposeAllClaims(vault, [claim], { sourceId: "src-1", runId: "run-3" });
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.value).toHaveLength(1);
+
+    const diff = listed.value[0]!.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+
+    expect(fm.reader_lineage).toBeUndefined();
   });
 });
