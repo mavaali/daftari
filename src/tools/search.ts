@@ -214,9 +214,15 @@ async function annotateAndLogServedHits(
   for (const hit of hits) {
     let broken: number | undefined;
     if (staleCtx) {
+      // Telemetry (broken_upstream) is the TRUE incident count — role- AND
+      // existence-unfiltered, so the vault-global broken-read rate cannot vary
+      // by who read the doc. Computed from BARE rows (no predicate), mirroring
+      // vault_read's split (#416). The predicate-enriched rows below drive only
+      // the caller-facing display buckets.
+      const bareRows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
+      broken = bareRows.filter((r) => r.staleness === "pending-broken").length;
       const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
       const rows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance, isVerifiable);
-      broken = rows.filter((r) => r.staleness === "pending-broken").length;
       // `db` is the caller's already-open index handle — the same one the
       // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
       const { visible, hiddenPending } = access
