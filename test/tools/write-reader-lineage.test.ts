@@ -13,7 +13,7 @@ import {
   unionLineage,
 } from "../../src/distill/reader-fingerprint.js";
 import { vaultRead } from "../../src/tools/read.js";
-import { vaultMerge, vaultWrite } from "../../src/tools/write.js";
+import { vaultMerge, vaultSupersede, vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:test";
@@ -481,5 +481,76 @@ describe("vaultMerge — reader_lineage fusion (6mf.4 R4)", () => {
     const actualReaders = Array.isArray(raw.readers) ? (raw.readers as string[]) : [];
     // Invariant: readers[] == dedupe(reader-part of lineage)
     expect(actualReaders.sort()).toEqual(computedReaders.sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6 (6mf.4 R5): vault_supersede is lineage-inert
+// ---------------------------------------------------------------------------
+
+describe("vaultSupersede — lineage-inert (6mf.4 R5)", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  it("vault_supersede leaves both predecessor and successor reader_lineage byte-unchanged", async () => {
+    // Seed predecessor with lineage
+    await seedDoc(vault, "pricing/pred.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    // Seed successor with its own lineage
+    await seedDoc(vault, "pricing/succ.md", {
+      readers: [READER_2],
+      reader_lineage: [LINEAGE_UPDATE_R2],
+    });
+
+    // Run supersede (predecessor → successor)
+    const result = await vaultSupersede(vault, {
+      old_path: "pricing/pred.md",
+      new_path: "pricing/succ.md",
+      agent: AGENT,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+
+    // Predecessor lineage must be unchanged (supersede only adds superseded_by)
+    const pred = await vaultRead(vault, "pricing/pred.md");
+    expect(pred.ok).toBe(true);
+    if (!pred.ok) return;
+    expect(pred.value.raw.reader_lineage).toEqual([LINEAGE_INGEST_R1]);
+
+    // Successor lineage must be byte-unchanged (supersede never writes successor)
+    const succ = await vaultRead(vault, "pricing/succ.md");
+    expect(succ.ok).toBe(true);
+    if (!succ.ok) return;
+    expect(succ.value.raw.reader_lineage).toEqual([LINEAGE_UPDATE_R2]);
+  });
+
+  it("vault_supersede does NOT copy predecessor lineage into successor", async () => {
+    await seedDoc(vault, "pricing/pred2.md", {
+      readers: [READER_1],
+      reader_lineage: [LINEAGE_INGEST_R1],
+    });
+    // Successor has no lineage
+    await seedDoc(vault, "pricing/succ2.md", {});
+
+    const result = await vaultSupersede(vault, {
+      old_path: "pricing/pred2.md",
+      new_path: "pricing/succ2.md",
+      agent: AGENT,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+
+    // Successor must still have NO lineage after supersede
+    const succ = await vaultRead(vault, "pricing/succ2.md");
+    expect(succ.ok).toBe(true);
+    if (!succ.ok) return;
+    expect(succ.value.raw.reader_lineage).toBeUndefined();
   });
 });
