@@ -725,11 +725,18 @@ describe("sql-authoritative edge reads", () => {
 
   it("serializes the observing model into the edge record", async () => {
     const res = await observeEdge(vault, {
-      fromPath: "a.md", toPath: "b.md", observedBy: BY, blind: true,
-      axis: "prompt", model: "claude-opus-4-6", at: T1,
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "claude-opus-4-6",
+      at: T1,
     });
     expect(res.ok).toBe(true);
-    const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8").trim().split("\n");
+    const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8")
+      .trim()
+      .split("\n");
     const rec = JSON.parse(raw[raw.length - 1]!);
     expect(rec.model).toBe("claude-opus-4-6");
   });
@@ -758,15 +765,45 @@ describe("sql-authoritative edge reads", () => {
     const S0 = "2026-07-01T00:00:00Z";
     const S1 = "2026-07-01T00:05:00Z";
     // seed (non-blind — establishes the edge without registering a blind vote pair)
-    await observeEdge(vault, { fromPath: "a.md", toPath: "b.md", observedBy: BY, blind: false, at: S0 });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: S0,
+    });
     // two blind votes, same observer + axis, SAME sitting, DIFFERENT models
-    await observeEdge(vault, { fromPath: "a.md", toPath: "b.md", observedBy: BY, blind: true, axis: "prompt", model: "model-X", at: S1 });
-    await observeEdge(vault, { fromPath: "a.md", toPath: "b.md", observedBy: BY, blind: true, axis: "prompt", model: "model-Y", at: S1 });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "model-X",
+      at: S1,
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "model-Y",
+      at: S1,
+    });
     const edge = await getEdge(vault, "a.md", "b.md", new Date(S1));
     expect(edge.value?.kSurvived).toBe(2); // both counted — different models are independent
 
     // a THIRD vote repeating model-X, same sitting → replay, no advance
-    await observeEdge(vault, { fromPath: "a.md", toPath: "b.md", observedBy: BY, blind: true, axis: "prompt", model: "model-X", at: S1 });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "model-X",
+      at: S1,
+    });
     const edge2 = await getEdge(vault, "a.md", "b.md", new Date(S1));
     expect(edge2.value?.kSurvived).toBe(2); // unchanged — model-X already voted this sitting
   }, 60_000);

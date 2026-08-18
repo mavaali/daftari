@@ -307,7 +307,13 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       llmCalls: 7,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false, runId: "distill-2026-08-17T00-00-00-000Z-llm1" });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-llm1",
+    });
     expect(r.llmCalls).toBe(7);
   });
 
@@ -322,7 +328,13 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       llmCalls: 4,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false, runId: "distill-2026-08-17T00-00-00-000Z-claims1" });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-claims1",
+    });
     expect(r.claimsProduced).toBe(4);
   });
 
@@ -351,7 +363,13 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false, runId: "distill-2026-08-17T00-00-00-000Z-src2" });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-src2",
+    });
     expect(r.sourceId).toBeUndefined();
   });
 });
@@ -372,7 +390,13 @@ describe("buildReceipt — approx cost", () => {
       llmCalls: 3,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false, runId: "distill-2026-08-17T00-00-00-000Z-cost1" });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-cost1",
+    });
     expect(r.approxCostUSD).toBeGreaterThanOrEqual(0);
   });
 
@@ -383,7 +407,13 @@ describe("buildReceipt — approx cost", () => {
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false, runId: "distill-2026-08-17T00-00-00-000Z-cost2" });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-cost2",
+    });
     expect(r.approxCostUSD).toBe(0);
   });
 
@@ -411,7 +441,13 @@ describe("buildReceipt — approx cost", () => {
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false, runId: "distill-2026-08-17T00-00-00-000Z-ts1" });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-ts1",
+    });
     expect(typeof r.completedAt).toBe("string");
     expect(() => new Date(r.completedAt)).not.toThrow();
   });

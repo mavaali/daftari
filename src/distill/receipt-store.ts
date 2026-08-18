@@ -6,8 +6,8 @@
 import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { DistillReceipt } from "./cost.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { DistillReceipt } from "./cost.js";
 
 export function distillReceiptsPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "distill-receipts.jsonl");
