@@ -22,6 +22,7 @@ import {
 import type { SourceAdapter } from "./adapters/types.js";
 import { chunkMessages } from "./chunk.js";
 import { buildReceipt, planDistill } from "./cost.js";
+import { appendDistillReceipt } from "./receipt-store.js";
 import { extractClaims } from "./extract.js";
 import { ADAPTER_REGISTRY, DISTILL_NOT_CONFIGURED_MSG, resolveDistillClient } from "./index.js";
 import { makeOverlapHinter } from "./propose.js";
@@ -598,7 +599,13 @@ export async function runDistill(argv: string[]): Promise<number> {
     provider: transport,
     zdr,
     sourceId,
+    runId,
   });
+
+  const persisted = await appendDistillReceipt(vaultRoot, receipt);
+  if (!persisted.ok) {
+    process.stderr.write(`warning: could not persist distill receipt: ${persisted.error.message}\n`);
+  }
 
   // Summary to stdout.
   process.stdout.write(
