@@ -39,6 +39,10 @@ import type { FindingSource, FindingTarget } from "./types.js";
 // ---------------------------------------------------------------------------
 // Version stamp — embedded in every LedgerEvent.identity_scheme_version so
 // ledger consumers can detect and migrate across scheme changes.
+//
+// Bump this value whenever the tuple format, NUL-delimiter layout, or
+// canonicalization algorithm changes in a way that would cause the same
+// real-world finding to produce a different identity key.
 // ---------------------------------------------------------------------------
 
 export const IDENTITY_SCHEME_VERSION = "1";
@@ -46,21 +50,37 @@ export const IDENTITY_SCHEME_VERSION = "1";
 // ---------------------------------------------------------------------------
 // canonicalizeTarget — deterministic serialization of a FindingTarget for
 // use in the hash-path. Sorts struct fields so insertion order doesn't matter.
+//
+// For tier2 targets, each field is appended as a separate NUL-separated entry
+// into the caller's parts array (see deriveIdentity) rather than concatenated
+// with colon delimiters. Colons appear in vault paths and edge classes such as
+// "CONSUMES:SHALLOW", so using them as delimiters is collision-vulnerable.
 // ---------------------------------------------------------------------------
 
-function canonicalizeTarget(target: FindingTarget): string {
+// Returned as an array of parts so the caller can NUL-join them together with
+// the rest of the identity tuple, keeping field boundaries unambiguous.
+function canonicalizeTarget(target: FindingTarget): string[] {
   switch (target.kind) {
     case "lint":
-      return `lint:${target.path}`;
+      return [`lint`, target.path];
     case "staleness":
-      return `staleness:${target.path}`;
+      return [`staleness`, target.path];
     case "tension":
-      return `tension:${target.tensionId}`;
+      return [`tension`, target.tensionId];
     case "staged":
-      return `staged:${target.stagedActionId}`;
+      return [`staged`, target.stagedActionId];
     case "tier2":
-      // Fields are serialized in alphabetical order to be insertion-order-stable.
-      return `tier2:artifact=${target.artifact}:edgeClass=${target.edgeClass}:unit=${target.unit}`;
+      // Fields appended in alphabetical order (artifact, edgeClass, unit) to be
+      // insertion-order-stable. Each field is a separate NUL-delimited entry so
+      // no field value can bleed into another's position.
+      return [`tier2`, target.artifact, target.edgeClass, target.unit];
+    default: {
+      // Exhaustiveness guard: a runtime value that bypasses the type system
+      // (e.g. a JSON-parsed target with an unknown kind) must fail loudly rather
+      // than silently returning undefined and producing a broken identity key.
+      const unexpected = (target as FindingTarget & { kind: string }).kind;
+      throw new Error(`canonicalizeTarget: unexpected target kind "${unexpected}"`);
+    }
   }
 }
 
@@ -85,7 +105,11 @@ export function deriveIdentity(
 
   // Hash-path: stable tuple hash over (source, check, canonicalized-target,
   // discriminator?). Discriminator participates only when supplied.
-  const parts: string[] = [source, check, canonicalizeTarget(target)];
+  //
+  // canonicalizeTarget returns an array of parts so each tier2 field gets its
+  // own NUL-delimited slot — prevents colon-containing field values from
+  // collapsing two distinct triples into the same canonical string.
+  const parts: string[] = [source, check, ...canonicalizeTarget(target)];
   if (discriminator !== undefined) {
     parts.push(discriminator);
   }
@@ -121,6 +145,17 @@ function canonicalizeEvidence(value: unknown): unknown {
 // Canonicalizes (sorts keys recursively) before hashing, so two evidence
 // objects that are logically identical but differ only in key insertion order
 // yield the same fingerprint.
+//
+// CONTRACT — evidence MUST be JSON-serializable:
+//   • `undefined` values are silently dropped by JSON.stringify (consistent
+//     with normal JSON behaviour, but callers should not rely on the absence
+//     of a key as meaningful signal).
+//   • BigInt, Symbol, and function values are not JSON-serializable;
+//     JSON.stringify will throw (BigInt) or silently omit them (Symbol,
+//     function). Passing such values is CALLER ERROR — adapters must convert
+//     or exclude them before calling fingerprint.
+//   • Circular references will cause JSON.stringify to throw; callers must
+//     ensure the evidence graph is acyclic.
 // ---------------------------------------------------------------------------
 
 export function fingerprint(evidence: Record<string, unknown>): string {

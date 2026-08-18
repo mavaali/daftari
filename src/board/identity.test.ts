@@ -299,7 +299,57 @@ describe("deriveIdentity — tier2 tuple target canonicalization", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. fingerprint — property-style: repeated calls with same input → same hash
+// 9. tier2 collision safety — colon-containing field values must not collide
+// ---------------------------------------------------------------------------
+//
+// CRITICAL 1 regression guard: the old format used `:` as a field delimiter
+// inside the tier2 canonical string, which meant two distinct triples whose
+// values contain the literal substrings `:edgeClass=` or `:unit=` could
+// produce the same canonical string and thus the same identity key.
+//
+// Example of the collision under the old scheme:
+//   artifact="a:edgeClass=b:unit=c", edgeClass="d", unit="e"
+//   →  "tier2:artifact=a:edgeClass=b:unit=c:edgeClass=d:unit=e"
+//
+//   artifact="a",                   edgeClass="b:unit=c:edgeClass=d", unit="e"
+//   →  "tier2:artifact=a:edgeClass=b:unit=c:edgeClass=d:unit=e"
+//
+// Both produce the identical string. After the fix they MUST produce distinct
+// identity keys.
+
+describe("deriveIdentity — tier2 collision safety (CRITICAL 1)", () => {
+  it("tier2 triples whose field values contain colon-based substrings must not collide", () => {
+    // Triple A: artifact contains literal ':edgeClass=...:unit=...' substring
+    const tA = tier2Target(
+      "a:edgeClass=b:unit=c", // artifact with embedded delimiter-lookalike
+      "e",
+      "d",
+    );
+
+    // Triple B: a distinct triple that produces the same colon-joined string under the OLD scheme
+    const tB = tier2Target(
+      "a",
+      "e",
+      "b:unit=c:edgeClass=d", // edgeClass with embedded delimiter-lookalike
+    );
+
+    const keyA = deriveIdentity("tier2", "compat", tA);
+    const keyB = deriveIdentity("tier2", "compat", tB);
+
+    // These are genuinely different triples — they MUST have different identity keys.
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it("tier2 field values containing colons are still deterministic", () => {
+    const t = tier2Target("vault/a:b.md", "core/c:d.md", "CONSUMES:SHALLOW");
+    const key1 = deriveIdentity("tier2", "compat", t);
+    const key2 = deriveIdentity("tier2", "compat", t);
+    expect(key1).toBe(key2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. fingerprint — property-style: repeated calls with same input → same hash  (was §9)
 // ---------------------------------------------------------------------------
 
 describe("fingerprint — repeated-call determinism", () => {
