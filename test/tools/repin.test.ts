@@ -93,7 +93,7 @@ describe("computeRepin", () => {
     writeVaultDoc(vault, "note.md", [pinEntry]);
 
     // Now prepend 10 lines so the target block shifts to lines 15-18.
-    const prefix = Array.from({ length: 10 }, (_, i) => `inserted${i + 1}`).join("\n") + "\n";
+    const prefix = `${Array.from({ length: 10 }, (_, i) => `inserted${i + 1}`).join("\n")}\n`;
     await writeFile(join(codeRepo, "src/mod.ts"), prefix + original, "utf-8");
 
     // Compute the repin plan.
@@ -105,7 +105,8 @@ describe("computeRepin", () => {
     expect(plan.replacements).toHaveLength(1);
     expect(plan.skipped).toHaveLength(0);
 
-    const rep = plan.replacements[0]!;
+    const [rep] = plan.replacements;
+    if (!rep) throw new Error("expected one replacement");
     // old must match the original pin entry
     expect(rep.old).toBe(pinEntry);
     // new must encode the relocated range (lines 15-18) and the CURRENT sha12
@@ -145,8 +146,8 @@ describe("computeRepin", () => {
 
     expect(result.value.replacements).toHaveLength(0);
     expect(result.value.skipped).toHaveLength(1);
-    expect(result.value.skipped[0]!.state).toBe("moved");
-    expect(result.value.skipped[0]!.entry).toBe(pinEntry);
+    expect(result.value.skipped[0]?.state).toBe("moved");
+    expect(result.value.skipped[0]?.entry).toBe(pinEntry);
   });
 
   // -------------------------------------------------------------------------
@@ -170,8 +171,8 @@ describe("computeRepin", () => {
 
     expect(result.value.replacements).toHaveLength(0);
     expect(result.value.skipped).toHaveLength(1);
-    expect(result.value.skipped[0]!.state).toBe("missing");
-    expect(result.value.skipped[0]!.entry).toBe(pinEntry);
+    expect(result.value.skipped[0]?.state).toBe("missing");
+    expect(result.value.skipped[0]?.entry).toBe(pinEntry);
   });
 
   // -------------------------------------------------------------------------
