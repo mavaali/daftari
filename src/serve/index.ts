@@ -39,7 +39,7 @@ import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
-import { setVecKnnK } from "../search/hybrid.js";
+import { setDefaultWeights, setVecKnnK } from "../search/hybrid.js";
 import { setSuppressSuperseded } from "../search/suppression.js";
 import { setProvider } from "../search/vector.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js";
@@ -707,6 +707,7 @@ export async function runServe(argv: string[]): Promise<number> {
   // per process, same lifecycle as the provider above.
   setCoverageEnabled(config.value.search.coverage);
   setVecKnnK(config.value.search.vecKnnK);
+  setDefaultWeights(config.value.search.weights);
   setSuppressSuperseded(config.value.search.suppressSuperseded);
 
   // Startup warnings mirror stdio's: unknown tool names in the tools block.

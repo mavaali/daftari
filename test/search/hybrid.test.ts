@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_WEIGHTS,
+  getDefaultWeights,
   getVecKnnK,
   hybridSearch,
   relatedSearch,
@@ -220,7 +220,7 @@ describe("hybrid search", () => {
       const result = relatedSearch(db, CREDIT_DOC);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.weights).toEqual(DEFAULT_WEIGHTS);
+      expect(result.value.weights).toEqual(getDefaultWeights());
     });
   });
 });
@@ -739,6 +739,10 @@ describe("vec KNN fan-out knob", () => {
 
   it("defaults to the measured 256", () => {
     expect(getVecKnnK()).toBe(256);
+  });
+
+  it("fusion weights default to the measured 0.8/0.2", () => {
+    expect(getDefaultWeights()).toEqual({ bm25: 0.8, vector: 0.2 });
   });
 
   it("round-trips a configured value", () => {

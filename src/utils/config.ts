@@ -390,6 +390,12 @@ export interface DaftariConfig {
 export interface SearchTuningConfig {
   coverage: boolean;
   vecKnnK: number;
+  // Hybrid fusion weights. Default 0.8/0.2, measured (fusion weight sweep,
+  // 2026-08-18): the recall-vs-weight curve is an inverted U — a light
+  // vector contribution beats both the old 0.5/0.5 split (worst measured
+  // vector-on setting, ~-2pp everywhere) and pure lexical at most budgets.
+  // See docs/superpowers/results/2026-08-18-fusion-weight-sweep.md.
+  weights: { bm25: number; vector: number };
   // MAV-161: supersession suppression in vault_search — demote hits whose
   // superseded_by chain resolves to a readable current head, pulling that
   // head into the list when absent. Default off until the hallucination-
@@ -399,6 +405,7 @@ export interface SearchTuningConfig {
 
 export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   coverage: false,
+  weights: { bm25: 0.8, vector: 0.2 },
   // 256 is the measured saturation point of the MAV-159 recall-vs-K sweep on
   // the frozen RB corpus: +1.0–2.8pp multi-day recall over the historical 64
   // depending on budget, distractor load flat, K=512 byte-identical to 256.
@@ -406,7 +413,7 @@ export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   suppressSuperseded: false,
 };
 
-const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k", "suppress_superseded"] as const;
+const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k", "suppress_superseded", "weights"] as const;
 
 // Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
 // larger than any realistic per-query candidate need and the config is more
@@ -1688,6 +1695,33 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
         );
       }
       search.suppressSuperseded = block.suppress_superseded;
+    }
+    if (block.weights !== undefined) {
+      const w = block.weights;
+      if (w === null || typeof w !== "object" || Array.isArray(w)) {
+        return err(new Error("malformed config: 'search.weights' must be a mapping"));
+      }
+      const wr = w as Record<string, unknown>;
+      const unknownW = rejectUnknownKeys(wr, ["bm25", "vector"], "search.weights");
+      if (!unknownW.ok) return err(new Error(`malformed config: ${unknownW.error.message}`));
+      const bm25 = wr.bm25;
+      const vector = wr.vector;
+      if (
+        typeof bm25 !== "number" ||
+        typeof vector !== "number" ||
+        !Number.isFinite(bm25) ||
+        !Number.isFinite(vector) ||
+        bm25 < 0 ||
+        vector < 0 ||
+        bm25 + vector <= 0
+      ) {
+        return err(
+          new Error(
+            "malformed config: 'search.weights' needs numeric non-negative 'bm25' and 'vector' summing above zero",
+          ),
+        );
+      }
+      search.weights = { bm25, vector };
     }
     if (block.vec_knn_k !== undefined) {
       if (
