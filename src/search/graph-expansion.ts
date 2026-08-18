@@ -4,9 +4,13 @@
 // gate, returns `ranked` unchanged when off, flags injected hits (viaEdge) for
 // RBAC filtering at the call site. hybrid.ts ranking is not touched.
 
-import { getChunksForPath, type IndexDb } from "../storage/index-db.js";
+import { topicEgoGraphFrom } from "../canon/topic.js";
+import { listEdges } from "../curation/edges.js";
+import { listTensions } from "../curation/tension.js";
+import { getChunksForPath, getDocumentsByPaths, type IndexDb } from "../storage/index-db.js";
 import { type GraphExpandConfig, SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
 import type { EmbeddingProvider } from "./embedding-provider.js";
+import type { HybridHit } from "./hybrid.js";
 import { cosineSimilarity } from "./vector.js";
 
 // Runtime config holder — resolved ONCE at startup (setGraphExpandConfig called
@@ -80,4 +84,146 @@ export function maxChunkCosine(
     if (c > best) best = c;
   }
   return best;
+}
+
+interface Graph {
+  tensions: { sourceA: string; sourceB: string }[];
+  edges: { fromPath: string; toPath: string; status: string }[];
+}
+
+// A minimal materialized doc for an injected hit — enough to populate the
+// HybridHit surface and, crucially, `collection` for the call site's RBAC
+// filter. Not the full IndexedDocument.
+export interface MaterializedDoc {
+  path: string;
+  title: string;
+  collection: string;
+  status: string;
+}
+
+export interface GraphExpansionDeps {
+  config: GraphExpandConfig;
+  loadGraph: (vaultRoot: string, subset: GraphExpandConfig["subset"]) => Promise<Graph>;
+  embedQuery: (query: string) => Promise<Float32Array | null>;
+  affinity: (path: string) => number; // db + query embedding already closed over
+  // Injected so the pass is hermetically testable. Populates title/collection/
+  // status for injected hits; `collection` is load-bearing (RBAC at the call site).
+  materialize: (paths: string[]) => MaterializedDoc[];
+}
+
+// Default graph loader. The subset gates which edge kinds are traversed:
+//   "trigger"  = tensions + trigger-bearing derives_from (the ceiling winner)
+//   "all"      = tensions + candidate|trigger-bearing derives_from
+//   "tensions" = tensions only, no derives_from edges
+// Revoked edges are never included (filtered out explicitly).
+export async function loadGraphForSubset(
+  vaultRoot: string,
+  subset: GraphExpandConfig["subset"],
+): Promise<Graph> {
+  const tensionsRes = await listTensions(vaultRoot);
+  const tensions = tensionsRes.ok
+    ? tensionsRes.value.map((t) => ({ sourceA: t.sourceA, sourceB: t.sourceB }))
+    : [];
+  let edges: Graph["edges"] = [];
+  if (subset !== "tensions") {
+    const edgesRes = await listEdges(
+      vaultRoot,
+      subset === "trigger" ? { status: "trigger-bearing" } : {},
+    );
+    if (edgesRes.ok) {
+      edges = edgesRes.value
+        .filter((e) => e.status !== "revoked")
+        .map((e) => ({ fromPath: e.fromPath, toPath: e.toPath, status: e.status }));
+    }
+  }
+  return { tensions, edges };
+}
+
+function adjacency(pairs: readonly (readonly [string, string])[]): Map<string, Set<string>> {
+  const m = new Map<string, Set<string>>();
+  const add = (a: string, b: string) => {
+    let s = m.get(a);
+    if (!s) {
+      s = new Set();
+      m.set(a, s);
+    }
+    s.add(b);
+  };
+  for (const [a, b] of pairs) {
+    add(a, b);
+    add(b, a);
+  }
+  return m;
+}
+
+// The pass. Returns `ranked` UNCHANGED (same reference) when disabled or when no
+// neighbor clears the floor, so the call site's identity check is meaningful.
+export async function applyGraphExpansion(
+  db: IndexDb,
+  vaultRoot: string,
+  query: string,
+  ranked: HybridHit[],
+  deps: GraphExpansionDeps,
+): Promise<HybridHit[]> {
+  const { config } = deps;
+  if (!config.enabled || config.cap <= 0 || ranked.length === 0) return ranked;
+
+  const graph = await deps.loadGraph(vaultRoot, config.subset);
+  if (graph.tensions.length === 0 && graph.edges.length === 0) return ranked;
+
+  const qEmb = await deps.embedQuery(query);
+  if (!qEmb) return ranked; // no vector signal ⇒ no affinity floor ⇒ do not inject blind
+
+  const seedPaths = ranked.map((h) => h.path);
+  const candidateSet = new Set(seedPaths);
+
+  // Which edge kind bridged seed→neighbor? topicEgoGraphFrom is undirected over
+  // the union; classify each neighbor by membership in the edge vs tension
+  // adjacency (edge wins when both, matching the derives_from default below).
+  const tensionNbrs = adjacency(graph.tensions.map((t) => [t.sourceA, t.sourceB] as const));
+  const edgeNbrs = adjacency(graph.edges.map((e) => [e.fromPath, e.toPath] as const));
+
+  const candidates: NeighborCandidate[] = [];
+  for (const seed of seedPaths) {
+    for (const nbr of topicEgoGraphFrom(graph.tensions, graph.edges, seed, 1)) {
+      if (nbr === seed || candidateSet.has(nbr)) continue;
+      const edgeType: "derives_from" | "tension" = edgeNbrs.get(seed)?.has(nbr)
+        ? "derives_from"
+        : tensionNbrs.get(seed)?.has(nbr)
+          ? "tension"
+          : "derives_from";
+      candidates.push({ path: nbr, seed, edgeType, affinity: deps.affinity(nbr) });
+    }
+  }
+
+  const chosen = selectExpansion(candidates, candidateSet, { cap: config.cap, tau: config.tau });
+  if (chosen.length === 0) return ranked;
+
+  const docs = new Map(deps.materialize(chosen.map((c) => c.path)).map((d) => [d.path, d]));
+  const injected: HybridHit[] = chosen.map((c) => {
+    const doc = docs.get(c.path);
+    return {
+      path: c.path,
+      title: doc?.title ?? c.path,
+      collection: doc?.collection ?? "",
+      status: doc?.status ?? "",
+      score: 0,
+      bm25Score: 0,
+      vectorScore: c.affinity,
+      snippet: "",
+      decay: null,
+      viaEdge: c.viaEdge,
+    };
+  });
+  return [...ranked, ...injected];
+}
+
+// Default materialize: read title/collection/status from the index.
+export function materializeFromIndex(db: IndexDb, paths: string[]): MaterializedDoc[] {
+  return getDocumentsByPaths(db, paths).map((d) => ({
+    path: d.path,
+    title: d.title,
+    collection: d.collection,
+    status: d.status,
+  }));
 }

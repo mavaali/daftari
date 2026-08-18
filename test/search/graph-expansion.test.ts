@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyGraphExpansion,
   maxChunkCosine,
   type NeighborCandidate,
   selectExpansion,
@@ -72,6 +73,77 @@ describe("selectExpansion", () => {
     expect(
       selectExpansion([cand("a", "s1", "tension", 0.9)], new Set(["s1"]), { cap: 0, tau: 0.3 }),
     ).toEqual([]);
+  });
+});
+
+// biome-ignore lint/suspicious/noExplicitAny: hermetic fakes for the injected pass deps
+const hit = (path: string) =>
+  ({
+    path,
+    title: path,
+    collection: "c",
+    status: "canonical",
+    score: 1,
+    bm25Score: 1,
+    vectorScore: 0,
+    snippet: "",
+    decay: null,
+    // biome-ignore lint/suspicious/noExplicitAny: test-only cast
+  }) as any;
+
+// biome-ignore lint/suspicious/noExplicitAny: partial-deps override helper
+const deps = (over: Partial<any> = {}) => ({
+  loadGraph: async () => ({
+    tensions: [{ sourceA: "s1", sourceB: "n_tension" }],
+    edges: [{ fromPath: "s1", toPath: "n_edge", status: "trigger-bearing" }],
+  }),
+  embedQuery: async () => new Float32Array([1, 0, 0]),
+  affinity: (path: string) => (path === "n_edge" ? 0.9 : path === "n_tension" ? 0.1 : 0),
+  materialize: (paths: string[]) =>
+    paths.map((p) => ({ path: p, title: p, collection: "c", status: "canonical" })),
+  ...over,
+});
+
+describe("applyGraphExpansion", () => {
+  it("returns ranked unchanged when disabled", async () => {
+    const ranked = [hit("s1")];
+    // biome-ignore lint/suspicious/noExplicitAny: hermetic
+    const out = await applyGraphExpansion({} as any, "/v", "q", ranked, {
+      config: { enabled: false, cap: 5, tau: 0.3, subset: "trigger" },
+      ...deps(),
+    });
+    expect(out).toBe(ranked);
+  });
+
+  it("appends affinity-passing neighbors flagged viaEdge, drops below-tau", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: hermetic
+    const out = await applyGraphExpansion({} as any, "/v", "q", [hit("s1")], {
+      config: { enabled: true, cap: 5, tau: 0.3, subset: "trigger" },
+      ...deps(),
+    });
+    expect(out.map((h) => h.path)).toEqual(["s1", "n_edge"]); // n_tension 0.1 < tau dropped
+    expect(out[1].viaEdge).toEqual({ seed: "s1", edgeType: "derives_from" });
+    expect(out[1].coverageReason).toBeUndefined();
+  });
+
+  it("no-ops on an empty graph", async () => {
+    const ranked = [hit("s1")];
+    // biome-ignore lint/suspicious/noExplicitAny: hermetic
+    const out = await applyGraphExpansion({} as any, "/v", "q", ranked, {
+      config: { enabled: true, cap: 5, tau: 0.3, subset: "trigger" },
+      ...deps({ loadGraph: async () => ({ tensions: [], edges: [] }) }),
+    });
+    expect(out).toBe(ranked);
+  });
+
+  it("no-ops (returns ranked) when the query cannot be embedded", async () => {
+    const ranked = [hit("s1")];
+    // biome-ignore lint/suspicious/noExplicitAny: hermetic
+    const out = await applyGraphExpansion({} as any, "/v", "q", ranked, {
+      config: { enabled: true, cap: 5, tau: 0.3, subset: "trigger" },
+      ...deps({ embedQuery: async () => null }),
+    });
+    expect(out).toBe(ranked);
   });
 });
 
