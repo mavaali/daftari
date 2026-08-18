@@ -43,6 +43,12 @@ export interface RoleConfig {
   // destructive grant — a history rewrite + force-push is irreversible — so it
   // is opt-in, off by default. YAML key: erase. Optional; absent means false.
   erase?: boolean;
+  // R13/R16 (U10): may perform human disposition actions on board items
+  // (owner assignment, reassign). Provisioned true on a human operator's role;
+  // omitted on an agent role. This is the config-declared signal distinguishing
+  // humans from agents — AccessContext carries no principal_type. YAML key:
+  // dispose. Optional; absent means false.
+  dispose?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -385,6 +391,12 @@ export interface DaftariConfig {
   // — no mounts, no principals grants. stdio-only in v1: `daftari serve`
   // refuses to start on a config carrying a `mounts` list.
   federation?: FederationConfig;
+  // U10: optional explicit principal list (`principals:` top-level key).
+  // Supplements the implicit set derived from server.auth.tokens[].user.
+  // The union of both sets is the configured principal set. Absent ⇒ []
+  // (leniently parsed; not required). Used by isConfiguredPrincipal to gate
+  // board owner/reassign actions to known identities only.
+  principals: string[];
 }
 
 export interface SearchTuningConfig {
@@ -447,6 +459,7 @@ function emptyConfig(): DaftariConfig {
     autoRepin: true,
     distill: undefined,
     federation: undefined,
+    principals: [],
   };
 }
 
@@ -510,6 +523,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     erase = obj.erase;
   }
 
+  let dispose = false;
+  if (obj.dispose !== undefined) {
+    if (typeof obj.dispose !== "boolean") {
+      return err(new Error(`role '${name}' dispose must be true or false`));
+    }
+    dispose = obj.dispose;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -537,6 +558,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ratify,
     ...(proposeOnly ? { proposeOnly } : {}),
     ...(erase ? { erase } : {}),
+    ...(dispose ? { dispose } : {}),
   });
 }
 
@@ -1740,6 +1762,14 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     }
   }
 
+  // Optional `principals:` top-level list (U10). Union with tokens[].user in
+  // principals.ts — config layer just collects the explicit additions here.
+  // Absent ⇒ [] (lenient: not required, not an error).
+  const principalsList = asStringArray(root.principals, "'principals'");
+  if (!principalsList.ok) {
+    return err(new Error(`malformed config: ${principalsList.error.message}`));
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
@@ -1764,5 +1794,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     autoRepin,
     distill: distillConfig.value,
     federation: federationConfig.value,
+    principals: principalsList.value,
   });
 }
