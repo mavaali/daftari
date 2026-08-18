@@ -36,6 +36,13 @@ import {
 } from "../search/coverage.js";
 import { resolveCurrentSource } from "../search/current-source.js";
 import {
+  applyGraphExpansion,
+  graphExpandConfig,
+  loadGraphForSubset,
+  materializeFromIndex,
+  maxChunkCosine,
+} from "../search/graph-expansion.js";
+import {
   DEFAULT_WEIGHTS,
   extractRelatedSeed,
   type HybridHit,
@@ -58,7 +65,7 @@ import {
 import { type ReindexResult, reindexVault } from "../search/reindex.js";
 import { applySupersededSuppression } from "../search/suppression.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
-import { getProvider } from "../search/vector.js";
+import { embedQuery, getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
@@ -642,6 +649,30 @@ async function searchLocalVault(
       ? widened.filter((h) => (h.viaCoverage ? canRead(access.role, h.collection) : true))
       : widened;
 
+    // off.1/MAV-154: one-hop edge-expansion post-pass (default off). Same shape
+    // as the coverage pass — gated by the startup-resolved config, returns
+    // `permitted` unchanged when off, injected hits flagged viaEdge and
+    // RBAC-filtered identically (an edge pull must never surface an unreadable
+    // doc). The `if` guard keeps the extra query embed out of the default hot
+    // path entirely — zero added cost for callers who do not opt in.
+    const geCfg = graphExpandConfig();
+    let permittedExpanded = permitted;
+    if (geCfg.enabled) {
+      const provider = getProvider();
+      const qEmbRes = await embedQuery(query);
+      const qEmb = qEmbRes.ok ? qEmbRes.value : null;
+      const expanded = await applyGraphExpansion(db, vaultRoot, query, permitted, {
+        config: geCfg,
+        loadGraph: loadGraphForSubset,
+        embedQuery: async () => qEmb, // embedded once, shared with the affinity floor
+        affinity: (path) => (qEmb ? maxChunkCosine(db, path, qEmb, provider) : 0),
+        materialize: (paths) => materializeFromIndex(db, paths),
+      });
+      permittedExpanded = access
+        ? expanded.filter((h) => (h.viaEdge ? canRead(access.role, h.collection) : true))
+        : expanded;
+    }
+
     // Foreground the current source for any hit (ranked OR coverage-added) that
     // points at a successor. Additive and lossless. Do NOT gate this on
     // hit.status === "superseded": a deprecated doc can also carry a
@@ -670,8 +701,8 @@ async function searchLocalVault(
     // resolution is validAtSource's job below.
     const served =
       validAt === null
-        ? applySupersededSuppression(db, permitted, access, { pullIn: true })
-        : permitted;
+        ? applySupersededSuppression(db, permittedExpanded, access, { pullIn: true })
+        : permittedExpanded;
 
     if (validAt !== null) {
       for (const hit of served) {

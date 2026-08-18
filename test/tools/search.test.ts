@@ -9,6 +9,7 @@ import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
 import { setCoverageEnabled } from "../../src/search/coverage.js";
+import { setGraphExpandConfig } from "../../src/search/graph-expansion.js";
 import { setSuppressSuperseded } from "../../src/search/suppression.js";
 import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
@@ -841,4 +842,76 @@ describe("FTS5 lexical snippets (#108)", () => {
     expect(hit?.snippet).toContain("throttled escalation");
     expect(hit?.snippet).not.toContain("Filler paragraph 0");
   });
+});
+
+// off.1/MAV-154: graph-augmented retrieval wiring. Loads the real model
+// (reindex embeds + affinity cosine), so gate on RB_INTEGRATION like the other
+// model-loading handler tests.
+const itIntegration = process.env.RB_INTEGRATION ? it : it.skip;
+
+describe("vault_search graph expansion (off.1)", () => {
+  let vault: string;
+  const HELIOS = "pricing/helios-consumption-pricing.md";
+  const VEGA = "competitive-intel/vega-insight-positioning.md";
+
+  beforeAll(async () => {
+    vault = makeTempVault();
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+    // A tension bridges the top hit (HELIOS) to VEGA. The "trigger" subset
+    // includes tensions, so VEGA becomes a one-hop neighbor of the seed.
+    const t = await addTension(vault, {
+      title: "pricing model dispute",
+      kind: "factual",
+      sourceA: HELIOS,
+      sourceB: VEGA,
+      claimA: "credits are consumption-priced",
+      claimB: "Vega undercuts on flat pricing",
+      loggedBy: "test",
+    });
+    if (!t.ok) throw t.error;
+  }, 60_000);
+
+  afterAll(() => {
+    setGraphExpandConfig({ enabled: false, cap: 10, tau: 0.3, subset: "trigger" });
+    rmSync(tensionsPath(vault), { force: true });
+    clearContestedCache();
+    cleanupVault(vault);
+  });
+
+  itIntegration(
+    "injects the edge-reached doc flagged viaEdge when enabled",
+    async () => {
+      // limit:1 → ranked = [HELIOS]; VEGA is sliced out and can only re-enter
+      // via the tension edge. tau low so the wiring, not the floor, is tested.
+      setGraphExpandConfig({ enabled: true, cap: 10, tau: 0.05, subset: "trigger" });
+      const res = await vaultSearch(vault, {
+        query: "Helios compute credit consumption pricing",
+        limit: 1,
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const injected = res.value.hits.find((h) => h.path === VEGA);
+      expect(injected).toBeDefined();
+      expect(injected?.viaEdge).toEqual({ seed: HELIOS, edgeType: "tension" });
+      expect(injected?.coverageReason).toBeUndefined();
+    },
+    60_000,
+  );
+
+  itIntegration(
+    "stays quiet when disabled (default-off ship-safety)",
+    async () => {
+      setGraphExpandConfig({ enabled: false, cap: 10, tau: 0.3, subset: "trigger" });
+      const res = await vaultSearch(vault, {
+        query: "Helios compute credit consumption pricing",
+        limit: 1,
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.hits.some((h) => h.viaEdge)).toBe(false);
+      expect(res.value.hits.find((h) => h.path === VEGA)).toBeUndefined();
+    },
+    60_000,
+  );
 });
