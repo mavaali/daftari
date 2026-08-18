@@ -338,22 +338,35 @@ describe("vault_staleness (#234)", () => {
     // NOT become a named unverifiable row, or deleted becomes distinguishable
     // from hidden.
     const upstream = await vaultWrite(vault, {
-      path: "pricing/divergent.md", body: "# D\n",
-      frontmatter: frontmatter({ title: "D", collection: "competitive-intel" }), agent: AGENT,
+      path: "pricing/divergent.md",
+      body: "# D\n",
+      frontmatter: frontmatter({ title: "D", collection: "competitive-intel" }),
+      agent: AGENT,
     });
     if (!upstream.ok) throw upstream.error;
     await vaultRead(vault, "pricing/divergent.md", undefined, "run-div");
     const consumer = await vaultWrite(vault, {
-      path: "pricing/consumer-div.md", body: "# C\n",
-      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }), agent: AGENT, run_id: "run-div",
+      path: "pricing/consumer-div.md",
+      body: "# C\n",
+      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }),
+      agent: AGENT,
+      run_id: "run-div",
     });
     if (!consumer.ok) throw consumer.error;
 
     // Evict the upstream (out-of-band deletion).
     const db = openIndexForAccessOrNull(vault);
-    try { deleteDocument(db!, "pricing/divergent.md"); } finally { db?.close(); }
+    try {
+      deleteDocument(db!, "pricing/divergent.md");
+    } finally {
+      db?.close();
+    }
 
-    const pricingOnly = { user: "human:n", roleName: "pricing-only", role: { read: ["pricing"], write: [], promote: false, ratify: false } };
+    const pricingOnly = {
+      user: "human:n",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
     const gated = await vaultRead(vault, "pricing/consumer-div.md", pricingOnly);
     if (!gated.ok) throw gated.error;
     // Must NOT name the deleted upstream, and must NOT count it as visible unverifiable.
