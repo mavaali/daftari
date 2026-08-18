@@ -35,6 +35,8 @@ import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
 import { loadAttestKey } from "../attest/sign.js";
+import type { BoardFilters } from "../board/board.js";
+import { listBoard } from "../board/board.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
 import { acquireLock } from "../lifecycle/lock.js";
@@ -46,7 +48,9 @@ import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js"
 import { createBackend, type StorageBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
+import { vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
+import { renderBoardPage } from "../view/board-page.js";
 import { type AuthEvent, appendAuthEvent, tokenHint } from "./auth-log.js";
 import {
   type Bucket,
@@ -255,6 +259,55 @@ function bearerFrom(req: IncomingMessage): string | null {
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+function writeHtml(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+  res.end(body);
+}
+
+// Read the full request body as a UTF-8 string. Returns null if reading fails
+// or body exceeds the 1 MiB safety limit.
+function readBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const LIMIT = 1_048_576; // 1 MiB
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > LIMIT) {
+        resolve(null);
+        req.destroy();
+      } else {
+        chunks.push(chunk);
+      }
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    req.on("error", () => resolve(null));
+  });
+}
+
+// Parse BoardFilters from a URLSearchParams instance (query string).
+function filtersFromQuery(query: URLSearchParams): BoardFilters {
+  const filters: BoardFilters = {};
+  const collection = query.get("collection");
+  if (collection) filters.collection = collection;
+  const check = query.get("check");
+  if (check) filters.check = check;
+  const certainty = query.get("certainty");
+  if (certainty === "low" || certainty === "medium" || certainty === "high") {
+    filters.certainty = certainty;
+  }
+  const owner = query.get("owner");
+  if (owner) filters.owner = owner;
+  const minAgeDays = query.get("minAgeDays");
+  if (minAgeDays !== null) {
+    const n = Number(minAgeDays);
+    if (Number.isFinite(n) && n >= 0) filters.minAgeDays = Math.floor(n);
+  }
+  const document = query.get("document");
+  if (document) filters.document = document;
+  return filters;
 }
 
 export interface ServeHandle {
@@ -482,6 +535,141 @@ export function startHttpServer(
     }
 
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+    // ---------------------------------------------------------------------------
+    // Board routes (U12) — mounted BEFORE the /mcp 404 gate so they are
+    // reachable, and AFTER authenticate() so every request carries a real
+    // AccessContext. The DNS-rebinding / Origin guard above already ran.
+    //
+    // Route list:
+    //   GET  /board              → renderBoardPage HTML (R25/R26/R29)
+    //   GET  /api/board          → listBoard JSON (R25/R26/R29)
+    //   POST /api/board/dispose  → vaultBoardDispose (R30/R32)
+    //   POST /api/board/resolve  → vaultBoardResolve (R30/R32)
+    //
+    // Non-disclosure (R20): dispose/resolve return 403 for both "not found"
+    // and "not permitted" — identical status+body so the HTTP layer adds no
+    // existence oracle beyond what the tools carefully hide.
+    // ---------------------------------------------------------------------------
+    const isBoardPath =
+      url.pathname === "/board" ||
+      url.pathname === "/api/board" ||
+      url.pathname === "/api/board/dispose" ||
+      url.pathname === "/api/board/resolve";
+
+    if (isBoardPath) {
+      const boardAccess = await authenticate(req, res);
+      if (boardAccess === null) return; // authenticate() already wrote the rejection
+
+      const filters = filtersFromQuery(url.searchParams);
+      const hasFilters = Object.keys(filters).length > 0;
+
+      if (url.pathname === "/api/board" && req.method === "GET") {
+        // GET /api/board → JSON board result
+        const result = await listBoard(vaultRoot, boardAccess, hasFilters ? filters : undefined);
+        writeJson(res, 200, result);
+        return;
+      }
+
+      if (url.pathname === "/board" && req.method === "GET") {
+        // GET /board → rendered HTML page
+        const result = await listBoard(vaultRoot, boardAccess, hasFilters ? filters : undefined);
+        const html = renderBoardPage(result, hasFilters ? filters : undefined);
+        writeHtml(res, 200, html);
+        return;
+      }
+
+      if (url.pathname === "/api/board/dispose" && req.method === "POST") {
+        // POST /api/board/dispose → vaultBoardDispose
+        const rawBody = await readBody(req);
+        if (rawBody === null) {
+          writeJson(res, 400, {
+            error: "bad_request",
+            message: "request body too large or unreadable",
+          });
+          return;
+        }
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(rawBody) as Record<string, unknown>;
+        } catch {
+          writeJson(res, 400, { error: "bad_request", message: "request body is not valid JSON" });
+          return;
+        }
+        const disposeResult = await vaultBoardDispose(vaultRoot, boardAccess, config, {
+          finding_id: typeof args.finding_id === "string" ? args.finding_id : "",
+          event: typeof args.event === "string" ? args.event : "",
+          ...(typeof args.rationale === "string" ? { rationale: args.rationale } : {}),
+          ...(typeof args.expiry === "string" ? { expiry: args.expiry } : {}),
+          ...(typeof args.owner === "string" ? { owner: args.owner } : {}),
+        });
+        if (!disposeResult.ok) {
+          // Non-disclosure: use 403 for both "not found" and "not permitted"
+          // so the HTTP status code does not become an existence oracle.
+          // Input-validation errors (missing/invalid event, missing finding_id)
+          // are 400 — they expose no finding existence.
+          const msg = disposeResult.error.message;
+          const isInputError =
+            msg.includes("finding_id is required") ||
+            msg.includes("invalid event") ||
+            msg.includes("reassign requires");
+          const isCapabilityError =
+            msg.includes("permission denied") || msg.includes("lacks the dispose capability");
+          if (isInputError) {
+            writeJson(res, 400, { error: "bad_request", message: msg });
+          } else if (isCapabilityError) {
+            writeJson(res, 403, { error: "forbidden", message: msg });
+          } else {
+            // "not found or not permitted" — the non-disclosing error from the tool.
+            // Always 403, never 404, so no existence oracle.
+            writeJson(res, 403, { error: "forbidden", message: msg });
+          }
+          return;
+        }
+        writeJson(res, 200, disposeResult.value);
+        return;
+      }
+
+      if (url.pathname === "/api/board/resolve" && req.method === "POST") {
+        // POST /api/board/resolve → vaultBoardResolve
+        const rawBody = await readBody(req);
+        if (rawBody === null) {
+          writeJson(res, 400, {
+            error: "bad_request",
+            message: "request body too large or unreadable",
+          });
+          return;
+        }
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(rawBody) as Record<string, unknown>;
+        } catch {
+          writeJson(res, 400, { error: "bad_request", message: "request body is not valid JSON" });
+          return;
+        }
+        const resolveResult = await vaultBoardResolve(vaultRoot, boardAccess, config, {
+          finding_id: typeof args.finding_id === "string" ? args.finding_id : "",
+        });
+        if (!resolveResult.ok) {
+          const msg = resolveResult.error.message;
+          const isInputError = msg.includes("finding_id is required");
+          if (isInputError) {
+            writeJson(res, 400, { error: "bad_request", message: msg });
+          } else {
+            // Non-disclosure: 403 for both not-found and not-permitted.
+            writeJson(res, 403, { error: "forbidden", message: msg });
+          }
+          return;
+        }
+        writeJson(res, 200, resolveResult.value);
+        return;
+      }
+
+      // Method not allowed on a known board path (e.g. POST /board)
+      writeJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+
     if (url.pathname !== "/mcp") {
       writeJson(res, 404, { error: "not_found" });
       return;
