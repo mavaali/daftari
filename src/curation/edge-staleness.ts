@@ -122,12 +122,21 @@ function classifyEdge(input: {
   provenance: ProvenanceEntry[];
   compiledEdge?: ConsumesEdge;
   verdicts?: Tier2Verdict[];
+  isVerifiable?: (unit: string) => boolean;
 }): UpstreamStaleness {
   const base = {
     unit: input.unit,
     edge_class: input.edgeClass,
     baseline: input.baseline,
   };
+  if (input.isVerifiable && !input.isVerifiable(input.unit)) {
+    return {
+      ...base,
+      staleness: "unverifiable",
+      changed_fields: [],
+      reason: "source not in your readable vault",
+    };
+  }
   // The tier-2 residual: a covering semantic verdict decides what structure
   // could not. Consulted on BOTH pending-unchecked paths (no-baseline and
   // structurally-undecidable) — only the unit's CURRENT change counts; a
@@ -230,6 +239,7 @@ export function compiledUpstreamStaleness(
   artifact: string,
   consumes: ConsumesEdge[],
   provenance: ProvenanceEntry[],
+  isVerifiable?: (unit: string) => boolean,
 ): UpstreamStaleness[] {
   return forwardConsumes(consumes, artifact)
     .filter((e) => e.unit !== artifact)
@@ -241,6 +251,7 @@ export function compiledUpstreamStaleness(
         baseline: e.compile_ts,
         provenance,
         compiledEdge: e,
+        isVerifiable,
       }),
     );
 }
@@ -258,8 +269,9 @@ export function upstreamStaleness(input: {
   // hot path never loads them; the vault_staleness / tier-2 queue surfaces
   // do, so the residual reflects judgments already paid for.
   verdicts?: Tier2Verdict[];
+  isVerifiable?: (unit: string) => boolean;
 }): UpstreamStaleness[] {
-  const rows = compiledUpstreamStaleness(input.artifact, input.consumes, input.provenance);
+  const rows = compiledUpstreamStaleness(input.artifact, input.consumes, input.provenance, input.isVerifiable);
 
   // Declared baseline: the artifact's own latest landed write.
   const artifactWrites = input.provenance.filter(
@@ -276,6 +288,7 @@ export function upstreamStaleness(input: {
         baseline: declaredBaseline,
         provenance: input.provenance,
         verdicts: input.verdicts,
+        isVerifiable: input.isVerifiable,
       }),
     );
   }
@@ -290,6 +303,7 @@ export function upstreamStaleness(input: {
         baseline: e.lastRederived,
         provenance: input.provenance,
         verdicts: input.verdicts,
+        isVerifiable: input.isVerifiable,
       }),
     );
   }
