@@ -4,7 +4,10 @@
 // gate, returns `ranked` unchanged when off, flags injected hits (viaEdge) for
 // RBAC filtering at the call site. hybrid.ts ranking is not touched.
 
+import { getChunksForPath, type IndexDb } from "../storage/index-db.js";
 import { type GraphExpandConfig, SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
+import type { EmbeddingProvider } from "./embedding-provider.js";
+import { cosineSimilarity } from "./vector.js";
 
 // Runtime config holder — resolved ONCE at startup (setGraphExpandConfig called
 // from src/index.ts and src/serve/index.ts beside setCoverageEnabled/setVecKnnK),
@@ -58,4 +61,23 @@ export function selectExpansion(
       affinity: c.affinity,
       viaEdge: { seed: c.seed, edgeType: c.edgeType },
     }));
+}
+
+// Max cosine of any of a document's chunk embeddings to the query embedding.
+// Reads the plain `embeddings` rows via getChunksForPath — NOT the KNN virtual
+// table; a known neighbor set does not need the global scan. 0 when the path is
+// unindexed or has no embeddings (never a false floor pass).
+export function maxChunkCosine(
+  db: IndexDb,
+  path: string,
+  queryEmbedding: Float32Array,
+  provider: Pick<EmbeddingProvider, "id" | "dim">,
+): number {
+  let best = 0;
+  for (const chunk of getChunksForPath(db, path, provider.id, provider.dim)) {
+    if (!chunk.embedding) continue;
+    const c = cosineSimilarity(chunk.embedding, queryEmbedding);
+    if (c > best) best = c;
+  }
+  return best;
 }

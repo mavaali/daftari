@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { type NeighborCandidate, selectExpansion } from "../../src/search/graph-expansion.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  maxChunkCosine,
+  type NeighborCandidate,
+  selectExpansion,
+} from "../../src/search/graph-expansion.js";
+import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
+import { reindexVault } from "../../src/search/reindex.js";
+import { embedQuery, getProvider } from "../../src/search/vector.js";
+import { type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
+import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const cand = (
   path: string,
@@ -64,4 +73,48 @@ describe("selectExpansion", () => {
       selectExpansion([cand("a", "s1", "tension", 0.9)], new Set(["s1"]), { cap: 0, tau: 0.3 }),
     ).toEqual([]);
   });
+});
+
+const itIntegration = process.env.RB_INTEGRATION ? it : it.skip;
+
+describe("maxChunkCosine (integration)", () => {
+  let vault: string;
+  let db: IndexDb;
+
+  beforeEach(async () => {
+    vault = makeTempVault();
+    const r = await reindexVault(vault);
+    if (!r.ok) throw r.error;
+    const o = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!o.ok) throw o.error;
+    db = o.value;
+  });
+
+  afterEach(() => {
+    db.close();
+    cleanupVault(vault);
+  });
+
+  itIntegration(
+    "returns a real doc's best chunk cosine (0,1] and 0 for an unindexed path",
+    async () => {
+      const provider = getProvider();
+      const q = await embedQuery("data governance and pipeline lineage");
+      expect(q.ok).toBe(true);
+      if (!q.ok) return;
+
+      const real = maxChunkCosine(
+        db,
+        "competitive-intel/northwind-data-governance.md",
+        q.value,
+        provider,
+      );
+      expect(real).toBeGreaterThan(0);
+      expect(real).toBeLessThanOrEqual(1);
+
+      const missing = maxChunkCosine(db, "does/not/exist.md", q.value, provider);
+      expect(missing).toBe(0);
+    },
+    120_000,
+  );
 });
