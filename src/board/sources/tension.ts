@@ -52,8 +52,8 @@ export const tensionAdapter: FindingSourceAdapter = {
    * `now` is accepted for interface consistency; tension listing does not
    * consume it (no time-dependent staleness computation here).
    */
-  async list(vaultRoot: string, access: AccessContext, _now?: Date): Promise<Finding[]> {
-    const nowIso = (_now ?? new Date()).toISOString();
+  async list(vaultRoot: string, access: AccessContext, now?: Date): Promise<Finding[]> {
+    const nowIso = (now ?? new Date()).toISOString();
 
     const result = await listTensions(vaultRoot, "unresolved");
     if (!result.ok) {

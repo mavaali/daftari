@@ -23,7 +23,7 @@
 // Run with:
 //   npx vitest run src/board/sources/tension.test.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -102,7 +102,7 @@ function writeTension(
   // Append block to file (each entry preceded by blank line, matching renderEntry)
   let existing = "";
   try {
-    existing = require("node:fs").readFileSync(filePath, "utf-8");
+    existing = readFileSync(filePath, "utf-8");
   } catch {
     existing = "";
   }
@@ -448,7 +448,7 @@ describe("tensionAdapter — Scenario 4: claim edit → fingerprint drift, ident
     // Overwrite tensions.md with an edited claimA
     const daftariDir = join(vaultRoot, ".daftari");
     const tensionsPath = join(daftariDir, "tensions.md");
-    const originalContent = require("node:fs").readFileSync(tensionsPath, "utf-8");
+    const originalContent = readFileSync(tensionsPath, "utf-8");
     const editedContent = originalContent.replace("Original claim A", "EDITED claim A");
     writeFileSync(tensionsPath, editedContent, "utf-8");
 

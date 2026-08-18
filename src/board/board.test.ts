@@ -25,9 +25,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
 import type { RoleConfig } from "../utils/config.js";
 import { type BoardFilters, listBoard } from "./board.js";
-import { IDENTITY_SCHEME_VERSION } from "./identity.js";
 import { appendEvent, boardDispositionsPath } from "./ledger.js";
-import type { BoardColumn, LedgerEvent } from "./types.js";
+import type { BoardColumn } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Vault fixture helpers (mirrors lint.test.ts, staleness.test.ts, etc.)
@@ -757,6 +756,22 @@ describe("listBoard — Scenario 5: filters (R26)", () => {
   it("filter by minAgeDays=99999 returns empty when all findings are brand-new", async () => {
     const filtered = await listBoard(vaultRoot, adminAccess, { minAgeDays: 99999 }, FIXED_NOW);
     // first_seen for brand-new findings is FIXED_NOW itself → age = 0 days → excluded
+    expect(filtered.all.length).toBe(0);
+  });
+
+  it("filter by owner='' returns findings with no owner (all new findings)", async () => {
+    // New findings have owner:"" by default. Filter by owner:"" should return all.
+    const all = await listBoard(vaultRoot, adminAccess, undefined, FIXED_NOW);
+    const filtered = await listBoard(vaultRoot, adminAccess, { owner: "" }, FIXED_NOW);
+    expect(filtered.all.length).toBe(all.all.length);
+    for (const f of filtered.all) {
+      expect(f.owner).toBe("");
+    }
+  });
+
+  it("filter by owner='human:admin' narrows to zero when no findings are owned", async () => {
+    // No reassign events → all owners are ""; filter by a named owner returns empty.
+    const filtered = await listBoard(vaultRoot, adminAccess, { owner: "human:admin" }, FIXED_NOW);
     expect(filtered.all.length).toBe(0);
   });
 
