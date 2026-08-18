@@ -734,15 +734,15 @@ Additional filler content for padding the vault retrieval set.
 // the default and the round-trip.
 describe("vec KNN fan-out knob", () => {
   afterEach(() => {
-    setVecKnnK(64);
+    setVecKnnK(256);
   });
 
-  it("defaults to the historical 64", () => {
-    expect(getVecKnnK()).toBe(64);
+  it("defaults to the measured 256", () => {
+    expect(getVecKnnK()).toBe(256);
   });
 
   it("round-trips a configured value", () => {
-    setVecKnnK(256);
-    expect(getVecKnnK()).toBe(256);
+    setVecKnnK(64);
+    expect(getVecKnnK()).toBe(64);
   });
 });

@@ -309,8 +309,10 @@ export interface DaftariConfig {
   // reconfirmed on the frozen 3.7.0 baseline, MAV-156); the discriminating-tag
   // half is untested on native vaults, so opting back in stays supported.
   // `vecKnnK` is the vector-arm KNN fan-out (chunks fetched before the
-  // best-chunk-per-doc collapse) — fixed at 64 since the first release; made
-  // configurable for the recall-vs-K sweep (MAV-159).
+  // best-chunk-per-doc collapse). Default 256, measured (MAV-159 sweep,
+  // 2026-08-18): recall rises monotonically to a saturation point at 256
+  // with distractor load flat — see
+  // docs/superpowers/results/2026-08-18-mav159-knn-sweep.md.
   search: SearchTuningConfig;
   // Optional git-author → identity mapping consumed by `daftari backfill`
   // (§11.1) when deriving the `updated_by` frontmatter field from a doc's git
@@ -397,7 +399,10 @@ export interface SearchTuningConfig {
 
 export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   coverage: false,
-  vecKnnK: 64,
+  // 256 is the measured saturation point of the MAV-159 recall-vs-K sweep on
+  // the frozen RB corpus: +1.0–2.8pp multi-day recall over the historical 64
+  // depending on budget, distractor load flat, K=512 byte-identical to 256.
+  vecKnnK: 256,
   suppressSuperseded: false,
 };
 

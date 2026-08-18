@@ -126,10 +126,11 @@ const SNIPPET_RADIUS = 140;
 // best-per-document. A multiple of the user-facing limit keeps the hybrid
 // fusion honest — if we only fetched `limit` chunks we'd risk every one
 // belonging to the same document and starving the rest of the candidate set.
-// 64 is empirically generous for typical limit ≤ 10; configurable since
-// MAV-159 (`search.vec_knn_k` in config.yaml, applied at startup like
-// setProvider) so the recall-vs-K curve can be measured rather than assumed.
-// Config validation owns the bounds; this setter stays dumb.
+// Default 256, measured (MAV-159 sweep): recall is monotone in K and
+// saturates at 256 with distractor load flat, so the fan-out captures the
+// ceiling at negligible KNN cost. `search.vec_knn_k` in config.yaml
+// overrides, applied at startup like setProvider. Config validation owns
+// the bounds; this setter stays dumb.
 let vecKnnK = SEARCH_TUNING_DEFAULTS.vecKnnK;
 
 export function setVecKnnK(k: number): void {

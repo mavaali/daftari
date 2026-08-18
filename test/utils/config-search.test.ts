@@ -2,7 +2,7 @@
 //
 // `search.coverage` re-enables the retired date-window coverage pass;
 // `search.vec_knn_k` sets the vector-arm KNN fan-out. Absent block = the
-// defaults (coverage off, fan-out 64). Malformed values are hard config
+// defaults (coverage off, fan-out 256). Malformed values are hard config
 // errors, matching the rest of the loader's trust model.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -27,13 +27,13 @@ describe("loadConfig — search tuning block", () => {
     writeFileSync(configPath(dir), yaml);
   }
 
-  it("defaults to coverage off / fan-out 64 when no config file exists", () => {
+  it("defaults to coverage off / fan-out 256 when no config file exists", () => {
     const result = loadConfig(dir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.search).toEqual({
       coverage: false,
-      vecKnnK: 64,
+      vecKnnK: 256,
       suppressSuperseded: false,
     });
   });
@@ -45,7 +45,7 @@ describe("loadConfig — search tuning block", () => {
     if (!result.ok) return;
     expect(result.value.search).toEqual({
       coverage: false,
-      vecKnnK: 64,
+      vecKnnK: 256,
       suppressSuperseded: false,
     });
   });

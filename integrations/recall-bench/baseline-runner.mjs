@@ -126,7 +126,7 @@ console.log(`vault: indexed ${reindexed.value.documentCount} docs`);
 
 // --- retrieval sweep ---------------------------------------------------------
 
-const { hybridSearch } = await import(join(ROOT, "dist/search/hybrid.js"));
+const { getVecKnnK, hybridSearch } = await import(join(ROOT, "dist/search/hybrid.js"));
 const { applyCoveragePass, DEFAULT_COVERAGE_OPTIONS } = await import(
   join(ROOT, "dist/search/coverage.js")
 );
@@ -246,6 +246,7 @@ const summary = {
   daftariCommit: execSync("git rev-parse HEAD", { cwd: ROOT }).toString().trim(),
   corpusCommit,
   nodeVersion: process.version,
+  vecKnnK: getVecKnnK(),
   vectorUsed,
   smoke: SMOKE,
   counts: {
