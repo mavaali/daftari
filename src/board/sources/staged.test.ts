@@ -16,7 +16,7 @@
 // Run with:
 //   npx vitest run src/board/sources/staged.test.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -110,13 +110,12 @@ function writeStagedActionProposal(
   const daftariDir = join(vaultRoot, ".daftari");
   mkdirSync(daftariDir, { recursive: true });
   const filePath = join(daftariDir, "staged-actions.jsonl");
-  const existing = (() => {
-    try {
-      return require("node:fs").readFileSync(filePath, "utf-8");
-    } catch {
-      return "";
-    }
-  })();
+  let existing = "";
+  try {
+    existing = readFileSync(filePath, "utf-8");
+  } catch {
+    existing = "";
+  }
   writeFileSync(filePath, existing + JSON.stringify(record) + "\n", "utf-8");
 }
 
@@ -133,13 +132,12 @@ function writeStagedActionDecision(
 ): void {
   const daftariDir = join(vaultRoot, ".daftari");
   const filePath = join(daftariDir, "staged-actions.jsonl");
-  const existing = (() => {
-    try {
-      return require("node:fs").readFileSync(filePath, "utf-8");
-    } catch {
-      return "";
-    }
-  })();
+  let existing = "";
+  try {
+    existing = readFileSync(filePath, "utf-8");
+  } catch {
+    existing = "";
+  }
   writeFileSync(filePath, existing + JSON.stringify(decision) + "\n", "utf-8");
 }
 

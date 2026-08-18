@@ -28,8 +28,9 @@
 //       The tuple makes it unique per (artifact,unit,edge_class).
 //     - fingerprint: fingerprint({staleness, changed_fields, baseline}) —
 //       volatile (staleness state can change when verdicts land).
-//     - RBAC: filter by the ARTIFACT's collection (not the unit). A finding
-//       about a dependent the caller cannot read is omitted entirely (R17).
+//     - RBAC: BOTH artifact AND unit must be readable (matching vaultTier2Queue),
+//       because the finding names the unit and must not disclose an unreadable
+//       upstream. Uses sourceReadable() from tension-access.ts for both endpoints.
 //
 // Surfaced edge-staleness states: ONLY "pending-broken".
 //   "current"            — not a problem, no finding.
@@ -56,7 +57,7 @@ import { type UpstreamStaleness, upstreamStaleness } from "../../curation/edge-s
 import { listEdges } from "../../curation/edges.js";
 import { readProvenanceLog } from "../../curation/provenance.js";
 import { computeStaleness } from "../../curation/staleness.js";
-import { sourceVerifiable } from "../../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../../curation/tension-access.js";
 import { readTier2Verdicts } from "../../curation/tier2.js";
 import { loadDocuments } from "../../curation/vault-docs.js";
 import { collectionForPath } from "../../storage/index-db.js";
@@ -232,6 +233,10 @@ type UpstreamStalenessFn = (artifact: string) => UpstreamStaleness[];
  * In production, use the real loading path via `edgeStalenessAdapter`.
  *
  * Only "pending-broken" rows produce a Finding. See file header for rationale.
+ *
+ * RBAC requires BOTH artifact AND unit readable (matching vaultTier2Queue),
+ * because the finding names the unit and must not disclose an unreadable
+ * upstream. Uses sourceReadable() from tension-access.ts for both endpoints.
  */
 export function makeEdgeStalenessAdapter(upstreamFn: UpstreamStalenessFn): FindingSourceAdapter {
   return {
@@ -249,13 +254,17 @@ export function makeEdgeStalenessAdapter(upstreamFn: UpstreamStalenessFn): Findi
         for (const doc of loaded.value) {
           const artifact = doc.path;
 
-          // RBAC: filter by ARTIFACT collection (R17).
-          const collection = collectionForPath(db, artifact);
-          if (!canRead(access.role, collection)) continue;
+          // RBAC: artifact must be readable before we enumerate its rows.
+          if (!sourceReadable(db, access, artifact)) continue;
 
           // Get upstream staleness rows for this artifact via the injected fn.
           const rows = upstreamFn(artifact);
-          findings.push(...buildEdgeStalenessFindings(artifact, rows, nowIso));
+
+          // RBAC: unit must also be readable before naming it in the finding.
+          // buildEdgeStalenessFindings only emits pending-broken rows; filter
+          // the unit check per-row so we don't lose readable-unit findings.
+          const allowedRows = rows.filter((row) => sourceReadable(db, access, row.unit));
+          findings.push(...buildEdgeStalenessFindings(artifact, allowedRows, nowIso));
         }
 
         return findings;
@@ -342,9 +351,8 @@ export const edgeStalenessAdapter: FindingSourceAdapter = {
       for (const doc of loaded.value) {
         const artifact = doc.path;
 
-        // RBAC: filter by ARTIFACT collection.
-        const collection = collectionForPath(db, artifact);
-        if (!canRead(access.role, collection)) continue;
+        // RBAC: artifact must be readable before we enumerate its rows.
+        if (!sourceReadable(db, access, artifact)) continue;
 
         // Compute upstream staleness for this artifact.
         // Note: we skip compiled edges (consumes: []) to keep the load light
@@ -361,7 +369,12 @@ export const edgeStalenessAdapter: FindingSourceAdapter = {
           isVerifiable,
         });
 
-        findings.push(...buildEdgeStalenessFindings(artifact, rows, nowIso));
+        // RBAC: unit must also be readable before naming it in the finding.
+        // The unit path appears in the finding's target and evidence; surfacing
+        // it when the unit's collection is denied would disclose an unreadable
+        // upstream. Matches vaultTier2Queue's both-endpoints-readable policy.
+        const allowedRows = rows.filter((row) => sourceReadable(db, access, row.unit));
+        findings.push(...buildEdgeStalenessFindings(artifact, allowedRows, nowIso));
       }
 
       return findings;

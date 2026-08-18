@@ -455,6 +455,93 @@ describe("makeTier2QueueAdapter — Scenario 4: RBAC omission for denied artifac
 });
 
 // ---------------------------------------------------------------------------
+// Scenario 4b: RBAC — denied UNIT collection → omitted entirely (existence disclosure)
+//
+// Both endpoints (artifact AND unit) must be readable. If the unit is in a
+// denied collection, the finding is omitted even if the artifact is readable.
+// This matches vaultTier2Queue's both-endpoints-readable policy (#455).
+// ---------------------------------------------------------------------------
+
+describe("makeTier2QueueAdapter — Scenario 4b: RBAC omission for denied unit collection", () => {
+  let vaultRoot: string;
+  const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
+
+  beforeEach(() => {
+    vaultRoot = mkdtempSync(join(tmpdir(), "daftari-tier2-unit-rbac-test-"));
+    writeConfig(vaultRoot, {
+      admin: { read: ["*"], write: ["*"], promote: true, ratify: true },
+      analyst: { read: ["notes"], write: ["notes"] },
+    });
+    // artifact in "notes" — readable by analyst
+    writeDoc(
+      vaultRoot,
+      "notes/artifact.md",
+      frontmatter({ title: "Artifact", collection: "notes" }) + "# Body\n",
+    );
+    // unit in "restricted" — NOT readable by analyst
+    writeDoc(
+      vaultRoot,
+      "restricted/secret-unit.md",
+      frontmatter({ title: "Secret Unit", collection: "restricted" }) + "# Secret\n",
+    );
+    // a second unit in "notes" — readable by analyst (control)
+    writeDoc(
+      vaultRoot,
+      "notes/readable-unit.md",
+      frontmatter({ title: "Readable Unit", collection: "notes" }) + "# Readable\n",
+    );
+  });
+
+  afterEach(() => {
+    rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  it("admin sees findings for all items including restricted unit", async () => {
+    const item1 = makeWorkItem("notes/artifact.md", "restricted/secret-unit.md");
+    const item2 = makeWorkItem("notes/artifact.md", "notes/readable-unit.md");
+    const adapter = makeTier2QueueAdapter(async () => [item1, item2]);
+    const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
+    expect(findings).toHaveLength(2);
+    const units = findings.map((f) => (f.target as Tier2Target).unit);
+    expect(units).toContain("restricted/secret-unit.md");
+    expect(units).toContain("notes/readable-unit.md");
+  });
+
+  it("scoped analyst: artifact is readable but unit is denied → finding OMITTED entirely", async () => {
+    // artifact=notes/artifact.md is readable, unit=restricted/secret-unit.md is NOT
+    const item = makeWorkItem("notes/artifact.md", "restricted/secret-unit.md");
+    const adapter = makeTier2QueueAdapter(async () => [item]);
+    const findings = await adapter.list(vaultRoot, scopedAccess, FIXED_NOW);
+    // Must be zero — the unit is in a denied collection, existence must not leak
+    expect(findings).toHaveLength(0);
+  });
+
+  it("scoped analyst sees finding for readable-unit but not denied restricted-unit", async () => {
+    const item1 = makeWorkItem("notes/artifact.md", "restricted/secret-unit.md");
+    const item2 = makeWorkItem("notes/artifact.md", "notes/readable-unit.md");
+    const adapter = makeTier2QueueAdapter(async () => [item1, item2]);
+    const findings = await adapter.list(vaultRoot, scopedAccess, FIXED_NOW);
+    expect(findings).toHaveLength(1);
+    expect((findings[0]!.target as Tier2Target).unit).toBe("notes/readable-unit.md");
+    // restricted unit path must not appear anywhere in the output
+    const units = findings.map((f) => (f.target as Tier2Target).unit);
+    expect(units).not.toContain("restricted/secret-unit.md");
+  });
+
+  it("reproduces returns false for a denied-unit finding under scoped role", async () => {
+    const item = makeWorkItem("notes/artifact.md", "restricted/secret-unit.md");
+    const adapter = makeTier2QueueAdapter(async () => [item]);
+    // Admin can see it; capture the identity key
+    const adminFindings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
+    expect(adminFindings).toHaveLength(1);
+    const capturedKey = adminFindings[0]!.identity_key;
+    // Scoped role cannot reproduce it (unit denied)
+    const result = await adapter.reproduces(capturedKey, vaultRoot, scopedAccess, FIXED_NOW);
+    expect(result).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Scenario 5: Identity non-collision with edge-staleness (source+check differ)
 // ---------------------------------------------------------------------------
 

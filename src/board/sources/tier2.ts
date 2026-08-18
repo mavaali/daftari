@@ -12,9 +12,13 @@
 //     tier2-queue:     source="tier2",     check="pending-unchecked"
 //   Same Tier2Target shape, different source+check → different hash → no collision.
 //
-// RBAC: filter by ARTIFACT's collection (R17).
-//   An item whose artifact collection the caller cannot read is omitted entirely.
-//   openIndexForAccessOrNull + collectionForPath + canRead(access.role, collection).
+// RBAC: BOTH artifact AND unit must be readable (matching vaultTier2Queue).
+//   A finding names two endpoints; if either is in a denied collection the
+//   entire finding is omitted. This prevents upstream existence disclosure:
+//   the unit path appears in the finding's target and evidence, so surfacing
+//   it when the unit's collection is denied would reveal that the unit exists.
+//   Uses sourceReadable(db, access, path) from src/curation/tension-access.ts
+//   for both endpoints — the same primitive vaultTier2Queue uses.
 //
 // Dependency injection for testability (mirrors makeEdgeStalenessAdapter in U6):
 //   makeTier2QueueAdapter(fn) creates an adapter that calls
@@ -27,14 +31,12 @@
 //   pending-unchecked with no covering verdict in the current live set.
 
 import type { AccessContext } from "../../access/rbac.js";
-import { canRead } from "../../access/rbac.js";
 import { upstreamStaleness } from "../../curation/edge-staleness.js";
 import { listEdges } from "../../curation/edges.js";
 import { readProvenanceLog } from "../../curation/provenance.js";
-import { sourceVerifiable } from "../../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../../curation/tension-access.js";
 import { readTier2Verdicts } from "../../curation/tier2.js";
 import { loadDocuments } from "../../curation/vault-docs.js";
-import { collectionForPath } from "../../storage/index-db.js";
 import { openIndexForAccessOrNull } from "../../tools/search.js";
 import type { Tier2WorkItem } from "../../tools/tier2.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
@@ -103,8 +105,9 @@ type Tier2ItemsFn = (vaultRoot: string) => Promise<Tier2WorkItem[]>;
  * In tests, inject a function that returns pre-canned Tier2WorkItem rows.
  * In production, use the real loading path via `tier2QueueAdapter`.
  *
- * RBAC is enforced by the artifact's collection — filtering happens here in
- * the adapter, not in the injected function.
+ * RBAC requires BOTH artifact AND unit readable (matching vaultTier2Queue),
+ * because the finding names the unit and must not disclose an unreadable
+ * upstream. Uses sourceReadable() from tension-access.ts for both endpoints.
  */
 export function makeTier2QueueAdapter(itemsFn: Tier2ItemsFn): FindingSourceAdapter {
   return {
@@ -119,9 +122,12 @@ export function makeTier2QueueAdapter(itemsFn: Tier2ItemsFn): FindingSourceAdapt
         const findings: Finding[] = [];
 
         for (const item of items) {
-          // RBAC: filter by ARTIFACT collection (R17).
-          const collection = collectionForPath(db, item.artifact);
-          if (!canRead(access.role, collection)) continue;
+          // RBAC: BOTH artifact AND unit must be readable.
+          // The finding names the unit path; surfacing it when the unit's
+          // collection is denied would disclose the existence of an unreadable
+          // upstream. Matches vaultTier2Queue's both-endpoints-readable policy.
+          if (!sourceReadable(db, access, item.artifact)) continue;
+          if (!sourceReadable(db, access, item.unit)) continue;
 
           findings.push(buildTier2Finding(item, nowIso));
         }
@@ -202,9 +208,10 @@ export const tier2QueueAdapter: FindingSourceAdapter = {
       for (const doc of loaded.value) {
         const artifact = doc.path;
 
-        // RBAC: filter by ARTIFACT collection (R17).
-        const collection = collectionForPath(db, artifact);
-        if (!canRead(access.role, collection)) continue;
+        // RBAC: BOTH artifact AND unit must be readable (matching vaultTier2Queue).
+        // The finding names the unit; if the unit's collection is denied the
+        // finding is omitted to prevent upstream existence disclosure.
+        if (!sourceReadable(db, access, artifact)) continue;
 
         // Compute upstream staleness for this artifact (compiled edges excluded
         // via consumes:[] — same as tools/tier2.ts:residualRows).
@@ -222,6 +229,9 @@ export const tier2QueueAdapter: FindingSourceAdapter = {
         // Only pending-unchecked rows go on the tier-2 board (residual queue).
         for (const row of rows) {
           if (row.staleness !== "pending-unchecked") continue;
+
+          // RBAC: unit must also be readable before we name it in the finding.
+          if (!sourceReadable(db, access, row.unit)) continue;
 
           const item: Tier2WorkItem = {
             artifact,

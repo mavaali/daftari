@@ -830,6 +830,100 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
   });
 
   // -------------------------------------------------------------------------
+  // Scenario 9b: RBAC — denied UNIT collection → finding omitted entirely.
+  //
+  // The finding target exposes the unit path; if the caller cannot read the
+  // unit's collection, the finding is omitted even when the artifact is
+  // readable. This matches vaultTier2Queue's both-endpoints-readable policy
+  // and prevents upstream existence disclosure (#455).
+  // -------------------------------------------------------------------------
+  describe("Scenario 9b: RBAC omits finding when unit collection is denied", () => {
+    const pendingBrokenRowRestrictedUnit: UpstreamStaleness = {
+      unit: "restricted/secret-unit.md",
+      edge_class: "declared",
+      staleness: "pending-broken",
+      baseline: "2025-01-01T00:00:00.000Z",
+      changed_fields: ["body"],
+      reason: "tier-1: affected",
+    };
+    const pendingBrokenRowReadableUnit: UpstreamStaleness = {
+      unit: "notes/unit.md",
+      edge_class: "declared",
+      staleness: "pending-broken",
+      baseline: "2025-01-01T00:00:00.000Z",
+      changed_fields: ["body"],
+      reason: "tier-1: affected",
+    };
+
+    beforeEach(() => {
+      // Add a restricted unit doc to the vault for RBAC resolution
+      writeDoc(
+        vaultRoot,
+        "restricted/secret-unit.md",
+        frontmatter({ title: "Secret Unit", collection: "restricted", updated: "2025-01-01" }) +
+          "# Secret\n",
+      );
+    });
+
+    it("admin sees finding when unit is in restricted collection", async () => {
+      const adapter = makeEdgeStalenessAdapter((artifact) =>
+        artifact === "notes/artifact.md" ? [pendingBrokenRowRestrictedUnit] : [],
+      );
+      const findings = await adapter.list(vaultRoot, adminAccess);
+      const edgeFindings = findings.filter(
+        (f) =>
+          f.check === "edge-staleness" &&
+          f.target.kind === "tier2" &&
+          (f.target as Tier2Target).artifact === "notes/artifact.md" &&
+          (f.target as Tier2Target).unit === "restricted/secret-unit.md",
+      );
+      expect(edgeFindings.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("scoped analyst: artifact readable but unit in denied collection → finding OMITTED", async () => {
+      // artifact=notes/artifact.md is readable by scopedRole (notes collection)
+      // unit=restricted/secret-unit.md is NOT readable by scopedRole
+      const adapter = makeEdgeStalenessAdapter((artifact) =>
+        artifact === "notes/artifact.md" ? [pendingBrokenRowRestrictedUnit] : [],
+      );
+      const findings = await adapter.list(vaultRoot, scopedAccess);
+      const denied = findings.filter(
+        (f) =>
+          f.check === "edge-staleness" &&
+          f.target.kind === "tier2" &&
+          (f.target as Tier2Target).unit === "restricted/secret-unit.md",
+      );
+      // Must be zero — unit existence must not leak
+      expect(denied).toHaveLength(0);
+    });
+
+    it("scoped analyst sees readable-unit finding but not restricted-unit finding", async () => {
+      const adapter = makeEdgeStalenessAdapter((artifact) =>
+        artifact === "notes/artifact.md"
+          ? [pendingBrokenRowRestrictedUnit, pendingBrokenRowReadableUnit]
+          : [],
+      );
+      const findings = await adapter.list(vaultRoot, scopedAccess);
+      const edgeFindings = findings.filter((f) => f.check === "edge-staleness");
+      const units = edgeFindings.map((f) => (f.target as Tier2Target).unit);
+      expect(units).toContain("notes/unit.md");
+      expect(units).not.toContain("restricted/secret-unit.md");
+    });
+
+    it("omission is total — restricted unit path does not appear anywhere in denied findings", async () => {
+      const adapter = makeEdgeStalenessAdapter((artifact) =>
+        artifact === "notes/artifact.md" ? [pendingBrokenRowRestrictedUnit] : [],
+      );
+      const scopedFindings = await adapter.list(vaultRoot, scopedAccess);
+      for (const f of scopedFindings) {
+        if (f.target.kind === "tier2") {
+          expect((f.target as Tier2Target).unit).not.toMatch(/^restricted\//);
+        }
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Scenario 10: reproduces() — true when row still pending-broken, false after.
   // -------------------------------------------------------------------------
   describe("Scenario 10: reproduces() for edge-staleness", () => {
