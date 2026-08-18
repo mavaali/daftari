@@ -387,6 +387,14 @@ export interface DaftariConfig {
   federation?: FederationConfig;
 }
 
+export type GraphExpandSubset = "trigger" | "all" | "tensions";
+export interface GraphExpandConfig {
+  enabled: boolean;
+  cap: number;
+  tau: number;
+  subset: GraphExpandSubset;
+}
+
 export interface SearchTuningConfig {
   coverage: boolean;
   vecKnnK: number;
@@ -395,6 +403,12 @@ export interface SearchTuningConfig {
   // head into the list when absent. Default off until the hallucination-
   // judged bench decides; the deterministic mechanics ship gated.
   suppressSuperseded: boolean;
+  // off.1/MAV-154: one-hop edge expansion post-pass in vault_search. Default off
+  // — the $0 ceiling arm cleared but wild-alignment is unproven (bead off.6).
+  // `subset` picks the edge kinds (trigger = tensions + trigger-bearing
+  // derives_from, the ceiling winner). `tau` is the vector-cosine affinity floor;
+  // `cap` the fixed global add budget.
+  graphExpand: GraphExpandConfig;
 }
 
 export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
@@ -404,9 +418,15 @@ export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   // depending on budget, distractor load flat, K=512 byte-identical to 256.
   vecKnnK: 256,
   suppressSuperseded: false,
+  graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
 };
 
-const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k", "suppress_superseded"] as const;
+const RECOGNISED_SEARCH_KEYS = [
+  "coverage",
+  "vec_knn_k",
+  "suppress_superseded",
+  "graph_expand",
+] as const;
 
 // Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
 // larger than any realistic per-query candidate need and the config is more
@@ -1703,6 +1723,52 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
         );
       }
       search.vecKnnK = block.vec_knn_k;
+    }
+    if (block.graph_expand !== undefined) {
+      if (
+        typeof block.graph_expand !== "object" ||
+        block.graph_expand === null ||
+        Array.isArray(block.graph_expand)
+      ) {
+        return err(new Error("malformed config: 'search.graph_expand' must be a mapping"));
+      }
+      const ge = block.graph_expand as Record<string, unknown>;
+      const g = { ...SEARCH_TUNING_DEFAULTS.graphExpand };
+      if (ge.enabled !== undefined) {
+        if (typeof ge.enabled !== "boolean") {
+          return err(
+            new Error("malformed config: 'search.graph_expand.enabled' must be true or false"),
+          );
+        }
+        g.enabled = ge.enabled;
+      }
+      if (ge.cap !== undefined) {
+        if (typeof ge.cap !== "number" || !Number.isInteger(ge.cap) || ge.cap < 0) {
+          return err(
+            new Error("malformed config: 'search.graph_expand.cap' must be a non-negative integer"),
+          );
+        }
+        g.cap = ge.cap;
+      }
+      if (ge.tau !== undefined) {
+        if (typeof ge.tau !== "number" || ge.tau < -1 || ge.tau > 1) {
+          return err(
+            new Error("malformed config: 'search.graph_expand.tau' must be a number in [-1, 1]"),
+          );
+        }
+        g.tau = ge.tau;
+      }
+      if (ge.subset !== undefined) {
+        if (ge.subset !== "trigger" && ge.subset !== "all" && ge.subset !== "tensions") {
+          return err(
+            new Error(
+              "malformed config: 'search.graph_expand.subset' must be trigger | all | tensions",
+            ),
+          );
+        }
+        g.subset = ge.subset;
+      }
+      search.graphExpand = g;
     }
   }
 
