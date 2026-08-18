@@ -24,7 +24,7 @@ import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import { setCoverageEnabled } from "./search/coverage.js";
-import { setVecKnnK } from "./search/hybrid.js";
+import { setDefaultWeights, setVecKnnK } from "./search/hybrid.js";
 import {
   markIndexError,
   markIndexing,
@@ -120,6 +120,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // per process, same lifecycle as the provider above.
   setCoverageEnabled(config.value.search.coverage);
   setVecKnnK(config.value.search.vecKnnK);
+  setDefaultWeights(config.value.search.weights);
   setSuppressSuperseded(config.value.search.suppressSuperseded);
 
   // Resolve the access identity. With no --role the server runs as the

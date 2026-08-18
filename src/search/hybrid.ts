@@ -38,7 +38,22 @@ export interface HybridWeights {
   vector: number;
 }
 
-export const DEFAULT_WEIGHTS: HybridWeights = { bm25: 0.5, vector: 0.5 };
+// Fusion default: 0.8/0.2, measured (2026-08-18 weight sweep on the frozen
+// corpus): the recall-vs-weight curve is an inverted U with a broad 0.7-0.9
+// plateau beating both the historical 0.5/0.5 (the worst measured vector-on
+// setting) and pure lexical at most budgets — the vector arm earns its keep
+// as a tiebreaker, not a co-ranker. `search.weights` in config.yaml
+// overrides per vault, applied at startup like the other retrieval knobs;
+// callers can still pass per-query weights.
+let defaultWeights: HybridWeights = { ...SEARCH_TUNING_DEFAULTS.weights };
+
+export function setDefaultWeights(w: HybridWeights): void {
+  defaultWeights = { ...w };
+}
+
+export function getDefaultWeights(): HybridWeights {
+  return defaultWeights;
+}
 
 export interface HybridHit {
   path: string;
@@ -498,7 +513,7 @@ export async function hybridSearch(
   query: string,
   options: HybridSearchOptions = {},
 ): Promise<Result<HybridSearchResult, Error>> {
-  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const weights = options.weights ?? getDefaultWeights();
   const limit = options.limit ?? 10;
   // Default flipped to "chunk" in v1.29.0: chunk-level BM25 recovers the
   // multi-topic-document dilution gap (RB recall + SQuAD retrieval) and produces
@@ -579,7 +594,7 @@ export function relatedSearchFromSeed(
   excludePath: string | null,
   options: HybridSearchOptions = {},
 ): { hits: HybridHit[]; vectorUsed: boolean } {
-  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const weights = options.weights ?? getDefaultWeights();
   const limit = options.limit ?? 10;
   const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
 
@@ -614,7 +629,7 @@ export function relatedSearch(
   path: string,
   options: HybridSearchOptions = {},
 ): Result<RelatedSearchResult, Error> {
-  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const weights = options.weights ?? getDefaultWeights();
   const seed = extractRelatedSeed(db, path);
   if (!seed.ok) return seed;
 

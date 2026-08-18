@@ -36,8 +36,8 @@ import {
 } from "../search/coverage.js";
 import { resolveCurrentSource } from "../search/current-source.js";
 import {
-  DEFAULT_WEIGHTS,
   extractRelatedSeed,
+  getDefaultWeights,
   type HybridHit,
   type HybridSearchResult,
   type HybridWeights,
@@ -137,7 +137,7 @@ function parseWeights(raw: unknown): HybridWeights {
       return { bm25, vector };
     }
   }
-  return DEFAULT_WEIGHTS;
+  return getDefaultWeights();
 }
 
 // Shared numeric-arg posture: a positive finite number floors and clamps to
