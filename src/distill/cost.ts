@@ -46,7 +46,6 @@
 //   are enforced by U2/U3. This module RECORDS the actuals from ExtractOutcome
 //   and ESTIMATES for pre-flight; it does not duplicate the cap logic.
 
-import { randomUUID } from "node:crypto";
 import { estimateCostUSD, isModelPriced } from "../consolidate/constants.js";
 import type { DistillConfig } from "../utils/config.js";
 import type { Chunk } from "./chunk.js";
@@ -124,6 +123,12 @@ export interface BuildReceiptOpts {
   zdr: boolean;
   /** Optional source identifier (file path, channel id, etc.). */
   sourceId?: string;
+  /**
+   * The run's staging id — the SAME makeRunId() value stamped into each
+   * artifact body's provenance block (propose.ts). Persisted on the receipt so
+   * a receipt on disk joins to the claims it produced (#423). Not a fresh UUID.
+   */
+  runId: string;
 }
 
 /**
@@ -236,7 +241,7 @@ export function planDistill(chunks: Chunk[], config: DistillConfig): DistillPlan
  * receipt; this function only constructs it.
  */
 export function buildReceipt(opts: BuildReceiptOpts): DistillReceipt {
-  const { outcome, config, provider, zdr, sourceId } = opts;
+  const { outcome, config, provider, zdr, sourceId, runId } = opts;
 
   const claimsProduced = outcome.claims.length;
 
@@ -249,7 +254,7 @@ export function buildReceipt(opts: BuildReceiptOpts): DistillReceipt {
   const approxCostUSD = costFromLlmCalls(outcome.llmCalls, config);
 
   return {
-    runId: randomUUID(),
+    runId,
     ...(sourceId !== undefined ? { sourceId } : {}),
     model: config.model,
     provider,
