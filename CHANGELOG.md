@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-08-19
+
+### Added
+
+- **Board browser-login shim** (#458) — a signed, HttpOnly session cookie so an operator can reach the `/board` surface from a browser, which cannot send `Authorization: Bearer` on navigation. A new `server.auth.session` block names the env vars carrying the HMAC signing key and the login password, plus the identity a successful login receives (`maps_to`) and a configurable lifetime; the login form (`GET/POST /board/login`) mints the cookie (`HttpOnly; SameSite=Strict`, `Secure` when `transport_security: external`) and `/board/logout` clears it. The cookie is a third credential type composable with — and consulted only after — the existing bearer/OAuth paths: an invalid cookie is never a guest downgrade, a browser hitting `GET /board` unauthenticated is redirected to the login page while API clients still receive a `401`, and the signing key must be at least 32 bytes or the server refuses to start. State-changing board requests authenticated by cookie require a double-submit CSRF token (bearer-authenticated callers are exempt), and the board page now renders working accept/defer/dismiss/resolve controls plus a sign-out action.
+
 ## [3.8.0] - 2026-08-19
 
 ### Added
