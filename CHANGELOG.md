@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-08-19
+
 ### Added
 
+- **Vault Board** (#455) — a finding-centric curation surface that turns the detection surfaces (lint, staleness, edge-staleness, staged actions, tier-2 queue, tensions) into durable, dispositionable cards with stable identity across runs and an append-only disposition ledger (`.daftari/board-dispositions.jsonl`, operator-local, gitignored). Bounded agent authority is enforced by construction: a new `dispose` role capability gates human disposition (`vault_board_dispose` — accept/defer/dismiss/reassign), `vault_board_resolve` records a **system-authored** resolution only when the originating deterministic check no longer reproduces, and reopen-on-reappearance is emitted solely by reconciliation — no autonomous dismissal or prioritization. Findings and dispositions carry the vault's RBAC and no-existence-disclosure guarantees (both endpoints of an upstream edge must be readable; byte-identical errors for hidden vs absent, at both the tool and HTTP layers). Ships three MCP tools (`vault_board_list` / `vault_board_dispose` / `vault_board_resolve`) plus a `/board` + `/api/board` surface mounted in the `serve` path behind the existing bearer/JWT `authenticate()` and ops floor; the board page is server-rendered and XSS-escaped, with New / Accepted / Waiting / Resolved / Dismissed columns and per-collection/check/certainty/owner/age/document filters. Reconciliation is read-time — the board writes nothing when unused.
 - **Version discovery** — `daftari --version` (and `-v`) prints the running version and exits. The version is also surfaced in-band: `vault_status` now returns a `serverVersion` field, so an agent already connected over MCP — which never sees the `initialize`-handshake `serverInfo` — can read the running version through a callable tool.
 - **Distill receipts** (#423) — `buildReceipt` now carries the run's staging `runId` (the id stamped into artifact bodies) instead of a throwaway UUID, and each receipt is persisted to `.daftari/distill-receipts.jsonl` (operator-local, gitignored, never MCP-exposed) — so a run's provider/ZDR/cost facts join to the claims it produced.
 
