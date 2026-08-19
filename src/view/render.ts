@@ -128,7 +128,8 @@ export function escHtml(s: unknown): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
 }
 
 // Serialize a value for safe embedding inside an inline <script>. JSON.stringify
