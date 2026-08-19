@@ -608,3 +608,47 @@ describe("page structure", () => {
     expect(html).toContain("high");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Instrument-panel table (2026-08-18 redesign) — source grouping, the injected
+// clock for the age column, and render determinism.
+// ---------------------------------------------------------------------------
+
+describe("panel table — source groups and age", () => {
+  it("groups findings under a source group header", () => {
+    const f1 = baseFinding({ source: "staleness", target: { kind: "staleness", path: "a.md" } });
+    const f2 = baseFinding({
+      source: "tension",
+      target: { kind: "tension", tensionId: "t-1" },
+      evidence: { sourceA: "x.md", sourceB: "y.md" },
+    });
+    const html = renderBoardPage(boardWith([f1, f2]));
+    // One group header per non-empty source, carrying the source name.
+    expect(html).toMatch(/class="bgroup"><span class="gsrc[^"]*">staleness</);
+    expect(html).toMatch(/class="bgroup"><span class="gsrc[^"]*">tension</);
+    // Empty sources render no group header.
+    expect(html).not.toMatch(/class="bgroup"><span class="gsrc[^"]*">lint</);
+  });
+
+  it("derives the age column from first_seen against the injected now", () => {
+    const firstSeen = "2026-01-01T00:00:00.000Z";
+    const now = Date.parse(firstSeen) + 3 * 86_400_000;
+    const f = baseFinding({ first_seen: firstSeen });
+    const html = renderBoardPage(boardWith([f]), undefined, now);
+    expect(html).toContain(`<span class="bage">3d</span>`);
+  });
+
+  it("is deterministic for a fixed now (pure renderer contract)", () => {
+    const f = baseFinding({ disposition: "waiting" });
+    const board = boardWith([f]);
+    const now = Date.parse("2026-08-18T00:00:00.000Z");
+    expect(renderBoardPage(board, undefined, now)).toBe(renderBoardPage(board, undefined, now));
+  });
+
+  it("marks the row's disposition in the N/A/W/R/D state indicator", () => {
+    const f = baseFinding({ disposition: "waiting" });
+    const html = renderBoardPage(boardWith([f]));
+    expect(html).toContain('title="disposition: waiting"');
+    expect(html).toMatch(/class="dseg on-waiting"/);
+  });
+});

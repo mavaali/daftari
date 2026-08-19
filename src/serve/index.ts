@@ -410,15 +410,19 @@ function renderLoginPage(error?: string): string {
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>Board — sign in</title><style>` +
-    `body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0d1117;color:#c9d1d9;` +
+    // Instrument-panel palette — mirrors the :root tokens in view/pages.ts
+    // (this page is standalone by design, so the values are inlined).
+    `body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#141513;color:#d8d6cb;` +
     `display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}` +
-    `form{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:28px 30px;width:280px}` +
-    `h1{font-size:15px;margin:0 0 4px;letter-spacing:.04em;text-transform:uppercase}` +
-    `p.sub{font-size:11px;color:#8b949e;margin:0 0 18px}` +
-    `input{width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:7px;` +
-    `color:#c9d1d9;padding:9px 11px;font:inherit;margin-bottom:14px}` +
-    `button{width:100%;background:#238636;border:0;border-radius:7px;color:#fff;padding:9px;font:inherit;cursor:pointer}` +
-    `p.err{color:#f85149;font-size:12px;margin:0 0 12px}` +
+    `form{background:#191a18;border:1px solid #32332e;padding:28px 30px;width:280px}` +
+    `h1{font-size:14px;font-weight:700;margin:0 0 4px;letter-spacing:.12em;text-transform:uppercase;color:#f2f0e6}` +
+    `p.sub{font-size:11px;color:#8f8e83;margin:0 0 18px}` +
+    `input{width:100%;box-sizing:border-box;background:#141513;border:1px solid #4a4b44;` +
+    `color:#d8d6cb;padding:9px 11px;font:inherit;margin-bottom:14px}` +
+    `button{width:100%;background:transparent;border:1px solid #3fd68c;color:#3fd68c;padding:9px;` +
+    `font:inherit;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}` +
+    `button:hover{background:rgba(63,214,140,.12)}` +
+    `p.err{color:#e8713d;font-size:12px;margin:0 0 12px}` +
     `</style></head><body><form method="post" action="/board/login">` +
     `<h1>Vault Board</h1><p class="sub">Enter the board password to continue.</p>` +
     errorHtml +
