@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-08-19
+
+### Changed
+
+- **Instrument-panel view redesign** (#460) — the `daftari view` / `daftari serve` web surface moves to a single dark instrument-panel system, decided on a design canvas after exploring a refined kanban, a triage queue, and a ledger table against the shipped board: flat, square, hairline rules, mono-dominant chrome, with the epistemic colors as the only color on screen (green = strong, amber = caution, orange = weak/hazard, rose accent = contested — the keystone signal keeps its own channel). The vault board's five kanban columns become a disposition stat strip over one dense findings table grouped by source: disposition is a cell, not a place. Rows carry the certainty word plus tone mark, back-links, evidence, waiting rationale/expiry, an N/A/W/R/D state indicator, and the accept/defer/dismiss/resolve controls unchanged (`data-id`/`data-board-action`/CSRF wiring byte-identical). The table iterates the canonical `FINDING_SOURCES`, so a future source adapter cannot be counted but silently unrendered; the age column derives from an injected clock, keeping the renderer pure; narrow viewports stack rows into cards. `/doc`, `/graph`, the index, dashboard, and `/board/login` all adopt the palette; the graph client and legend resolve colors from the CSS tokens so the palette lives in one place.
+
+### Fixed
+
+- **`manifest.json` version drift** (#461) — the `.mcpb` manifest was still at 3.7.0, having drifted through the 3.8.0 and 3.9.0 releases; it now tracks the package version again.
+
 ## [3.9.0] - 2026-08-19
 
 ### Added
