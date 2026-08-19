@@ -16,7 +16,7 @@
 //     fields; values reflect the currently-applied filters (R26).
 //   - Back-links (R28):
 //       lint/staleness → /doc/<path>
-//       staged         → /doc/<evidence.target_path>
+//       staged         → /doc/<evidence.targetPath>
 //       tension        → /doc/<evidence.sourceA> and /doc/<evidence.sourceB>
 //       tier2          → /doc/<target.artifact> and /doc/<target.unit>
 //   - Disposition buttons: DEFERRED to U12. Cards are read-only — disposition
@@ -120,8 +120,8 @@ function renderTargetLinks(target: FindingTarget, evidence: Record<string, unkno
       return `<a href="/doc/${encodeURI(p)}">${escHtml(p)}</a>`;
     }
     case "staged": {
-      // Staged findings carry the target document in evidence.target_path.
-      const tp = (evidence as { target_path?: string }).target_path;
+      // Staged findings carry the target document in evidence.targetPath.
+      const tp = (evidence as { targetPath?: string }).targetPath;
       if (typeof tp === "string") {
         return (
           `<a href="/doc/${encodeURI(tp)}">${escHtml(tp)}</a>` +

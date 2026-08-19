@@ -32,7 +32,7 @@
 //       Rationale: sourceA is the "primary" side of a tension; it is the
 //       document the triage owner is most likely curating. Documented here
 //       so U12/U13 can surface this choice.
-//     - staged target: first path segment of the finding's evidence.target_path
+//     - staged target: first path segment of the finding's evidence.targetPath
 //       (the path the staged action targets)
 //     - tier2 target: first path segment of artifact
 //       Rationale: artifact is the dependent document, which is the entity
@@ -54,7 +54,7 @@
 //
 //   document
 //     - lint/staleness: target.path === document.
-//     - staged: evidence.target_path === document.
+//     - staged: evidence.targetPath === document.
 //     - tension: evidence.sourceA === document || evidence.sourceB === document.
 //     - tier2: target.artifact === document || target.unit === document.
 //
@@ -140,8 +140,8 @@ function collectionOf(finding: Finding): string | undefined {
       return t.path.split("/")[0];
 
     case "staged": {
-      // Staged actions carry the target_path in evidence.
-      const tp = (finding.evidence as { target_path?: string }).target_path;
+      // Staged actions carry the targetPath in evidence.
+      const tp = (finding.evidence as { targetPath?: string }).targetPath;
       if (typeof tp === "string") return tp.split("/")[0];
       return undefined;
     }
@@ -175,7 +175,7 @@ function documentMatches(finding: Finding, document: string): boolean {
     case "staleness":
       return t.path === document;
     case "staged": {
-      const tp = (finding.evidence as { target_path?: string }).target_path;
+      const tp = (finding.evidence as { targetPath?: string }).targetPath;
       return tp === document;
     }
     case "tension": {

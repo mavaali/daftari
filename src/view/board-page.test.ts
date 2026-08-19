@@ -205,11 +205,11 @@ describe("R27 — per-finding card independence", () => {
     expect(cardCount).toBe(3);
   });
 
-  it("staged finding with no evidence.target_path renders staged:id tag without a /doc/ link", () => {
+  it("staged finding with no evidence.targetPath renders staged:id tag without a /doc/ link", () => {
     const f = baseFinding({
       source: "staged",
       target: { kind: "staged", stagedActionId: "sa-no-path" },
-      evidence: {}, // no target_path
+      evidence: {}, // no targetPath
       disposition: "new",
     });
     const html = renderBoardPage(boardWith([f]));
@@ -326,7 +326,7 @@ describe("R28 — card back-links", () => {
     const f = baseFinding({
       source: "staged",
       target: { kind: "staged", stagedActionId: "sa-001" },
-      evidence: { target_path: "decisions/retry.md" },
+      evidence: { targetPath: "decisions/retry.md" },
       disposition: "new",
     });
     const html = renderBoardPage(boardWith([f]));

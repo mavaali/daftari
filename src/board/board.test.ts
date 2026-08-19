@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
 import type { RoleConfig } from "../utils/config.js";
+import { renderBoardPage } from "../view/board-page.js";
 import { listBoard } from "./board.js";
 import { appendEvent, boardDispositionsPath } from "./ledger.js";
 import type { BoardColumn } from "./types.js";
@@ -671,7 +672,7 @@ describe("listBoard — Scenario 5: filters (R26)", () => {
       if (f.target.kind === "lint" || f.target.kind === "staleness") {
         expect(f.target.path.startsWith("notes/")).toBe(true);
       }
-      // staged: target_path resolved to notes/ — covered by engine's collection resolution
+      // staged: targetPath resolved to notes/ — covered by engine's collection resolution
       // tension: sourceA starts with "notes/" — documented semantic
     }
   });
@@ -851,5 +852,102 @@ describe("listBoard — Scenario 6: columns shape", () => {
       const col = result.columns[f.disposition as BoardColumn];
       expect(col.some((c) => c.identity_key === f.identity_key)).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 7: Staged evidence seam — end-to-end contract (#455)
+//
+// Verifies that a real staged adapter finding (evidence.targetPath, NOT
+// evidence.target_path) flows through listBoard and:
+//   (a) is matched by collection=<its collection> filter (collectionOf)
+//   (b) is matched by document=<its targetPath> filter (documentMatches)
+//   (c) its back-link renders to /doc/<targetPath> via renderBoardPage
+//
+// This test uses the REAL staged adapter (via listBoard with a filesystem
+// vault), not a hand-written mock, so it fails if the adapter and engine
+// disagree on the field name.
+// ---------------------------------------------------------------------------
+
+describe("listBoard — Scenario 7: staged evidence targetPath seam (#455)", () => {
+  let vaultRoot: string;
+
+  beforeEach(() => {
+    vaultRoot = mkdtempSync(join(tmpdir(), "daftari-board-staged-seam-"));
+    writeConfig(vaultRoot, {
+      admin: { read: ["*"], write: ["*"], promote: true, ratify: true },
+    });
+
+    // notes/ collection document (needed for RBAC collection resolution)
+    writeDoc(
+      vaultRoot,
+      "notes/target-doc.md",
+      frontmatter({ title: "Target", collection: "notes", updated: "2020-01-01", ttl_days: null }) +
+        "# Target\n\nContent.\n",
+    );
+
+    // Staged action targeting notes/target-doc.md
+    writeStagedActionProposal(vaultRoot, {
+      id: "seam-001",
+      action_type: "promote",
+      target_path: "notes/target-doc.md",
+      proposed_by: "human:admin",
+      proposed_at: "2025-12-01T00:00:00Z",
+      expires_at: "2027-01-01T00:00:00Z",
+      status: "pending",
+      rationale: "seam test promote",
+      proposed_diff: "",
+    });
+  });
+
+  afterEach(() => {
+    rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  it("(a) staged finding is matched by collection='notes' filter", async () => {
+    const filtered = await listBoard(vaultRoot, adminAccess, { collection: "notes" }, FIXED_NOW);
+    const stagedFindings = filtered.all.filter((f) => f.source === "staged");
+    expect(stagedFindings.length).toBeGreaterThan(0);
+    const seam = stagedFindings.find(
+      (f) => f.target.kind === "staged" && f.target.stagedActionId === "seam-001",
+    );
+    expect(seam).toBeDefined();
+  });
+
+  it("(b) staged finding is matched by document='notes/target-doc.md' filter", async () => {
+    const filtered = await listBoard(
+      vaultRoot,
+      adminAccess,
+      { document: "notes/target-doc.md" },
+      FIXED_NOW,
+    );
+    const stagedFindings = filtered.all.filter((f) => f.source === "staged");
+    expect(stagedFindings.length).toBeGreaterThan(0);
+    const seam = stagedFindings.find(
+      (f) => f.target.kind === "staged" && f.target.stagedActionId === "seam-001",
+    );
+    expect(seam).toBeDefined();
+  });
+
+  it("(c) staged finding evidence uses targetPath (not target_path)", async () => {
+    const result = await listBoard(vaultRoot, adminAccess, undefined, FIXED_NOW);
+    const seam = result.all.find(
+      (f) =>
+        f.source === "staged" &&
+        f.target.kind === "staged" &&
+        f.target.stagedActionId === "seam-001",
+    );
+    expect(seam).toBeDefined();
+    // The adapter emits evidence.targetPath — verify the field name is correct
+    expect(seam!.evidence.targetPath).toBe("notes/target-doc.md");
+    // The wrong field name must NOT be present
+    expect((seam!.evidence as Record<string, unknown>).target_path).toBeUndefined();
+  });
+
+  it("(d) renderBoardPage renders back-link to /doc/notes/target-doc.md (not /doc/undefined)", async () => {
+    const result = await listBoard(vaultRoot, adminAccess, undefined, FIXED_NOW);
+    const html = renderBoardPage(result);
+    expect(html).toContain('href="/doc/notes/target-doc.md"');
+    expect(html).not.toContain('href="/doc/undefined"');
   });
 });
