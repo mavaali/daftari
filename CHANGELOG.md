@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-08-19
+
+### Changed
+
+- **Board: instrument-panel redesign** (#460) — the `/board` view drops the five-column kanban layout for a dense, single-table view: a stat strip of per-disposition counts (New/Accepted/Waiting/Resolved/Dismissed) sits above one table of findings grouped by source (lint, staleness, tension, staged, tier-2), with disposition rendered as a compact N/A/W/R/D indicator cell rather than a card's position. A waiting row shows the rationale/expiry from its most recent human ledger event inline. The filter form, back-links to source documents/tensions, and the authenticated Accept/Defer/Dismiss/Resolve action buttons carry over unchanged from the prior card layout, as does per-vault RBAC and XSS-escaping of all vault-derived text. `renderBoardPage` stays a pure function (board state in, HTML string out — no tool calls).
+
 ## [3.9.0] - 2026-08-19
 
 ### Added
