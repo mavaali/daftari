@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.1] - 2026-08-19
+
+### Fixed
+
+- **Board login autofill** (#463) — the `/board` sign-in form was a lone password input, so browser password managers skipped it (no save/autofill offer, forcing a retype each sign-in). It now pairs the password with a `username` field prefilled from the configured session user (`maps_to.user`), `autocomplete="username"`, `readonly` — the server ignores it, it exists only as an autofill anchor. Fully addresses Chrome; Safari still requires an `https` origin (a bare-IP `http://` origin is non-saveable by design).
+
 ## [3.10.0] - 2026-08-19
 
 ### Changed
