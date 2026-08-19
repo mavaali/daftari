@@ -402,9 +402,17 @@ function writeRedirect(res: ServerResponse, location: string, setCookies: string
 // Minimal, self-contained login page (bead 7q9). No external assets; a single
 // password field POSTing form-encoded to /board/login. `error` renders a
 // message after a failed attempt.
-function renderLoginPage(error?: string): string {
+function renderLoginPage(error?: string, username?: string): string {
   const errorHtml = error
     ? `<p class="err">${error.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</p>`
+    : "";
+  // A username field paired with the password input lets browser password
+  // managers recognize this as a login form and offer save/autofill; a lone
+  // password box is skipped. The user is fixed by config (maps_to.user), so it
+  // is prefilled and readonly — the server ignores it, it exists only as an
+  // autofill anchor.
+  const userHtml = username
+    ? `<input type="text" name="username" value="${username.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c] as string)}" autocomplete="username" aria-label="User" readonly>`
     : "";
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
@@ -426,6 +434,7 @@ function renderLoginPage(error?: string): string {
     `</style></head><body><form method="post" action="/board/login">` +
     `<h1>Vault Board</h1><p class="sub">Enter the board password to continue.</p>` +
     errorHtml +
+    userHtml +
     `<input type="password" name="password" autofocus autocomplete="current-password" aria-label="Board password">` +
     `<button type="submit">Sign in</button></form></body></html>`
   );
@@ -771,7 +780,7 @@ export function startHttpServer(
       const secure = config.server.transportSecurity === "external";
 
       if (url.pathname === "/board/login" && req.method === "GET") {
-        writeHtml(res, 200, renderLoginPage());
+        writeHtml(res, 200, renderLoginPage(undefined, session.user));
         return;
       }
 
@@ -804,7 +813,7 @@ export function startHttpServer(
         if (!sameLength || !equal) {
           chargePenalty(penaltyBox, loginRemote, Date.now());
           audit({ outcome: "deny-401", remote: loginRemote, method: "POST", path: "/board/login" });
-          writeHtml(res, 401, renderLoginPage("Incorrect password."));
+          writeHtml(res, 401, renderLoginPage("Incorrect password.", session.user));
           return;
         }
         const nowSec = Math.floor(Date.now() / 1000);

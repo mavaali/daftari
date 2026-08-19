@@ -182,6 +182,33 @@ describe("board login shim — session configured", () => {
     expect(body).toContain("Vault Board");
   });
 
+  it("bdd: GET /board/login → carries a username field (configured user) for autofill", async () => {
+    const res = await fetch(u(handle.port, "/board/login"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // Password managers need a username field paired with the password input to
+    // offer save/autofill; a lone password box is skipped. The user is fixed by
+    // config (maps_to.user), so it is prefilled + readonly.
+    expect(body).toContain('name="username"');
+    expect(body).toContain('autocomplete="username"');
+    expect(body).toContain('value="human:mihir"');
+    // Must appear before the password field so the pair is recognized in order.
+    expect(body.indexOf('name="username"')).toBeLessThan(body.indexOf('name="password"'));
+  });
+
+  it("bdd: wrong-password re-render also carries the username field", async () => {
+    const res = await fetch(u(handle.port, "/board/login"), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: "nope" }).toString(),
+      redirect: "manual",
+    });
+    expect(res.status).toBe(401);
+    const body = await res.text();
+    expect(body).toContain('name="username"');
+    expect(body).toContain('value="human:mihir"');
+  });
+
   it("U5: POST /board/login with wrong password → 401", async () => {
     const res = await fetch(u(handle.port, "/board/login"), {
       method: "POST",
