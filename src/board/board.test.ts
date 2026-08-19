@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
 import type { RoleConfig } from "../utils/config.js";
-import { type BoardFilters, listBoard } from "./board.js";
+import { listBoard } from "./board.js";
 import { appendEvent, boardDispositionsPath } from "./ledger.js";
 import type { BoardColumn } from "./types.js";
 
@@ -118,7 +118,7 @@ function writeStagedActionProposal(
   } catch {
     existing = "";
   }
-  writeFileSync(filePath, existing + JSON.stringify(record) + "\n", "utf-8");
+  writeFileSync(filePath, `${existing + JSON.stringify(record)}\n`, "utf-8");
 }
 
 function writeTension(
@@ -155,7 +155,7 @@ function writeTension(
   } catch {
     existing = "";
   }
-  writeFileSync(filePath, existing + `\n${lines.join("\n")}\n`, "utf-8");
+  writeFileSync(filePath, `${existing}\n${lines.join("\n")}\n`, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
@@ -246,12 +246,12 @@ function seedMixedVault(): string {
   writeDoc(
     vaultRoot,
     "notes/expired-doc.md",
-    frontmatter({
+    `${frontmatter({
       title: "Expired",
       collection: "notes",
       updated: STALE_DATE,
       ttl_days: 90,
-    }) + "# Expired\n",
+    })}# Expired\n`,
   );
 
   // Staged: pending action against notes/orphan-doc.md
@@ -376,34 +376,34 @@ describe("listBoard — Scenario 2: RBAC role fixtures", () => {
     writeDoc(
       vaultRoot,
       "notes/expired-doc.md",
-      frontmatter({
+      `${frontmatter({
         title: "Expired Notes",
         collection: "notes",
         updated: STALE_DATE,
         ttl_days: 90,
-      }) + "# Expired\n",
+      })}# Expired\n`,
     );
 
     // restricted/ collection — hidden from scopedRole
     writeDoc(
       vaultRoot,
       "restricted/secret-orphan.md",
-      frontmatter({
+      `${frontmatter({
         title: "Secret Orphan",
         collection: "restricted",
         updated: "2020-01-01",
         ttl_days: null,
-      }) + "# Secret\n\nNo one links here.\n",
+      })}# Secret\n\nNo one links here.\n`,
     );
     writeDoc(
       vaultRoot,
       "restricted/secret-expired.md",
-      frontmatter({
+      `${frontmatter({
         title: "Secret Expired",
         collection: "restricted",
         updated: STALE_DATE,
         ttl_days: 90,
-      }) + "# Secret Expired\n",
+      })}# Secret Expired\n`,
     );
   });
 
@@ -608,24 +608,24 @@ describe("listBoard — Scenario 5: filters (R26)", () => {
     writeDoc(
       vaultRoot,
       "notes/expired-doc.md",
-      frontmatter({
+      `${frontmatter({
         title: "Expired",
         collection: "notes",
         updated: STALE_DATE,
         ttl_days: 90,
-      }) + "# Expired\n",
+      })}# Expired\n`,
     );
 
     // decisions/ collection
     writeDoc(
       vaultRoot,
       "decisions/orphan-decision.md",
-      frontmatter({
+      `${frontmatter({
         title: "Orphan Decision",
         collection: "decisions",
         updated: "2020-01-01",
         ttl_days: null,
-      }) + "# Decision\n\nNo one links here.\n",
+      })}# Decision\n\nNo one links here.\n`,
     );
 
     // Staged action

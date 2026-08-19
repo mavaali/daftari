@@ -171,12 +171,12 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     writeDoc(
       vaultRoot,
       "notes/artifact.md",
-      frontmatter({ title: "Artifact", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Artifact", collection: "notes" })}# Body\n`,
     );
     writeDoc(
       vaultRoot,
       "notes/unit.md",
-      frontmatter({ title: "Unit", collection: "notes" }) + "# Unit body\n",
+      `${frontmatter({ title: "Unit", collection: "notes" })}# Unit body\n`,
     );
   });
 
@@ -298,7 +298,7 @@ describe("makeTier2QueueAdapter — Scenario 2: covered row → disappears from 
     writeDoc(
       vaultRoot,
       "notes/artifact.md",
-      frontmatter({ title: "Artifact", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Artifact", collection: "notes" })}# Body\n`,
     );
   });
 
@@ -338,7 +338,7 @@ describe("makeTier2QueueAdapter — Scenario 3: tuple identity stable across lis
     writeDoc(
       vaultRoot,
       "notes/artifact.md",
-      frontmatter({ title: "Artifact", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Artifact", collection: "notes" })}# Body\n`,
     );
   });
 
@@ -365,7 +365,7 @@ describe("makeTier2QueueAdapter — Scenario 3: tuple identity stable across lis
     writeDoc(
       vaultRoot,
       "notes/other-unit.md",
-      frontmatter({ title: "Other", collection: "notes" }) + "# Other\n",
+      `${frontmatter({ title: "Other", collection: "notes" })}# Other\n`,
     );
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
     const ids = findings.map((f) => f.identity_key);
@@ -392,18 +392,18 @@ describe("makeTier2QueueAdapter — Scenario 4: RBAC omission for denied artifac
     writeDoc(
       vaultRoot,
       "notes/artifact.md",
-      frontmatter({ title: "Artifact", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Artifact", collection: "notes" })}# Body\n`,
     );
     // restricted artifact — NOT readable by analyst
     writeDoc(
       vaultRoot,
       "restricted/secret-artifact.md",
-      frontmatter({ title: "Secret", collection: "restricted" }) + "# Secret\n",
+      `${frontmatter({ title: "Secret", collection: "restricted" })}# Secret\n`,
     );
     writeDoc(
       vaultRoot,
       "notes/unit.md",
-      frontmatter({ title: "Unit", collection: "notes" }) + "# Unit\n",
+      `${frontmatter({ title: "Unit", collection: "notes" })}# Unit\n`,
     );
   });
 
@@ -476,19 +476,19 @@ describe("makeTier2QueueAdapter — Scenario 4b: RBAC omission for denied unit c
     writeDoc(
       vaultRoot,
       "notes/artifact.md",
-      frontmatter({ title: "Artifact", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Artifact", collection: "notes" })}# Body\n`,
     );
     // unit in "restricted" — NOT readable by analyst
     writeDoc(
       vaultRoot,
       "restricted/secret-unit.md",
-      frontmatter({ title: "Secret Unit", collection: "restricted" }) + "# Secret\n",
+      `${frontmatter({ title: "Secret Unit", collection: "restricted" })}# Secret\n`,
     );
     // a second unit in "notes" — readable by analyst (control)
     writeDoc(
       vaultRoot,
       "notes/readable-unit.md",
-      frontmatter({ title: "Readable Unit", collection: "notes" }) + "# Readable\n",
+      `${frontmatter({ title: "Readable Unit", collection: "notes" })}# Readable\n`,
     );
   });
 
@@ -583,7 +583,7 @@ describe("tier2QueueAdapter (production) — Scenario 6: smoke test on empty vau
     writeDoc(
       vaultRoot,
       "notes/baseline.md",
-      frontmatter({ title: "Baseline", collection: "notes", sources: [] }) + "# Baseline\n",
+      `${frontmatter({ title: "Baseline", collection: "notes", sources: [] })}# Baseline\n`,
     );
   });
 

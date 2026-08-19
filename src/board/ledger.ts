@@ -201,7 +201,10 @@ export function currentDisposition(events: LedgerEvent[], now?: Date): CurrentDi
 
   // The latest event determines current state. The list is in append order
   // so the last element is the most recent.
-  const latest = events[events.length - 1]!;
+  // events.length > 0 is guaranteed by the guard above; index is in bounds.
+  const latest = events[events.length - 1];
+  if (latest === undefined)
+    throw new Error("currentDisposition: internal error: last event undefined");
 
   // Scan events in order to derive:
   //   owner   — updated on each reassign event (last reassign wins).
@@ -261,8 +264,12 @@ export function eventTimestamps(events: LedgerEvent[]): EventTimestamps {
   if (events.length === 0) {
     throw new Error("eventTimestamps: events array must not be empty");
   }
-  let first = events[0]!.at;
-  let last = events[0]!.at;
+  // events.length > 0 is guaranteed by the guard above; index 0 is in bounds.
+  const first0 = events[0];
+  if (first0 === undefined)
+    throw new Error("eventTimestamps: internal error: first event undefined");
+  let first = first0.at;
+  let last = first0.at;
   for (const evt of events) {
     if (evt.at < first) first = evt.at;
     if (evt.at > last) last = evt.at;

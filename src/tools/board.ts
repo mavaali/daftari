@@ -327,7 +327,8 @@ export async function vaultBoardResolve(
   // -------------------------------------------------------------------
   let descriptor: FindingDescriptor | undefined;
   for (let i = priorEvents.length - 1; i >= 0; i--) {
-    const ev = priorEvents[i]!;
+    const ev = priorEvents[i];
+    if (ev === undefined) throw new Error("vaultBoardResolve: internal error: index out of bounds");
     if (ev.descriptor !== undefined) {
       descriptor = ev.descriptor;
       break;
@@ -386,15 +387,17 @@ export async function vaultBoardResolve(
   // Return resolved:false / still_reproduces:false to signal idempotency
   // (the condition is gone, the finding is already resolved, nothing to do).
   // -------------------------------------------------------------------
-  const currentLatest = priorEvents[priorEvents.length - 1]!;
-  if (currentLatest.event === "resolved") {
+  // priorEvents.length > 0 is guaranteed by the guard at the top of Step 1.
+  const latestEvent = priorEvents[priorEvents.length - 1];
+  if (latestEvent === undefined)
+    throw new Error("vaultBoardResolve: internal error: last event undefined");
+  if (latestEvent.event === "resolved") {
     return ok({ resolved: false, still_reproduces: false });
   }
 
   // No longer reproduces — append a system-authored resolved event.
   // Carry the descriptor forward from the most recent ledger descriptor.
   // against_fingerprint from the latest event.
-  const latestEvent = priorEvents[priorEvents.length - 1]!;
 
   const resolvedRecord: Omit<LedgerEvent, "identity_scheme_version"> = {
     finding_id,

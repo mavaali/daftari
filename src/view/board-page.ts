@@ -325,7 +325,7 @@ export function renderBoardPage(boardState: BoardResult, filters?: BoardFilters)
   // Inline the board CSS as a scoped <style> block appended to the layout's
   // <head>. layout() wraps in a full HTML page with the shared CSS; we inject
   // the board additions via a <style> tag in the body (pre-content).
-  const bodyWithCss = `<style>${BOARD_CSS}</style>` + body;
+  const bodyWithCss = `<style>${BOARD_CSS}</style>${body}`;
 
   return layout("Vault Board", bodyWithCss);
 }

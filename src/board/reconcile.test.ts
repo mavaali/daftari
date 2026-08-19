@@ -702,7 +702,7 @@ describe("CASE C — descriptor-backed resolved findings", () => {
       label: "Updated label after reassign",
     };
 
-    const ledger = buildLedger([
+    const _ledger = buildLedger([
       makeEvent({
         finding_id: "f-desc-c3",
         event: "accept",

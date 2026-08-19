@@ -147,13 +147,13 @@ describe("lintAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/orphan-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Orphan",
           collection: "notes",
           // updated 1 day ago — not stale unless ttl is very short
           updated: "2025-01-01",
           ttl_days: null,
-        }) + "# Orphan\n\nNo one links here.\n",
+        })}# Orphan\n\nNo one links here.\n`,
       );
     });
 
@@ -300,12 +300,12 @@ describe("lintAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/stale-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Stale",
           collection: "notes",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Stale doc\n",
+        })}# Stale doc\n`,
       );
     });
 
@@ -358,12 +358,12 @@ describe("lintAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/broken-ref-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Broken Ref",
           collection: "notes",
           updated: "2025-01-01",
           sources: ["notes/nonexistent-source.md"],
-        }) + "# Broken Ref\n",
+        })}# Broken Ref\n`,
       );
     });
 
@@ -406,12 +406,12 @@ describe("lintAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/staleness-check.md",
-        frontmatter({
+        `${frontmatter({
           title: "Staleness Check",
           collection: "notes",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Staleness Check\n",
+        })}# Staleness Check\n`,
       );
     });
 
@@ -435,7 +435,7 @@ describe("lintAdapter", () => {
 
     it("reproduces returns false when the condition no longer holds (different now makes doc fresh)", async () => {
       // Using a "now" close to the updated date means the doc is NOT stale (< 90 days).
-      const freshNow = new Date(staleDate + "T00:00:00Z");
+      const freshNow = new Date(`${staleDate}T00:00:00Z`);
       freshNow.setDate(freshNow.getDate() + 10); // only 10 days after update → not stale
 
       const findings = await lintAdapter.list(vaultRoot, adminAccess, STALE_NOW);
@@ -556,7 +556,7 @@ describe("lintAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/any-doc.md",
-        frontmatter({ title: "Any", collection: "notes", updated: "2020-01-01" }) + "# Any\n",
+        `${frontmatter({ title: "Any", collection: "notes", updated: "2020-01-01" })}# Any\n`,
       );
     });
 
@@ -596,7 +596,7 @@ describe("lintAdapter", () => {
       // Build a body with 8001+ chars of verbatim-quoted text.
       // verbatimQuotes() matches "quoted text" and curly "quoted text" patterns.
       // Use straight-double-quoted spans, each on its own line.
-      const oneQuote = '"' + "x".repeat(200) + '"'; // 202 chars per quote
+      const oneQuote = `"${"x".repeat(200)}"`; // 202 chars per quote
       const manyQuotes = Array.from({ length: 41 }, () => oneQuote).join("\n"); // 41*202=8282 chars
       writeDoc(
         vaultRoot,
@@ -706,7 +706,7 @@ describe("lintAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/malformed-pins-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Malformed Pins",
           collection: "notes",
           updated: "2025-01-01",
@@ -716,7 +716,7 @@ describe("lintAdapter", () => {
             // end (3) < start (20) → malformed (different entry)
             `myrepo:src/bar.ts#L20-3@${sha}`,
           ],
-        }) + "# Malformed Pins\n",
+        })}# Malformed Pins\n`,
       );
     });
 

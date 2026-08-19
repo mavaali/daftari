@@ -109,7 +109,7 @@ describe("appendEvent + loadLedger — basic round-trip", () => {
 
     const events = loaded.value.byFinding.get("f-1");
     expect(events).toHaveLength(3);
-    expect(events!.map((e) => e.event)).toEqual(["new", "accept", "dismiss"]);
+    expect(events?.map((e) => e.event)).toEqual(["new", "accept", "dismiss"]);
   });
 
   it("appends events for multiple findings; each finding's list is independent", async () => {
@@ -656,8 +656,8 @@ describe("appendEvent — optional field preservation", () => {
     if (!loaded.ok) return;
 
     const events = loaded.value.byFinding.get("f-opts")!;
-    expect(events[0]!.rationale).toBe("waiting on upstream fix");
-    expect(events[0]!.expiry).toBe("2025-03-01T00:00:00Z");
+    expect(events[0]?.rationale).toBe("waiting on upstream fix");
+    expect(events[0]?.expiry).toBe("2025-03-01T00:00:00Z");
   });
 });
 
@@ -689,7 +689,7 @@ describe("loadLedger — structural guard for against_fingerprint and at", () =>
     // Inject a JSON line that parses but has no against_fingerprint
     appendFileSync(
       filePath,
-      JSON.stringify({
+      `${JSON.stringify({
         finding_id: "f-guard-bad1",
         event: "new",
         by: "human:alice",
@@ -697,7 +697,7 @@ describe("loadLedger — structural guard for against_fingerprint and at", () =>
         at: "2024-01-02T00:00:00Z",
         // against_fingerprint intentionally omitted
         identity_scheme_version: "v1",
-      }) + "\n",
+      })}\n`,
     );
 
     // Write another valid event after the bad line
@@ -741,7 +741,7 @@ describe("loadLedger — structural guard for against_fingerprint and at", () =>
     // Inject a JSON line that parses but has no at field
     appendFileSync(
       filePath,
-      JSON.stringify({
+      `${JSON.stringify({
         finding_id: "f-guard-at-bad",
         event: "new",
         by: "human:alice",
@@ -749,7 +749,7 @@ describe("loadLedger — structural guard for against_fingerprint and at", () =>
         // at intentionally omitted
         against_fingerprint: "fp-missing-at",
         identity_scheme_version: "v1",
-      }) + "\n",
+      })}\n`,
     );
 
     const loaded = await loadLedger(vaultRoot);

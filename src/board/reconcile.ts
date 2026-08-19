@@ -65,7 +65,8 @@ function priorHumanDisposition(events: LedgerEvent[]): BoardColumn {
   // then keep scanning to find the human event before it.
   let passedMarker = false;
   for (let i = events.length - 1; i >= 0; i--) {
-    const evt = events[i]!;
+    const evt = events[i];
+    if (evt === undefined) throw new Error("priorHumanDisposition: index out of bounds");
     if (!passedMarker) {
       if (evt.event === "resolved" || evt.event === "reopened") {
         passedMarker = true;
@@ -132,9 +133,6 @@ function columnForLiveWithLedger(
       // Already reopened (second run after first run persisted the event).
       // Don't re-emit. Column is the disposition before the reopened marker.
       return { column: priorHumanDisposition(events), shouldEmitReopen: false };
-
-    case "new":
-    case "reassign":
     default:
       // "new" system event or reassign as latest — treat as new for column.
       return { column: "new", shouldEmitReopen: false };
@@ -176,7 +174,8 @@ function buildSystemEvent(
 
 function latestDescriptor(events: LedgerEvent[]): FindingDescriptor | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
-    const evt = events[i]!;
+    const evt = events[i];
+    if (evt === undefined) throw new Error("latestDescriptor: index out of bounds");
     if (evt.descriptor !== undefined) {
       return evt.descriptor;
     }
@@ -197,13 +196,15 @@ function latestDescriptor(events: LedgerEvent[]): FindingDescriptor | undefined 
 
 function skeletonFinding(identity_key: string, events: LedgerEvent[]): Finding {
   const ts = eventTimestamps(events);
-  const lastEvent = events[events.length - 1]!;
+  const lastEvent = events[events.length - 1];
+  if (lastEvent === undefined) throw new Error("skeletonFinding: events array must not be empty");
 
   // Walk backward to find the latest owner from any reassign event, or fall
   // back to the last event's owner field.
   let owner: string | undefined;
   for (let i = events.length - 1; i >= 0; i--) {
-    const evt = events[i]!;
+    const evt = events[i];
+    if (evt === undefined) throw new Error("skeletonFinding: index out of bounds");
     if (evt.owner !== undefined) {
       owner = evt.owner;
       break;

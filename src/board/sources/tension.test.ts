@@ -106,7 +106,7 @@ function writeTension(
   } catch {
     existing = "";
   }
-  writeFileSync(filePath, existing + `\n${lines.join("\n")}\n`, "utf-8");
+  writeFileSync(filePath, `${existing}\n${lines.join("\n")}\n`, "utf-8");
 }
 
 // ---------------------------------------------------------------------------

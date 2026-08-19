@@ -216,7 +216,7 @@ roles:
     ratify: true
     dispose: true
 `);
-    expect(config.roles["human"]?.dispose).toBe(true);
+    expect(config.roles.human?.dispose).toBe(true);
   });
 
   it("defaults dispose to absent (falsy) when not declared", () => {
@@ -227,7 +227,7 @@ roles:
     write: ["*"]
 `);
     // absent means the key is omitted (undefined / falsy) — not forced to false
-    const role = config.roles["agent"];
+    const role = config.roles.agent;
     expect(role?.dispose).toBeFalsy();
   });
 
@@ -240,7 +240,7 @@ roles:
     promote: false
     ratify: true
 `);
-    const role = config.roles["analyst"];
+    const role = config.roles.analyst;
     // Existing fields untouched.
     expect(role?.read).toEqual(["competitive-intel", "pricing"]);
     expect(role?.promote).toBe(false);
@@ -319,7 +319,7 @@ roles:
     read: ["*"]
     write: ["*"]
 `);
-    expect(canDispose(config.roles["human"] ?? null)).toBe(true);
-    expect(canDispose(config.roles["agent"] ?? null)).toBe(false);
+    expect(canDispose(config.roles.human ?? null)).toBe(true);
+    expect(canDispose(config.roles.agent ?? null)).toBe(false);
   });
 });

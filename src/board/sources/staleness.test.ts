@@ -172,12 +172,12 @@ describe("ttlStalenessAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/expired-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Expired",
           collection: "notes",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Expired\n",
+        })}# Expired\n`,
       );
     });
 
@@ -345,12 +345,12 @@ describe("ttlStalenessAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/no-ttl.md",
-        frontmatter({
+        `${frontmatter({
           title: "No TTL",
           collection: "notes",
           updated: "2020-01-01",
           ttl_days: null,
-        }) + "# No TTL\n",
+        })}# No TTL\n`,
       );
       const findings = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
       const paths = findings.map((f) => (f.target.kind === "staleness" ? f.target.path : ""));
@@ -363,12 +363,12 @@ describe("ttlStalenessAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/fresh-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Fresh",
           collection: "notes",
           updated: recentDate,
           ttl_days: 90,
-        }) + "# Fresh\n",
+        })}# Fresh\n`,
       );
       const findings = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
       const paths = findings.map((f) => (f.target.kind === "staleness" ? f.target.path : ""));
@@ -389,23 +389,23 @@ describe("ttlStalenessAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/expired-readable.md",
-        frontmatter({
+        `${frontmatter({
           title: "Expired Readable",
           collection: "notes",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Expired Readable\n",
+        })}# Expired Readable\n`,
       );
       // Expired doc in "restricted" — NOT readable by scopedRole
       writeDoc(
         vaultRoot,
         "restricted/expired-secret.md",
-        frontmatter({
+        `${frontmatter({
           title: "Expired Secret",
           collection: "restricted",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Expired Secret\n",
+        })}# Expired Secret\n`,
       );
     });
 
@@ -447,12 +447,12 @@ describe("ttlStalenessAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/reproduced-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Reproduced",
           collection: "notes",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Reproduced\n",
+        })}# Reproduced\n`,
       );
     });
 
@@ -476,7 +476,7 @@ describe("ttlStalenessAdapter", () => {
 
     it("reproduces returns false when doc is refreshed within TTL (different now)", async () => {
       // Use a now close to the update date so the doc is NOT expired
-      const freshNow = new Date(staleDate + "T00:00:00Z");
+      const freshNow = new Date(`${staleDate}T00:00:00Z`);
       freshNow.setDate(freshNow.getDate() + 10); // 10 days after update < 90 day TTL → not expired
 
       const findings = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
@@ -527,12 +527,12 @@ describe("ttlStalenessAdapter", () => {
       writeDoc(
         vaultRoot,
         "notes/shape-doc.md",
-        frontmatter({
+        `${frontmatter({
           title: "Shape",
           collection: "notes",
           updated: staleDate,
           ttl_days: 90,
-        }) + "# Shape\n",
+        })}# Shape\n`,
       );
     });
 
@@ -587,17 +587,17 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
     writeDoc(
       vaultRoot,
       "notes/unit.md",
-      frontmatter({ title: "Unit", collection: "notes", updated: "2025-01-01" }) + "# Unit\n",
+      `${frontmatter({ title: "Unit", collection: "notes", updated: "2025-01-01" })}# Unit\n`,
     );
     // Artifact in "restricted" collection (for RBAC tests)
     writeDoc(
       vaultRoot,
       "restricted/secret-artifact.md",
-      frontmatter({
+      `${frontmatter({
         title: "Secret Artifact",
         collection: "restricted",
         updated: "2025-01-01",
-      }) + "# Secret\n",
+      })}# Secret\n`,
     );
   });
 
@@ -1026,12 +1026,12 @@ describe("resolveAdapterForIdentity (C1)", () => {
     writeDoc(
       vaultRoot,
       "notes/expired-for-resolver.md",
-      frontmatter({
+      `${frontmatter({
         title: "Expired Resolver",
         collection: "notes",
         updated: staleDate,
         ttl_days: 90,
-      }) + "# Expired\n",
+      })}# Expired\n`,
     );
   });
 
@@ -1145,12 +1145,12 @@ describe("edgeStalenessAdapter production smoke test (I1)", () => {
     writeDoc(
       vaultRoot,
       "notes/smoke-doc.md",
-      frontmatter({
+      `${frontmatter({
         title: "Smoke",
         collection: "notes",
         updated: "2025-06-01",
         sources: [],
-      }) + "# Smoke\n",
+      })}# Smoke\n`,
     );
     // Minimal provenance log: one entry for smoke-doc (no upstream to be stale on)
     const daftariDir = join(vaultRoot, ".daftari");
@@ -1161,7 +1161,7 @@ describe("edgeStalenessAdapter production smoke test (I1)", () => {
       timestamp: "2025-06-01T00:00:00.000Z",
       changed_fields: ["body"],
     });
-    writeFileSync(join(daftariDir, "curation-log.jsonl"), provenanceEntry + "\n", "utf-8");
+    writeFileSync(join(daftariDir, "curation-log.jsonl"), `${provenanceEntry}\n`, "utf-8");
     // Note: no edges.jsonl and no tier2-verdicts.jsonl seeded — these are
     // optional (absent-file is treated as "no entries" by the loaders).
   });

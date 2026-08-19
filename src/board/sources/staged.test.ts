@@ -116,7 +116,7 @@ function writeStagedActionProposal(
   } catch {
     existing = "";
   }
-  writeFileSync(filePath, existing + JSON.stringify(record) + "\n", "utf-8");
+  writeFileSync(filePath, `${existing + JSON.stringify(record)}\n`, "utf-8");
 }
 
 /** Append a decision record for a given id */
@@ -138,7 +138,7 @@ function writeStagedActionDecision(
   } catch {
     existing = "";
   }
-  writeFileSync(filePath, existing + JSON.stringify(decision) + "\n", "utf-8");
+  writeFileSync(filePath, `${existing + JSON.stringify(decision)}\n`, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +190,7 @@ describe("stagedAdapter — Scenario 1: pending action → finding", () => {
     writeDoc(
       vaultRoot,
       "notes/my-doc.md",
-      frontmatter({ title: "My Doc", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "My Doc", collection: "notes" })}# Body\n`,
     );
     // Write a pending staged action targeting notes/my-doc.md
     writeStagedActionProposal(vaultRoot, {
@@ -306,12 +306,12 @@ describe("stagedAdapter — Scenario 2: identity stable after unrelated ledger a
     writeDoc(
       vaultRoot,
       "notes/doc-a.md",
-      frontmatter({ title: "Doc A", collection: "notes" }) + "# A\n",
+      `${frontmatter({ title: "Doc A", collection: "notes" })}# A\n`,
     );
     writeDoc(
       vaultRoot,
       "notes/doc-b.md",
-      frontmatter({ title: "Doc B", collection: "notes" }) + "# B\n",
+      `${frontmatter({ title: "Doc B", collection: "notes" })}# B\n`,
     );
     // First pending action
     writeStagedActionProposal(vaultRoot, {
@@ -376,7 +376,7 @@ describe("stagedAdapter — Scenario 3: ratified action → excluded + reproduce
     writeDoc(
       vaultRoot,
       "notes/doc.md",
-      frontmatter({ title: "Doc", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Doc", collection: "notes" })}# Body\n`,
     );
     // Write a pending proposal
     writeStagedActionProposal(vaultRoot, {
@@ -425,7 +425,7 @@ describe("stagedAdapter — Scenario 3: ratified action → excluded + reproduce
     writeDoc(
       vaultRoot,
       "notes/doc2.md",
-      frontmatter({ title: "Doc2", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Doc2", collection: "notes" })}# Body\n`,
     );
     writeStagedActionProposal(vaultRoot, {
       id: "stage-002",
@@ -464,13 +464,13 @@ describe("stagedAdapter — Scenario 4: RBAC omission for denied collection", ()
     writeDoc(
       vaultRoot,
       "notes/readable.md",
-      frontmatter({ title: "Readable", collection: "notes" }) + "# Body\n",
+      `${frontmatter({ title: "Readable", collection: "notes" })}# Body\n`,
     );
     // restricted doc — NOT readable by analyst
     writeDoc(
       vaultRoot,
       "restricted/secret.md",
-      frontmatter({ title: "Secret", collection: "restricted" }) + "# Secret\n",
+      `${frontmatter({ title: "Secret", collection: "restricted" })}# Secret\n`,
     );
     // Two pending actions: one on notes, one on restricted
     writeStagedActionProposal(vaultRoot, {

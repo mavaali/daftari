@@ -34,7 +34,7 @@ import type { AccessContext } from "../../access/rbac.js";
 import { upstreamStaleness } from "../../curation/edge-staleness.js";
 import { listEdges } from "../../curation/edges.js";
 import { readProvenanceLog } from "../../curation/provenance.js";
-import { sourceReadable, sourceVerifiable } from "../../curation/tension-access.js";
+import { sourceReadable } from "../../curation/tension-access.js";
 import { readTier2Verdicts } from "../../curation/tier2.js";
 import { loadDocuments } from "../../curation/vault-docs.js";
 import { openIndexForAccessOrNull } from "../../tools/search.js";
