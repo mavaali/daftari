@@ -91,6 +91,56 @@ const BOARD_CSS = `
   border-left:3px solid var(--warn); padding-left:8px; }
 .board-card .card-expiry { font-family:var(--mono); font-size:10px; color:var(--warn);
   margin-top:3px; }
+/* disposition controls (U8) */
+.board-topbar { display:flex; align-items:center; justify-content:space-between; }
+.board-card .card-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:9px; }
+.ba { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.04em;
+  padding:4px 9px; border-radius:6px; border:1px solid var(--border); background:var(--surface);
+  color:var(--fg); cursor:pointer; }
+.ba:hover { border-color:var(--muted); }
+.ba:disabled { opacity:.5; cursor:default; }
+.ba-resolve { border-color:var(--ok,#238636); color:var(--ok,#3fb950); }
+`;
+
+// ---------------------------------------------------------------------------
+// Board client script (U8, bead 7q9). Wires the disposition buttons and the
+// sign-out control to the authenticated POST endpoints. Uses the double-submit
+// CSRF token: read the non-HttpOnly daftari_csrf cookie and echo it in the
+// X-CSRF-Token header. Vanilla JS, no external deps — same inline-<script>
+// pattern as the graph page (pages.ts). Event-delegated so it costs one
+// listener regardless of card count.
+// ---------------------------------------------------------------------------
+
+const BOARD_CLIENT_JS = `
+(function(){
+  function csrf(){var m=document.cookie.match(/(?:^|; )daftari_csrf=([^;]*)/);return m?m[1]:'';}
+  function post(url,payload){
+    return fetch(url,{method:'POST',headers:{'content-type':'application/json','x-csrf-token':csrf()},body:JSON.stringify(payload)});
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest('[data-board-action]');
+    if(!btn)return;
+    var card=btn.closest('.board-card');
+    var id=card&&card.getAttribute('data-id');
+    if(!id)return;
+    var action=btn.getAttribute('data-board-action');
+    var url=action==='resolve'?'/api/board/resolve':'/api/board/dispose';
+    var payload=action==='resolve'?{finding_id:id}:{finding_id:id,event:action};
+    btn.disabled=true;
+    post(url,payload).then(function(r){
+      if(r.ok){location.reload();return;}
+      return r.json().catch(function(){return{};}).then(function(b){
+        btn.disabled=false;
+        alert('Action failed ('+r.status+'): '+((b&&b.message)||'request rejected'));
+      });
+    }).catch(function(){btn.disabled=false;alert('Network error');});
+  });
+  var lo=document.getElementById('board-logout');
+  if(lo){lo.addEventListener('click',function(){
+    post('/board/logout',{}).then(function(){location.href='/board/login';})
+      .catch(function(){location.href='/board/login';});
+  });}
+})();
 `;
 
 // ---------------------------------------------------------------------------
@@ -243,6 +293,16 @@ function renderCard(f: Finding): string {
     `</div>` +
     renderEvidenceSummary(f.evidence) +
     rationale +
+    // Disposition controls (U8, bead 7q9). The board client script (injected
+    // once in renderBoardPage) reads the finding id from the card's data-id
+    // and POSTs to /api/board/{dispose,resolve} with the CSRF token. No id is
+    // echoed onto the buttons themselves — the handler walks up to .board-card.
+    `<div class="card-actions">` +
+    `<button type="button" class="ba" data-board-action="accept">Accept</button>` +
+    `<button type="button" class="ba" data-board-action="defer">Defer</button>` +
+    `<button type="button" class="ba" data-board-action="dismiss">Dismiss</button>` +
+    `<button type="button" class="ba ba-resolve" data-board-action="resolve">Resolve</button>` +
+    `</div>` +
     `</div>`
   );
 }
@@ -315,7 +375,10 @@ export function renderBoardPage(boardState: BoardResult, filters?: BoardFilters)
   const total = boardState.all.length;
 
   const body =
+    `<div class="board-topbar">` +
     `<h1>Vault Board</h1>` +
+    `<button type="button" id="board-logout" class="ba">Sign out</button>` +
+    `</div>` +
     (total > 0
       ? `<p style="font-size:13px;color:var(--muted);margin:0 0 14px;">${total} finding${total === 1 ? "" : "s"}</p>`
       : `<p style="font-size:13px;color:var(--muted);margin:0 0 14px;">No findings</p>`) +
@@ -325,7 +388,7 @@ export function renderBoardPage(boardState: BoardResult, filters?: BoardFilters)
   // Inline the board CSS as a scoped <style> block appended to the layout's
   // <head>. layout() wraps in a full HTML page with the shared CSS; we inject
   // the board additions via a <style> tag in the body (pre-content).
-  const bodyWithCss = `<style>${BOARD_CSS}</style>${body}`;
+  const bodyWithCss = `<style>${BOARD_CSS}</style>${body}<script>${BOARD_CLIENT_JS}</script>`;
 
   return layout("Vault Board", bodyWithCss);
 }

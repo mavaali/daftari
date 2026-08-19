@@ -23,7 +23,7 @@
 //     (401) on EVERY request on every bind — never downgraded to guest;
 //   - the deny-all guest exists only in the no-auth loopback configuration.
 
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -64,6 +64,7 @@ import {
   tryAcquireSlot,
   tryTake,
 } from "./limits.js";
+import { signSession, verifySession } from "./session.js";
 
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_BIND = "127.0.0.1";
@@ -112,6 +113,20 @@ interface ResolvedToken {
   roleName: string;
 }
 
+// Minimum HMAC signing-key length. A short key weakens the session MAC; refuse
+// startup rather than mint forgeable cookies.
+const MIN_SESSION_KEY_BYTES = 32;
+
+// A resolved browser-session credential (bead 7q9): the HMAC key, the login
+// password bytes, the identity a login receives, and the lifetime in ms.
+export interface ResolvedSession {
+  key: Buffer;
+  credential: Buffer;
+  user: string;
+  roleName: string;
+  lifetimeMs: number;
+}
+
 const LOOPBACK_BINDS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 function remoteOf(req: IncomingMessage): string {
@@ -128,7 +143,9 @@ export function validateServeStartup(
   config: DaftariConfig,
   bind: string,
   env: NodeJS.ProcessEnv,
-): { ok: true; tokens: ResolvedToken[] } | { ok: false; error: string } {
+):
+  | { ok: true; tokens: ResolvedToken[]; session: ResolvedSession | null }
+  | { ok: false; error: string } {
   // Federation is stdio-only in v1 (#297, spec Decision 8): per-bearer
   // identity would need per-request resolution against every mount's
   // principals, and the "vault labels do not leak" disclosure ruling was
@@ -140,7 +157,10 @@ export function validateServeStartup(
       error: "federation is stdio-only in v1; remove the federation block or run stdio",
     };
   }
-  const authConfigured = config.server.tokens.length > 0 || config.server.oauth !== undefined;
+  const authConfigured =
+    config.server.tokens.length > 0 ||
+    config.server.oauth !== undefined ||
+    config.server.session !== undefined;
   if (!isLoopbackBind(bind)) {
     if (!authConfigured) {
       return {
@@ -230,7 +250,48 @@ export function validateServeStartup(
       }
     }
   }
-  return { ok: true, tokens };
+  // Session (bead 7q9): resolve the signing key + login password from env and
+  // check the mapped role is declared — the same loud posture as the tokens.
+  let session: ResolvedSession | null = null;
+  const sessionCfg = config.server.session;
+  if (sessionCfg) {
+    const keyValue = env[sessionCfg.signingKeyEnv];
+    if (typeof keyValue !== "string" || keyValue.length === 0) {
+      return {
+        ok: false,
+        error: `server.auth.session names env var ${sessionCfg.signingKeyEnv}, which is not set`,
+      };
+    }
+    if (Buffer.byteLength(keyValue, "utf-8") < MIN_SESSION_KEY_BYTES) {
+      return {
+        ok: false,
+        error: `server.auth.session signing key (${sessionCfg.signingKeyEnv}) must be at least ${MIN_SESSION_KEY_BYTES} bytes`,
+      };
+    }
+    const credValue = env[sessionCfg.credentialEnv];
+    if (typeof credValue !== "string" || credValue.length === 0) {
+      return {
+        ok: false,
+        error: `server.auth.session names env var ${sessionCfg.credentialEnv}, which is not set`,
+      };
+    }
+    if (!(sessionCfg.mapsTo.role in config.roles)) {
+      return {
+        ok: false,
+        error:
+          `server.auth.session maps to role '${sessionCfg.mapsTo.role}', ` +
+          `which is not declared in config roles`,
+      };
+    }
+    session = {
+      key: Buffer.from(keyValue, "utf-8"),
+      credential: Buffer.from(credValue, "utf-8"),
+      user: sessionCfg.mapsTo.user,
+      roleName: sessionCfg.mapsTo.role,
+      lifetimeMs: sessionCfg.lifetimeHours * 3_600_000,
+    };
+  }
+  return { ok: true, tokens, session };
 }
 
 // Constant-time match of the presented bearer against every configured
@@ -256,6 +317,53 @@ function bearerFrom(req: IncomingMessage): string | null {
   return m ? (m[1] as string) : null;
 }
 
+// Board-login cookie names (bead 7q9). The CSRF cookie is deliberately NOT
+// HttpOnly — the board page's script reads it to echo the value in a header
+// (double-submit), which is the whole point.
+export const SESSION_COOKIE = "daftari_session";
+export const CSRF_COOKIE = "daftari_csrf";
+
+// Minimal, allocation-light cookie parse: the Cookie header is a
+// "; "-delimited list of name=value pairs. Values are used verbatim (our own
+// tokens are base64url / hex, no encoding needed).
+function cookiesFrom(req: IncomingMessage): Map<string, string> {
+  const out = new Map<string, string>();
+  const header = req.headers.cookie;
+  if (typeof header !== "string") return out;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (name.length > 0 && !out.has(name)) out.set(name, value);
+  }
+  return out;
+}
+
+function acceptsHtml(req: IncomingMessage): boolean {
+  const accept = req.headers.accept;
+  return typeof accept === "string" && accept.includes("text/html");
+}
+
+// Double-submit CSRF check (bead 7q9): a cookie-authed state-changing request
+// must echo the non-HttpOnly CSRF cookie back in an X-CSRF-Token header. A
+// cross-site page can send the cookie automatically but cannot read it to set
+// the header (it is same-origin to the board), and cannot set a custom header
+// on a simple form post. Returns an error string on failure, null when valid.
+function checkCsrf(req: IncomingMessage): string | null {
+  const cookie = cookiesFrom(req).get(CSRF_COOKIE);
+  const raw = req.headers["x-csrf-token"];
+  const header = typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : undefined;
+  if (cookie === undefined || cookie.length === 0 || header === undefined || header.length === 0) {
+    return "missing CSRF token";
+  }
+  const a = Buffer.from(cookie, "utf-8");
+  const b = Buffer.from(header, "utf-8");
+  const sameLength = a.length === b.length;
+  const equal = timingSafeEqual(sameLength ? a : b, b);
+  return sameLength && equal ? null : "CSRF token mismatch";
+}
+
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -264,6 +372,59 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 function writeHtml(res: ServerResponse, status: number, body: string): void {
   res.writeHead(status, { "content-type": "text/html; charset=utf-8" });
   res.end(body);
+}
+
+// Build a Set-Cookie value for a board-login cookie (bead 7q9). HttpOnly is
+// caller-controlled (the session cookie is HttpOnly; the CSRF cookie is not,
+// so the board page can echo it). SameSite=Strict blocks cross-site sends,
+// the primary CSRF defense; the double-submit token is defense-in-depth.
+// Secure is set only when the operator declared transport_security: external —
+// a loopback http server cannot set Secure or the browser drops the cookie.
+function buildCookie(
+  name: string,
+  value: string,
+  opts: { httpOnly: boolean; maxAgeSec: number; secure: boolean },
+): string {
+  const parts = [`${name}=${value}`, "Path=/", "SameSite=Strict", `Max-Age=${opts.maxAgeSec}`];
+  if (opts.httpOnly) parts.push("HttpOnly");
+  if (opts.secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+function writeRedirect(res: ServerResponse, location: string, setCookies: string[]): void {
+  res.writeHead(302, {
+    location,
+    ...(setCookies.length > 0 ? { "set-cookie": setCookies } : {}),
+  });
+  res.end();
+}
+
+// Minimal, self-contained login page (bead 7q9). No external assets; a single
+// password field POSTing form-encoded to /board/login. `error` renders a
+// message after a failed attempt.
+function renderLoginPage(error?: string): string {
+  const errorHtml = error
+    ? `<p class="err">${error.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</p>`
+    : "";
+  return (
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<title>Board — sign in</title><style>` +
+    `body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0d1117;color:#c9d1d9;` +
+    `display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}` +
+    `form{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:28px 30px;width:280px}` +
+    `h1{font-size:15px;margin:0 0 4px;letter-spacing:.04em;text-transform:uppercase}` +
+    `p.sub{font-size:11px;color:#8b949e;margin:0 0 18px}` +
+    `input{width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:7px;` +
+    `color:#c9d1d9;padding:9px 11px;font:inherit;margin-bottom:14px}` +
+    `button{width:100%;background:#238636;border:0;border-radius:7px;color:#fff;padding:9px;font:inherit;cursor:pointer}` +
+    `p.err{color:#f85149;font-size:12px;margin:0 0 12px}` +
+    `</style></head><body><form method="post" action="/board/login">` +
+    `<h1>Vault Board</h1><p class="sub">Enter the board password to continue.</p>` +
+    errorHtml +
+    `<input type="password" name="password" autofocus autocomplete="current-password" aria-label="Board password">` +
+    `<button type="submit">Sign in</button></form></body></html>`
+  );
 }
 
 // Read the full request body as a UTF-8 string. Returns null if reading fails
@@ -372,6 +533,9 @@ export interface StartHttpServerOptions {
   // Test-only: inject the in-flight gate so tests can preload it to the
   // ceiling instead of racing slow requests.
   slotGate?: SlotGate;
+  // The resolved browser-session credential (bead 7q9), or null when no
+  // server.auth.session block is configured. Threaded from validateServeStartup.
+  session?: ResolvedSession | null;
 }
 
 export function startHttpServer(
@@ -383,7 +547,8 @@ export function startHttpServer(
   opts: StartHttpServerOptions = {},
 ): Promise<ServeHandle> {
   const oauth = config.server.oauth;
-  const authConfigured = tokens.length > 0 || oauth !== undefined;
+  const session = opts.session ?? null;
+  const authConfigured = tokens.length > 0 || oauth !== undefined || session !== null;
 
   // The ops floor (multi-user item 6). Process-local in-memory state is
   // correct by construction: one serve process per vault is the invariant
@@ -392,6 +557,10 @@ export function startHttpServer(
   const limits = config.server.limits;
   const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
   const principalBuckets = new Map<string, Bucket>();
+  // Marks requests authenticated via the browser-session COOKIE (bead 7q9).
+  // CSRF enforcement (double-submit) applies only to these — bearer-authed
+  // requests carry no ambient credential a cross-site page could ride.
+  const cookieAuthedReqs = new WeakSet<IncomingMessage>();
   const slotGate = opts.slotGate ?? makeSlotGate(limits.maxInFlight);
   // Fire-and-forget: an audit write must never add latency or failure to a
   // response. Errors surface once per failure on stderr.
@@ -428,6 +597,11 @@ export function startHttpServer(
     req: IncomingMessage,
     res: ServerResponse,
     auditPath?: string,
+    // When set and the request is a browser (Accept: text/html) that fails
+    // authentication with a 401 (missing/invalid credential — NOT a 403
+    // unmapped-subject), redirect there instead of writing the JSON 401. Lets
+    // GET /board send a browser to the login page (bead 7q9, U6).
+    htmlRedirectTo?: string,
   ): Promise<AccessContext | null> => {
     const effectiveAuditPath = auditPath ?? new URL(req.url ?? "/", "http://localhost").pathname;
     if (!authConfigured) {
@@ -478,6 +652,22 @@ export function startHttpServer(
         }
       }
     }
+    // Browser-session cookie (bead 7q9): consulted ONLY when no valid bearer
+    // matched. A verifying cookie whose role is still declared authenticates
+    // the request; anything else falls through to the 401 below (an invalid
+    // cookie is never a guest downgrade). The double-submit CSRF check is NOT
+    // done here — authentication and CSRF are separate concerns; the board
+    // route layer enforces CSRF on cookie-authed state-changing requests.
+    if (session !== null) {
+      const cookie = cookiesFrom(req).get(SESSION_COOKIE);
+      if (cookie !== undefined) {
+        const verified = verifySession(cookie, session.key, Math.floor(Date.now() / 1000));
+        if (verified.ok && verified.value.role in config.roles) {
+          cookieAuthedReqs.add(req);
+          return resolveAccess(config, verified.value.user, verified.value.role);
+        }
+      }
+    }
     chargePenalty(penaltyBox, remoteOf(req), Date.now());
     audit({
       outcome: "deny-401",
@@ -488,6 +678,12 @@ export function startHttpServer(
       method: req.method ?? "",
       path: effectiveAuditPath,
     });
+    if (htmlRedirectTo !== undefined && acceptsHtml(req)) {
+      // Browser hitting a protected page with no session → send it to login
+      // (penalty + audit already charged above, same as the JSON 401).
+      writeRedirect(res, htmlRedirectTo, []);
+      return null;
+    }
     writeJson(res, 401, {
       error: "unauthorized",
       message: "a valid bearer token is required",
@@ -554,6 +750,94 @@ export function startHttpServer(
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
     // ---------------------------------------------------------------------------
+    // Board login shim (bead 7q9, U5) — mounted BEFORE authenticate(): the login
+    // page and credential POST must be reachable WITHOUT a session. Present only
+    // when a server.auth.session block is configured; otherwise these paths 404
+    // like any unknown route. The rebinding/Origin guard above already ran.
+    //   GET  /board/login   → login form
+    //   POST /board/login   → verify password → set session+csrf cookies → 302 /board
+    //   POST /board/logout  → clear cookies → 302 /board/login (CSRF-checked)
+    // ---------------------------------------------------------------------------
+    if (url.pathname === "/board/login" || url.pathname === "/board/logout") {
+      if (session === null) {
+        writeJson(res, 404, { error: "not_found" });
+        return;
+      }
+      const loginRemote = remoteOf(req);
+      const secure = config.server.transportSecurity === "external";
+
+      if (url.pathname === "/board/login" && req.method === "GET") {
+        writeHtml(res, 200, renderLoginPage());
+        return;
+      }
+
+      if (url.pathname === "/board/login" && req.method === "POST") {
+        // Brute-force lockout shares the pre-auth penalty box, keyed on remote.
+        const gate = penaltyAllows(penaltyBox, loginRemote, Date.now());
+        if (!gate.allowed) {
+          res.setHeader("Retry-After", String(gate.retryAfterSeconds));
+          writeJson(res, 429, {
+            error: "rate_limited",
+            message: "too many failed sign-in attempts",
+          });
+          return;
+        }
+        const rawBody = await readBody(req);
+        if (rawBody === null) {
+          writeJson(res, 400, {
+            error: "bad_request",
+            message: "request body too large or unreadable",
+          });
+          return;
+        }
+        const submitted = new URLSearchParams(rawBody).get("password") ?? "";
+        const submittedBuf = Buffer.from(submitted, "utf-8");
+        const sameLength = submittedBuf.length === session.credential.length;
+        const equal = timingSafeEqual(
+          sameLength ? submittedBuf : session.credential,
+          session.credential,
+        );
+        if (!sameLength || !equal) {
+          chargePenalty(penaltyBox, loginRemote, Date.now());
+          audit({ outcome: "deny-401", remote: loginRemote, method: "POST", path: "/board/login" });
+          writeHtml(res, 401, renderLoginPage("Incorrect password."));
+          return;
+        }
+        const nowSec = Math.floor(Date.now() / 1000);
+        const maxAgeSec = Math.floor(session.lifetimeMs / 1000);
+        const token = signSession(
+          { user: session.user, role: session.roleName, exp: nowSec + maxAgeSec },
+          session.key,
+        );
+        const csrf = randomBytes(18).toString("base64url");
+        writeRedirect(res, "/board", [
+          buildCookie(SESSION_COOKIE, token, { httpOnly: true, maxAgeSec, secure }),
+          buildCookie(CSRF_COOKIE, csrf, { httpOnly: false, maxAgeSec, secure }),
+        ]);
+        return;
+      }
+
+      if (url.pathname === "/board/logout" && req.method === "POST") {
+        // Logout mutates session state → CSRF-checked (double-submit). No valid
+        // token → 403; the browser UI always sends it, so this only bites forced
+        // cross-site logout attempts.
+        const csrfError = checkCsrf(req);
+        if (csrfError !== null) {
+          writeJson(res, 403, { error: "forbidden", message: csrfError });
+          return;
+        }
+        writeRedirect(res, "/board/login", [
+          buildCookie(SESSION_COOKIE, "", { httpOnly: true, maxAgeSec: 0, secure }),
+          buildCookie(CSRF_COOKIE, "", { httpOnly: false, maxAgeSec: 0, secure }),
+        ]);
+        return;
+      }
+
+      writeJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+
+    // ---------------------------------------------------------------------------
     // Board routes (U12) — mounted BEFORE the /mcp 404 gate so they are
     // reachable, and AFTER authenticate() so every request carries a real
     // AccessContext. The DNS-rebinding / Origin guard above already ran.
@@ -601,8 +885,14 @@ export function startHttpServer(
       }
 
       // authenticate() charges the penalty box on 401/403 and logs the real
-      // board path (not "/mcp") via the auditPath argument.
-      const boardAccess = await authenticate(req, res, url.pathname);
+      // board path (not "/mcp") via the auditPath argument. For a browser
+      // hitting GET /board with no session, redirect to the login page instead
+      // of a JSON 401 (U6) — only meaningful when a session block is configured.
+      const htmlRedirectTo =
+        url.pathname === "/board" && req.method === "GET" && session !== null
+          ? "/board/login"
+          : undefined;
+      const boardAccess = await authenticate(req, res, url.pathname, htmlRedirectTo);
       if (boardAccess === null) return; // authenticate() already wrote the rejection
 
       // Layer B (post-auth): per-principal token-bucket, same as /mcp.
@@ -648,6 +938,15 @@ export function startHttpServer(
 
       if (url.pathname === "/api/board/dispose" && req.method === "POST") {
         // POST /api/board/dispose → vaultBoardDispose
+        // CSRF (U7): a cookie-authed browser must echo the double-submit token.
+        // Bearer-authed callers carry no ambient credential and are exempt.
+        if (cookieAuthedReqs.has(req)) {
+          const csrfError = checkCsrf(req);
+          if (csrfError !== null) {
+            writeJson(res, 403, { error: "forbidden", message: csrfError });
+            return;
+          }
+        }
         const rawBody = await readBody(req);
         if (rawBody === null) {
           writeJson(res, 400, {
@@ -708,6 +1007,14 @@ export function startHttpServer(
 
       if (url.pathname === "/api/board/resolve" && req.method === "POST") {
         // POST /api/board/resolve → vaultBoardResolve
+        // CSRF (U7): cookie-authed browsers must echo the double-submit token.
+        if (cookieAuthedReqs.has(req)) {
+          const csrfError = checkCsrf(req);
+          if (csrfError !== null) {
+            writeJson(res, 403, { error: "forbidden", message: csrfError });
+            return;
+          }
+        }
         const rawBody = await readBody(req);
         if (rawBody === null) {
           writeJson(res, 400, {
@@ -984,6 +1291,7 @@ export async function runServe(argv: string[]): Promise<number> {
   try {
     handle = await startHttpServer(vaultRoot, config.value, gate.tokens, bind, port, {
       legacyHttp,
+      session: gate.session,
     });
   } catch (e) {
     process.stderr.write(
