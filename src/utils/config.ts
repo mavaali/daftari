@@ -142,6 +142,18 @@ export interface OAuthConfig {
   subjects: Record<string, OAuthSubjectConfig>;
 }
 
+// Browser-login shim (bead 7q9): a cookie session so a browser — which cannot
+// send `Authorization: Bearer` on navigation — can authenticate to `/board`.
+// Like tokens, the secret VALUES live in env vars named here, never in config.
+// `maps_to` is the single identity a successful login receives; multi-user
+// browser login is OAuth's job, not this block's.
+export interface SessionConfig {
+  signingKeyEnv: string; // env var holding the HMAC signing key (>= 32 bytes)
+  credentialEnv: string; // env var holding the login password
+  mapsTo: { user: string; role: string }; // role must exist in `roles`
+  lifetimeHours: number; // session lifetime; default 12
+}
+
 export interface ServerConfig {
   // "external" is the operator's explicit acknowledgment that TLS terminates
   // upstream (or the network is trusted). Required for non-loopback binds —
@@ -151,6 +163,9 @@ export interface ServerConfig {
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
   oauth?: OAuthConfig;
+  // Optional and composable with tokens/oauth (bead 7q9): humans log in from a
+  // browser and receive a signed session cookie; machines keep using bearers.
+  session?: SessionConfig;
   // The serve ops floor (multi-user item 6). Defaults ALWAYS apply in serve
   // mode — an opt-in floor is still a missing floor. stdio ignores the
   // whole block: single caller, single identity, no request boundary.
@@ -1087,8 +1102,17 @@ const RECOGNISED_SERVER_LIMITS_KEYS = [
   "auth_failures_per_minute",
   "max_in_flight",
 ] as const;
-const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth"] as const;
+const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth", "session"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
+const RECOGNISED_SESSION_KEYS = [
+  "signing_key_env",
+  "credential_env",
+  "maps_to",
+  "lifetime_hours",
+] as const;
+const RECOGNISED_MAPS_TO_KEYS = ["user", "role"] as const;
+// Default browser-session lifetime when `lifetime_hours` is omitted.
+export const DEFAULT_SESSION_LIFETIME_HOURS = 12;
 const RECOGNISED_OAUTH_KEYS = ["issuer", "audience", "jwks_uri", "subjects"] as const;
 
 // `server.auth.oauth` (#7). Shape-only validation here; URL parseability and
@@ -1140,6 +1164,58 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
     audience: (obj.audience as string).trim(),
     jwksUri: (obj.jwks_uri as string).trim(),
     subjects,
+  });
+}
+
+// `server.auth.session` (bead 7q9). Shape-only validation here; whether the
+// named env vars are actually set, and whether `maps_to.role` is declared, is
+// checked at serve startup (same posture as tokens/oauth) so config load stays
+// pure of process.env.
+function validateSession(raw: unknown): Result<SessionConfig, Error> {
+  const mapping = requireMapping(raw, "'server.auth.session'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_SESSION_KEYS, "server.auth.session");
+  if (!known.ok) return known;
+  for (const field of ["signing_key_env", "credential_env"] as const) {
+    if (typeof obj[field] !== "string" || (obj[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.session.${field}' must be a non-empty string`));
+    }
+  }
+  const mapsToMapping = requireMapping(obj.maps_to, "'server.auth.session.maps_to'");
+  if (!mapsToMapping.ok) return mapsToMapping;
+  const mapsTo = mapsToMapping.value;
+  const mapsToKnown = rejectUnknownKeys(
+    mapsTo,
+    RECOGNISED_MAPS_TO_KEYS,
+    "server.auth.session.maps_to",
+  );
+  if (!mapsToKnown.ok) return mapsToKnown;
+  for (const field of RECOGNISED_MAPS_TO_KEYS) {
+    if (typeof mapsTo[field] !== "string" || (mapsTo[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.session.maps_to.${field}' must be a non-empty string`));
+    }
+  }
+  let lifetimeHours = DEFAULT_SESSION_LIFETIME_HOURS;
+  if (obj.lifetime_hours !== undefined) {
+    const v = obj.lifetime_hours;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+      return err(
+        new Error(
+          `'server.auth.session.lifetime_hours' must be a positive integer (got ${JSON.stringify(v)})`,
+        ),
+      );
+    }
+    lifetimeHours = v;
+  }
+  return ok({
+    signingKeyEnv: (obj.signing_key_env as string).trim(),
+    credentialEnv: (obj.credential_env as string).trim(),
+    mapsTo: {
+      user: (mapsTo.user as string).trim(),
+      role: (mapsTo.role as string).trim(),
+    },
+    lifetimeHours,
   });
 }
 
@@ -1237,6 +1313,11 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
           role: (t.role as string).trim(),
         });
       }
+    }
+    if (auth.session !== undefined) {
+      const session = validateSession(auth.session);
+      if (!session.ok) return session;
+      out.session = session.value;
     }
   }
   return ok(out);
