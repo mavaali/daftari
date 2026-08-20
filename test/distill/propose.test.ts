@@ -518,4 +518,66 @@ describe("proposeAllClaims (U4)", () => {
     expect(body).toContain("## Provenance");
     expect(body).not.toContain("### Reader");
   });
+
+  // -------------------------------------------------------------------------
+  // Defect 1: body must NOT embed frontmatter fence (assembleBody fix)
+  // -------------------------------------------------------------------------
+
+  it("body does NOT start with '---' and does not embed a frontmatter fence", async () => {
+    const runId = "run-body-no-fence";
+    const claim = makeClaim({
+      claim_key: "chunk-fence:no-frontmatter-fence-aabbccdd",
+      statement: "The body must not embed a frontmatter fence.",
+      proposed_frontmatter: { title: "Body no fence" },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+
+    // Must not open with a frontmatter fence.
+    expect(body.startsWith("---")).toBe(false);
+
+    // The first non-empty line must be the claim statement, not YAML.
+    const firstNonEmpty = body.split("\n").find((line) => line.trim().length > 0);
+    expect(firstNonEmpty).toBe(claim.statement);
+
+    // Body must still contain the claim statement and Provenance section.
+    expect(body).toContain(claim.statement);
+    expect(body).toContain("## Provenance");
+  });
+
+  it("body does NOT embed a frontmatter fence even when the claim carries run_meta", async () => {
+    const runId = "run-body-no-fence-with-meta";
+    const claim = makeClaim({
+      claim_key: "chunk-fence:no-fence-with-meta-eeff0011",
+      statement: "The body must not embed a frontmatter fence when run_meta is present.",
+      proposed_frontmatter: { title: "Body no fence with meta" },
+      run_meta: makeRunMeta(),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body.startsWith("---")).toBe(false);
+
+    const firstNonEmpty = body.split("\n").find((line) => line.trim().length > 0);
+    expect(firstNonEmpty).toBe(claim.statement);
+
+    expect(body).toContain("## Provenance");
+    expect(body).toContain("### Reader");
+  });
 });

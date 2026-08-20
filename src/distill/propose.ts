@@ -18,7 +18,6 @@
 //   so a future config hook can override it without touching call sites.
 
 import { join } from "node:path";
-import { dump } from "js-yaml";
 import type { AccessContext } from "../access/rbac.js";
 import { type StageOutcome, stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { slugifyKey } from "../import/langgraph-store.js";
@@ -294,15 +293,10 @@ function readerProvenanceLines(reader: ReaderFrontmatter | null): string[] {
 
 function assembleBody(
   claim: ExtractedClaim,
-  frontmatter: Record<string, unknown>,
   ids: DistillIds,
   reader: ReaderFrontmatter | null,
 ): string {
   return [
-    "---",
-    dump(frontmatter).trimEnd(),
-    "---",
-    "",
     claim.statement.trim(),
     "",
     "## Provenance",
@@ -455,7 +449,7 @@ export async function proposeAllClaims(
     const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta, lineageOp) : null;
     if (reader) Object.assign(frontmatter, reader);
 
-    const body = assembleBody(claim, frontmatter, ids, reader);
+    const body = assembleBody(claim, ids, reader);
 
     // U8/R5 + R7: overlap-hint. Attach top-K likely-collision neighbor paths to
     // the rationale so the ratifier can see possible overlaps at a glance, and
