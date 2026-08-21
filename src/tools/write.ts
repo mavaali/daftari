@@ -2107,6 +2107,11 @@ interface MergeWrite {
   action: WriteResult["action"];
 }
 
+interface MergeSnapshot {
+  absPath: string;
+  contentHash: string | null;
+}
+
 // Combines two source documents into a target and supersedes both sources to
 // point at it. Mechanical, not generative: the merged body is supplied by the
 // caller (a human at ratification, or the loop) — vault_merge never synthesizes
@@ -2216,6 +2221,29 @@ export async function vaultMerge(
       targetOldContent = parsedTarget.value.content;
       targetCreated = parsedTarget.value.frontmatter.created;
     }
+  }
+
+  // The merge payload below is composed from these exact bytes. File locks
+  // prevent overlap only after they are acquired; they do not detect a writer
+  // that lands after these reads and releases its lock before this merge takes
+  // its own locks. Preserve one snapshot per canonical path so the locked
+  // section can reject that non-overlapping stale-read race before any write.
+  // First snapshot wins: when the target aliases path_a, target's later read
+  // must not replace the earlier source snapshot that targetRaw is based on.
+  const mergeSnapshots = new Map<string, MergeSnapshot>();
+  mergeSnapshots.set(resolvedA.value.relPath, {
+    absPath: resolvedA.value.absPath,
+    contentHash: sha256Hex(existingA.value),
+  });
+  mergeSnapshots.set(resolvedB.value.relPath, {
+    absPath: resolvedB.value.absPath,
+    contentHash: sha256Hex(existingB.value),
+  });
+  if (!mergeSnapshots.has(resolvedTarget.value.relPath)) {
+    mergeSnapshots.set(resolvedTarget.value.relPath, {
+      absPath: resolvedTarget.value.absPath,
+      contentHash: existingTarget.ok ? sha256Hex(existingTarget.value) : null,
+    });
   }
 
   // Tier guard (#141): the merged body wholly replaces the target's. path_a
@@ -2461,6 +2489,24 @@ export async function vaultMerge(
       const lock = acquireLock(lockDb, relPath, holder);
       if (!lock.ok) return lock;
       held.push(relPath);
+    }
+
+    // Revalidate every input while holding the complete lock set. A null hash
+    // records a target that did not exist when the merge was composed; if a
+    // concurrent writer created it before these locks were acquired, that is
+    // stale too. Compliant writers cannot change the files between this check
+    // and the writes below because they must acquire one of the held locks.
+    for (const [relPath, snapshot] of mergeSnapshots) {
+      const current = await readFile(snapshot.absPath);
+      const currentHash = current.ok ? sha256Hex(current.value) : null;
+      if (currentHash !== snapshot.contentHash) {
+        return err(
+          new Error(
+            `stale merge: ${relPath} changed after vault_merge read it; ` +
+              "retry against the current documents",
+          ),
+        );
+      }
     }
 
     // Write all files, then a single git commit. This is NOT crash-atomic on
