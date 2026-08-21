@@ -49,6 +49,11 @@ export interface RoleConfig {
   // humans from agents — AccessContext carries no principal_type. YAML key:
   // dispose. Optional; absent means false.
   dispose?: boolean;
+  // #454: may verify filesystem metadata for repo: source references. This is
+  // separate from vault read/write grants because repo_root may expose a much
+  // larger tree than the vault ACL covers. YAML key: verify_repo_sources.
+  // Optional; absent means false.
+  verifyRepoSources?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -550,6 +555,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     dispose = obj.dispose;
   }
 
+  let verifyRepoSources = false;
+  if (obj.verify_repo_sources !== undefined) {
+    if (typeof obj.verify_repo_sources !== "boolean") {
+      return err(new Error(`role '${name}' verify_repo_sources must be true or false`));
+    }
+    verifyRepoSources = obj.verify_repo_sources;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -578,6 +591,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ...(proposeOnly ? { proposeOnly } : {}),
     ...(erase ? { erase } : {}),
     ...(dispose ? { dispose } : {}),
+    ...(verifyRepoSources ? { verifyRepoSources } : {}),
   });
 }
 

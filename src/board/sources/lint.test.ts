@@ -119,6 +119,18 @@ const scopedAccess: AccessContext = {
   role: scopedRole,
 };
 
+const repoVerifierAccess: AccessContext = {
+  user: "human:operator",
+  roleName: "operator",
+  role: {
+    read: ["*"],
+    write: [],
+    promote: false,
+    ratify: false,
+    verifyRepoSources: true,
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -136,6 +148,30 @@ describe("lintAdapter", () => {
 
   afterEach(() => {
     rmSync(vaultRoot, { recursive: true, force: true });
+  });
+
+  describe("repository-source metadata authorization (#454)", () => {
+    beforeEach(() => {
+      writeFileSync(
+        join(vaultRoot, ".daftari", "config.yaml"),
+        "version: 1\nvault_name: test-vault\nrepo_root: .\nroles: {}\n",
+      );
+      writeDoc(
+        vaultRoot,
+        "notes/repo-ref.md",
+        `${frontmatter({ sources: ["repo:evidence/missing.md"] })}# Repo ref\n`,
+      );
+    });
+
+    it("omits repository verification for roles without the dedicated grant", async () => {
+      const findings = await lintAdapter.list(vaultRoot, adminAccess);
+      expect(findings.some((f) => f.check === "unverifiableSourceRefs")).toBe(false);
+    });
+
+    it("exposes repository verification to a role with the dedicated grant", async () => {
+      const findings = await lintAdapter.list(vaultRoot, repoVerifierAccess);
+      expect(findings.some((f) => f.check === "unverifiableSourceRefs")).toBe(true);
+    });
   });
 
   // -------------------------------------------------------------------------

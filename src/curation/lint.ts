@@ -208,6 +208,10 @@ export interface LintOptions {
   // U12/R9: verbatim-quote budget for synthesized (compiled) notes. Defaults to
   // the distill config's maxVerbatimChars; a caller may override per run.
   maxVerbatimChars?: number;
+  // #454: whether this caller is authorized to stat repo: targets. Direct
+  // internal/CLI calls default true; access-controlled surfaces must pass the
+  // role's dedicated verify_repo_sources grant explicitly.
+  verifyRepoSources?: boolean;
 }
 
 // U12/R9: verbatim quotes in a compiled note's body — straight or curly
@@ -329,10 +333,12 @@ export async function runLint(
   // server startup is the surface that rejects malformed config. If config is
   // unavailable here, repo refs are reported as unconfigured rather than
   // suppressing every otherwise-independent lint check.
-  checks.unverifiableSourceRefs = unverifiableRepoSourceFindings(
-    docs,
-    config.ok ? config.value.repoRoot : undefined,
-  );
+  if (opts.verifyRepoSources !== false) {
+    checks.unverifiableSourceRefs = unverifiableRepoSourceFindings(
+      docs,
+      config.ok ? config.value.repoRoot : undefined,
+    );
+  }
 
   // Item 5(c): tension-log reconciliation inputs for the positionIntegrity
   // sub-checks — one load, grouped per doc. Positional tensions are

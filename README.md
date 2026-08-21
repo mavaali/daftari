@@ -206,7 +206,10 @@ sources:
   would create the violation. Traversal and absolute paths never resolve.
 - `repo:path/to/file` resolves against `repo_root`. Lint verifies file metadata
   only—it does not read the file—and reports missing, unconfigured, invalid, or
-  escaping references under advisory `unverifiableSourceRefs` findings.
+  escaping references under advisory `unverifiableSourceRefs` findings. On MCP
+  and board surfaces, the caller's role must explicitly set
+  `verify_repo_sources: true`; vault read grants alone never authorize probing
+  the larger repository tree.
 - `http:`, `https:`, `mailto:`, `distill:`, and other URI schemes are provenance,
   not vault dependency edges.
 - Unprefixed values remain backward compatible: if they resolve to an existing
@@ -690,6 +693,7 @@ roles:
     write: ["*"]
     promote: true
     ratify: true   # may approve/reject staged actions and contest edges
+    verify_repo_sources: true  # may stat repo: provenance targets under repo_root
 ```
 
 </details>

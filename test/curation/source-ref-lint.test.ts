@@ -82,4 +82,20 @@ describe("vault_lint — repository source references", () => {
     if (!report.ok) return;
     expect(report.value.checks.unverifiableSourceRefs[0]?.detail).toContain("(missing)");
   });
+
+  it("does not touch or report repository metadata when verification is not authorized", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "daftari-repo-source-"));
+    dirs.push(repo);
+    const vault = join(repo, "vault");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    mkdirSync(join(repo, "evidence"));
+    writeFileSync(join(repo, "evidence", "exists.md"), "external evidence");
+    writeFileSync(join(vault, ".daftari", "config.yaml"), "repo_root: ..\n");
+    writeDoc(vault, ["repo:evidence/exists.md", "repo:evidence/missing.md"]);
+
+    const report = await runLint(vault, { verifyRepoSources: false });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.unverifiableSourceRefs).toEqual([]);
+  });
 });

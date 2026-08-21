@@ -1030,6 +1030,30 @@ describe("loadConfig — schema extensions", () => {
       expect(result.error.message).toContain("promote and propose_only");
     });
   });
+
+  describe("verify_repo_sources role flag (#454)", () => {
+    it("parses an explicit repository-metadata verification grant", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    verify_repo_sources: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.verifyRepoSources).toBe(true);
+    });
+
+    it("defaults to absent and rejects non-boolean grants", () => {
+      writeConfig("roles:\n  reader:\n    read: ['*']\n");
+      const absent = loadConfig(dir);
+      expect(absent.ok).toBe(true);
+      if (!absent.ok) return;
+      expect(absent.value.roles.reader?.verifyRepoSources).toBeUndefined();
+
+      writeConfig("roles:\n  reader:\n    read: ['*']\n    verify_repo_sources: yes\n");
+      const malformed = loadConfig(dir);
+      expect(malformed.ok).toBe(false);
+      if (malformed.ok) return;
+      expect(malformed.error.message).toContain("verify_repo_sources");
+    });
+  });
 });
 
 describe("malformed-comment hint on YAML parse errors (#26)", () => {

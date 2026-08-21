@@ -52,7 +52,7 @@
 //   last detail seen, and the ledger will re-triage if it drifts.
 
 import type { AccessContext } from "../../access/rbac.js";
-import { canRead } from "../../access/rbac.js";
+import { canRead, canVerifyRepoSources } from "../../access/rbac.js";
 import { type LintCheckName, runLint, TIER0_LINT_CHECKS } from "../../curation/lint.js";
 import type { Confidence } from "../../frontmatter/types.js";
 import { collectionForPath } from "../../storage/index-db.js";
@@ -141,7 +141,10 @@ export const lintAdapter: FindingSourceAdapter = {
    */
   async list(vaultRoot: string, access: AccessContext, now?: Date): Promise<Finding[]> {
     const nowDate = now ?? new Date();
-    const result = await runLint(vaultRoot, { now: nowDate });
+    const result = await runLint(vaultRoot, {
+      now: nowDate,
+      verifyRepoSources: canVerifyRepoSources(access.role),
+    });
     if (!result.ok) {
       // Surface errors as an empty list rather than throwing — the board engine
       // treats an empty list as "no findings", not a fatal error. The caller
