@@ -41,6 +41,7 @@ const LEDGER_CLAUSE: Record<LintCheckName, string> = {
   positionIntegrity: "holds positions that do not square with one another",
   malformedPins: "carries a code-anchor pin the ledger cannot read",
   verbatimQuoteOverrun: "quotes its source verbatim past the compiler's budget",
+  unverifiableSourceRefs: "cites repository evidence the ledger cannot verify",
 };
 
 // "1 matter" / "3 matters" — a small deterministic pluralizer for the copy.

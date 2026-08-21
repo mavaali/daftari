@@ -107,13 +107,13 @@ describe("lint", () => {
       expect(report.value.checks.domainLeaks[0]?.detail).toContain("old-draft.md");
     });
 
-    it("flags the path-like unresolvable source, skipping opaque and external citations", async () => {
+    it("flags an explicit unresolvable vault source, skipping opaque and external citations", async () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
       if (!report.ok) return;
       const finding = report.value.checks.brokenSourceRefs;
       expect(finding.map((f) => f.path)).toEqual(["cites-missing.md"]);
-      expect(finding[0]?.detail).toContain("lint/nonexistent-target.md");
+      expect(finding[0]?.detail).toContain("vault:lint/nonexistent-target.md");
       expect(finding[0]?.detail).not.toContain("opaque-citation-string");
       expect(finding[0]?.detail).not.toContain("example.com");
     });
@@ -132,7 +132,7 @@ describe("lint", () => {
 
       try {
         stub("b/foo.md", []);
-        stub("readers/consumer.md", ["a/foo.md"]);
+        stub("readers/consumer.md", ["vault:a/foo.md"]);
 
         const report = await runLint(dir);
         expect(report.ok).toBe(true);
@@ -140,7 +140,7 @@ describe("lint", () => {
         expect(report.value.checks.brokenSourceRefs).toEqual([
           {
             path: "readers/consumer.md",
-            detail: "unresolvable reference(s): a/foo.md",
+            detail: "unresolvable reference(s): vault:a/foo.md",
           },
         ]);
       } finally {

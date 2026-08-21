@@ -1,0 +1,148 @@
+import { realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, posix, relative, resolve } from "node:path";
+import { parseSourceRef } from "../frontmatter/source-ref.js";
+import { resolveLink } from "./vault-docs.js";
+
+export type VaultSourceResolution =
+  | { kind: "vault"; explicit: boolean; target: string | null }
+  | { kind: "non-vault" };
+
+function resolveExplicitVaultTarget(rawTarget: string, byPath: Set<string>): string | null {
+  if (
+    rawTarget.length === 0 ||
+    rawTarget.includes("\\") ||
+    rawTarget.startsWith("/") ||
+    rawTarget.split("/").includes("..")
+  ) {
+    return null;
+  }
+  const normalized = posix.normalize(rawTarget);
+  if (normalized === "." || normalized.startsWith("../")) return null;
+  if (byPath.has(normalized)) return normalized;
+  const withMd = normalized.endsWith(".md") ? normalized : `${normalized}.md`;
+  return byPath.has(withMd) ? withMd : null;
+}
+
+// Resolves only the subset of `sources` that are genuine vault dependencies.
+// Explicit vault addresses are root-relative and strict. Legacy values use the
+// historical resolver, but an unresolved legacy citation remains opaque rather
+// than becoming a certain broken-dependency finding.
+export function resolveVaultSourceRef(
+  raw: string,
+  fromPath: string,
+  byPath: Set<string>,
+  byBasename: Map<string, string | null>,
+): VaultSourceResolution {
+  const parsed = parseSourceRef(raw);
+  if (parsed.kind === "vault") {
+    return {
+      kind: "vault",
+      explicit: true,
+      target: resolveExplicitVaultTarget(parsed.target, byPath),
+    };
+  }
+  if (parsed.kind !== "legacy") return { kind: "non-vault" };
+  const target = resolveLink(parsed.target, fromPath, byPath, byBasename);
+  return target ? { kind: "vault", explicit: false, target } : { kind: "non-vault" };
+}
+
+export type RepoSourceStatus =
+  | { status: "exists" }
+  | { status: "missing" }
+  | { status: "invalid" }
+  | { status: "outside_root" }
+  | { status: "unavailable" };
+
+function isContained(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function nearestExistingAncestor(path: string): string | null {
+  let cursor = path;
+  for (;;) {
+    try {
+      statSync(cursor);
+      return cursor;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) return null;
+    cursor = parent;
+  }
+}
+
+// Metadata-only repository reference verification. The lexical check rejects
+// traversal before touching the filesystem; realpath checks then close symlink
+// escapes for both existing targets and missing targets below an existing link.
+export function verifyRepoSourceRef(repoRoot: string, target: string): RepoSourceStatus {
+  if (
+    target.length === 0 ||
+    target.includes("\\") ||
+    isAbsolute(target) ||
+    target.split("/").includes("..")
+  ) {
+    return { status: "invalid" };
+  }
+  const candidate = resolve(repoRoot, target);
+  if (!isContained(resolve(repoRoot), candidate)) return { status: "invalid" };
+
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(repoRoot);
+  } catch {
+    return { status: "unavailable" };
+  }
+
+  try {
+    const metadata = statSync(candidate);
+    if (!metadata.isFile()) return { status: "invalid" };
+    const realTarget = realpathSync(candidate);
+    return isContained(realRoot, realTarget) ? { status: "exists" } : { status: "outside_root" };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { status: "unavailable" };
+    const ancestor = nearestExistingAncestor(dirname(candidate));
+    if (!ancestor) return { status: "unavailable" };
+    try {
+      return isContained(realRoot, realpathSync(ancestor))
+        ? { status: "missing" }
+        : { status: "outside_root" };
+    } catch {
+      return { status: "unavailable" };
+    }
+  }
+}
+
+export interface SourceRefFinding {
+  path: string;
+  detail: string;
+}
+
+// One advisory finding per citing document. Grouping avoids duplicate board
+// identities while still naming every unverifiable repo reference. Absolute
+// host paths never enter the result.
+export function unverifiableRepoSourceFindings(
+  docs: Array<{ path: string; frontmatter: { sources?: string[] } }>,
+  repoRoot?: string,
+): SourceRefFinding[] {
+  const findings: SourceRefFinding[] = [];
+  for (const doc of docs) {
+    const unverifiable: string[] = [];
+    for (const raw of doc.frontmatter.sources ?? []) {
+      const parsed = parseSourceRef(raw);
+      if (parsed.kind !== "repo") continue;
+      const status = repoRoot
+        ? verifyRepoSourceRef(repoRoot, parsed.target).status
+        : "unconfigured";
+      if (status !== "exists") unverifiable.push(`${parsed.raw} (${status})`);
+    }
+    if (unverifiable.length > 0) {
+      findings.push({
+        path: doc.path,
+        detail: `unverifiable repository source(s): ${unverifiable.join(", ")}`,
+      });
+    }
+  }
+  return findings;
+}

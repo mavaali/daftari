@@ -38,6 +38,7 @@
 // re-queued, so a sources b sources a terminates after one round trip.
 
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { resolveVaultSourceRef } from "./source-refs.js";
 import type { TensionEntry } from "./tension.js";
 import { loadTensionClusters } from "./tension-clusters.js";
 import {
@@ -94,17 +95,17 @@ export interface TensionBlastInput {
 }
 
 // Reverse-source map: target doc → docs whose frontmatter `sources` cites
-// the target. Source paths are resolved through the same path-resolution
-// rules as in-vault links (exact match, .md suffix, relative-to-from,
-// basename), so author-written shorthand paths like `pricing/foo` line up
-// with the canonical `pricing/foo.md`. Unresolved sources (typos, links to
-// non-vault material) and self-citations are dropped.
+// the target. Explicit `vault:` refs are strict root-relative addresses;
+// existing unprefixed legacy refs retain exact/relative/basename resolution.
+// Repository, web, distill, opaque, unresolved legacy, and self citations are
+// provenance rather than dependency edges and are dropped from this map.
 export function buildReverseSourceMap(docs: LoadedDoc[]): Map<string, Set<string>> {
   const reverse = new Map<string, Set<string>>();
   const { byPath, byBasename } = buildPathIndexes(docs);
   for (const d of docs) {
     for (const raw of d.frontmatter.sources ?? []) {
-      const target = resolveLink(raw, d.path, byPath, byBasename);
+      const source = resolveVaultSourceRef(raw, d.path, byPath, byBasename);
+      const target = source.kind === "vault" ? source.target : null;
       if (!target || target === d.path) continue;
       if (!reverse.has(target)) reverse.set(target, new Set());
       (reverse.get(target) as Set<string>).add(d.path);

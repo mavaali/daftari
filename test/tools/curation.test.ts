@@ -58,6 +58,54 @@ describe("curation tools", () => {
       expect(result.ok).toBe(false);
     });
 
+    it("does not expose repository file existence without the dedicated role grant", async () => {
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      mkdirSync(join(vault, "notes"), { recursive: true });
+      writeFileSync(join(vault, ".daftari", "config.yaml"), "repo_root: .\n");
+      writeFileSync(
+        join(vault, "notes", "claim.md"),
+        "---\n" +
+          "title: Claim\n" +
+          "domain: accumulation\n" +
+          "collection: notes\n" +
+          "status: draft\n" +
+          "confidence: low\n" +
+          "created: 2026-01-01\n" +
+          "updated: 2026-01-01\n" +
+          "updated_by: human:test\n" +
+          "provenance: direct\n" +
+          'sources: ["repo:evidence/missing.md"]\n' +
+          "tags: []\n" +
+          "---\nClaim.\n",
+      );
+      const reader: AccessContext = {
+        user: "human:reader",
+        roleName: "reader",
+        role: { read: ["notes"], write: ["notes"], promote: false, ratify: false },
+      };
+      const verifier: AccessContext = {
+        ...reader,
+        roleName: "operator",
+        role: {
+          read: ["notes"],
+          write: ["notes"],
+          promote: false,
+          ratify: false,
+          verifyRepoSources: true,
+        },
+      };
+
+      const hidden = await vaultLint(vault, { filter: "unverifiableSourceRefs" }, reader);
+      expect(hidden.ok).toBe(true);
+      if (!hidden.ok) return;
+      expect(hidden.value.checks.unverifiableSourceRefs).toEqual([]);
+
+      const visible = await vaultLint(vault, { filter: "unverifiableSourceRefs" }, verifier);
+      expect(visible.ok).toBe(true);
+      if (!visible.ok) return;
+      expect(visible.value.checks.unverifiableSourceRefs).toHaveLength(1);
+    });
+
     it("tool result carries coverageEquity (unfiltered)", async () => {
       const result = await vaultLint(LINT_VAULT, {});
       expect(result.ok).toBe(true);

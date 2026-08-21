@@ -9,7 +9,13 @@
 // Result, never throws) plus an MCP ToolDefinition, mirroring the read- and
 // write-path tools.
 
-import { type AccessContext, canRatify, canRead, hasAnyRead } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canRatify,
+  canRead,
+  canVerifyRepoSources,
+  hasAnyRead,
+} from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import type { CoverageEquitySummary } from "../curation/coverage.js";
 import {
@@ -439,7 +445,12 @@ export async function vaultLint(
   try {
     report = await runLint(
       vaultRoot,
-      access ? { pathVisible: (p) => sourceReadable(db, access, p) } : {},
+      access
+        ? {
+            pathVisible: (p) => sourceReadable(db, access, p),
+            verifyRepoSources: canVerifyRepoSources(access.role),
+          }
+        : {},
     );
   } finally {
     db?.close();

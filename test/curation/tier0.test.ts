@@ -88,15 +88,33 @@ describe("tier0Findings", () => {
     expect(t0.lifecycleConflicts).toEqual([]);
   });
 
-  it("flags a qualified source whose original target vanished despite a same-basename survivor", () => {
-    const docs = [doc("b/foo.md"), doc("readers/consumer.md", { sources: ["a/foo.md"] })];
+  it("flags an explicit vault source whose target vanished despite a same-basename survivor", () => {
+    const docs = [doc("b/foo.md"), doc("readers/consumer.md", { sources: ["vault:a/foo.md"] })];
     const t0 = tier0Findings(docs);
     expect(t0.brokenSourceRefs).toEqual([
       {
         path: "readers/consumer.md",
-        detail: "unresolvable reference(s): a/foo.md",
+        detail: "unresolvable reference(s): vault:a/foo.md",
       },
     ]);
+  });
+
+  it("does not treat repository, web, distill, or unresolved legacy citations as vault deps", () => {
+    const docs = [
+      doc("sketches/idea.md", { status: "draft", domain: "generative" }),
+      doc("readers/consumer.md", {
+        sources: [
+          "repo:sketches/idea.md",
+          "https://example.com/evidence",
+          "distill:source-1#claim-2",
+          "opaque/slash-shaped-citation",
+        ],
+      }),
+    ];
+    const findings = tier0Findings(docs);
+    expect(findings.brokenSourceRefs).toEqual([]);
+    expect(findings.lifecycleConflicts).toEqual([]);
+    expect(findings.domainLeaks).toEqual([]);
   });
 });
 
@@ -167,19 +185,34 @@ describe("tier0PromoteGate", () => {
     expect(gate.hiddenConflicts).toBe(1);
   });
 
-  it("flags an unresolvable path-like source and a schema-invalid target", () => {
+  it("flags an unresolvable explicit vault source and a schema-invalid target", () => {
     const docs = [
-      doc("a/target.md", { status: "draft", sources: ["a/gone.md"] }, [
+      doc("a/target.md", { status: "draft", sources: ["vault:a/gone.md"] }, [
         { field: "ttl_days", message: "expected number or null, got string" },
       ]),
     ];
     const gate = tier0PromoteGate(docs, "a/target.md");
-    expect(gate.violations.some((v) => v.includes("unresolvable source: a/gone.md"))).toBe(true);
+    expect(gate.violations.some((v) => v.includes("unresolvable source: vault:a/gone.md"))).toBe(
+      true,
+    );
     expect(gate.violations.some((v) => v.includes("schema-invalid"))).toBe(true);
   });
 
   it("returns no violations for a missing target (dispatch reports that)", () => {
     expect(tier0PromoteGate([], "a/ghost.md")).toEqual({ violations: [], hiddenConflicts: 0 });
+  });
+
+  it("allows repository and opaque citations through ratification", () => {
+    const docs = [
+      doc("a/target.md", {
+        status: "draft",
+        sources: ["repo:docs/evidence.md", "opaque/slash-shaped-citation"],
+      }),
+    ];
+    expect(tier0PromoteGate(docs, "a/target.md")).toEqual({
+      violations: [],
+      hiddenConflicts: 0,
+    });
   });
 });
 
@@ -208,5 +241,14 @@ describe("tier0DeprecateGate", () => {
     );
     expect(gate.dependents).toEqual(["pricing/user.md"]);
     expect(gate.hiddenDependents).toBe(1);
+  });
+
+  it("recognizes explicit vault refs but ignores same-shaped repository refs", () => {
+    const docs = [
+      doc("a/lib.md"),
+      doc("a/vault-user.md", { sources: ["vault:a/lib.md"] }),
+      doc("a/repo-user.md", { sources: ["repo:a/lib.md"] }),
+    ];
+    expect(tier0DeprecateGate(docs, "a/lib.md").dependents).toEqual(["a/vault-user.md"]);
   });
 });

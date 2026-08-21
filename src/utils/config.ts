@@ -49,6 +49,11 @@ export interface RoleConfig {
   // humans from agents — AccessContext carries no principal_type. YAML key:
   // dispose. Optional; absent means false.
   dispose?: boolean;
+  // #454: may verify filesystem metadata for repo: source references. This is
+  // separate from vault read/write grants because repo_root may expose a much
+  // larger tree than the vault ACL covers. YAML key: verify_repo_sources.
+  // Optional; absent means false.
+  verifyRepoSources?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -363,6 +368,9 @@ export interface DaftariConfig {
   // static `.git` file while git's churn lives off-cloud. Always resolved
   // outside the vault.
   gitDir?: string;
+  // Root used by explicit `repo:` source references. It may equal the vault
+  // root or contain a nested vault, but may never sit below/outside the vault.
+  repoRoot?: string;
   // Human-facing voice for vault_lint's `content` channel. "plain" (default) is
   // the compact summary; "ledger_keeper" re-renders the same findings in the
   // ledger-keeper register. Presentation only — the structured lint payload is
@@ -464,6 +472,7 @@ function emptyConfig(): DaftariConfig {
     shadowMode: false,
     shadowModeSet: false,
     gitDir: undefined,
+    repoRoot: undefined,
     lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
@@ -546,6 +555,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     dispose = obj.dispose;
   }
 
+  let verifyRepoSources = false;
+  if (obj.verify_repo_sources !== undefined) {
+    if (typeof obj.verify_repo_sources !== "boolean") {
+      return err(new Error(`role '${name}' verify_repo_sources must be true or false`));
+    }
+    verifyRepoSources = obj.verify_repo_sources;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -574,6 +591,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ...(proposeOnly ? { proposeOnly } : {}),
     ...(erase ? { erase } : {}),
     ...(dispose ? { dispose } : {}),
+    ...(verifyRepoSources ? { verifyRepoSources } : {}),
   });
 }
 
@@ -1463,6 +1481,22 @@ function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefin
   return ok(gitDirAbs);
 }
 
+function resolveRepoRoot(raw: unknown, vaultRoot: string): Result<string | undefined, Error> {
+  if (raw === undefined || raw === null) return ok(undefined);
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return err(new Error("malformed config: 'repo_root' must be a non-empty string"));
+  }
+  const vaultAbs = resolve(vaultRoot);
+  const repoRootAbs = resolve(vaultAbs, expandTilde(raw));
+  const vaultFromRepo = relative(repoRootAbs, vaultAbs);
+  if (vaultFromRepo.startsWith("..") || isAbsolute(vaultFromRepo)) {
+    return err(
+      new Error(`malformed config: 'repo_root' must contain the vault (got ${repoRootAbs})`),
+    );
+  }
+  return ok(repoRootAbs);
+}
+
 // Resolves the optional `code_repos` block (JIT anchor pins). A mapping of
 // describes-`repo:`-prefix → local checkout path, each ~/relative/absolute
 // expanded like `git_dir` (reusing expandTilde + resolve-against-vault). Unlike
@@ -1669,6 +1703,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const gitDir = resolveGitDir(root.git_dir, vaultRoot);
   if (!gitDir.ok) return gitDir;
 
+  const repoRoot = resolveRepoRoot(root.repo_root, vaultRoot);
+  if (!repoRoot.ok) return repoRoot;
+
   const lintVoice = resolveLintVoice(root.lint_voice);
   if (!lintVoice.ok) return lintVoice;
 
@@ -1865,6 +1902,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode,
     shadowModeSet,
     gitDir: gitDir.value,
+    repoRoot: repoRoot.value,
     lintVoice: lintVoice.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,

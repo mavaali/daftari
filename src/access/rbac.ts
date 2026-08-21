@@ -83,6 +83,13 @@ export function canDispose(role: RoleConfig | null): boolean {
   return role !== null && role.dispose === true;
 }
 
+// True if the role may ask Daftari to stat repo: provenance targets. Kept
+// separate from vault read grants: repo_root can include paths outside every
+// vault collection, so read:["*"] does not imply filesystem-metadata access.
+export function canVerifyRepoSources(role: RoleConfig | null): boolean {
+  return role?.verifyRepoSources ?? false;
+}
+
 // True if the role is propose-only (#235): its writes must land as staged
 // `write` proposals, never as direct mutations. vault_write and vault_assert
 // coerce into staged proposals; every other write tool denies. The write

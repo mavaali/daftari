@@ -182,6 +182,44 @@ Documents can make their epistemic edges explicit: `questions_answered` is what
 later agents can take as settled, `questions_raised` is where to build next.
 `vault_lint` turns the open questions across the vault into a coverage map.
 
+### Typed source references
+
+`sources` records provenance from more than one address space. Prefix a source
+when its resolution contract matters:
+
+```yaml
+# .daftari/config.yaml — for a vault nested inside its repository
+repo_root: ..
+
+# document frontmatter
+sources:
+  - vault:canon/settled-claim.md
+  - repo:research/raw-evidence.md
+  - https://example.com/published-evidence
+  - mailto:owner@example.com
+  - distill:session-42#claim-7
+  - doi:10.1000/182
+```
+
+- `vault:path/to/note.md` is a strict, vault-root-relative dependency. A missing
+  target is a tier-0 `brokenSourceRefs` finding and blocks ratification that
+  would create the violation. Traversal and absolute paths never resolve.
+- `repo:path/to/file` resolves against `repo_root`. Lint verifies file metadata
+  only—it does not read the file—and reports missing, unconfigured, invalid, or
+  escaping references under advisory `unverifiableSourceRefs` findings. On MCP
+  and board surfaces, the caller's role must explicitly set
+  `verify_repo_sources: true`; vault read grants alone never authorize probing
+  the larger repository tree.
+- `http:`, `https:`, `mailto:`, `distill:`, and other URI schemes are provenance,
+  not vault dependency edges.
+- Unprefixed values remain backward compatible: if they resolve to an existing
+  vault document, they are dependency edges; otherwise they are opaque
+  citations. Use `vault:` for dependencies whose disappearance must fail tier 0.
+
+`repo_root` may be the vault root or an ancestor containing a nested vault. It
+is resolved relative to the vault and must contain it. Repository targets are
+checked with lexical and real-path containment, including symlink escapes.
+
 `valid_from` / `valid_until` are the second temporal axis. Everything else in
 the file records **transaction time** — when the vault came to believe
 something; these record **valid time** — when the claim was true in the world. A
@@ -655,6 +693,7 @@ roles:
     write: ["*"]
     promote: true
     ratify: true   # may approve/reject staged actions and contest edges
+    verify_repo_sources: true  # may stat repo: provenance targets under repo_root
 ```
 
 </details>
@@ -954,4 +993,3 @@ retention, and contact.
 ## License
 
 MIT.
-

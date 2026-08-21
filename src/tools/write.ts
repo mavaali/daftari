@@ -17,6 +17,7 @@ import { mintConsumesEdges } from "../curation/consumes.js";
 import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
+import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import {
@@ -27,13 +28,11 @@ import {
   computeBlast,
   type HiddenDownstream,
 } from "../curation/tension-blast.js";
-import { EXTERNAL_REF } from "../curation/tier0.js";
 import {
   buildPathIndexes,
   extractLinks,
   loadDocuments,
   outgoingLinkTargets,
-  resolveLink,
 } from "../curation/vault-docs.js";
 import {
   encodeLineageEntry,
@@ -42,6 +41,7 @@ import {
 } from "../distill/reader-fingerprint.js";
 import { type ParsedDocument, parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
+import { parseSourceRef } from "../frontmatter/source-ref.js";
 import {
   CONFIDENCES,
   DOMAINS,
@@ -875,7 +875,10 @@ function generativeDomainRefs(
   if (doc.domain !== "accumulation") return null;
   // Most accumulation writes reference nothing; skip the index entirely
   // rather than loading every vault path to resolve an empty candidate set.
-  const localSources = doc.sources.filter((s) => !EXTERNAL_REF.test(s));
+  const localSources = doc.sources.filter((s) => {
+    const kind = parseSourceRef(s).kind;
+    return kind === "vault" || kind === "legacy";
+  });
   if (localSources.length === 0 && extractLinks(doc.body).length === 0) return null;
   const db = openIndexForAccessOrNull(vaultRoot);
   if (!db) return null;
@@ -883,7 +886,8 @@ function generativeDomainRefs(
     const indexes = buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p })));
     const candidates = new Set<string>(outgoingLinkTargets(doc.body, doc.relPath, indexes));
     for (const raw of localSources) {
-      const target = resolveLink(raw, doc.relPath, indexes.byPath, indexes.byBasename);
+      const source = resolveVaultSourceRef(raw, doc.relPath, indexes.byPath, indexes.byBasename);
+      const target = source.kind === "vault" ? source.target : null;
       if (target && target !== doc.relPath) candidates.add(target);
     }
     if (candidates.size === 0) return null;
