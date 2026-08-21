@@ -355,7 +355,7 @@ describe("lintAdapter", () => {
   // -------------------------------------------------------------------------
   describe("Scenario 4: tier-0 check emits Finding with certainty 'high'", () => {
     beforeEach(() => {
-      // A doc with a broken sources entry (path-like ref to a nonexistent doc).
+      // A doc with an explicit broken vault dependency.
       writeDoc(
         vaultRoot,
         "notes/broken-ref-doc.md",
@@ -363,7 +363,7 @@ describe("lintAdapter", () => {
           title: "Broken Ref",
           collection: "notes",
           updated: "2025-01-01",
-          sources: ["notes/nonexistent-source.md"],
+          sources: ["vault:notes/nonexistent-source.md"],
         })}# Broken Ref\n`,
       );
     });

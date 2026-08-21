@@ -8,7 +8,7 @@
 // advisory judgments, but the posture is the same: report only.
 
 import { ok, type Result } from "../frontmatter/types.js";
-import { DISTILL_NUMERIC_DEFAULTS } from "../utils/config.js";
+import { DISTILL_NUMERIC_DEFAULTS, loadConfig } from "../utils/config.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
@@ -22,6 +22,7 @@ import {
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
+import { unverifiableRepoSourceFindings } from "./source-refs.js";
 import {
   listStagedActions,
   pendingLintItems,
@@ -71,6 +72,7 @@ export const LINT_CHECKS = [
   "positionIntegrity",
   "malformedPins",
   "verbatimQuoteOverrun",
+  "unverifiableSourceRefs",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -258,6 +260,7 @@ export async function runLint(
 ): Promise<Result<LintReport, Error>> {
   const loaded = await loadDocuments(vaultRoot);
   if (!loaded.ok) return loaded;
+  const config = loadConfig(vaultRoot);
   const allDocs = loaded.value;
   const pathVisible = opts.pathVisible;
   const docs = pathVisible ? allDocs.filter((d) => pathVisible(d.path)) : allDocs;
@@ -296,6 +299,7 @@ export async function runLint(
     positionIntegrity: [],
     malformedPins: [],
     verbatimQuoteOverrun: [],
+    unverifiableSourceRefs: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -321,6 +325,14 @@ export async function runLint(
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
+  // runLint historically remains useful against partially configured vaults;
+  // server startup is the surface that rejects malformed config. If config is
+  // unavailable here, repo refs are reported as unconfigured rather than
+  // suppressing every otherwise-independent lint check.
+  checks.unverifiableSourceRefs = unverifiableRepoSourceFindings(
+    docs,
+    config.ok ? config.value.repoRoot : undefined,
+  );
 
   // Item 5(c): tension-log reconciliation inputs for the positionIntegrity
   // sub-checks — one load, grouped per doc. Positional tensions are

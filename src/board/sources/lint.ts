@@ -92,6 +92,7 @@ const SUGGESTED_ACTIONS: Record<LintCheckName, string> = {
   positionIntegrity: "Fix the position set integrity issue in the document",
   malformedPins: "Fix the malformed pin suffix in the describes entry",
   verbatimQuoteOverrun: "Paraphrase verbatim quotes or add sources[] attribution",
+  unverifiableSourceRefs: "Restore or correct the repository source, or configure repo_root",
 };
 
 // ---------------------------------------------------------------------------

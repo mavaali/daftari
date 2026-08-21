@@ -511,6 +511,32 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("repo_root (typed source references)", () => {
+    it("is absent by default", () => {
+      const cfg = loadConfig(dir);
+      expect(cfg.ok).toBe(true);
+      if (cfg.ok) expect(cfg.value.repoRoot).toBeUndefined();
+    });
+
+    it("resolves a repository root that contains a nested vault", () => {
+      const repo = mkdtempSync(join(tmpdir(), "daftari-repo-root-"));
+      const vault = join(repo, "vault");
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      writeFileSync(configPath(vault), "repo_root: ..\n");
+      const cfg = loadConfig(vault);
+      expect(cfg.ok).toBe(true);
+      if (cfg.ok) expect(cfg.value.repoRoot).toBe(resolve(repo));
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it("rejects non-string roots and roots that do not contain the vault", () => {
+      writeConfig("repo_root: [..]\n");
+      expect(loadConfig(dir).ok).toBe(false);
+      writeConfig("repo_root: ./nested\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+  });
+
   describe("type primitives", () => {
     it("parses every supported extension type", () => {
       writeConfig(

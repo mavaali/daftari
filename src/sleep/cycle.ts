@@ -14,6 +14,7 @@
 
 import { parseDescribesEntry } from "../audit/describes.js";
 import { buildDocket } from "../court/docket.js";
+import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import {
   daysUntil,
   listStagedActions,
@@ -28,7 +29,7 @@ import {
   computeBlast,
 } from "../curation/tension-blast.js";
 import { computeValidity } from "../curation/validity.js";
-import { buildPathIndexes, loadDocuments, resolveLink } from "../curation/vault-docs.js";
+import { buildPathIndexes, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { ANCHOR_PIN_CAP } from "../tools/anchors.js";
 import { computeRepin } from "../tools/repin.js";
@@ -148,7 +149,10 @@ export async function runSleepCycle(
     // Scope is intentionally locked to the sources frontmatter edge only — not
     // markdown body links. Self-terminating once the source is re-pointed.
     const citedRetracted = (doc.frontmatter.sources ?? [])
-      .map((raw) => resolveLink(raw, doc.path, byPath, byBasename))
+      .map((raw) => {
+        const source = resolveVaultSourceRef(raw, doc.path, byPath, byBasename);
+        return source.kind === "vault" ? source.target : null;
+      })
       .filter((t): t is string => t !== null && retracted.has(t));
     const citesRetracted = citedRetracted.length > 0;
 

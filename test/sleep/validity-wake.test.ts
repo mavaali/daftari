@@ -187,6 +187,23 @@ describe("daftari sleep — retracted source wake", () => {
     expect(woken).toContain("analysis/dep.md");
   });
 
+  it("wakes for explicit vault refs but not same-shaped repository refs", async () => {
+    mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
+    mdRetracted(vault, "analysis/vault-dep.md", {
+      sources: ["vault:refs/old-spec.md"],
+    });
+    mdRetracted(vault, "analysis/repo-dep.md", {
+      sources: ["repo:refs/old-spec.md"],
+    });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const woken = r.value.wake.map((w) => w.path);
+    expect(woken).toContain("analysis/vault-dep.md");
+    expect(woken).not.toContain("analysis/repo-dep.md");
+  });
+
   it("reason mentions 'retracted source'", async () => {
     mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
     mdRetracted(vault, "analysis/dep.md", { sources: ["refs/old-spec.md"] });

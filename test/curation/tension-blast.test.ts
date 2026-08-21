@@ -218,6 +218,25 @@ describe("buildReverseSourceMap / buildReverseLinkMap", () => {
     expect(buildReverseSourceMap(docs).get("b/foo.md")).toBeUndefined();
     expect(buildReverseLinkMap(docs).get("b/foo.md")).toBeUndefined();
   });
+
+  it("creates dependency edges only for resolved vault sources", () => {
+    const docs: LoadedDoc[] = [
+      syntheticDoc({ path: "canon/fact.md" }),
+      syntheticDoc({
+        path: "readers/consumer.md",
+        sources: [
+          "vault:canon/fact.md",
+          "repo:canon/fact.md",
+          "distill:canon/fact.md",
+          "doi:canon/fact.md",
+        ],
+      }),
+    ];
+
+    expect([...(buildReverseSourceMap(docs).get("canon/fact.md") ?? [])]).toEqual([
+      "readers/consumer.md",
+    ]);
+  });
 });
 
 describe("computeTensionBlast", () => {

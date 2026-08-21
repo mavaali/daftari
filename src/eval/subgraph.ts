@@ -5,9 +5,9 @@
 // with one dense collection cannot dominate every sample. From the seed we hop
 // along four edge kinds — frontmatter `sources`, in-body markdown links, logged
 // tensions, and `superseded_by` revision links — collecting neighbours until a
-// node cap is reached. In Daftari's data model `sources:` holds external
-// citation slugs (not in-vault paths), so the real in-vault doc→doc revision
-// edge lives in `superseded_by:`, walked bidirectionally below.
+// node cap is reached. `sources:` retains every provenance edge in the sample,
+// but traversal follows only references that resolve as vault dependencies;
+// repo/web/distill/opaque citations never cause file reads.
 //
 // Pure given (vault state + seed): the same inputs always yield the same
 // subgraph. All randomness is replaced by SHA-256 indexing over sorted inputs.
@@ -16,7 +16,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import { readTextFile } from "../audit/readtext.js";
+import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { listTensions } from "../curation/tension.js";
+import { buildPathIndexes } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { openIndexForActiveProvider } from "../tools/search.js";
@@ -86,6 +88,7 @@ export async function sampleSubgraph(
   const codeNodes = new Map<string, SubgraphNode>();
 
   const tensionsByDoc = await loadTensionEdges(vaultRoot);
+  const sourceIndexes = buildPathIndexes(docs);
 
   // Bidirectional supersede map, built from the already-materialized SQL rows
   // (no extra file reads). Bidirectional so a seed landing on EITHER the old or
@@ -114,6 +117,7 @@ export async function sampleSubgraph(
     supersededByDoc,
     codeNodes,
     codeNodeCap,
+    sourceIndexes,
   );
   const firstHopNeighbors = [...visited.keys()].filter((p) => p !== seedDoc);
   for (const n of firstHopNeighbors) {
@@ -127,6 +131,7 @@ export async function sampleSubgraph(
       supersededByDoc,
       codeNodes,
       codeNodeCap,
+      sourceIndexes,
     );
   }
 
@@ -154,15 +159,13 @@ export async function sampleSubgraph(
 //    in-vault node — these reference other vault documents, so a dangling
 //    target means the neighbour was trimmed or never existed and the edge is
 //    meaningless.
-//  - for `sources` edges, the `to` is a provenance citation that is, by the
-//    vault's frontmatter convention, an external source slug rather than an
-//    in-vault `.md` path. Such an edge records real provenance off the seed
-//    doc and is retained even though the cited source is not itself a node.
+//  - for `sources` edges, `to` is either a canonical vault path or a non-vault
+//    provenance citation. The relationship is retained even if no node exists.
 function keepEdge(e: SubgraphEdge, nodePaths: Set<string>): boolean {
   if (!nodePaths.has(e.from)) return false;
-  // `sources` cites external slugs; `describes` cites code paths (possibly in an
-  // external repo). Neither requires an in-vault `to` node — the edge records a
-  // real relationship off a retained doc.
+  // `sources` may cite non-vault provenance; `describes` may cite code in an
+  // external repo. Neither requires an in-vault `to` node for the relationship
+  // itself to remain meaningful.
   if (e.kind === "sources" || e.kind === "describes") return true;
   return nodePaths.has(e.to);
 }
@@ -268,6 +271,7 @@ async function walkHop(
   supersededByDoc: Map<string, Array<{ other: string }>>,
   codeNodes: Map<string, SubgraphNode>,
   codeNodeCap: number,
+  sourceIndexes: ReturnType<typeof buildPathIndexes>,
 ): Promise<void> {
   const node = visited.get(from);
   if (!node) return;
@@ -277,8 +281,10 @@ async function walkHop(
     : [];
   for (const s of sources) {
     if (typeof s !== "string") continue;
-    edges.push({ from, to: s, kind: "sources" });
-    await loadNode(vaultRoot, s, visited);
+    const source = resolveVaultSourceRef(s, from, sourceIndexes.byPath, sourceIndexes.byBasename);
+    const target = source.kind === "vault" ? source.target : null;
+    edges.push({ from, to: target ?? s, kind: "sources" });
+    if (target) await loadNode(vaultRoot, target, visited);
   }
 
   // describes edges: doc-to-code bindings. The edge is always recorded; the
