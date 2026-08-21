@@ -98,4 +98,43 @@ describe("vault_lint — repository source references", () => {
     if (!report.ok) return;
     expect(report.value.checks.unverifiableSourceRefs).toEqual([]);
   });
+
+  it("labels distill refs as born-unverifiable without repository verification authority", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-distill-source-"));
+    dirs.push(vault);
+    writeDoc(vault, ["distill:session-42#claim-7"]);
+
+    const report = await runLint(vault, { verifyRepoSources: false });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.brokenSourceRefs).toEqual([]);
+    expect(report.value.checks.unverifiableSourceRefs).toEqual([
+      {
+        path: "claim.md",
+        detail:
+          "born-unverifiable distill source(s): distill:session-42#claim-7 — " +
+          "external source, discarded by design — re-derivation means re-presenting the source",
+      },
+    ]);
+  });
+
+  it("groups repository and distill evidence into one finding per citing document", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "daftari-mixed-source-"));
+    dirs.push(repo);
+    const vault = join(repo, "vault");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(join(vault, ".daftari", "config.yaml"), "repo_root: ..\n");
+    writeDoc(vault, ["repo:evidence/missing.md", "distill:session-42#claim-7"]);
+
+    const report = await runLint(vault);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.checks.unverifiableSourceRefs).toHaveLength(1);
+    expect(report.value.checks.unverifiableSourceRefs[0]?.detail).toContain(
+      "repo:evidence/missing.md (missing)",
+    );
+    expect(report.value.checks.unverifiableSourceRefs[0]?.detail).toContain(
+      "born-unverifiable distill source(s): distill:session-42#claim-7",
+    );
+  });
 });

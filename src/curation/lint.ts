@@ -22,7 +22,7 @@ import {
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
-import { unverifiableRepoSourceFindings } from "./source-refs.js";
+import { unverifiableSourceFindings } from "./source-refs.js";
 import {
   listStagedActions,
   pendingLintItems,
@@ -330,15 +330,14 @@ export async function runLint(
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
   // runLint historically remains useful against partially configured vaults;
-  // server startup is the surface that rejects malformed config. If config is
-  // unavailable here, repo refs are reported as unconfigured rather than
-  // suppressing every otherwise-independent lint check.
-  if (opts.verifyRepoSources !== false) {
-    checks.unverifiableSourceRefs = unverifiableRepoSourceFindings(
-      docs,
-      config.ok ? config.value.repoRoot : undefined,
-    );
-  }
+  // server startup is the surface that rejects malformed config. Authorized
+  // repo verification treats an unavailable root as unconfigured. Distill
+  // breadcrumbs are labeled independently because they require no filesystem
+  // metadata access.
+  checks.unverifiableSourceRefs = unverifiableSourceFindings(docs, {
+    ...(config.ok && config.value.repoRoot ? { repoRoot: config.value.repoRoot } : {}),
+    verifyRepoSources: opts.verifyRepoSources !== false,
+  });
 
   // Item 5(c): tension-log reconciliation inputs for the positionIntegrity
   // sub-checks — one load, grouped per doc. Positional tensions are

@@ -210,8 +210,11 @@ sources:
   and board surfaces, the caller's role must explicitly set
   `verify_repo_sources: true`; vault read grants alone never authorize probing
   the larger repository tree.
-- `http:`, `https:`, `mailto:`, `distill:`, and other URI schemes are provenance,
-  not vault dependency edges.
+- `http:`, `https:`, `mailto:`, and other URI schemes are provenance, not vault
+  dependency edges.
+- `distill:<source-id>#<claim-key>` is an audit breadcrumb, not a re-derivation
+  source. Reads and advisory lint label it `born-unverifiable`: the external
+  source was discarded by design, so re-derivation means re-presenting it.
 - Unprefixed values remain backward compatible: if they resolve to an existing
   vault document, they are dependency edges; otherwise they are opaque
   citations. Use `vault:` for dependencies whose disappearance must fail tier 0.

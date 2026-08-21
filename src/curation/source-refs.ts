@@ -119,28 +119,70 @@ export interface SourceRefFinding {
   detail: string;
 }
 
+export const DISTILL_SOURCE_UNVERIFIABLE_REASON =
+  "external source, discarded by design — re-derivation means re-presenting the source";
+
+export interface SourceVerifiabilityAnnotation {
+  source: string;
+  status: "born-unverifiable";
+  reason: typeof DISTILL_SOURCE_UNVERIFIABLE_REASON;
+}
+
+export function sourceVerifiabilityAnnotations(sources: string[]): SourceVerifiabilityAnnotation[] {
+  const seen = new Set<string>();
+  const annotations: SourceVerifiabilityAnnotation[] = [];
+  for (const raw of sources) {
+    const parsed = parseSourceRef(raw);
+    if (parsed.kind !== "distill" || seen.has(parsed.raw)) continue;
+    seen.add(parsed.raw);
+    annotations.push({
+      source: parsed.raw,
+      status: "born-unverifiable",
+      reason: DISTILL_SOURCE_UNVERIFIABLE_REASON,
+    });
+  }
+  return annotations;
+}
+
 // One advisory finding per citing document. Grouping avoids duplicate board
-// identities while still naming every unverifiable repo reference. Absolute
-// host paths never enter the result.
-export function unverifiableRepoSourceFindings(
+// identities when a doc mixes repo and distill refs. Repository verification
+// is capability-gated; distill refs need no filesystem access and are always
+// labeled because the readable document already discloses the raw breadcrumb.
+// Absolute host paths never enter the result.
+export function unverifiableSourceFindings(
   docs: Array<{ path: string; frontmatter: { sources?: string[] } }>,
-  repoRoot?: string,
+  opts: { repoRoot?: string; verifyRepoSources: boolean },
 ): SourceRefFinding[] {
   const findings: SourceRefFinding[] = [];
   for (const doc of docs) {
-    const unverifiable: string[] = [];
+    const repoRefs: string[] = [];
+    const distillRefs: string[] = [];
     for (const raw of doc.frontmatter.sources ?? []) {
       const parsed = parseSourceRef(raw);
-      if (parsed.kind !== "repo") continue;
-      const status = repoRoot
-        ? verifyRepoSourceRef(repoRoot, parsed.target).status
+      if (parsed.kind === "distill") {
+        distillRefs.push(parsed.raw);
+        continue;
+      }
+      if (parsed.kind !== "repo" || !opts.verifyRepoSources) continue;
+      const status = opts.repoRoot
+        ? verifyRepoSourceRef(opts.repoRoot, parsed.target).status
         : "unconfigured";
-      if (status !== "exists") unverifiable.push(`${parsed.raw} (${status})`);
+      if (status !== "exists") repoRefs.push(`${parsed.raw} (${status})`);
     }
-    if (unverifiable.length > 0) {
+    const clauses: string[] = [];
+    if (repoRefs.length > 0) {
+      clauses.push(`unverifiable repository source(s): ${repoRefs.join(", ")}`);
+    }
+    if (distillRefs.length > 0) {
+      clauses.push(
+        `born-unverifiable distill source(s): ${distillRefs.join(", ")} — ` +
+          DISTILL_SOURCE_UNVERIFIABLE_REASON,
+      );
+    }
+    if (clauses.length > 0) {
       findings.push({
         path: doc.path,
-        detail: `unverifiable repository source(s): ${unverifiable.join(", ")}`,
+        detail: clauses.join("; "),
       });
     }
   }
