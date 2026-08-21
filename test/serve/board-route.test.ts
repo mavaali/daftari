@@ -37,6 +37,7 @@ import { boardDispositionsPath } from "../../src/board/ledger.js";
 import type { LedgerEvent } from "../../src/board/types.js";
 import { authLogPath } from "../../src/serve/auth-log.js";
 import { type ServeHandle, startHttpServer, validateServeStartup } from "../../src/serve/index.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 import { type DaftariConfig, loadConfig } from "../../src/utils/config.js";
 
 // ---------------------------------------------------------------------------
@@ -561,7 +562,7 @@ describe("board routes — with auth configured", () => {
       return;
     }
 
-    const findingId = board.all[0]!.identity_key;
+    const findingId = requireDefined(board.all[0]).identity_key;
 
     // Dispose first so the ledger has an entry with a descriptor (required
     // for vaultBoardResolve's RBAC gate on the descriptor target).
@@ -607,7 +608,7 @@ describe("board routes — with auth configured", () => {
     }
 
     const findingId = lintFinding.identity_key;
-    const sourcePath = join(vault, lintFinding.target!.path!);
+    const sourcePath = join(vault, requireDefined(lintFinding.target?.path));
 
     // 2. Dispose to seed the ledger with a descriptor+rbacPaths entry.
     const disposeRes = await postJson(

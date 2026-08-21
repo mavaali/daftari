@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
 import { boardDispositionsPath } from "../board/ledger.js";
 import type { Finding, LedgerEvent } from "../board/types.js";
+import { requireDefined } from "../test-utils/require-defined.js";
 import type { DaftariConfig, RoleConfig } from "../utils/config.js";
 import { vaultBoardDispose, vaultBoardList, vaultBoardResolve } from "./board.js";
 
@@ -358,7 +359,9 @@ describe("vault_board_dispose — R13/R16 canDispose gate", () => {
       const allFindings = listResult.value.all;
       // We need at least one finding to attempt the dispose
       const findingId =
-        allFindings.length > 0 ? allFindings[0]!.identity_key : "fake-finding-id-does-not-matter";
+        allFindings.length > 0
+          ? requireDefined(allFindings[0]).identity_key
+          : "fake-finding-id-does-not-matter";
 
       const result = await vaultBoardDispose(vaultRoot, agentAccess, config, {
         finding_id: findingId,
@@ -435,11 +438,11 @@ describe("vault_board_dispose — human operator, all four events", () => {
       (e) => e.finding_id === finding.identity_key && e.event === "accept",
     );
     expect(events).toHaveLength(1);
-    expect(events[0]!.principal_type).toBe("human");
-    expect(events[0]!.by).toBe("human:operator");
+    expect(requireDefined(events[0]).principal_type).toBe("human");
+    expect(requireDefined(events[0]).by).toBe("human:operator");
     // Descriptor must be stamped
-    expect(events[0]!.descriptor).toBeDefined();
-    expect(events[0]!.descriptor?.source).toBe("lint");
+    expect(requireDefined(events[0]).descriptor).toBeDefined();
+    expect(requireDefined(events[0]).descriptor?.source).toBe("lint");
   });
 
   it("defer — appended with principal_type 'human' and expiry", async () => {
@@ -463,9 +466,9 @@ describe("vault_board_dispose — human operator, all four events", () => {
       (e) => e.finding_id === finding.identity_key && e.event === "defer",
     );
     expect(events).toHaveLength(1);
-    expect(events[0]!.principal_type).toBe("human");
-    expect(events[0]!.expiry).toBe(expiry);
-    expect(events[0]!.descriptor).toBeDefined();
+    expect(requireDefined(events[0]).principal_type).toBe("human");
+    expect(requireDefined(events[0]).expiry).toBe(expiry);
+    expect(requireDefined(events[0]).descriptor).toBeDefined();
   });
 
   it("dismiss — appended with principal_type 'human'", async () => {
@@ -487,8 +490,8 @@ describe("vault_board_dispose — human operator, all four events", () => {
       (e) => e.finding_id === finding.identity_key && e.event === "dismiss",
     );
     expect(events).toHaveLength(1);
-    expect(events[0]!.principal_type).toBe("human");
-    expect(events[0]!.descriptor).toBeDefined();
+    expect(requireDefined(events[0]).principal_type).toBe("human");
+    expect(requireDefined(events[0]).descriptor).toBeDefined();
   });
 
   it("reassign to configured principal — appended with principal_type 'human'", async () => {
@@ -511,9 +514,9 @@ describe("vault_board_dispose — human operator, all four events", () => {
       (e) => e.finding_id === finding.identity_key && e.event === "reassign",
     );
     expect(events).toHaveLength(1);
-    expect(events[0]!.principal_type).toBe("human");
-    expect(events[0]!.owner).toBe("human:other-operator");
-    expect(events[0]!.descriptor).toBeDefined();
+    expect(requireDefined(events[0]).principal_type).toBe("human");
+    expect(requireDefined(events[0]).owner).toBe("human:other-operator");
+    expect(requireDefined(events[0]).descriptor).toBeDefined();
   });
 });
 
@@ -782,8 +785,8 @@ describe("vault_board_resolve — R14 reproduces gate", () => {
       (e) => e.event === "resolved" && e.finding_id === finding.identity_key,
     );
     expect(resolvedEvents).toHaveLength(1);
-    expect(resolvedEvents[0]!.principal_type).toBe("system");
-    expect(resolvedEvents[0]!.by).toBe("system");
+    expect(requireDefined(resolvedEvents[0]).principal_type).toBe("system");
+    expect(requireDefined(resolvedEvents[0]).by).toBe("system");
 
     // Calling resolve again does not add a second resolved event (idempotent)
     const secondResolveResult = await vaultBoardResolve(
@@ -969,13 +972,13 @@ describe("descriptor stamped on dispose events", () => {
       (e) => e.finding_id === finding.identity_key && e.event === "accept",
     );
     expect(events).toHaveLength(1);
-    const desc = events[0]!.descriptor;
+    const desc = requireDefined(events[0]).descriptor;
     expect(desc).toBeDefined();
     expect(desc?.source).toBe(finding.source);
     expect(desc?.check).toBe(finding.check);
     expect(desc?.target).toMatchObject(finding.target);
     expect(typeof desc?.label).toBe("string");
-    expect(desc!.label.length).toBeGreaterThan(0);
+    expect(requireDefined(desc).label.length).toBeGreaterThan(0);
   });
 });
 

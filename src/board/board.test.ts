@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
+import { requireDefined } from "../test-utils/require-defined.js";
 import type { RoleConfig } from "../utils/config.js";
 import { renderBoardPage } from "../view/board-page.js";
 import { listBoard } from "./board.js";
@@ -544,8 +545,8 @@ describe("listBoard — Scenario 4: reopen idempotency (end-to-end)", () => {
         f.check === "orphanFiles",
     );
     expect(orphanFinding).toBeDefined();
-    const id = orphanFinding!.identity_key;
-    const fp = orphanFinding!.fingerprint;
+    const id = requireDefined(orphanFinding).identity_key;
+    const fp = requireDefined(orphanFinding).fingerprint;
 
     // Manually seed the ledger: [accept, resolved] — simulating a prior
     // run where the user accepted it and then it was auto-resolved.
@@ -577,7 +578,7 @@ describe("listBoard — Scenario 4: reopen idempotency (end-to-end)", () => {
     // The finding should be in the reopened state (prior human disposition was accept → "accepted")
     const f2 = second.all.find((f) => f.identity_key === id);
     expect(f2).toBeDefined();
-    expect(f2!.disposition).toBe("accepted");
+    expect(requireDefined(f2).disposition).toBe("accepted");
 
     // Call listBoard again: latest event is "reopened" → no new emit.
     await listBoard(vaultRoot, adminAccess, undefined, FIXED_NOW);
@@ -787,8 +788,8 @@ describe("listBoard — Scenario 5: filters (R26)", () => {
         f.check === "orphanFiles",
     );
     expect(orphan).toBeDefined();
-    const id = orphan!.identity_key;
-    const fp = orphan!.fingerprint;
+    const id = requireDefined(orphan).identity_key;
+    const fp = requireDefined(orphan).fingerprint;
 
     await appendEvent(vaultRoot, {
       finding_id: id,
@@ -939,9 +940,9 @@ describe("listBoard — Scenario 7: staged evidence targetPath seam (#455)", () 
     );
     expect(seam).toBeDefined();
     // The adapter emits evidence.targetPath — verify the field name is correct
-    expect(seam!.evidence.targetPath).toBe("notes/target-doc.md");
+    expect(requireDefined(seam).evidence.targetPath).toBe("notes/target-doc.md");
     // The wrong field name must NOT be present
-    expect((seam!.evidence as Record<string, unknown>).target_path).toBeUndefined();
+    expect((requireDefined(seam).evidence as Record<string, unknown>).target_path).toBeUndefined();
   });
 
   it("(d) renderBoardPage renders back-link to /doc/notes/target-doc.md (not /doc/undefined)", async () => {

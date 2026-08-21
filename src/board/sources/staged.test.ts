@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../access/rbac.js";
+import { requireDefined } from "../../test-utils/require-defined.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { StagedTarget } from "../types.js";
@@ -213,14 +214,14 @@ describe("stagedAdapter — Scenario 1: pending action → finding", () => {
   it("emits one finding for the pending action", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.check).toBeTruthy();
-    expect(findings[0]!.source).toBe("staged");
+    expect(requireDefined(findings[0]).check).toBeTruthy();
+    expect(requireDefined(findings[0]).source).toBe("staged");
   });
 
   it("identity_key is 'staged:stage-001' — native-id path", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     // The native-id fast-path in identity.ts returns "staged:<stagedActionId>"
     expect(f.identity_key).toBe("staged:stage-001");
 
@@ -232,13 +233,13 @@ describe("stagedAdapter — Scenario 1: pending action → finding", () => {
 
   it("target is { kind:'staged', stagedActionId:'stage-001' }", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.target).toEqual({ kind: "staged", stagedActionId: "stage-001" });
   });
 
   it("evidence contains actionType, targetPath, rationale, expiresAt", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.evidence.actionType).toBe("promote");
     expect(f.evidence.targetPath).toBe("notes/my-doc.md");
     expect(typeof f.evidence.rationale).toBe("string");
@@ -247,18 +248,18 @@ describe("stagedAdapter — Scenario 1: pending action → finding", () => {
 
   it("fingerprint = fingerprint(evidence)", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.fingerprint).toBe(fingerprint(f.evidence));
   });
 
   it("certainty is 'medium'", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    expect(findings[0]!.certainty).toBe("medium");
+    expect(requireDefined(findings[0]).certainty).toBe("medium");
   });
 
   it("suggested_action and verify_predicate are non-empty strings", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(typeof f.suggested_action).toBe("string");
     expect(f.suggested_action.length).toBeGreaterThan(0);
     expect(typeof f.verify_predicate).toBe("string");
@@ -267,19 +268,19 @@ describe("stagedAdapter — Scenario 1: pending action → finding", () => {
 
   it("identityOf(raw) returns same identity_key", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(stagedAdapter.identityOf(f)).toBe(f.identity_key);
   });
 
   it("fingerprintOf(raw) returns same fingerprint", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(stagedAdapter.fingerprintOf(f)).toBe(f.fingerprint);
   });
 
   it("reproduces returns true for the pending action", async () => {
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     const result = await stagedAdapter.reproduces(
       f.identity_key,
       vaultRoot,
@@ -353,7 +354,7 @@ describe("stagedAdapter — Scenario 2: identity stable after unrelated ledger a
     const f1Again = findings2.find((f) => f.identity_key === "staged:stage-001");
     expect(f1Again).toBeDefined();
     // Identity unchanged
-    expect(f1!.identity_key).toBe(f1Again!.identity_key);
+    expect(requireDefined(f1).identity_key).toBe(requireDefined(f1Again).identity_key);
     // Two findings now
     expect(findings2).toHaveLength(2);
     expect(findings2.find((f) => f.identity_key === "staged:stage-002")).toBeDefined();
@@ -442,7 +443,7 @@ describe("stagedAdapter — Scenario 3: ratified action → excluded + reproduce
     const findings = await stagedAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     // Only stage-002 is pending
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.identity_key).toBe("staged:stage-002");
+    expect(requireDefined(findings[0]).identity_key).toBe("staged:stage-002");
   });
 });
 
@@ -512,7 +513,7 @@ describe("stagedAdapter — Scenario 4: RBAC omission for denied collection", ()
   it("scoped analyst sees only the notes finding — restricted is omitted", async () => {
     const findings = await stagedAdapter.list(vaultRoot, scopedAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.identity_key).toBe("staged:stage-001");
+    expect(requireDefined(findings[0]).identity_key).toBe("staged:stage-001");
   });
 
   it("reproduces for restricted finding returns false for scoped role", async () => {

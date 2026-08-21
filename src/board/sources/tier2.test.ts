@@ -32,6 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../access/rbac.js";
+import { requireDefined } from "../../test-utils/require-defined.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { Tier2Target } from "../types.js";
@@ -189,14 +190,14 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.source).toBe("tier2");
+    expect(requireDefined(findings[0]).source).toBe("tier2");
   });
 
   it("identity_key is the tuple hash: deriveIdentity('tier2', check, target)", async () => {
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md", "declared");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
 
     const target: Tier2Target = {
       kind: "tier2",
@@ -217,7 +218,7 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md", "earned");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.target).toEqual({
       kind: "tier2",
       artifact: "notes/artifact.md",
@@ -230,7 +231,7 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.evidence.edge_class).toBe("declared");
     expect(Array.isArray(f.evidence.changed_fields)).toBe(true);
     expect(f.evidence.baseline).toBe("2025-01-01T00:00:00.000Z");
@@ -241,7 +242,7 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.fingerprint).toBe(fingerprint(f.evidence));
   });
 
@@ -249,14 +250,14 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    expect(findings[0]!.certainty).toBe("medium");
+    expect(requireDefined(findings[0]).certainty).toBe("medium");
   });
 
   it("suggested_action and verify_predicate are non-empty strings", async () => {
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(typeof f.suggested_action).toBe("string");
     expect(f.suggested_action.length).toBeGreaterThan(0);
     expect(typeof f.verify_predicate).toBe("string");
@@ -267,7 +268,7 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(adapter.identityOf(f)).toBe(f.identity_key);
     expect(adapter.fingerprintOf(f)).toBe(f.fingerprint);
   });
@@ -276,7 +277,7 @@ describe("makeTier2QueueAdapter — Scenario 1: residual row → finding with tu
     const item = makeWorkItem("notes/artifact.md", "notes/unit.md");
     const adapter = makeTier2QueueAdapter(async () => [item]);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     const result = await adapter.reproduces(f.identity_key, vaultRoot, adminAccess, FIXED_NOW);
     expect(result).toBe(true);
   });
@@ -312,7 +313,7 @@ describe("makeTier2QueueAdapter — Scenario 2: covered row → disappears from 
     let items = [item];
     const adapter = makeTier2QueueAdapter(async () => items);
     const findings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     const capturedId = f.identity_key;
 
     // Now simulate a verdict covering the row — clear the live set
@@ -352,7 +353,7 @@ describe("makeTier2QueueAdapter — Scenario 3: tuple identity stable across lis
 
     const run1 = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
     const run2 = await adapter.list(vaultRoot, adminAccess, new Date("2026-06-01T00:00:00Z"));
-    expect(run1[0]!.identity_key).toBe(run2[0]!.identity_key);
+    expect(requireDefined(run1[0]).identity_key).toBe(requireDefined(run2[0]).identity_key);
   });
 
   it("different (artifact,unit,edgeClass) triples produce different identity_keys", async () => {
@@ -428,7 +429,7 @@ describe("makeTier2QueueAdapter — Scenario 4: RBAC omission for denied artifac
     const adapter = makeTier2QueueAdapter(async () => [item1, item2]);
     const findings = await adapter.list(vaultRoot, scopedAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    expect((findings[0]!.target as Tier2Target).artifact).toBe("notes/artifact.md");
+    expect((requireDefined(findings[0]).target as Tier2Target).artifact).toBe("notes/artifact.md");
   });
 
   it("reproduces for restricted artifact returns false for scoped role", async () => {
@@ -445,7 +446,7 @@ describe("makeTier2QueueAdapter — Scenario 4: RBAC omission for denied artifac
 
     // Scoped role cannot reproduce it
     const result = await adapter.reproduces(
-      restricted!.identity_key,
+      requireDefined(restricted).identity_key,
       vaultRoot,
       scopedAccess,
       FIXED_NOW,
@@ -522,7 +523,7 @@ describe("makeTier2QueueAdapter — Scenario 4b: RBAC omission for denied unit c
     const adapter = makeTier2QueueAdapter(async () => [item1, item2]);
     const findings = await adapter.list(vaultRoot, scopedAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    expect((findings[0]!.target as Tier2Target).unit).toBe("notes/readable-unit.md");
+    expect((requireDefined(findings[0]).target as Tier2Target).unit).toBe("notes/readable-unit.md");
     // restricted unit path must not appear anywhere in the output
     const units = findings.map((f) => (f.target as Tier2Target).unit);
     expect(units).not.toContain("restricted/secret-unit.md");
@@ -534,7 +535,7 @@ describe("makeTier2QueueAdapter — Scenario 4b: RBAC omission for denied unit c
     // Admin can see it; capture the identity key
     const adminFindings = await adapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(adminFindings).toHaveLength(1);
-    const capturedKey = adminFindings[0]!.identity_key;
+    const capturedKey = requireDefined(adminFindings[0]).identity_key;
     // Scoped role cannot reproduce it (unit denied)
     const result = await adapter.reproduces(capturedKey, vaultRoot, scopedAccess, FIXED_NOW);
     expect(result).toBe(false);

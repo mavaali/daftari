@@ -13,6 +13,7 @@ import {
 } from "../../src/curation/edges.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getAllDerivesFromEdges, type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const BY = "agent:curation-loop";
@@ -737,7 +738,7 @@ describe("sql-authoritative edge reads", () => {
     const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8")
       .trim()
       .split("\n");
-    const rec = JSON.parse(raw[raw.length - 1]!);
+    const rec = JSON.parse(requireDefined(raw[raw.length - 1]));
     expect(rec.model).toBe("claude-opus-4-6");
   });
 
@@ -755,7 +756,7 @@ describe("sql-authoritative edge reads", () => {
     const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8")
       .trim()
       .split("\n");
-    const rec = JSON.parse(raw[raw.length - 1]!);
+    const rec = JSON.parse(requireDefined(raw[raw.length - 1]));
     // Not model:"" — an empty model must be indistinguishable from a legacy
     // no-model record so the `rec.model ?? ""` dedup key stays consistent.
     expect("model" in rec).toBe(false);
