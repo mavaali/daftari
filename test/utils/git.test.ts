@@ -229,6 +229,21 @@ describe("git", () => {
     const result = await lastCommitContainingPath(vault, "never.md");
     expect(result).toEqual({ ok: true, value: null });
   });
+
+  it("treats Git pathspec magic in a recovery path as a literal filename", async () => {
+    const literal = ":(glob)q3-*.md";
+    await writeFile(join(vault, literal), "present\n", "utf-8");
+    const added = await commit(vault, [literal], "add literal pathspec", "agent:tester");
+    expect(added.ok).toBe(true);
+    const containing = execFileSync("git", ["-C", vault, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+    rmSync(join(vault, literal));
+    await commit(vault, [literal], "delete literal pathspec", "agent:tester");
+
+    const result = await lastCommitContainingPath(vault, literal);
+    expect(result).toEqual({ ok: true, value: containing });
+  });
 });
 
 // --- commit-path timeout hardening ------------------------------------------

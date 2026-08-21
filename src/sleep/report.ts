@@ -14,10 +14,17 @@ export interface SleepReport {
   wakeLimit: number;
 }
 
+function markdownTableCell(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("|", "\\|").replaceAll("\n", "<br>");
+}
+
 function wakeLine(w: WakeTask): string {
+  const sources = w.sources.join(", ") || "—";
   return (
-    `| ${w.path} | ${w.reason} | ${w.ageDays}d / ${w.ttlDays ?? "—"}d | ` +
-    `${w.blastTotal} (${w.blastPrimary}p/${w.blastAdvisory}a) | ${w.sources.join(", ") || "—"} |`
+    `| ${markdownTableCell(w.path)} | ${markdownTableCell(w.reason)} | ` +
+    `${w.ageDays}d / ${w.ttlDays ?? "—"}d | ` +
+    `${w.blastTotal} (${w.blastPrimary}p/${w.blastAdvisory}a) | ` +
+    `${markdownTableCell(sources)} |`
   );
 }
 

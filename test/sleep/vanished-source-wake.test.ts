@@ -154,6 +154,23 @@ describe("daftari sleep — vanished-source wake", () => {
     expect(task?.reason).not.toContain("gone-forever");
   });
 
+  it("escapes source-path pipes in the Morning Report table", async () => {
+    md(vault, "analysis/dependent.md", { sources: ["vault:refs/weird|name.md"] });
+
+    const result = await runSleepCycle(vault, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const report = renderMarkdown({
+      generatedAt: NOW.toISOString(),
+      vault,
+      cycle: result.value,
+      wakeQueuePath: null,
+      wakeLimit: 20,
+    });
+    expect(report).toContain("refs/weird\\|name.md");
+    expect(report).not.toContain("refs/weird|name.md");
+  });
+
   it("ignores vanished units from superseded compiled edge groups", async () => {
     md(vault, "refs/live.md");
     md(vault, "analysis/artifact.md");

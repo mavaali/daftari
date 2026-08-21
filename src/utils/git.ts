@@ -307,7 +307,13 @@ export async function lastCommitContainingPath(
   vaultRoot: string,
   relPath: string,
 ): Promise<Result<string | null, Error>> {
-  const out = await git(vaultRoot, ["log", "--all", "--format=%H", "--", relPath]);
+  const out = await git(vaultRoot, [
+    "log",
+    "--all",
+    "--format=%H",
+    "--",
+    ...literalPathspecs([relPath]),
+  ]);
   if (!out.ok) return out;
   const commits = out.value
     .split("\n")
