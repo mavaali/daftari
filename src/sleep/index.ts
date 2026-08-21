@@ -66,10 +66,10 @@ Dream types (--dream, default 'circadian'):
     1. sweep expired staged actions (housekeeping)
     2. score every document's decay; honor the domain split (generative docs
        going stale is expected — counted, never woken)
-    3. build the WAKE LIST: canonical accumulation docs past TTL with
-       downstream dependents, ranked by blast radius — and write it to
-       .daftari/wake-queue.jsonl for an external agent to re-verify each
-       against its sources and stage diffs for ratification
+    3. build the WAKE LIST: canonical accumulation docs triggered by decay,
+       ended validity, or retracted/vanished grounding, ranked by blast radius
+       — and write it to .daftari/wake-queue.jsonl for an external agent to
+       re-verify each and stage diffs for ratification
     4. surface tension aging and the court docket head
     5. render the Morning Report, including compiled-edge instrumentation
        coverage and ending at the ratification queue — with the rubber-stamp

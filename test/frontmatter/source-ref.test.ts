@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveVaultSourceRef, verifyRepoSourceRef } from "../../src/curation/source-refs.js";
+import {
+  explicitVaultSourceTarget,
+  resolveVaultSourceRef,
+  verifyRepoSourceRef,
+} from "../../src/curation/source-refs.js";
 import { parseSourceRef } from "../../src/frontmatter/source-ref.js";
 
 describe("parseSourceRef", () => {
@@ -29,6 +33,12 @@ describe("resolveVaultSourceRef", () => {
     expect(
       resolveVaultSourceRef("vault:canon/fact", "readers/note.md", byPath, byBasename),
     ).toEqual({ kind: "vault", explicit: true, target: "canon/fact.md" });
+  });
+
+  it("returns a safe normalized explicit target even when the document is missing", () => {
+    expect(explicitVaultSourceTarget("vault:gone/fact")).toBe("gone/fact.md");
+    expect(explicitVaultSourceTarget("vault:../fact.md")).toBeNull();
+    expect(explicitVaultSourceTarget("repo:gone/fact.md")).toBeNull();
   });
 
   it("rejects traversal and never basename-falls back for explicit vault addresses", () => {

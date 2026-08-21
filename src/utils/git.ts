@@ -296,6 +296,36 @@ export async function headFullSha(vaultRoot: string): Promise<Result<string, Err
   return ok(out.value.trim());
 }
 
+// Returns the newest commit whose resulting tree actually contained relPath.
+// A plain path log reports the later deletion commit, which cannot recover the
+// file through `daftari asof`. Walk path-touching commits newest-first and
+// return the first tree that still has the blob. This also handles renames: a
+// rename commit may touch both names, but only the new path exists in its tree.
+// `--all` includes any locally available ref; no matching tree is a successful
+// null, distinct from Git being unusable.
+export async function lastCommitContainingPath(
+  vaultRoot: string,
+  relPath: string,
+): Promise<Result<string | null, Error>> {
+  const out = await git(vaultRoot, [
+    "log",
+    "--all",
+    "--format=%H",
+    "--",
+    ...literalPathspecs([relPath]),
+  ]);
+  if (!out.ok) return out;
+  const commits = out.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (const hash of commits) {
+    const present = await git(vaultRoot, ["cat-file", "-e", `${hash}:${relPath}`]);
+    if (present.ok) return ok(hash);
+  }
+  return ok(null);
+}
+
 export interface PathHistory {
   firstCommitDate: string;
   lastCommit: string;

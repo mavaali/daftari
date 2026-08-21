@@ -21,6 +21,7 @@ import {
   gitIdentity,
   hashObjectFile,
   isGitRepo,
+  lastCommitContainingPath,
   log,
 } from "../../src/utils/git.js";
 import {
@@ -202,6 +203,46 @@ describe("git", () => {
     await ensureGitRepo(vault);
     const result = await catFileBlob(vault, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     expect(result.ok).toBe(false);
+  });
+
+  it("finds the last commit whose tree contained a path, not its deletion commit", async () => {
+    await writeFile(join(vault, "source.md"), "present\n", "utf-8");
+    const added = await commit(vault, ["source.md"], "add source", "agent:tester");
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    const containing = execFileSync("git", ["-C", vault, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+
+    rmSync(join(vault, "source.md"));
+    const deleted = await commit(vault, ["source.md"], "delete source", "agent:tester");
+    expect(deleted.ok).toBe(true);
+
+    const result = await lastCommitContainingPath(vault, "source.md");
+    expect(result).toEqual({ ok: true, value: containing });
+  });
+
+  it("returns null when a path never appeared in available history", async () => {
+    await writeFile(join(vault, "other.md"), "present\n", "utf-8");
+    await commit(vault, ["other.md"], "add other", "agent:tester");
+
+    const result = await lastCommitContainingPath(vault, "never.md");
+    expect(result).toEqual({ ok: true, value: null });
+  });
+
+  it("treats Git pathspec magic in a recovery path as a literal filename", async () => {
+    const literal = ":(glob)q3-*.md";
+    await writeFile(join(vault, literal), "present\n", "utf-8");
+    const added = await commit(vault, [literal], "add literal pathspec", "agent:tester");
+    expect(added.ok).toBe(true);
+    const containing = execFileSync("git", ["-C", vault, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+    rmSync(join(vault, literal));
+    await commit(vault, [literal], "delete literal pathspec", "agent:tester");
+
+    const result = await lastCommitContainingPath(vault, literal);
+    expect(result).toEqual({ ok: true, value: containing });
   });
 });
 

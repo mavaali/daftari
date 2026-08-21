@@ -348,8 +348,11 @@ LLM-free, write-free (documents are never touched):
 ```
 
 The cycle sweeps expired staged actions, scores every document's decay, and
-builds the **wake list**: canonical accumulation documents past their TTL
-with downstream dependents, ranked by blast radius. The list is written to
+builds the **wake list**: canonical accumulation documents triggered by decay,
+ended validity, or retracted/vanished declared and compiled grounding, ranked
+by blast radius. For a deleted vault source, the operator report distinguishes
+recoverable Git history (with the last commit that contained the file) from a
+path absent in available history. The list is written to
 `.daftari/wake-queue.jsonl` for an external agent to consume — re-verify each
 document against its sources, stage the diff — because the vault never
 re-verifies on its own. Generative documents going stale are expected, not a

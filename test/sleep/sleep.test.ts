@@ -163,7 +163,7 @@ describe("runSleep (CLI)", () => {
 
     const md = readFileSync(outMd, "utf-8");
     expect(md).toContain("# Morning Report");
-    expect(md).toContain("## Wake list — 1 load-bearing decayed document(s)");
+    expect(md).toContain("## Wake list — 1 advisory task(s)");
     expect(md).toContain("| pricing/rotten.md |");
     expect(md).toContain("Quiet decay — 1");
     expect(md).toContain("generative docs past TTL: 1");
