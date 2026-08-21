@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../access/rbac.js";
+import { requireDefined } from "../../test-utils/require-defined.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { FindingSourceAdapter } from "../types.js";
@@ -178,8 +179,8 @@ describe("lintAdapter", () => {
           f.target.path === "notes/orphan-doc.md",
       );
       expect(f).toBeDefined();
-      expect(f!.source).toBe("lint");
-      expect(f!.target).toEqual({ kind: "lint", path: "notes/orphan-doc.md" });
+      expect(requireDefined(f).source).toBe("lint");
+      expect(requireDefined(f).target).toEqual({ kind: "lint", path: "notes/orphan-doc.md" });
     });
 
     it("Finding identity_key matches deriveIdentity('lint', checkName, target)", async () => {
@@ -195,7 +196,7 @@ describe("lintAdapter", () => {
         kind: "lint",
         path: "notes/orphan-doc.md",
       });
-      expect(f!.identity_key).toBe(expected);
+      expect(requireDefined(f).identity_key).toBe(expected);
     });
 
     it("Finding fingerprint matches fingerprint({ detail })", async () => {
@@ -207,8 +208,8 @@ describe("lintAdapter", () => {
           f.target.path === "notes/orphan-doc.md",
       );
       expect(f).toBeDefined();
-      const expectedFp = fingerprint({ detail: f!.evidence.detail as string });
-      expect(f!.fingerprint).toBe(expectedFp);
+      const expectedFp = fingerprint({ detail: requireDefined(f).evidence.detail as string });
+      expect(requireDefined(f).fingerprint).toBe(expectedFp);
     });
 
     it("identityOf(raw) returns the same identity_key as stored on the Finding", async () => {
@@ -220,7 +221,7 @@ describe("lintAdapter", () => {
           f.target.path === "notes/orphan-doc.md",
       );
       expect(f).toBeDefined();
-      expect(lintAdapter.identityOf(f!)).toBe(f!.identity_key);
+      expect(lintAdapter.identityOf(requireDefined(f))).toBe(requireDefined(f).identity_key);
     });
 
     it("fingerprintOf(raw) returns the same fingerprint as stored on the Finding", async () => {
@@ -232,7 +233,7 @@ describe("lintAdapter", () => {
           f.target.path === "notes/orphan-doc.md",
       );
       expect(f).toBeDefined();
-      expect(lintAdapter.fingerprintOf(f!)).toBe(f!.fingerprint);
+      expect(lintAdapter.fingerprintOf(requireDefined(f))).toBe(requireDefined(f).fingerprint);
     });
   });
 
@@ -329,7 +330,7 @@ describe("lintAdapter", () => {
           f.target.path === "notes/stale-doc.md",
       );
       expect(f).toBeDefined();
-      expect(f!.certainty).toBe("medium");
+      expect(requireDefined(f).certainty).toBe("medium");
     });
 
     it("staleFiles Finding has suggested_action and verify_predicate set", async () => {
@@ -341,11 +342,11 @@ describe("lintAdapter", () => {
           f.target.path === "notes/stale-doc.md",
       );
       expect(f).toBeDefined();
-      expect(typeof f!.suggested_action).toBe("string");
-      expect(f!.suggested_action.length).toBeGreaterThan(0);
-      expect(typeof f!.verify_predicate).toBe("string");
-      expect(f!.verify_predicate).toContain("staleFiles");
-      expect(f!.verify_predicate).toContain("notes/stale-doc.md");
+      expect(typeof requireDefined(f).suggested_action).toBe("string");
+      expect(requireDefined(f).suggested_action.length).toBeGreaterThan(0);
+      expect(typeof requireDefined(f).verify_predicate).toBe("string");
+      expect(requireDefined(f).verify_predicate).toContain("staleFiles");
+      expect(requireDefined(f).verify_predicate).toContain("notes/stale-doc.md");
     });
   });
 
@@ -387,7 +388,7 @@ describe("lintAdapter", () => {
           f.target.path === "notes/broken-ref-doc.md",
       );
       expect(f).toBeDefined();
-      expect(f!.certainty).toBe("high");
+      expect(requireDefined(f).certainty).toBe("high");
     });
   });
 
@@ -425,7 +426,7 @@ describe("lintAdapter", () => {
       );
       expect(f).toBeDefined();
       const result = await lintAdapter.reproduces(
-        f!.identity_key,
+        requireDefined(f).identity_key,
         vaultRoot,
         adminAccess,
         STALE_NOW,
@@ -449,7 +450,7 @@ describe("lintAdapter", () => {
 
       // Now re-run reproduces with a fresh now → the stale condition no longer holds.
       const result = await lintAdapter.reproduces(
-        f!.identity_key,
+        requireDefined(f).identity_key,
         vaultRoot,
         adminAccess,
         freshNow,
@@ -521,7 +522,7 @@ describe("lintAdapter", () => {
         kind: "lint",
         path: "notes/position-doc.md",
       });
-      expect(f!.identity_key).toBe(expected);
+      expect(requireDefined(f).identity_key).toBe(expected);
     });
   });
 
@@ -740,7 +741,9 @@ describe("lintAdapter", () => {
           f.target.path === "notes/malformed-pins-doc.md",
       );
       expect(mpFindings.length).toBe(2);
-      expect(mpFindings[0]!.identity_key).not.toBe(mpFindings[1]!.identity_key);
+      expect(requireDefined(mpFindings[0]).identity_key).not.toBe(
+        requireDefined(mpFindings[1]).identity_key,
+      );
     });
 
     it("each malformedPins finding has a discriminator derived from its describes entry", async () => {
@@ -756,7 +759,9 @@ describe("lintAdapter", () => {
         expect((f.discriminator as string).length).toBeGreaterThan(0);
       }
       // The two discriminators must differ.
-      expect(mpFindings[0]!.discriminator).not.toBe(mpFindings[1]!.discriminator);
+      expect(requireDefined(mpFindings[0]).discriminator).not.toBe(
+        requireDefined(mpFindings[1]).discriminator,
+      );
     });
   });
 

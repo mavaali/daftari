@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { requireDefined } from "../test-utils/require-defined.js";
 import { IDENTITY_SCHEME_VERSION } from "./identity.js";
 import {
   appendEvent,
@@ -88,7 +89,7 @@ describe("appendEvent + loadLedger — basic round-trip", () => {
     const events = loaded.value.byFinding.get("finding-001");
     expect(events).toBeDefined();
     expect(events).toHaveLength(1);
-    const evt = events![0]!;
+    const evt = requireDefined(events?.[0]);
     expect(evt.identity_scheme_version).toBe(IDENTITY_SCHEME_VERSION);
     expect(evt.event).toBe("new");
     expect(evt.against_fingerprint).toBe("fp-abc123");
@@ -244,7 +245,7 @@ describe("currentDisposition — accept → defer → dismiss folds to dismissed
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-seq")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-seq"));
     const disp = currentDisposition(events);
 
     expect(disp.event).toBe("dismiss");
@@ -288,7 +289,7 @@ describe("currentDisposition — accept → defer → dismiss folds to dismissed
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-reload")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-reload"));
     expect(events).toHaveLength(3);
     const disp = currentDisposition(events);
     expect(disp.event).toBe("dismiss");
@@ -320,7 +321,7 @@ describe("currentDisposition — against_fingerprint comes from latest event (R1
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-fp")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-fp"));
     const disp = currentDisposition(events);
     expect(disp.against_fingerprint).toBe("fp-v2");
   });
@@ -353,7 +354,7 @@ describe("currentDisposition — expiry exposure", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-exp")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-exp"));
     const disp = currentDisposition(events);
     expect(disp.event).toBe("defer");
     expect(disp.expiry).toBe(expiry);
@@ -376,7 +377,7 @@ describe("currentDisposition — expiry exposure", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-past")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-past"));
     const now = new Date("2024-06-01T00:00:00Z");
     const disp = currentDisposition(events, now);
     expect(disp.expiry).toBe(pastExpiry);
@@ -400,7 +401,7 @@ describe("currentDisposition — expiry exposure", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-future")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-future"));
     const now = new Date("2024-06-01T00:00:00Z");
     const disp = currentDisposition(events, now);
     expect(disp.expired).toBe(false);
@@ -421,7 +422,7 @@ describe("currentDisposition — expiry exposure", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-noexp")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-noexp"));
     const disp = currentDisposition(events, new Date());
     expect(disp.expired).toBe(false);
   });
@@ -463,7 +464,7 @@ describe("currentDisposition — owner tracking", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-own")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-own"));
     const disp = currentDisposition(events);
     expect(disp.owner).toBe("carol");
   });
@@ -483,7 +484,7 @@ describe("currentDisposition — owner tracking", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-noown")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-noown"));
     const disp = currentDisposition(events);
     expect(disp.owner).toBeUndefined();
   });
@@ -581,7 +582,7 @@ describe("eventTimestamps — first_seen and last_seen (R12)", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-ts")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-ts"));
     const ts = eventTimestamps(events);
     expect(ts.first_seen).toBe("2024-03-01T00:00:00Z");
     expect(ts.last_seen).toBe("2024-05-01T00:00:00Z");
@@ -602,7 +603,7 @@ describe("eventTimestamps — first_seen and last_seen (R12)", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-one")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-one"));
     const ts = eventTimestamps(events);
     expect(ts.first_seen).toBe("2024-06-15T12:00:00Z");
     expect(ts.last_seen).toBe("2024-06-15T12:00:00Z");
@@ -655,7 +656,7 @@ describe("appendEvent — optional field preservation", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-opts")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-opts"));
     expect(events[0]?.rationale).toBe("waiting on upstream fix");
     expect(events[0]?.expiry).toBe("2025-03-01T00:00:00Z");
   });
@@ -810,7 +811,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-a")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-a"));
     const disp = currentDisposition(events);
     // Expiry set by defer must survive the subsequent reassign
     expect(disp.expiry).toBe(expiry);
@@ -842,7 +843,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-b")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-b"));
     const disp = currentDisposition(events);
     // accept must clear the expiry from the prior defer
     expect(disp.expiry).toBeUndefined();
@@ -874,7 +875,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-c")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-c"));
     const disp = currentDisposition(events);
     // reopened must NOT clear the standing expiry from dismiss
     expect(disp.expiry).toBe(expiry);
@@ -906,7 +907,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-d")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-d"));
     const disp = currentDisposition(events);
     // resolved must clear the standing expiry
     expect(disp.expiry).toBeUndefined();
@@ -943,7 +944,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-e")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-e"));
     const disp = currentDisposition(events, new Date("2099-07-01T00:00:00Z"));
     // dismiss with no expiry must unconditionally replace — standing expiry is now undefined
     expect(disp.expiry).toBeUndefined();
@@ -979,7 +980,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-f")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-f"));
     const disp = currentDisposition(events);
     // dismiss's expiry must replace the defer's expiry
     expect(disp.expiry).toBe(expiry2);
@@ -1013,7 +1014,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-g")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-g"));
     const disp = currentDisposition(events);
     expect(disp.expiry).toBe(expiry);
   });
@@ -1045,7 +1046,7 @@ describe("currentDisposition — standing-expiry fold semantics", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
 
-    const events = loaded.value.byFinding.get("f-stand-h")!;
+    const events = requireDefined(loaded.value.byFinding.get("f-stand-h"));
     const disp = currentDisposition(events);
     expect(disp.expiry).toBeUndefined();
   });
@@ -1085,7 +1086,7 @@ describe("appendEvent — descriptor (incl. rbacPaths) round-trip", () => {
     expect(events).toBeDefined();
     expect(events).toHaveLength(1);
 
-    const evt = events![0]!;
+    const evt = requireDefined(events?.[0]);
     expect(evt.descriptor).toBeDefined();
     expect(evt.descriptor?.source).toBe("tension");
     expect(evt.descriptor?.check).toBe("unresolved-tension");
@@ -1119,7 +1120,7 @@ describe("appendEvent — descriptor (incl. rbacPaths) round-trip", () => {
 
     const events = loaded.value.byFinding.get("f-desc-legacy");
     expect(events).toBeDefined();
-    const evt = events![0]!;
+    const evt = requireDefined(events?.[0]);
     expect(evt.descriptor).toBeDefined();
     // rbacPaths must be absent (undefined), not null or empty array
     expect(evt.descriptor?.rbacPaths).toBeUndefined();

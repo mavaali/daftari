@@ -8,6 +8,7 @@
 //   npx vitest run src/board/reconcile.test.ts
 
 import { describe, expect, it } from "vitest";
+import { requireDefined } from "../test-utils/require-defined.js";
 import { IDENTITY_SCHEME_VERSION } from "./identity.js";
 import { reconcile } from "./reconcile.js";
 import type { BoardColumn, Finding, FindingDescriptor, LedgerEvent } from "./types.js";
@@ -119,15 +120,15 @@ describe("CASE A — live finding with no ledger events", () => {
     const { findings, emit } = reconcile([finding], ledger, NOW);
 
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.disposition).toBe<BoardColumn>("new");
-    expect(findings[0]!.identity_key).toBe("f-a1");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(findings[0]).identity_key).toBe("f-a1");
     expect(emit).toHaveLength(0);
   });
 
   it("history is empty when no ledger events exist", () => {
     const finding = makeFinding({ identity_key: "f-a2" });
     const { findings } = reconcile([finding], new Map(), NOW);
-    expect(findings[0]!.history).toHaveLength(0);
+    expect(requireDefined(findings[0]).history).toHaveLength(0);
   });
 
   it("first_seen and last_seen come from the live finding when ledger is empty", () => {
@@ -137,8 +138,8 @@ describe("CASE A — live finding with no ledger events", () => {
       last_seen: "2024-03-15T00:00:00Z",
     });
     const { findings } = reconcile([finding], new Map(), NOW);
-    expect(findings[0]!.first_seen).toBe("2024-03-01T00:00:00Z");
-    expect(findings[0]!.last_seen).toBe("2024-03-15T00:00:00Z");
+    expect(requireDefined(findings[0]).first_seen).toBe("2024-03-01T00:00:00Z");
+    expect(requireDefined(findings[0]).last_seen).toBe("2024-03-15T00:00:00Z");
   });
 });
 
@@ -156,7 +157,7 @@ describe("CASE B — accept → column 'accepted'", () => {
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
 
-    expect(findings[0]!.disposition).toBe<BoardColumn>("accepted");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("accepted");
     expect(emit).toHaveLength(0);
   });
 
@@ -169,8 +170,8 @@ describe("CASE B — accept → column 'accepted'", () => {
     const ledger = buildLedger(events);
 
     const { findings } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.history).toHaveLength(2);
-    expect(findings[0]!.history.map((e) => e.event)).toEqual(["new", "accept"]);
+    expect(requireDefined(findings[0]).history).toHaveLength(2);
+    expect(requireDefined(findings[0]).history.map((e) => e.event)).toEqual(["new", "accept"]);
   });
 });
 
@@ -188,7 +189,7 @@ describe("CASE B — defer → column 'waiting'", () => {
     ]);
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.disposition).toBe<BoardColumn>("waiting");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("waiting");
     expect(emit).toHaveLength(0);
   });
 
@@ -205,7 +206,7 @@ describe("CASE B — defer → column 'waiting'", () => {
     ]);
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("new");
     expect(emit).toHaveLength(0);
   });
 
@@ -216,7 +217,7 @@ describe("CASE B — defer → column 'waiting'", () => {
     ]);
     const { findings } = reconcile([finding], ledger, NOW);
     // No expiry → not expired → stays waiting
-    expect(findings[0]!.disposition).toBe<BoardColumn>("waiting");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("waiting");
   });
 });
 
@@ -232,7 +233,7 @@ describe("CASE B — dismiss scenarios", () => {
     ]);
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.disposition).toBe<BoardColumn>("dismissed");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("dismissed");
     expect(emit).toHaveLength(0);
   });
 
@@ -249,7 +250,7 @@ describe("CASE B — dismiss scenarios", () => {
     ]);
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.disposition).toBe<BoardColumn>("dismissed");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("dismissed");
     expect(emit).toHaveLength(0);
   });
 
@@ -265,13 +266,13 @@ describe("CASE B — dismiss scenarios", () => {
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
     // Re-triage: column is new
-    expect(findings[0]!.disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("new");
     // No duplicate card — still exactly one finding
     expect(findings).toHaveLength(1);
     // No system event emitted for fingerprint drift
     expect(emit).toHaveLength(0);
     // History is preserved
-    expect(findings[0]!.history).toHaveLength(1);
+    expect(requireDefined(findings[0]).history).toHaveLength(1);
   });
 
   it("dismiss with ELAPSED expiry → column 'new' (R9)", () => {
@@ -287,7 +288,7 @@ describe("CASE B — dismiss scenarios", () => {
     ]);
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("new");
     expect(emit).toHaveLength(0);
   });
 });
@@ -311,19 +312,19 @@ describe("CASE B — resolved finding reappears in live set → reopened (R8)", 
 
     // One reopened emitted
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("reopened");
-    expect(emit[0]!.finding_id).toBe("f-b9");
-    expect(emit[0]!.principal_type).toBe("system");
-    expect(emit[0]!.by).toBe("system");
-    expect(emit[0]!.against_fingerprint).toBe("fp-b9");
-    expect(emit[0]!.identity_scheme_version).toBe(IDENTITY_SCHEME_VERSION);
-    expect(emit[0]!.at).toBe(NOW.toISOString());
+    expect(requireDefined(emit[0]).event).toBe("reopened");
+    expect(requireDefined(emit[0]).finding_id).toBe("f-b9");
+    expect(requireDefined(emit[0]).principal_type).toBe("system");
+    expect(requireDefined(emit[0]).by).toBe("system");
+    expect(requireDefined(emit[0]).against_fingerprint).toBe("fp-b9");
+    expect(requireDefined(emit[0]).identity_scheme_version).toBe(IDENTITY_SCHEME_VERSION);
+    expect(requireDefined(emit[0]).at).toBe(NOW.toISOString());
 
     // Column reverts to prior human disposition (accepted was the last human event)
-    expect(findings[0]!.disposition).toBe<BoardColumn>("accepted");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("accepted");
 
     // History contains ledger events + the new reopened event
-    const eventTypes = findings[0]!.history.map((e) => e.event);
+    const eventTypes = requireDefined(findings[0]).history.map((e) => e.event);
     expect(eventTypes).toContain("new");
     expect(eventTypes).toContain("accept");
     expect(eventTypes).toContain("resolved");
@@ -345,9 +346,9 @@ describe("CASE B — resolved finding reappears in live set → reopened (R8)", 
 
     const { findings, emit } = reconcile([finding], ledger, NOW);
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("reopened");
+    expect(requireDefined(emit[0]).event).toBe("reopened");
     // No prior human event → reverts to new
-    expect(findings[0]!.disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("new");
   });
 
   it("already-reopened finding (latest is 'reopened') does NOT re-emit reopened", () => {
@@ -375,7 +376,7 @@ describe("CASE B — resolved finding reappears in live set → reopened (R8)", 
     // No second reopened
     expect(emit).toHaveLength(0);
     // Column is the disposition before reopened (accept → accepted)
-    expect(findings[0]!.disposition).toBe<BoardColumn>("accepted");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("accepted");
   });
 });
 
@@ -394,19 +395,19 @@ describe("CASE C — accepted finding absent from live set → emit resolved", (
     const { findings, emit } = reconcile([], ledger, NOW);
 
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("resolved");
-    expect(emit[0]!.finding_id).toBe("f-c1");
-    expect(emit[0]!.principal_type).toBe("system");
-    expect(emit[0]!.by).toBe("system");
+    expect(requireDefined(emit[0]).event).toBe("resolved");
+    expect(requireDefined(emit[0]).finding_id).toBe("f-c1");
+    expect(requireDefined(emit[0]).principal_type).toBe("system");
+    expect(requireDefined(emit[0]).by).toBe("system");
     // against_fingerprint is the last known fingerprint from the ledger
-    expect(emit[0]!.against_fingerprint).toBe("fp-c1-v2");
-    expect(emit[0]!.identity_scheme_version).toBe(IDENTITY_SCHEME_VERSION);
-    expect(emit[0]!.at).toBe(NOW.toISOString());
+    expect(requireDefined(emit[0]).against_fingerprint).toBe("fp-c1-v2");
+    expect(requireDefined(emit[0]).identity_scheme_version).toBe(IDENTITY_SCHEME_VERSION);
+    expect(requireDefined(emit[0]).at).toBe(NOW.toISOString());
 
     // Resolved finding appears in findings with column 'resolved'
     const resolvedFindings = findings.filter((f) => f.disposition === "resolved");
     expect(resolvedFindings).toHaveLength(1);
-    expect(resolvedFindings[0]!.identity_key).toBe("f-c1");
+    expect(requireDefined(resolvedFindings[0]).identity_key).toBe("f-c1");
   });
 
   it("already-resolved and absent finding → no re-emit (idempotent, R6)", () => {
@@ -476,7 +477,7 @@ describe("Idempotency (R6 / R7)", () => {
     // First run
     const run1 = reconcile([liveFinding], ledger, NOW);
     expect(run1.emit).toHaveLength(1); // reopened emitted
-    expect(run1.emit[0]!.event).toBe("reopened");
+    expect(requireDefined(run1.emit[0]).event).toBe("reopened");
 
     // Apply emits (simulates caller persisting)
     const ledger2 = applyEmits(ledger, run1.emit);
@@ -485,8 +486,12 @@ describe("Idempotency (R6 / R7)", () => {
     const run2 = reconcile([liveFinding], ledger2, NOW);
     expect(run2.emit).toHaveLength(0); // ZERO new emits
     expect(run2.findings).toHaveLength(run1.findings.length);
-    expect(run2.findings[0]!.disposition).toBe(run1.findings[0]!.disposition);
-    expect(run2.findings[0]!.identity_key).toBe(run1.findings[0]!.identity_key);
+    expect(requireDefined(run2.findings[0]).disposition).toBe(
+      requireDefined(run1.findings[0]).disposition,
+    );
+    expect(requireDefined(run2.findings[0]).identity_key).toBe(
+      requireDefined(run1.findings[0]).identity_key,
+    );
   });
 
   it("accepted-absent → resolve → second run: zero emits, same resolved output", () => {
@@ -497,7 +502,7 @@ describe("Idempotency (R6 / R7)", () => {
     // First run (no live findings → resolved emitted)
     const run1 = reconcile([], ledger, NOW);
     expect(run1.emit).toHaveLength(1);
-    expect(run1.emit[0]!.event).toBe("resolved");
+    expect(requireDefined(run1.emit[0]).event).toBe("resolved");
 
     const ledger2 = applyEmits(ledger, run1.emit);
 
@@ -507,7 +512,7 @@ describe("Idempotency (R6 / R7)", () => {
     // Resolved finding still shows in findings (column resolved, no new emit)
     const resolvedFindings = run2.findings.filter((f) => f.disposition === "resolved");
     expect(resolvedFindings).toHaveLength(1);
-    expect(resolvedFindings[0]!.identity_key).toBe("f-idem2");
+    expect(requireDefined(resolvedFindings[0]).identity_key).toBe("f-idem2");
   });
 
   it("two runs with completely unchanged inputs produce bit-identical findings", () => {
@@ -558,17 +563,17 @@ describe("Multiple findings — mixed cases in one reconcile call", () => {
     const { findings, emit } = reconcile([fNew, fAccepted, fDismissed], ledger, NOW);
 
     const byKey = new Map(findings.map((f) => [f.identity_key, f]));
-    expect(byKey.get("f-mix-new")!.disposition).toBe<BoardColumn>("new");
-    expect(byKey.get("f-mix-accepted")!.disposition).toBe<BoardColumn>("accepted");
-    expect(byKey.get("f-mix-dismissed")!.disposition).toBe<BoardColumn>("dismissed");
+    expect(requireDefined(byKey.get("f-mix-new")).disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(byKey.get("f-mix-accepted")).disposition).toBe<BoardColumn>("accepted");
+    expect(requireDefined(byKey.get("f-mix-dismissed")).disposition).toBe<BoardColumn>("dismissed");
 
     // Resolved finding (absent from live) shows with column resolved
-    expect(byKey.get("f-mix-absent")!.disposition).toBe<BoardColumn>("resolved");
+    expect(requireDefined(byKey.get("f-mix-absent")).disposition).toBe<BoardColumn>("resolved");
 
     // One resolved event emitted for f-mix-absent
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("resolved");
-    expect(emit[0]!.finding_id).toBe("f-mix-absent");
+    expect(requireDefined(emit[0]).event).toBe("resolved");
+    expect(requireDefined(emit[0]).finding_id).toBe("f-mix-absent");
   });
 });
 
@@ -600,9 +605,9 @@ describe("priorHumanDisposition reversion — defer and dismiss prior states", (
 
     // Reopened emitted
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("reopened");
+    expect(requireDefined(emit[0]).event).toBe("reopened");
     // Column reverts to 'waiting' (prior human was defer)
-    expect(findings[0]!.disposition).toBe<BoardColumn>("waiting");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("waiting");
   });
 
   it("prior human event is dismiss, then resolved, then finding reappears → column 'dismissed'", () => {
@@ -627,9 +632,9 @@ describe("priorHumanDisposition reversion — defer and dismiss prior states", (
 
     // Reopened emitted
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("reopened");
+    expect(requireDefined(emit[0]).event).toBe("reopened");
     // Column reverts to 'dismissed' (prior human was dismiss)
-    expect(findings[0]!.disposition).toBe<BoardColumn>("dismissed");
+    expect(requireDefined(findings[0]).disposition).toBe<BoardColumn>("dismissed");
   });
 });
 
@@ -660,11 +665,11 @@ describe("CASE C — descriptor-backed resolved findings", () => {
 
     const resolved = findings.find((f) => f.identity_key === "f-desc-c1");
     expect(resolved).toBeDefined();
-    expect(resolved!.disposition).toBe<BoardColumn>("resolved");
+    expect(requireDefined(resolved).disposition).toBe<BoardColumn>("resolved");
     // Real values from descriptor, not placeholders
-    expect(resolved!.source).toBe("tension");
-    expect(resolved!.check).toBe("unresolvedTension");
-    expect(resolved!.target).toEqual({ kind: "tension", tensionId: "t-123" });
+    expect(requireDefined(resolved).source).toBe("tension");
+    expect(requireDefined(resolved).check).toBe("unresolvedTension");
+    expect(requireDefined(resolved).target).toEqual({ kind: "tension", tensionId: "t-123" });
   });
 
   it("skeleton falls back to sentinel source 'staleness' when NO event has a descriptor", () => {
@@ -682,10 +687,10 @@ describe("CASE C — descriptor-backed resolved findings", () => {
 
     const resolved = findings.find((f) => f.identity_key === "f-desc-c2");
     expect(resolved).toBeDefined();
-    expect(resolved!.disposition).toBe<BoardColumn>("resolved");
+    expect(requireDefined(resolved).disposition).toBe<BoardColumn>("resolved");
     // Sentinel, not "lint" (which would be misleading)
-    expect(resolved!.source).toBe("staleness");
-    expect(resolved!.check).toBe("unknown");
+    expect(requireDefined(resolved).source).toBe("staleness");
+    expect(requireDefined(resolved).check).toBe("unknown");
   });
 
   it("reconcile picks the LATEST descriptor-bearing event (not just the first)", () => {
@@ -740,8 +745,8 @@ describe("CASE C — descriptor-backed resolved findings", () => {
     const resolved = findings.find((f) => f.identity_key === "f-desc-c3b");
     expect(resolved).toBeDefined();
     // Should use the newest (accept event) descriptor
-    expect(resolved!.source).toBe("tension");
-    expect(resolved!.check).toBe("unresolvedTension");
+    expect(requireDefined(resolved).source).toBe("tension");
+    expect(requireDefined(resolved).check).toBe("unresolvedTension");
   });
 
   it("emitted 'resolved' event carries the descriptor forward", () => {
@@ -757,11 +762,13 @@ describe("CASE C — descriptor-backed resolved findings", () => {
     const { emit } = reconcile([], ledger, NOW);
 
     expect(emit).toHaveLength(1);
-    expect(emit[0]!.event).toBe("resolved");
-    expect(emit[0]!.descriptor).toBeDefined();
-    expect(emit[0]!.descriptor!.source).toBe("tension");
-    expect(emit[0]!.descriptor!.check).toBe("unresolvedTension");
-    expect(emit[0]!.descriptor!.label).toBe("Unresolved tension between belief A and belief B");
+    expect(requireDefined(emit[0]).event).toBe("resolved");
+    expect(requireDefined(emit[0]).descriptor).toBeDefined();
+    expect(requireDefined(emit[0]?.descriptor).source).toBe("tension");
+    expect(requireDefined(emit[0]?.descriptor).check).toBe("unresolvedTension");
+    expect(requireDefined(emit[0]?.descriptor).label).toBe(
+      "Unresolved tension between belief A and belief B",
+    );
   });
 
   it("idempotency: second run with descriptor still produces zero emits and same resolved output", () => {
@@ -777,7 +784,7 @@ describe("CASE C — descriptor-backed resolved findings", () => {
     // First run — emits resolved event
     const run1 = reconcile([], ledger, NOW);
     expect(run1.emit).toHaveLength(1);
-    expect(run1.emit[0]!.event).toBe("resolved");
+    expect(requireDefined(run1.emit[0]).event).toBe("resolved");
     const ledger2 = applyEmits(ledger, run1.emit);
 
     // Second run — resolved event now in ledger, still absent from live → ZERO new emits
@@ -789,14 +796,16 @@ describe("CASE C — descriptor-backed resolved findings", () => {
     const resolved2 = run2.findings.find((f) => f.identity_key === "f-desc-idem");
     expect(resolved1).toBeDefined();
     expect(resolved2).toBeDefined();
-    expect(resolved2!.disposition).toBe<BoardColumn>("resolved");
-    expect(resolved2!.source).toBe("tension");
-    expect(resolved2!.check).toBe("unresolvedTension");
+    expect(requireDefined(resolved2).disposition).toBe<BoardColumn>("resolved");
+    expect(requireDefined(resolved2).source).toBe("tension");
+    expect(requireDefined(resolved2).check).toBe("unresolvedTension");
     // Both runs produce the same identity_key, source, check, target (descriptor is deterministic)
-    expect(resolved1!.identity_key).toBe(resolved2!.identity_key);
-    expect(resolved1!.source).toBe(resolved2!.source);
-    expect(resolved1!.check).toBe(resolved2!.check);
-    expect(JSON.stringify(resolved1!.target)).toBe(JSON.stringify(resolved2!.target));
+    expect(requireDefined(resolved1).identity_key).toBe(requireDefined(resolved2).identity_key);
+    expect(requireDefined(resolved1).source).toBe(requireDefined(resolved2).source);
+    expect(requireDefined(resolved1).check).toBe(requireDefined(resolved2).check);
+    expect(JSON.stringify(requireDefined(resolved1).target)).toBe(
+      JSON.stringify(requireDefined(resolved2).target),
+    );
   });
 });
 
@@ -815,7 +824,7 @@ describe("No duplicate cards on fingerprint drift (R10)", () => {
     const { findings } = reconcile([finding], ledger, NOW);
     const driftFindings = findings.filter((f) => f.identity_key === "f-drift");
     expect(driftFindings).toHaveLength(1);
-    expect(driftFindings[0]!.disposition).toBe<BoardColumn>("new");
+    expect(requireDefined(driftFindings[0]).disposition).toBe<BoardColumn>("new");
   });
 });
 
@@ -842,8 +851,8 @@ describe("first_seen / last_seen derivation", () => {
     ]);
 
     const { findings } = reconcile([finding], ledger, NOW);
-    expect(findings[0]!.first_seen).toBe("2024-02-01T00:00:00Z");
-    expect(findings[0]!.last_seen).toBe("2024-04-15T00:00:00Z");
+    expect(requireDefined(findings[0]).first_seen).toBe("2024-02-01T00:00:00Z");
+    expect(requireDefined(findings[0]).last_seen).toBe("2024-04-15T00:00:00Z");
   });
 });
 
@@ -871,7 +880,7 @@ describe("Emitted event shape", () => {
 
     const { emit } = reconcile([finding], ledger, NOW);
     expect(emit).toHaveLength(1);
-    const evt = emit[0]!;
+    const evt = requireDefined(emit[0]);
     expect(evt.finding_id).toBe("f-shape-reopen");
     expect(evt.event).toBe("reopened");
     expect(typeof evt.by).toBe("string");
@@ -892,7 +901,7 @@ describe("Emitted event shape", () => {
 
     const { emit } = reconcile([], ledger, NOW);
     expect(emit).toHaveLength(1);
-    const evt = emit[0]!;
+    const evt = requireDefined(emit[0]);
     expect(evt.finding_id).toBe("f-shape-resolved");
     expect(evt.event).toBe("resolved");
     expect(evt.principal_type).toBe("system");

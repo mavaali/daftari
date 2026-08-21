@@ -11,6 +11,7 @@ import {
   readersFromLineage,
   unionLineage,
 } from "../../src/distill/reader-fingerprint.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 
 describe("reader lineage codec", () => {
   it("round-trips ts|op|encodeReader (encodeReader may itself contain pipes)", () => {
@@ -58,9 +59,9 @@ describe("reader lineage codec", () => {
     const entry = encodeLineageEntry("2026-01-01T00:00:00Z", "update", reader);
     const parsed = parseLineageEntry(entry);
     expect(parsed).not.toBeNull();
-    expect(parsed!.reader).toBe(reader);
-    expect(parsed!.op).toBe("update");
-    expect(parsed!.ts).toBe("2026-01-01T00:00:00Z");
+    expect(requireDefined(parsed).reader).toBe(reader);
+    expect(requireDefined(parsed).op).toBe("update");
+    expect(requireDefined(parsed).ts).toBe("2026-01-01T00:00:00Z");
   });
 
   it("unionLineage preserves existing order, does not re-sort", () => {
@@ -133,15 +134,15 @@ describe("proposeAllClaims — lineage op stamp (6mf.4 Task 3)", () => {
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);
 
-    const diff = listed.value[0]!.proposedDiff as Record<string, unknown>;
+    const diff = requireDefined(listed.value[0]).proposedDiff as Record<string, unknown>;
     const fm = diff.frontmatter as Record<string, unknown>;
 
     expect(Array.isArray(fm.reader_lineage)).toBe(true);
     const lineage = fm.reader_lineage as string[];
     expect(lineage).toHaveLength(1);
-    const parsed = parseLineageEntry(lineage[0]!);
+    const parsed = parseLineageEntry(requireDefined(lineage[0]));
     expect(parsed).not.toBeNull();
-    expect(parsed!.op).toBe("ingest");
+    expect(requireDefined(parsed).op).toBe("ingest");
   });
 
   it("an update claim (pathOverrides has the claim_key) produces reader_lineage with op=update", async () => {
@@ -156,15 +157,15 @@ describe("proposeAllClaims — lineage op stamp (6mf.4 Task 3)", () => {
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);
 
-    const diff = listed.value[0]!.proposedDiff as Record<string, unknown>;
+    const diff = requireDefined(listed.value[0]).proposedDiff as Record<string, unknown>;
     const fm = diff.frontmatter as Record<string, unknown>;
 
     expect(Array.isArray(fm.reader_lineage)).toBe(true);
     const lineage = fm.reader_lineage as string[];
     expect(lineage).toHaveLength(1);
-    const parsed = parseLineageEntry(lineage[0]!);
+    const parsed = parseLineageEntry(requireDefined(lineage[0]));
     expect(parsed).not.toBeNull();
-    expect(parsed!.op).toBe("update");
+    expect(requireDefined(parsed).op).toBe("update");
   });
 
   it("a claim with no run_meta does not produce reader_lineage", async () => {
@@ -176,7 +177,7 @@ describe("proposeAllClaims — lineage op stamp (6mf.4 Task 3)", () => {
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);
 
-    const diff = listed.value[0]!.proposedDiff as Record<string, unknown>;
+    const diff = requireDefined(listed.value[0]).proposedDiff as Record<string, unknown>;
     const fm = diff.frontmatter as Record<string, unknown>;
 
     expect(fm.reader_lineage).toBeUndefined();

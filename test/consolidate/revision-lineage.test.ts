@@ -14,6 +14,7 @@ import {
 import { encodeRevisionReader, parseLineageEntry } from "../../src/distill/reader-fingerprint.js";
 import type { LlmClient } from "../../src/eval/llm.js";
 import { err, ok } from "../../src/frontmatter/types.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 
 function tmpVault(): string {
   const root = join(
@@ -114,14 +115,14 @@ describe("revisionPanel — appendReaderLineage (6mf.4 R3)", () => {
 
       // appendReaderLineage must be called exactly ONCE on the from-doc
       expect(appendCalls).toHaveLength(1);
-      expect(appendCalls[0]!.path).toBe("a.md");
+      expect(requireDefined(appendCalls[0]).path).toBe("a.md");
 
       // The entry must be a "revision" lineage entry for the panel model
-      const parsed = parseLineageEntry(appendCalls[0]!.entry);
+      const parsed = parseLineageEntry(requireDefined(appendCalls[0]).entry);
       expect(parsed).not.toBeNull();
-      expect(parsed!.op).toBe("revision");
+      expect(requireDefined(parsed).op).toBe("revision");
       const expectedReader = encodeRevisionReader(baseOpts.model);
-      expect(parsed!.reader).toBe(expectedReader);
+      expect(requireDefined(parsed).reader).toBe(expectedReader);
     } finally {
       cleanup(root);
     }
@@ -279,7 +280,7 @@ describe("revisionPanel — appendReaderLineage (6mf.4 R3)", () => {
 
       // Lineage must be appended on the from-doc (contested path also applies writes)
       expect(appendCalls).toHaveLength(1);
-      expect(appendCalls[0]!.path).toBe("a.md");
+      expect(requireDefined(appendCalls[0]).path).toBe("a.md");
     } finally {
       cleanup(root);
     }

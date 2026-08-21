@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../access/rbac.js";
 import type { UpstreamStaleness } from "../../curation/edge-staleness.js";
+import { requireDefined } from "../../test-utils/require-defined.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { FindingSourceAdapter, Tier2Target } from "../types.js";
@@ -201,8 +202,8 @@ describe("ttlStalenessAdapter", () => {
           f.target.path === "notes/expired-doc.md",
       );
       expect(f).toBeDefined();
-      expect(f!.source).toBe("staleness");
-      expect(f!.target).toEqual({ kind: "staleness", path: "notes/expired-doc.md" });
+      expect(requireDefined(f).source).toBe("staleness");
+      expect(requireDefined(f).target).toEqual({ kind: "staleness", path: "notes/expired-doc.md" });
     });
 
     it("identity_key = deriveIdentity('staleness','ttl-staleness',target) — no discriminator", async () => {
@@ -218,8 +219,8 @@ describe("ttlStalenessAdapter", () => {
         kind: "staleness",
         path: "notes/expired-doc.md",
       });
-      expect(f!.identity_key).toBe(expected);
-      expect(f!.discriminator).toBeUndefined();
+      expect(requireDefined(f).identity_key).toBe(expected);
+      expect(requireDefined(f).discriminator).toBeUndefined();
     });
 
     it("fingerprint = fingerprint(evidence) where evidence is volatile (score,ageDays,ttlDays)", async () => {
@@ -234,8 +235,8 @@ describe("ttlStalenessAdapter", () => {
       // fingerprint covers full evidence — score and ageDays are the volatile parts,
       // ttlDays is stable but included. fingerprintOf uses fingerprint(raw.evidence)
       // which must be consistent with how list() stored the fingerprint.
-      const expectedFp = fingerprint(f!.evidence);
-      expect(f!.fingerprint).toBe(expectedFp);
+      const expectedFp = fingerprint(requireDefined(f).evidence);
+      expect(requireDefined(f).fingerprint).toBe(expectedFp);
     });
 
     it("identity STABLE across two runs while fingerprint DRIFTS as ageDays grows", async () => {
@@ -261,12 +262,12 @@ describe("ttlStalenessAdapter", () => {
       expect(f2).toBeDefined();
 
       // Identity is STABLE
-      expect(f1!.identity_key).toBe(f2!.identity_key);
+      expect(requireDefined(f1).identity_key).toBe(requireDefined(f2).identity_key);
 
       // Fingerprint DRIFTS because ageDays changed (200 → 210)
-      expect(f1!.evidence.ageDays).toBe(200);
-      expect(f2!.evidence.ageDays).toBe(210);
-      expect(f1!.fingerprint).not.toBe(f2!.fingerprint);
+      expect(requireDefined(f1).evidence.ageDays).toBe(200);
+      expect(requireDefined(f2).evidence.ageDays).toBe(210);
+      expect(requireDefined(f1).fingerprint).not.toBe(requireDefined(f2).fingerprint);
     });
 
     it("evidence carries score, ageDays, ttlDays with correct values", async () => {
@@ -278,11 +279,11 @@ describe("ttlStalenessAdapter", () => {
           f.target.path === "notes/expired-doc.md",
       );
       expect(f).toBeDefined();
-      expect(typeof f!.evidence.score).toBe("number");
-      expect(typeof f!.evidence.ageDays).toBe("number");
-      expect(f!.evidence.ttlDays).toBe(90);
-      expect(f!.evidence.ageDays).toBe(200);
-      expect(f!.evidence.score).toBe(1); // min(1, 200/90) = 1
+      expect(typeof requireDefined(f).evidence.score).toBe("number");
+      expect(typeof requireDefined(f).evidence.ageDays).toBe("number");
+      expect(requireDefined(f).evidence.ttlDays).toBe(90);
+      expect(requireDefined(f).evidence.ageDays).toBe(200);
+      expect(requireDefined(f).evidence.score).toBe(1); // min(1, 200/90) = 1
     });
 
     it("identityOf(raw) returns the same identity_key as stored", async () => {
@@ -294,7 +295,9 @@ describe("ttlStalenessAdapter", () => {
           f.target.path === "notes/expired-doc.md",
       );
       expect(f).toBeDefined();
-      expect(ttlStalenessAdapter.identityOf(f!)).toBe(f!.identity_key);
+      expect(ttlStalenessAdapter.identityOf(requireDefined(f))).toBe(
+        requireDefined(f).identity_key,
+      );
     });
 
     it("fingerprintOf(raw) returns the same fingerprint as stored", async () => {
@@ -306,7 +309,9 @@ describe("ttlStalenessAdapter", () => {
           f.target.path === "notes/expired-doc.md",
       );
       expect(f).toBeDefined();
-      expect(ttlStalenessAdapter.fingerprintOf(f!)).toBe(f!.fingerprint);
+      expect(ttlStalenessAdapter.fingerprintOf(requireDefined(f))).toBe(
+        requireDefined(f).fingerprint,
+      );
     });
 
     it("certainty is 'medium'", async () => {
@@ -318,7 +323,7 @@ describe("ttlStalenessAdapter", () => {
           f.target.path === "notes/expired-doc.md",
       );
       expect(f).toBeDefined();
-      expect(f!.certainty).toBe("medium");
+      expect(requireDefined(f).certainty).toBe("medium");
     });
 
     it("suggested_action and verify_predicate are non-empty strings", async () => {
@@ -330,10 +335,10 @@ describe("ttlStalenessAdapter", () => {
           f.target.path === "notes/expired-doc.md",
       );
       expect(f).toBeDefined();
-      expect(typeof f!.suggested_action).toBe("string");
-      expect(f!.suggested_action.length).toBeGreaterThan(0);
-      expect(typeof f!.verify_predicate).toBe("string");
-      expect(f!.verify_predicate.length).toBeGreaterThan(0);
+      expect(typeof requireDefined(f).suggested_action).toBe("string");
+      expect(requireDefined(f).suggested_action.length).toBeGreaterThan(0);
+      expect(typeof requireDefined(f).verify_predicate).toBe("string");
+      expect(requireDefined(f).verify_predicate.length).toBeGreaterThan(0);
     });
   });
 
@@ -466,7 +471,7 @@ describe("ttlStalenessAdapter", () => {
       );
       expect(f).toBeDefined();
       const result = await ttlStalenessAdapter.reproduces(
-        f!.identity_key,
+        requireDefined(f).identity_key,
         vaultRoot,
         adminAccess,
         FIXED_NOW,
@@ -489,7 +494,7 @@ describe("ttlStalenessAdapter", () => {
       expect(f).toBeDefined();
 
       const result = await ttlStalenessAdapter.reproduces(
-        f!.identity_key,
+        requireDefined(f).identity_key,
         vaultRoot,
         adminAccess,
         freshNow,
@@ -642,9 +647,9 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
           (f.target as Tier2Target).artifact === "notes/artifact.md",
       );
       expect(f).toBeDefined();
-      expect(f!.source).toBe("staleness");
-      expect(f!.check).toBe("edge-staleness");
-      const target = f!.target as Tier2Target;
+      expect(requireDefined(f).source).toBe("staleness");
+      expect(requireDefined(f).check).toBe("edge-staleness");
+      const target = requireDefined(f).target as Tier2Target;
       expect(target.kind).toBe("tier2");
       expect(target.artifact).toBe("notes/artifact.md");
       expect(target.unit).toBe("notes/unit.md");
@@ -668,8 +673,8 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
         edgeClass: "compiled",
       };
       const expected = deriveIdentity("staleness", "edge-staleness", expectedTarget);
-      expect(f!.identity_key).toBe(expected);
-      expect(f!.discriminator).toBeUndefined();
+      expect(requireDefined(f).identity_key).toBe(expected);
+      expect(requireDefined(f).discriminator).toBeUndefined();
     });
 
     it("fingerprint = fingerprint(evidence) covering volatile fields (staleness,changed_fields,baseline,reason)", async () => {
@@ -684,8 +689,8 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
       expect(f).toBeDefined();
       // fingerprint covers full evidence — fingerprintOf must use fingerprint(raw.evidence)
       // which must be consistent with how list() stored the fingerprint.
-      const expectedFp = fingerprint(f!.evidence);
-      expect(f!.fingerprint).toBe(expectedFp);
+      const expectedFp = fingerprint(requireDefined(f).evidence);
+      expect(requireDefined(f).fingerprint).toBe(expectedFp);
     });
 
     it("identityOf(raw) returns the same identity_key", async () => {
@@ -698,7 +703,7 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
           (f.target as Tier2Target).artifact === "notes/artifact.md",
       );
       expect(f).toBeDefined();
-      expect(adapter.identityOf(f!)).toBe(f!.identity_key);
+      expect(adapter.identityOf(requireDefined(f))).toBe(requireDefined(f).identity_key);
     });
 
     it("fingerprintOf(raw) returns the same fingerprint", async () => {
@@ -711,7 +716,7 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
           (f.target as Tier2Target).artifact === "notes/artifact.md",
       );
       expect(f).toBeDefined();
-      expect(adapter.fingerprintOf(f!)).toBe(f!.fingerprint);
+      expect(adapter.fingerprintOf(requireDefined(f))).toBe(requireDefined(f).fingerprint);
     });
 
     it("tuple identity is unique per (artifact, unit, edgeClass)", async () => {
@@ -747,10 +752,10 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
           (f.target as Tier2Target).artifact === "notes/artifact.md",
       );
       expect(f).toBeDefined();
-      expect(f!.evidence.staleness).toBe("pending-broken");
-      expect(f!.evidence.changed_fields).toEqual(["body"]);
-      expect(f!.evidence.baseline).toBe("2025-01-01T00:00:00.000Z");
-      expect(typeof f!.evidence.reason).toBe("string");
+      expect(requireDefined(f).evidence.staleness).toBe("pending-broken");
+      expect(requireDefined(f).evidence.changed_fields).toEqual(["body"]);
+      expect(requireDefined(f).evidence.baseline).toBe("2025-01-01T00:00:00.000Z");
+      expect(typeof requireDefined(f).evidence.reason).toBe("string");
     });
   });
 
@@ -946,7 +951,11 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
           (f.target as Tier2Target).artifact === "notes/artifact.md",
       );
       expect(f).toBeDefined();
-      const result = await adapter.reproduces(f!.identity_key, vaultRoot, adminAccess);
+      const result = await adapter.reproduces(
+        requireDefined(f).identity_key,
+        vaultRoot,
+        adminAccess,
+      );
       expect(result).toBe(true);
     });
 
@@ -963,7 +972,11 @@ describe("edgeStalenessAdapter (via makeEdgeStalenessAdapter injection)", () => 
 
       // Now inject no rows (row resolved to current)
       const adapterResolved = makeEdgeStalenessAdapter(() => []);
-      const result = await adapterResolved.reproduces(f!.identity_key, vaultRoot, adminAccess);
+      const result = await adapterResolved.reproduces(
+        requireDefined(f).identity_key,
+        vaultRoot,
+        adminAccess,
+      );
       expect(result).toBe(false);
     });
   });
@@ -1045,7 +1058,7 @@ describe("resolveAdapterForIdentity (C1)", () => {
     expect(f).toBeDefined();
 
     const resolved = await resolveAdapterForIdentity(
-      f!.identity_key,
+      requireDefined(f).identity_key,
       vaultRoot,
       adminAccess,
       FIXED_NOW,
@@ -1100,7 +1113,7 @@ describe("resolveAdapterForIdentity (C1)", () => {
 
     // edgeStalenessAdapter.reproduces should return false for a ttl key.
     const edgeReproduces = await edgeStalenessAdapter.reproduces(
-      f!.identity_key,
+      requireDefined(f).identity_key,
       vaultRoot,
       adminAccess,
       FIXED_NOW,
@@ -1109,7 +1122,7 @@ describe("resolveAdapterForIdentity (C1)", () => {
 
     // Only ttlStalenessAdapter.reproduces should return true.
     const ttlReproduces = await ttlStalenessAdapter.reproduces(
-      f!.identity_key,
+      requireDefined(f).identity_key,
       vaultRoot,
       adminAccess,
       FIXED_NOW,

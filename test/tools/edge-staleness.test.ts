@@ -3,6 +3,7 @@ import { observeEdge } from "../../src/curation/edges.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog } from "../../src/curation/read-log.js";
 import { deleteDocument } from "../../src/storage/index-db.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 import { vaultStaleness } from "../../src/tools/edge-staleness.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { openIndexForAccessOrNull } from "../../src/tools/search.js";
@@ -266,7 +267,7 @@ describe("vault_staleness (#234)", () => {
     // Evict the compiled upstream from the index (simulates out-of-band deletion).
     const db = openIndexForAccessOrNull(vault);
     try {
-      deleteDocument(db!, "pricing/metric.md");
+      deleteDocument(requireDefined(db), "pricing/metric.md");
     } finally {
       db?.close();
     }
@@ -285,7 +286,7 @@ describe("vault_staleness (#234)", () => {
     await seedNeighborhood(vault);
     const db = openIndexForAccessOrNull(vault);
     try {
-      deleteDocument(db!, "pricing/metric.md");
+      deleteDocument(requireDefined(db), "pricing/metric.md");
     } finally {
       db?.close();
     }
@@ -357,7 +358,7 @@ describe("vault_staleness (#234)", () => {
     // Evict the upstream (out-of-band deletion).
     const db = openIndexForAccessOrNull(vault);
     try {
-      deleteDocument(db!, "pricing/divergent.md");
+      deleteDocument(requireDefined(db), "pricing/divergent.md");
     } finally {
       db?.close();
     }

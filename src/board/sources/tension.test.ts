@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../access/rbac.js";
+import { requireDefined } from "../../test-utils/require-defined.js";
 import type { RoleConfig } from "../../utils/config.js";
 import { deriveIdentity, fingerprint } from "../identity.js";
 import type { TensionTarget } from "../types.js";
@@ -175,13 +176,13 @@ describe("tensionAdapter — Scenario 1: unresolved tension both sides readable 
   it("emits one finding for the unresolved tension", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.source).toBe("tension");
+    expect(requireDefined(findings[0]).source).toBe("tension");
   });
 
   it("identity_key is 'tension:tension-001' — native-id path", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findings).toHaveLength(1);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.identity_key).toBe("tension:tension-001");
 
     // Verify via deriveIdentity too
@@ -192,13 +193,13 @@ describe("tensionAdapter — Scenario 1: unresolved tension both sides readable 
 
   it("target is { kind:'tension', tensionId:'tension-001' }", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.target).toEqual({ kind: "tension", tensionId: "tension-001" });
   });
 
   it("evidence contains title, kind, sourceA, claimA, sourceB, claimB", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(f.evidence.title).toBe("Doc A vs Doc B conflict");
     expect(f.evidence.kind).toBe("factual");
     expect(f.evidence.sourceA).toBe("notes/doc-a.md");
@@ -209,7 +210,7 @@ describe("tensionAdapter — Scenario 1: unresolved tension both sides readable 
 
   it("fingerprint = fingerprint({ claimA, claimB, status, kind })", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     const expected = fingerprint({
       claimA: "The sky is blue",
       claimB: "The sky is green",
@@ -221,12 +222,12 @@ describe("tensionAdapter — Scenario 1: unresolved tension both sides readable 
 
   it("certainty is 'medium'", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    expect(findings[0]!.certainty).toBe("medium");
+    expect(requireDefined(findings[0]).certainty).toBe("medium");
   });
 
   it("suggested_action and verify_predicate are non-empty strings", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(typeof f.suggested_action).toBe("string");
     expect(f.suggested_action.length).toBeGreaterThan(0);
     expect(typeof f.verify_predicate).toBe("string");
@@ -235,19 +236,19 @@ describe("tensionAdapter — Scenario 1: unresolved tension both sides readable 
 
   it("identityOf(raw) returns same identity_key", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(tensionAdapter.identityOf(f)).toBe(f.identity_key);
   });
 
   it("fingerprintOf(raw) returns same fingerprint", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     expect(tensionAdapter.fingerprintOf(f)).toBe(f.fingerprint);
   });
 
   it("reproduces returns true for the unresolved tension", async () => {
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
-    const f = findings[0]!;
+    const f = requireDefined(findings[0]);
     const result = await tensionAdapter.reproduces(
       f.identity_key,
       vaultRoot,
@@ -319,7 +320,7 @@ describe("tensionAdapter — Scenario 2: one side in denied collection → omitt
     const findings = await tensionAdapter.list(vaultRoot, scopedAccess, FIXED_NOW);
     // tension-002 omitted (restricted side); tension-003 visible
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.identity_key).toBe("tension:tension-003");
+    expect(requireDefined(findings[0]).identity_key).toBe("tension:tension-003");
     // Cross-collection tension must not appear — no count, no signal (R19)
     const crossCollectionFinding = findings.find((f) => f.identity_key === "tension:tension-002");
     expect(crossCollectionFinding).toBeUndefined();
@@ -443,7 +444,7 @@ describe("tensionAdapter — Scenario 4: claim edit → fingerprint drift, ident
     // Read original finding
     const findingsBefore = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findingsBefore).toHaveLength(1);
-    const before = findingsBefore[0]!;
+    const before = requireDefined(findingsBefore[0]);
 
     // Overwrite tensions.md with an edited claimA
     const daftariDir = join(vaultRoot, ".daftari");
@@ -455,7 +456,7 @@ describe("tensionAdapter — Scenario 4: claim edit → fingerprint drift, ident
     // Read findings again
     const findingsAfter = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     expect(findingsAfter).toHaveLength(1);
-    const after = findingsAfter[0]!;
+    const after = requireDefined(findingsAfter[0]);
 
     // Identity is stable — same tension-006
     expect(after.identity_key).toBe(before.identity_key);
@@ -515,7 +516,7 @@ describe("tensionAdapter — Scenario 5: legacy tension with no id → excluded"
     const findings = await tensionAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
     // Only the modern tension appears
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.identity_key).toBe("tension:tension-007");
+    expect(requireDefined(findings[0]).identity_key).toBe("tension:tension-007");
   });
 
   it("reproduces returns false for a hypothetical legacy-id key", async () => {

@@ -7,6 +7,7 @@ import {
   visibleTensions,
 } from "../../src/curation/tension-access.js";
 import { deleteDocument } from "../../src/storage/index-db.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 import { openIndexForAccessOrNull } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
@@ -112,7 +113,7 @@ describe("sourceVerifiable", () => {
     const db = openIndexForAccessOrNull(vault);
     try {
       expect(sourceVerifiable(db, undefined, "pricing/x.md")).toBe(true);
-      deleteDocument(db!, "pricing/x.md");
+      deleteDocument(requireDefined(db), "pricing/x.md");
       expect(sourceVerifiable(db, undefined, "pricing/x.md")).toBe(false);
     } finally {
       db?.close();
