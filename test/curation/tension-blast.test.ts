@@ -201,6 +201,23 @@ describe("buildReverseSourceMap / buildReverseLinkMap", () => {
     const map = buildReverseLinkMap(docs);
     expect([...(map.get("a.md") ?? [])]).toEqual(["b.md"]);
   });
+
+  it("does not transfer qualified dangling dependencies to a same-basename survivor", () => {
+    const docs: LoadedDoc[] = [
+      syntheticDoc({ path: "b/foo.md" }),
+      syntheticDoc({
+        path: "readers/source-consumer.md",
+        sources: ["a/foo.md"],
+      }),
+      syntheticDoc({
+        path: "readers/link-consumer.md",
+        content: "see [former target](a/foo.md)",
+      }),
+    ];
+
+    expect(buildReverseSourceMap(docs).get("b/foo.md")).toBeUndefined();
+    expect(buildReverseLinkMap(docs).get("b/foo.md")).toBeUndefined();
+  });
 });
 
 describe("computeTensionBlast", () => {
