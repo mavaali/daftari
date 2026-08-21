@@ -14,6 +14,11 @@
 
 import { parseDescribesEntry } from "../audit/describes.js";
 import { buildDocket } from "../court/docket.js";
+import {
+  type CompiledEdgeCoverageSummary,
+  compiledEdgeCoverageSummary,
+  listConsumesEdges,
+} from "../curation/consumes.js";
 import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import {
   daysUntil,
@@ -68,6 +73,7 @@ export interface RepinPassResult {
 
 export interface SleepCycleResult {
   staleness: { fresh: number; aging: number; stale: number; total: number };
+  compiledEdgeCoverage: CompiledEdgeCoverageSummary;
   // Ranked: widest blast first, then oldest.
   wake: WakeTask[];
   // Expired accumulation docs with no downstream dependents — noted, not woken.
@@ -103,6 +109,12 @@ export async function runSleepCycle(
 
   const docs = await loadDocuments(vaultRoot);
   if (!docs.ok) return docs;
+  const consumes = await listConsumesEdges(vaultRoot);
+  if (!consumes.ok) return consumes;
+  const compiledEdgeCoverage = compiledEdgeCoverageSummary(
+    docs.value.map((doc) => doc.path),
+    consumes.value,
+  );
 
   const reverseSource = buildReverseSourceMap(docs.value);
   const reverseLink = buildReverseLinkMap(docs.value);
@@ -349,6 +361,7 @@ export async function runSleepCycle(
 
   return ok({
     staleness,
+    compiledEdgeCoverage,
     wake,
     decayedQuiet,
     generativeStale,

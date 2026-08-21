@@ -690,7 +690,11 @@ Three of its concerns are simple enough to state in a line:
   `content`-channel summary honors an optional `lint_voice` key in
   `.daftari/config.yaml` (`plain`, the default, or `ledger_keeper` for the
   ledger-keeper register); it re-words the same findings without touching the
-  structured output.
+  structured output. A separate `compiledEdgeCoverage` monitor reports whether
+  the caller-readable document set has no, partial, or complete mechanically
+  observed `consumes` coverage. It is not a freshness verdict: an absent,
+  machine-local `consumes.jsonl` is named as no data instead of silently
+  resembling an all-current graph.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
