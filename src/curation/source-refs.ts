@@ -7,7 +7,7 @@ export type VaultSourceResolution =
   | { kind: "vault"; explicit: boolean; target: string | null }
   | { kind: "non-vault" };
 
-function resolveExplicitVaultTarget(rawTarget: string, byPath: Set<string>): string | null {
+function normalizeExplicitVaultTarget(rawTarget: string): string | null {
   if (
     rawTarget.length === 0 ||
     rawTarget.includes("\\") ||
@@ -18,9 +18,20 @@ function resolveExplicitVaultTarget(rawTarget: string, byPath: Set<string>): str
   }
   const normalized = posix.normalize(rawTarget);
   if (normalized === "." || normalized.startsWith("../")) return null;
-  if (byPath.has(normalized)) return normalized;
-  const withMd = normalized.endsWith(".md") ? normalized : `${normalized}.md`;
-  return byPath.has(withMd) ? withMd : null;
+  return normalized.endsWith(".md") ? normalized : `${normalized}.md`;
+}
+
+// The normalized root-relative target named by an explicit `vault:` source,
+// whether or not that target currently exists. Callers that diagnose absence
+// need the candidate path without weakening legacy-source compatibility.
+export function explicitVaultSourceTarget(raw: string): string | null {
+  const parsed = parseSourceRef(raw);
+  return parsed.kind === "vault" ? normalizeExplicitVaultTarget(parsed.target) : null;
+}
+
+function resolveExplicitVaultTarget(rawTarget: string, byPath: Set<string>): string | null {
+  const target = normalizeExplicitVaultTarget(rawTarget);
+  return target !== null && byPath.has(target) ? target : null;
 }
 
 // Resolves only the subset of `sources` that are genuine vault dependencies.

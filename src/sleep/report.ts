@@ -16,7 +16,7 @@ export interface SleepReport {
 
 function wakeLine(w: WakeTask): string {
   return (
-    `| ${w.path} | ${w.ageDays}d / ${w.ttlDays ?? "—"}d | ` +
+    `| ${w.path} | ${w.reason} | ${w.ageDays}d / ${w.ttlDays ?? "—"}d | ` +
     `${w.blastTotal} (${w.blastPrimary}p/${w.blastAdvisory}a) | ${w.sources.join(", ") || "—"} |`
   );
 }
@@ -74,22 +74,22 @@ export function renderMarkdown(report: SleepReport): string {
   }
   lines.push("");
 
-  lines.push(`## Wake list — ${c.wake.length} load-bearing decayed document(s)`);
+  lines.push(`## Wake list — ${c.wake.length} advisory task(s)`);
   if (c.wake.length === 0) {
-    lines.push("Nothing needs waking. Every canonical document with dependents is inside TTL.");
+    lines.push("Nothing needs waking. No canonical accumulation document matched a wake trigger.");
   } else {
     lines.push(
-      "Canonical, past TTL, with downstream dependents. Point an agent at the " +
-        "wake queue to re-verify each against its sources and stage diffs for " +
+      "Canonical accumulation documents triggered by decay, ended validity, or " +
+        "retracted/vanished grounding. Point an agent at the wake queue to re-verify and stage diffs for " +
         "ratification — the vault never re-verifies on its own.",
     );
     lines.push("");
-    lines.push("| doc | age / TTL | blast | sources |");
-    lines.push("|-----|-----------|-------|---------|");
+    lines.push("| doc | trigger | age / TTL | blast | sources |");
+    lines.push("|-----|---------|-----------|-------|---------|");
     for (const w of c.wake.slice(0, report.wakeLimit)) lines.push(wakeLine(w));
     if (c.wake.length > report.wakeLimit) {
       lines.push(
-        `| …and ${c.wake.length - report.wakeLimit} more (full list in the queue) | | | |`,
+        `| …and ${c.wake.length - report.wakeLimit} more (full list in the queue) | | | | |`,
       );
     }
     if (report.wakeQueuePath) {
