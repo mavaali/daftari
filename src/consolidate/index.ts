@@ -293,8 +293,12 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       ages[e.fromPath] = (now.getTime() - new Date(e.lastRederived).getTime()) / MS_PER_DAY;
     }
 
+    const { runnable: runnableEdgeDue, skipped: skippedEdgePairs } = preflightDueEdges(
+      [...eventEdges, ...decayEdges],
+      docByPath,
+    );
     const { queue, backstopOverdueRemaining } = prioritize({
-      edgeDue: [...eventEdges, ...decayEdges],
+      edgeDue: runnableEdgeDue,
       birth,
       budget,
       ages,
@@ -310,6 +314,10 @@ export async function runConsolidate(argv: string[]): Promise<number> {
     report += `  edge due-queue (${edgeItems.length}):\n`;
     for (const q of edgeItems) {
       if (q.kind === "edge") report += `    [${q.slice}/${q.reason}] ${q.fromPath} ← ${q.toPath}\n`;
+    }
+    report += `  skipped edge pairs (${skippedEdgePairs.length}):\n`;
+    for (const skipped of skippedEdgePairs) {
+      report += `    [${skipped.reason}] ${skipped.fromPath} ← ${skipped.toPath} (missing: ${skipped.missingPaths.join(", ")})\n`;
     }
     report += `  birth queue (${birthItems.length}):\n`;
     for (const q of birthItems) {
@@ -499,6 +507,41 @@ function parseOptionalInt(raw: string | undefined): { value: number | null; erro
     return { value: null, error: `expected a non-negative integer, got ${JSON.stringify(raw)}` };
   }
   return { value: n };
+}
+
+interface SkippedEdgePair {
+  reason: "missing_endpoint";
+  fromPath: string;
+  toPath: string;
+  missingPaths: string[];
+}
+
+function preflightDueEdges(
+  dueEdges: DueEdge[],
+  docByPath: Map<string, { relPath: string; content: string }>,
+): { runnable: DueEdge[]; skipped: SkippedEdgePair[] } {
+  // A vanished endpoint is terminal for this cycle: exclude it before priority
+  // so it consumes no budget and cannot create a false unserved-backstop exit.
+  // Keep the durable edge untouched; the report is the advisory surface.
+  const runnable: DueEdge[] = [];
+  const skipped = new Map<string, SkippedEdgePair>();
+  for (const edge of dueEdges) {
+    const missingPaths = [edge.fromPath, edge.toPath].filter((path) => !docByPath.has(canon(path)));
+    if (missingPaths.length === 0) {
+      runnable.push(edge);
+      continue;
+    }
+    const key = `${canon(edge.fromPath)}\n${canon(edge.toPath)}`;
+    if (!skipped.has(key)) {
+      skipped.set(key, {
+        reason: "missing_endpoint",
+        fromPath: canon(edge.fromPath),
+        toPath: canon(edge.toPath),
+        missingPaths: [...new Set(missingPaths.map(canon))],
+      });
+    }
+  }
+  return { runnable, skipped: [...skipped.values()] };
 }
 
 interface Stage2Result {
