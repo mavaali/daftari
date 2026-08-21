@@ -243,4 +243,14 @@ describe("daftari sleep — retracted source wake", () => {
     if (!r.ok) return;
     expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/draft-dep.md");
   });
+
+  it("does not wake a dangling qualified source ref through a same-basename retracted doc", async () => {
+    mdRetracted(vault, "b/foo.md", { status: "deprecated" });
+    mdRetracted(vault, "analysis/dep.md", { sources: ["a/foo.md"] });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/dep.md");
+  });
 });

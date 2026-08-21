@@ -87,6 +87,17 @@ describe("tier0Findings", () => {
     expect(t0.brokenSourceRefs).toEqual([]);
     expect(t0.lifecycleConflicts).toEqual([]);
   });
+
+  it("flags a qualified source whose original target vanished despite a same-basename survivor", () => {
+    const docs = [doc("b/foo.md"), doc("readers/consumer.md", { sources: ["a/foo.md"] })];
+    const t0 = tier0Findings(docs);
+    expect(t0.brokenSourceRefs).toEqual([
+      {
+        path: "readers/consumer.md",
+        detail: "unresolvable reference(s): a/foo.md",
+      },
+    ]);
+  });
 });
 
 describe("domainLeaks (#4)", () => {

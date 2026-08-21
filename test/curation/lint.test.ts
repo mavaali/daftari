@@ -118,6 +118,36 @@ describe("lint", () => {
       expect(finding[0]?.detail).not.toContain("example.com");
     });
 
+    it("flags a deleted qualified source despite a same-basename survivor", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "daftari-lint-dangling-qualified-"));
+      const stub = (path: string, sources: string[]): void => {
+        const abs = join(dir, path);
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(
+          abs,
+          `---\ntitle: "${path}"\ndomain: accumulation\ncollection: docs\nstatus: canonical\nconfidence: high\ncreated: 2026-01-01\nupdated: 2026-05-01\nupdated_by: agent:test\nprovenance: direct\nsources: [${sources.join(", ")}]\nsuperseded_by: null\nttl_days: null\ntags: []\n---\n\nBody.\n`,
+          "utf-8",
+        );
+      };
+
+      try {
+        stub("b/foo.md", []);
+        stub("readers/consumer.md", ["a/foo.md"]);
+
+        const report = await runLint(dir);
+        expect(report.ok).toBe(true);
+        if (!report.ok) return;
+        expect(report.value.checks.brokenSourceRefs).toEqual([
+          {
+            path: "readers/consumer.md",
+            detail: "unresolvable reference(s): a/foo.md",
+          },
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("flags the canonical doc citing a draft source", async () => {
       const report = await runLint(LINT_VAULT);
       expect(report.ok).toBe(true);
