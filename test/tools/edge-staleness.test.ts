@@ -1,10 +1,12 @@
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeEdge } from "../../src/curation/edges.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog } from "../../src/curation/read-log.js";
 import { deleteDocument } from "../../src/storage/index-db.js";
 import { requireDefined } from "../../src/test-utils/require-defined.js";
-import { vaultStaleness } from "../../src/tools/edge-staleness.js";
+import { edgeStalenessTools, vaultStaleness } from "../../src/tools/edge-staleness.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { openIndexForAccessOrNull } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
@@ -175,6 +177,81 @@ describe("vault_staleness (#234)", () => {
     expect(report.value.broken_read_rate).toBeGreaterThan(0);
     expect(report.value.by_tool.vault_read?.broken_serves).toBeGreaterThanOrEqual(1);
   }, 60_000);
+
+  it("distinguishes an instrumented vault from a fresh clone with no consumes log", async () => {
+    await seedNeighborhood(vault);
+
+    const instrumented = await vaultStaleness(vault, {});
+    expect(instrumented.ok).toBe(true);
+    if (!instrumented.ok || instrumented.value.mode !== "report") return;
+    const total = instrumented.value.compiled_edge_coverage.total_documents;
+    expect(instrumented.value.compiled_edge_coverage).toMatchObject({
+      status: "partial",
+      instrumented_documents: 1,
+      uninstrumented_documents: total - 1,
+    });
+
+    // consumes.jsonl is machine-local/gitignored, so removing it models the
+    // signal available immediately after cloning the same markdown vault.
+    rmSync(join(vault, ".daftari", "consumes.jsonl"));
+    const clone = await vaultStaleness(vault, {});
+    expect(clone.ok).toBe(true);
+    if (!clone.ok || clone.value.mode !== "report") return;
+    expect(clone.value.compiled_edge_coverage).toEqual({
+      status: "no-data",
+      total_documents: total,
+      instrumented_documents: 0,
+      uninstrumented_documents: total,
+      message: `no compiled-edge data (${total} docs uninstrumented)`,
+    });
+  }, 60_000);
+
+  it("scopes compiled-edge coverage counts to documents the caller can read", async () => {
+    const visible = await vaultWrite(vault, {
+      path: "pricing/visible.md",
+      body: "# Visible\n",
+      frontmatter: frontmatter({ title: "Visible" }),
+      agent: AGENT,
+    });
+    const hidden = await vaultWrite(vault, {
+      path: "competitive-intel/hidden.md",
+      body: "# Hidden\n",
+      frontmatter: frontmatter({ title: "Hidden", collection: "competitive-intel" }),
+      agent: AGENT,
+    });
+    if (!visible.ok || !hidden.ok) throw new Error("fixture write failed");
+
+    const pricingOnly = {
+      user: "human:narrow",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const result = await vaultStaleness(vault, {}, pricingOnly);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.mode !== "report") return;
+    const operator = await vaultStaleness(vault, {});
+    expect(operator.ok).toBe(true);
+    if (!operator.ok || operator.value.mode !== "report") return;
+    expect(result.value.compiled_edge_coverage.total_documents).toBeLessThan(
+      operator.value.compiled_edge_coverage.total_documents,
+    );
+    expect(result.value.compiled_edge_coverage.uninstrumented_documents).toBe(
+      result.value.compiled_edge_coverage.total_documents,
+    );
+  }, 60_000);
+
+  it("declares compiled-edge coverage in the report output schema", () => {
+    const definition = edgeStalenessTools.find((tool) => tool.name === "vault_staleness");
+    const oneOf = definition?.outputSchema.oneOf as Array<Record<string, unknown>> | undefined;
+    const reportSchema = oneOf?.find(
+      (schema) =>
+        ((schema.properties as Record<string, { const?: string }> | undefined)?.mode?.const ??
+          "") === "report",
+    );
+    expect(
+      (reportSchema?.properties as Record<string, unknown> | undefined)?.compiled_edge_coverage,
+    ).toBeDefined();
+  });
 
   it("omits edges to unreadable units and coarsens them into hidden_pending", async () => {
     await seedNeighborhood(vault);

@@ -9,6 +9,7 @@ import { recordProvenance } from "../../src/curation/provenance.js";
 import { addTension, listTensions, resolveTension } from "../../src/curation/tension.js";
 import {
   curationTools,
+  summarizeLint,
   vaultLint,
   vaultProvenance,
   vaultTensionBlast,
@@ -149,6 +150,15 @@ describe("curation tools", () => {
       if (!result.ok) return;
       expect(result.value.coverageEquity).toBeDefined();
       expect(result.value.coverageEquity.directionResolution).toBeDefined();
+      expect(result.value.compiledEdgeCoverage).toMatchObject({
+        status: "no-data",
+        total_documents: 9,
+        instrumented_documents: 0,
+        uninstrumented_documents: 9,
+      });
+      expect(summarizeLint(result.value)).toContain(
+        "compiled-edge coverage: no compiled-edge data (9 docs uninstrumented)",
+      );
     });
 
     it("tool result carries coverageEquity (filtered)", async () => {
@@ -157,6 +167,38 @@ describe("curation tools", () => {
       if (!result.ok) return;
       expect(result.value.coverageEquity).toBeDefined();
       expect(result.value.coverageEquity.actionMix).toBeDefined();
+      expect(result.value.compiledEdgeCoverage.status).toBe("no-data");
+    });
+
+    it("scopes the compiled-edge coverage monitor to caller-readable documents", async () => {
+      const doc = (title: string, collection: string) =>
+        `---\ntitle: ${title}\ndomain: accumulation\ncollection: ${collection}\n` +
+        "status: draft\nconfidence: low\ncreated: 2026-01-01\nupdated: 2026-01-01\n" +
+        "updated_by: human:test\nprovenance: direct\nsources: []\ntags: []\n---\nBody.\n";
+      mkdirSync(join(vault, "notes"), { recursive: true });
+      mkdirSync(join(vault, "secret"), { recursive: true });
+      writeFileSync(join(vault, "notes", "visible.md"), doc("Visible", "notes"));
+      writeFileSync(join(vault, "secret", "hidden.md"), doc("Hidden", "secret"));
+      const reader: AccessContext = {
+        user: "human:reader",
+        roleName: "reader",
+        role: { read: ["notes"], write: [], promote: false, ratify: false },
+      };
+
+      const result = await vaultLint(vault, {}, reader);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.compiledEdgeCoverage).toMatchObject({
+        total_documents: 1,
+        instrumented_documents: 0,
+        uninstrumented_documents: 1,
+      });
+    });
+
+    it("declares the compiled-edge coverage monitor in the vault_lint output schema", () => {
+      const definition = curationTools.find((tool) => tool.name === "vault_lint");
+      const properties = definition?.outputSchema.properties as Record<string, unknown> | undefined;
+      expect(properties?.compiledEdgeCoverage).toBeDefined();
     });
 
     it("tool result carries reviewThroughput, unfiltered and filtered (#236 QW2)", async () => {

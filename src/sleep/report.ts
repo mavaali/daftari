@@ -66,6 +66,7 @@ export function renderMarkdown(report: SleepReport): string {
     `- ${c.staleness.fresh} fresh · ${c.staleness.aging} aging · ` +
       `**${c.staleness.stale} stale** of ${c.staleness.total} documents`,
   );
+  lines.push(`- compiled-edge coverage: ${c.compiledEdgeCoverage.message}`);
   if (c.generativeStale > 0) {
     lines.push(
       `- generative docs past TTL: ${c.generativeStale} (expected for the domain — not woken)`,

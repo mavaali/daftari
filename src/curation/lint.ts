@@ -9,6 +9,11 @@
 
 import { ok, type Result } from "../frontmatter/types.js";
 import { DISTILL_NUMERIC_DEFAULTS, loadConfig } from "../utils/config.js";
+import {
+  type CompiledEdgeCoverageSummary,
+  compiledEdgeCoverageSummary,
+  listConsumesEdges,
+} from "./consumes.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
@@ -188,6 +193,9 @@ export interface LintReport {
   // Coverage/equity summary (Stage 4 — spec §6.2): four budget-drift ratchets
   // over the cortex loop. Read-only monitor; never a target.
   coverageEquity: CoverageEquitySummary;
+  // #420: coverage of mechanically observed compiled dependencies, separate
+  // from freshness. Computed over the same visibility-scoped docs as checks.
+  compiledEdgeCoverage: CompiledEdgeCoverageSummary;
   // #235's headline measurement (quick win 2 of #236): proposal arrival rate
   // vs. review throughput over the staged-actions log. Vault-global counts by
   // design, like tensionHealth — no paths or principals cross here.
@@ -631,7 +639,7 @@ export async function runLint(
 
   // Each JSONL log is read ONCE; the lint summaries and the coverage view
   // below are derived from the same in-memory records. Read order (staged,
-  // shadow, edges) matches the pre-consolidation sequence so a multi-log
+  // shadow, edges, consumes) matches the pre-consolidation sequence so a multi-log
   // failure surfaces the same first error it always did.
   const stagedRes = await listStagedActions(vaultRoot);
   if (!stagedRes.ok) return stagedRes;
@@ -639,6 +647,8 @@ export async function runLint(
   if (!shadowRecordsRes.ok) return shadowRecordsRes;
   const edgesRes = await listEdges(vaultRoot, {}, now);
   if (!edgesRes.ok) return edgesRes;
+  const consumesRes = await listConsumesEdges(vaultRoot);
+  if (!consumesRes.ok) return consumesRes;
 
   const stagedActions = pendingLintItems(stagedRes.value, now);
   const shadowActions = shadowLintSummaryOf(shadowRecordsRes.value);
@@ -659,6 +669,10 @@ export async function runLint(
     stagedActions,
     shadowActions,
     coverageEquity: coverageEquityRes.value,
+    compiledEdgeCoverage: compiledEdgeCoverageSummary(
+      docs.map((doc) => doc.path),
+      consumesRes.value,
+    ),
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
   });
 }

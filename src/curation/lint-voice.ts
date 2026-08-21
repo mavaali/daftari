@@ -88,7 +88,8 @@ export function renderLedgerKeeper(report: VaultLintResult): string {
       `${report.reviewThroughput.lifetime.expired} lapsed unread; ` +
       `${report.shadowActions.total} write(s) watched in shadow, ` +
       `${report.shadowActions.gated} the budget would have stayed; ` +
-      `${report.coverageEquity.backstopOverdue.count} edge(s) overdue for backstop.`,
+      `${report.coverageEquity.backstopOverdue.count} edge(s) overdue for backstop; ` +
+      `compiled-edge coverage: ${report.compiledEdgeCoverage.message}.`,
   ];
 
   const top = flat.slice(0, LINT_SUMMARY_TOP_FINDINGS);

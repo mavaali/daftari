@@ -287,7 +287,7 @@ tensions inline and foreground the current source of superseded documents),
 
 **Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`, `vault_set_tier`
 
-**Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_tension_triage` (the unranked triage card / `court --triage`), `vault_lint`, `vault_provenance`, `vault_staleness` (edge-staleness: pending upstream changes / broken-read rate)
+**Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_tension_triage` (the unranked triage card / `court --triage`), `vault_lint`, `vault_provenance`, `vault_staleness` (edge-staleness: pending upstream changes, broken-read rate, and compiled-edge instrumentation coverage)
 
 **Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`, `vault_consumes` (query the compiled dependency graph), `vault_backlinks` (the reverse knowledge-graph query — which documents reference a target; a code-path target lists the docs whose `describes` binds that file, and `verify:true` classifies each pin against its code repo)
 
@@ -357,9 +357,12 @@ defect: counted, never woken.
 
 The **Morning Report** ends where the human begins: tension aging and the
 court docket head, the ratification queue with soon-to-expire proposals, and
-the rubber-stamp monitor — zero rejections over a long decision history is
-printed as a warning, not a compliment. The agent proposes overnight; you
-ratify over coffee.
+the rubber-stamp monitor. It also reports compiled-edge instrumentation
+coverage separately from freshness: an absent machine-local `consumes.jsonl`
+is shown as `no compiled-edge data (N docs uninstrumented)`, not as an
+all-current vault. Zero rejections over a long decision history is printed as
+a warning, not a compliment. The agent proposes overnight; you ratify over
+coffee.
 
 Each completed pass appends a content-light summary (counts only, no document
 bodies) to a self-pruning `.daftari/runs.jsonl`; `daftari runs [list|show <id>]`

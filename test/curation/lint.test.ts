@@ -1118,6 +1118,11 @@ ${body}
       expect(eq.directionResolution).toBeDefined();
       // The seeded edge is non-revoked and directed.
       expect(eq.directionResolution.directed).toBeGreaterThanOrEqual(1);
+      expect(r.value.compiledEdgeCoverage).toMatchObject({
+        status: "no-data",
+        instrumented_documents: 0,
+      });
+      expect(r.value.compiledEdgeCoverage.uninstrumented_documents).toBeGreaterThan(0);
     });
   });
 });
