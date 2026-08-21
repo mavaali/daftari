@@ -202,11 +202,15 @@ describe("tier0PromoteGate", () => {
     expect(tier0PromoteGate([], "a/ghost.md")).toEqual({ violations: [], hiddenConflicts: 0 });
   });
 
-  it("allows repository and opaque citations through ratification", () => {
+  it("allows repository, distill, and opaque citations through ratification", () => {
     const docs = [
       doc("a/target.md", {
         status: "draft",
-        sources: ["repo:docs/evidence.md", "opaque/slash-shaped-citation"],
+        sources: [
+          "repo:docs/evidence.md",
+          "distill:session-42#claim-7",
+          "opaque/slash-shaped-citation",
+        ],
       }),
     ];
     expect(tier0PromoteGate(docs, "a/target.md")).toEqual({

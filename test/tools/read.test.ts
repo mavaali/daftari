@@ -38,6 +38,41 @@ describe("vaultRead", () => {
     expect(result.value.frontmatter.status).toBe("canonical");
     expect(result.value.content).toContain("## Questions Answered");
     expect(result.value.validation.valid).toBe(true);
+    expect(result.value.source_verifiability).toBeUndefined();
+  });
+
+  it("labels distill provenance as born-unverifiable with the re-derivation contract", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-read-distill-source-"));
+    try {
+      writeFileSync(
+        join(vault, "claim.md"),
+        HEALTHY_FRONTMATTER.replace(
+          "sources: []",
+          'sources: ["distill:session-42#claim-7", "https://example.com/source"]',
+        ),
+        "utf-8",
+      );
+
+      const result = await vaultRead(vault, "claim.md");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.source_verifiability).toEqual([
+        {
+          source: "distill:session-42#claim-7",
+          status: "born-unverifiable",
+          reason:
+            "external source, discarded by design — re-derivation means re-presenting the source",
+        },
+      ]);
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  it("declares the born-unverifiable annotation in the vault_read output schema", () => {
+    const definition = readTools.find((tool) => tool.name === "vault_read");
+    const properties = definition?.outputSchema.properties as Record<string, unknown> | undefined;
+    expect(properties?.source_verifiability).toBeDefined();
   });
 
   it("succeeds on a document with invalid frontmatter, flagging issues", async () => {

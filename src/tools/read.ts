@@ -16,6 +16,10 @@ import {
 import { comparePositions, isContested, unsuperseded } from "../curation/positions.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
+import {
+  type SourceVerifiabilityAnnotation,
+  sourceVerifiabilityAnnotations,
+} from "../curation/source-refs.js";
 import { computeStaleness } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation/tension.js";
@@ -142,6 +146,10 @@ export interface VaultReadResult {
   // consolidate/admit.ts treats `warn` as edge-blocking.
   validity: ValidityReport | null;
   upstream_staleness: UpstreamReadStaleness | null;
+  // #422: source-address annotations that are knowably unverifiable by
+  // contract. Present only when sources contains distill: audit breadcrumbs;
+  // advisory and never a promotion gate.
+  source_verifiability?: SourceVerifiabilityAnnotation[];
   // #8: graph-shaped decay — orphanhood and deprecated-still-linked, from
   // the materialized inbound-link graph, computed from the caller's vantage.
   // Null when there is nothing to say (same contract as `decay`).
@@ -256,6 +264,7 @@ async function vaultReadFederated(
   // vault's declared schema extensions — the caller sees the doc as its own
   // vault's schema judges it, not as the canonical vault's would.
   const { frontmatter, report } = validateFrontmatter(parsed.value.raw, mount.schemaExtensions);
+  const sourceVerifiability = sourceVerifiabilityAnnotations(frontmatter.sources);
 
   return ok({
     path: federatedPathOf(mount.alias, resolved.value.relPath),
@@ -268,6 +277,7 @@ async function vaultReadFederated(
     decay: null,
     validity: null,
     upstream_staleness: null,
+    ...(sourceVerifiability.length > 0 ? { source_verifiability: sourceVerifiability } : {}),
     structural: null,
     anchors: null,
     version: sha256Hex(file.value),
@@ -494,6 +504,7 @@ export async function vaultRead(
     resolved.value.relPath,
     parsed.value.frontmatter.describes ?? [],
   );
+  const sourceVerifiability = sourceVerifiabilityAnnotations(parsed.value.frontmatter.sources);
 
   // Decision 4 — softened decay copy (annotate-only). A doc past its TTL whose
   // code pins are ALL intact is stale by the clock but verifiably current about
@@ -571,6 +582,7 @@ export async function vaultRead(
     // read.
     validity: computeValidity(parsed.value.frontmatter, new Date().toISOString().slice(0, 10)),
     upstream_staleness: upstream,
+    ...(sourceVerifiability.length > 0 ? { source_verifiability: sourceVerifiability } : {}),
     structural,
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
@@ -1382,6 +1394,20 @@ export const readTools: ToolDefinition[] = [
             banner: { type: ["string", "null"] },
           },
           required: ["edges", "hidden_pending", "pending_broken", "unverifiable", "banner"],
+        },
+        source_verifiability: {
+          type: "array",
+          description:
+            "Born-unverifiable source-address annotations; absent unless the document cites distill: breadcrumbs",
+          items: {
+            type: "object",
+            properties: {
+              source: { type: "string" },
+              status: { type: "string", enum: ["born-unverifiable"] },
+              reason: { type: "string" },
+            },
+            required: ["source", "status", "reason"],
+          },
         },
         // Null when healthy — same contract as `decay`.
         structural: {

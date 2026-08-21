@@ -681,11 +681,12 @@ Three of its concerns are simple enough to state in a line:
   files, deprecated-but-still-linked, and questions raised but unanswered
   anywhere in the vault. Since joined by tier demotions, the tier 0 referential
   checks (broken source refs, lifecycle conflicts, schema conformance, domain
-  leaks), valid-time conflicts, and advisory repository-source verification.
-  Access-controlled lint and board surfaces run repository metadata checks only
-  for roles with `verify_repo_sources: true`; vault collection reads do not
-  grant visibility into the wider `repo_root`. The authoritative list is `LINT_CHECKS` in
-  `src/curation/lint.ts`; the tool's `filter` enum reads it directly. The
+  leaks), valid-time conflicts, and advisory source verifiability. Explicit
+  `distill:` breadcrumbs are labeled born-unverifiable on read and lint;
+  access-controlled lint and board surfaces run `repo:` metadata checks only
+  for roles with `verify_repo_sources: true`, because vault collection reads do
+  not grant visibility into the wider `repo_root`. The authoritative list is
+  `LINT_CHECKS` in `src/curation/lint.ts`; the tool's `filter` enum reads it directly. The
   `content`-channel summary honors an optional `lint_voice` key in
   `.daftari/config.yaml` (`plain`, the default, or `ledger_keeper` for the
   ledger-keeper register); it re-words the same findings without touching the

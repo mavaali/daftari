@@ -174,6 +174,30 @@ describe("lintAdapter", () => {
     });
   });
 
+  describe("born-unverifiable distill sources (#422)", () => {
+    it("emits a board finding without the repository verification grant", async () => {
+      writeDoc(
+        vaultRoot,
+        "notes/distilled.md",
+        `${frontmatter({
+          provenance: "synthesized",
+          sources: ["distill:session-42#claim-7"],
+        })}# Distilled claim\n`,
+      );
+
+      const findings = await lintAdapter.list(vaultRoot, adminAccess);
+      const finding = findings.find(
+        (candidate) =>
+          candidate.check === "unverifiableSourceRefs" &&
+          candidate.target.kind === "lint" &&
+          candidate.target.path === "notes/distilled.md",
+      );
+      expect(finding).toBeDefined();
+      expect(finding?.evidence.detail).toContain("born-unverifiable distill source(s)");
+      expect(finding?.suggested_action).toContain("re-present");
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Scenario 1: orphan doc → lint adapter emits a Finding with correct
   // identity + fingerprint.

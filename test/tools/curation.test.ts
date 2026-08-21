@@ -106,6 +106,43 @@ describe("curation tools", () => {
       expect(visible.value.checks.unverifiableSourceRefs).toHaveLength(1);
     });
 
+    it("surfaces distill breadcrumbs to a readable role without repository metadata access", async () => {
+      mkdirSync(join(vault, "notes"), { recursive: true });
+      writeFileSync(
+        join(vault, "notes", "claim.md"),
+        "---\n" +
+          "title: Claim\n" +
+          "domain: accumulation\n" +
+          "collection: notes\n" +
+          "status: draft\n" +
+          "confidence: low\n" +
+          "created: 2026-01-01\n" +
+          "updated: 2026-01-01\n" +
+          "updated_by: human:test\n" +
+          "provenance: synthesized\n" +
+          'sources: ["distill:session-42#claim-7"]\n' +
+          "tags: []\n" +
+          "---\nClaim.\n",
+      );
+      const reader: AccessContext = {
+        user: "human:reader",
+        roleName: "reader",
+        role: { read: ["notes"], write: [], promote: false, ratify: false },
+      };
+
+      const result = await vaultLint(vault, { filter: "unverifiableSourceRefs" }, reader);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.checks.unverifiableSourceRefs).toEqual([
+        {
+          path: "notes/claim.md",
+          detail:
+            "born-unverifiable distill source(s): distill:session-42#claim-7 — " +
+            "external source, discarded by design — re-derivation means re-presenting the source",
+        },
+      ]);
+    });
+
     it("tool result carries coverageEquity (unfiltered)", async () => {
       const result = await vaultLint(LINT_VAULT, {});
       expect(result.ok).toBe(true);
