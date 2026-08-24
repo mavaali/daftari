@@ -117,6 +117,31 @@ describe("Google Docs adapter", () => {
     expect(providerState).toEqual(state());
   });
 
+  it("requests incompleteSearch in the Drive listing field mask", async () => {
+    const requestedUrls: string[] = [];
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      transport: async (url) => {
+        requestedUrls.push(url);
+        if (url.startsWith("https://www.googleapis.com/drive/v3/changes/startPageToken")) {
+          return json({ startPageToken: "changes-3" });
+        }
+        if (url.startsWith("https://www.googleapis.com/drive/v3/files")) {
+          return json({ files: [] });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const result = await adapter.discover(state());
+
+    expect(result).toEqual({ ok: true, value: [] });
+    const filesUrl = requestedUrls.find((url) =>
+      url.startsWith("https://www.googleapis.com/drive/v3/files"),
+    );
+    expect(new URL(filesUrl).searchParams.get("fields")).toContain("incompleteSearch");
+  });
+
   it("uses Drive changes incrementally after the initial full discovery", async () => {
     const providerState = state("changes-1", {
       "doc-1": {

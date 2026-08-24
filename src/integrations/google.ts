@@ -244,7 +244,7 @@ async function listFiles(
       transport,
       requestUrl(`${GOOGLE_DRIVE_URL}/files`, {
         corpora: "allDrives",
-        fields: "nextPageToken,files(id,mimeType,version,trashed)",
+        fields: "nextPageToken,incompleteSearch,files(id,mimeType,version,trashed)",
         includeItemsFromAllDrives: "true",
         pageSize: "1000",
         pageToken: nextPageToken,
