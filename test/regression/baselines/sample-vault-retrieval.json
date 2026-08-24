@@ -1,0 +1,511 @@
+{
+  "query:sv-001": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md"
+    ]
+  },
+  "query:sv-002": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md"
+    ]
+  },
+  "query:sv-003": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/cirrus-realtime-early-read.md"
+    ]
+  },
+  "query:sv-004": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/northwind-data-governance.md"
+    ]
+  },
+  "query:sv-005": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/vega-insight-positioning.md"
+    ]
+  },
+  "query:sv-006": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/cirrus-capacity-tiers-2026.md"
+    ]
+  },
+  "query:sv-007": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1,
+      2
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1,
+      2
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/cirrus-capacity-tiers-2026.md",
+      "pricing/helios-consumption-pricing.md"
+    ]
+  },
+  "query:sv-008": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/cirrus-capacity-tiers.md"
+    ]
+  },
+  "query:sv-009": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1,
+      2
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1,
+      2
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/cirrus-capacity-tiers.md",
+      "pricing/cirrus-capacity-tiers-2026.md"
+    ]
+  },
+  "query:sv-010": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/helios-consumption-pricing.md"
+    ]
+  },
+  "query:sv-011": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/helios-consumption-pricing.md"
+    ]
+  },
+  "query:sv-012": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/serverless-cost-predictability.md"
+    ]
+  },
+  "query:sv-013": {
+    "chunkMrr": 0.5,
+    "chunkNdcg@10": 0.63093,
+    "chunkRanks": [
+      2
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/serverless-cost-predictability.md"
+    ]
+  },
+  "query:sv-014": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "_drafts/moonshot-agentic-etl.md"
+    ]
+  },
+  "query:sv-015": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "_drafts/incomplete-note.md"
+    ]
+  },
+  "query:sv-016": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/northwind-data-governance.md"
+    ]
+  },
+  "query:sv-017": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/vega-insight-positioning.md"
+    ]
+  },
+  "query:sv-018": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md"
+    ]
+  },
+  "query:sv-019": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/cirrus-capacity-tiers-2026.md"
+    ]
+  },
+  "query:sv-020": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "pricing/cirrus-capacity-tiers.md"
+    ]
+  },
+  "query:sv-021": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1,
+      2
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1,
+      2
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/northwind-data-governance.md",
+      "competitive-intel/vega-insight-positioning.md"
+    ]
+  },
+  "query:sv-022": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1,
+      2
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1,
+      2
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
+      "pricing/helios-consumption-pricing.md"
+    ]
+  },
+  "query:sv-023": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1,
+      2
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1,
+      2
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/aurora-pipelines-vs-helios-connect.md",
+      "pricing/helios-consumption-pricing.md"
+    ]
+  },
+  "query:sv-024": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 1,
+    "chunkRanks": [
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 1,
+    "documentRanks": [
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "competitive-intel/cirrus-realtime-early-read.md"
+    ]
+  },
+  "query:sv-025": {
+    "chunkMrr": 1,
+    "chunkNdcg@10": 0.919721,
+    "chunkRanks": [
+      3,
+      1
+    ],
+    "chunkRecall@10": 1,
+    "chunkRecall@5": 1,
+    "documentMrr": 1,
+    "documentNdcg@10": 0.919721,
+    "documentRanks": [
+      3,
+      1
+    ],
+    "documentRecall@10": 1,
+    "documentRecall@5": 1,
+    "relevantPaths": [
+      "_drafts/moonshot-agentic-etl.md",
+      "pricing/serverless-cost-predictability.md"
+    ]
+  },
+  "summary:chunk": {
+    "meanNdcg@10": 0.982026,
+    "meanRecall@10": 1,
+    "meanRecall@5": 1,
+    "mrr": 0.98,
+    "questionCount": 25,
+    "tolerance": 0
+  },
+  "summary:document": {
+    "meanNdcg@10": 0.996789,
+    "meanRecall@10": 1,
+    "meanRecall@5": 1,
+    "mrr": 1,
+    "questionCount": 25,
+    "tolerance": 0
+  }
+}
