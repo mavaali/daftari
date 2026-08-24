@@ -4,10 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok } from "../../src/frontmatter/types.js";
 import {
+  armProviderWebhookSetup,
+  confirmProviderWebhookVerification,
   type DistillationInput,
   type EngineDeps,
   ensureProviderWebhook,
   type ProviderAdapter,
+  readProviderWebhookVerificationToken,
   reconcileProvider,
   startPeriodicIntegrationSync,
   validateContinuousAdapterCapabilities,
@@ -508,7 +511,12 @@ describe("provider reconciliation", () => {
     expect(
       writeIntegrationState(
         vault,
-        { providers: { google: providerState() }, oauthStates: {} },
+        {
+          providers: {
+            google: { ...providerState(), webhook: { id: "channel", secret: "secret" } },
+          },
+          oauthStates: {},
+        },
         KEY,
       ),
     ).toEqual(ok(undefined));
@@ -548,13 +556,24 @@ describe("provider reconciliation", () => {
       secret: "operator-verification-token",
       verificationRequired: true,
     };
+    const armed = armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: { ...config, google: undefined, notion: config.google } }),
+      () => "one-time-setup-token",
+    );
+    expect(armed).toEqual(ok({ setupToken: "one-time-setup-token" }));
     const result = await verifyProviderWebhook(
       vault,
       adapter({
         name: "notion",
         verifyWebhook: async () => ok({ kind: "verification", channel }),
       }),
-      { headers: {}, body: Buffer.from('{"verification_token":"operator-verification-token"}') },
+      {
+        headers: {},
+        body: Buffer.from('{"verification_token":"operator-verification-token"}'),
+        setupToken: "one-time-setup-token",
+      },
       deps({
         config: { ...config, google: undefined, notion: config.google },
         adapters: {},
@@ -563,6 +582,131 @@ describe("provider reconciliation", () => {
 
     expect(result).toEqual(ok({ kind: "verification", channel }));
     expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook).toEqual(channel);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.notion?.webhookSetupToken,
+    ).toBeUndefined();
+  });
+
+  it("rejects unsolicited, wrong, and replayed manual webhook verification", async () => {
+    const notionConfig = { ...config, google: undefined, notion: config.google };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const verifyWebhook = vi.fn(async () =>
+      ok({
+        kind: "verification" as const,
+        channel: { id: "notion-manual", secret: "captured", verificationRequired: true },
+      }),
+    );
+    const notion = adapter({ name: "notion", verifyWebhook });
+    const notionDeps = deps({ config: notionConfig });
+    const body = Buffer.from('{"verification_token":"captured"}');
+
+    expect((await verifyProviderWebhook(vault, notion, { headers: {}, body }, notionDeps)).ok).toBe(
+      false,
+    );
+    expect(verifyWebhook).not.toHaveBeenCalled();
+    expect(
+      armProviderWebhookSetup(vault, "notion", notionDeps, () => "armed-setup-token-value").ok,
+    ).toBe(true);
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body, setupToken: "wrong-token" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(verifyWebhook).not.toHaveBeenCalled();
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body, setupToken: "armed-setup-token-value" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body, setupToken: "armed-setup-token-value" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("blocks signed events until the operator confirms manual verification", async () => {
+    const notionConfig = { ...config, google: undefined, notion: config.google };
+    const channel = {
+      id: "notion-manual",
+      secret: "captured-token",
+      verificationRequired: true,
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: { ...providerState(), webhook: channel } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const verifyWebhook = vi.fn(async () =>
+      ok({ kind: "event" as const, eventId: "evt-1", hint: { kind: "reconcile" as const } }),
+    );
+    const notion = adapter({ name: "notion", verifyWebhook });
+    const notionDeps = deps({ config: notionConfig });
+
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body: Buffer.alloc(0) },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(verifyWebhook).not.toHaveBeenCalled();
+    expect(readProviderWebhookVerificationToken(vault, "notion", notionDeps)).toEqual(
+      ok({ verificationToken: "captured-token" }),
+    );
+    expect(readProviderWebhookVerificationToken(vault, "notion", notionDeps)).toEqual(
+      ok({ verificationToken: "captured-token" }),
+    );
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body: Buffer.alloc(0) },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(confirmProviderWebhookVerification(vault, "notion", notionDeps)).toEqual(ok(undefined));
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body: Buffer.alloc(0) },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.notion?.webhook?.verificationRequired,
+    ).toBe(false);
   });
 
   it("rejects a polling adapter missing token refresh capability", () => {

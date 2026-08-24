@@ -1,6 +1,7 @@
 // Provider-neutral reconciliation. Provider adapters own OAuth HTTP, discovery,
 // and normalization; this module owns encrypted metadata and the change gate.
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { sha256Hex } from "../utils/hash.js";
 import {
@@ -60,6 +61,8 @@ export interface EnsureWebhookInput {
 export interface WebhookRequest {
   headers: Record<string, string | string[] | undefined>;
   body: Uint8Array;
+  /** One-time route nonce for an unsigned manual provider verification request. */
+  setupToken?: string;
 }
 
 export type RefreshHint =
@@ -340,6 +343,78 @@ function validVerifiedWebhook(value: VerifiedWebhook): boolean {
   );
 }
 
+function equalSecret(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+export function armProviderWebhookSetup(
+  vaultRoot: string,
+  provider: ProviderName,
+  deps: Pick<EngineDeps, "config" | "environment" | "writeIntegrationState">,
+  createToken: () => string = () => randomBytes(32).toString("base64url"),
+): Result<{ setupToken: string }, Error> {
+  const configured = providerConfig(deps.config, provider);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const persisted = readIntegrationState(vaultRoot, key.value);
+  if (!persisted.ok) return persisted;
+  const providerState = persisted.value.providers[provider];
+  if (providerState === undefined) {
+    return err(new Error(`integration provider ${provider} is not authorized`));
+  }
+  if (providerState.webhook !== undefined) {
+    return err(new Error(`integration provider ${provider} already has a webhook channel`));
+  }
+  const setupToken = createToken();
+  if (typeof setupToken !== "string" || setupToken.length < 16) {
+    return err(new Error("integration webhook setup token generation failed"));
+  }
+  providerState.webhookSetupToken = setupToken;
+  const written = writeState(vaultRoot, key.value, persisted.value, deps);
+  return written.ok ? ok({ setupToken }) : written;
+}
+
+export function readProviderWebhookVerificationToken(
+  vaultRoot: string,
+  provider: ProviderName,
+  deps: Pick<EngineDeps, "config" | "environment">,
+): Result<{ verificationToken: string }, Error> {
+  const configured = providerConfig(deps.config, provider);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const persisted = readIntegrationState(vaultRoot, key.value);
+  if (!persisted.ok) return persisted;
+  const providerState = persisted.value.providers[provider];
+  const webhook = providerState?.webhook;
+  if (webhook?.verificationRequired !== true) {
+    return err(new Error(`integration provider ${provider} has no pending webhook verification`));
+  }
+  return ok({ verificationToken: webhook.secret });
+}
+
+export function confirmProviderWebhookVerification(
+  vaultRoot: string,
+  provider: ProviderName,
+  deps: Pick<EngineDeps, "config" | "environment" | "writeIntegrationState">,
+): Result<void, Error> {
+  const configured = providerConfig(deps.config, provider);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const persisted = readIntegrationState(vaultRoot, key.value);
+  if (!persisted.ok) return persisted;
+  const webhook = persisted.value.providers[provider]?.webhook;
+  if (webhook?.verificationRequired !== true) {
+    return err(new Error(`integration provider ${provider} has no pending webhook verification`));
+  }
+  webhook.verificationRequired = false;
+  return writeState(vaultRoot, key.value, persisted.value, deps);
+}
+
 export async function reconcileProvider(
   vaultRoot: string,
   adapter: ProviderAdapter,
@@ -545,6 +620,20 @@ export async function verifyProviderWebhook(
   if (providerState === undefined) {
     return err(new Error(`integration provider ${adapter.name} is not authorized`));
   }
+  if (providerState.webhook === undefined) {
+    const expected = providerState.webhookSetupToken;
+    if (
+      expected === undefined ||
+      input.setupToken === undefined ||
+      !equalSecret(input.setupToken, expected)
+    ) {
+      return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
+    }
+  } else if (providerState.webhook.verificationRequired === true) {
+    return err(
+      new Error(`integration provider ${adapter.name} webhook verification is not confirmed`),
+    );
+  }
 
   let verified: Result<VerifiedWebhook, Error>;
   try {
@@ -567,6 +656,12 @@ export async function verifyProviderWebhook(
         new Error(`integration provider ${adapter.name} webhook verification is already captured`),
       );
     }
+    if (verified.value.channel.verificationRequired !== true) {
+      return err(
+        new Error(`integration provider ${adapter.name} returned an unsafe verification channel`),
+      );
+    }
+    delete providerState.webhookSetupToken;
     providerState.webhook = verified.value.channel;
     const written = writeState(vaultRoot, key.value, persisted.value, deps);
     if (!written.ok) return written;

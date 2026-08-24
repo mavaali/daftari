@@ -29,6 +29,8 @@ export interface ProviderState {
   refreshToken: string;
   accessTokenExpiresAt?: string;
   cursor?: string;
+  /** One-time nonce arming an otherwise unsigned manual webhook verification. */
+  webhookSetupToken?: string;
   webhook?: {
     id: string;
     secret: string;

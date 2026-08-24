@@ -117,7 +117,11 @@ function validProviderState(value: unknown): value is ProviderState {
   ) {
     return false;
   }
-  if (!validOptionalString(value.accessTokenExpiresAt) || !validOptionalString(value.cursor))
+  if (
+    !validOptionalString(value.accessTokenExpiresAt) ||
+    !validOptionalString(value.cursor) ||
+    !validOptionalString(value.webhookSetupToken)
+  )
     return false;
   if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
     return false;
