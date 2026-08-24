@@ -66,6 +66,7 @@ export interface DistillationRun {
 }
 
 export interface UnavailableSourceEvent {
+  idempotencyKey: string;
   providerSourceId: string;
   reason: "no_longer_discovered";
   revision: string;
@@ -79,6 +80,7 @@ export interface EngineDeps {
   now?: () => Date;
   distill(input: DistillationInput): Promise<Result<DistillationRun, Error>>;
   recordUnavailable?(event: UnavailableSourceEvent): Result<void, Error>;
+  writeIntegrationState?: typeof writeIntegrationState;
 }
 
 export interface ReconcileOutcome {
@@ -114,6 +116,14 @@ export function configuredCredential(
 
 export function sourceIdentity(provider: ProviderName, sourceId: string): string {
   return `${provider}:${sourceId}`;
+}
+
+export function unavailableEventKey(
+  provider: ProviderName,
+  sourceId: string,
+  revision: string,
+): string {
+  return `${sourceIdentity(provider, sourceId)}:${revision}`;
 }
 
 function timestamp(deps: EngineDeps): string {
@@ -154,8 +164,9 @@ function writeState(
   vaultRoot: string,
   key: Buffer,
   state: Parameters<typeof writeIntegrationState>[1],
+  deps: Pick<EngineDeps, "writeIntegrationState">,
 ): Result<void, Error> {
-  return writeIntegrationState(vaultRoot, state, key);
+  return (deps.writeIntegrationState ?? writeIntegrationState)(vaultRoot, state, key);
 }
 
 export async function reconcileProvider(
@@ -210,6 +221,7 @@ export async function reconcileProvider(
       const providerSourceId = sourceIdentity(adapter.name, sourceId);
       if (deps.recordUnavailable !== undefined) {
         const recorded = deps.recordUnavailable({
+          idempotencyKey: unavailableEventKey(adapter.name, sourceId, previous.revision),
           providerSourceId,
           reason: "no_longer_discovered",
           revision: previous.revision,
@@ -218,7 +230,7 @@ export async function reconcileProvider(
         if (!recorded.ok) return recorded;
       }
       providerState.sources[sourceId] = { ...previous, available: false, lastSeenAt: seenAt };
-      const written = writeState(vaultRoot, key.value, persisted.value);
+      const written = writeState(vaultRoot, key.value, persisted.value, deps);
       if (!written.ok) return written;
       outcome.unavailableSourceIds.push(providerSourceId);
     }
@@ -246,13 +258,13 @@ export async function reconcileProvider(
       providerState.sources[remote.id] = next;
       const contentHash = sha256Hex(fetched.value.text);
       if (previous?.contentHash === contentHash) {
-        const written = writeState(vaultRoot, key.value, persisted.value);
+        const written = writeState(vaultRoot, key.value, persisted.value, deps);
         if (!written.ok) return written;
         outcome.unchangedSourceIds.push(providerSourceId);
         continue;
       }
 
-      const beforeDistill = writeState(vaultRoot, key.value, persisted.value);
+      const beforeDistill = writeState(vaultRoot, key.value, persisted.value, deps);
       if (!beforeDistill.ok) return beforeDistill;
       let distilled: Result<DistillationRun, Error>;
       try {
@@ -274,7 +286,7 @@ export async function reconcileProvider(
         contentHash,
         lastDistillRunId: distilled.value.runId,
       };
-      const written = writeState(vaultRoot, key.value, persisted.value);
+      const written = writeState(vaultRoot, key.value, persisted.value, deps);
       if (!written.ok) return written;
       outcome.distilledSourceIds.push(providerSourceId);
     }

@@ -295,6 +295,7 @@ describe("provider reconciliation", () => {
     );
     expect(unavailable).toEqual([
       {
+        idempotencyKey: "google:doc-1:1",
         providerSourceId: "google:doc-1",
         reason: "no_longer_discovered",
         revision: "1",
@@ -365,6 +366,58 @@ describe("provider reconciliation", () => {
       }),
     );
     expect(events).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(false);
+  });
+
+  it("reuses an unavailable event key when the state write fails after event persistence", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex("Previously available"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const eventKeys: string[] = [];
+    const recordUnavailable = (event: { idempotencyKey: string }) => {
+      eventKeys.push(event.idempotencyKey);
+      return ok(undefined);
+    };
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({
+        recordUnavailable,
+        writeIntegrationState: () => err(new Error("state disk unavailable")),
+      }),
+    );
+    expect(first.ok).toBe(false);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(true);
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({ recordUnavailable }),
+    );
+    expect(second.ok).toBe(true);
+    expect(eventKeys).toEqual(["google:doc-1:1", "google:doc-1:1"]);
     expect(
       readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
     ).toBe(false);
