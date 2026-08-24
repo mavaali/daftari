@@ -10,6 +10,7 @@ import {
   type ProviderAdapter,
   reconcileProvider,
   startPeriodicIntegrationSync,
+  validateContinuousAdapterCapabilities,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
@@ -382,6 +383,103 @@ describe("provider reconciliation", () => {
     });
   });
 
+  it("refreshes and persists expired tokens before ensuring a webhook", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensuredAccessToken: string | undefined;
+    let persistedAccessToken: string | undefined;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          ok({
+            accessToken: "rotated-access",
+            refreshToken: "rotated-refresh",
+            accessTokenExpiresAt: "2026-08-24T13:00:00.000Z",
+          }),
+        ensureWebhook: async (state) => {
+          ensuredAccessToken = state.accessToken;
+          const persisted = readIntegrationState(vault, KEY);
+          if (persisted.ok) persistedAccessToken = persisted.value.providers.google?.accessToken;
+          return ok({ id: "channel-1", secret: "webhook-secret" });
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(ensuredAccessToken).toBe("rotated-access");
+    expect(persistedAccessToken).toBe("rotated-access");
+    expect(readIntegrationState(vault, KEY).value.providers.google).toMatchObject({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+      webhook: { id: "channel-1", secret: "webhook-secret" },
+    });
+  });
+
+  it("does not ensure a webhook after expired-token refresh fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensured = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("refresh failed")),
+        ensureWebhook: async () => {
+          ensured = true;
+          return ok({ id: "channel-1", secret: "webhook-secret" });
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(ensured).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
   it("preserves a prior webhook channel when provider setup fails", async () => {
     const previous = { id: "previous-channel", secret: "previous-secret" };
     expect(
@@ -424,6 +522,34 @@ describe("provider reconciliation", () => {
     );
 
     expect(result).toEqual(ok({ kind: "sources", sourceIds: ["doc-1"], rediscover: true }));
+  });
+
+  it("rejects a polling adapter missing token refresh capability", () => {
+    expect(validateContinuousAdapterCapabilities(adapter(), { webhooksRequired: false }).ok).toBe(
+      false,
+    );
+  });
+
+  it("rejects a webhook adapter missing both webhook capabilities", () => {
+    expect(
+      validateContinuousAdapterCapabilities(
+        adapter({ refreshTokens: async () => ok({ accessToken: "next", refreshToken: "next" }) }),
+        { webhooksRequired: true },
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("accepts a complete continuous adapter contract", () => {
+    expect(
+      validateContinuousAdapterCapabilities(
+        adapter({
+          refreshTokens: async () => ok({ accessToken: "next", refreshToken: "next" }),
+          ensureWebhook: async () => ok({ id: "channel-1", secret: "secret" }),
+          verifyWebhook: async () => ok({ kind: "reconcile" }),
+        }),
+        { webhooksRequired: true },
+      ),
+    ).toEqual(ok(undefined));
   });
 
   it("marks a no-longer-discovered source unavailable while preserving its hash", async () => {

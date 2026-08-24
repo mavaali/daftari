@@ -126,6 +126,10 @@ export interface ReconcileOutcome {
   unavailableSourceIds: string[];
 }
 
+export interface ContinuousAdapterCapabilityOptions {
+  webhooksRequired: boolean;
+}
+
 const activeReconciliations = new Set<string>();
 
 export function providerConfig(
@@ -136,6 +140,27 @@ export function providerConfig(
   if (value === undefined)
     return err(new Error(`integration provider ${provider} is not configured`));
   return ok(value);
+}
+
+// Migration keeps the new adapter methods optional at the type level so old
+// adapters continue to compile. Serve validates this boundary at startup before
+// it starts any continuous sync or webhook route.
+export function validateContinuousAdapterCapabilities(
+  adapter: ProviderAdapter,
+  options: ContinuousAdapterCapabilityOptions,
+): Result<void, Error> {
+  if (adapter.refreshTokens === undefined) {
+    return err(new Error(`integration provider ${adapter.name} lacks token refresh capability`));
+  }
+  if (options.webhooksRequired && adapter.ensureWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} lacks webhook setup capability`));
+  }
+  if (options.webhooksRequired && adapter.verifyWebhook === undefined) {
+    return err(
+      new Error(`integration provider ${adapter.name} lacks webhook verification capability`),
+    );
+  }
+  return ok(undefined);
 }
 
 export function configuredCredential(
@@ -447,10 +472,20 @@ export async function ensureProviderWebhook(
   if (!key.ok) return key;
   const persisted = readIntegrationState(vaultRoot, key.value);
   if (!persisted.ok) return persisted;
-  const providerState = persisted.value.providers[adapter.name];
+  let providerState = persisted.value.providers[adapter.name];
   if (providerState === undefined) {
     return err(new Error(`integration provider ${adapter.name} is not authorized`));
   }
+  const refreshed = await refreshExpiredTokens(
+    vaultRoot,
+    adapter,
+    key.value,
+    persisted.value,
+    providerState,
+    deps,
+  );
+  if (!refreshed.ok) return refreshed;
+  providerState = refreshed.value;
 
   let ensured: Result<WebhookChannel, Error>;
   try {
