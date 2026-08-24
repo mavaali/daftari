@@ -917,8 +917,9 @@ compute-but-don't-write, the would-be `do()` is journaled with its impact
 (convex blast scaling) and budget (vault-state function of the
 ratification-queue depth), and `vault_ratify` returns
 `applied: false, shadow: true` instead of recording a false `ratified`.
-This is the calibration posture the cortex loop runs in until
-coverage/equity ratchets clear and the auto-write tier graduates.
+When `shadow_mode: true`, this is the calibration posture: no edge write lands.
+Setting `shadow_mode: false` explicitly selects the live admitted-write path;
+that operator choice does not establish the spec's broader Stage-5 graduation.
 
 The issue-#97 calibration did **not** test this loop. It repeated
 `daftari sleep --dream tension-scan` at N=0/1/2/3, killed that intervention's
@@ -927,10 +928,10 @@ calibration gates untouched. The evidence ledger and reopen threshold are in
 `docs/superpowers/results/2026-08-23-sleep-extensions-evidence-verdict.md`.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
-process silently deletes knowledge. Live consolidation requires an explicit
-operator choice, every envelope decision is attributable and journaled, and
-actions outside the bounded consolidation tier remain staged for human
-ratification.
+process silently rewrites or deletes knowledge. Live consolidation requires an
+explicit operator choice, every envelope decision is attributable and
+journaled, and actions outside the bounded consolidation tier remain staged for
+human ratification.
 
 ## Bi-temporal validity
 

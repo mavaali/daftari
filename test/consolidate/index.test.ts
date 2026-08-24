@@ -33,7 +33,7 @@ describe("runConsolidate", () => {
 
     expect(code).toBe(0);
     expect(text).toContain("explicit live-or-shadow posture");
-    expect(text).toContain("shadow_mode: false to write admitted edges live");
+    expect(text).toContain("false = write admitted edges live");
     expect(text).not.toContain("(shadow-only)");
   });
 

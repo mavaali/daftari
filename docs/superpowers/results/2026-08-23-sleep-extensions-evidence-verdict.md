@@ -51,7 +51,9 @@ intervention.
 The production run used 166 documents / 6,463 chunks, 30 fixed questions
 (10 per tier), two answer runs per question, and the same question set at every
 round. Baseline N=0 was followed by three 200-judgment tension-scan passes.
-Every one of the 60 planned answer runs was graded in every round.
+Every one of the 60 planned answer runs was graded in every round. The overall
+score uses Component B's tier weights — retrieval 1×, cross-reference 2×,
+contradiction 3× — rather than an unweighted mean of the three tier rows.
 
 | Tier | N=0 | N=1 | N=2 | N=3 |
 |---|---:|---:|---:|---:|

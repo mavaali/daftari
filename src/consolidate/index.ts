@@ -103,7 +103,7 @@ explicit posture does not claim that the spec's broader Stage-5 calibration
 and auto-write-graduation gates have been satisfied.
 
 Any mode other than 'scan' REQUIRES shadow_mode to be set explicitly in
-.daftari/config.yaml (true = calibrate/journal only, shadow_mode: false to write admitted edges live).
+.daftari/config.yaml (true = calibrate/journal only, false = write admitted edges live).
 The loop refuses to run live under an implicit default so a cron pass can't
 silently start writing.
 
