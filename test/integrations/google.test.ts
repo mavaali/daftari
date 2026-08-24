@@ -33,6 +33,11 @@ function transport(responses: Record<string, Response[]>): GoogleHttpTransport {
   };
 }
 
+function requireCapability<T>(capability: T | undefined, name: string): T {
+  if (capability === undefined) throw new Error(`Google adapter is missing ${name}`);
+  return capability;
+}
+
 describe("Google Docs adapter", () => {
   it("discovers every accessible native Google Doc and advances its Drive change cursor", async () => {
     const providerState = state();
@@ -303,5 +308,225 @@ describe("Google Docs adapter", () => {
         },
       },
     ]);
+  });
+
+  it("refreshes access tokens without replacing Google's omitted refresh token", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      now: () => new Date("2026-08-24T12:00:00.000Z"),
+      transport: async (url, init) => {
+        requests.push({ url, init });
+        return json({ access_token: "rotated-access", expires_in: 1800 });
+      },
+    });
+
+    const refreshed = await requireCapability(
+      adapter.refreshTokens,
+      "refreshTokens",
+    )({
+      clientId: "google-client-id",
+      clientSecret: "google-client-secret",
+      refreshToken: "durable-refresh-token",
+    });
+
+    expect(refreshed).toEqual({
+      ok: true,
+      value: {
+        accessToken: "rotated-access",
+        refreshToken: "durable-refresh-token",
+        accessTokenExpiresAt: "2026-08-24T12:30:00.000Z",
+      },
+    });
+    expect(requests).toEqual([
+      {
+        url: "https://oauth2.googleapis.com/token",
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: "google-client-id",
+            client_secret: "google-client-secret",
+            grant_type: "refresh_token",
+            refresh_token: "durable-refresh-token",
+          }).toString(),
+        },
+      },
+    ]);
+  });
+
+  it("rejects a failed Google token refresh without accepting a partial response", async () => {
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      transport: transport({
+        "https://oauth2.googleapis.com/token": [json({ error: "invalid_grant" }, 400)],
+      }),
+    });
+
+    const refreshed = await requireCapability(
+      adapter.refreshTokens,
+      "refreshTokens",
+    )({
+      clientId: "google-client-id",
+      clientSecret: "google-client-secret",
+      refreshToken: "durable-refresh-token",
+    });
+
+    expect(refreshed.ok).toBe(false);
+  });
+
+  it("creates a renewed Drive change channel from the stored cursor", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const providerState = state("changes-7");
+    providerState.webhook = {
+      id: "expired-channel",
+      secret: "expired-secret",
+      expiresAt: "2026-08-24T11:59:00.000Z",
+    };
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      transport: async (url, init) => {
+        requests.push({ url, init });
+        const request = JSON.parse(String(init.body)) as { id: string };
+        return json({ id: request.id, expiration: "1787576400000" });
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/google/webhook",
+      now: new Date("2026-08-24T12:00:00.000Z"),
+      renewBefore: new Date("2026-08-24T12:05:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({
+      ok: true,
+      value: {
+        id: expect.any(String),
+        secret: expect.any(String),
+        expiresAt: "2026-08-24T13:00:00.000Z",
+      },
+    });
+    if (!ensured.ok) return;
+    expect(ensured.value.id).not.toBe("expired-channel");
+    expect(ensured.value.secret).not.toBe("expired-secret");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toContain("https://www.googleapis.com/drive/v3/changes/watch?");
+    const query = new URL(requests[0]?.url).searchParams;
+    expect(query.get("pageToken")).toBe("changes-7");
+    expect(query.get("includeItemsFromAllDrives")).toBe("true");
+    expect(query.get("supportsAllDrives")).toBe("true");
+    expect(JSON.parse(String(requests[0]?.init.body))).toMatchObject({
+      id: ensured.value.id,
+      token: ensured.value.secret,
+      type: "web_hook",
+      address: "https://vault.example/integrations/google/webhook",
+    });
+  });
+
+  it("retains an unexpired Drive channel and refuses an insecure callback URL", async () => {
+    const providerState = state("changes-7");
+    providerState.webhook = {
+      id: "current-channel",
+      secret: "current-secret",
+      expiresAt: "2026-08-24T13:00:00.000Z",
+    };
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      transport: async () => {
+        throw new Error("a current channel must not create a new watch request");
+      },
+    });
+
+    const retained = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(
+      providerState,
+      {
+        callbackUrl: "https://vault.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-24T12:05:00.000Z"),
+      },
+    );
+    const insecure = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(
+      state("changes-7"),
+      {
+        callbackUrl: "http://localhost/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-24T12:05:00.000Z"),
+      },
+    );
+
+    expect(retained).toEqual({
+      ok: true,
+      value: {
+        id: "current-channel",
+        secret: "current-secret",
+        expiresAt: "2026-08-24T13:00:00.000Z",
+      },
+    });
+    expect(insecure.ok).toBe(false);
+  });
+
+  it("accepts only the active Google change-channel credentials", async () => {
+    const providerState = state("changes-7");
+    providerState.webhook = { id: "channel-1", secret: "channel-token" };
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+    });
+
+    const valid = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {
+          "X-Goog-Channel-ID": "channel-1",
+          "X-Goog-Channel-Token": "channel-token",
+          "X-Goog-Resource-State": "change",
+          "X-Goog-Message-Number": "42",
+        },
+        body: new Uint8Array([1, 2, 3]),
+      },
+      providerState,
+    );
+    const wrongToken = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {
+          "x-goog-channel-id": "channel-1",
+          "x-goog-channel-token": "attacker-token",
+          "x-goog-resource-state": "change",
+          "x-goog-message-number": "42",
+        },
+        body: new Uint8Array(),
+      },
+      providerState,
+    );
+    const wrongState = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {
+          "x-goog-channel-id": "channel-1",
+          "x-goog-channel-token": "channel-token",
+          "x-goog-resource-state": "update",
+          "x-goog-message-number": "42",
+        },
+        body: new Uint8Array(),
+      },
+      providerState,
+    );
+
+    const missingMessageNumber = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {
+          "x-goog-channel-id": "channel-1",
+          "x-goog-channel-token": "channel-token",
+          "x-goog-resource-state": "change",
+        },
+        body: new Uint8Array(),
+      },
+      providerState,
+    );
+
+    expect(valid).toEqual({
+      ok: true,
+      value: { kind: "event", eventId: "channel-1:42", hint: { kind: "reconcile" } },
+    });
+    expect(wrongToken.ok).toBe(false);
+    expect(wrongState.ok).toBe(false);
+    expect(missingMessageNumber.ok).toBe(false);
   });
 });

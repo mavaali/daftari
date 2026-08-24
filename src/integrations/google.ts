@@ -1,13 +1,19 @@
 // Google Docs integration adapter. It owns only Google OAuth and HTTP; the
 // provider-neutral engine owns persistence, reconciliation, and distillation.
 
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   AuthorizationRequest,
   CodeExchange,
+  EnsureWebhookInput,
   ProviderAdapter,
   ProviderTokens,
+  RefreshTokenRequest,
   RemoteSource,
+  VerifiedWebhook,
+  WebhookChannel,
+  WebhookRequest,
 } from "./engine.js";
 import type { ProviderState } from "./types.js";
 
@@ -53,6 +59,11 @@ interface GoogleTokenResponse {
   access_token?: unknown;
   refresh_token?: unknown;
   expires_in?: unknown;
+}
+
+interface GoogleChannelResponse {
+  id?: unknown;
+  expiration?: unknown;
 }
 
 interface GoogleTextRun {
@@ -182,6 +193,24 @@ function tokenExpiration(expiresIn: unknown, now: () => Date): string | undefine
     return undefined;
   }
   return new Date(now().getTime() + expiresIn * 1000).toISOString();
+}
+
+function providerTokens(
+  response: GoogleTokenResponse,
+  now: () => Date,
+  retainedRefreshToken?: string,
+): Result<ProviderTokens, Error> {
+  const accessToken = stringValue(response.access_token);
+  const refreshToken = stringValue(response.refresh_token) ?? retainedRefreshToken;
+  if (accessToken === undefined || refreshToken === undefined || refreshToken.length === 0) {
+    return err(new Error("Google OAuth token response is incomplete"));
+  }
+  const accessTokenExpiresAt = tokenExpiration(response.expires_in, now);
+  return ok({
+    accessToken,
+    refreshToken,
+    ...(accessTokenExpiresAt === undefined ? {} : { accessTokenExpiresAt }),
+  });
 }
 
 async function jsonResponse(
@@ -404,17 +433,138 @@ async function exchangeCode(
     }).toString(),
   });
   if (!response.ok) return response;
-  const tokens = response.value as GoogleTokenResponse;
-  const accessToken = stringValue(tokens.access_token);
-  const refreshToken = stringValue(tokens.refresh_token);
-  if (accessToken === undefined || refreshToken === undefined) {
-    return err(new Error("Google OAuth token response is incomplete"));
+  return providerTokens(response.value as GoogleTokenResponse, now);
+}
+
+async function refreshTokens(
+  transport: GoogleHttpTransport,
+  now: () => Date,
+  input: RefreshTokenRequest,
+): Promise<Result<ProviderTokens, Error>> {
+  const response = await jsonResponse(transport, GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: input.clientId,
+      client_secret: input.clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: input.refreshToken,
+    }).toString(),
+  });
+  if (!response.ok) return response;
+  return providerTokens(response.value as GoogleTokenResponse, now, input.refreshToken);
+}
+
+function currentWebhook(state: ProviderState, renewBefore: Date): WebhookChannel | undefined {
+  const webhook = state.webhook;
+  if (webhook?.expiresAt === undefined) return undefined;
+  const expiresAt = Date.parse(webhook.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > renewBefore.getTime() ? webhook : undefined;
+}
+
+function validHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
   }
-  const accessTokenExpiresAt = tokenExpiration(tokens.expires_in, now);
+}
+
+function channelExpiration(value: unknown): Result<string | undefined, Error> {
+  if (value === undefined) return ok(undefined);
+  const raw = stringValue(value);
+  if (raw === undefined || !/^\d+$/.test(raw)) {
+    return err(new Error("Google webhook expiration is invalid"));
+  }
+  const expiration = new Date(Number(raw));
+  return Number.isNaN(expiration.getTime())
+    ? err(new Error("Google webhook expiration is invalid"))
+    : ok(expiration.toISOString());
+}
+
+async function ensureWebhook(
+  transport: GoogleHttpTransport,
+  state: ProviderState,
+  input: EnsureWebhookInput,
+): Promise<Result<WebhookChannel, Error>> {
+  if (!validHttpsUrl(input.callbackUrl)) {
+    return err(new Error("Google webhook callback URL must use HTTPS"));
+  }
+  if (state.cursor === undefined) {
+    return err(new Error("Google webhook requires a Drive change cursor"));
+  }
+  const current = currentWebhook(state, input.renewBefore);
+  if (current !== undefined) return ok(current);
+
+  const id = randomUUID();
+  const secret = randomBytes(32).toString("base64url");
+  const response = await jsonResponse(
+    transport,
+    requestUrl(`${GOOGLE_DRIVE_URL}/changes/watch`, {
+      includeItemsFromAllDrives: "true",
+      pageToken: state.cursor,
+      supportsAllDrives: "true",
+    }),
+    {
+      method: "POST",
+      headers: {
+        ...authorizationHeaders(state.accessToken),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ id, type: "web_hook", address: input.callbackUrl, token: secret }),
+    },
+  );
+  if (!response.ok) return response;
+  const channel = response.value as GoogleChannelResponse;
+  if (stringValue(channel.id) !== id) {
+    return err(new Error("Google webhook response has an invalid channel ID"));
+  }
+  const expiresAt = channelExpiration(channel.expiration);
+  if (!expiresAt.ok) return expiresAt;
   return ok({
-    accessToken,
-    refreshToken,
-    ...(accessTokenExpiresAt === undefined ? {} : { accessTokenExpiresAt }),
+    id,
+    secret,
+    ...(expiresAt.value === undefined ? {} : { expiresAt: expiresAt.value }),
+  });
+}
+
+function webhookHeader(headers: WebhookRequest["headers"], name: string): string | undefined {
+  const expected = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === expected) return typeof value === "string" ? value : undefined;
+  }
+  return undefined;
+}
+
+function equalWebhookSecret(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+async function verifyWebhook(
+  input: WebhookRequest,
+  state: ProviderState,
+): Promise<Result<VerifiedWebhook, Error>> {
+  const webhook = state.webhook;
+  const channelId = webhookHeader(input.headers, "x-goog-channel-id");
+  const token = webhookHeader(input.headers, "x-goog-channel-token");
+  const resourceState = webhookHeader(input.headers, "x-goog-resource-state");
+  const messageNumber = webhookHeader(input.headers, "x-goog-message-number");
+  if (
+    webhook === undefined ||
+    channelId !== webhook.id ||
+    token === undefined ||
+    !equalWebhookSecret(token, webhook.secret) ||
+    messageNumber === undefined ||
+    (resourceState !== "sync" && resourceState !== "change" && resourceState !== "changed")
+  ) {
+    return err(new Error("Google webhook is invalid"));
+  }
+  return ok({
+    kind: "event",
+    eventId: `${channelId}:${messageNumber}`,
+    hint: { kind: "reconcile" },
   });
 }
 
@@ -425,6 +575,9 @@ export function createGoogleDocsAdapter(options: GoogleDocsAdapterOptions): Prov
     name: "google",
     authorizationUrl: (input) => authorizationUrl(input, options.redirectUri),
     exchangeCode: (input) => exchangeCode(transport, options.redirectUri, now, input),
+    refreshTokens: (input) => refreshTokens(transport, now, input),
+    ensureWebhook: (state, input) => ensureWebhook(transport, state, input),
+    verifyWebhook,
     discover: async (state) => {
       let discovered: Result<RemoteSource[], Error>;
       if (state.cursor === undefined) {
