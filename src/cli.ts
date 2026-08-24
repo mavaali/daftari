@@ -37,6 +37,7 @@ Usage:
   daftari distill <file|-> [options]  Compile-on-ingest: extract claims from a source file (see: daftari distill --help)
   daftari canary [options]            Falsify the read-path fence (see: daftari canary --help)
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
+  daftari schema <infer|diff>         Infer/diff frontmatter schema (see: daftari schema --help)
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
@@ -272,6 +273,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "eval") {
     const { runEval } = await import("./eval/index.js");
     process.exitCode = await runEval(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "schema") {
+    const { runSchema } = await import("./schema/index.js");
+    process.exitCode = await runSchema(argv.slice(1));
     return;
   }
 

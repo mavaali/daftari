@@ -839,6 +839,32 @@ reindexes when done.
 Already have a wiki or an Obsidian vault? Daftari adopts it **in place** — it
 indexes and curates the same markdown files you already edit, not a separate copy.
 
+Inspect the wiki's existing metadata before filling anything in:
+
+```bash
+# What keys and value shapes actually exist? No config required.
+daftari schema infer --vault ~/my-vault
+
+# Compare those observations with built-ins + schema_extensions.
+# Single-use custom keys stay below the default evidence threshold of 2.
+daftari schema diff --vault ~/my-vault --json
+
+# Limit either report to one folder; nested folders are included.
+daftari schema infer --vault ~/my-vault --scope notes
+```
+
+Both schema commands are read-only. `infer` reports occurrence/prevalence,
+observed types, bounded examples, distinct-value cardinality, and enum-likeness.
+`diff` reports widely used undeclared fields, declared-but-unused extensions,
+observed values that violate their declaration, and near-miss names such as
+`state` versus `status`. Use `--min-occurrences <n>` on `diff` to change the
+undeclared-field evidence threshold (default 2). Malformed or unreadable docs
+are listed as skipped evidence; drift problem categories and path/value examples
+are bounded. A missing vault or explicitly named scope fails loud, while an
+existing empty folder produces an empty report. Scope confinement follows real
+paths, so symlink aliases cannot escape the requested folder or double-count a
+document. No markdown, config, or index state is written.
+
 ```bash
 # Dry run — see what would change, write nothing
 daftari import obsidian ~/my-vault --plan

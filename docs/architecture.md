@@ -396,9 +396,36 @@ disk — honoring the non-destructive write invariant.
 
 An existing wiki rarely arrives with Daftari's frontmatter already in place
 — or with its own git history, or living under a sync-friendly filesystem.
-Three adoption surfaces address those, all CLI-only because adoption is a
+Four adoption surfaces address those, all CLI-only because adoption is a
 one-time operator act, not something an agent should reach for
 mid-conversation:
+
+**`daftari schema infer` / `daftari schema diff`** inspect an unfamiliar
+vault before any migration writes. Both commands read raw YAML frontmatter in a
+single vault walk (optionally restricted to a vault-confined `--scope`) and
+never create index, config, or markdown state. `infer` reports every observed
+key with occurrence/prevalence, observed types, a bounded example set, distinct
+value cardinality, and a conservative enum-like signal. Distinct tracking caps
+at 50 values and says when it was capped, so unique IDs and titles cannot grow
+the report without bound. Documents that cannot be read or parsed are named as
+skipped evidence rather than silently disappearing or aborting the rest of the
+advisory scan. The vault and an explicit scope must exist as directories;
+real-path confinement keeps symlink targets inside that scope, and canonical
+paths deduplicate aliases to the same document.
+
+`diff` compares the same observations with built-ins plus
+`schema_extensions`. It reports undeclared fields only after an explicit
+evidence threshold (`--min-occurrences`, default 2), while near-miss names such
+as `state` versus `status` remain visible even below that threshold because a
+one-document typo is still actionable. It also reports declared extensions
+with no non-null observations and aggregates observed type/enum/pattern drift
+with offending counts, at most five stable problem categories, and up to five
+path/value examples. Reports say when additional problem categories were
+omitted. Recursive YAML aliases, non-finite numbers, and oversized structures
+are converted to bounded, JSON-safe evidence before rendering. Missing required
+values are not mislabeled as observed-value drift; an extension that is absent
+or only null is instead reported as unused. Human-readable Markdown is the
+default, and `--json` emits the same deterministic evidence for automation.
 
 **`daftari backfill`** adopts a wiki without a manual migration sprint: it
 walks the vault and derives frontmatter defaults **deterministically** —
