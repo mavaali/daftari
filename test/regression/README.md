@@ -27,10 +27,13 @@ instances/queries flipped. If you didn't intend it, it's a regression.
   per-query hit@1/hit@5 (`baselines/retrieval.json`) plus aggregate
   recall@5/MRR/nDCG@5 (`baselines/retrieval-metrics.json`). The real-semantic
   sibling runs 25 frozen questions over `test/fixtures/sample-vault`, including
-  multi-document answers, and exact-diffs per-query relevant ranks plus
+  multi-document answers, through `vault_search` under pure lexical and shipped
+  0.8/0.2 MiniLM-fusion weights. The fusion arm replays 35 committed MiniLM
+  vectors, so it exercises sqlite-vec and fusion without loading a model or
+  touching the network. The gate exact-diffs per-query relevant ranks plus
   aggregate recall@5, recall@10, MRR, and nDCG@10
-  (`baselines/sample-vault-retrieval.json`). Both arms are lexical-only and run
-  at zero tolerance; vector/provider arms remain Tier 2.
+  (`baselines/sample-vault-retrieval.json`) at zero tolerance. The credentialed
+  OpenAI provider matrix remains Tier 2.
 
 Fixtures are pinned copies — they do not track
 `integrations/consensus-bench/src/__fixtures__/`, and they are excluded from
@@ -41,6 +44,9 @@ The sample-vault question set lives at
 `fixtures/sample-vault-queries.jsonl`. Each row includes its answer paths and a
 review rationale; edit it only with a reviewed baseline delta. Design:
 `docs/superpowers/specs/2026-08-23-sample-vault-retrieval-gate-design.md`.
+If the corpus or questions change, regenerate the checked-in local-MiniLM
+vectors with `npm run regression:update-sample-embeddings`, commit that fixture,
+then use the normal clean-tree baseline command.
 
 Tiers 2–3 (nightly vector/hybrid bench, pre-release LLM-judge) are follow-ups
 per the design spec; this directory is Tier 1 only.
