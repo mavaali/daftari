@@ -126,7 +126,9 @@ function validProviderState(value: unknown): value is ProviderState {
     isStringRecord(value.webhook) &&
     typeof value.webhook.id === "string" &&
     typeof value.webhook.secret === "string" &&
-    validOptionalString(value.webhook.expiresAt)
+    validOptionalString(value.webhook.expiresAt) &&
+    (value.webhook.verificationRequired === undefined ||
+      typeof value.webhook.verificationRequired === "boolean")
   );
 }
 

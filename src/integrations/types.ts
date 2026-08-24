@@ -29,7 +29,12 @@ export interface ProviderState {
   refreshToken: string;
   accessTokenExpiresAt?: string;
   cursor?: string;
-  webhook?: { id: string; secret: string; expiresAt?: string };
+  webhook?: {
+    id: string;
+    secret: string;
+    expiresAt?: string;
+    verificationRequired?: boolean;
+  };
   sources: Record<string, SourceState>;
 }
 

@@ -504,7 +504,7 @@ describe("provider reconciliation", () => {
     expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
   });
 
-  it("returns generic verified webhook refresh hints for routes to queue", async () => {
+  it("returns generic verified webhook events for routes to queue", async () => {
     expect(
       writeIntegrationState(
         vault,
@@ -515,13 +515,54 @@ describe("provider reconciliation", () => {
     const result = await verifyProviderWebhook(
       vault,
       adapter({
-        verifyWebhook: async () => ok({ kind: "sources", sourceIds: ["doc-1"], rediscover: true }),
+        verifyWebhook: async () =>
+          ok({
+            kind: "event",
+            eventId: "evt-1",
+            hint: { kind: "sources", sourceIds: ["doc-1"], rediscover: true },
+          }),
       }),
       { headers: { "x-provider-signature": "signature" }, body: Buffer.from("event") },
       deps(),
     );
 
-    expect(result).toEqual(ok({ kind: "sources", sourceIds: ["doc-1"], rediscover: true }));
+    expect(result).toEqual(
+      ok({
+        kind: "event",
+        eventId: "evt-1",
+        hint: { kind: "sources", sourceIds: ["doc-1"], rediscover: true },
+      }),
+    );
+  });
+
+  it("persists a provider verification channel before returning it", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: { ...providerState(), webhook: undefined } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const channel = {
+      id: "notion-verification",
+      secret: "operator-verification-token",
+      verificationRequired: true,
+    };
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        name: "notion",
+        verifyWebhook: async () => ok({ kind: "verification", channel }),
+      }),
+      { headers: {}, body: Buffer.from('{"verification_token":"operator-verification-token"}') },
+      deps({
+        config: { ...config, google: undefined, notion: config.google },
+        adapters: {},
+      }),
+    );
+
+    expect(result).toEqual(ok({ kind: "verification", channel }));
+    expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook).toEqual(channel);
   });
 
   it("rejects a polling adapter missing token refresh capability", () => {
@@ -545,7 +586,8 @@ describe("provider reconciliation", () => {
         adapter({
           refreshTokens: async () => ok({ accessToken: "next", refreshToken: "next" }),
           ensureWebhook: async () => ok({ id: "channel-1", secret: "secret" }),
-          verifyWebhook: async () => ok({ kind: "reconcile" }),
+          verifyWebhook: async () =>
+            ok({ kind: "event", eventId: "evt-1", hint: { kind: "reconcile" } }),
         }),
         { webhooksRequired: true },
       ),

@@ -48,6 +48,7 @@ export interface WebhookChannel {
   id: string;
   secret: string;
   expiresAt?: string;
+  verificationRequired?: boolean;
 }
 
 export interface EnsureWebhookInput {
@@ -64,6 +65,10 @@ export interface WebhookRequest {
 export type RefreshHint =
   | { kind: "reconcile" }
   | { kind: "sources"; sourceIds: string[]; rediscover: boolean };
+
+export type VerifiedWebhook =
+  | { kind: "verification"; channel: WebhookChannel }
+  | { kind: "event"; eventId: string; hint: RefreshHint };
 
 export interface RemoteSource {
   id: string;
@@ -86,7 +91,10 @@ export interface ProviderAdapter {
     state: ProviderState,
     input: EnsureWebhookInput,
   ): Promise<Result<WebhookChannel, Error>>;
-  verifyWebhook?(input: WebhookRequest, state: ProviderState): Promise<Result<RefreshHint, Error>>;
+  verifyWebhook?(
+    input: WebhookRequest,
+    state: ProviderState,
+  ): Promise<Result<VerifiedWebhook, Error>>;
   discover(state: ProviderState): Promise<Result<RemoteSource[], Error>>;
   fetch(source: RemoteSource, state: ProviderState): Promise<Result<NormalizedRemoteSource, Error>>;
 }
@@ -306,7 +314,9 @@ function validWebhookChannel(channel: WebhookChannel): boolean {
     channel.id.length > 0 &&
     typeof channel.secret === "string" &&
     channel.secret.length > 0 &&
-    (channel.expiresAt === undefined || typeof channel.expiresAt === "string")
+    (channel.expiresAt === undefined || typeof channel.expiresAt === "string") &&
+    (channel.verificationRequired === undefined ||
+      typeof channel.verificationRequired === "boolean")
   );
 }
 
@@ -317,6 +327,16 @@ function validRefreshHint(hint: RefreshHint): boolean {
     Array.isArray(hint.sourceIds) &&
     hint.sourceIds.every((sourceId) => typeof sourceId === "string" && sourceId.length > 0) &&
     typeof hint.rediscover === "boolean"
+  );
+}
+
+function validVerifiedWebhook(value: VerifiedWebhook): boolean {
+  if (value.kind === "verification") return validWebhookChannel(value.channel);
+  return (
+    value.kind === "event" &&
+    typeof value.eventId === "string" &&
+    value.eventId.length > 0 &&
+    validRefreshHint(value.hint)
   );
 }
 
@@ -511,7 +531,7 @@ export async function verifyProviderWebhook(
   adapter: ProviderAdapter,
   input: WebhookRequest,
   deps: EngineDeps,
-): Promise<Result<RefreshHint, Error>> {
+): Promise<Result<VerifiedWebhook, Error>> {
   if (adapter.verifyWebhook === undefined) {
     return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
   }
@@ -526,7 +546,7 @@ export async function verifyProviderWebhook(
     return err(new Error(`integration provider ${adapter.name} is not authorized`));
   }
 
-  let verified: Result<RefreshHint, Error>;
+  let verified: Result<VerifiedWebhook, Error>;
   try {
     verified = await adapter.verifyWebhook(input, providerState);
   } catch {
@@ -534,10 +554,22 @@ export async function verifyProviderWebhook(
   }
   if (!verified.ok)
     return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
-  if (!validRefreshHint(verified.value)) {
+  if (!validVerifiedWebhook(verified.value)) {
     return err(
-      new Error(`integration provider ${adapter.name} webhook verification returned invalid hint`),
+      new Error(
+        `integration provider ${adapter.name} webhook verification returned invalid result`,
+      ),
     );
+  }
+  if (verified.value.kind === "verification") {
+    if (providerState.webhook !== undefined) {
+      return err(
+        new Error(`integration provider ${adapter.name} webhook verification is already captured`),
+      );
+    }
+    providerState.webhook = verified.value.channel;
+    const written = writeState(vaultRoot, key.value, persisted.value, deps);
+    if (!written.ok) return written;
   }
   return ok(verified.value);
 }
