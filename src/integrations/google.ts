@@ -36,6 +36,7 @@ interface GoogleFile {
 
 interface GoogleFilesResponse {
   files?: unknown;
+  incompleteSearch?: unknown;
   nextPageToken?: unknown;
 }
 
@@ -257,6 +258,10 @@ async function listFiles(
     if (page.files !== undefined && !Array.isArray(page.files)) {
       return err(new Error("Google Drive files response is invalid"));
     }
+    if (page.incompleteSearch !== undefined && typeof page.incompleteSearch !== "boolean") {
+      return err(new Error("Google Drive files response is invalid"));
+    }
+    if (page.incompleteSearch) return err(new Error("Google Drive file search is incomplete"));
     for (const file of page.files ?? []) {
       const source = nativeGoogleDoc(file);
       if (source !== undefined) sources.set(source.id, source);
@@ -407,6 +412,7 @@ function authorizationUrl(input: AuthorizationRequest, redirectUri: string): str
     code_challenge: input.codeChallenge,
     code_challenge_method: input.codeChallengeMethod,
     include_granted_scopes: "true",
+    prompt: "consent",
     redirect_uri: redirectUri,
     response_type: "code",
     scope: GOOGLE_SCOPES,

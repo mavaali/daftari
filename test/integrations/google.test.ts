@@ -94,6 +94,29 @@ describe("Google Docs adapter", () => {
     });
   });
 
+  it("refuses an incomplete Drive listing rather than reporting partial discovery", async () => {
+    const providerState = state();
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      transport: transport({
+        "https://www.googleapis.com/drive/v3/changes/startPageToken": [
+          json({ startPageToken: "changes-3" }),
+        ],
+        "https://www.googleapis.com/drive/v3/files": [
+          json({
+            incompleteSearch: true,
+            files: [{ id: "doc-1", mimeType: GOOGLE_DOCUMENT, version: "3" }],
+          }),
+        ],
+      }),
+    });
+
+    const result = await adapter.discover(providerState);
+
+    expect(result.ok).toBe(false);
+    expect(providerState).toEqual(state());
+  });
+
   it("uses Drive changes incrementally after the initial full discovery", async () => {
     const providerState = state("changes-1", {
       "doc-1": {
@@ -277,6 +300,7 @@ describe("Google Docs adapter", () => {
       code_challenge: "pkce-challenge",
       code_challenge_method: "S256",
       include_granted_scopes: "true",
+      prompt: "consent",
       redirect_uri: "https://vault.example/integrations/google/callback",
       response_type: "code",
       scope:
