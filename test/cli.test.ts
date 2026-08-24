@@ -157,6 +157,20 @@ describe("daftari audit subcommand", () => {
   });
 });
 
+describe("daftari schema subcommand", () => {
+  it("routes schema help through the top-level CLI", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    process.exitCode = undefined;
+    await run(["schema", "--help"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining("daftari schema"));
+    expect(process.exitCode).toBe(0);
+    out.mockRestore();
+    process.exitCode = undefined;
+  });
+});
+
 describe("daftari import subcommand", () => {
   it("prints import help on `daftari import --help`", async () => {
     const { vi } = await import("vitest");

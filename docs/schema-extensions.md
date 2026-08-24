@@ -105,6 +105,20 @@ core fields), RBAC, write locks, git auto-commit, the provenance log, and the
 curation engine — `vault_lint`, TTL staleness, and the tension log operate on
 built-ins only.
 
+To inspect the gap between authored metadata and this declaration, run
+`daftari schema infer --vault <path>` and `daftari schema diff --vault <path>`.
+The former works without a config and reports the raw frontmatter keys and
+value shapes already present. The latter loads this block and reports unused
+extensions, observed values that fail the canonical validator, widely used
+undeclared fields (two occurrences by default, configurable with
+`--min-occurrences`), and near-miss field names. Both are read-only; add
+`--scope <folder>` to constrain the walk or `--json` for machine-readable
+output. The vault and an explicit scope must exist as directories. Scope checks
+use canonical paths so symlinks cannot escape the selected folder or count the
+same document twice. Inference examples, distinct tracking, drift problem
+categories, and drift path/value evidence are bounded; recursive aliases and
+non-finite YAML numbers are rendered as JSON-safe evidence.
+
 ## Worked example — an ADR vault
 
 A vault of Architecture Decision Records wants four fields beyond the built-in
