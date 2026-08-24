@@ -27,20 +27,20 @@ secret.
 
 ## Decision
 
-[DATA] Add a second Tier-1 retrieval test over the existing 10-document sample
+Add a second Tier-1 retrieval test over the existing 10-document sample
 vault. Freeze 25 natural-language questions in JSONL. Questions carry stable
 IDs, one or more known relevant paths, their provenance (`questions_answered`,
 `questions_raised`, or `curated`), and a rationale so the ground truth is
 reviewable in the PR rather than hidden in test code.
 
-[DATA] Run each question through the exported `vaultSearch` tool logic at limit
+Run each question through the exported `vaultSearch` tool logic at limit
 10 under two shipped configurations:
 
 - pure lexical weights `{ bm25: 1, vector: 0 }`;
 - the shipped default fusion weights (currently `{ bm25: 0.8, vector: 0.2 }`),
   selected by omitting the tool's `weights` argument.
 
-[DATA] The fixture stores 35 float vectors as base64: 10 sample-vault chunks and
+The fixture stores 35 float vectors as base64: 10 sample-vault chunks and
 25 queries, produced by the shipped `local-minilm` provider. SHA-256 input hashes
 bind every vector to exact chunk/query text, and usage labels make the mapping
 reviewable. A fixture provider fails on any unrecognized text. It is installed
@@ -51,7 +51,7 @@ every committed vector is consumed. At least one query's ranked answer paths
 must differ between lexical and fusion, preventing a vector-on arm that is
 technically exercised but behaviorally inert.
 
-[DATA] The temporary vault is assembled from an explicit manifest of the 12
+The temporary vault is assembled from an explicit manifest of the 12
 Git-tracked sample-vault inputs. It never recursively copies the source tree,
 so ignored local state such as `index.db`, read logs, staged actions, or
 untracked Markdown cannot contaminate the corpus or satisfy an embedding-cache
@@ -59,7 +59,7 @@ lookup. The gate compares the manifest to `git ls-files` before copying, so a
 tracked corpus addition or removal fails loud instead of silently testing a
 stale subset.
 
-[DATA] Runtime parsers validate the JSONL question shape, source enum, trimmed
+Runtime parsers validate the JSONL question shape, source enum, trimmed
 non-empty values, normalized ID/query/path uniqueness, and corpus membership.
 TypeScript assertions alone are not treated as fixture validation.
 

@@ -19,7 +19,7 @@ import {
 } from "../../../src/search/retrieval-metrics.js";
 import { resetProviderForTests, setProviderForTests } from "../../../src/search/vector.js";
 import { type IndexDb, openIndexDb } from "../../../src/storage/index-db.js";
-import { type Baseline, diffBaseline } from "../helpers/baseline.js";
+import { type Baseline, diffBaseline, round6 } from "../helpers/baseline.js";
 
 const FIXTURE = resolve("test/regression/fixtures/native-vault");
 const BASELINE = resolve("test/regression/baselines/retrieval.json");
@@ -32,8 +32,6 @@ const BASELINE = resolve("test/regression/baselines/retrieval.json");
 const METRICS_BASELINE = resolve("test/regression/baselines/retrieval-metrics.json");
 const K = 5;
 const LEX = { bm25: 1, vector: 0 };
-
-const round6 = (v: number | null): number | null => (v === null ? null : Math.round(v * 1e6) / 1e6);
 
 // Stub provider: reindex embeds every chunk through this instead of loading
 // MiniLM. Zero vectors are fine — the suite never ranks by vector (weight 0).

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
+import { walkFiles } from "../../../src/storage/fs-walk.js";
 
 // Deliberately explicit: a regression corpus is the committed inputs, never
 // whatever ignored index/read-log state happens to live beside them locally.
@@ -50,15 +51,20 @@ export function listTrackedSampleVaultFiles(repositoryRoot: string): string[] {
     .sort();
 }
 
-export function listFixtureFiles(root: string): string[] {
-  const files: string[] = [];
-  const visit = (directory: string, prefix: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-      if (entry.isDirectory()) visit(join(directory, entry.name), path);
-      if (entry.isFile()) files.push(path);
-    }
-  };
-  visit(root, "");
-  return files.sort();
+export function assertTrackedSampleVaultManifest(repositoryRoot: string): void {
+  const actual = listTrackedSampleVaultFiles(repositoryRoot);
+  const expected = [...SAMPLE_VAULT_FILES].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      `sample-vault tracked files differ from the frozen regression manifest: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+    );
+  }
+}
+
+export async function listFixtureFiles(root: string): Promise<string[]> {
+  const { files, symlinks } = await walkFiles(root);
+  if (symlinks > 0) {
+    throw new Error(`sample-vault regression copy contains ${symlinks} symbolic link(s)`);
+  }
+  return files.map((path) => relative(root, path).split(sep).join("/")).sort();
 }

@@ -25,11 +25,11 @@ import {
 import { vaultSearch } from "../../../src/tools/search.js";
 import { SEARCH_TUNING_DEFAULTS } from "../../../src/utils/config.js";
 import { sha256Hex } from "../../../src/utils/hash.js";
-import { type Baseline, diffBaseline } from "../helpers/baseline.js";
+import { type Baseline, diffBaseline, round6 } from "../helpers/baseline.js";
 import {
+  assertTrackedSampleVaultManifest,
   copyTrackedSampleVault,
   listFixtureFiles,
-  listTrackedSampleVaultFiles,
   SAMPLE_VAULT_FILES,
 } from "../helpers/sample-vault-fixture.js";
 
@@ -65,6 +65,17 @@ interface MetricSamples {
   rr: (number | null)[];
   ndcg10: (number | null)[];
 }
+
+const METRIC_SPECS = [
+  { sample: "recall5", perQuery: `Recall@${K_SHORT}`, summary: `meanRecall@${K_SHORT}` },
+  { sample: "recall10", perQuery: `Recall@${K_LONG}`, summary: `meanRecall@${K_LONG}` },
+  { sample: "rr", perQuery: "Mrr", summary: "mrr" },
+  { sample: "ndcg10", perQuery: `Ndcg@${K_LONG}`, summary: `meanNdcg@${K_LONG}` },
+] as const satisfies readonly {
+  sample: keyof MetricSamples;
+  perQuery: string;
+  summary: string;
+}[];
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -169,10 +180,6 @@ const fixtureProvider: EmbeddingProvider = {
   },
 };
 
-function round6(value: number | null): number | null {
-  return value === null ? null : Math.round(value * 1e6) / 1e6;
-}
-
 function relevantRanks(ranked: string[], relevant: string[]): number[] {
   return relevant.map((path) => {
     const index = ranked.indexOf(path);
@@ -195,9 +202,9 @@ describe("retrieval regression (real-semantic sample vault)", () => {
   beforeAll(async () => {
     setProviderForTests(fixtureProvider);
     vault = mkdtempSync(resolve(tmpdir(), "daftari-sample-golden-"));
-    expect(listTrackedSampleVaultFiles(resolve("."))).toEqual([...SAMPLE_VAULT_FILES].sort());
+    assertTrackedSampleVaultManifest(resolve("."));
     copyTrackedSampleVault(FIXTURE, vault);
-    expect(listFixtureFiles(vault)).toEqual([...SAMPLE_VAULT_FILES].sort());
+    expect(await listFixtureFiles(vault)).toEqual([...SAMPLE_VAULT_FILES].sort());
     const reindexed = await reindexVault(vault);
     if (!reindexed.ok) throw reindexed.error;
     expect(reindexed.value.documentCount).toBe(10);
@@ -242,29 +249,29 @@ describe("retrieval regression (real-semantic sample vault)", () => {
         const recall10 = recallAtK(ranked, question.relevantPaths, K_LONG);
         const rr = reciprocalRank(ranked, question.relevantPaths);
         const ndcg10 = ndcgAtK(ranked, question.relevantPaths, K_LONG);
-        samples[arm].recall5.push(recall5);
-        samples[arm].recall10.push(recall10);
-        samples[arm].rr.push(rr);
-        samples[arm].ndcg10.push(ndcg10);
+        const metrics = { recall5, recall10, rr, ndcg10 } satisfies Record<
+          keyof MetricSamples,
+          number | null
+        >;
         perArm[`${arm}Ranks`] = relevantRanks(ranked, question.relevantPaths).join(", ");
-        perArm[`${arm}Recall@${K_SHORT}`] = round6(recall5);
-        perArm[`${arm}Recall@${K_LONG}`] = round6(recall10);
-        perArm[`${arm}Mrr`] = round6(rr);
-        perArm[`${arm}Ndcg@${K_LONG}`] = round6(ndcg10);
+        for (const spec of METRIC_SPECS) {
+          samples[arm][spec.sample].push(metrics[spec.sample]);
+          perArm[`${arm}${spec.perQuery}`] = round6(metrics[spec.sample]);
+        }
       }
       if (perArm.lexicalRanks !== perArm.fusionRanks) fusionRankChanges.push(question.id);
       actual[`query:${question.id}`] = perArm;
     }
 
     for (const arm of ["lexical", "fusion"] as const) {
-      actual[`summary:${arm}`] = {
+      const summary: Baseline[string] = {
         questionCount: questions.length,
         tolerance: TOLERANCE,
-        [`meanRecall@${K_SHORT}`]: round6(meanOf(samples[arm].recall5)),
-        [`meanRecall@${K_LONG}`]: round6(meanOf(samples[arm].recall10)),
-        mrr: round6(meanOf(samples[arm].rr)),
-        [`meanNdcg@${K_LONG}`]: round6(meanOf(samples[arm].ndcg10)),
       };
+      for (const spec of METRIC_SPECS) {
+        summary[spec.summary] = round6(meanOf(samples[arm][spec.sample]));
+      }
+      actual[`summary:${arm}`] = summary;
     }
   }, 30_000);
 
@@ -305,6 +312,6 @@ describe("retrieval regression (real-semantic sample vault)", () => {
   });
 
   it("matches public-surface lexical/fusion ranks and aggregate metric goldens", () => {
-    expect(diffBaseline(BASELINE, actual)).toEqual([]);
+    expect(diffBaseline(BASELINE, actual, { numericTolerance: TOLERANCE })).toEqual([]);
   });
 });

@@ -15,9 +15,8 @@ import { resetProviderForTests, setProviderForTests } from "../src/search/vector
 import { embeddingToBlob, getAllChunks, openIndexDb } from "../src/storage/index-db.js";
 import { sha256Hex } from "../src/utils/hash.js";
 import {
+  assertTrackedSampleVaultManifest,
   copyTrackedSampleVault,
-  listTrackedSampleVaultFiles,
-  SAMPLE_VAULT_FILES,
 } from "../test/regression/helpers/sample-vault-fixture.js";
 
 const root = resolve(import.meta.dirname, "..");
@@ -55,10 +54,7 @@ const questions = readFileSync(questionsPath, "utf8")
 const vault = mkdtempSync(join(tmpdir(), "daftari-sample-embedding-fixture-"));
 
 try {
-  const tracked = listTrackedSampleVaultFiles(root);
-  if (JSON.stringify(tracked) !== JSON.stringify([...SAMPLE_VAULT_FILES].sort())) {
-    throw new Error("sample-vault tracked files differ from the frozen regression manifest");
-  }
+  assertTrackedSampleVaultManifest(root);
   copyTrackedSampleVault(sourceVault, vault);
   setProviderForTests(recordingProvider);
   const reindexed = await reindexVault(vault);
@@ -91,6 +87,9 @@ try {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([hash, labels]) => [hash, [...labels].sort()]),
   );
+  if (vectors.size === 0) {
+    throw new Error("refusing to write an empty sample-vault embedding fixture");
+  }
   if (JSON.stringify(Object.keys(sortedVectors)) !== JSON.stringify(Object.keys(sortedUsage))) {
     throw new Error("recorded vector and usage hashes differ");
   }
