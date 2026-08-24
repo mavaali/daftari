@@ -29,10 +29,21 @@ export function copyTrackedSampleVault(source: string, destination: string): voi
 
 export function listTrackedSampleVaultFiles(repositoryRoot: string): string[] {
   const prefix = "test/fixtures/sample-vault/";
-  return execFileSync("git", ["ls-files", "--", prefix], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  })
+  // This intentional Git dependency proves the frozen manifest still covers
+  // every committed corpus input while excluding ignored local vault state.
+  let tracked: string;
+  try {
+    tracked = execFileSync("git", ["ls-files", "--", prefix], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+  } catch (cause) {
+    throw new Error(
+      "sample-vault regression requires a Git checkout to validate its corpus manifest",
+      { cause },
+    );
+  }
+  return tracked
     .split("\n")
     .filter(Boolean)
     .map((path) => path.slice(prefix.length))

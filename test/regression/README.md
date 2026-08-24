@@ -1,7 +1,10 @@
 # Tier 1 regression suite (PR gate)
 
 Hermetic vitest suites that gate every PR: committed fixtures, no network, no
-model loads, no `/tmp` paths. Design:
+model loads, no `/tmp` paths. The sample-vault retrieval gate additionally
+requires a Git checkout: it uses `git ls-files` to prove its explicit corpus
+manifest covers every committed input while excluding ignored local vault
+state. Design:
 `docs/superpowers/specs/2026-07-07-regression-suite-design.md`.
 
 ## Two kinds of red

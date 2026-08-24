@@ -142,6 +142,7 @@ const embeddingFixture = parseEmbeddingFixture();
 
 const providerCalls = { warm: 0, embed: 0, inputs: 0 };
 const usedVectorHashes = new Set<string>();
+let fixtureProviderError: Error | undefined;
 const fixtureProvider: EmbeddingProvider = {
   id: embeddingFixture.sourceProvider,
   dim: embeddingFixture.dim,
@@ -157,7 +158,8 @@ const fixtureProvider: EmbeddingProvider = {
       const hash = sha256Hex(text);
       const encoded = embeddingFixture.vectors[hash];
       if (encoded === undefined) {
-        return err(new Error(`precomputed embedding missing for input ${hash}`));
+        fixtureProviderError = new Error(`precomputed embedding missing for input ${hash}`);
+        return err(fixtureProviderError);
       }
       usedVectorHashes.add(hash);
       const bytes = Buffer.from(encoded, "base64");
@@ -223,8 +225,15 @@ describe("retrieval regression (real-semantic sample vault)", () => {
           limit: K_LONG,
         };
         if (arm === "lexical") args.weights = LEXICAL;
+        fixtureProviderError = undefined;
         const result = await vaultSearch(vault, args);
         if (!result.ok) throw result.error;
+        if (arm === "fusion" && !result.value.vectorUsed) {
+          throw (
+            fixtureProviderError ??
+            new Error(`fusion unexpectedly degraded to lexical-only for ${question.id}`)
+          );
+        }
         expect(result.value.vectorUsed).toBe(arm === "fusion");
         expect(result.value.weights).toEqual(expectedWeights);
         if (arm === "lexical") expect(providerCalls.embed).toBe(embedsBefore);

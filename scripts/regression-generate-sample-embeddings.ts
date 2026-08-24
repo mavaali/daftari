@@ -12,7 +12,7 @@ import {
 } from "../src/search/providers/local-minilm.js";
 import { reindexVault } from "../src/search/reindex.js";
 import { resetProviderForTests, setProviderForTests } from "../src/search/vector.js";
-import { getAllChunks, openIndexDb } from "../src/storage/index-db.js";
+import { embeddingToBlob, getAllChunks, openIndexDb } from "../src/storage/index-db.js";
 import { sha256Hex } from "../src/utils/hash.js";
 import {
   copyTrackedSampleVault,
@@ -27,7 +27,7 @@ const outputPath = join(root, "test/regression/fixtures/sample-vault-minilm-embe
 const vectors = new Map<string, string>();
 
 function encode(vector: Float32Array): string {
-  return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength).toString("base64");
+  return embeddingToBlob(vector).toString("base64");
 }
 
 const recordingProvider: EmbeddingProvider = {
