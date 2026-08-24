@@ -24,12 +24,23 @@ instances/queries flipped. If you didn't intend it, it's a regression.
   (`baselines/staleness.json`).
 - `retrieval/` — 100-doc native-shape vault, 300 field-isolated token
   queries, lexical BM25 under document and chunk granularity. Goldens:
-  per-query hit@1/hit@5 (`baselines/retrieval.json`).
+  per-query hit@1/hit@5 (`baselines/retrieval.json`) plus aggregate
+  recall@5/MRR/nDCG@5 (`baselines/retrieval-metrics.json`). The real-semantic
+  sibling runs 25 frozen questions over `test/fixtures/sample-vault`, including
+  multi-document answers, and exact-diffs per-query relevant ranks plus
+  aggregate recall@5, recall@10, MRR, and nDCG@10
+  (`baselines/sample-vault-retrieval.json`). Both arms are lexical-only and run
+  at zero tolerance; vector/provider arms remain Tier 2.
 
 Fixtures are pinned copies — they do not track
 `integrations/consensus-bench/src/__fixtures__/`, and they are excluded from
 biome so they stay byte-frozen. Regenerate the native vault with
 `node scripts/gen-regression-vault.mjs` (deterministic).
+
+The sample-vault question set lives at
+`fixtures/sample-vault-queries.jsonl`. Each row includes its answer paths and a
+review rationale; edit it only with a reviewed baseline delta. Design:
+`docs/superpowers/specs/2026-08-23-sample-vault-retrieval-gate-design.md`.
 
 Tiers 2–3 (nightly vector/hybrid bench, pre-release LLM-judge) are follow-ups
 per the design spec; this directory is Tier 1 only.
