@@ -18,6 +18,7 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
+import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
 
@@ -414,6 +415,9 @@ export interface DaftariConfig {
   // — no mounts, no principals grants. stdio-only in v1: `daftari serve`
   // refuses to start on a config carrying a `mounts` list.
   federation?: FederationConfig;
+  // Deployment-owned OAuth settings. Secret values never live in YAML: this
+  // block names only environment variables that the deployment must supply.
+  integrations?: IntegrationConfig;
   // U10: optional explicit principal list (`principals:` top-level key).
   // Supplements the implicit set derived from server.auth.tokens[].user.
   // The union of both sets is the configured principal set. Absent ⇒ []
@@ -504,12 +508,80 @@ function emptyConfig(): DaftariConfig {
     autoRepin: true,
     distill: undefined,
     federation: undefined,
+    integrations: undefined,
     principals: [],
   };
 }
 
 export function configPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "config.yaml");
+}
+
+const RECOGNISED_INTEGRATIONS_KEYS = [
+  "encryption_key_env",
+  "polling_interval_minutes",
+  "google",
+  "notion",
+] as const;
+const RECOGNISED_INTEGRATION_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
+
+function validateIntegrationProvider(
+  provider: "google" | "notion",
+  raw: unknown,
+): Result<IntegrationProviderConfig, Error> {
+  const mapping = requireMapping(raw, `'integrations.${provider}'`);
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(
+    mapping.value,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS,
+    `integrations.${provider}`,
+  );
+  if (!known.ok) return known;
+  for (const key of RECOGNISED_INTEGRATION_PROVIDER_KEYS) {
+    const value = mapping.value[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
+    }
+  }
+  return ok({
+    clientIdEnv: (mapping.value.client_id_env as string).trim(),
+    clientSecretEnv: (mapping.value.client_secret_env as string).trim(),
+  });
+}
+
+function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefined, Error> {
+  if (raw === undefined) return ok(undefined);
+  const mapping = requireMapping(raw, "'integrations'");
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(mapping.value, RECOGNISED_INTEGRATIONS_KEYS, "integrations");
+  if (!known.ok) return known;
+
+  const encryptionKeyEnv = mapping.value.encryption_key_env;
+  if (typeof encryptionKeyEnv !== "string" || encryptionKeyEnv.trim().length === 0) {
+    return err(new Error("'integrations.encryption_key_env' must be a non-empty string"));
+  }
+
+  let pollingIntervalMinutes = DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES;
+  if (mapping.value.polling_interval_minutes !== undefined) {
+    const interval = mapping.value.polling_interval_minutes;
+    if (typeof interval !== "number" || !Number.isInteger(interval) || interval <= 0) {
+      return err(new Error("'integrations.polling_interval_minutes' must be a positive integer"));
+    }
+    pollingIntervalMinutes = interval;
+  }
+
+  const integrations: IntegrationConfig = {
+    encryptionKeyEnv: encryptionKeyEnv.trim(),
+    pollingIntervalMinutes,
+  };
+  for (const provider of ["google", "notion"] as const) {
+    if (mapping.value[provider] === undefined) continue;
+    const config = validateIntegrationProvider(provider, mapping.value[provider]);
+    if (!config.ok) return config;
+    integrations[provider] = config.value;
+  }
+  return ok(integrations);
 }
 
 function asStringArray(value: unknown, where: string): Result<string[], Error> {
@@ -1760,6 +1832,11 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     return err(new Error(`malformed config: ${federationConfig.error.message}`));
   }
 
+  const integrationsConfig = validateIntegrations(root.integrations);
+  if (!integrationsConfig.ok) {
+    return err(new Error(`malformed config: ${integrationsConfig.error.message}`));
+  }
+
   const toolsConfig = validateTools(root.tools);
   if (!toolsConfig.ok) return err(new Error(`malformed config: ${toolsConfig.error.message}`));
 
@@ -1980,6 +2057,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     autoRepin,
     distill: distillConfig.value,
     federation: federationConfig.value,
+    integrations: integrationsConfig.value,
     principals: principalsList.value,
   });
 }

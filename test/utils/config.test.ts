@@ -1114,3 +1114,54 @@ describe("malformed-comment hint on YAML parse errors (#26)", () => {
     expect(malformedCommentHint(text, null)).toBeNull();
   });
 });
+
+describe("loadConfig — integrations", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-integrations-config-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  it("parses environment-variable references for the enabled providers", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+        "  polling_interval_minutes: 20\n" +
+        "  google:\n" +
+        "    client_id_env: GOOGLE_CLIENT_ID\n" +
+        "    client_secret_env: GOOGLE_CLIENT_SECRET\n" +
+        "  notion:\n" +
+        "    client_id_env: NOTION_CLIENT_ID\n" +
+        "    client_secret_env: NOTION_CLIENT_SECRET\n",
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.integrations).toEqual({
+      encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+      pollingIntervalMinutes: 20,
+      google: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" },
+      notion: { clientIdEnv: "NOTION_CLIENT_ID", clientSecretEnv: "NOTION_CLIENT_SECRET" },
+    });
+  });
+
+  it("rejects a client secret declared directly in YAML", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: KEY\n" +
+        "  google:\n" +
+        "    client_id_env: ID\n" +
+        "    client_secret: leaked\n",
+    );
+    expect(loadConfig(dir).ok).toBe(false);
+  });
+});
