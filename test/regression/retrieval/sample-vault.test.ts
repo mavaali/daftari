@@ -88,7 +88,7 @@ describe("retrieval regression (real-semantic sample vault)", () => {
 
     for (const question of questions) {
       const perArm: Baseline[string] = {
-        relevantPaths: question.relevantPaths,
+        relevantPaths: question.relevantPaths.join(", "),
       };
       for (const granularity of ["document", "chunk"] as const) {
         const result = await hybridSearch(db, question.query, {
@@ -107,7 +107,7 @@ describe("retrieval regression (real-semantic sample vault)", () => {
         samples[granularity].recall10.push(recall10);
         samples[granularity].rr.push(rr);
         samples[granularity].ndcg10.push(ndcg10);
-        perArm[`${granularity}Ranks`] = relevantRanks(ranked, question.relevantPaths);
+        perArm[`${granularity}Ranks`] = relevantRanks(ranked, question.relevantPaths).join(", ");
         perArm[`${granularity}Recall@${K_SHORT}`] = round6(recall5);
         perArm[`${granularity}Recall@${K_LONG}`] = round6(recall10);
         perArm[`${granularity}Mrr`] = round6(rr);
@@ -137,10 +137,12 @@ describe("retrieval regression (real-semantic sample vault)", () => {
     expect(questions.length).toBeGreaterThanOrEqual(20);
     expect(questions.length).toBeLessThanOrEqual(50);
     expect(new Set(questions.map(({ id }) => id)).size).toBe(questions.length);
+    expect(new Set(questions.map(({ query }) => query)).size).toBe(questions.length);
     for (const question of questions) {
       expect(question.query.trim().length).toBeGreaterThan(0);
       expect(question.rationale.trim().length).toBeGreaterThan(0);
       expect(question.relevantPaths.length).toBeGreaterThan(0);
+      expect(new Set(question.relevantPaths).size).toBe(question.relevantPaths.length);
       for (const path of question.relevantPaths) expect(corpusPaths.has(path)).toBe(true);
     }
   });
