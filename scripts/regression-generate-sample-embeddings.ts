@@ -14,7 +14,11 @@ import { reindexVault } from "../src/search/reindex.js";
 import { resetProviderForTests, setProviderForTests } from "../src/search/vector.js";
 import { getAllChunks, openIndexDb } from "../src/storage/index-db.js";
 import { sha256Hex } from "../src/utils/hash.js";
-import { copyTrackedSampleVault } from "../test/regression/helpers/sample-vault-fixture.js";
+import {
+  copyTrackedSampleVault,
+  listTrackedSampleVaultFiles,
+  SAMPLE_VAULT_FILES,
+} from "../test/regression/helpers/sample-vault-fixture.js";
 
 const root = resolve(import.meta.dirname, "..");
 const sourceVault = join(root, "test/fixtures/sample-vault");
@@ -51,6 +55,10 @@ const questions = readFileSync(questionsPath, "utf8")
 const vault = mkdtempSync(join(tmpdir(), "daftari-sample-embedding-fixture-"));
 
 try {
+  const tracked = listTrackedSampleVaultFiles(root);
+  if (JSON.stringify(tracked) !== JSON.stringify([...SAMPLE_VAULT_FILES].sort())) {
+    throw new Error("sample-vault tracked files differ from the frozen regression manifest");
+  }
   copyTrackedSampleVault(sourceVault, vault);
   setProviderForTests(recordingProvider);
   const reindexed = await reindexVault(vault);

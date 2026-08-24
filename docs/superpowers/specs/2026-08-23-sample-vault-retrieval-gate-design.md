@@ -55,7 +55,9 @@ technically exercised but behaviorally inert.
 Git-tracked sample-vault inputs. It never recursively copies the source tree,
 so ignored local state such as `index.db`, read logs, staged actions, or
 untracked Markdown cannot contaminate the corpus or satisfy an embedding-cache
-lookup.
+lookup. The gate compares the manifest to `git ls-files` before copying, so a
+tracked corpus addition or removal fails loud instead of silently testing a
+stale subset.
 
 [DATA] Runtime parsers validate the JSONL question shape, source enum, trimmed
 non-empty values, normalized ID/query/path uniqueness, and corpus membership.

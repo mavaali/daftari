@@ -16,7 +16,12 @@ import {
   reciprocalRank,
 } from "../../../src/search/retrieval-metrics.js";
 import { resetProviderForTests, setProviderForTests } from "../../../src/search/vector.js";
-import { getAllDocuments, type IndexDb, openIndexDb } from "../../../src/storage/index-db.js";
+import {
+  blobToEmbedding,
+  getAllDocuments,
+  type IndexDb,
+  openIndexDb,
+} from "../../../src/storage/index-db.js";
 import { vaultSearch } from "../../../src/tools/search.js";
 import { SEARCH_TUNING_DEFAULTS } from "../../../src/utils/config.js";
 import { sha256Hex } from "../../../src/utils/hash.js";
@@ -24,6 +29,7 @@ import { type Baseline, diffBaseline } from "../helpers/baseline.js";
 import {
   copyTrackedSampleVault,
   listFixtureFiles,
+  listTrackedSampleVaultFiles,
   SAMPLE_VAULT_FILES,
 } from "../helpers/sample-vault-fixture.js";
 
@@ -155,7 +161,7 @@ const fixtureProvider: EmbeddingProvider = {
       }
       usedVectorHashes.add(hash);
       const bytes = Buffer.from(encoded, "base64");
-      vectors.push(new Float32Array(bytes.buffer, bytes.byteOffset, embeddingFixture.dim).slice());
+      vectors.push(blobToEmbedding(bytes));
     }
     return ok(vectors);
   },
@@ -187,6 +193,7 @@ describe("retrieval regression (real-semantic sample vault)", () => {
   beforeAll(async () => {
     setProviderForTests(fixtureProvider);
     vault = mkdtempSync(resolve(tmpdir(), "daftari-sample-golden-"));
+    expect(listTrackedSampleVaultFiles(resolve("."))).toEqual([...SAMPLE_VAULT_FILES].sort());
     copyTrackedSampleVault(FIXTURE, vault);
     expect(listFixtureFiles(vault)).toEqual([...SAMPLE_VAULT_FILES].sort());
     const reindexed = await reindexVault(vault);

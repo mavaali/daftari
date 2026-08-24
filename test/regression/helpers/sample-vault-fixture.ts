@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -24,6 +25,18 @@ export function copyTrackedSampleVault(source: string, destination: string): voi
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(join(source, path), target);
   }
+}
+
+export function listTrackedSampleVaultFiles(repositoryRoot: string): string[] {
+  const prefix = "test/fixtures/sample-vault/";
+  return execFileSync("git", ["ls-files", "--", prefix], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter(Boolean)
+    .map((path) => path.slice(prefix.length))
+    .sort();
 }
 
 export function listFixtureFiles(root: string): string[] {
