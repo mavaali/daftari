@@ -1,7 +1,7 @@
 // Regenerate the committed MiniLM vectors used by the #301 Tier-1 retrieval
 // gate. This developer-only command may load/download the local model; the
 // regression test itself only replays the resulting fixture.
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { EmbeddingProvider } from "../src/search/embedding-provider.js";
@@ -14,6 +14,7 @@ import { reindexVault } from "../src/search/reindex.js";
 import { resetProviderForTests, setProviderForTests } from "../src/search/vector.js";
 import { getAllChunks, openIndexDb } from "../src/storage/index-db.js";
 import { sha256Hex } from "../src/utils/hash.js";
+import { copyTrackedSampleVault } from "../test/regression/helpers/sample-vault-fixture.js";
 
 const root = resolve(import.meta.dirname, "..");
 const sourceVault = join(root, "test/fixtures/sample-vault");
@@ -50,7 +51,7 @@ const questions = readFileSync(questionsPath, "utf8")
 const vault = mkdtempSync(join(tmpdir(), "daftari-sample-embedding-fixture-"));
 
 try {
-  cpSync(sourceVault, vault, { recursive: true });
+  copyTrackedSampleVault(sourceVault, vault);
   setProviderForTests(recordingProvider);
   const reindexed = await reindexVault(vault);
   if (!reindexed.ok) throw reindexed.error;

@@ -2,7 +2,7 @@
 // stable sample vault through the shipped vault_search surface under lexical
 // and default-fusion configurations. The fusion arm replays committed MiniLM
 // vectors; CI never loads a model or touches the network.
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -18,15 +18,20 @@ import {
 import { resetProviderForTests, setProviderForTests } from "../../../src/search/vector.js";
 import { getAllDocuments, type IndexDb, openIndexDb } from "../../../src/storage/index-db.js";
 import { vaultSearch } from "../../../src/tools/search.js";
+import { SEARCH_TUNING_DEFAULTS } from "../../../src/utils/config.js";
 import { sha256Hex } from "../../../src/utils/hash.js";
 import { type Baseline, diffBaseline } from "../helpers/baseline.js";
+import {
+  copyTrackedSampleVault,
+  listFixtureFiles,
+  SAMPLE_VAULT_FILES,
+} from "../helpers/sample-vault-fixture.js";
 
 const FIXTURE = resolve("test/fixtures/sample-vault");
 const QUESTIONS = resolve("test/regression/fixtures/sample-vault-queries.jsonl");
 const EMBEDDINGS = resolve("test/regression/fixtures/sample-vault-minilm-embeddings.json");
 const BASELINE = resolve("test/regression/baselines/sample-vault-retrieval.json");
 const LEXICAL = { bm25: 1, vector: 0 };
-const FUSION = { bm25: 0.8, vector: 0.2 };
 const K_SHORT = 5;
 const K_LONG = 10;
 const TOLERANCE = 0;
@@ -182,7 +187,8 @@ describe("retrieval regression (real-semantic sample vault)", () => {
   beforeAll(async () => {
     setProviderForTests(fixtureProvider);
     vault = mkdtempSync(resolve(tmpdir(), "daftari-sample-golden-"));
-    cpSync(FIXTURE, vault, { recursive: true });
+    copyTrackedSampleVault(FIXTURE, vault);
+    expect(listFixtureFiles(vault)).toEqual([...SAMPLE_VAULT_FILES].sort());
     const reindexed = await reindexVault(vault);
     if (!reindexed.ok) throw reindexed.error;
     expect(reindexed.value.documentCount).toBe(10);
@@ -202,19 +208,18 @@ describe("retrieval regression (real-semantic sample vault)", () => {
       const perArm: Baseline[string] = {
         relevantPaths: question.relevantPaths.join(", "),
       };
-      for (const [arm, weights] of [
-        ["lexical", LEXICAL],
-        ["fusion", FUSION],
-      ] as const) {
+      for (const arm of ["lexical", "fusion"] as const) {
+        const expectedWeights = arm === "lexical" ? LEXICAL : SEARCH_TUNING_DEFAULTS.weights;
         const embedsBefore = providerCalls.embed;
-        const result = await vaultSearch(vault, {
+        const args: Record<string, unknown> = {
           query: question.query,
           limit: K_LONG,
-          weights,
-        });
+        };
+        if (arm === "lexical") args.weights = LEXICAL;
+        const result = await vaultSearch(vault, args);
         if (!result.ok) throw result.error;
         expect(result.value.vectorUsed).toBe(arm === "fusion");
-        expect(result.value.weights).toEqual(weights);
+        expect(result.value.weights).toEqual(expectedWeights);
         if (arm === "lexical") expect(providerCalls.embed).toBe(embedsBefore);
         const ranked = result.value.hits.map(({ path }) => path);
         const recall5 = recallAtK(ranked, question.relevantPaths, K_SHORT);
