@@ -860,8 +860,11 @@ the loop runs as its own RBAC principal (e.g.
 artifact traceable to the authenticated identity rather than the
 caller-supplied `agent` claim.
 
-The loop ships in stages, all live today, and each stage layers a new
-discipline on the previous one's queues:
+The loop shipped Stages 1–4. LLM modes now require an explicit posture:
+`shadow_mode: true` journals without applying edge writes, while
+`shadow_mode: false` permits admitted consolidation writes. The explicit live
+switch does not establish that the spec's separate Stage-5 calibration and
+broad auto-write-graduation gates have been met.
 
 - **Stage 1 — scheduler.** `--mode scan` computes three clocks (event /
   decay / backstop) over the `derives_from` edge store + git history and
@@ -885,10 +888,11 @@ discipline on the previous one's queues:
   consults a two-gate envelope: an **invariants** gate (refuses to act on
   an edge whose endpoint carries an unresolved tension, missing
   provenance, or formal-stale decay) and a **trust-budget** gate. The
-  envelope is wired **live but shadowed** — its verdict is computed and
-  journaled to `.daftari/shadow-actions.jsonl` as
-  `decision: "admitted"` or `decision: "gated"` (with the gate and
-  reason), but never enacted. `vault_lint` surfaces a distinct
+  envelope is live: its verdict is computed and journaled to
+  `.daftari/shadow-actions.jsonl` as `decision: "admitted"` or
+  `decision: "gated"` (with the gate and reason). In explicit shadow mode no
+  edge write is applied; with explicit `shadow_mode: false`, admitted writes
+  also land in the edge store. `vault_lint` surfaces a distinct
   envelope-gated view alongside the existing would-gate calibration
   section. §8 closures: a loop decision records `decided_by_principal`
   (the authenticated identity) on the staged-action / contest-tension
@@ -916,11 +920,17 @@ ratification-queue depth), and `vault_ratify` returns
 This is the calibration posture the cortex loop runs in until
 coverage/equity ratchets clear and the auto-write tier graduates.
 
+The issue-#97 calibration did **not** test this loop. It repeated
+`daftari sleep --dream tension-scan` at N=0/1/2/3, killed that intervention's
+difficulty-adaptive-depth hypothesis, and left the consolidate loop's own
+calibration gates untouched. The evidence ledger and reopen threshold are in
+`docs/superpowers/results/2026-08-23-sleep-extensions-evidence-verdict.md`.
+
 Advisory-by-design is the point: an agent maintains the vault, but no automated
-process silently rewrites or deletes knowledge. Every change is a deliberate,
-attributable act. The staged-action queue is the same principle pushed one step
-further — even an autonomous curation loop only ever *proposes*; a human ratifies
-before anything is written.
+process silently deletes knowledge. Live consolidation requires an explicit
+operator choice, every envelope decision is attributable and journaled, and
+actions outside the bounded consolidation tier remain staged for human
+ratification.
 
 ## Bi-temporal validity
 
