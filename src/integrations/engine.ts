@@ -38,6 +38,33 @@ export interface ProviderTokens {
   accessTokenExpiresAt?: string;
 }
 
+export interface RefreshTokenRequest {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}
+
+export interface WebhookChannel {
+  id: string;
+  secret: string;
+  expiresAt?: string;
+}
+
+export interface EnsureWebhookInput {
+  callbackUrl: string;
+  now: Date;
+  renewBefore: Date;
+}
+
+export interface WebhookRequest {
+  headers: Record<string, string | string[] | undefined>;
+  body: Uint8Array;
+}
+
+export type RefreshHint =
+  | { kind: "reconcile" }
+  | { kind: "sources"; sourceIds: string[]; rediscover: boolean };
+
 export interface RemoteSource {
   id: string;
   revision: string;
@@ -51,6 +78,15 @@ export interface ProviderAdapter {
   readonly name: ProviderName;
   authorizationUrl(input: AuthorizationRequest): string;
   exchangeCode(input: CodeExchange): Promise<Result<ProviderTokens, Error>>;
+  // Optional while existing provider adapters are migrated to the expanded
+  // contract. The engine rejects an expired or webhook-enabled provider that
+  // has not implemented the corresponding capability.
+  refreshTokens?(input: RefreshTokenRequest): Promise<Result<ProviderTokens, Error>>;
+  ensureWebhook?(
+    state: ProviderState,
+    input: EnsureWebhookInput,
+  ): Promise<Result<WebhookChannel, Error>>;
+  verifyWebhook?(input: WebhookRequest, state: ProviderState): Promise<Result<RefreshHint, Error>>;
   discover(state: ProviderState): Promise<Result<RemoteSource[], Error>>;
   fetch(source: RemoteSource, state: ProviderState): Promise<Result<NormalizedRemoteSource, Error>>;
 }
@@ -130,6 +166,10 @@ function timestamp(deps: EngineDeps): string {
   return (deps.now ?? (() => new Date()))().toISOString();
 }
 
+function currentTime(deps: Pick<EngineDeps, "now">): Date {
+  return (deps.now ?? (() => new Date()))();
+}
+
 function reconciliationKey(vaultRoot: string, provider: ProviderName): string {
   return `${vaultRoot}\u0000${provider}`;
 }
@@ -169,6 +209,92 @@ function writeState(
   return (deps.writeIntegrationState ?? writeIntegrationState)(vaultRoot, state, key);
 }
 
+function accessTokenExpired(state: ProviderState, deps: Pick<EngineDeps, "now">): boolean {
+  if (state.accessTokenExpiresAt === undefined) return false;
+  const expiration = Date.parse(state.accessTokenExpiresAt);
+  return !Number.isFinite(expiration) || expiration <= currentTime(deps).getTime();
+}
+
+async function refreshExpiredTokens(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  key: Buffer,
+  persisted: Parameters<typeof writeIntegrationState>[1],
+  state: ProviderState,
+  deps: EngineDeps,
+): Promise<Result<ProviderState, Error>> {
+  if (!accessTokenExpired(state, deps)) return ok(state);
+  if (adapter.refreshTokens === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot refresh expired tokens`));
+  }
+  const configuration = providerConfig(deps.config, adapter.name);
+  if (!configuration.ok) return configuration;
+  const clientId = configuredCredential(
+    deps.environment,
+    configuration.value.clientIdEnv,
+    `${adapter.name} OAuth client ID`,
+  );
+  if (!clientId.ok) return clientId;
+  const clientSecret = configuredCredential(
+    deps.environment,
+    configuration.value.clientSecretEnv,
+    `${adapter.name} OAuth client secret`,
+  );
+  if (!clientSecret.ok) return clientSecret;
+
+  let refreshed: Result<ProviderTokens, Error>;
+  try {
+    refreshed = await adapter.refreshTokens({
+      clientId: clientId.value,
+      clientSecret: clientSecret.value,
+      refreshToken: state.refreshToken,
+    });
+  } catch {
+    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  }
+  if (!refreshed.ok)
+    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  if (refreshed.value.accessToken.length === 0 || refreshed.value.refreshToken.length === 0) {
+    return err(
+      new Error(`integration provider ${adapter.name} token refresh returned incomplete tokens`),
+    );
+  }
+
+  const { accessTokenExpiresAt: _previousExpiration, ...unchanged } = state;
+  const refreshedState: ProviderState = {
+    ...unchanged,
+    accessToken: refreshed.value.accessToken,
+    refreshToken: refreshed.value.refreshToken,
+    ...(refreshed.value.accessTokenExpiresAt === undefined
+      ? {}
+      : { accessTokenExpiresAt: refreshed.value.accessTokenExpiresAt }),
+  };
+  persisted.providers[adapter.name] = refreshedState;
+  const written = writeState(vaultRoot, key, persisted, deps);
+  if (!written.ok) return written;
+  return ok(refreshedState);
+}
+
+function validWebhookChannel(channel: WebhookChannel): boolean {
+  return (
+    typeof channel.id === "string" &&
+    channel.id.length > 0 &&
+    typeof channel.secret === "string" &&
+    channel.secret.length > 0 &&
+    (channel.expiresAt === undefined || typeof channel.expiresAt === "string")
+  );
+}
+
+function validRefreshHint(hint: RefreshHint): boolean {
+  if (hint.kind === "reconcile") return true;
+  return (
+    hint.kind === "sources" &&
+    Array.isArray(hint.sourceIds) &&
+    hint.sourceIds.every((sourceId) => typeof sourceId === "string" && sourceId.length > 0) &&
+    typeof hint.rediscover === "boolean"
+  );
+}
+
 export async function reconcileProvider(
   vaultRoot: string,
   adapter: ProviderAdapter,
@@ -187,10 +313,20 @@ export async function reconcileProvider(
     if (!key.ok) return key;
     const persisted = readIntegrationState(vaultRoot, key.value);
     if (!persisted.ok) return persisted;
-    const providerState = persisted.value.providers[adapter.name];
+    let providerState = persisted.value.providers[adapter.name];
     if (providerState === undefined) {
       return err(new Error(`integration provider ${adapter.name} is not authorized`));
     }
+    const refreshed = await refreshExpiredTokens(
+      vaultRoot,
+      adapter,
+      key.value,
+      persisted.value,
+      providerState,
+      deps,
+    );
+    if (!refreshed.ok) return refreshed;
+    providerState = refreshed.value;
 
     let discovered: Result<RemoteSource[], Error>;
     try {
@@ -294,6 +430,81 @@ export async function reconcileProvider(
   } finally {
     activeReconciliations.delete(lockKey);
   }
+}
+
+export async function ensureProviderWebhook(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  input: EnsureWebhookInput,
+  deps: EngineDeps,
+): Promise<Result<WebhookChannel, Error>> {
+  if (adapter.ensureWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot ensure webhooks`));
+  }
+  const configured = providerConfig(deps.config, adapter.name);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const persisted = readIntegrationState(vaultRoot, key.value);
+  if (!persisted.ok) return persisted;
+  const providerState = persisted.value.providers[adapter.name];
+  if (providerState === undefined) {
+    return err(new Error(`integration provider ${adapter.name} is not authorized`));
+  }
+
+  let ensured: Result<WebhookChannel, Error>;
+  try {
+    ensured = await adapter.ensureWebhook(providerState, input);
+  } catch {
+    return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+  }
+  if (!ensured.ok)
+    return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+  if (!validWebhookChannel(ensured.value)) {
+    return err(
+      new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
+    );
+  }
+  providerState.webhook = ensured.value;
+  const written = writeState(vaultRoot, key.value, persisted.value, deps);
+  if (!written.ok) return written;
+  return ok(ensured.value);
+}
+
+export async function verifyProviderWebhook(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  input: WebhookRequest,
+  deps: EngineDeps,
+): Promise<Result<RefreshHint, Error>> {
+  if (adapter.verifyWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
+  }
+  const configured = providerConfig(deps.config, adapter.name);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const persisted = readIntegrationState(vaultRoot, key.value);
+  if (!persisted.ok) return persisted;
+  const providerState = persisted.value.providers[adapter.name];
+  if (providerState === undefined) {
+    return err(new Error(`integration provider ${adapter.name} is not authorized`));
+  }
+
+  let verified: Result<RefreshHint, Error>;
+  try {
+    verified = await adapter.verifyWebhook(input, providerState);
+  } catch {
+    return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
+  }
+  if (!verified.ok)
+    return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
+  if (!validRefreshHint(verified.value)) {
+    return err(
+      new Error(`integration provider ${adapter.name} webhook verification returned invalid hint`),
+    );
+  }
+  return ok(verified.value);
 }
 
 export function startPeriodicIntegrationSync(

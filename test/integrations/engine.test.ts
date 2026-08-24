@@ -6,9 +6,11 @@ import { err, ok } from "../../src/frontmatter/types.js";
 import {
   type DistillationInput,
   type EngineDeps,
+  ensureProviderWebhook,
   type ProviderAdapter,
   reconcileProvider,
   startPeriodicIntegrationSync,
+  verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
@@ -248,6 +250,180 @@ describe("provider reconciliation", () => {
         unavailableSourceIds: [],
       }),
     );
+  });
+
+  it("persists rotated tokens before discovering with an expired access token", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let refreshInput: unknown;
+    let discoveredState: ProviderState | undefined;
+    let persistedAccessToken: string | undefined;
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async (input) => {
+          refreshInput = input;
+          return ok({
+            accessToken: "rotated-access",
+            refreshToken: "rotated-refresh",
+            accessTokenExpiresAt: "2026-08-24T13:00:00.000Z",
+          });
+        },
+        discover: async (state) => {
+          discoveredState = state;
+          const persisted = readIntegrationState(vault, KEY);
+          if (persisted.ok) persistedAccessToken = persisted.value.providers.google?.accessToken;
+          return ok([]);
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(refreshInput).toEqual({
+      clientId: "google-client-id",
+      clientSecret: "google-client-secret",
+      refreshToken: "old-refresh",
+    });
+    expect(discoveredState).toMatchObject({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+    });
+    expect(persistedAccessToken).toBe("rotated-access");
+    expect(readIntegrationState(vault, KEY).value.providers.google).toMatchObject({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+      accessTokenExpiresAt: "2026-08-24T13:00:00.000Z",
+    });
+  });
+
+  it("does not call a provider when expired-token refresh fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let discovered = false;
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("refresh failed")),
+        discover: async () => {
+          discovered = true;
+          return ok([]);
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(discovered).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("persists a webhook channel only after provider setup succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () =>
+          ok({ id: "channel-1", secret: "webhook-secret", expiresAt: "2026-08-25T12:00:00.000Z" }),
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ id: "channel-1", secret: "webhook-secret", expiresAt: "2026-08-25T12:00:00.000Z" }),
+    );
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual({
+      id: "channel-1",
+      secret: "webhook-secret",
+      expiresAt: "2026-08-25T12:00:00.000Z",
+    });
+  });
+
+  it("preserves a prior webhook channel when provider setup fails", async () => {
+    const previous = { id: "previous-channel", secret: "previous-secret" };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: { ...providerState(), webhook: previous } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({ ensureWebhook: async () => err(new Error("webhook setup failed")) }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
+  });
+
+  it("returns generic verified webhook refresh hints for routes to queue", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async () => ok({ kind: "sources", sourceIds: ["doc-1"], rediscover: true }),
+      }),
+      { headers: { "x-provider-signature": "signature" }, body: Buffer.from("event") },
+      deps(),
+    );
+
+    expect(result).toEqual(ok({ kind: "sources", sourceIds: ["doc-1"], rediscover: true }));
   });
 
   it("marks a no-longer-discovered source unavailable while preserving its hash", async () => {
