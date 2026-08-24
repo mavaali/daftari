@@ -2,7 +2,9 @@
 
 Daftari is an MCP server that exposes a curated markdown vault to AI agents, with built-in search, advisory curation checks, and config-driven RBAC.
 
-This guide walks a reviewer through every tool the server exposes, using the bundled `templates/reviewer-vault/` fixture. It is meant for a 15-minute hands-on review, not a deep tour.
+This guide walks a reviewer through the core document loop using the bundled
+`templates/reviewer-vault/` fixture. It is a 15-minute hands-on review, not an
+exhaustive tour of the tiered MCP registry or operator CLI.
 
 ## 1. Connect
 
@@ -42,7 +44,7 @@ Optional: do a one-shot index build before connecting:
 npx daftari --vault /absolute/path/to/daftari-reviewer-vault --reindex
 ```
 
-## 2. Walkthrough — exercising all 14 tools
+## 2. Walkthrough — exercising the core document loop
 
 The vault ships with eleven documents across three collections, one logged tension, and one intentionally-incomplete draft. Each step below pairs a concrete prompt with the result you should see.
 
@@ -142,4 +144,5 @@ Refused with an error like `vault_promote: frontmatter is incomplete: confidence
 
 Returns `{ action: "deprecate", status: "deprecated" }`. Re-run `vault_provenance` on this file to see the full create → append → promote → deprecate trail in one log.
 
-That's all 14 tools. Optional next step: re-run `vault_status` and `vault_lint` to see how the vault state has shifted.
+That completes the core loop. For a final check, re-run `vault_status` and
+`vault_lint` to see how the vault state shifted.

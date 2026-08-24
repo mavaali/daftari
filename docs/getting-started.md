@@ -57,7 +57,8 @@ Add Daftari to your `claude_desktop_config.json` (on macOS:
     "daftari": {
       "command": "npx",
       "args": [
-        "daftari",
+        "-y",
+        "daftari@latest",
         "--vault",
         "/absolute/path/to/my-vault",
         "--user",
@@ -70,9 +71,11 @@ Add Daftari to your `claude_desktop_config.json` (on macOS:
 }
 ```
 
-Use an absolute vault path. Restart Claude Desktop and the 13 `vault_*` tools
-appear. The rest of this walkthrough describes those tool calls — an agent
-makes them for you, but they map one-to-one to what you would ask for.
+Use an absolute vault path. Restart Claude Desktop and Daftari's advertised
+`vault_*` tools appear. The exact set depends on the `tools.tier` configured for
+the vault; MCP clients receive current names and schemas from `tools/list`.
+The rest of this walkthrough describes those tool calls—an agent makes them
+for you, but they map one-to-one to what you would ask for.
 
 ## 4. Write your first document
 
@@ -117,21 +120,24 @@ documents — useful before writing, to find what the vault already knows.
 
 ## 6. Lint the vault
 
-`vault_lint` runs six advisory curation checks across the whole vault:
+`vault_lint` runs advisory curation checks across the whole vault:
 
 ```jsonc
 // vault_lint
 {}
 ```
 
-It reports — never fixes:
+It reports—never fixes—problems such as:
 
 - **staleFiles** — past their `ttl_days` and overdue for review
 - **orphanFiles** — no inbound links from any other document
 - **oldDrafts** — drafts that have sat unpromoted too long
 - **stagnantLowConfidence** — low-confidence documents that have not improved
-- **retiredStillLinked** — deprecated or superseded documents still cited by canonical ones
-- **unansweredQuestions** — questions in `questions_raised` that no document answers
+- **retiredStillLinked** — retired sources still cited by canonical documents
+- **unansweredQuestions** — open questions no document answers
+
+The full report also covers structural, grounding, validity, edge, and
+cross-domain problems as those features apply to the vault.
 
 Pass `{ "filter": "oldDrafts" }` to restrict the report to one check.
 

@@ -2,157 +2,181 @@
 
 [![CI](https://github.com/mavaali/daftari/actions/workflows/ci.yml/badge.svg)](https://github.com/mavaali/daftari/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/daftari.svg)](https://www.npmjs.com/package/daftari) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-*Daftari* (دفتری) is the Urdu word for a ledger-keeper: the person in a
-trading house who maintained the *daftar*, the bound register where every
-transaction was recorded, cross-referenced, and preserved. The daftar was not a
-filing cabinet. It was a living document. Entries referenced earlier entries.
-Corrections were noted, not erased. The ledger got more valuable the longer it
-was kept, because the accumulated record revealed patterns no single entry
-could.
+**Durable, inspectable memory for AI agents.** Daftari exposes a markdown vault
+over the Model Context Protocol (MCP), then adds the controls an agent needs to
+use that vault without flattening its history: provenance, supersession,
+staleness, open contradictions, access control, and Git-backed writes.
 
-Daftari is the **long-term memory cortex for your LLM agents** — a persistent,
-structured vault they read, write, and curate over time, **portable across any
-model.** A cortex, not a clipboard.
+The model is replaceable. The memory stays yours: plain files on disk, readable
+without Daftari and portable across MCP clients.
 
-## Contents
+*Daftari* (دفتری) is Urdu for a ledger-keeper. The model is deliberate: a
+ledger records corrections instead of erasing them, and becomes more useful as
+its cross-referenced history accumulates.
 
-**Why Daftari** — [Rent the brain, own the memory](#rent-the-brain-own-the-memory) · [Not a second brain](#not-a-second-brain) · [It remembers, it doesn't resolve](#it-remembers--it-doesnt-resolve-for-you) · [How it compares](#how-it-compares)
+```bash
+npx daftari --init ./my-vault
+```
 
-**Concepts** — [What it is](#what-it-is) · [The four layers](#the-four-layers) · [Two kinds of knowledge](#two-kinds-of-knowledge) · [File format](#file-format)
+## Choose your path
 
-**The rituals** — [The tools](#the-tools) · [Circadian memory](#circadian-memory) · [The viewer](#the-viewer) · [Tension Court](#tension-court) · [The principal interview](#the-principal-interview) · [Belief archaeology](#belief-archaeology) · [The vault as witness](#the-vault-as-witness--and-the-wager-layer) · [Coherence audit](#coherence-audit)
+| I want to… | Start here |
+|---|---|
+| Create a vault and connect an MCP client | [Five-minute quickstart](#five-minute-quickstart) |
+| Adopt an Obsidian vault or existing markdown wiki | [Adopt existing notes](docs/adoption.md) |
+| See how knowledge compounds instead of being repeatedly retrieved | [Worked example](docs/worked-example.md) |
+| Run the curation loop | [Curation workflow](docs/curation-workflow.md) |
+| Review tensions, stale beliefs, or historical state | [Operator workflows](docs/operator-workflows.md) |
+| Configure access, HTTP serving, federation, or storage | [Deployment and access](docs/deployment.md) |
+| Understand the design and its boundaries | [Architecture](docs/architecture.md) |
+| Look up frontmatter fields | [File format](docs/file-format.md) |
+| Find the rest of the documentation | [Documentation map](docs/README.md) |
 
-**Running it** — [Access control](#access-control) · [Cross-vault federation](#cross-vault-federation) · [Server mode](#server-mode-self-hosted) · [Storage backing](#storage-backing) · [Adopting a vault + OKF](#adopting-an-existing-vault)
+## Five-minute quickstart
 
-**Reference** — [What's not in v1](#whats-not-in-v1) · [Development](#development) · [Documentation](#documentation) · [Integrations](#integrations) · [Privacy](#privacy) · [License](#license)
+**Prerequisite:** Node.js 20 or newer.
 
-<!-- Why Daftari -->
+### 1. Create a vault
 
-## Rent the brain, own the memory
+```bash
+npx daftari --init ./my-vault
+```
 
-LLMs are stateless; they forget. So memory is being bolted on everywhere — but
-*inside the model*: ChatGPT memory, Claude projects, Copilot, Gemini. Memory is
-becoming a feature of the provider, and whoever holds your memory holds you.
+Daftari creates a Git-backed vault with a config file, four starter
+collections, and three fictional example documents. The markdown is the source
+of truth; `.daftari/index.db` is a rebuildable search index.
 
-Daftari takes the other path. The model is the rented part — swappable, obsolete
-in six months. Your memory is the durable asset, so it should belong to you and
-travel with you: plain markdown on your disk, under git, readable in any editor,
-queryable by any agent. **Compilation over retrieval** — the agent compiles an
-answer once and writes it back, so every later read starts from the compiled
-result instead of re-stitching chunks from zero.
+### 2. Connect an MCP client
 
-## Not a second brain
+Add Daftari to your MCP client configuration. For Claude Desktop on macOS,
+edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
-Second brains are memory for a *human* to think with — you catch the stale fact,
-you notice the contradiction. Daftari is memory for an *agent* to reason with:
-the persistence layer for a consumer that acts on what it is handed and cannot
-sanity-check it first. Same substrate (markdown, links); reversed purpose — and
-a higher bar, because the reliability has to live in the memory, not the reader.
+```json
+{
+  "mcpServers": {
+    "daftari": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "daftari@latest",
+        "--vault",
+        "/absolute/path/to/my-vault",
+        "--user",
+        "me",
+        "--role",
+        "admin"
+      ]
+    }
+  }
+}
+```
 
-## It remembers — it doesn't resolve for you
+Use an absolute vault path, then restart the client. The scaffolded config
+includes an `admin` role. Omitting `--role`, or naming a role that does not
+exist, starts Daftari as a deny-all guest.
 
-Because the agent can't infer them, the vault carries three things and collapses
-none:
+### 3. Ask the vault a question
 
-- **what's current** — supersession follows a real edge to the latest source
-- **what's grounded** — provenance on every entry; the vault never mints a value
-- **what's contested** — contradictions surface as *tensions*, held open, not
-  flattened into a false answer
+Try a request that forces the agent to search before answering:
 
-The daftar noted corrections rather than erasing them. Daftari keeps that as a
-law:
+> Search my Daftari vault for the current Helios pricing model. Cite the source
+> document and tell me whether it is stale or contested.
+
+The agent should search the example vault, read the matching markdown, and
+report the document's standing rather than returning an unqualified snippet.
+
+Next, ask it to write a draft:
+
+> Create a low-confidence draft that compares the Helios and Aurora examples.
+> Preserve the source links and list the questions the draft cannot answer.
+
+Every mutation is written to markdown, recorded in provenance, indexed, and
+committed to Git. Continue through promotion, retirement, and tension handling
+in the [full getting-started walkthrough](docs/getting-started.md).
+
+## The problem Daftari solves
+
+Agents do not merely need stored text. They need to know what they can trust
+when the text changes, conflicts, or loses its grounding.
+
+Daftari keeps three judgments separate:
+
+- **What is current.** A supersession follows an explicit edge to a successor;
+  recency alone does not make a claim true.
+- **What is grounded.** Sources and provenance remain attached to the document;
+  the vault does not manufacture evidence.
+- **What is contested.** When live claims disagree and neither replaces the
+  other, the contradiction remains visible as a tension.
+
+That gives the system one governing rule:
 
 > **A tension may never masquerade as a supersession.**
 
-It resolves only by discovery — a real edge — never by invention. The agent
-compiles; the vault preserves; *you* keep the judgment. See
-[the manifesto](docs/manifesto.md) for the full argument.
-
 ```mermaid
 flowchart TD
-    A[Two docs disagree] --> B{Is there a real edge?<br/>source / supersession link}
-    B -- yes --> C[Supersede: one current,<br/>lineage preserved]
-    B -- no --> D[Tension: both held open, live]
+    A[Two live claims disagree] --> B{Does one explicitly<br/>supersede the other?}
+    B -- yes --> C[Follow the successor<br/>preserve the lineage]
+    B -- no --> D[Keep both live<br/>surface an open tension]
 ```
 
-## How it compares
+The longer argument—including why memory should outlive the model renting
+it—lives in the [manifesto](docs/manifesto.md). The implementation boundaries
+live in the [architecture guide](docs/architecture.md).
 
-The real question a memory layer has to answer: **what happens when two facts
-contradict?**
+## What using Daftari looks like
 
-| What happens to a contradiction? | Systems |
-|---|---|
-| Invisible | AGENTS.md, RAG |
-| Synthesis-overwrite (association only) | Mem0 (OSS), ChatGPT / Claude memory, Glean |
-| New wins, old tagged-invalid | Zep / Graphiti, Sentra |
-| Resolved by graph / majority-vote | Cognee, ElephantBroker |
-| **Held open, live & queryable** | **Daftari** |
+The basic loop is small:
 
-And the honest cost, since compounding isn't free:
+1. **Search before writing.** Find the current documents, their sources, and
+   any unresolved tensions.
+2. **Write a draft.** State confidence, provenance, sources, and open questions
+   in YAML frontmatter.
+3. **Curate deliberately.** Lint reports staleness, weak grounding, abandoned
+   drafts, unanswered questions, and broken relationships. It does not fix
+   them.
+4. **Ratify or retire.** Promote trustworthy drafts, supersede replaced
+   knowledge, and record why a claim changed.
+5. **Revisit.** Sleep runs, interviews, court dockets, and archaeology reports
+   turn accumulated history into a review queue.
 
-| Who has to do the curation work? | |
-|---|---|
-| RAG | Nobody — retrieval only, zero authoring cost |
-| AGENTS.md | One file, hand-maintained |
-| **Daftari** | **An agent (or human) curates — the heaviest of the three, and the reason knowledge compounds** |
+This is **compilation over retrieval**: an agent writes a considered result
+back into the vault so the next agent begins with the accumulated record, not
+with the same pile of fragments. See the [worked example](docs/worked-example.md)
+for the document lifecycle across three writes.
 
-> The nearest formal prior art is **TOKI** ([arXiv 2606.06240](https://arxiv.org/abs/2606.06240),
-> with a [reference implementation](https://github.com/ZenAlexa/toki-bitemporal-memory)):
-> a bitemporal operator algebra whose opt-in `await-confirmation` operator can hold a
-> contradiction open. The line: TOKI resolves at write time (hold-open is one of four
-> operators) and keeps the loser in an *archival* audit row; Daftari makes non-resolution
-> the *default* and keeps both facts *live and queryable* in retrieval.
+## Capabilities by outcome
 
-<!-- Concepts -->
+Configure the MCP registry in `core`, `standard`, or `full` tiers. The tier
+changes what clients see in `tools/list`; it does not change the vault's data
+model.
 
-## What it is
+| Outcome | Main surfaces | What they provide |
+|---|---|---|
+| Find relevant knowledge | `vault_search`, `vault_search_related`, `vault_themes` | Hybrid lexical/vector retrieval, related documents, and thematic clusters |
+| Read with context | `vault_read`, `vault_backlinks`, `vault_consumes` | Document content, inbound references, and compiled dependencies |
+| Write and maintain documents | `vault_write`, `vault_append`, `vault_merge`, `vault_supersede` | Structured writes with locking, provenance, indexing, and Git history |
+| Control lifecycle and confidence | `vault_promote`, `vault_deprecate`, `vault_set_confidence`, `vault_set_tier` | Explicit gates between draft, canonical, source, and retired knowledge |
+| Keep contradictions visible | `vault_tension_log`, `vault_tension_triage`, `vault_positions`, `vault_canon` | Open tensions, attributed positions, and settled-versus-contested belief |
+| Require human judgment | `vault_stage_action`, `vault_ratify`, `vault_consolidate` | Proposed actions and ratified organizational positions |
+| Inspect trust and history | `vault_receipt`, `vault_provenance`, `vault_witness`, `daftari asof` | Evidence receipts, write history, principal track records, and past belief state |
+| Operate the vault | `daftari sleep`, `court`, `interview`, `view`, `audit` | Review queues, rulings, elicited evidence, a read-only portal, and coherence checks |
 
-A directory of markdown files with YAML frontmatter, exposed to agents as 38
-MCP tools over stdio. The vault is plain text: you can read it in any editor,
-`git log` it, grep it. Daftari adds the machinery agents need to treat it as a
-shared workspace.
+Use `daftari --help` for the current CLI surface. MCP clients obtain the current
+tool names and schemas directly from `tools/list`; the README does not duplicate
+the complete registry.
 
-```
-npx daftari --init ./my-vault
-npx daftari --vault ./my-vault --user me --role admin
-```
+## How the vault is built
 
-Point any MCP client (Claude Desktop, Claude Code, an agent SDK) at it.
+| Layer | Responsibility | Boundary |
+|---|---|---|
+| **Storage** | Markdown with YAML frontmatter, Git history, SQLite search index | Markdown is canonical; the index is disposable |
+| **Access** | Config-driven roles and collection permissions | No separate user-management database |
+| **Write safety** | Process lock, file locks, attributable writes, automatic commits | Concurrency protection does not resolve semantic conflicts |
+| **Curation** | Lifecycle, staleness, tensions, provenance, staged actions | Advisory by default; judgment is never silently automated |
 
-## The four layers
-
-All four implement one idea — *resolve only by discovery, never by invention.*
-Read [**The core idea**](docs/architecture.md#the-core-idea) first and the layers
-become its consequences. Storage and access control are table stakes; the moat is
-layers 3 and 4.
-
-|Layer                |What it does                                                                                          |Why it matters                                                         |
-|---------------------|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
-|**Storage**          |Markdown + frontmatter on disk, git history, rebuildable SQLite index for hybrid BM25 + vector search.|Plain text is the source of truth. Delete every `.db` file and rebuild.|
-|**Access control**   |Config-driven RBAC. Roles and per-collection read/write/promote permissions in `.daftari/config.yaml`.|Multiple agents, scoped access, no user-management system.             |
-|**Write arbitration**|File-level locks (60s TTL), auto-commit to git, structured provenance log.                            |Concurrent agents write safely. Every mutation is attributable.        |
-|**Curation**         |Draft-to-canonical lifecycle, TTL-based staleness, tension logging, advisory linter.                  |Knowledge that stops being true gets surfaced, not silently trusted.   |
-
-## Two kinds of knowledge
-
-Every document declares a `domain`. The distinction drives how the curation
-layer treats it.
-
-**Accumulation** documents compile and compound. A competitive-intel note, a
-pricing breakdown, a researched comparison. Each write builds on the last.
-Going stale is a problem to fix.
-
-**Generative** documents speculate. A moonshot sketch, a brainstorm, a “what
-if.” Going stale is expected, not a defect.
-
-Applied uniformly, the same curation rules would either nag about every
-brainstorm or wave through every stale fact. The domain split lets the system
-hold each to the right standard.
-
-## File format
-
-Markdown with YAML frontmatter. Frontmatter is the metadata layer; there is no
-separate database.
+Every document remains readable in an editor and inspectable with ordinary Git
+commands. Frontmatter is the metadata layer; Daftari does not introduce a
+second document format. A typical accumulation document begins like this:
 
 ```yaml
 ---
@@ -166,865 +190,112 @@ updated: 2026-05-17
 updated_by: agent:claude-code
 provenance: synthesized
 sources:
-  - aurora-product-page
+  - https://example.com/aurora-product-page
 ttl_days: 120
-valid_from: 2026-05-01
-valid_until: null
 tags: [aurora, ingestion, competitive]
 questions_answered:
-  - "How does Aurora frame the ingestion/transformation boundary?"
+  - "How does Aurora frame the ingestion boundary?"
 questions_raised:
-  - "Does an authored-pipeline model slow teams down at small scale?"
+  - "Does an authored pipeline slow small teams down?"
 ---
 ```
 
-Documents can make their epistemic edges explicit: `questions_answered` is what
-later agents can take as settled, `questions_raised` is where to build next.
-`vault_lint` turns the open questions across the vault into a coverage map.
+Read the [file-format reference](docs/file-format.md) for validity intervals,
+typed source references, lifecycle fields, positions, and extension rules.
 
-### Typed source references
+## Run it where the work happens
 
-`sources` records provenance from more than one address space. Prefix a source
-when its resolution contract matters:
+### Local MCP server
 
-```yaml
-# .daftari/config.yaml — for a vault nested inside its repository
-repo_root: ..
-
-# document frontmatter
-sources:
-  - vault:canon/settled-claim.md
-  - repo:research/raw-evidence.md
-  - https://example.com/published-evidence
-  - mailto:owner@example.com
-  - distill:session-42#claim-7
-  - doi:10.1000/182
-```
-
-- `vault:path/to/note.md` is a strict, vault-root-relative dependency. A missing
-  target is a tier-0 `brokenSourceRefs` finding and blocks ratification that
-  would create the violation. Traversal and absolute paths never resolve.
-- `repo:path/to/file` resolves against `repo_root`. Lint verifies file metadata
-  only—it does not read the file—and reports missing, unconfigured, invalid, or
-  escaping references under advisory `unverifiableSourceRefs` findings. On MCP
-  and board surfaces, the caller's role must explicitly set
-  `verify_repo_sources: true`; vault read grants alone never authorize probing
-  the larger repository tree.
-- `http:`, `https:`, `mailto:`, and other URI schemes are provenance, not vault
-  dependency edges.
-- `distill:<source-id>#<claim-key>` is an audit breadcrumb, not a re-derivation
-  source. Reads and advisory lint label it `born-unverifiable`: the external
-  source was discarded by design, so re-derivation means re-presenting it.
-- Unprefixed values remain backward compatible: if they resolve to an existing
-  vault document, they are dependency edges; otherwise they are opaque
-  citations. Use `vault:` for dependencies whose disappearance must fail tier 0.
-
-`repo_root` may be the vault root or an ancestor containing a nested vault. It
-is resolved relative to the vault and must contain it. Repository targets are
-checked with lexical and real-path containment, including symlink escapes.
-
-`valid_from` / `valid_until` are the second temporal axis. Everything else in
-the file records **transaction time** — when the vault came to believe
-something; these record **valid time** — when the claim was true in the world. A
-document edited this morning can describe a price that stopped applying in
-March, and only the second axis can tell you so. That makes supersession
-checkable rather than merely asserted:
+The default mode is one stdio process serving one writable vault:
 
 ```bash
-daftari asof 2026-04-01 --valid 2026-01-15
+npx daftari --vault ./my-vault --user me --role admin
 ```
 
-"On April 1st, what did the vault believe was true on January 15th?"
+This is the normal setup for Claude Desktop, Claude Code, and local agent SDKs.
 
-<details>
-<summary><b>Half-open valid-time intervals and the authoring rules (▸ expand for full reference)</b></summary>
+### Shared self-hosted server
 
-The window is half-open — `[valid_from, valid_until)` — so `valid_until` is the
-first day the claim no longer held, and a successor's `valid_from` is exactly
-its predecessor's `valid_until`. Handoffs share no day and leave no gap. The
-fields are optional and always authored: nothing derives them from git dates or
-mtime, because that would manufacture a claim nobody made. Both null means
-unknown, which is never read as "always true".
-
-Full field reference in <docs/file-format.md>.
-
-</details>
-
-<!-- The rituals -->
-
-## The tools
-
-**Read:** `vault_read`, `vault_index`, `vault_status`
-
-**Attest:** `vault_receipt` — compile an epistemic receipt for the documents
-an answer cites: per-source status, confidence, provenance, freshness, exact
-content-version hash, supersession-chain resolution, and open tensions, plus
-deterministic summary flags, the vault's git HEAD as an as-of anchor, and a
-recomputable hash over the whole receipt. Attach it to the answer so any
-consumer can see what the answer stands on.
-
-**Believe:** `vault_canon` — compute settled vs. contested belief across
-holders over an emergent topic (params: `seed`, `holders?`, `as_of?`,
-`depth?`). Returns a per-claim settled/contested classification, integrity
-flags (`graph_completeness: "curated"`, `partial_visibility`, `unindexed`,
-`ghost_holder_warning`), and an attached `vault_receipt` as the epistemic
-anchor. Recorded, not omniscient: settled means no contradiction is on record,
-not that none exists. Never auto-resolves.
-
-**Witness:** `vault_witness` — per-principal track records from the vault's
-own ledgers, priced by the wager schedule: write volume, live claims with
-open exposure, contested claims with stake at risk, the settled book
-(burned vs credited), proposal outcomes, tensions logged. Advisory and
-deterministic; includes the flat-curve monitor so a single-author vault is
-reported as uninformative rather than as signal.
-
-<details>
-<summary><b>The full per-category tool registry and the tool-tier config (▸ expand for full reference)</b></summary>
-
-**Search:** `vault_search` (hybrid BM25 + vector; hits carry their unresolved
-tensions inline and foreground the current source of superseded documents),
-`vault_search_related`, `vault_themes` (thematic clustering), `vault_reindex`
-
-**Write:** `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`, `vault_set_tier`
-
-**Curate:** `vault_tension_log`, `vault_tension_resolve`, `vault_tension_clusters`, `vault_tension_blast`, `vault_tension_triage` (the unranked triage card / `court --triage`), `vault_lint`, `vault_provenance`, `vault_staleness` (edge-staleness: pending upstream changes, broken-read rate, and compiled-edge instrumentation coverage)
-
-**Edges:** `vault_edge_observe`, `vault_edge_contest`, `vault_edges`, `vault_consumes` (query the compiled dependency graph), `vault_backlinks` (the reverse knowledge-graph query — which documents reference a target; a code-path target lists the docs whose `describes` binds that file, and `verify:true` classifies each pin against its code repo)
-
-**Dispatch:** `vault_tier1` (type-directed change dispatch), `vault_tier2_queue`, `vault_tier2_verdict` (semantic-review queue + verdict)
-
-**Ratify:** `vault_stage_action`, `vault_ratify`
-
-**Positions:** `vault_assert` (a principal's assert/dispute/qualify stance on a claim doc; conflicting live stances mark it contested and cap confidence), `vault_positions` (query positions by doc or principal), `vault_consolidate` (ratify-gated org stance; clears the contested confidence cap, dissent computed server-side)
-
-The curation engine is advisory: `vault_lint` reports problems and
-`vault_tension_log` records contradictions. Neither auto-fixes anything. Every
-change is a deliberate, attributable act. Retraction is surfaced, not enforced:
-the `retiredStillLinked` lint check / `retired_still_linked` read-time advisory
-flags canonical docs still citing a deprecated or superseded source, and
-`vault_deprecate`/`vault_supersede` return a `dependents` advisory (the
-downstream blast) at retraction time.
-
-### Tool tiers
-
-Every advertised tool costs the agent context tokens and a decision branch.
-The `tools` block in `.daftari/config.yaml` picks how much of the registry
-`tools/list` advertises:
-
-```yaml
-tools:
-  tier: standard   # core | standard | full (default: full)
-  include:         # add tools the tier omits
-    - vault_tension_log
-  exclude:         # remove tools the tier includes — exclude wins
-    - vault_status
-```
-
-`core` is the search-before-derive loop (`vault_search`, `vault_read`,
-`vault_write`, `vault_index`, `vault_lint`, `vault_status`); `standard` adds
-the full document lifecycle (append/promote/deprecate/supersede/merge,
-confidence and tier setters, propose/ratify) plus `vault_search_related`,
-`vault_provenance`, and diagnostics; `full` is everything. `--tools <tier>` overrides the tier for one invocation. Filtering
-only changes what is *advertised* — calls to any registered tool still work,
-so an agent holding a cached tool name keeps working across a tier change.
-Unknown names in `include`/`exclude` warn at startup and are ignored, so a
-config written for a newer daftari still loads.
-
-</details>
-
-**Evaluate (opt-in, requires an Anthropic API key):** `daftari eval` — scores how
-well an LLM can use the curation surface to answer multi-hop questions about the
-vault. See the [design spec](docs/superpowers/specs/2026-05-31-cortex-quality-metric-design.md)
-for the rationale and the cortex framing.
-
-## Circadian memory
-
-The vault sleeps. `daftari sleep` is the nightly metabolic pass — deterministic,
-LLM-free, write-free (documents are never touched):
+For multiple clients, `daftari serve` exposes the same vault over Streamable
+HTTP:
 
 ```bash
-# In cron (any scheduler works; daftari ships the cycle, not a daemon):
-0 3 * * * cd /path/to/vault && npx daftari sleep --output .daftari/morning-report.md
+daftari serve --vault ./my-vault
 ```
 
-The cycle sweeps expired staged actions, scores every document's decay, and
-builds the **wake list**: canonical accumulation documents triggered by decay,
-ended validity, or retracted/vanished declared and compiled grounding, ranked
-by blast radius. For a deleted vault source, the operator report distinguishes
-recoverable Git history (with the last commit that contained the file) from a
-path absent in available history. The list is written to
-`.daftari/wake-queue.jsonl` for an external agent to consume — re-verify each
-document against its sources, stage the diff — because the vault never
-re-verifies on its own. Generative documents going stale are expected, not a
-defect: counted, never woken.
+Non-loopback deployments fail closed unless authentication and external
+transport security are configured. See [deployment and access](docs/deployment.md)
+for bearer tokens, OAuth 2.1, process takeover, federation, and storage backing.
 
-The **Morning Report** ends where the human begins: tension aging and the
-court docket head, the ratification queue with soon-to-expire proposals, and
-the rubber-stamp monitor. It also reports compiled-edge instrumentation
-coverage separately from freshness: an absent machine-local `consumes.jsonl`
-is shown as `no compiled-edge data (N docs uninstrumented)`, not as an
-all-current vault. Zero rejections over a long decision history is printed as
-a warning, not a compliment. The agent proposes overnight; you ratify over
-coffee.
+### Existing markdown
 
-Each completed pass appends a content-light summary (counts only, no document
-bodies) to a self-pruning `.daftari/runs.jsonl`; `daftari runs [list|show <id>]`
-reads that history back, so the loop's own liveness is legible over time.
-
-## The viewer
-
-`daftari view` serves a read-only web portal over the vault — loopback only,
-no editing — that makes the vault's *epistemic state and knowledge graph*
-legible, not just its prose:
-
-- **Dashboard home** — vault metrics, a freshness distribution (fresh/aging/
-  stale), open-tension and ratification-queue counts, and the recent sleep-run
-  trend.
-- **Document pages** lead with a **standing strip** — status, a confidence
-  meter, decay, and a contested flag — over rendered (sanitized) markdown, with
-  epistemic banners (decay / structural / upstream / pins), a **Contested**
-  panel, **backlinks**, a table of contents, and in-vault links resolved to
-  their documents.
-- **Knowledge graph** (`/graph`) — an interactive map of the vault: nodes are
-  documents (colored by status, flagged when decayed or contested), edges are
-  source / link / derives-from / contested relations. Click a node to open it;
-  every document links to its own neighborhood.
-- **Search** over the hybrid index, on every page.
-
-Read-only by construction (only GET, no mutation routes, a loopback Host
-allow-list against DNS-rebinding), built on `node:http` with one lazily loaded
-graph library — no web framework.
+Daftari can inspect and adopt an Obsidian vault or other markdown wiki in
+place. Schema inference and drift checks are read-only; import fills missing
+frontmatter without replacing existing content.
 
 ```bash
-daftari view --vault ./my-vault    # then open http://127.0.0.1:8788
-```
-
-## Tension Court
-
-Tensions wait in a log; the court turns them into decidable cases. `daftari
-court` compiles a **docket** — every open tension briefed and ranked (stale
-first, then by blast radius): both sides' claims, the present state of their
-documents, the downstream stakes, cluster membership, and **precedents** —
-past rulings on disputes that shared a document, a collection pair, or a
-kind.
-
-The **triage card** (`daftari court --triage` / `vault_tension_triage`) is the
-deliberately **unranked**, cluster-grouped companion view — legibility, not a
-severity score. Each contested side surfaces `criticality`, `provenance`, and
-`updated_by`, so a resolver can judge trust without opening the documents.
-
-```bash
-# The docket — a 5-minute weekly ritual
-daftari court --vault ./my-vault
-
-# One case's full brief (verbatim rationales from cited precedents)
-daftari court --tension tension-abc123
-
-# Rule. The rationale is recorded verbatim and cited by future dockets.
-daftari court rule tension-abc123 --kind corrected \
-  --rationale "Vendor pricing page confirmed the entry tier on 2026-07-10."
-```
-
-Rulings go through the same `resolveTension` write path as
-`vault_tension_resolve` — a ruling records the closure, it never edits the
-disputed documents. Precedent retrieval is deterministic (shared-document >
-collection-pair > same-kind; no LLM): the court retrieves how this house has
-resolved similar disputes before, and whether a precedent applies stays the
-human's judgment. Memory grows case law.
-
-## The principal interview
-
-The vault interrogates you. `daftari interview` assembles a question sheet
-from what the vault already knows is unclear — open tensions (contested
-first, longest-carried first), canonical accumulation docs past their TTL,
-and `questions_raised` entries no document answers — deterministic and
-LLM-free, like the circadian pass:
-
-```bash
-# The sheet — read-only, priority-ordered
-daftari interview --vault ./my-vault
-
-# Sit for it. Answers are recorded VERBATIM; empty skips, 'q' ends.
-daftari interview ask --vault ./my-vault
-```
-
-Answered questions become a transcript document in an `interviews/`
-collection — `tier: source` (your words, body immutable), `provenance:
-direct`, no TTL (testimony doesn't expire) — committed like any other write,
-with `sources` tracing each question back to the tension or document that
-prompted it. The pattern is the companion interview on a living-summary
-page: the compiler's highest-value move is not more compilation, it is
-asking the principal about the unclear spots and folding the verbatim
-answers back into the corpus.
-
-Recording testimony resolves nothing. The transcript is *evidence*: the CLI
-ends by pointing at `daftari court rule <id> --references <transcript>` for
-tensions it touched, and at re-verified writes for stale docs. Operator-only,
-like the court — no MCP tool, no access context.
-
-## Belief archaeology
-
-Git is the version layer, so the vault can answer **"what did we believe on
-March 3?"** `daftari asof` is a read-only report over the repo's history — no
-checkout, no index, no API key:
-
-```bash
-# The vault's belief state at a date (or any git ref), plus the drift since
-daftari asof 2026-03-03 --vault ./my-vault
-
-# One document's trajectory: frontmatter then vs now, commits in between
-daftari asof HEAD~20 --doc pricing/helios-consumption-pricing.md
-
-# Counterfactual replay: this fact turned out wrong — who had inherited it
-# at the time, and where are they now?
-daftari asof 2026-03-03 --blast pricing/helios-consumption-pricing.md
-```
-
-The default report shows the document and tension state at that point and
-the drift since: documents added/removed, `status`/`confidence` transitions,
-and tensions opened or resolved. `--blast` computes the blast radius of a
-document over the tree *as of the commit* (same source/link edge semantics as
-`vault_tension_blast`), annotating each downstream document with its status
-today — the post-mortem view for a fact that was later corrected. Markdown to
-stdout by default; `--output` / `--output-json` write files. Pairs with
-`vault_receipt`: a receipt's `vaultHead` is exactly the anchor to hand back
-to `asof`.
-
-## The vault as witness — and the wager layer
-
-Every write already carries an identity, every proposal an outcome, every
-tension a logger and a ruling. `vault_witness` aggregates that ledger into a
-**track record per principal** — and prices it. Confidence is free to claim,
-so the wager schedule makes it cost something: writing at `high` stakes 3
-points, `medium` 1, `low` 0 (hedged claims are the honest default and are
-never taxed). A claim later corrected by a ruling or retired by someone else
-burns the stake; a claim maintained through a full TTL cycle earns credit.
-The balance is arithmetic on recorded facts — advisory, provisional
-constants, nothing enforced: routing a high-stakes write to the agent with
-the earned balance is your policy, not the vault's.
-
-<details>
-<summary><b>The two kill conditions that travel with the tool (▸ expand for full reference)</b></summary>
-
-Both kill conditions from the design travel with the tool: the flat-curve
-monitor (one author ≥95% of writes → curves declared uninformative) and the
-longitudinal write-volume series (if stake-fear suppresses honest claims, it
-shows up here first).
-
-</details>
-
-## Coherence audit
-
-`daftari audit` is a read-only, deterministic check across one or more
-markdown repos for **broken cross-repo references** and **link-graph
-transitive staleness**. It works against any markdown tree — daftari-managed
-or not. The audit creates no `.daftari/` directory and writes nothing to the
-audited repos.
-
-### Multi-repo (the headline use case)
-
-When two or more repos link to each other, the audit detects broken
-references that neither repo's own lint could see — because each repo only
-knows about itself.
-
-```bash
-daftari audit \
-  --repo ~/repos/service-a \
-  --repo ~/repos/service-b
-```
-
-That works for relative-path links (`../service-b/docs/api.md`). For
-GitHub-style URL links between repos (`https://github.com/org/service-b/...`),
-declare each repo's URL patterns in an `audit.yaml` so the resolver can map
-them back to the local repo:
-
-```yaml
-# audit.yaml
-repos:
-  - name: service-a
-    path: ~/repos/service-a
-    urls: ["github.com/org/service-a"]
-  - name: service-b
-    path: ~/repos/service-b
-    urls: ["github.com/org/service-b"]
-```
-
-```bash
-daftari audit --config audit.yaml
-```
-
-### Single repo
-
-The same command, one `--repo`:
-
-```bash
-daftari audit --repo ./docs
-```
-
-In single-repo mode the cross-repo check trivially has no work, but the
-staleness check still runs over the in-repo link graph.
-
-### What gets detected
-
-- **Missing files.** A link from `service-a/intro.md` to `../service-b/api.md`
-  or `https://github.com/org/service-b/blob/main/api.md` — flagged if `api.md`
-  doesn't exist in `service-b`.
-- **Missing anchors.** Same link with `#run` — flagged if `api.md` has no
-  `## Run` heading.
-- **Direct staleness.** Any doc whose git mtime is older than
-  `staleness.threshold_days` (default 540, ~18 months).
-- **Transitive staleness.** A fresh doc that links — directly or through a
-  chain — to a stale doc is itself flagged, with the shortest chain reported.
-  Catches the case where you keep touching an index page while the docs it
-  links to are rotting.
-
-<details>
-<summary><b>Sample output, CI integration, exit codes, CLI flags, and the full <code>audit.yaml</code> schema (▸ expand for full reference)</b></summary>
-
-### Sample output
-
-```markdown
-# Coherence Audit Report
-
-## Totals
-- repos scanned: **2**
-- docs scanned: **47**
-- broken cross-repo refs: **2**
-- directly stale docs: **3**
-- transitively stale docs: **5**
-
-## Broken cross-repo references
-| kind           | source                    | target                  | href |
-|----------------|---------------------------|-------------------------|------|
-| missing_anchor | service-a/intro.md        | service-b/api.md#run    | `https://github.com/org/service-b/blob/main/api.md#run` |
-| missing_file   | service-a/architecture.md | service-b/deleted.md    | `../service-b/deleted.md` |
-
-## Staleness
-| kind       | doc                      | mtime      | chain |
-|------------|--------------------------|------------|-------|
-| transitive | service-a/onboarding.md  | 2026-04-01 | service-a/onboarding.md → service-b/legacy-flow.md |
-```
-
-JSON output (`--output-json` or `output.json` in config) carries the same
-structure with full detail in `brokenRefs[]` and `staleness[]` arrays plus a
-`totals` summary block for compact downstream rendering.
-
-### CI integration
-
-The audit's exit code is designed to gate CI:
-
-```yaml
-# .github/workflows/docs-audit.yml
-name: Docs audit
-on: [pull_request]
-jobs:
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }   # full history so git mtime works
-      - run: npx daftari@latest audit --config audit.yaml
-```
-
-Exit codes:
-
-| code | meaning |
-|------|---------|
-| `0`  | clean run, all findings within `fail_on` thresholds |
-| `1`  | clean run but a threshold was exceeded — CI fails |
-| `2`  | config error (missing required fields, bad paths, malformed YAML) |
-| `3`  | runtime error (IO failure during collection) |
-
-### CLI flags
-
-`audit.yaml` and CLI flags overlap; CLI wins. A warning is printed to stderr
-when `--output` or `--output-json` displaces a value from the config.
-
-- `--repo <path>` — add a repo. May be repeated. Anonymous CLI repos get no
-  URL patterns; URL-based cross-refs into them won't be detected. Use
-  `--config` for URL-aware repos.
-- `--config <path>` — load an `audit.yaml`.
-- `--output <md>` — markdown report destination (default: stdout).
-- `--output-json <json>` — JSON report destination (default: not written).
-- `--help` — full help text.
-
-### Full `audit.yaml` schema
-
-```yaml
-repos:
-  - name: service-a
-    path: ~/repos/service-a
-    docs_glob: "docs/**/*.md"       # default: "**/*.md"
-    urls:                            # optional; enables URL-pattern matching
-      - "github.com/org/service-a"
-
-  - name: service-b
-    path: ~/repos/service-b
-    urls:
-      - "github.com/org/service-b"
-
-output:
-  markdown: coherence-report.md      # default: stdout
-  json: coherence-report.json        # default: not emitted
-
-staleness:
-  threshold_days: 540                # default: 540 (18 months)
-
-fail_on:
-  broken_refs: 1                     # default: fail on any broken ref
-  transitive_staleness: 100          # default: generous; teams tune
-```
-
-</details>
-
-<!-- Running it -->
-
-## Access control
-
-No user-management system. Roles live in config, the server starts with one.
-No `--role` or an unknown name falls back to deny-all. An agent identity is
-just a role too — e.g. a `curation-loop` role that reads and writes but leaves
-`ratify` off: the agent proposes, humans ratify.
-
-<details>
-<summary><b>Roles config example (▸ expand for full reference)</b></summary>
-
-```yaml
-roles:
-  analyst:
-    read: [competitive-intel, pricing]
-    write: [competitive-intel, _drafts]
-  researcher:
-    read: ["*"]
-    write: [moonshot, _drafts]
-  admin:
-    read: ["*"]
-    write: ["*"]
-    promote: true
-    ratify: true   # may approve/reject staged actions and contest edges
-    verify_repo_sources: true  # may stat repo: provenance targets under repo_root
-```
-
-</details>
-
-## Cross-vault federation
-
-One process, one *writable* vault — but it can mount other vaults read-only
-and search across them. Reads and search compose over every mounted vault;
-writes, locks, git, and curation stay bound to the local one. The boundary in
-one line: **a mount exposes documents, not vault state** — you can read and
-search a mounted vault's markdown, but its tensions, edges, provenance, and
-lint never cross.
-
-Declare mounts in your own config:
-
-```yaml
-# your vault's .daftari/config.yaml
-federation:
-  mounts:
-    - alias: research
-      path: ../research-vault
-      index: lexical      # skip embeddings for this mount (default: full)
-```
-
-Access is granted by the *other* vault, in its own config, keyed by your
-authenticated identity — deny-all until its owner says otherwise:
-
-```yaml
-# the referenced vault's .daftari/config.yaml
-federation:
-  principals:
-    "human:mihir": { role: researcher }   # a role defined in THAT vault
-```
-
-Federated documents address as `research:notes/pricing.md`, every result
-carries a `vault` label, and `vault_search` fuses ranked hits across vaults
-(rank fusion, so differing corpus statistics can't skew scores). Nothing is
-ever written under a mounted vault — its search index lives inside *your*
-`.daftari/`, rebuilt from its markdown like any other derived cache. Mount
-freshness is checked at startup; `vault_reindex {mount: research}` refreshes
-on demand. stdio-only for now: `daftari serve` refuses a config with mounts.
-
-## Server mode (self-hosted)
-
-By default daftari is a per-user stdio process. `daftari serve` starts the
-same vault as **one always-on instance over Streamable HTTP** — for a team, or
-for clients that can't spawn a local process (claude.ai web/mobile, Cowork):
-
-```bash
-daftari serve --vault ./my-vault              # http://127.0.0.1:8787/mcp
-daftari serve --vault ./my-vault --bind 0.0.0.0 --port 9000
-daftari serve --vault ./my-vault --legacy-http   # also answer 2025-era MCP clients
-```
-
-Identity is **per request**, resolved from the bearer on every request (MCP
-2026-07-28 is stateless — there are no sessions), so every RBAC and
-existence-disclosure rule applies per caller with zero tool changes. Two
-composable auth schemes, both declared in config. `--legacy-http` is a
-temporary, opt-in migration flag for clients still on 2025-era MCP: same
-process, same per-request auth, no session table (removal tracked in #371).
-
-<details>
-<summary><b>Auth config (bearer tokens + OAuth 2.1) and the fail-loud posture (▸ expand for full reference)</b></summary>
-
-```yaml
-server:
-  transport_security: external   # required off-loopback: TLS terminates upstream
-  auth:
-    tokens:                      # static bearer tokens (agents, ETL)
-      - env: DAFTARI_TOKEN_ETL   # the VALUE lives in this env var, never in config
-        user: agent:etl
-        role: admin
-    oauth:                       # OAuth 2.1 resource server (humans via your IdP)
-      issuer: https://idp.example.com
-      audience: daftari
-      jwks_uri: https://idp.example.com/.well-known/jwks.json
-      subjects:
-        "alice@example.com": { user: human:alice, role: analyst }
-```
-
-The posture is fail-loud, never silent-downgrade: a non-loopback bind refuses
-to start without auth **and** the explicit `transport_security: external`
-acknowledgment (daftari never terminates TLS itself — put Caddy/nginx/a load
-balancer in front); with any auth configured, a bad or missing credential is
-a 401 at session open and a valid JWT whose subject isn't mapped is a 403 —
-neither ever becomes the guest. Guest sessions exist only in the no-auth
-loopback configuration. A running server also refuses to be silently killed:
-stray stdio invocations against the same vault refuse to start, and replacing
-a live holder requires a deliberate `daftari serve --takeover`.
-
-</details>
-
-## Storage backing
-
-A self-hosted vault can push to durable object storage (#6). The local git
-working copy stays canonical — reads, writes, auto-commits, locks, and the
-index all stay exactly as above — and the backing is a dumb sync target.
-
-<details>
-<summary><b>Storage config, <code>daftari sync</code> commands, and sync semantics (▸ expand for full reference)</b></summary>
-
-```yaml
-# .daftari/config.yaml
-storage:
-  backend: s3            # fs | s3 | azure
-  bucket: team-vault
-  region: us-east-1
-  # endpoint: https://…  # MinIO / R2 / GCS S3-interop endpoints
-  # sync_interval_minutes: 15   # daftari serve pushes on this cadence
-```
-
-```bash
-daftari sync --vault ./my-vault              # incremental push
-daftari sync --vault ./my-vault --dry-run    # show the diff only
-daftari sync --vault ./empty-dir --restore --backend s3 --bucket team-vault
-```
-
-The push covers the markdown tree, the `.git` directory, and durable
-`.daftari` journals; the rebuildable SQLite index and lock files never sync.
-Neither do `.git/config` and `.git/hooks` — git *executes* what those
-declare, and a backup channel must not deliver code (`git clone` refuses to
-transmit them for the same reason), so re-add remotes and local git config
-by hand after a restore.
-Cloud backends load their SDKs (`@aws-sdk/client-s3`, `@azure/storage-blob`)
-as optional dependencies — install the one you use; credentials come from the
-SDK's standard environment chain, never from vault config. GCS is reached via
-its S3-interoperability endpoint. Restore refuses non-empty directories and
-reindexes when done.
-
-</details>
-
-## Adopting an existing vault
-
-Already have a wiki or an Obsidian vault? Daftari adopts it **in place** — it
-indexes and curates the same markdown files you already edit, not a separate copy.
-
-Inspect the wiki's existing metadata before filling anything in:
-
-```bash
-# What keys and value shapes actually exist? No config required.
 daftari schema infer --vault ~/my-vault
-
-# Compare those observations with built-ins + schema_extensions.
-# Single-use custom keys stay below the default evidence threshold of 2.
-daftari schema diff --vault ~/my-vault --json
-
-# Limit either report to one folder; nested folders are included.
-daftari schema infer --vault ~/my-vault --scope notes
-```
-
-Both schema commands are read-only. `infer` reports occurrence/prevalence,
-observed types, bounded examples, distinct-value cardinality, and enum-likeness.
-`diff` reports widely used undeclared fields, declared-but-unused extensions,
-observed values that violate their declaration, and near-miss names such as
-`state` versus `status`. Use `--min-occurrences <n>` on `diff` to change the
-undeclared-field evidence threshold (default 2). Malformed or unreadable docs
-are listed as skipped evidence; drift problem categories and path/value examples
-are bounded. A missing vault or explicitly named scope fails loud, while an
-existing empty folder produces an empty report. Scope confinement follows real
-paths, so symlink aliases cannot escape the requested folder or double-count a
-document. No markdown, config, or index state is written.
-
-```bash
-# Dry run — see what would change, write nothing
+daftari schema diff --vault ~/my-vault
 daftari import obsidian ~/my-vault --plan
-
-# Adopt one folder at a time (per-folder ratification; --yes to skip the prompt)
-daftari import obsidian ~/my-vault --apply --scope notes
 ```
 
-The import is non-destructive to your content. It fills only the *missing*
-Daftari frontmatter — collection from the folder, dates from git history (or file
-mtime), sensible defaults for the rest — and preserves everything you already
-had, including custom frontmatter fields. Obsidian specifics: inline `#tags` are
-merged into `tags`, a Web Clipper `source` is mapped into `sources`, and
-`[[wikilinks]]` are left untouched (Daftari resolves them as written). Filling
-frontmatter is deliberate, not automatic — re-run the import to pick up newly
-added notes.
+Cloud-synced folders need an external Git directory so sync software never
+copies a live `.git/` database. Follow the safeguards in
+[adopting existing notes](docs/adoption.md) before applying an import.
 
-### Cloud-synced vaults (iCloud, Dropbox, …)
+## What Daftari does not do
 
-Daftari versions every change with git, and a `.git/` directory churning inside a
-cloud-synced folder can corrupt. For a synced vault, keep git's data outside it:
+- It does not resolve contradictions by generating a compromise.
+- It does not auto-fix lint findings or promote agent output on its own.
+- It does not hide the canonical files behind a proprietary database.
+- It does not provide a hosted multi-tenant service; server mode is
+  self-hosted.
+- It does not replace the model or agent framework. It gives them a durable
+  memory substrate over MCP.
 
-```bash
-daftari import obsidian "~/Library/Mobile Documents/.../my-vault" \
-  --apply --scope notes --external-git-dir
-```
+For a longer comparison with adjacent memory patterns, see
+[positioning](docs/positioning-2026-07.md). That analysis is kept outside the
+onboarding path because competitor claims age faster than the product contract.
 
-This writes `git_dir: external` to `.daftari/config.yaml`, so Daftari uses
-`git init --separate-git-dir`: only a tiny static `.git` *file* stays in the vault
-(syncs harmlessly) while the repo data lives under `~/.local/share/daftari/git/`.
-Pass `--external-git-dir=/path` for an explicit location, or set `git_dir`
-directly in config to apply the same to any vault. History is per-device; your
-notes still sync everywhere.
+## Documentation
 
-### Lower-level: `backfill`
+The [documentation map](docs/README.md) organizes the full set by task. The
+main paths are:
 
-`daftari import obsidian` is a thin, Obsidian-aware wrapper over `daftari
-backfill` — the git-driven frontmatter migration that works on any markdown wiki.
-Use it directly for non-Obsidian trees:
+- [Getting started](docs/getting-started.md)
+- [Worked example](docs/worked-example.md)
+- [Curation workflow](docs/curation-workflow.md)
+- [Operator workflows](docs/operator-workflows.md)
+- [Deployment and access](docs/deployment.md)
+- [Adopting existing notes](docs/adoption.md)
+- [Architecture](docs/architecture.md)
+- [File format](docs/file-format.md)
+- [Privacy](PRIVACY.md)
 
-```bash
-daftari backfill --plan
-daftari backfill --apply --scope specs
-```
+Integrations:
 
-## Open Knowledge Format (OKF)
-
-[OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-is Google Cloud's vendor-neutral spec for the LLM-wiki pattern: a directory of
-markdown files with YAML frontmatter that any producer can emit and any consumer
-can read without translation. A Daftari vault *is* that pattern, so `daftari
-okf` bridges the two directions.
-[v0.2](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals/)
-adds opt-in **trust signals** — raw credibility indicators (provenance,
-verification, lifecycle, freshness), never computed scores — and Daftari maps
-them from/to its native metadata.
-
-<details>
-<summary><b>OKF export / import field-mapping and the <code>daftari okf</code> commands (▸ expand for full reference)</b></summary>
-
-**Export** renders the vault as a portable OKF bundle — every doc becomes an OKF
-concept doc (the core `type` / `title` / `description` / `resource` / `tags`
-fields, plus a verbatim `daftari` sidecar for lossless round-trip), with
-generated `index.md` (progressive-disclosure listing) and `log.md`
-(chronological history). Trust signals derive from native metadata:
-`updated`/`updated_by` become `generated`, the lifecycle maps to
-`draft`/`stable`/`deprecated`, `ttl_days` becomes an absolute `stale_after`
-date, and `sources` become structured entries. `verified` is never fabricated —
-Daftari records authorship, not independent confirmations, so exported docs
-honestly read as unverified. The source vault is never mutated.
-
-```bash
-daftari okf export ./my-vault --out ./okf-bundle
-daftari okf export ./my-vault --out ./okf-bundle --collection pricing
-```
-
-**Import** adopts an OKF bundle into a vault. A bundle produced by `okf export`
-round-trips exactly via its sidecar; a foreign bundle is mapped conservatively
-(docs land as `draft` in the `accumulation` domain, the original OKF `type` is
-preserved in an `okf_type` field). Trust signals inform the mapping: a
-human-reviewed doc (a `human:*` entry in `verified`) imports with `confidence:
-high`, `status: deprecated` stays `deprecated` (retired knowledge must not
-resurface as a fresh draft), and `stale_after` converts to `ttl_days`. An
-`Attested Computation` is surfaced in an import warning but **not**
-auto-write-protected: `tier: source` is enforcement, and its only sanctioned
-grant path is `vault_set_tier` (reason required, provenance-logged) — a foreign
-bundle's self-declared `type` doesn't buy it. Review the doc, then elevate
-deliberately. OKF fields with no lossless Daftari slot (the trust record,
-attestation machinery) are preserved under `okf_*` keys. Writes auto-commit and
-the index is rebuilt.
-
-```bash
-daftari okf import ./okf-bundle --into ./my-vault --dry-run
-daftari okf import ./okf-bundle --into ./my-vault
-```
-
-</details>
-
-<!-- Reference / meta -->
-
-## What’s not in v1
-
-Deliberately deferred to keep the surface tight:
-
-- **Cloud-hosted multi-tenant SaaS** (self-hosted server mode HAS shipped —
-  see [Server mode](#server-mode-self-hosted) and
-  [Storage backing](#storage-backing); the project itself hosts nothing)
-- **Conflict resolution beyond file-level locks** (CRDTs, semantic merge)
-- **Background curation agent** running lint on a cadence
-- **Enforced domain separation** (v1 documents the convention; v2 enforces it —
-  advisory boundary warnings shipped in the meantime: `vault_lint`'s
-  `domainLeaks` check and write-time `domain_warnings`)
-
-(LLM reranking, deferred here originally, has since shipped as the opt-in
-agent-as-judge `rerank_candidates` on `vault_search`: the server prepares the
-fused candidate pool and the protocol; the calling agent is the judge.)
-
-Each is a clean increment on a surface that already works.
+- [`integrations/langchain/`](integrations/langchain/) exposes Daftari tools as
+  LangChain `BaseTool`s for LangGraph and `create_react_agent`.
+- [`packages/router/`](packages/router/) routes one MCP connection across
+  multiple writable Daftari vaults.
 
 ## Development
 
-```
+```bash
 npm install
 npm run build
 npm test
 ```
 
-Design tenets: functions and types, no classes; tool handlers return
-`Result<T, Error>` rather than throwing; tests mirror the `src/` structure.
+The codebase is TypeScript and Node.js. Functions and types are preferred over
+classes; tool handlers return `Result<T, Error>` rather than throwing; tests
+mirror the `src/` structure.
 
-The build board: the chain currently under construction — the derived-content
-critical path — is tracked with live progress in
-[#428](https://github.com/mavaali/daftari/issues/428).
+## Privacy and license
 
-## Documentation
+Daftari runs locally by default and makes no network calls unless a vault opts
+into an external provider or integration. Read the [privacy policy](PRIVACY.md)
+for the complete boundary.
 
-- <docs/getting-started.md> — scaffold, write, search, lint, promote, deprecate
-- <docs/architecture.md> — layered design, request path, accumulation vs. generative domains
-- <docs/file-format.md> — complete frontmatter reference
-
-## Integrations
-
-- [`integrations/langchain/`](integrations/langchain/) — `langchain-daftari`, a
-  Python package that exposes all 38 daftari tools as LangChain `BaseTool`s
-  for use with LangGraph / `create_react_agent`. Sync + async, schemas pulled
-  live from `tools/list`.
-- [`packages/router`](packages/router) — multi-vault MCP router that fans out across N Daftari vaults
-
-## Privacy
-
-Daftari is a local MCP server. It runs on your machine, against vault files on
-your machine. The default configuration makes no network calls — vault content
-stays on your local filesystem and is read or written only through tools the
-MCP client invokes. The only optional egress is the OpenAI embedding provider,
-which the user must explicitly opt into per vault.
-
-Full policy: [PRIVACY.md](./PRIVACY.md) — covers data collection (none),
-storage (local-only), the OpenAI opt-in, third-party integrations (none),
-retention, and contact.
-
-## License
-
-MIT.
+Daftari is available under the [MIT License](LICENSE).
