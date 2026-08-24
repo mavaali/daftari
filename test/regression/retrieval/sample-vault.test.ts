@@ -177,6 +177,7 @@ describe("retrieval regression (real-semantic sample vault)", () => {
   const actual: Baseline = {};
   const corpusPaths = new Set<string>();
   const samples = { lexical: emptySamples(), fusion: emptySamples() };
+  const fusionRankChanges: string[] = [];
 
   beforeAll(async () => {
     setProviderForTests(fixtureProvider);
@@ -230,6 +231,7 @@ describe("retrieval regression (real-semantic sample vault)", () => {
         perArm[`${arm}Mrr`] = round6(rr);
         perArm[`${arm}Ndcg@${K_LONG}`] = round6(ndcg10);
       }
+      if (perArm.lexicalRanks !== perArm.fusionRanks) fusionRankChanges.push(question.id);
       actual[`query:${question.id}`] = perArm;
     }
 
@@ -271,6 +273,10 @@ describe("retrieval regression (real-semantic sample vault)", () => {
     expect(providerCalls.embed).toBeGreaterThan(0);
     expect(providerCalls.inputs).toBeGreaterThan(questions.length);
     expect([...usedVectorHashes].sort()).toEqual(Object.keys(embeddingFixture.vectors).sort());
+  });
+
+  it("keeps the fusion arm behaviorally distinct from lexical retrieval", () => {
+    expect(fusionRankChanges.length).toBeGreaterThan(0);
   });
 
   it("uses the Tier-1 deterministic tolerance of zero", () => {

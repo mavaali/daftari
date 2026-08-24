@@ -46,7 +46,9 @@ reviewable. A fixture provider fails on any unrecognized text. It is installed
 before reindex, never loads MiniLM, never accesses the network, and its `warm`
 method deliberately fails if called. The test asserts lexical queries make no
 embedding call, fusion queries report `vectorUsed: true`, no warmup occurs, and
-every committed vector is consumed.
+every committed vector is consumed. At least one query's ranked answer paths
+must differ between lexical and fusion, preventing a vector-on arm that is
+technically exercised but behaviorally inert.
 
 [DATA] Runtime parsers validate the JSONL question shape, source enum, trimmed
 non-empty values, normalized ID/query/path uniqueness, and corpus membership.
@@ -62,10 +64,11 @@ TypeScript assertions alone are not treated as fixture validation.
 - binary nDCG@10.
 
 [DATA] It also records mean recall@5, mean recall@10, MRR, and mean nDCG@10
-for the lexical and fusion arms. Scores are rounded to six decimal places. The stated Tier-1
-tolerance is **0**: deterministic lexical behavior must exact-diff. A changed
-rank or metric blocks the PR until the search regression is fixed or a reviewer
-accepts a baseline delta generated with `npm run regression:update-baseline`.
+for the lexical and fusion arms. Scores are rounded to six decimal places. The
+stated Tier-1 tolerance is **0**: deterministic lexical and vector-replay
+behavior must exact-diff. A changed rank or metric blocks the PR until the
+search regression is fixed or a reviewer accepts a baseline delta generated
+with `npm run regression:update-baseline`.
 
 [DATA] The question-set evidence threshold is 20–50 unique questions, matching
 #301. Every question must have non-empty rationale and at least one relevant
