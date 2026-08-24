@@ -139,6 +139,7 @@ export function createConfiguredIntegrationRuntime(
   let engineDeps: EngineDeps | undefined;
   let interval: ReturnType<typeof setInterval> | undefined;
   let currentCycle: Promise<void> | undefined;
+  let rerunRequested = false;
   let routeBaseUrl: string | undefined;
   let started = false;
 
@@ -177,8 +178,16 @@ export function createConfiguredIntegrationRuntime(
   }
 
   function runOnce(): Promise<void> {
-    if (currentCycle !== undefined) return currentCycle;
-    currentCycle = cycle()
+    if (currentCycle !== undefined) {
+      rerunRequested = true;
+      return currentCycle;
+    }
+    currentCycle = (async () => {
+      do {
+        rerunRequested = false;
+        await cycle();
+      } while (rerunRequested);
+    })()
       .catch(() => onError("integration cycle failed"))
       .finally(() => {
         currentCycle = undefined;

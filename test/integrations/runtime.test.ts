@@ -131,4 +131,37 @@ describe("configured integration runtime", () => {
     expect(messages.join(" ")).not.toContain("provider body with secret");
     await created.value.close();
   });
+
+  it("runs one immediate follow-up when woken after the active queue drain", async () => {
+    let discoveries = 0;
+    let release: (() => void) | undefined;
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      adapterFactories: {
+        google: (redirectUri) => ({
+          ...factory({ discover: 0, ensure: 0 })(redirectUri),
+          discover: async () => {
+            discoveries += 1;
+            if (discoveries === 1) {
+              await new Promise<void>((resolve) => {
+                release = resolve;
+              });
+            }
+            return ok([]);
+          },
+        }),
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    while (discoveries === 0) await Promise.resolve();
+    const followUp = created.value.runOnce();
+    release?.();
+    await followUp;
+    expect(discoveries).toBe(2);
+    await created.value.close();
+  });
 });
