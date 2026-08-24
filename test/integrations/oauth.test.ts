@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok } from "../../src/frontmatter/types.js";
 import type { EngineDeps, ProviderAdapter } from "../../src/integrations/engine.js";
-import { beginAuthorization, completeAuthorization } from "../../src/integrations/oauth.js";
+import {
+  beginAuthorization,
+  beginAuthorizationRedirect,
+  completeAuthorization,
+} from "../../src/integrations/oauth.js";
 import { readIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig } from "../../src/integrations/types.js";
 
@@ -120,5 +124,23 @@ describe("integration OAuth transactions", () => {
 
     expect(result).toEqual(err(new Error("OAuth code exchange failed for google")));
     expect(readIntegrationState(vault, KEY)).toEqual(ok({ providers: {}, oauthStates: {} }));
+  });
+
+  it("composes a provider authorization URL from a persisted OAuth transaction", () => {
+    const provider = adapter();
+    const started = beginAuthorizationRedirect(vault, provider, config, environment, now);
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.value.url).toBe("https://accounts.example/authorize");
+    expect(started.value.authorization).toMatchObject({
+      provider: "google",
+      clientId: "google-client-id",
+      state: started.value.state,
+      codeChallengeMethod: "S256",
+    });
+    expect(readIntegrationState(vault, KEY).value.oauthStates[started.value.state]).toMatchObject({
+      provider: "google",
+    });
   });
 });

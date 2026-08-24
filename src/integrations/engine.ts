@@ -207,9 +207,6 @@ export async function reconcileProvider(
 
     for (const [sourceId, previous] of Object.entries(providerState.sources)) {
       if (currentSources.has(sourceId) || !previous.available) continue;
-      providerState.sources[sourceId] = { ...previous, available: false, lastSeenAt: seenAt };
-      const written = writeState(vaultRoot, key.value, persisted.value);
-      if (!written.ok) return written;
       const providerSourceId = sourceIdentity(adapter.name, sourceId);
       if (deps.recordUnavailable !== undefined) {
         const recorded = deps.recordUnavailable({
@@ -220,6 +217,9 @@ export async function reconcileProvider(
         });
         if (!recorded.ok) return recorded;
       }
+      providerState.sources[sourceId] = { ...previous, available: false, lastSeenAt: seenAt };
+      const written = writeState(vaultRoot, key.value, persisted.value);
+      if (!written.ok) return written;
       outcome.unavailableSourceIds.push(providerSourceId);
     }
 

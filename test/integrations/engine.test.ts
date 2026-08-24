@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,11 +10,7 @@ import {
   reconcileProvider,
   startPeriodicIntegrationSync,
 } from "../../src/integrations/engine.js";
-import {
-  integrationStatePath,
-  readIntegrationState,
-  writeIntegrationState,
-} from "../../src/integrations/state.js";
+import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
 import { sha256Hex } from "../../src/utils/hash.js";
 
@@ -151,13 +147,26 @@ describe("provider reconciliation", () => {
       }),
     );
     expect(inputs).toEqual([{ providerSourceId: "google:doc-1", revision: "2", text }]);
-    expect(readFileSync(integrationStatePath(vault), "utf8")).not.toContain(text);
-    expect(readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]).toMatchObject(
-      {
-        revision: "2",
-        contentHash: sha256Hex(text),
-        lastDistillRunId: "run-2",
-      },
+    expect(readIntegrationState(vault, KEY)).toEqual(
+      ok({
+        providers: {
+          google: {
+            accessToken: "access",
+            refreshToken: "refresh",
+            sources: {
+              "doc-1": {
+                id: "doc-1",
+                revision: "2",
+                contentHash: sha256Hex(text),
+                available: true,
+                lastSeenAt: "2026-08-24T12:00:00.000Z",
+                lastDistillRunId: "run-2",
+              },
+            },
+          },
+        },
+        oauthStates: {},
+      }),
     );
   });
 
@@ -298,6 +307,67 @@ describe("provider reconciliation", () => {
         available: false,
       },
     );
+  });
+
+  it("retries an unavailable review event before marking its source unavailable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex("Previously available"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const events: string[] = [];
+    let firstAttempt = true;
+    const recordUnavailable = (event: { providerSourceId: string }) => {
+      if (firstAttempt) {
+        firstAttempt = false;
+        return err(new Error("review queue unavailable"));
+      }
+      events.push(event.providerSourceId);
+      return ok(undefined);
+    };
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({ recordUnavailable }),
+    );
+    expect(first.ok).toBe(false);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(true);
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({ recordUnavailable }),
+    );
+    expect(second).toEqual(
+      ok({
+        distilledSourceIds: [],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: ["google:doc-1"],
+      }),
+    );
+    expect(events).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(false);
   });
 
   it("returns a stop function that prevents future periodic reconciliations", async () => {

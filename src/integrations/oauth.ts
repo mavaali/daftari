@@ -7,6 +7,7 @@ import {
   type AuthorizationRequest,
   configuredCredential,
   type EngineDeps,
+  type ProviderAdapter,
   type ProviderTokens,
   providerConfig,
 } from "./engine.js";
@@ -80,6 +81,28 @@ export function beginAuthorization(
       codeChallengeMethod: "S256",
     },
   });
+}
+
+export interface AuthorizationRedirect extends AuthorizationStart {
+  url: string;
+}
+
+// This is the explicit route-facing seam: the engine persists the transaction,
+// while the provider adapter owns the provider-specific authorization URL.
+export function beginAuthorizationRedirect(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  config: IntegrationConfig,
+  environment: NodeJS.ProcessEnv,
+  now: () => Date = () => new Date(),
+): Result<AuthorizationRedirect, Error> {
+  const started = beginAuthorization(vaultRoot, adapter.name, config, environment, now);
+  if (!started.ok) return started;
+  try {
+    return ok({ ...started.value, url: adapter.authorizationUrl(started.value.authorization) });
+  } catch {
+    return err(new Error(`OAuth authorization URL failed for ${adapter.name}`));
+  }
 }
 
 function providerState(
