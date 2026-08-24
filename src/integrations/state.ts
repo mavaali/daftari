@@ -3,7 +3,7 @@
 // is deliberately never written here.
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
@@ -38,6 +38,38 @@ function validKey(key: Buffer): Result<void, Error> {
     return err(new Error("integration state encryption key must be exactly 32 bytes"));
   }
   return ok(undefined);
+}
+
+// A base64 decoder is deliberately permissive (it accepts missing padding and
+// ignores some invalid characters). Re-encoding and comparing byte-for-byte
+// makes this an exact configuration format, so a typo cannot silently select a
+// different key before AES-GCM is constructed.
+export function resolveIntegrationStateKey(
+  encryptionKeyEnv: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Result<Buffer, Error> {
+  if (typeof encryptionKeyEnv !== "string" || encryptionKeyEnv.trim().length === 0) {
+    return err(new Error("integration state encryption key environment variable must be named"));
+  }
+  const encoded = environment[encryptionKeyEnv];
+  if (typeof encoded !== "string" || encoded.length === 0) {
+    return err(
+      new Error(
+        `integration state encryption key environment variable ${encryptionKeyEnv} is not set`,
+      ),
+    );
+  }
+  const key = Buffer.from(encoded, "base64");
+  if (key.toString("base64") !== encoded) {
+    return err(
+      new Error(
+        `integration state encryption key environment variable ${encryptionKeyEnv} must be canonical base64`,
+      ),
+    );
+  }
+  const keyResult = validKey(key);
+  if (!keyResult.ok) return keyResult;
+  return ok(key);
 }
 
 function asBase64(
@@ -191,6 +223,7 @@ export function writeIntegrationState(
   const parsedState = parseState(state);
   if (!parsedState.ok) return parsedState;
 
+  let tempPath: string | undefined;
   try {
     const nonce = randomBytes(NONCE_BYTES);
     const cipher = createCipheriv("aes-256-gcm", key, nonce);
@@ -206,11 +239,20 @@ export function writeIntegrationState(
     };
     const path = integrationStatePath(vaultRoot);
     mkdirSync(dirname(path), { recursive: true });
-    const tempPath = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+    tempPath = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
     writeFileSync(tempPath, `${JSON.stringify(envelope)}\n`, { encoding: "utf8", mode: 0o600 });
     renameSync(tempPath, path);
+    tempPath = undefined;
     return ok(undefined);
   } catch {
+    if (tempPath !== undefined) {
+      try {
+        rmSync(tempPath, { force: true });
+      } catch {
+        // Preserve the primary state-write failure. The ignore rule keeps a
+        // best-effort cleanup failure out of version control.
+      }
+    }
     return err(new Error("cannot write encrypted integration state"));
   }
 }

@@ -25,6 +25,7 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/process.lock
 **/.daftari/distill-receipts.jsonl
 **/.daftari/integrations.state.enc
+**/.daftari/integrations.state.enc.*.tmp
 **/.daftari/board-dispositions.jsonl
 # Ephemeral eval artifacts (regeneratable from .md sources + LLM calls).
 **/.daftari/eval/

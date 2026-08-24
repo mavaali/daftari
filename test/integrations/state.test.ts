@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { ok } from "../../src/frontmatter/types.js";
 import {
   integrationStatePath,
   readIntegrationState,
+  resolveIntegrationStateKey,
   writeIntegrationState,
 } from "../../src/integrations/state.js";
 import type { IntegrationState } from "../../src/integrations/types.js";
@@ -69,6 +70,19 @@ describe("encrypted integration state", () => {
     expect(readIntegrationState(vault, invalidKey).ok).toBe(false);
   });
 
+  it("resolves only canonical base64 environment keys of exactly 32 bytes", () => {
+    const name = "DAFTARI_INTEGRATIONS_KEY";
+    const canonical = KEY.toString("base64");
+    expect(resolveIntegrationStateKey(name, { [name]: canonical })).toEqual(ok(KEY));
+
+    // Node's base64 decoder accepts this value, but a deployment typo must not
+    // silently decode to the configured key.
+    expect(resolveIntegrationStateKey(name, { [name]: canonical.slice(0, -1) }).ok).toBe(false);
+    expect(
+      resolveIntegrationStateKey(name, { [name]: Buffer.alloc(31, 7).toString("base64") }).ok,
+    ).toBe(false);
+  });
+
   it("rejects a tampered envelope", () => {
     expect(writeIntegrationState(vault, state("refresh-token"), KEY).ok).toBe(true);
     const envelope = JSON.parse(readFileSync(integrationStatePath(vault), "utf8")) as {
@@ -79,5 +93,15 @@ describe("encrypted integration state", () => {
 
     const result = readIntegrationState(vault, KEY);
     expect(result.ok).toBe(false);
+  });
+
+  it("removes the temporary envelope when the atomic rename fails", () => {
+    mkdirSync(integrationStatePath(vault), { recursive: true });
+
+    expect(writeIntegrationState(vault, state("refresh-token"), KEY).ok).toBe(false);
+    const entries = readdirSync(join(vault, ".daftari"));
+    expect(entries.filter((entry) => /^integrations\.state\.enc\..+\.tmp$/.test(entry))).toEqual(
+      [],
+    );
   });
 });
