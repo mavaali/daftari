@@ -21,6 +21,22 @@ afterEach(() => {
 });
 
 describe("runConsolidate", () => {
+  it("describes the explicit live-or-shadow posture without claiming shadow-only", async () => {
+    const out: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((s) => {
+      out.push(String(s));
+      return true;
+    });
+
+    const code = await runConsolidate(["--help"]);
+    const text = out.join("");
+
+    expect(code).toBe(0);
+    expect(text).toContain("explicit live-or-shadow posture");
+    expect(text).toContain("false = write admitted edges live");
+    expect(text).not.toContain("(shadow-only)");
+  });
+
   it("on a fresh vault, lists every doc in the birth queue and exits 0", async () => {
     writeFileSync(join(dir, "a.md"), "# a\n");
     writeFileSync(join(dir, "b.md"), "# b\n");

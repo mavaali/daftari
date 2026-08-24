@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Sleep-extensions evidence ledger** (#97) — closes the stale umbrella without
+  conflating two different loops: the production N=0/1/2/3 experiment kills the
+  proposed difficulty-adaptive repeated tension scan, while the separately
+  shipped `daftari consolidate` scheduler/panel loop keeps its own calibration
+  gates. The current architecture and CLI help now state the real safety
+  posture: LLM modes require an explicit `shadow_mode`; `true` journals without
+  applying edge writes, while `false` permits admitted consolidation writes.
+
 ## [3.10.1] - 2026-08-19
 
 ### Fixed
