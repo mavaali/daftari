@@ -478,6 +478,7 @@ export function createNotionAdapter(options: NotionAdapterOptions): ProviderAdap
   const now = options.now ?? (() => new Date());
   return {
     name: "notion",
+    webhookSetup: "manual",
     authorizationUrl: (input) => authorizationUrl(input, options.redirectUri),
     exchangeCode: (input) => exchangeCode(transport, options.redirectUri, now, input),
     refreshTokens: (input) => refreshTokens(transport, now, input),

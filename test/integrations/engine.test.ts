@@ -610,6 +610,22 @@ describe("provider reconciliation", () => {
       false,
     );
     expect(verifyWebhook).not.toHaveBeenCalled();
+    const eventAdapter = adapter({
+      name: "notion",
+      verifyWebhook: async () =>
+        ok({ kind: "event", eventId: "poison", hint: { kind: "reconcile" } }),
+    });
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          eventAdapter,
+          { headers: {}, body, setupToken: "armed-setup-token-value" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook).toBeUndefined();
     expect(
       armProviderWebhookSetup(vault, "notion", notionDeps, () => "armed-setup-token-value").ok,
     ).toBe(true);
@@ -644,6 +660,51 @@ describe("provider reconciliation", () => {
         )
       ).ok,
     ).toBe(false);
+  });
+
+  it("serializes concurrent verification capture for one vault and provider", async () => {
+    const notionConfig = { ...config, google: undefined, notion: config.google };
+    const notionDeps = deps({ config: notionConfig });
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    expect(
+      armProviderWebhookSetup(vault, "notion", notionDeps, () => "concurrent-setup-token").ok,
+    ).toBe(true);
+    let release: (() => void) | undefined;
+    const verifyWebhook = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof ok<{ kind: "verification"; channel: typeof channel }>>>(
+          (resolve) => {
+            release = () => resolve(ok({ kind: "verification", channel }));
+          },
+        ),
+    );
+    const channel = {
+      id: "notion-manual",
+      secret: "first-secret",
+      verificationRequired: true,
+    };
+    const notion = adapter({ name: "notion", verifyWebhook });
+    const request = {
+      headers: {},
+      body: Buffer.from('{"verification_token":"first-secret"}'),
+      setupToken: "concurrent-setup-token",
+    };
+    const first = verifyProviderWebhook(vault, notion, request, notionDeps);
+    await Promise.resolve();
+    const second = await verifyProviderWebhook(vault, notion, request, notionDeps);
+    expect(second.ok).toBe(false);
+    release?.();
+    expect((await first).ok).toBe(true);
+    expect(verifyWebhook).toHaveBeenCalledTimes(1);
+    expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook?.secret).toBe(
+      "first-secret",
+    );
   });
 
   it("blocks signed events until the operator confirms manual verification", async () => {

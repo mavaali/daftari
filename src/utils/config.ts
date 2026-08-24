@@ -178,6 +178,8 @@ export interface ServerConfig {
   limits: ServeLimitsConfig;
   // .daftari/auth-log.jsonl on/off (operator-only audit; serve only).
   audit: boolean;
+  /** Public HTTPS origin/base path used for connector OAuth and webhook callbacks. */
+  publicBaseUrl?: string;
 }
 
 export interface ServeLimitsConfig {
@@ -1205,7 +1207,13 @@ function validateFederation(raw: unknown): Result<FederationConfig | undefined, 
   return ok({ mounts, principals });
 }
 
-const RECOGNISED_SERVER_KEYS = ["transport_security", "auth", "limits", "audit"] as const;
+const RECOGNISED_SERVER_KEYS = [
+  "transport_security",
+  "public_base_url",
+  "auth",
+  "limits",
+  "audit",
+] as const;
 const RECOGNISED_SERVER_LIMITS_KEYS = [
   "rate_per_minute",
   "burst",
@@ -1343,6 +1351,26 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
   const known = rejectUnknownKeys(obj, RECOGNISED_SERVER_KEYS, "server");
   if (!known.ok) return known;
   const out: ServerConfig = { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true };
+  if (obj.public_base_url !== undefined) {
+    if (typeof obj.public_base_url !== "string" || obj.public_base_url.trim().length === 0) {
+      return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+    }
+    try {
+      const publicUrl = new URL(obj.public_base_url.trim());
+      if (
+        publicUrl.protocol !== "https:" ||
+        publicUrl.username ||
+        publicUrl.password ||
+        publicUrl.search ||
+        publicUrl.hash
+      ) {
+        return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+      }
+      out.publicBaseUrl = publicUrl.toString().replace(/\/$/, "");
+    } catch {
+      return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+    }
+  }
   if (obj.limits !== undefined) {
     const limitsMapping = requireMapping(obj.limits, "'server.limits'");
     if (!limitsMapping.ok) return limitsMapping;

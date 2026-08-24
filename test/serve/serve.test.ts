@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { ok } from "../../src/frontmatter/types.js";
+import type { IntegrationRuntime } from "../../src/integrations/runtime.js";
 import {
   matchToken,
   prepareStorageSync,
@@ -563,6 +565,43 @@ describe("legacy HTTP compatibility (--legacy-http, #366)", () => {
       await legacy.close();
     }
   }, 30_000);
+});
+
+describe("serve integration runtime wiring", () => {
+  it("starts, routes, and closes an injected provider-neutral runtime", async () => {
+    const vault = buildVault(false);
+    const cfg = loadedConfig(vault);
+    const started: string[] = [];
+    let closed = false;
+    const runtime: IntegrationRuntime = {
+      start: async (localBaseUrl) => {
+        started.push(localBaseUrl);
+        return ok(undefined);
+      },
+      handle: async (_request, response, url) => {
+        if (url.pathname !== "/integrations/test") return false;
+        response.writeHead(204);
+        response.end();
+        return true;
+      },
+      runOnce: async () => undefined,
+      close: async () => {
+        closed = true;
+      },
+    };
+    const handle = await startHttpServer(vault, cfg, [], "127.0.0.1", 0, {
+      integrationRuntime: runtime,
+    });
+    try {
+      expect(started).toEqual([`http://127.0.0.1:${handle.port}`]);
+      const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`);
+      expect(response.status).toBe(204);
+    } finally {
+      await handle.close();
+      rmSync(vault, { recursive: true, force: true });
+    }
+    expect(closed).toBe(true);
+  });
 });
 
 describe("runServe --help", () => {

@@ -31,6 +31,14 @@ function transport(responses: Record<string, Response[]>): NotionHttpTransport {
 }
 
 describe("Notion adapter", () => {
+  it("declares that webhook subscription verification is manual", () => {
+    const adapter = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      transport: async () => json({}),
+    });
+    expect(adapter.webhookSetup).toBe("manual");
+  });
+
   it("discovers every accessible page across paginated search results", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const adapter = createNotionAdapter({

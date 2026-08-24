@@ -1,0 +1,134 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { err, ok } from "../../src/frontmatter/types.js";
+import type { ProviderAdapter } from "../../src/integrations/engine.js";
+import { createConfiguredIntegrationRuntime } from "../../src/integrations/runtime.js";
+import { writeIntegrationState } from "../../src/integrations/state.js";
+import type { IntegrationConfig } from "../../src/integrations/types.js";
+
+const KEY = Buffer.alloc(32, 9);
+const config: IntegrationConfig = {
+  encryptionKeyEnv: "INTEGRATION_KEY",
+  pollingIntervalMinutes: 10,
+  google: { clientIdEnv: "GOOGLE_ID", clientSecretEnv: "GOOGLE_SECRET" },
+};
+const environment = {
+  INTEGRATION_KEY: KEY.toString("base64"),
+  GOOGLE_ID: "id",
+  GOOGLE_SECRET: "secret",
+};
+
+describe("configured integration runtime", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-runtime-"));
+    writeIntegrationState(
+      vault,
+      {
+        providers: { google: { accessToken: "access", refreshToken: "refresh", sources: {} } },
+        oauthStates: {},
+      },
+      KEY,
+    );
+  });
+
+  afterEach(() => rmSync(vault, { recursive: true, force: true }));
+
+  function factory(spy: { redirect?: string; discover: number; ensure: number }) {
+    return (redirectUri: string): ProviderAdapter => {
+      spy.redirect = redirectUri;
+      return {
+        name: "google",
+        authorizationUrl: () => "https://accounts.example/authorize",
+        exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+        refreshTokens: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+        ensureWebhook: async () => {
+          spy.ensure += 1;
+          return ok({ id: "channel", secret: "secret" });
+        },
+        verifyWebhook: async () =>
+          ok({ kind: "event", eventId: "evt", hint: { kind: "reconcile" } }),
+        discover: async (state) => {
+          spy.discover += 1;
+          state.cursor = "cursor";
+          return ok([]);
+        },
+        fetch: async () => err(new Error("not used")),
+      };
+    };
+  }
+
+  it("uses a loopback OAuth callback and polling without pretending webhooks work", async () => {
+    const spy = { discover: 0, ensure: 0 };
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      adapterFactories: { google: factory(spy) },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    expect(spy.redirect).toBe("http://127.0.0.1:8787/integrations/google/callback");
+    expect(spy.discover).toBeGreaterThan(0);
+    expect(spy.ensure).toBe(0);
+    await created.value.close();
+  });
+
+  it("uses the public base URL and maintains webhook channels after reconciliation", async () => {
+    const spy = { discover: 0, ensure: 0 };
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      publicBaseUrl: "https://vault.example/daftari",
+      adapterFactories: { google: factory(spy) },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    expect(spy.redirect).toBe("https://vault.example/daftari/integrations/google/callback");
+    expect(spy.ensure).toBeGreaterThan(0);
+    await created.value.close();
+  });
+
+  it("fails before constructing an adapter when a named secret is missing", async () => {
+    const factorySpy = vi.fn(factory({ discover: 0, ensure: 0 }));
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment: { ...environment, GOOGLE_SECRET: undefined },
+      adapterFactories: { google: factorySpy },
+    });
+    expect(created.ok).toBe(false);
+    expect(factorySpy).not.toHaveBeenCalled();
+  });
+
+  it("surfaces safe lifecycle failures without provider response data", async () => {
+    const messages: string[] = [];
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      adapterFactories: {
+        google: () => ({
+          ...factory({ discover: 0, ensure: 0 })("http://localhost/callback"),
+          discover: async () => err(new Error("provider body with secret")),
+        }),
+      },
+      onError: (message) => messages.push(message),
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    expect(messages).toContain("integration google reconcile failed");
+    expect(messages.join(" ")).not.toContain("provider body with secret");
+    await created.value.close();
+  });
+});

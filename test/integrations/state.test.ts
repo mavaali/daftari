@@ -104,4 +104,19 @@ describe("encrypted integration state", () => {
       [],
     );
   });
+
+  it("rejects short or mutually exclusive webhook setup state", () => {
+    const short = state("refresh-token");
+    const google = short.providers.google;
+    if (google === undefined) throw new Error("missing test provider");
+    delete google.webhook;
+    google.webhookSetupToken = "short";
+    expect(writeIntegrationState(vault, short, KEY).ok).toBe(false);
+
+    const both = state("refresh-token");
+    const bothGoogle = both.providers.google;
+    if (bothGoogle === undefined) throw new Error("missing test provider");
+    bothGoogle.webhookSetupToken = "long-enough-setup-token";
+    expect(writeIntegrationState(vault, both, KEY).ok).toBe(false);
+  });
 });

@@ -120,12 +120,14 @@ function validProviderState(value: unknown): value is ProviderState {
   if (
     !validOptionalString(value.accessTokenExpiresAt) ||
     !validOptionalString(value.cursor) ||
-    !validOptionalString(value.webhookSetupToken)
+    !validOptionalString(value.webhookSetupToken) ||
+    (value.webhookSetupToken !== undefined && value.webhookSetupToken.length < 16)
   )
     return false;
   if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
     return false;
   if (value.webhook === undefined) return true;
+  if (value.webhookSetupToken !== undefined) return false;
   return (
     isStringRecord(value.webhook) &&
     typeof value.webhook.id === "string" &&

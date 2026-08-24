@@ -1164,4 +1164,22 @@ describe("loadConfig — integrations", () => {
     );
     expect(loadConfig(dir).ok).toBe(false);
   });
+
+  it("accepts only an absolute HTTPS server public base URL", () => {
+    writeConfig("server:\n  public_base_url: https://vault.example/daftari\n");
+    const valid = loadConfig(dir);
+    expect(valid.ok).toBe(true);
+    if (valid.ok) expect(valid.value.server.publicBaseUrl).toBe("https://vault.example/daftari");
+
+    for (const value of [
+      "http://vault.example",
+      "/relative",
+      "not a url",
+      "https://vault.example/path?secret=value",
+      "https://vault.example/path#fragment",
+    ]) {
+      writeConfig(`server:\n  public_base_url: ${JSON.stringify(value)}\n`);
+      expect(loadConfig(dir).ok).toBe(false);
+    }
+  });
 });

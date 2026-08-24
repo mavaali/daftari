@@ -39,6 +39,10 @@ import type { BoardFilters } from "../board/board.js";
 import { listBoard } from "../board/board.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
+import {
+  createConfiguredIntegrationRuntime,
+  type IntegrationRuntime,
+} from "../integrations/runtime.js";
 import { acquireLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
 import { setGraphExpandConfig } from "../search/graph-expansion.js";
@@ -550,6 +554,8 @@ export interface StartHttpServerOptions {
   // The resolved browser-session credential (bead 7q9), or null when no
   // server.auth.session block is configured. Threaded from validateServeStartup.
   session?: ResolvedSession | null;
+  /** Provider-neutral connector runtime; provider behavior stays outside serve. */
+  integrationRuntime?: IntegrationRuntime;
 }
 
 export function startHttpServer(
@@ -770,6 +776,19 @@ export function startHttpServer(
     }
 
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+    if (opts.integrationRuntime !== undefined && url.pathname.startsWith("/integrations/")) {
+      const handled = await opts.integrationRuntime.handle(req, res, url, {
+        authorize: async (integrationRequest, integrationResponse) => {
+          const access = await authenticate(integrationRequest, integrationResponse, url.pathname);
+          return access === null
+            ? null
+            : { cookieAuthenticated: cookieAuthedReqs.has(integrationRequest) };
+        },
+        checkCsrf,
+      });
+      if (handled) return;
+    }
 
     // ---------------------------------------------------------------------------
     // Board login shim (bead 7q9, U5) — mounted BEFORE authenticate(): the login
@@ -1165,23 +1184,42 @@ export function startHttpServer(
   return new Promise((resolveStart, rejectStart) => {
     httpServer.once("error", rejectStart);
     httpServer.listen(port, bind, () => {
-      httpServer.removeListener("error", rejectStart);
       const address = httpServer.address();
       const boundPort = typeof address === "object" && address !== null ? address.port : port;
       if (isLoopbackBind(bind)) loopbackGuard = makeLoopbackGuard(boundPort);
-      resolveStart({
-        port: boundPort,
-        close: async () => {
-          // close() aborts in-flight exchanges and resolves once every
-          // per-request instance has terminated — there is no session table
-          // to drain.
-          await mcpHandler.close();
-          await new Promise<void>((r) => httpServer.close(() => r()));
-          // Drain fire-and-forget audit appends last: no request can start a
-          // new one once the listener is closed, so this settles the tail and
-          // guarantees no append resurrects .daftari/ after shutdown.
-          await Promise.allSettled([...pendingAudits]);
-        },
+      void (async () => {
+        if (opts.integrationRuntime !== undefined) {
+          const callbackHost = isLoopbackBind(bind) ? bind : "127.0.0.1";
+          const started = await opts.integrationRuntime.start(
+            `http://${callbackHost}:${boundPort}`,
+          );
+          if (!started.ok) {
+            await new Promise<void>((done) => httpServer.close(() => done()));
+            rejectStart(started.error);
+            return;
+          }
+        }
+        httpServer.removeListener("error", rejectStart);
+        resolveStart({
+          port: boundPort,
+          close: async () => {
+            // Stop connector timers and drain their active cycle before the
+            // request transport closes.
+            await opts.integrationRuntime?.close();
+            // close() aborts in-flight exchanges and resolves once every
+            // per-request instance has terminated — there is no session table
+            // to drain.
+            await mcpHandler.close();
+            await new Promise<void>((r) => httpServer.close(() => r()));
+            // Drain fire-and-forget audit appends last: no request can start a
+            // new one once the listener is closed, so this settles the tail and
+            // guarantees no append resurrects .daftari/ after shutdown.
+            await Promise.allSettled([...pendingAudits]);
+          },
+        });
+      })().catch(async (cause) => {
+        await new Promise<void>((done) => httpServer.close(() => done()));
+        rejectStart(cause);
       });
     });
   });
@@ -1267,6 +1305,24 @@ export async function runServe(argv: string[]): Promise<number> {
     return 2;
   }
 
+  let integrationRuntime: IntegrationRuntime | undefined;
+  if (config.value.integrations !== undefined) {
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot,
+      config: config.value.integrations,
+      environment: process.env,
+      ...(config.value.server.publicBaseUrl === undefined
+        ? {}
+        : { publicBaseUrl: config.value.server.publicBaseUrl }),
+      onError: (message) => process.stderr.write(`daftari: warning: ${message}\n`),
+    });
+    if (!created.ok) {
+      process.stderr.write(`daftari serve: ${created.error.message}\n`);
+      return 2;
+    }
+    integrationRuntime = created.value;
+  }
+
   // Storage backing for periodic sync (#6): created and validated BEFORE the
   // lock and the listener. A config-declared capability that cannot run must
   // refuse at startup — returning an exit code after the listener is up
@@ -1319,6 +1375,7 @@ export async function runServe(argv: string[]): Promise<number> {
     handle = await startHttpServer(vaultRoot, config.value, gate.tokens, bind, port, {
       legacyHttp,
       session: gate.session,
+      ...(integrationRuntime === undefined ? {} : { integrationRuntime }),
     });
   } catch (e) {
     process.stderr.write(
