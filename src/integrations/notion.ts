@@ -2,7 +2,7 @@
 // normalization, and signed webhook interpretation. The provider-neutral
 // engine owns persistence, reconciliation, and distillation.
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   AuthorizationRequest,
@@ -137,6 +137,7 @@ function tokenRequestHeaders(clientId: string, clientSecret: string): Record<str
     accept: "application/json",
     authorization: basicAuthorization(clientId, clientSecret),
     "content-type": "application/json",
+    "notion-version": NOTION_VERSION,
   };
 }
 
@@ -405,6 +406,12 @@ function verifySignature(input: WebhookRequest, secret: string): boolean {
   );
 }
 
+function equalSecret(left: string, right: string): boolean {
+  const leftDigest = createHash("sha256").update(left, "utf8").digest();
+  const rightDigest = createHash("sha256").update(right, "utf8").digest();
+  return timingSafeEqual(leftDigest, rightDigest);
+}
+
 function parseWebhookBody(input: WebhookRequest): Result<Record<string, unknown>, Error> {
   let parsed: unknown;
   try {
@@ -428,10 +435,17 @@ function eventHint(event: NotionEvent): RefreshHint {
 }
 
 function webhookHint(input: WebhookRequest, state: ProviderState): Result<VerifiedWebhook, Error> {
-  const body = parseWebhookBody(input);
-  if (!body.ok) return body;
   const webhook = state.webhook;
   if (webhook === undefined) {
+    if (
+      input.setupToken === undefined ||
+      state.webhookSetupToken === undefined ||
+      !equalSecret(input.setupToken, state.webhookSetupToken)
+    ) {
+      return err(new Error("Notion webhook setup token is invalid"));
+    }
+    const body = parseWebhookBody(input);
+    if (!body.ok) return body;
     const verificationToken = stringValue(body.value.verification_token);
     if (verificationToken === undefined) return err(new Error("Notion webhook is not verified"));
     return ok({
@@ -443,9 +457,14 @@ function webhookHint(input: WebhookRequest, state: ProviderState): Result<Verifi
       },
     });
   }
+  if (webhook.verificationRequired === true) {
+    return err(new Error("Notion webhook verification is not confirmed"));
+  }
   if (!verifySignature(input, webhook.secret)) {
     return err(new Error("Notion webhook signature is invalid"));
   }
+  const body = parseWebhookBody(input);
+  if (!body.ok) return body;
   const event = body.value as NotionEvent;
   const eventId = stringValue(event.id);
   if (eventId === undefined || stringValue(event.type) === undefined) {

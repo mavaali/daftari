@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { createNotionAdapter, type NotionHttpTransport } from "../../src/integrations/notion.js";
 import type { ProviderState } from "../../src/integrations/types.js";
 
-function state(webhook?: ProviderState["webhook"]): ProviderState {
+function state(webhook?: ProviderState["webhook"], webhookSetupToken?: string): ProviderState {
   return {
     accessToken: "access-token",
     refreshToken: "refresh-token",
     ...(webhook === undefined ? {} : { webhook }),
+    ...(webhookSetupToken === undefined ? {} : { webhookSetupToken }),
     sources: {},
   };
 }
@@ -251,6 +252,7 @@ describe("Notion adapter", () => {
               "base64",
             )}`,
             "content-type": "application/json",
+            "notion-version": "2026-03-11",
           },
           body: JSON.stringify({
             grant_type: "authorization_code",
@@ -301,6 +303,7 @@ describe("Notion adapter", () => {
             "base64",
           )}`,
           "content-type": "application/json",
+          "notion-version": "2026-03-11",
         },
         body: JSON.stringify({
           grant_type: "refresh_token",
@@ -357,7 +360,10 @@ describe("Notion adapter", () => {
     });
     const body = Buffer.from(JSON.stringify({ verification_token: "verification-token" }));
 
-    const result = await adapter.verifyWebhook?.({ headers: {}, body }, state());
+    const result = await adapter.verifyWebhook?.(
+      { headers: {}, body, setupToken: "one-time-setup-token" },
+      state(undefined, "one-time-setup-token"),
+    );
 
     expect(result).toEqual({
       ok: true,
@@ -369,6 +375,42 @@ describe("Notion adapter", () => {
           verificationRequired: true,
         },
       },
+    });
+  });
+
+  it("rejects unsigned verification capture without the matching one-time setup token", async () => {
+    const adapter = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      transport: async () => {
+        throw new Error("unexpected HTTP request");
+      },
+    });
+    const body = Buffer.from(JSON.stringify({ verification_token: "verification-token" }));
+
+    const missing = await adapter.verifyWebhook?.(
+      { headers: {}, body },
+      state(undefined, "one-time-setup-token"),
+    );
+    const wrong = await adapter.verifyWebhook?.(
+      { headers: {}, body, setupToken: "wrong-setup-token!!" },
+      state(undefined, "one-time-setup-token"),
+    );
+    const unauthenticatedInvalidBody = await adapter.verifyWebhook?.(
+      { headers: {}, body: Buffer.from("not-json"), setupToken: "wrong-setup-token!!" },
+      state(undefined, "one-time-setup-token"),
+    );
+
+    expect(missing).toEqual({
+      ok: false,
+      error: new Error("Notion webhook setup token is invalid"),
+    });
+    expect(wrong).toEqual({
+      ok: false,
+      error: new Error("Notion webhook setup token is invalid"),
+    });
+    expect(unauthenticatedInvalidBody).toEqual({
+      ok: false,
+      error: new Error("Notion webhook setup token is invalid"),
     });
   });
 
@@ -435,11 +477,44 @@ describe("Notion adapter", () => {
     const result = await adapter.verifyWebhook?.(
       {
         headers: { "x-notion-signature": `sha256=${"0".repeat(64)}` },
-        body: Buffer.from('{"id":"event-1"}'),
+        body: Buffer.from("not-json"),
       },
       state({ id: "subscription-1", secret: "verification-token" }),
     );
 
     expect(result).toEqual({ ok: false, error: new Error("Notion webhook signature is invalid") });
+  });
+
+  it("rejects signed events until the operator confirms Notion verification", async () => {
+    const adapter = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      transport: async () => {
+        throw new Error("unexpected HTTP request");
+      },
+    });
+    const body = Buffer.from(
+      JSON.stringify({
+        id: "event-page-1",
+        type: "page.content_updated",
+        entity: { id: "page-1", type: "page" },
+      }),
+    );
+    const signature = `sha256=${createHmac("sha256", "verification-token")
+      .update(body)
+      .digest("hex")}`;
+
+    const result = await adapter.verifyWebhook?.(
+      { headers: { "x-notion-signature": signature }, body },
+      state({
+        id: "notion-manual",
+        secret: "verification-token",
+        verificationRequired: true,
+      }),
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: new Error("Notion webhook verification is not confirmed"),
+    });
   });
 });
