@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-08-23
+
+### Added
+
+- **Frontmatter schema inference and drift diff** (#478) — read-only `daftari schema infer` and `daftari schema diff` commands expose the vault's de facto frontmatter schema. `infer` reports every raw YAML key with occurrence/prevalence, observed types, capped distinct counts, bounded examples, and conservative enum-likeness; `diff` compares observations against built-ins plus `schema_extensions` and reports widely used undeclared fields, null-aware unused extensions, validator drift, and near-miss names. The undeclared-field gate defaults to 2 occurrences (`--min-occurrences` makes the threshold explicit); scope is required and canonical-path confined, symlink escapes and duplicate aliases are skipped as evidence, and hostile YAML/Markdown is converted to bounded safe output. README and adoption docs now put schema inspection before backfill. Fixes #299.
+- **Typed repository-external source references** (#474) — `sources` gains explicit address-space semantics: `vault:` is strict root-relative and tier-0 enforced; `repo:` resolves against the configured `repo_root` with lexical and realpath containment and metadata-only verification; web/mail/distill/opaque references remain provenance rather than dependency edges. Missing, unconfigured, invalid, or escaping repo references surface under advisory `unverifiableSourceRefs`, and only real vault dependencies affect reverse graphs, write warnings, eval traversal, sleep wakeups, and ratification. Repo metadata verification is gated behind the opt-in `verify_repo_sources` role capability. Fixes #454.
+- **Real sample-vault retrieval gate in CI** (#479) — every PR now runs 25 frozen, human-reviewable questions over the real sample vault through the shipped `vault_search` surface, under both pure lexical retrieval and the shipped default MiniLM fusion path. The fusion path is hermetic (35 committed MiniLM vectors replayed, no model load or network), with per-query ranks plus recall@5/recall@10/MRR/nDCG@10 goldens at tolerance 0; the gate fails on missing vectors, fallback, behaviorally inert fusion, lost provenance, or any changed rank/metric. Completes the CI remainder of #301.
+
 ### Changed
 
 - **Sleep-extensions evidence ledger** (#97) — closes the stale umbrella without
@@ -17,11 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   posture: LLM modes require an explicit `shadow_mode`; `true` journals without
   applying edge writes, while `false` permits admitted consolidation writes.
 
-## [3.10.1] - 2026-08-19
-
 ### Fixed
 
 - **Board login autofill** (#463) — the `/board` sign-in form was a lone password input, so browser password managers skipped it (no save/autofill offer, forcing a retype each sign-in). It now pairs the password with a `username` field prefilled from the configured session user (`maps_to.user`), `autocomplete="username"`, `readonly` — the server ignores it, it exists only as an autofill anchor. Fully addresses Chrome; Safari still requires an `https` origin (a bare-IP `http://` origin is non-saveable by design).
+- **Stale `vault_merge` snapshots rejected** (#470) — `vault_merge` composed its three-file write set before acquiring locks, so a concurrent update/create in that gap could be silently overwritten. Each canonical source/target input is now snapshotted and revalidated while holding the complete sorted lock set; any drift rejects the whole operation as `stale merge` before the first write. Closes #469.
+- **Dangling qualified refs no longer retarget by basename** (#471) — a qualified reference that no longer resolves stays dangling instead of inheriting a surviving document that shares its basename; basename fallback is restricted to genuinely bare references and duplicate basenames are treated as ambiguous. Applies through the shared resolver used by lint, blast/backlinks, sleep wake, view rendering, and write advisories. Closes #417.
+- **Historical erasure gated on an acknowledged dependents plan** (#472) — when a live erase target has downstream dependents, the operator must acknowledge the exact current pre-scrub plan (`vaultErasePlan` returns targets, dependents, a coarsened hidden remainder, HEAD, and a deterministic `plan_hash`) before the irreversible rewrite; the plan is recomputed at the last reversible point and any target/graph/permission/HEAD drift aborts. Zero-blast compatibility is preserved; neither `vault_erase` nor its planner is MCP/CLI-registered.
+- **Vanished consolidate endpoints stop retrying** (#473) — a due edge with a vanished endpoint is now a terminal `missing_endpoint` advisory for that consolidate cycle rather than executable revision work; skipped pairs consume no queue budget and cannot create a false unserved-backstop exit. The edge store is untouched (no auto-revoke, contest, panel, or LLM call); valid pairs including directed cycles retain the existing revision path.
+- **Distill sources labeled born-unverifiable** (#475) — `distill:<source-id>#<claim-key>` surfaces as structured born-unverifiable provenance on local and federated `vault_read` with its re-derivation contract, and `vault_lint` and board findings carry the same advisory label even without repo metadata verification. `PRIVACY.md` now states that raw distill input transits Anthropic or OpenRouter and distinguishes Daftari retention from provider retention. Fixes #422.
+- **Compiled-edge coverage gaps surfaced** (#476) — `vault_staleness` report mode carries a separate `compiled_edge_coverage` summary (no-data/partial/complete), so removing the gitignored consumes log flips an instrumented vault to no-data rather than resembling an all-current graph; `vault_lint` exposes the same monitor. Access-controlled counts stay scoped to caller-readable documents and the monitor names no paths. Fixes #420.
+- **Vanished-source wake coverage** (#477) — the circadian sweep now wakes fresh canonical accumulation dependents when an explicit vault source or current compiled unit disappears, and recovery evidence distinguishes a path last seen in Git (with the exact containing commit, recoverable via asof) from one absent from history or unavailable history. The Morning Report renders each wake trigger instead of framing every task as TTL decay; legacy/external references stay opaque and the pass remains advisory. Fixes #421.
+- **Distill proposal staging** (#466) — `assembleBody` no longer prepends a frontmatter fence into the proposal body (which `vault_write` re-added at ratify time, doubling frontmatter on every landed distill draft), and `titleOf` truncates at a word boundary with no ellipsis instead of mid-word at 80 characters.
+- **Test-suite lint cleanup** (#465, #430) — replaced 279 non-null assertions across 16 test files with a runtime-checked `requireDefined` guard and cleared the attestation-template lint infos; no production behavior change.
 
 ## [3.10.0] - 2026-08-19
 
