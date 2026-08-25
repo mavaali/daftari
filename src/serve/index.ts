@@ -576,13 +576,21 @@ export function startHttpServer(
   const cookieAuthedReqs = new WeakSet<IncomingMessage>();
   const slotGate = opts.slotGate ?? makeSlotGate(limits.maxInFlight);
   // Fire-and-forget: an audit write must never add latency or failure to a
-  // response. Errors surface once per failure on stderr.
+  // response. Errors surface once per failure on stderr. The in-flight appends
+  // are tracked so close() can DRAIN them: appendAuthEvent does mkdirSync(
+  // .daftari) + appendFile, so an append still pending after shutdown would
+  // resurrect .daftari/ under a vault being torn down (ENOTEMPTY during rmSync
+  // — observed as a load-sensitive false-red in the ops-floor suite). Draining
+  // on close makes shutdown leave no straggler writer.
+  const pendingAudits = new Set<Promise<unknown>>();
   const audit = (entry: Omit<AuthEvent, "ts">): void => {
     if (!config.server.audit) return;
-    void appendAuthEvent(vaultRoot, entry).then((r) => {
+    const p = appendAuthEvent(vaultRoot, entry).then((r) => {
       if (!r.ok)
         process.stderr.write(`daftari serve: auth-log append failed: ${r.error.message}\n`);
     });
+    pendingAudits.add(p);
+    void p.finally(() => pendingAudits.delete(p));
   };
   // JWKS key set, created lazily on the first OAuth verification: jose
   // caches fetched keys, so the server stays stateless and offline-tolerant
@@ -1168,6 +1176,10 @@ export function startHttpServer(
           // to drain.
           await mcpHandler.close();
           await new Promise<void>((r) => httpServer.close(() => r()));
+          // Drain fire-and-forget audit appends last: no request can start a
+          // new one once the listener is closed, so this settles the tail and
+          // guarantees no append resurrects .daftari/ after shutdown.
+          await Promise.allSettled([...pendingAudits]);
         },
       });
     });
