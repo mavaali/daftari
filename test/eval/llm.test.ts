@@ -182,6 +182,45 @@ describe("run metadata — completeJsonWithRetry", () => {
   });
 });
 
+describe("completeJson — anthropic transport", () => {
+  function makeClientWith(create: ReturnType<typeof vi.fn>) {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    // biome-ignore lint/suspicious/noExplicitAny: minimal SDK stand-in
+    const client = createAnthropicClient({ messages: { create } } as any);
+    if (prev) process.env.ANTHROPIC_API_KEY = prev;
+    else delete process.env.ANTHROPIC_API_KEY;
+    return client;
+  }
+
+  function makeCreate(text: string) {
+    return vi.fn(async () => ({
+      content: [{ type: "text", text, citations: null }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+      stop_reason: "end_turn",
+    }));
+  }
+
+  const OPTS = { model: "m", system: "s", user: "u", schema: { type: "object" } };
+
+  it("recovers JSON from a fenced block with leading prose (preamble case)", async () => {
+    const text =
+      'Here is the JSON you asked for:\n\n```json\n{"related": true, "premise": "B"}\n```';
+    const client = makeClientWith(makeCreate(text));
+    const r = await client.completeJson(OPTS);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ related: true, premise: "B" });
+  });
+
+  it("recovers a bare object preceded by reasoning preamble (no fence)", async () => {
+    const text = 'Sure, here you go:\n{"related": false, "premise": "C"}';
+    const client = makeClientWith(makeCreate(text));
+    const r = await client.completeJson(OPTS);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ related: false, premise: "C" });
+  });
+});
+
 describe("stripCodeFence", () => {
   it("strips a ```json fenced block", () => {
     expect(stripCodeFence('```json\n{"a":1}\n```')).toBe('{"a":1}');
