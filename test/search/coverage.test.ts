@@ -312,6 +312,21 @@ describe("enforceTokenCap", () => {
     expect(enforceTokenCap(list, DEFAULT_COVERAGE_OPTIONS)).toEqual(list);
   });
 
+  it("treats an edge-injected (viaEdge) hit as synthetic — evictable over budget (off.1)", () => {
+    // A graph-expansion hit shares the synthetic budget: over the cap it is
+    // evicted like a coverage doc, while the caller's ranked hit is never dropped.
+    const edge: HybridHit = {
+      ...hit("edge.md"),
+      snippet: "e".repeat(100),
+      viaEdge: { seed: "a.md", edgeType: "tension" },
+    };
+    const out = enforceTokenCap([hit("a.md"), edge], {
+      ...DEFAULT_COVERAGE_OPTIONS,
+      tokenCapChars: 0,
+    });
+    expect(out.map((h) => h.path)).toEqual(["a.md"]);
+  });
+
   it("treats a non-resolved currentSource as fresh (only resolved counts as stale)", () => {
     const dangling = {
       ...cov("dangling.md", "y".repeat(50)),

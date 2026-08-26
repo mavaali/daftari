@@ -36,6 +36,7 @@ describe("loadConfig — search tuning block", () => {
       weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 256,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
@@ -49,6 +50,7 @@ describe("loadConfig — search tuning block", () => {
       weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 256,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
@@ -62,6 +64,7 @@ describe("loadConfig — search tuning block", () => {
       weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 256,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
@@ -75,6 +78,7 @@ describe("loadConfig — search tuning block", () => {
       weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 128,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
