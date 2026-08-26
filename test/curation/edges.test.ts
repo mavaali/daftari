@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -13,6 +13,7 @@ import {
 } from "../../src/curation/edges.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { getAllDerivesFromEdges, type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const BY = "agent:curation-loop";
@@ -723,6 +724,44 @@ describe("sql-authoritative edge reads", () => {
     }
   });
 
+  it("serializes the observing model into the edge record", async () => {
+    const res = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "claude-opus-4-6",
+      at: T1,
+    });
+    expect(res.ok).toBe(true);
+    const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8")
+      .trim()
+      .split("\n");
+    const rec = JSON.parse(requireDefined(raw[raw.length - 1]));
+    expect(rec.model).toBe("claude-opus-4-6");
+  });
+
+  it("a whitespace-only model is persisted as absent, not empty (dedup-key contract)", async () => {
+    const res = await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "   ",
+      at: T1,
+    });
+    expect(res.ok).toBe(true);
+    const raw = readFileSync(join(vault, ".daftari", "edges.jsonl"), "utf8")
+      .trim()
+      .split("\n");
+    const rec = JSON.parse(requireDefined(raw[raw.length - 1]));
+    // Not model:"" — an empty model must be indistinguishable from a legacy
+    // no-model record so the `rec.model ?? ""` dedup key stays consistent.
+    expect("model" in rec).toBe(false);
+  });
+
   it("trail extras survive the sql read path", async () => {
     await seedAndVote(vault);
     await contestEdge(vault, {
@@ -741,4 +780,52 @@ describe("sql-authoritative edge reads", () => {
     expect(got.value?.contestedAt).toBe(T2);
     expect(got.value?.contestReason).toBe("case-2 contradiction");
   });
+
+  it("counts two DIFFERENT models on the same (observer, axis) as independent votes in one sitting", async () => {
+    // Use same-sitting timestamps (gap < 1 day) so the replay-guard is the only discriminator.
+    const S0 = "2026-07-01T00:00:00Z";
+    const S1 = "2026-07-01T00:05:00Z";
+    // seed (non-blind — establishes the edge without registering a blind vote pair)
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: false,
+      at: S0,
+    });
+    // two blind votes, same observer + axis, SAME sitting, DIFFERENT models
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "model-X",
+      at: S1,
+    });
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "model-Y",
+      at: S1,
+    });
+    const edge = await getEdge(vault, "a.md", "b.md", new Date(S1));
+    expect(edge.value?.kSurvived).toBe(2); // both counted — different models are independent
+
+    // a THIRD vote repeating model-X, same sitting → replay, no advance
+    await observeEdge(vault, {
+      fromPath: "a.md",
+      toPath: "b.md",
+      observedBy: BY,
+      blind: true,
+      axis: "prompt",
+      model: "model-X",
+      at: S1,
+    });
+    const edge2 = await getEdge(vault, "a.md", "b.md", new Date(S1));
+    expect(edge2.value?.kSurvived).toBe(2); // unchanged — model-X already voted this sitting
+  }, 60_000);
 });

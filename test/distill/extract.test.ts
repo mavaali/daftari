@@ -302,6 +302,73 @@ describe("extractClaims — maxClaims", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Defect 2: titleOf — word-boundary truncation, no ellipsis
+// ---------------------------------------------------------------------------
+
+describe("extractClaims — title word-boundary truncation (Defect 2)", () => {
+  it("returns the full statement as title when it is <= 80 chars", async () => {
+    const statement = "A".repeat(80);
+    const chunks = chunkMessages([msg(0, "irrelevant")], 1);
+    const llm = mockLlm([{ claims: [{ statement }] }]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims).toHaveLength(1);
+    expect(out.claims[0].proposed_frontmatter.title).toBe(statement);
+  });
+
+  it("truncates a >80-char statement to <= 80 chars with NO trailing ellipsis", async () => {
+    // 90-char statement, all one word — hard-cut at 80 expected.
+    const statement = "A".repeat(90);
+    const chunks = chunkMessages([msg(0, "irrelevant")], 1);
+    const llm = mockLlm([{ claims: [{ statement }] }]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims).toHaveLength(1);
+    const title = out.claims[0].proposed_frontmatter.title;
+    expect(title.length).toBeLessThanOrEqual(80);
+    expect(title).not.toContain("…");
+    expect(title).not.toContain("...");
+  });
+
+  it("truncates at a word boundary, not mid-word, when possible", async () => {
+    // Build a statement where the 80th char is mid-word.
+    // "word1 word2 " repeated so that position 80 falls inside a word.
+    // "Hello world " is 12 chars. 6 repetitions = 72 chars, then we add
+    // enough to push past 80 with a partial word.
+    const statement = "Hello world ".repeat(6) + "overflow"; // 72 + 8 = 80 chars exactly — let's go longer
+    // Actually: 72 chars + "overflow_extra" to guarantee we exceed 80
+    const stmt = "Hello world ".repeat(6) + "overflow_extra_word"; // 72 + 19 = 91 chars
+    const chunks = chunkMessages([msg(0, "irrelevant")], 1);
+    const llm = mockLlm([{ claims: [{ statement: stmt }] }]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims).toHaveLength(1);
+    const title = out.claims[0].proposed_frontmatter.title;
+    expect(title.length).toBeLessThanOrEqual(80);
+    expect(title).not.toContain("…");
+    expect(title).not.toContain("...");
+    // The title must end on a complete word (no partial word at the end).
+    // Since we truncate at a word boundary, the last char should not be
+    // mid-word — the truncated result should equal the statement up to the
+    // last space at or before position 80, trimmed.
+    expect(title.endsWith(" ")).toBe(false);
+    // Confirm: the character immediately after the title in the original
+    // statement is either end-of-string or a space (i.e. we broke on a boundary).
+    const charAfter = stmt[title.length];
+    expect(charAfter === undefined || charAfter === " ").toBe(true);
+  });
+
+  it("hard-cuts at TITLE_MAX when the first word exceeds 80 chars (no empty title)", async () => {
+    const statement = "X".repeat(100); // single 100-char "word"
+    const chunks = chunkMessages([msg(0, "irrelevant")], 1);
+    const llm = mockLlm([{ claims: [{ statement }] }]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims).toHaveLength(1);
+    const title = out.claims[0].proposed_frontmatter.title;
+    expect(title.length).toBe(80);
+    expect(title).not.toContain("…");
+    expect(title.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Input cap
 // ---------------------------------------------------------------------------
 

@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, holding one writable vault under one process
-lock, running as one access identity for its lifetime, serving 39 tools over
+lock, running as one access identity for its lifetime, serving 42 tools over
 stdio. (Federation, #297, lets that process additionally mount other vaults
 read-only — the invariant is one *writable* vault, one lock, one identity, not
 one directory; mounts expose documents, never vault state, and nothing is ever
@@ -104,7 +104,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 39 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 42 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -396,9 +396,36 @@ disk — honoring the non-destructive write invariant.
 
 An existing wiki rarely arrives with Daftari's frontmatter already in place
 — or with its own git history, or living under a sync-friendly filesystem.
-Three adoption surfaces address those, all CLI-only because adoption is a
+Four adoption surfaces address those, all CLI-only because adoption is a
 one-time operator act, not something an agent should reach for
 mid-conversation:
+
+**`daftari schema infer` / `daftari schema diff`** inspect an unfamiliar
+vault before any migration writes. Both commands read raw YAML frontmatter in a
+single vault walk (optionally restricted to a vault-confined `--scope`) and
+never create index, config, or markdown state. `infer` reports every observed
+key with occurrence/prevalence, observed types, a bounded example set, distinct
+value cardinality, and a conservative enum-like signal. Distinct tracking caps
+at 50 values and says when it was capped, so unique IDs and titles cannot grow
+the report without bound. Documents that cannot be read or parsed are named as
+skipped evidence rather than silently disappearing or aborting the rest of the
+advisory scan. The vault and an explicit scope must exist as directories;
+real-path confinement keeps symlink targets inside that scope, and canonical
+paths deduplicate aliases to the same document.
+
+`diff` compares the same observations with built-ins plus
+`schema_extensions`. It reports undeclared fields only after an explicit
+evidence threshold (`--min-occurrences`, default 2), while near-miss names such
+as `state` versus `status` remain visible even below that threshold because a
+one-document typo is still actionable. It also reports declared extensions
+with no non-null observations and aggregates observed type/enum/pattern drift
+with offending counts, at most five stable problem categories, and up to five
+path/value examples. Reports say when additional problem categories were
+omitted. Recursive YAML aliases, non-finite numbers, and oversized structures
+are converted to bounded, JSON-safe evidence before rendering. Missing required
+values are not mislabeled as observed-value drift; an extension that is absent
+or only null is instead reported as unused. Human-readable Markdown is the
+default, and `--json` emits the same deterministic evidence for automation.
 
 **`daftari backfill`** adopts a wiki without a manual migration sprint: it
 walks the vault and derives frontmatter defaults **deterministically** —
@@ -676,17 +703,25 @@ Three of its concerns are simple enough to state in a line:
 - **Staleness.** Each document has a `ttl_days`. Past it, the document is
   flagged stale with a decay score. Stale does not mean deleted — it means "a
   human or agent should re-verify this."
-- **Lint.** `vault_lint` runs twelve cross-vault checks and produces a report.
+- **Lint.** `vault_lint` runs cross-vault checks and produces a report.
   The originals: stale files, orphans, old drafts, stagnant low-confidence
   files, deprecated-but-still-linked, and questions raised but unanswered
   anywhere in the vault. Since joined by tier demotions, the tier 0 referential
   checks (broken source refs, lifecycle conflicts, schema conformance, domain
-  leaks), and valid-time conflicts. The authoritative list is `LINT_CHECKS` in
-  `src/curation/lint.ts`; the tool's `filter` enum reads it directly. The
+  leaks), valid-time conflicts, and advisory source verifiability. Explicit
+  `distill:` breadcrumbs are labeled born-unverifiable on read and lint;
+  access-controlled lint and board surfaces run `repo:` metadata checks only
+  for roles with `verify_repo_sources: true`, because vault collection reads do
+  not grant visibility into the wider `repo_root`. The authoritative list is
+  `LINT_CHECKS` in `src/curation/lint.ts`; the tool's `filter` enum reads it directly. The
   `content`-channel summary honors an optional `lint_voice` key in
   `.daftari/config.yaml` (`plain`, the default, or `ledger_keeper` for the
   ledger-keeper register); it re-words the same findings without touching the
-  structured output.
+  structured output. A separate `compiledEdgeCoverage` monitor reports whether
+  the caller-readable document set has no, partial, or complete mechanically
+  observed `consumes` coverage. It is not a freshness verdict: an absent,
+  machine-local `consumes.jsonl` is named as no data instead of silently
+  resembling an all-current graph.
 - **Lifecycle.** The `draft → canonical → deprecated / superseded` status
   progression. `vault_promote` and `vault_deprecate` move documents along it;
   promotion is gated on complete frontmatter and the `promote` permission.
@@ -788,8 +823,9 @@ argument: as $\Delta t$ grows, the half-life factor drives $S \to 0$ no matter h
 many votes the edge once earned — strength keeps *no* memory of past votes beyond
 the decaying trail, so an un-retested edge drops out on its own and entrenchment
 is structurally impossible, not merely discouraged. A replayed attestation (same
-observer, same axis) counts again only after a minimum gap, so one caller can't
-pump strength in a single sitting.
+observer, same model, same axis) counts again only after a minimum gap, so one
+caller can't pump strength in a single sitting; observations from a different
+model on the same edge in the same sitting count as an independent vote.
 
 The tools split producer from consumer the same way the staged queue does:
 `vault_edge_observe` records sightings (the producer — normally the loop);
@@ -799,6 +835,10 @@ re-earn it; `vault_edges` lists edges with their live aged strength. Storage
 mirrors staged actions: an append-only log at `.daftari/edges.jsonl` is the
 source of truth, with a derived `derives_from_edges` table in the ephemeral index
 (rebuilt on reindex, materialized at startup) for the loop's traversal engine.
+Distill run receipts (provider, ZDR, cost, model, and the staging `runId` that
+joins to produced artifacts) are persisted separately to
+`.daftari/distill-receipts.jsonl` — operator-local and gitignored, never exposed
+through MCP tools.
 
 ## The consolidation loop
 
@@ -820,8 +860,11 @@ the loop runs as its own RBAC principal (e.g.
 artifact traceable to the authenticated identity rather than the
 caller-supplied `agent` claim.
 
-The loop ships in stages, all live today, and each stage layers a new
-discipline on the previous one's queues:
+The loop shipped Stages 1–4. LLM modes now require an explicit posture:
+`shadow_mode: true` journals without applying edge writes, while
+`shadow_mode: false` permits admitted consolidation writes. The explicit live
+switch does not establish that the spec's separate Stage-5 calibration and
+broad auto-write-graduation gates have been met.
 
 - **Stage 1 — scheduler.** `--mode scan` computes three clocks (event /
   decay / backstop) over the `derives_from` edge store + git history and
@@ -845,10 +888,11 @@ discipline on the previous one's queues:
   consults a two-gate envelope: an **invariants** gate (refuses to act on
   an edge whose endpoint carries an unresolved tension, missing
   provenance, or formal-stale decay) and a **trust-budget** gate. The
-  envelope is wired **live but shadowed** — its verdict is computed and
-  journaled to `.daftari/shadow-actions.jsonl` as
-  `decision: "admitted"` or `decision: "gated"` (with the gate and
-  reason), but never enacted. `vault_lint` surfaces a distinct
+  envelope is live: its verdict is computed and journaled to
+  `.daftari/shadow-actions.jsonl` as `decision: "admitted"` or
+  `decision: "gated"` (with the gate and reason). In explicit shadow mode no
+  edge write is applied; with explicit `shadow_mode: false`, admitted writes
+  also land in the edge store. `vault_lint` surfaces a distinct
   envelope-gated view alongside the existing would-gate calibration
   section. §8 closures: a loop decision records `decided_by_principal`
   (the authenticated identity) on the staged-action / contest-tension
@@ -873,14 +917,21 @@ compute-but-don't-write, the would-be `do()` is journaled with its impact
 (convex blast scaling) and budget (vault-state function of the
 ratification-queue depth), and `vault_ratify` returns
 `applied: false, shadow: true` instead of recording a false `ratified`.
-This is the calibration posture the cortex loop runs in until
-coverage/equity ratchets clear and the auto-write tier graduates.
+When `shadow_mode: true`, this is the calibration posture: no edge write lands.
+Setting `shadow_mode: false` explicitly selects the live admitted-write path;
+that operator choice does not establish the spec's broader Stage-5 graduation.
+
+The issue-#97 calibration did **not** test this loop. It repeated
+`daftari sleep --dream tension-scan` at N=0/1/2/3, killed that intervention's
+difficulty-adaptive-depth hypothesis, and left the consolidate loop's own
+calibration gates untouched. The evidence ledger and reopen threshold are in
+`docs/superpowers/results/2026-08-23-sleep-extensions-evidence-verdict.md`.
 
 Advisory-by-design is the point: an agent maintains the vault, but no automated
-process silently rewrites or deletes knowledge. Every change is a deliberate,
-attributable act. The staged-action queue is the same principle pushed one step
-further — even an autonomous curation loop only ever *proposes*; a human ratifies
-before anything is written.
+process silently rewrites or deletes knowledge. Live consolidation requires an
+explicit operator choice, every envelope decision is attributable and
+journaled, and actions outside the bounded consolidation tier remain staged for
+human ratification.
 
 ## Bi-temporal validity
 

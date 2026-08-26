@@ -43,6 +43,17 @@ export interface RoleConfig {
   // destructive grant — a history rewrite + force-push is irreversible — so it
   // is opt-in, off by default. YAML key: erase. Optional; absent means false.
   erase?: boolean;
+  // R13/R16 (U10): may perform human disposition actions on board items
+  // (owner assignment, reassign). Provisioned true on a human operator's role;
+  // omitted on an agent role. This is the config-declared signal distinguishing
+  // humans from agents — AccessContext carries no principal_type. YAML key:
+  // dispose. Optional; absent means false.
+  dispose?: boolean;
+  // #454: may verify filesystem metadata for repo: source references. This is
+  // separate from vault read/write grants because repo_root may expose a much
+  // larger tree than the vault ACL covers. YAML key: verify_repo_sources.
+  // Optional; absent means false.
+  verifyRepoSources?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -136,6 +147,18 @@ export interface OAuthConfig {
   subjects: Record<string, OAuthSubjectConfig>;
 }
 
+// Browser-login shim (bead 7q9): a cookie session so a browser — which cannot
+// send `Authorization: Bearer` on navigation — can authenticate to `/board`.
+// Like tokens, the secret VALUES live in env vars named here, never in config.
+// `maps_to` is the single identity a successful login receives; multi-user
+// browser login is OAuth's job, not this block's.
+export interface SessionConfig {
+  signingKeyEnv: string; // env var holding the HMAC signing key (>= 32 bytes)
+  credentialEnv: string; // env var holding the login password
+  mapsTo: { user: string; role: string }; // role must exist in `roles`
+  lifetimeHours: number; // session lifetime; default 12
+}
+
 export interface ServerConfig {
   // "external" is the operator's explicit acknowledgment that TLS terminates
   // upstream (or the network is trusted). Required for non-loopback binds —
@@ -145,6 +168,9 @@ export interface ServerConfig {
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
   oauth?: OAuthConfig;
+  // Optional and composable with tokens/oauth (bead 7q9): humans log in from a
+  // browser and receive a signed session cookie; machines keep using bearers.
+  session?: SessionConfig;
   // The serve ops floor (multi-user item 6). Defaults ALWAYS apply in serve
   // mode — an opt-in floor is still a missing floor. stdio ignores the
   // whole block: single caller, single identity, no request boundary.
@@ -342,6 +368,9 @@ export interface DaftariConfig {
   // static `.git` file while git's churn lives off-cloud. Always resolved
   // outside the vault.
   gitDir?: string;
+  // Root used by explicit `repo:` source references. It may equal the vault
+  // root or contain a nested vault, but may never sit below/outside the vault.
+  repoRoot?: string;
   // Human-facing voice for vault_lint's `content` channel. "plain" (default) is
   // the compact summary; "ledger_keeper" re-renders the same findings in the
   // ledger-keeper register. Presentation only — the structured lint payload is
@@ -385,6 +414,12 @@ export interface DaftariConfig {
   // — no mounts, no principals grants. stdio-only in v1: `daftari serve`
   // refuses to start on a config carrying a `mounts` list.
   federation?: FederationConfig;
+  // U10: optional explicit principal list (`principals:` top-level key).
+  // Supplements the implicit set derived from server.auth.tokens[].user.
+  // The union of both sets is the configured principal set. Absent ⇒ []
+  // (leniently parsed; not required). Used by isConfiguredPrincipal to gate
+  // board owner/reassign actions to known identities only.
+  principals: string[];
 }
 
 export type GraphExpandSubset = "trigger" | "all" | "tensions";
@@ -398,6 +433,12 @@ export interface GraphExpandConfig {
 export interface SearchTuningConfig {
   coverage: boolean;
   vecKnnK: number;
+  // Hybrid fusion weights. Default 0.8/0.2, measured (fusion weight sweep,
+  // 2026-08-18): the recall-vs-weight curve is an inverted U — a light
+  // vector contribution beats both the old 0.5/0.5 split (worst measured
+  // vector-on setting, ~-2pp everywhere) and pure lexical at most budgets.
+  // See docs/superpowers/results/2026-08-18-fusion-weight-sweep.md.
+  weights: { bm25: number; vector: number };
   // MAV-161: supersession suppression in vault_search — demote hits whose
   // superseded_by chain resolves to a readable current head, pulling that
   // head into the list when absent. Default off until the hallucination-
@@ -413,6 +454,7 @@ export interface SearchTuningConfig {
 
 export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   coverage: false,
+  weights: { bm25: 0.8, vector: 0.2 },
   // 256 is the measured saturation point of the MAV-159 recall-vs-K sweep on
   // the frozen RB corpus: +1.0–2.8pp multi-day recall over the historical 64
   // depending on budget, distractor load flat, K=512 byte-identical to 256.
@@ -426,6 +468,7 @@ const RECOGNISED_SEARCH_KEYS = [
   "vec_knn_k",
   "suppress_superseded",
   "graph_expand",
+  "weights",
 ] as const;
 
 // Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
@@ -450,6 +493,7 @@ function emptyConfig(): DaftariConfig {
     shadowMode: false,
     shadowModeSet: false,
     gitDir: undefined,
+    repoRoot: undefined,
     lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
@@ -460,6 +504,7 @@ function emptyConfig(): DaftariConfig {
     autoRepin: true,
     distill: undefined,
     federation: undefined,
+    principals: [],
   };
 }
 
@@ -523,6 +568,22 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     erase = obj.erase;
   }
 
+  let dispose = false;
+  if (obj.dispose !== undefined) {
+    if (typeof obj.dispose !== "boolean") {
+      return err(new Error(`role '${name}' dispose must be true or false`));
+    }
+    dispose = obj.dispose;
+  }
+
+  let verifyRepoSources = false;
+  if (obj.verify_repo_sources !== undefined) {
+    if (typeof obj.verify_repo_sources !== "boolean") {
+      return err(new Error(`role '${name}' verify_repo_sources must be true or false`));
+    }
+    verifyRepoSources = obj.verify_repo_sources;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -550,6 +611,8 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ratify,
     ...(proposeOnly ? { proposeOnly } : {}),
     ...(erase ? { erase } : {}),
+    ...(dispose ? { dispose } : {}),
+    ...(verifyRepoSources ? { verifyRepoSources } : {}),
   });
 }
 
@@ -1078,8 +1141,17 @@ const RECOGNISED_SERVER_LIMITS_KEYS = [
   "auth_failures_per_minute",
   "max_in_flight",
 ] as const;
-const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth"] as const;
+const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth", "session"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
+const RECOGNISED_SESSION_KEYS = [
+  "signing_key_env",
+  "credential_env",
+  "maps_to",
+  "lifetime_hours",
+] as const;
+const RECOGNISED_MAPS_TO_KEYS = ["user", "role"] as const;
+// Default browser-session lifetime when `lifetime_hours` is omitted.
+export const DEFAULT_SESSION_LIFETIME_HOURS = 12;
 const RECOGNISED_OAUTH_KEYS = ["issuer", "audience", "jwks_uri", "subjects"] as const;
 
 // `server.auth.oauth` (#7). Shape-only validation here; URL parseability and
@@ -1131,6 +1203,58 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
     audience: (obj.audience as string).trim(),
     jwksUri: (obj.jwks_uri as string).trim(),
     subjects,
+  });
+}
+
+// `server.auth.session` (bead 7q9). Shape-only validation here; whether the
+// named env vars are actually set, and whether `maps_to.role` is declared, is
+// checked at serve startup (same posture as tokens/oauth) so config load stays
+// pure of process.env.
+function validateSession(raw: unknown): Result<SessionConfig, Error> {
+  const mapping = requireMapping(raw, "'server.auth.session'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_SESSION_KEYS, "server.auth.session");
+  if (!known.ok) return known;
+  for (const field of ["signing_key_env", "credential_env"] as const) {
+    if (typeof obj[field] !== "string" || (obj[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.session.${field}' must be a non-empty string`));
+    }
+  }
+  const mapsToMapping = requireMapping(obj.maps_to, "'server.auth.session.maps_to'");
+  if (!mapsToMapping.ok) return mapsToMapping;
+  const mapsTo = mapsToMapping.value;
+  const mapsToKnown = rejectUnknownKeys(
+    mapsTo,
+    RECOGNISED_MAPS_TO_KEYS,
+    "server.auth.session.maps_to",
+  );
+  if (!mapsToKnown.ok) return mapsToKnown;
+  for (const field of RECOGNISED_MAPS_TO_KEYS) {
+    if (typeof mapsTo[field] !== "string" || (mapsTo[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.session.maps_to.${field}' must be a non-empty string`));
+    }
+  }
+  let lifetimeHours = DEFAULT_SESSION_LIFETIME_HOURS;
+  if (obj.lifetime_hours !== undefined) {
+    const v = obj.lifetime_hours;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+      return err(
+        new Error(
+          `'server.auth.session.lifetime_hours' must be a positive integer (got ${JSON.stringify(v)})`,
+        ),
+      );
+    }
+    lifetimeHours = v;
+  }
+  return ok({
+    signingKeyEnv: (obj.signing_key_env as string).trim(),
+    credentialEnv: (obj.credential_env as string).trim(),
+    mapsTo: {
+      user: (mapsTo.user as string).trim(),
+      role: (mapsTo.role as string).trim(),
+    },
+    lifetimeHours,
   });
 }
 
@@ -1228,6 +1352,11 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
           role: (t.role as string).trim(),
         });
       }
+    }
+    if (auth.session !== undefined) {
+      const session = validateSession(auth.session);
+      if (!session.ok) return session;
+      out.session = session.value;
     }
   }
   return ok(out);
@@ -1371,6 +1500,22 @@ function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefin
     );
   }
   return ok(gitDirAbs);
+}
+
+function resolveRepoRoot(raw: unknown, vaultRoot: string): Result<string | undefined, Error> {
+  if (raw === undefined || raw === null) return ok(undefined);
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return err(new Error("malformed config: 'repo_root' must be a non-empty string"));
+  }
+  const vaultAbs = resolve(vaultRoot);
+  const repoRootAbs = resolve(vaultAbs, expandTilde(raw));
+  const vaultFromRepo = relative(repoRootAbs, vaultAbs);
+  if (vaultFromRepo.startsWith("..") || isAbsolute(vaultFromRepo)) {
+    return err(
+      new Error(`malformed config: 'repo_root' must contain the vault (got ${repoRootAbs})`),
+    );
+  }
+  return ok(repoRootAbs);
 }
 
 // Resolves the optional `code_repos` block (JIT anchor pins). A mapping of
@@ -1579,6 +1724,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const gitDir = resolveGitDir(root.git_dir, vaultRoot);
   if (!gitDir.ok) return gitDir;
 
+  const repoRoot = resolveRepoRoot(root.repo_root, vaultRoot);
+  if (!repoRoot.ok) return repoRoot;
+
   const lintVoice = resolveLintVoice(root.lint_voice);
   if (!lintVoice.ok) return lintVoice;
 
@@ -1709,6 +1857,33 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       }
       search.suppressSuperseded = block.suppress_superseded;
     }
+    if (block.weights !== undefined) {
+      const w = block.weights;
+      if (w === null || typeof w !== "object" || Array.isArray(w)) {
+        return err(new Error("malformed config: 'search.weights' must be a mapping"));
+      }
+      const wr = w as Record<string, unknown>;
+      const unknownW = rejectUnknownKeys(wr, ["bm25", "vector"], "search.weights");
+      if (!unknownW.ok) return err(new Error(`malformed config: ${unknownW.error.message}`));
+      const bm25 = wr.bm25;
+      const vector = wr.vector;
+      if (
+        typeof bm25 !== "number" ||
+        typeof vector !== "number" ||
+        !Number.isFinite(bm25) ||
+        !Number.isFinite(vector) ||
+        bm25 < 0 ||
+        vector < 0 ||
+        bm25 + vector <= 0
+      ) {
+        return err(
+          new Error(
+            "malformed config: 'search.weights' needs numeric non-negative 'bm25' and 'vector' summing above zero",
+          ),
+        );
+      }
+      search.weights = { bm25, vector };
+    }
     if (block.vec_knn_k !== undefined) {
       if (
         typeof block.vec_knn_k !== "number" ||
@@ -1772,6 +1947,14 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     }
   }
 
+  // Optional `principals:` top-level list (U10). Union with tokens[].user in
+  // principals.ts — config layer just collects the explicit additions here.
+  // Absent ⇒ [] (lenient: not required, not an error).
+  const principalsList = asStringArray(root.principals, "'principals'");
+  if (!principalsList.ok) {
+    return err(new Error(`malformed config: ${principalsList.error.message}`));
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
@@ -1786,6 +1969,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode,
     shadowModeSet,
     gitDir: gitDir.value,
+    repoRoot: repoRoot.value,
     lintVoice: lintVoice.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,
@@ -1796,5 +1980,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     autoRepin,
     distill: distillConfig.value,
     federation: federationConfig.value,
+    principals: principalsList.value,
   });
 }

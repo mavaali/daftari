@@ -64,6 +64,11 @@ export function toCanonDoc(path: string, doc: LoadedDoc): CanonDoc {
     const readers = rawReaders.filter((r): r is string => typeof r === "string");
     if (readers.length > 0) cd.readers = readers;
   }
+  const rawLineage = raw.reader_lineage;
+  if (Array.isArray(rawLineage)) {
+    const lineage = rawLineage.filter((e): e is string => typeof e === "string");
+    if (lineage.length > 0) cd.readerLineage = lineage;
+  }
   return cd;
 }
 

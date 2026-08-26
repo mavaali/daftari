@@ -25,6 +25,6 @@
     "seedLimit": 10,
     "sweepLimit": 180,
     "budgets": [0, 1, 2, 3, 4, 5, 10, 15, 20, 30, 50, 90, 170],
-    "weights": "hybridSearch defaults (bm25 0.5 / vector 0.5); when the embedding model cannot load, search degrades to lexical-only and the run records vectorUsed=false — arms are only comparable to arms with the same vectorUsed value"
+    "weights": "hybridSearch defaults (bm25 0.8 / vector 0.2 since the 2026-08-18 weight sweep); when the embedding model cannot load, search degrades to lexical-only and the run records vectorUsed=false — arms are only comparable to arms with the same vectorUsed value AND the same weights"
   }
 }

@@ -511,6 +511,32 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("repo_root (typed source references)", () => {
+    it("is absent by default", () => {
+      const cfg = loadConfig(dir);
+      expect(cfg.ok).toBe(true);
+      if (cfg.ok) expect(cfg.value.repoRoot).toBeUndefined();
+    });
+
+    it("resolves a repository root that contains a nested vault", () => {
+      const repo = mkdtempSync(join(tmpdir(), "daftari-repo-root-"));
+      const vault = join(repo, "vault");
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      writeFileSync(configPath(vault), "repo_root: ..\n");
+      const cfg = loadConfig(vault);
+      expect(cfg.ok).toBe(true);
+      if (cfg.ok) expect(cfg.value.repoRoot).toBe(resolve(repo));
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it("rejects non-string roots and roots that do not contain the vault", () => {
+      writeConfig("repo_root: [..]\n");
+      expect(loadConfig(dir).ok).toBe(false);
+      writeConfig("repo_root: ./nested\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+  });
+
   describe("type primitives", () => {
     it("parses every supported extension type", () => {
       writeConfig(
@@ -1002,6 +1028,30 @@ describe("loadConfig — schema extensions", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error.message).toContain("promote and propose_only");
+    });
+  });
+
+  describe("verify_repo_sources role flag (#454)", () => {
+    it("parses an explicit repository-metadata verification grant", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    verify_repo_sources: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.verifyRepoSources).toBe(true);
+    });
+
+    it("defaults to absent and rejects non-boolean grants", () => {
+      writeConfig("roles:\n  reader:\n    read: ['*']\n");
+      const absent = loadConfig(dir);
+      expect(absent.ok).toBe(true);
+      if (!absent.ok) return;
+      expect(absent.value.roles.reader?.verifyRepoSources).toBeUndefined();
+
+      writeConfig("roles:\n  reader:\n    read: ['*']\n    verify_repo_sources: yes\n");
+      const malformed = loadConfig(dir);
+      expect(malformed.ok).toBe(false);
+      if (malformed.ok) return;
+      expect(malformed.error.message).toContain("verify_repo_sources");
     });
   });
 });

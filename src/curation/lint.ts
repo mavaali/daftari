@@ -8,7 +8,12 @@
 // advisory judgments, but the posture is the same: report only.
 
 import { ok, type Result } from "../frontmatter/types.js";
-import { DISTILL_NUMERIC_DEFAULTS } from "../utils/config.js";
+import { DISTILL_NUMERIC_DEFAULTS, loadConfig } from "../utils/config.js";
+import {
+  type CompiledEdgeCoverageSummary,
+  compiledEdgeCoverageSummary,
+  listConsumesEdges,
+} from "./consumes.js";
 import { type CoverageEquitySummary, coverageEquitySummary } from "./coverage.js";
 import { DRAFT_MAX_DAYS, LOW_CONFIDENCE_MAX_DAYS } from "./decay.js";
 import { listEdges } from "./edges.js";
@@ -22,6 +27,7 @@ import {
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
+import { unverifiableSourceFindings } from "./source-refs.js";
 import {
   listStagedActions,
   pendingLintItems,
@@ -71,6 +77,7 @@ export const LINT_CHECKS = [
   "positionIntegrity",
   "malformedPins",
   "verbatimQuoteOverrun",
+  "unverifiableSourceRefs",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -186,6 +193,9 @@ export interface LintReport {
   // Coverage/equity summary (Stage 4 — spec §6.2): four budget-drift ratchets
   // over the cortex loop. Read-only monitor; never a target.
   coverageEquity: CoverageEquitySummary;
+  // #420: coverage of mechanically observed compiled dependencies, separate
+  // from freshness. Computed over the same visibility-scoped docs as checks.
+  compiledEdgeCoverage: CompiledEdgeCoverageSummary;
   // #235's headline measurement (quick win 2 of #236): proposal arrival rate
   // vs. review throughput over the staged-actions log. Vault-global counts by
   // design, like tensionHealth — no paths or principals cross here.
@@ -206,6 +216,10 @@ export interface LintOptions {
   // U12/R9: verbatim-quote budget for synthesized (compiled) notes. Defaults to
   // the distill config's maxVerbatimChars; a caller may override per run.
   maxVerbatimChars?: number;
+  // #454: whether this caller is authorized to stat repo: targets. Direct
+  // internal/CLI calls default true; access-controlled surfaces must pass the
+  // role's dedicated verify_repo_sources grant explicitly.
+  verifyRepoSources?: boolean;
 }
 
 // U12/R9: verbatim quotes in a compiled note's body — straight or curly
@@ -258,6 +272,7 @@ export async function runLint(
 ): Promise<Result<LintReport, Error>> {
   const loaded = await loadDocuments(vaultRoot);
   if (!loaded.ok) return loaded;
+  const config = loadConfig(vaultRoot);
   const allDocs = loaded.value;
   const pathVisible = opts.pathVisible;
   const docs = pathVisible ? allDocs.filter((d) => pathVisible(d.path)) : allDocs;
@@ -296,6 +311,7 @@ export async function runLint(
     positionIntegrity: [],
     malformedPins: [],
     verbatimQuoteOverrun: [],
+    unverifiableSourceRefs: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -321,6 +337,15 @@ export async function runLint(
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
+  // runLint historically remains useful against partially configured vaults;
+  // server startup is the surface that rejects malformed config. Authorized
+  // repo verification treats an unavailable root as unconfigured. Distill
+  // breadcrumbs are labeled independently because they require no filesystem
+  // metadata access.
+  checks.unverifiableSourceRefs = unverifiableSourceFindings(docs, {
+    ...(config.ok && config.value.repoRoot ? { repoRoot: config.value.repoRoot } : {}),
+    verifyRepoSources: opts.verifyRepoSources !== false,
+  });
 
   // Item 5(c): tension-log reconciliation inputs for the positionIntegrity
   // sub-checks — one load, grouped per doc. Positional tensions are
@@ -614,7 +639,7 @@ export async function runLint(
 
   // Each JSONL log is read ONCE; the lint summaries and the coverage view
   // below are derived from the same in-memory records. Read order (staged,
-  // shadow, edges) matches the pre-consolidation sequence so a multi-log
+  // shadow, edges, consumes) matches the pre-consolidation sequence so a multi-log
   // failure surfaces the same first error it always did.
   const stagedRes = await listStagedActions(vaultRoot);
   if (!stagedRes.ok) return stagedRes;
@@ -622,6 +647,8 @@ export async function runLint(
   if (!shadowRecordsRes.ok) return shadowRecordsRes;
   const edgesRes = await listEdges(vaultRoot, {}, now);
   if (!edgesRes.ok) return edgesRes;
+  const consumesRes = await listConsumesEdges(vaultRoot);
+  if (!consumesRes.ok) return consumesRes;
 
   const stagedActions = pendingLintItems(stagedRes.value, now);
   const shadowActions = shadowLintSummaryOf(shadowRecordsRes.value);
@@ -642,6 +669,10 @@ export async function runLint(
     stagedActions,
     shadowActions,
     coverageEquity: coverageEquityRes.value,
+    compiledEdgeCoverage: compiledEdgeCoverageSummary(
+      docs.map((doc) => doc.path),
+      consumesRes.value,
+    ),
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
   });
 }

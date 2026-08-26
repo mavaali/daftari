@@ -46,6 +46,14 @@ export interface ConsumesEdge {
   compile_ts: string; // ISO 8601 — when the write landed
 }
 
+export interface CompiledEdgeCoverageSummary {
+  status: "no-data" | "partial" | "complete";
+  total_documents: number;
+  instrumented_documents: number;
+  uninstrumented_documents: number;
+  message: string;
+}
+
 export function consumesPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "consumes.jsonl");
 }
@@ -123,6 +131,40 @@ export function currentConsumesEdges(all: ConsumesEdge[]): ConsumesEdge[] {
     if (seen === undefined || e.compile_ts >= seen) latestTs.set(e.artifact, e.compile_ts);
   }
   return all.filter((e) => latestTs.get(e.artifact) === e.compile_ts);
+}
+
+// Coverage is deliberately narrower than correctness: an artifact is
+// instrumented when its CURRENT compile group contains at least one observed
+// input. The summary never claims that every expected input was captured or
+// that any document is fresh. That is enough to distinguish a machine-local
+// consumes substrate that is absent (including a fresh clone) from one that
+// has actually observed compiled dependencies.
+export function compiledEdgeCoverageSummary(
+  documentPaths: string[],
+  all: ConsumesEdge[],
+): CompiledEdgeCoverageSummary {
+  const documents = new Set(documentPaths);
+  const instrumented = new Set(
+    currentConsumesEdges(all)
+      .map((edge) => edge.artifact)
+      .filter((artifact) => documents.has(artifact)),
+  ).size;
+  const total = documents.size;
+  const uninstrumented = total - instrumented;
+  const status = instrumented === 0 ? "no-data" : uninstrumented === 0 ? "complete" : "partial";
+  const message =
+    status === "no-data"
+      ? `no compiled-edge data (${uninstrumented} docs uninstrumented)`
+      : status === "complete"
+        ? `compiled-edge data observed for all ${total} docs`
+        : `compiled-edge data observed for ${instrumented} of ${total} docs (${uninstrumented} uninstrumented)`;
+  return {
+    status,
+    total_documents: total,
+    instrumented_documents: instrumented,
+    uninstrumented_documents: uninstrumented,
+    message,
+  };
 }
 
 // Forward query: the units the artifact's current compile consumed.

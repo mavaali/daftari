@@ -6,54 +6,58 @@
 // The visual system is epistemic-first: a document's STANDING (status,
 // confidence, tier, decay, contested) is the loudest thing on the page — a
 // colored instrument strip, not grey metadata — because that standing is what
-// the vault knows and a plain reader cannot show. Semantic colors: green =
-// strong (high / canonical / fresh), amber = caution (medium / aging), red =
-// weak/hazard (low / warn / deprecated), maroon accent = contested.
+// the vault knows and a plain reader cannot show.
+//
+// Instrument-panel palette (2026-08-18 redesign, decided on the design canvas):
+// a single dark look — flat, square, hairline rules, mono-dominant chrome —
+// where the epistemic colors are the ONLY color on screen: green = strong
+// (high / canonical / fresh), amber = caution (medium / aging), orange =
+// weak/hazard (low / warn / deprecated), rose accent = contested (its own
+// channel — the keystone signal never shares a hue with mere weakness).
+// Everything else is a warm near-monochrome ramp (--bg → --hi). No light
+// theme by design.
 
 import type { GraphOptions } from "./graph.js";
 import { escHtml, type TocEntry } from "./render.js";
 import type { StatusView } from "./status-view.js";
 
 const CSS = `
-:root { color-scheme: light dark;
-  --bg:#f6f3ee; --surface:#fff; --surface-2:#faf8f4; --border:#e2ddd4; --border-2:#d0cabd;
-  --text:#20211f; --muted:#6b6b6b; --accent:#b11f4b; --accent-soft:rgba(177,31,75,.08);
-  --link:#0a66c2; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
-  --good:#15803d; --good-bg:rgba(21,128,61,.10);
-  --warn:#b45309; --warn-bg:rgba(180,83,9,.10);
-  --bad:#c2410c; --bad-bg:rgba(194,65,12,.10);
-  --dim:#8a8a8a; --dim-bg:rgba(138,138,138,.12); }
-@media (prefers-color-scheme: dark) { :root {
-  --bg:#232322; --surface:#2c2c2b; --surface-2:#313130; --border:#42423f; --border-2:#565652;
-  --text:#e6e3dc; --muted:#9a988f; --accent:#fd8ea1; --accent-soft:rgba(253,142,161,.12);
-  --link:#69b3ff;
-  --good:#4ade80; --good-bg:rgba(74,222,128,.14);
-  --warn:#fbbf24; --warn-bg:rgba(251,191,36,.14);
-  --bad:#fb923c; --bad-bg:rgba(251,146,60,.14);
-  --dim:#8f8d86; --dim-bg:rgba(143,141,134,.16); } }
-* { box-sizing:border-box; }
+:root { color-scheme: dark;
+  --bg:#141513; --surface:#191a18; --surface-2:#1f201d; --border:#32332e; --border-2:#4a4b44;
+  --text:#d8d6cb; --muted:#8f8e83; --hi:#f2f0e6; --faint:#6e6e63;
+  --accent:#e0607e; --accent-soft:rgba(224,96,126,.12);
+  --link:#f2f0e6; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  --good:#3fd68c; --good-bg:rgba(63,214,140,.12);
+  --warn:#e6b83d; --warn-bg:rgba(230,184,61,.12);
+  --bad:#e8713d; --bad-bg:rgba(232,113,61,.12);
+  --dim:#8f8e83; --dim-bg:rgba(143,142,131,.12); }
+* { box-sizing:border-box; border-radius:0; }
 body { margin:0; background:var(--bg); color:var(--text);
   font-family:-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.55; }
 .wrap { max-width:920px; margin:0 auto; padding:20px 22px 90px; }
-a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+.wrap.wide { max-width:1360px; }
+a { color:var(--link); text-decoration:underline; text-decoration-color:var(--border-2);
+  text-underline-offset:3px; }
+a:hover { text-decoration-color:var(--hi); }
+.brand, .nav a, .tile a { text-decoration:none; }
 h1 { line-height:1.2; font-size:26px; margin:10px 0 14px; letter-spacing:-.01em; }
 h2 { line-height:1.25; }
 
 /* top bar */
 .topbar { display:flex; align-items:center; gap:16px; margin:0 0 20px;
   padding-bottom:12px; border-bottom:1px solid var(--border); }
-.brand { font-weight:800; color:var(--accent); font-size:14px; letter-spacing:.02em;
-  font-family:var(--mono); }
+.brand { font-weight:700; color:var(--hi); font-size:13px; letter-spacing:.14em;
+  text-transform:uppercase; font-family:var(--mono); }
 .topbar form { margin-left:auto; }
 .topbar input { font-size:13px; padding:6px 11px; border:1px solid var(--border-2);
-  border-radius:8px; background:var(--surface); color:var(--text); width:240px; }
+  background:var(--surface); color:var(--text); width:240px; }
 
 /* standing strip — the epistemic hero */
 .standing { display:flex; flex-wrap:wrap; align-items:center; gap:10px 12px;
-  background:var(--surface); border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); border:1px solid var(--border);
   padding:12px 16px; margin:0 0 16px; }
 .badge { font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.03em;
-  text-transform:uppercase; padding:3px 9px; border-radius:6px; border:1px solid transparent; }
+  text-transform:uppercase; padding:3px 9px; border:1px solid transparent; }
 .badge.solid-good { background:var(--good-bg); color:var(--good); border-color:var(--good); }
 .badge.out-dim { color:var(--dim); border-color:var(--border-2); }
 .badge.solid-bad { background:var(--bad-bg); color:var(--bad); border-color:var(--bad); }
@@ -61,23 +65,23 @@ h2 { line-height:1.25; }
 .meter .label { font-family:var(--mono); font-size:10px; text-transform:uppercase;
   letter-spacing:.05em; color:var(--muted); }
 .meter .bars { display:inline-flex; gap:3px; }
-.meter .seg { width:16px; height:7px; border-radius:2px; background:var(--dim-bg); }
+.meter .seg { width:16px; height:7px; background:var(--dim-bg); }
 .meter .seg.on-good { background:var(--good); } .meter .seg.on-warn { background:var(--warn); }
 .meter .seg.on-bad { background:var(--bad); }
-.chip { font-family:var(--mono); font-size:11px; padding:3px 9px; border-radius:6px;
+.chip { font-family:var(--mono); font-size:11px; padding:3px 9px;
   display:inline-flex; align-items:center; gap:5px; }
 .chip.good { background:var(--good-bg); color:var(--good); }
 .chip.warn { background:var(--warn-bg); color:var(--warn); }
 .chip.bad  { background:var(--bad-bg);  color:var(--bad); }
 .chip.dim  { background:var(--dim-bg);  color:var(--muted); }
 .chip.contested { background:var(--accent-soft); color:var(--accent); font-weight:700; }
-.dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:0 0 auto; }
+.dot { width:8px; height:8px; display:inline-block; flex:0 0 auto; }
 .dot.good{background:var(--good);} .dot.warn{background:var(--warn);}
 .dot.bad{background:var(--bad);} .dot.dim{background:var(--dim);}
 .spacer { flex:1 1 auto; }
 .tier { font-family:var(--mono); font-size:11px; color:var(--muted); }
 .graphlink { margin:0 0 14px; font-size:13px; }
-.toc { background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+.toc { background:var(--surface-2); border:1px solid var(--border);
   padding:10px 16px; margin:0 0 16px; }
 .toc h2 { font-size:11px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.04em;
   color:var(--muted); margin:0 0 6px; }
@@ -87,10 +91,10 @@ h2 { line-height:1.25; }
 .body :is(h1,h2,h3) { scroll-margin-top:12px; }
 .tags { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }
 .tag { font-family:var(--mono); font-size:11px; color:var(--muted);
-  border:1px solid var(--border); border-radius:20px; padding:1px 9px; }
+  border:1px solid var(--border); padding:1px 9px; }
 
 /* epistemic banners — differentiated by kind */
-.banner { display:flex; gap:10px; align-items:flex-start; border-radius:10px;
+.banner { display:flex; gap:10px; align-items:flex-start;
   padding:10px 14px; margin:0 0 10px; font-size:13px; border:1px solid var(--border);
   border-left-width:4px; background:var(--surface-2); }
 .banner .bk { font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.05em;
@@ -99,7 +103,7 @@ h2 { line-height:1.25; }
 .banner.warn { border-left-color:var(--warn);} .banner.warn .bk { color:var(--warn); }
 
 /* contested panel */
-.tensions { border:1px solid var(--accent); border-left-width:4px; border-radius:10px;
+.tensions { border:1px solid var(--accent); border-left-width:4px;
   padding:12px 16px; margin:0 0 16px; background:var(--accent-soft); }
 .tensions h2 { font-size:13px; color:var(--accent); margin:0 0 8px; font-family:var(--mono);
   text-transform:uppercase; letter-spacing:.04em; }
@@ -110,11 +114,12 @@ h2 { line-height:1.25; }
 .tensions .k { font-family:var(--mono); font-size:11px; }
 
 /* body */
-.body { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+.body { background:var(--surface); border:1px solid var(--border);
   padding:22px 26px; overflow-wrap:anywhere; }
 .body h1,.body h2,.body h3 { margin-top:1.4em; }
-.body pre { background:#1c1c1c; color:#e2e2e2; padding:12px 14px; border-radius:8px; overflow:auto; }
-.body code { background:var(--dim-bg); padding:1px 5px; border-radius:4px; font-size:.92em; }
+.body pre { background:#0f100e; color:#e2e2e2; border:1px solid var(--border);
+  padding:12px 14px; overflow:auto; }
+.body code { background:var(--dim-bg); padding:1px 5px; font-size:.92em; }
 .body pre code { background:none; padding:0; }
 .body blockquote { border-left:3px solid var(--border-2); margin:0; padding-left:14px; color:var(--muted); }
 
@@ -147,10 +152,10 @@ ul.docs .cf { font-family:var(--mono); font-size:10px; color:var(--muted); flex:
 .gtools { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0 0 8px; font-size:13px; }
 .gtools label { font-family:var(--mono); font-size:11px; color:var(--muted); }
 .gtools select { font-size:13px; padding:4px 8px; border:1px solid var(--border-2);
-  border-radius:7px; background:var(--surface); color:var(--text); }
+  background:var(--surface); color:var(--text); }
 .ginfo { font-size:12px; color:var(--muted); margin:0 0 8px; min-height:15px; }
 #cy { width:100%; height:72vh; background:var(--surface); border:1px solid var(--border);
-  border-radius:12px; }
+  }
 .legend { display:flex; gap:16px; flex-wrap:wrap; font-family:var(--mono); font-size:11px;
   color:var(--muted); margin:10px 0 0; }
 .legend .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px;
@@ -159,28 +164,29 @@ ul.docs .cf { font-family:var(--mono); font-size:10px; color:var(--muted); flex:
   vertical-align:middle; }
 
 /* topbar nav */
-.nav { display:flex; gap:14px; margin-left:18px; }
-.nav a { font-family:var(--mono); font-size:12px; color:var(--muted); }
-.nav a:hover { color:var(--link); }
+.nav { display:flex; gap:18px; margin-left:14px; }
+.nav a { font-family:var(--mono); font-size:10px; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.09em; }
+.nav a:hover { color:var(--hi); }
 
 /* dashboard */
 .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:0 0 20px; }
-.tile { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+.tile { background:var(--surface); border:1px solid var(--border); padding:14px 16px; }
 .tile .num { font-size:28px; font-weight:700; letter-spacing:-.02em; }
 .tile .lbl { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.04em;
   color:var(--muted); margin-top:2px; }
 .tile a { display:block; }
 .tile.alert .num { color:var(--accent); }
-.panel { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+.panel { background:var(--surface); border:1px solid var(--border);
   padding:14px 18px; margin:0 0 16px; }
 .panel h2 { font-size:12px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.04em;
   color:var(--muted); margin:0 0 10px; }
-.sbar { display:flex; height:14px; border-radius:7px; overflow:hidden; background:var(--dim-bg); }
+.sbar { display:flex; height:14px; overflow:hidden; background:var(--dim-bg); }
 .sbar span { display:block; }
 .sbar .fresh { background:var(--good); } .sbar .aging { background:var(--warn); }
 .sbar .stale { background:var(--bad); }
 .sbar-key { display:flex; gap:16px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--muted); }
-.sbar-key .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+.sbar-key .sw { display:inline-block; width:9px; height:9px; margin-right:5px; vertical-align:middle; }
 .runs { list-style:none; margin:0; padding:0; }
 .runs li { display:flex; gap:10px; align-items:baseline; padding:5px 0; border-top:1px solid var(--border); font-size:13px; }
 .runs li:first-child { border-top:none; }
@@ -193,15 +199,29 @@ function searchBox(query = ""): string {
 <input type="search" name="q" placeholder="Search the vault…" value="${escHtml(query)}" autocomplete="off"></form>`;
 }
 
-export function layout(title: string, bodyHtml: string, query = ""): string {
+export function layout(
+  title: string,
+  bodyHtml: string,
+  query = "",
+  opts: { wide?: boolean } = {},
+): string {
   return (
     `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escHtml(title)}</title><style>${CSS}</style></head>
-<body><div class="wrap"><div class="topbar"><a class="brand" href="/">daftari · vault</a>` +
-    `<nav class="nav"><a href="/docs">documents</a><a href="/graph">graph</a></nav>` +
+<body><div class="wrap${opts.wide ? " wide" : ""}"><div class="topbar"><a class="brand" href="/">daftari · vault</a>` +
+    `<nav class="nav"><a href="/docs">documents</a><a href="/graph">graph</a><a href="/board">board</a></nav>` +
     `${searchBox(query)}</div>${bodyHtml}</div></body></html>`
   );
+}
+
+// --- shared epistemic tone mapping -------------------------------------------
+
+// One tone scale for every three-level epistemic value (confidence, certainty):
+// high = good, medium = warn, everything else = bad. Shared so the board and
+// the doc pages can never disagree about what a level looks like.
+export function toneForLevel(level: string): "good" | "warn" | "bad" {
+  return level === "high" ? "good" : level === "medium" ? "warn" : "bad";
 }
 
 // --- epistemic visual vocabulary ---------------------------------------------
@@ -209,7 +229,7 @@ export function layout(title: string, bodyHtml: string, query = ""): string {
 // Confidence → a 3-segment meter (low=1 red, medium=2 amber, high=3 green).
 function confidenceMeter(conf: string): string {
   const rank = conf === "high" ? 3 : conf === "medium" ? 2 : 1;
-  const tone = conf === "high" ? "good" : conf === "medium" ? "warn" : "bad";
+  const tone = toneForLevel(conf);
   const segs = [1, 2, 3]
     .map((i) => `<span class="seg${i <= rank ? ` on-${tone}` : ""}"></span>`)
     .join("");
@@ -348,6 +368,17 @@ export function renderDocPage(args: {
           )
           .join("")}</ul></nav>`
       : "";
+  // R28 (admin-loopback convenience): a static link from the doc page into the
+  // board filtered to this document. No data fetch — purely a link construction.
+  // encodeURIComponent encodes slashes and special chars in the path, producing
+  // a valid query-string value. The board's RBAC-correct surface is in U12;
+  // this is a convenience shortcut for admins browsing the viewer.
+  const boardLink =
+    `<div class="backlinks" style="margin-top:12px;">` +
+    `<h2>Open findings</h2>` +
+    `<p style="font-size:13px;">` +
+    `<a href="/board?document=${encodeURIComponent(args.path)}">Open findings for this document →</a>` +
+    `</p></div>`;
   const body =
     `<h1>${escHtml(fm.title || args.path)}</h1>` +
     standing +
@@ -357,7 +388,8 @@ export function renderDocPage(args: {
     tensionsPanel +
     tocPanel +
     `<div class="body">${args.bodyHtml}</div>` +
-    `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>`;
+    `<div class="backlinks"><h2>Backlinks</h2>${backlinks}</div>` +
+    boardLink;
   return layout(fm.title || args.path, body);
 }
 
@@ -443,8 +475,12 @@ export function renderSearchPage(query: string, hits: SearchHitView[]): string {
 // (cytoscape) is the only client dependency, and only on this route.
 const GRAPH_CLIENT_JS = `
 (function () {
-  var COL = { canonical:'#15803d', draft:'#8a8a8a', retired:'#c2410c',
-    contested:'#b11f4b', decayed:'#b45309', derives:'#0a66c2', edge:'#c9c1b4' };
+  // The palette lives in one place — the :root custom properties. Cytoscape
+  // can't read CSS variables itself, so resolve the tokens once here.
+  var css = getComputedStyle(document.documentElement);
+  function tok(n) { return css.getPropertyValue(n).trim(); }
+  var COL = { canonical:tok('--good'), draft:tok('--dim'), retired:tok('--bad'),
+    contested:tok('--accent'), decayed:tok('--warn'), derives:tok('--text'), edge:tok('--border-2') };
   var info = document.getElementById('ginfo');
   fetch('/api/graph' + (location.search || '')).then(function (r) { return r.json(); }).then(function (g) {
     if (!g.nodes || g.nodes.length === 0) { info.textContent = 'No documents to graph.'; return; }
@@ -470,7 +506,7 @@ const GRAPH_CLIENT_JS = `
       elements: els,
       style: [
         { selector: 'node', style: { 'label': 'data(label)', 'font-size': 7, 'width': 16, 'height': 16,
-          'background-color': COL.draft, 'color': '#6b6b6b', 'text-wrap': 'ellipsis', 'text-max-width': 90,
+          'background-color': COL.draft, 'color': tok('--muted'), 'text-wrap': 'ellipsis', 'text-max-width': 90,
           'text-valign': 'bottom', 'text-margin-y': 2, 'border-width': 0, 'min-zoomed-font-size': 6 } },
         { selector: 'node[status="canonical"]', style: { 'background-color': COL.canonical } },
         { selector: 'node[status="draft"]', style: { 'background-color': COL.draft } },
@@ -531,13 +567,13 @@ export function renderGraphPage(opts: GraphOptions): string {
     `</div>` +
     `<div id="cy"></div>` +
     `<div class="legend">` +
-    `<span><span class="sw" style="background:#15803d"></span>canonical</span>` +
-    `<span><span class="sw" style="background:#8a8a8a"></span>draft</span>` +
-    `<span><span class="sw" style="background:#c2410c"></span>retired</span>` +
-    `<span><span class="sw" style="background:#fff;border:3px dashed #b45309"></span>decayed</span>` +
-    `<span><span class="sw" style="background:#fff;border:4px solid #b11f4b"></span>contested</span>` +
-    `<span><span class="ln" style="border-color:#0a66c2"></span>derives_from</span>` +
-    `<span><span class="ln" style="border-color:#b11f4b"></span>contested</span>` +
+    `<span><span class="sw" style="background:var(--good)"></span>canonical</span>` +
+    `<span><span class="sw" style="background:var(--dim)"></span>draft</span>` +
+    `<span><span class="sw" style="background:var(--bad)"></span>retired</span>` +
+    `<span><span class="sw" style="background:var(--bg);border:3px dashed var(--warn)"></span>decayed</span>` +
+    `<span><span class="sw" style="background:var(--bg);border:4px solid var(--accent)"></span>contested</span>` +
+    `<span><span class="ln" style="border-color:var(--text)"></span>derives_from</span>` +
+    `<span><span class="ln" style="border-color:var(--accent)"></span>contested</span>` +
     `</div>` +
     `<script src="/assets/cytoscape.min.js"></script>` +
     `<script>${GRAPH_CLIENT_JS}</script>`;

@@ -33,8 +33,10 @@ describe("loadConfig — search tuning block", () => {
     if (!result.ok) return;
     expect(result.value.search).toEqual({
       coverage: false,
+      weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 256,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
@@ -45,8 +47,10 @@ describe("loadConfig — search tuning block", () => {
     if (!result.ok) return;
     expect(result.value.search).toEqual({
       coverage: false,
+      weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 256,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
@@ -57,8 +61,10 @@ describe("loadConfig — search tuning block", () => {
     if (!result.ok) return;
     expect(result.value.search).toEqual({
       coverage: true,
+      weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 256,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
   });
 
@@ -69,9 +75,36 @@ describe("loadConfig — search tuning block", () => {
     if (!result.ok) return;
     expect(result.value.search).toEqual({
       coverage: false,
+      weights: { bm25: 0.8, vector: 0.2 },
       vecKnnK: 128,
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     });
+  });
+
+  it("parses explicit fusion weights", () => {
+    writeConfig("search:\n  weights:\n    bm25: 0.6\n    vector: 0.4\n");
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.search.weights).toEqual({ bm25: 0.6, vector: 0.4 });
+  });
+
+  it.each([
+    ["search:\n  weights: even\n", "'search.weights' must be a mapping"],
+    [
+      "search:\n  weights:\n    bm25: 1\n    vektor: 0\n",
+      "'search.weights.vektor' is not a recognised setting",
+    ],
+    ["search:\n  weights:\n    bm25: 0\n    vector: 0\n", "summing above zero"],
+    ["search:\n  weights:\n    bm25: -1\n    vector: 2\n", "non-negative"],
+    ["search:\n  weights:\n    bm25: 0.5\n", "numeric non-negative"],
+  ])("rejects malformed weights: %s", (yaml, msg) => {
+    writeConfig(yaml);
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain(msg);
   });
 
   it("rejects a non-mapping search block", () => {

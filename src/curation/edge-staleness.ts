@@ -68,7 +68,8 @@ export type EdgeStalenessClass =
   | "current"
   | "pending-unchecked"
   | "pending-compatible"
-  | "pending-broken";
+  | "pending-broken"
+  | "unverifiable";
 
 export interface UpstreamStaleness {
   unit: string;
@@ -88,6 +89,7 @@ export interface UpstreamStalenessSummary {
   pending_unchecked: number;
   pending_compatible: number;
   pending_broken: number;
+  unverifiable: number;
 }
 
 // The unit's content writes since the baseline, folded to one changed-field
@@ -120,12 +122,21 @@ function classifyEdge(input: {
   provenance: ProvenanceEntry[];
   compiledEdge?: ConsumesEdge;
   verdicts?: Tier2Verdict[];
+  isVerifiable?: (unit: string) => boolean;
 }): UpstreamStaleness {
   const base = {
     unit: input.unit,
     edge_class: input.edgeClass,
     baseline: input.baseline,
   };
+  if (input.isVerifiable && !input.isVerifiable(input.unit)) {
+    return {
+      ...base,
+      staleness: "unverifiable",
+      changed_fields: [],
+      reason: "source not in your readable vault",
+    };
+  }
   // The tier-2 residual: a covering semantic verdict decides what structure
   // could not. Consulted on BOTH pending-unchecked paths (no-baseline and
   // structurally-undecidable) — only the unit's CURRENT change counts; a
@@ -228,6 +239,7 @@ export function compiledUpstreamStaleness(
   artifact: string,
   consumes: ConsumesEdge[],
   provenance: ProvenanceEntry[],
+  isVerifiable?: (unit: string) => boolean,
 ): UpstreamStaleness[] {
   return forwardConsumes(consumes, artifact)
     .filter((e) => e.unit !== artifact)
@@ -239,6 +251,7 @@ export function compiledUpstreamStaleness(
         baseline: e.compile_ts,
         provenance,
         compiledEdge: e,
+        isVerifiable,
       }),
     );
 }
@@ -256,8 +269,14 @@ export function upstreamStaleness(input: {
   // hot path never loads them; the vault_staleness / tier-2 queue surfaces
   // do, so the residual reflects judgments already paid for.
   verdicts?: Tier2Verdict[];
+  isVerifiable?: (unit: string) => boolean;
 }): UpstreamStaleness[] {
-  const rows = compiledUpstreamStaleness(input.artifact, input.consumes, input.provenance);
+  const rows = compiledUpstreamStaleness(
+    input.artifact,
+    input.consumes,
+    input.provenance,
+    input.isVerifiable,
+  );
 
   // Declared baseline: the artifact's own latest landed write.
   const artifactWrites = input.provenance.filter(
@@ -274,6 +293,7 @@ export function upstreamStaleness(input: {
         baseline: declaredBaseline,
         provenance: input.provenance,
         verdicts: input.verdicts,
+        isVerifiable: input.isVerifiable,
       }),
     );
   }
@@ -288,6 +308,7 @@ export function upstreamStaleness(input: {
         baseline: e.lastRederived,
         provenance: input.provenance,
         verdicts: input.verdicts,
+        isVerifiable: input.isVerifiable,
       }),
     );
   }
@@ -303,6 +324,14 @@ export function upstreamStaleness(input: {
 // none/some/many bucket over their pending edges — never an exact count,
 // never a severity class. vault_read, vault_search, and vault_staleness all
 // call this one helper so the invariant cannot drift between surfaces.
+//
+// Unverifiable rows (deleted units) are ALWAYS coarsened into the hidden
+// bucket for RBAC-scoped callers, regardless of path-prefix readability.
+// A deleted doc's collection can only be guessed from its path (frontmatter
+// is gone); that guess can diverge from the collection it had while alive,
+// which would make "deleted" distinguishable from "RBAC-hidden" — an
+// existence oracle (#416). The operator (no-access) path bypasses this
+// split entirely and still receives named rows.
 export function splitUpstreamVisibility(
   rows: UpstreamStaleness[],
   isReadable: (unit: string) => boolean,
@@ -310,6 +339,17 @@ export function splitUpstreamVisibility(
   const visible: UpstreamStaleness[] = [];
   let hiddenPendingCount = 0;
   for (const r of rows) {
+    // Unverifiable units (deleted, or unreadable) must never be NAMED to an
+    // RBAC-scoped caller: a deleted doc's collection can only be guessed from
+    // its path prefix (its frontmatter is gone), which can diverge from the
+    // collection it had while alive — naming it would distinguish "deleted"
+    // from "hidden", an existence oracle (#416/#217). They fold into the
+    // coarse bucket, identical to a hidden-but-alive unit. The operator
+    // (no-access) path bypasses this split and still sees named rows.
+    if (r.staleness === "unverifiable") {
+      hiddenPendingCount += 1;
+      continue;
+    }
     if (isReadable(r.unit)) visible.push(r);
     else if (r.staleness !== "current") hiddenPendingCount += 1;
   }
@@ -322,12 +362,14 @@ export function summarizeUpstream(rows: UpstreamStaleness[]): UpstreamStalenessS
     pending_unchecked: 0,
     pending_compatible: 0,
     pending_broken: 0,
+    unverifiable: 0,
   };
   for (const r of rows) {
     if (r.staleness === "current") summary.current += 1;
     else if (r.staleness === "pending-unchecked") summary.pending_unchecked += 1;
     else if (r.staleness === "pending-compatible") summary.pending_compatible += 1;
-    else summary.pending_broken += 1;
+    else if (r.staleness === "pending-broken") summary.pending_broken += 1;
+    else summary.unverifiable += 1;
   }
   return summary;
 }

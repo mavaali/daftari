@@ -16,7 +16,7 @@ import {
 import { recordReads } from "../curation/read-log.js";
 import { structuralDecay } from "../curation/structural.js";
 import { TENSION_KINDS } from "../curation/tension.js";
-import { sourceReadable } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../curation/tension-access.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import { ensureMountIndexFresh, reindexMount } from "../federation/mount-index.js";
@@ -43,8 +43,8 @@ import {
   maxChunkCosine,
 } from "../search/graph-expansion.js";
 import {
-  DEFAULT_WEIGHTS,
   extractRelatedSeed,
+  getDefaultWeights,
   type HybridHit,
   type HybridSearchResult,
   type HybridWeights,
@@ -144,7 +144,7 @@ function parseWeights(raw: unknown): HybridWeights {
       return { bm25, vector };
     }
   }
-  return DEFAULT_WEIGHTS;
+  return getDefaultWeights();
 }
 
 // Shared numeric-arg posture: a positive finite number floors and clamps to
@@ -221,8 +221,20 @@ async function annotateAndLogServedHits(
   for (const hit of hits) {
     let broken: number | undefined;
     if (staleCtx) {
-      const rows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
-      broken = rows.filter((r) => r.staleness === "pending-broken").length;
+      // Telemetry (broken_upstream) is the TRUE incident count — role- AND
+      // existence-unfiltered, so the vault-global broken-read rate cannot vary
+      // by who read the doc. Computed from BARE rows (no predicate), mirroring
+      // vault_read's split (#416). The predicate-enriched rows below drive only
+      // the caller-facing display buckets.
+      const bareRows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
+      broken = bareRows.filter((r) => r.staleness === "pending-broken").length;
+      const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
+      const rows = compiledUpstreamStaleness(
+        hit.path,
+        staleCtx.consumes,
+        staleCtx.provenance,
+        isVerifiable,
+      );
       // `db` is the caller's already-open index handle — the same one the
       // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
       const { visible, hiddenPending } = access
@@ -232,6 +244,9 @@ async function annotateAndLogServedHits(
       const brokenBucket = bucketHiddenDownstream(visibleBroken);
       if (brokenBucket !== "none") hit.pendingBrokenUpstream = brokenBucket;
       if (hiddenPending !== "none") hit.hiddenPendingUpstream = hiddenPending;
+      const visibleUnverifiable = visible.filter((r) => r.staleness === "unverifiable").length;
+      const unverifiableBucket = bucketHiddenDownstream(visibleUnverifiable);
+      if (unverifiableBucket !== "none") hit.unverifiableUpstream = unverifiableBucket;
     }
     entries.push({
       tool,
@@ -1164,6 +1179,13 @@ const hybridHitSchema = {
       description:
         "Coarse bucket of pending changes on upstream edges the caller cannot read; " +
         "severity is withheld. Absent = none.",
+    },
+    unverifiableUpstream: {
+      type: "string",
+      enum: ["some", "many"],
+      description:
+        "Coarse bucket of VISIBLE upstream inputs the caller can no longer " +
+        "verify (deleted/evicted). Never an exact count (#217/#416).",
     },
     orphan: { type: "boolean", description: "No inbound links from the caller's vantage." },
     retiredStillLinked: { type: "boolean" },

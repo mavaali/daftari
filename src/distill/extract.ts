@@ -173,7 +173,12 @@ function parseStatements(parsed: unknown): string[] | null {
 
 const TITLE_MAX = 80;
 function titleOf(statement: string): string {
-  return statement.length <= TITLE_MAX ? statement : `${statement.slice(0, TITLE_MAX - 1)}…`;
+  if (statement.length <= TITLE_MAX) return statement;
+  // Find the last space at or before TITLE_MAX to break on a word boundary.
+  const lastSpace = statement.lastIndexOf(" ", TITLE_MAX);
+  if (lastSpace > 0) return statement.slice(0, lastSpace);
+  // No space found before TITLE_MAX (first word exceeds limit) — hard-cut.
+  return statement.slice(0, TITLE_MAX);
 }
 
 // --- extraction pass ---------------------------------------------------------

@@ -5,6 +5,67 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.11.0] - 2026-08-23
+
+### Added
+
+- **Frontmatter schema inference and drift diff** (#478) — read-only `daftari schema infer` and `daftari schema diff` commands expose the vault's de facto frontmatter schema. `infer` reports every raw YAML key with occurrence/prevalence, observed types, capped distinct counts, bounded examples, and conservative enum-likeness; `diff` compares observations against built-ins plus `schema_extensions` and reports widely used undeclared fields, null-aware unused extensions, validator drift, and near-miss names. The undeclared-field gate defaults to 2 occurrences (`--min-occurrences` makes the threshold explicit); scope is required and canonical-path confined, symlink escapes and duplicate aliases are skipped as evidence, and hostile YAML/Markdown is converted to bounded safe output. README and adoption docs now put schema inspection before backfill. Fixes #299.
+- **Typed repository-external source references** (#474) — `sources` gains explicit address-space semantics: `vault:` is strict root-relative and tier-0 enforced; `repo:` resolves against the configured `repo_root` with lexical and realpath containment and metadata-only verification; web/mail/distill/opaque references remain provenance rather than dependency edges. Missing, unconfigured, invalid, or escaping repo references surface under advisory `unverifiableSourceRefs`, and only real vault dependencies affect reverse graphs, write warnings, eval traversal, sleep wakeups, and ratification. Repo metadata verification is gated behind the opt-in `verify_repo_sources` role capability. Fixes #454.
+- **Real sample-vault retrieval gate in CI** (#479) — every PR now runs 25 frozen, human-reviewable questions over the real sample vault through the shipped `vault_search` surface, under both pure lexical retrieval and the shipped default MiniLM fusion path. The fusion path is hermetic (35 committed MiniLM vectors replayed, no model load or network), with per-query ranks plus recall@5/recall@10/MRR/nDCG@10 goldens at tolerance 0; the gate fails on missing vectors, fallback, behaviorally inert fusion, lost provenance, or any changed rank/metric. Completes the CI remainder of #301.
+
+### Changed
+
+- **Sleep-extensions evidence ledger** (#97) — closes the stale umbrella without
+  conflating two different loops: the production N=0/1/2/3 experiment kills the
+  proposed difficulty-adaptive repeated tension scan, while the separately
+  shipped `daftari consolidate` scheduler/panel loop keeps its own calibration
+  gates. The current architecture and CLI help now state the real safety
+  posture: LLM modes require an explicit `shadow_mode`; `true` journals without
+  applying edge writes, while `false` permits admitted consolidation writes.
+
+### Fixed
+
+- **Board login autofill** (#463) — the `/board` sign-in form was a lone password input, so browser password managers skipped it (no save/autofill offer, forcing a retype each sign-in). It now pairs the password with a `username` field prefilled from the configured session user (`maps_to.user`), `autocomplete="username"`, `readonly` — the server ignores it, it exists only as an autofill anchor. Fully addresses Chrome; Safari still requires an `https` origin (a bare-IP `http://` origin is non-saveable by design).
+- **Stale `vault_merge` snapshots rejected** (#470) — `vault_merge` composed its three-file write set before acquiring locks, so a concurrent update/create in that gap could be silently overwritten. Each canonical source/target input is now snapshotted and revalidated while holding the complete sorted lock set; any drift rejects the whole operation as `stale merge` before the first write. Closes #469.
+- **Dangling qualified refs no longer retarget by basename** (#471) — a qualified reference that no longer resolves stays dangling instead of inheriting a surviving document that shares its basename; basename fallback is restricted to genuinely bare references and duplicate basenames are treated as ambiguous. Applies through the shared resolver used by lint, blast/backlinks, sleep wake, view rendering, and write advisories. Closes #417.
+- **Historical erasure gated on an acknowledged dependents plan** (#472) — when a live erase target has downstream dependents, the operator must acknowledge the exact current pre-scrub plan (`vaultErasePlan` returns targets, dependents, a coarsened hidden remainder, HEAD, and a deterministic `plan_hash`) before the irreversible rewrite; the plan is recomputed at the last reversible point and any target/graph/permission/HEAD drift aborts. Zero-blast compatibility is preserved; neither `vault_erase` nor its planner is MCP/CLI-registered.
+- **Vanished consolidate endpoints stop retrying** (#473) — a due edge with a vanished endpoint is now a terminal `missing_endpoint` advisory for that consolidate cycle rather than executable revision work; skipped pairs consume no queue budget and cannot create a false unserved-backstop exit. The edge store is untouched (no auto-revoke, contest, panel, or LLM call); valid pairs including directed cycles retain the existing revision path.
+- **Distill sources labeled born-unverifiable** (#475) — `distill:<source-id>#<claim-key>` surfaces as structured born-unverifiable provenance on local and federated `vault_read` with its re-derivation contract, and `vault_lint` and board findings carry the same advisory label even without repo metadata verification. `PRIVACY.md` now states that raw distill input transits Anthropic or OpenRouter and distinguishes Daftari retention from provider retention. Fixes #422.
+- **Compiled-edge coverage gaps surfaced** (#476) — `vault_staleness` report mode carries a separate `compiled_edge_coverage` summary (no-data/partial/complete), so removing the gitignored consumes log flips an instrumented vault to no-data rather than resembling an all-current graph; `vault_lint` exposes the same monitor. Access-controlled counts stay scoped to caller-readable documents and the monitor names no paths. Fixes #420.
+- **Vanished-source wake coverage** (#477) — the circadian sweep now wakes fresh canonical accumulation dependents when an explicit vault source or current compiled unit disappears, and recovery evidence distinguishes a path last seen in Git (with the exact containing commit, recoverable via asof) from one absent from history or unavailable history. The Morning Report renders each wake trigger instead of framing every task as TTL decay; legacy/external references stay opaque and the pass remains advisory. Fixes #421.
+- **Distill proposal staging** (#466) — `assembleBody` no longer prepends a frontmatter fence into the proposal body (which `vault_write` re-added at ratify time, doubling frontmatter on every landed distill draft), and `titleOf` truncates at a word boundary with no ellipsis instead of mid-word at 80 characters.
+- **Test-suite lint cleanup** (#465, #430) — replaced 279 non-null assertions across 16 test files with a runtime-checked `requireDefined` guard and cleared the attestation-template lint infos; no production behavior change.
+
+## [3.10.0] - 2026-08-19
+
+### Changed
+
+- **Instrument-panel view redesign** (#460) — the `daftari view` / `daftari serve` web surface moves to a single dark instrument-panel system, decided on a design canvas after exploring a refined kanban, a triage queue, and a ledger table against the shipped board: flat, square, hairline rules, mono-dominant chrome, with the epistemic colors as the only color on screen (green = strong, amber = caution, orange = weak/hazard, rose accent = contested — the keystone signal keeps its own channel). The vault board's five kanban columns become a disposition stat strip over one dense findings table grouped by source: disposition is a cell, not a place. Rows carry the certainty word plus tone mark, back-links, evidence, waiting rationale/expiry, an N/A/W/R/D state indicator, and the accept/defer/dismiss/resolve controls unchanged (`data-id`/`data-board-action`/CSRF wiring byte-identical). The table iterates the canonical `FINDING_SOURCES`, so a future source adapter cannot be counted but silently unrendered; the age column derives from an injected clock, keeping the renderer pure; narrow viewports stack rows into cards. `/doc`, `/graph`, the index, dashboard, and `/board/login` all adopt the palette; the graph client and legend resolve colors from the CSS tokens so the palette lives in one place.
+
+### Fixed
+
+- **`manifest.json` version drift** (#461) — the `.mcpb` manifest was still at 3.7.0, having drifted through the 3.8.0 and 3.9.0 releases; it now tracks the package version again.
+
+## [3.9.0] - 2026-08-19
+
+### Added
+
+- **Board browser-login shim** (#458) — a signed, HttpOnly session cookie so an operator can reach the `/board` surface from a browser, which cannot send `Authorization: Bearer` on navigation. A new `server.auth.session` block names the env vars carrying the HMAC signing key and the login password, plus the identity a successful login receives (`maps_to`) and a configurable lifetime; the login form (`GET/POST /board/login`) mints the cookie (`HttpOnly; SameSite=Strict`, `Secure` when `transport_security: external`) and `/board/logout` clears it. The cookie is a third credential type composable with — and consulted only after — the existing bearer/OAuth paths: an invalid cookie is never a guest downgrade, a browser hitting `GET /board` unauthenticated is redirected to the login page while API clients still receive a `401`, and the signing key must be at least 32 bytes or the server refuses to start. State-changing board requests authenticated by cookie require a double-submit CSRF token (bearer-authenticated callers are exempt), and the board page now renders working accept/defer/dismiss/resolve controls plus a sign-out action.
+
+## [3.8.0] - 2026-08-19
+
+### Added
+
+- **Vault Board** (#455) — a finding-centric curation surface that turns the detection surfaces (lint, staleness, edge-staleness, staged actions, tier-2 queue, tensions) into durable, dispositionable cards with stable identity across runs and an append-only disposition ledger (`.daftari/board-dispositions.jsonl`, operator-local, gitignored). Bounded agent authority is enforced by construction: a new `dispose` role capability gates human disposition (`vault_board_dispose` — accept/defer/dismiss/reassign), `vault_board_resolve` records a **system-authored** resolution only when the originating deterministic check no longer reproduces, and reopen-on-reappearance is emitted solely by reconciliation — no autonomous dismissal or prioritization. Findings and dispositions carry the vault's RBAC and no-existence-disclosure guarantees (both endpoints of an upstream edge must be readable; byte-identical errors for hidden vs absent, at both the tool and HTTP layers). Ships three MCP tools (`vault_board_list` / `vault_board_dispose` / `vault_board_resolve`) plus a `/board` + `/api/board` surface mounted in the `serve` path behind the existing bearer/JWT `authenticate()` and ops floor; the board page is server-rendered and XSS-escaped, with New / Accepted / Waiting / Resolved / Dismissed columns and per-collection/check/certainty/owner/age/document filters. Reconciliation is read-time — the board writes nothing when unused.
+- **Version discovery** — `daftari --version` (and `-v`) prints the running version and exits. The version is also surfaced in-band: `vault_status` now returns a `serverVersion` field, so an agent already connected over MCP — which never sees the `initialize`-handshake `serverInfo` — can read the running version through a callable tool.
+- **Distill receipts** (#423) — `buildReceipt` now carries the run's staging `runId` (the id stamped into artifact bodies) instead of a throwaway UUID, and each receipt is persisted to `.daftari/distill-receipts.jsonl` (operator-local, gitignored, never MCP-exposed) — so a run's provider/ZDR/cost facts join to the claims it produced.
+
+### Fixed
+
+- **Consolidate voting dedup** (#423) — the edge replay-guard dedup key now includes the observing model, so two different models re-deriving the same edge in one sitting count as independent votes instead of colliding as a replay.
+
 ## [3.7.0] - 2026-08-16
 
 The multi-user hardening release (#399, #402–#411): single-user correctness is table stakes — this release is about what breaks when there are many users, and stopping it.
@@ -23,6 +84,7 @@ The multi-user hardening release (#399, #402–#411): single-user correctness is
 - **Stale ratify replays** (#406) — staged write proposals are anchored to the doc version they were computed from; ratifying after the doc moved fails loudly naming the proposal instead of clobbering interim positions.
 - **Shadow mode leaked real tension mutations** (#404) — with `shadow_mode: true`, `vault_assert`/`vault_consolidate` no longer really mint or resolve tensions for doc writes that were shadowed no-ops.
 - Federation mount-index test realpath flake on macOS (#403); suite-wide self-diagnosing vault teardown (retry loop + survivor listing) retiring a class of CI teardown races.
+- **Edge staleness: new `unverifiable` class** (#416) — a dependent whose `compiled`/`declared`/`earned` upstream the caller can no longer verify (deleted, or evicted from a readable collection) previously reported a false `current`; it now reports `unverifiable` on `vault_read`, `vault_search`, and `vault_staleness`. RBAC-hidden upstreams are indistinguishable from deleted ones (no existence oracle); the reason string is always "source not in your readable vault". No persisted state — deletion is computed, never remembered.
 
 ## [3.6.0] - 2026-08-15
 

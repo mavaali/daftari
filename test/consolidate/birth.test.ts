@@ -556,6 +556,55 @@ describe("birthOne — budget (2 calls per neighbor)", () => {
   });
 });
 
+describe("birthOne — observe carries run model", () => {
+  it("directed observe includes model equal to opts.model", async () => {
+    const root = tmpVault();
+    try {
+      const observedInputs: Array<{ model?: string }> = [];
+      const { deps } = makeDeps({
+        llm: mockLlm(V.docPremise()),
+        observe: async (input) => {
+          observedInputs.push(input);
+          return ok(stubEdge(input.fromPath, input.toPath));
+        },
+      });
+      const r = await birthOne({ relPath: "a.md", content: "claim A" }, deps, {
+        ...baseOpts,
+        model: "run-model-42",
+      });
+      expect(r.ok).toBe(true);
+      expect(observedInputs.length).toBeGreaterThan(0);
+      expect(observedInputs.every((o) => o.model === "run-model-42")).toBe(true);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  it("symmetric observe includes model equal to opts.model", async () => {
+    const root = tmpVault();
+    try {
+      const observedInputs: Array<{ model?: string }> = [];
+      const { deps } = makeDeps({
+        llm: mockLlm(V.symmetric()),
+        searchNeighbors: async () => ok(["z.md"]),
+        observe: async (input) => {
+          observedInputs.push(input);
+          return ok(stubEdge(input.fromPath, input.toPath));
+        },
+      });
+      const r = await birthOne({ relPath: "a.md", content: "claim A" }, deps, {
+        ...baseOpts,
+        model: "run-model-42",
+      });
+      expect(r.ok).toBe(true);
+      expect(observedInputs.length).toBeGreaterThan(0);
+      expect(observedInputs.every((o) => o.model === "run-model-42")).toBe(true);
+    } finally {
+      cleanup(root);
+    }
+  });
+});
+
 describe("birthOne — path canonicalization", () => {
   it("canonicalizes neighbor + doc paths at the boundary (memory: canonicalize-path-keys)", async () => {
     const root = tmpVault();

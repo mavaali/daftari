@@ -49,6 +49,8 @@ export const WRITE_SHAPED_TOOLS: ReadonlySet<string> = new Set([
   "vault_edge_observe",
   "vault_edge_contest",
   "vault_tier2_verdict",
+  "vault_board_dispose",
+  "vault_board_resolve",
 ]);
 
 // Anything that reads the referenced `.daftari/` state or curation/graph
@@ -71,6 +73,7 @@ export const STATE_READ_TOOLS: ReadonlySet<string> = new Set([
   "vault_witness",
   "vault_tier1",
   "vault_tier2_queue",
+  "vault_board_list",
 ]);
 
 // The two uniform error strings. The copy is load-bearing (spec Decision 5).

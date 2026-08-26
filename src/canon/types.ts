@@ -21,6 +21,9 @@ export interface CanonDoc {
   // fields. Lets canon report which reader authored a canonized belief.
   readerModel?: string;
   readers?: string[];
+  // 6mf.4 R9: append-only reader lineage entries, one per read op.
+  // Optional — absent for docs with no reader_lineage field.
+  readerLineage?: string[];
 }
 
 export interface SettledClaim {

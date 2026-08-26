@@ -6,6 +6,7 @@ import {
   canPromote,
   canRatify,
   canRead,
+  canVerifyRepoSources,
   canWrite,
   filterByReadPermission,
   guestAccess,
@@ -109,6 +110,20 @@ describe("rbac", () => {
       expect(canRatify(analyst.role)).toBe(false);
       expect(canRatify(researcher.role)).toBe(false);
       expect(canRatify(null)).toBe(false);
+    });
+
+    it("grants repository-source verification only where explicitly declared", () => {
+      expect(
+        canVerifyRepoSources({
+          read: ["*"],
+          write: [],
+          promote: false,
+          ratify: false,
+          verifyRepoSources: true,
+        }),
+      ).toBe(true);
+      expect(canVerifyRepoSources(admin.role)).toBe(false);
+      expect(canVerifyRepoSources(null)).toBe(false);
     });
 
     it("reports propose-only from the flag, defaulting false (#235)", () => {

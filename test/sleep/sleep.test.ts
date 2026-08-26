@@ -92,6 +92,13 @@ describe("runSleepCycle", () => {
     // distribution; fresh + derived are fresh.
     expect(c.staleness.stale).toBe(3);
     expect(c.staleness.total).toBe(5);
+    expect(c.compiledEdgeCoverage).toEqual({
+      status: "no-data",
+      total_documents: 5,
+      instrumented_documents: 0,
+      uninstrumented_documents: 5,
+      message: "no compiled-edge data (5 docs uninstrumented)",
+    });
   });
 
   it("ranks the wake list by blast, then age", async () => {
@@ -156,10 +163,11 @@ describe("runSleep (CLI)", () => {
 
     const md = readFileSync(outMd, "utf-8");
     expect(md).toContain("# Morning Report");
-    expect(md).toContain("## Wake list — 1 load-bearing decayed document(s)");
+    expect(md).toContain("## Wake list — 1 advisory task(s)");
     expect(md).toContain("| pricing/rotten.md |");
     expect(md).toContain("Quiet decay — 1");
     expect(md).toContain("generative docs past TTL: 1");
+    expect(md).toContain("compiled-edge coverage: no compiled-edge data (5 docs uninstrumented)");
 
     const queue = readFileSync(wakeQueuePath(vault), "utf-8").trim().split("\n");
     expect(queue).toHaveLength(1);
@@ -167,6 +175,7 @@ describe("runSleep (CLI)", () => {
 
     const json = JSON.parse(readFileSync(outJson, "utf-8"));
     expect(json.cycle.wake).toHaveLength(1);
+    expect(json.cycle.compiledEdgeCoverage.status).toBe("no-data");
     expect(json.wakeQueuePath).toBe(wakeQueuePath(vault));
     rmSync(outMd, { force: true });
     rmSync(outJson, { force: true });

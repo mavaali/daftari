@@ -16,10 +16,14 @@ import {
 import { comparePositions, isContested, unsuperseded } from "../curation/positions.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
+import {
+  type SourceVerifiabilityAnnotation,
+  sourceVerifiabilityAnnotations,
+} from "../curation/source-refs.js";
 import { computeStaleness } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation/tension.js";
-import { sourceReadable, visibleTensions } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable, visibleTensions } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { computeValidity, type ValidityReport } from "../curation/validity.js";
 import {
@@ -53,6 +57,7 @@ import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
+import { DAFTARI_VERSION } from "../version.js";
 import { ANCHOR_PIN_CAP, type AnchorState, classifyPin } from "./anchors.js";
 import { openIndexForAccessOrNull } from "./search.js";
 
@@ -114,6 +119,10 @@ export interface UpstreamReadStaleness {
   // Pending-broken count among the VISIBLE edges (hidden ones only ever
   // surface through the coarse bucket above).
   pending_broken: number;
+  // Count of VISIBLE upstream edges whose unit the caller can no longer
+  // verify (deleted, or — for a readable collection — evicted). Unreadable
+  // units never enter this count; they fold into hidden_pending (#217).
+  unverifiable: number;
   banner: string | null;
 }
 
@@ -137,6 +146,10 @@ export interface VaultReadResult {
   // consolidate/admit.ts treats `warn` as edge-blocking.
   validity: ValidityReport | null;
   upstream_staleness: UpstreamReadStaleness | null;
+  // #422: source-address annotations that are knowably unverifiable by
+  // contract. Present only when sources contains distill: audit breadcrumbs;
+  // advisory and never a promotion gate.
+  source_verifiability?: SourceVerifiabilityAnnotation[];
   // #8: graph-shaped decay — orphanhood and deprecated-still-linked, from
   // the materialized inbound-link graph, computed from the caller's vantage.
   // Null when there is nothing to say (same contract as `decay`).
@@ -251,6 +264,7 @@ async function vaultReadFederated(
   // vault's declared schema extensions — the caller sees the doc as its own
   // vault's schema judges it, not as the canonical vault's would.
   const { frontmatter, report } = validateFrontmatter(parsed.value.raw, mount.schemaExtensions);
+  const sourceVerifiability = sourceVerifiabilityAnnotations(frontmatter.sources);
 
   return ok({
     path: federatedPathOf(mount.alias, resolved.value.relPath),
@@ -263,6 +277,7 @@ async function vaultReadFederated(
     decay: null,
     validity: null,
     upstream_staleness: null,
+    ...(sourceVerifiability.length > 0 ? { source_verifiability: sourceVerifiability } : {}),
     structural: null,
     anchors: null,
     version: sha256Hex(file.value),
@@ -358,23 +373,39 @@ export async function vaultRead(
     // existence leak). Collapses to null when there is nothing to report,
     // which is byte-identical to a document with no compiled edges at all.
     if (rows && rows.length > 0) {
+      const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
+      const verifiedRows = staleCtx
+        ? compiledUpstreamStaleness(
+            resolved.value.relPath,
+            staleCtx.consumes,
+            staleCtx.provenance,
+            isVerifiable,
+          )
+        : rows;
       const {
         visible,
         hiddenPending,
       }: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = access
-        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
-        : { visible: rows, hiddenPending: "none" };
+        ? splitUpstreamVisibility(verifiedRows, (unit) => sourceReadable(db, access, unit))
+        : { visible: verifiedRows, hiddenPending: "none" };
       if (visible.length > 0 || hiddenPending !== "none") {
         const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
-        const notes: string[] = [];
+        const unverifiable = visible.filter((r) => r.staleness === "unverifiable").length;
+        const clauses: string[] = [];
         if (pendingBroken > 0) {
-          notes.push(
+          clauses.push(
             `${pendingBroken} compiled upstream input${pendingBroken === 1 ? " has" : "s have"} ` +
-              `changed incompatibly since this document was compiled`,
+              `changed incompatibly since this document was compiled — this content may predate them`,
+          );
+        }
+        if (unverifiable > 0) {
+          clauses.push(
+            `${unverifiable} upstream input${unverifiable === 1 ? "" : "s"} can no longer be ` +
+              `verified (source not in your readable vault)`,
           );
         }
         if (hiddenPending !== "none") {
-          notes.push(
+          clauses.push(
             `${hiddenPending} upstream inputs outside your read scope have pending changes`,
           );
         }
@@ -382,7 +413,8 @@ export async function vaultRead(
           edges: visible,
           hidden_pending: hiddenPending,
           pending_broken: pendingBroken,
-          banner: notes.length > 0 ? `${notes.join("; ")} — this content may predate them.` : null,
+          unverifiable,
+          banner: clauses.length > 0 ? `${clauses.join("; ")}.` : null,
         };
       }
     }
@@ -472,6 +504,7 @@ export async function vaultRead(
     resolved.value.relPath,
     parsed.value.frontmatter.describes ?? [],
   );
+  const sourceVerifiability = sourceVerifiabilityAnnotations(parsed.value.frontmatter.sources);
 
   // Decision 4 — softened decay copy (annotate-only). A doc past its TTL whose
   // code pins are ALL intact is stale by the clock but verifiably current about
@@ -549,6 +582,7 @@ export async function vaultRead(
     // read.
     validity: computeValidity(parsed.value.frontmatter, new Date().toISOString().slice(0, 10)),
     upstream_staleness: upstream,
+    ...(sourceVerifiability.length > 0 ? { source_verifiability: sourceVerifiability } : {}),
     structural,
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
@@ -831,6 +865,10 @@ export interface FederationMountStatus {
 
 export interface VaultStatusResult {
   vault: string;
+  // The running daftari version. An agent already connected over MCP can't see
+  // the initialize-handshake serverInfo, so this surfaces the version through a
+  // callable tool.
+  serverVersion: string;
   fileCount: number;
   collections: { collection: string; count: number }[];
   invalidCount: number;
@@ -998,6 +1036,7 @@ export async function vaultStatus(
 
   return ok({
     vault: vaultRoot,
+    serverVersion: DAFTARI_VERSION,
     fileCount: indexEntries.count,
     collections,
     invalidCount,
@@ -1120,7 +1159,13 @@ const UPSTREAM_EDGE_SCHEMA: Record<string, unknown> = {
     edge_class: { type: "string", enum: ["compiled", "declared", "earned"] },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+      enum: [
+        "current",
+        "pending-unchecked",
+        "pending-compatible",
+        "pending-broken",
+        "unverifiable",
+      ],
     },
     baseline: {
       type: ["string", "null"],
@@ -1339,9 +1384,30 @@ export const readTools: ToolDefinition[] = [
               minimum: 0,
               description: "Pending-broken count among the VISIBLE edges only",
             },
+            unverifiable: {
+              type: "integer",
+              minimum: 0,
+              description:
+                "Count among the VISIBLE edges whose upstream unit the caller " +
+                "can no longer verify (deleted, or evicted from a readable collection)",
+            },
             banner: { type: ["string", "null"] },
           },
-          required: ["edges", "hidden_pending", "pending_broken", "banner"],
+          required: ["edges", "hidden_pending", "pending_broken", "unverifiable", "banner"],
+        },
+        source_verifiability: {
+          type: "array",
+          description:
+            "Born-unverifiable source-address annotations; absent unless the document cites distill: breadcrumbs",
+          items: {
+            type: "object",
+            properties: {
+              source: { type: "string" },
+              status: { type: "string", enum: ["born-unverifiable"] },
+              reason: { type: "string" },
+            },
+            required: ["source", "status", "reason"],
+          },
         },
         // Null when healthy — same contract as `decay`.
         structural: {
@@ -1564,9 +1630,10 @@ export const readTools: ToolDefinition[] = [
     title: "Vault health dashboard",
     annotations: { readOnlyHint: true },
     description:
-      "Vault health dashboard: total file count, per-collection counts, " +
-      "count of documents with invalid frontmatter, a staleness distribution " +
-      "(fresh/aging/stale), unresolved tensions, and recent write history.",
+      "Vault health dashboard: the running daftari version, total file count, " +
+      "per-collection counts, count of documents with invalid frontmatter, a " +
+      "staleness distribution (fresh/aging/stale), unresolved tensions, and " +
+      "recent write history.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -1576,6 +1643,10 @@ export const readTools: ToolDefinition[] = [
       type: "object",
       properties: {
         vault: { type: "string", description: "Absolute path of the vault root" },
+        serverVersion: {
+          type: "string",
+          description: "The running daftari version (matches the package version)",
+        },
         fileCount: {
           type: "integer",
           minimum: 0,
@@ -1665,6 +1736,7 @@ export const readTools: ToolDefinition[] = [
       },
       required: [
         "vault",
+        "serverVersion",
         "fileCount",
         "collections",
         "invalidCount",

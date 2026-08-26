@@ -74,6 +74,22 @@ export function canErase(role: RoleConfig | null): boolean {
   return role?.erase ?? false;
 }
 
+// True if the role may perform human disposition actions on board items (owner
+// assignment, reassign). Provisioned true on human operator roles; omitted on
+// agent roles. This is the config-declared signal that distinguishes a human
+// operator from an agent — AccessContext carries no principal_type.
+// (U10/R13/R16 capability gate; used by U11 reassign path.)
+export function canDispose(role: RoleConfig | null): boolean {
+  return role !== null && role.dispose === true;
+}
+
+// True if the role may ask Daftari to stat repo: provenance targets. Kept
+// separate from vault read grants: repo_root can include paths outside every
+// vault collection, so read:["*"] does not imply filesystem-metadata access.
+export function canVerifyRepoSources(role: RoleConfig | null): boolean {
+  return role?.verifyRepoSources ?? false;
+}
+
 // True if the role is propose-only (#235): its writes must land as staged
 // `write` proposals, never as direct mutations. vault_write and vault_assert
 // coerce into staged proposals; every other write tool denies. The write

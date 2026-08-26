@@ -145,6 +145,7 @@ describe("buildReceipt — truncation signal", () => {
       provider: "anthropic",
       zdr: false,
       sourceId: "test-source",
+      runId: "distill-2026-08-17T00-00-00-000Z-trunc1",
     });
     expect(receipt.truncated).toBe(true);
     expect(receipt.claimsProduced).toBe(5);
@@ -169,6 +170,7 @@ describe("buildReceipt — truncation signal", () => {
       config: { ...CONFIG, maxClaims: 5 }, // claimsProduced (6) === maxClaims + 1
       provider: "anthropic",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-trunc2",
     });
     expect(receipt.truncated).toBe(true);
     expect(receipt.claimsProduced).toBe(6);
@@ -190,6 +192,7 @@ describe("buildReceipt — truncation signal", () => {
       config: { ...CONFIG, maxClaims: 10 },
       provider: "anthropic",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-trunc3",
     });
     expect(receipt.truncated).toBe(false);
   });
@@ -210,6 +213,7 @@ describe("buildReceipt — truncation signal", () => {
       config: { ...CONFIG, maxClaims: 50 },
       provider: "openrouter",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-trunc4",
     });
     expect(receipt.truncated).toBe(true);
   });
@@ -239,6 +243,7 @@ describe("buildReceipt — provider and ZDR fields", () => {
       config: CONFIG,
       provider: "anthropic",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-prov1",
     });
     expect(r.provider).toBe("anthropic");
   });
@@ -249,6 +254,7 @@ describe("buildReceipt — provider and ZDR fields", () => {
       config: CONFIG,
       provider: "openrouter",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-prov2",
     });
     expect(r.provider).toBe("openrouter");
   });
@@ -259,6 +265,7 @@ describe("buildReceipt — provider and ZDR fields", () => {
       config: CONFIG,
       provider: "anthropic",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-zdr1",
     });
     expect(r.zdr).toBe(false);
   });
@@ -269,6 +276,7 @@ describe("buildReceipt — provider and ZDR fields", () => {
       config: CONFIG,
       provider: "anthropic",
       zdr: true,
+      runId: "distill-2026-08-17T00-00-00-000Z-zdr2",
     });
     expect(r.zdr).toBe(true);
   });
@@ -281,6 +289,7 @@ describe("buildReceipt — provider and ZDR fields", () => {
       config: CONFIG,
       provider: "anthropic",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-zdr3",
     });
     expect(r.zdr).toBe(false);
   });
@@ -298,7 +307,13 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       llmCalls: 7,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-llm1",
+    });
     expect(r.llmCalls).toBe(7);
   });
 
@@ -313,7 +328,13 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       llmCalls: 4,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-claims1",
+    });
     expect(r.claimsProduced).toBe(4);
   });
 
@@ -330,6 +351,7 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       provider: "anthropic",
       zdr: false,
       sourceId: "chat-2026-05-01.txt",
+      runId: "distill-2026-08-17T00-00-00-000Z-src1",
     });
     expect(r.sourceId).toBe("chat-2026-05-01.txt");
   });
@@ -341,7 +363,13 @@ describe("buildReceipt — actuals from ExtractOutcome", () => {
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-src2",
+    });
     expect(r.sourceId).toBeUndefined();
   });
 });
@@ -362,7 +390,13 @@ describe("buildReceipt — approx cost", () => {
       llmCalls: 3,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-cost1",
+    });
     expect(r.approxCostUSD).toBeGreaterThanOrEqual(0);
   });
 
@@ -373,20 +407,31 @@ describe("buildReceipt — approx cost", () => {
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-cost2",
+    });
     expect(r.approxCostUSD).toBe(0);
   });
 
-  it("receipt carries a non-empty runId", () => {
+  it("uses the caller's staging runId so the receipt joins to its artifacts", () => {
     const outcome: ExtractOutcome = {
       claims: [],
       budget_exhausted: false,
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
-    expect(typeof r.runId).toBe("string");
-    expect(r.runId.length).toBeGreaterThan(0);
+    const receipt = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-abc123",
+    });
+    expect(receipt.runId).toBe("distill-2026-08-17T00-00-00-000Z-abc123");
   });
 
   it("receipt carries a completedAt ISO timestamp", () => {
@@ -396,7 +441,13 @@ describe("buildReceipt — approx cost", () => {
       llmCalls: 0,
       chunkErrors: [],
     };
-    const r = buildReceipt({ outcome, config: CONFIG, provider: "anthropic", zdr: false });
+    const r = buildReceipt({
+      outcome,
+      config: CONFIG,
+      provider: "anthropic",
+      zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-ts1",
+    });
     expect(typeof r.completedAt).toBe("string");
     expect(() => new Date(r.completedAt)).not.toThrow();
   });
@@ -432,6 +483,7 @@ describe("DistillReceipt type shape", () => {
       config: CONFIG,
       provider: "anthropic",
       zdr: false,
+      runId: "distill-2026-08-17T00-00-00-000Z-shape-test",
     });
     expect(typeof r.runId).toBe("string");
     expect(typeof r.model).toBe("string");

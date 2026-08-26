@@ -223,7 +223,7 @@ describe("mintDescribesPins", () => {
 
     expect(outcome.minted).toHaveLength(0);
     expect(outcome.unresolved).toHaveLength(1);
-    expect(outcome.unresolved[0]!.reason).toMatch(/inverted|end.*start|range/i);
+    expect(outcome.unresolved[0]?.reason).toMatch(/inverted|end.*start|range/i);
     expect(outcome.entries[0]).toBe("repo:src/a.ts#L20-10");
   });
 
@@ -235,7 +235,7 @@ describe("mintDescribesPins", () => {
 
     expect(outcome.minted).toHaveLength(0);
     expect(outcome.unresolved).toHaveLength(1);
-    expect(outcome.unresolved[0]!.entry).toBe("repo:missing.ts#L1-5");
+    expect(outcome.unresolved[0]?.entry).toBe("repo:missing.ts#L1-5");
     expect(outcome.entries[0]).toBe("repo:missing.ts#L1-5");
   });
 
@@ -249,7 +249,7 @@ describe("mintDescribesPins", () => {
 
     expect(outcome.minted).toHaveLength(0);
     expect(outcome.unresolved).toHaveLength(1);
-    expect(outcome.unresolved[0]!.entry).toBe("repo:src/a.ts#L1-5");
+    expect(outcome.unresolved[0]?.entry).toBe("repo:src/a.ts#L1-5");
     // Function must not throw regardless of filesystem state.
   });
 

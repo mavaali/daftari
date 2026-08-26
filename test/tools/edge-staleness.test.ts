@@ -1,9 +1,14 @@
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeEdge } from "../../src/curation/edges.js";
 import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog } from "../../src/curation/read-log.js";
-import { vaultStaleness } from "../../src/tools/edge-staleness.js";
+import { deleteDocument } from "../../src/storage/index-db.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
+import { edgeStalenessTools, vaultStaleness } from "../../src/tools/edge-staleness.js";
 import { vaultRead } from "../../src/tools/read.js";
+import { openIndexForAccessOrNull } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -173,6 +178,81 @@ describe("vault_staleness (#234)", () => {
     expect(report.value.by_tool.vault_read?.broken_serves).toBeGreaterThanOrEqual(1);
   }, 60_000);
 
+  it("distinguishes an instrumented vault from a fresh clone with no consumes log", async () => {
+    await seedNeighborhood(vault);
+
+    const instrumented = await vaultStaleness(vault, {});
+    expect(instrumented.ok).toBe(true);
+    if (!instrumented.ok || instrumented.value.mode !== "report") return;
+    const total = instrumented.value.compiled_edge_coverage.total_documents;
+    expect(instrumented.value.compiled_edge_coverage).toMatchObject({
+      status: "partial",
+      instrumented_documents: 1,
+      uninstrumented_documents: total - 1,
+    });
+
+    // consumes.jsonl is machine-local/gitignored, so removing it models the
+    // signal available immediately after cloning the same markdown vault.
+    rmSync(join(vault, ".daftari", "consumes.jsonl"));
+    const clone = await vaultStaleness(vault, {});
+    expect(clone.ok).toBe(true);
+    if (!clone.ok || clone.value.mode !== "report") return;
+    expect(clone.value.compiled_edge_coverage).toEqual({
+      status: "no-data",
+      total_documents: total,
+      instrumented_documents: 0,
+      uninstrumented_documents: total,
+      message: `no compiled-edge data (${total} docs uninstrumented)`,
+    });
+  }, 60_000);
+
+  it("scopes compiled-edge coverage counts to documents the caller can read", async () => {
+    const visible = await vaultWrite(vault, {
+      path: "pricing/visible.md",
+      body: "# Visible\n",
+      frontmatter: frontmatter({ title: "Visible" }),
+      agent: AGENT,
+    });
+    const hidden = await vaultWrite(vault, {
+      path: "competitive-intel/hidden.md",
+      body: "# Hidden\n",
+      frontmatter: frontmatter({ title: "Hidden", collection: "competitive-intel" }),
+      agent: AGENT,
+    });
+    if (!visible.ok || !hidden.ok) throw new Error("fixture write failed");
+
+    const pricingOnly = {
+      user: "human:narrow",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const result = await vaultStaleness(vault, {}, pricingOnly);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.mode !== "report") return;
+    const operator = await vaultStaleness(vault, {});
+    expect(operator.ok).toBe(true);
+    if (!operator.ok || operator.value.mode !== "report") return;
+    expect(result.value.compiled_edge_coverage.total_documents).toBeLessThan(
+      operator.value.compiled_edge_coverage.total_documents,
+    );
+    expect(result.value.compiled_edge_coverage.uninstrumented_documents).toBe(
+      result.value.compiled_edge_coverage.total_documents,
+    );
+  }, 60_000);
+
+  it("declares compiled-edge coverage in the report output schema", () => {
+    const definition = edgeStalenessTools.find((tool) => tool.name === "vault_staleness");
+    const oneOf = definition?.outputSchema.oneOf as Array<Record<string, unknown>> | undefined;
+    const reportSchema = oneOf?.find(
+      (schema) =>
+        ((schema.properties as Record<string, { const?: string }> | undefined)?.mode?.const ??
+          "") === "report",
+    );
+    expect(
+      (reportSchema?.properties as Record<string, unknown> | undefined)?.compiled_edge_coverage,
+    ).toBeDefined();
+  });
+
   it("omits edges to unreadable units and coarsens them into hidden_pending", async () => {
     await seedNeighborhood(vault);
     // A pricing artifact compiled from a competitive-intel unit.
@@ -212,6 +292,10 @@ describe("vault_staleness (#234)", () => {
     expect(gated.value.edges).toEqual([]);
     expect(gated.value.hidden_pending).toBe("some");
     expect(gated.value.summary.pending_broken).toBe(0);
+    // No-oracle (#416): a hidden upstream classifies unverifiable for the narrow
+    // role but is filtered by the visibility split — it must NOT appear as a
+    // named row or in the visible summary; it stays only in the coarse bucket.
+    expect(gated.value.summary.unverifiable).toBe(0);
 
     // The same split on vault_read directly — the broken (incident) class
     // must not be derivable from the hidden upstream through the read
@@ -254,4 +338,120 @@ describe("vault_staleness (#234)", () => {
     const emptyArtifact = await vaultStaleness(vault, { artifact: "  " });
     expect(emptyArtifact.ok).toBe(false);
   });
+
+  it("a dependent of a deleted upstream reports unverifiable, not current", async () => {
+    await seedNeighborhood(vault);
+    // Evict the compiled upstream from the index (simulates out-of-band deletion).
+    const db = openIndexForAccessOrNull(vault);
+    try {
+      deleteDocument(requireDefined(db), "pricing/metric.md");
+    } finally {
+      db?.close();
+    }
+
+    const read = await vaultRead(vault, "pricing/artifact.md");
+    if (!read.ok) throw read.error;
+    const edges = read.value.upstream_staleness?.edges ?? [];
+    expect(edges.some((e) => e.staleness === "unverifiable")).toBe(true);
+    expect(edges.every((e) => e.staleness !== "current")).toBe(true);
+    expect(read.value.upstream_staleness?.unverifiable).toBe(1);
+    expect(read.value.upstream_staleness?.banner).toContain("can no longer be verified");
+    expect(read.value.upstream_staleness?.banner).not.toContain("deleted");
+  }, 60_000);
+
+  it("vault_staleness reports a deleted upstream as unverifiable in edges + summary", async () => {
+    await seedNeighborhood(vault);
+    const db = openIndexForAccessOrNull(vault);
+    try {
+      deleteDocument(requireDefined(db), "pricing/metric.md");
+    } finally {
+      db?.close();
+    }
+
+    const res = await vaultStaleness(vault, { artifact: "pricing/artifact.md" });
+    if (!res.ok) throw res.error;
+    if (res.value.mode !== "artifact") throw new Error("expected artifact mode");
+    expect(res.value.edges[0]?.staleness).toBe("unverifiable");
+    expect(res.value.edges[0]?.reason).toBe("source not in your readable vault");
+    expect(res.value.summary.unverifiable).toBe(1);
+    expect(res.value.summary.current).toBe(0);
+  }, 60_000);
+
+  it("RBAC-hidden upstream is indistinguishable from a deleted one (coarse bucket, no leak)", async () => {
+    await seedNeighborhood(vault);
+    const secret = await vaultWrite(vault, {
+      path: "competitive-intel/secret2.md",
+      body: "# S\n",
+      frontmatter: frontmatter({ title: "S", collection: "competitive-intel" }),
+      agent: AGENT,
+    });
+    if (!secret.ok) throw secret.error;
+    await vaultRead(vault, "competitive-intel/secret2.md", undefined, "run-9");
+    const consumer = await vaultWrite(vault, {
+      path: "pricing/consumer9.md",
+      body: "# C\n",
+      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }),
+      agent: AGENT,
+      run_id: "run-9",
+    });
+    if (!consumer.ok) throw consumer.error;
+
+    const pricingOnly = {
+      user: "human:n",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const gated = await vaultRead(vault, "pricing/consumer9.md", pricingOnly);
+    if (!gated.ok) throw gated.error;
+    // Hidden upstream never becomes a named row and never an exact count.
+    expect(gated.value.upstream_staleness?.edges).toEqual([]);
+    expect(gated.value.upstream_staleness?.hidden_pending).toBe("some");
+    expect(gated.value.upstream_staleness?.unverifiable ?? 0).toBe(0);
+  }, 60_000);
+
+  it("a deleted upstream whose frontmatter collection diverges from its path is not named to a narrow role (no existence oracle)", async () => {
+    // Upstream physically at pricing/… but frontmatter-tagged to competitive-intel:
+    // a pricing-only role cannot see it ALIVE. After deletion its collection can
+    // only be guessed from the path prefix (pricing = readable) — it must still
+    // NOT become a named unverifiable row, or deleted becomes distinguishable
+    // from hidden.
+    const upstream = await vaultWrite(vault, {
+      path: "pricing/divergent.md",
+      body: "# D\n",
+      frontmatter: frontmatter({ title: "D", collection: "competitive-intel" }),
+      agent: AGENT,
+    });
+    if (!upstream.ok) throw upstream.error;
+    await vaultRead(vault, "pricing/divergent.md", undefined, "run-div");
+    const consumer = await vaultWrite(vault, {
+      path: "pricing/consumer-div.md",
+      body: "# C\n",
+      frontmatter: frontmatter({ title: "C", provenance: "synthesized" }),
+      agent: AGENT,
+      run_id: "run-div",
+    });
+    if (!consumer.ok) throw consumer.error;
+
+    // Evict the upstream (out-of-band deletion).
+    const db = openIndexForAccessOrNull(vault);
+    try {
+      deleteDocument(requireDefined(db), "pricing/divergent.md");
+    } finally {
+      db?.close();
+    }
+
+    const pricingOnly = {
+      user: "human:n",
+      roleName: "pricing-only",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+    const gated = await vaultRead(vault, "pricing/consumer-div.md", pricingOnly);
+    if (!gated.ok) throw gated.error;
+    // Must NOT name the deleted upstream, and must NOT count it as visible unverifiable.
+    const edges = gated.value.upstream_staleness?.edges ?? [];
+    expect(edges.every((e) => e.unit !== "pricing/divergent.md")).toBe(true);
+    expect(gated.value.upstream_staleness?.unverifiable ?? 0).toBe(0);
+    // It still surfaces through the coarse bucket.
+    expect(gated.value.upstream_staleness?.hidden_pending).toBe("some");
+  }, 60_000);
 });

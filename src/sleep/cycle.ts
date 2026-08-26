@@ -12,8 +12,16 @@
 // generative document going stale is expected, not a defect — it is counted,
 // never woken.
 
+import { posix } from "node:path";
 import { parseDescribesEntry } from "../audit/describes.js";
 import { buildDocket } from "../court/docket.js";
+import {
+  type CompiledEdgeCoverageSummary,
+  compiledEdgeCoverageSummary,
+  currentConsumesEdges,
+  listConsumesEdges,
+} from "../curation/consumes.js";
+import { explicitVaultSourceTarget, resolveVaultSourceRef } from "../curation/source-refs.js";
 import {
   daysUntil,
   listStagedActions,
@@ -28,15 +36,67 @@ import {
   computeBlast,
 } from "../curation/tension-blast.js";
 import { computeValidity } from "../curation/validity.js";
-import { buildPathIndexes, loadDocuments, resolveLink } from "../curation/vault-docs.js";
+import { buildPathIndexes, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { ANCHOR_PIN_CAP } from "../tools/anchors.js";
 import { computeRepin } from "../tools/repin.js";
 import { loadConfig } from "../utils/config.js";
+import { lastCommitContainingPath } from "../utils/git.js";
 
-// A load-bearing decayed document: canonical, accumulation-domain, past its
-// TTL, with at least one downstream dependent. The wake queue exists for an
-// external agent to re-verify these against their sources — daftari never
+function validCompiledUnitPath(raw: string): string | null {
+  if (
+    raw.length === 0 ||
+    raw.includes("\\") ||
+    raw.startsWith("/") ||
+    raw.split("/").includes("..") ||
+    !raw.endsWith(".md") ||
+    posix.normalize(raw) !== raw
+  ) {
+    return null;
+  }
+  return raw;
+}
+
+type SourceHistoryEvidence =
+  | { status: "recoverable"; commit: string }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
+async function sourceHistoryEvidence(
+  vaultRoot: string,
+  path: string,
+  cache: Map<string, SourceHistoryEvidence>,
+): Promise<SourceHistoryEvidence> {
+  const cached = cache.get(path);
+  if (cached) return cached;
+  const result = await lastCommitContainingPath(vaultRoot, path);
+  const evidence: SourceHistoryEvidence = !result.ok
+    ? { status: "unavailable" }
+    : result.value === null
+      ? { status: "absent" }
+      : { status: "recoverable", commit: result.value };
+  cache.set(path, evidence);
+  return evidence;
+}
+
+async function vanishedSourceDetail(
+  vaultRoot: string,
+  path: string,
+  cache: Map<string, SourceHistoryEvidence>,
+): Promise<string> {
+  const evidence = await sourceHistoryEvidence(vaultRoot, path, cache);
+  if (evidence.status === "recoverable") {
+    return `${path} missing from worktree, last seen at ${evidence.commit} (recoverable via asof)`;
+  }
+  if (evidence.status === "absent") {
+    return `${path} missing from worktree and not found in available git history (gone-forever in available history)`;
+  }
+  return `${path} missing from worktree; git history unavailable`;
+}
+
+// An advisory task for a canonical accumulation document triggered by decay,
+// ended validity, or retracted/vanished grounding. The wake queue exists for
+// an external agent to re-verify these against their sources — daftari never
 // re-verifies on its own.
 export interface WakeTask {
   path: string;
@@ -67,6 +127,7 @@ export interface RepinPassResult {
 
 export interface SleepCycleResult {
   staleness: { fresh: number; aging: number; stale: number; total: number };
+  compiledEdgeCoverage: CompiledEdgeCoverageSummary;
   // Ranked: widest blast first, then oldest.
   wake: WakeTask[];
   // Expired accumulation docs with no downstream dependents — noted, not woken.
@@ -102,11 +163,25 @@ export async function runSleepCycle(
 
   const docs = await loadDocuments(vaultRoot);
   if (!docs.ok) return docs;
+  const consumes = await listConsumesEdges(vaultRoot);
+  if (!consumes.ok) return consumes;
+  const compiledEdgeCoverage = compiledEdgeCoverageSummary(
+    docs.value.map((doc) => doc.path),
+    consumes.value,
+  );
 
   const reverseSource = buildReverseSourceMap(docs.value);
   const reverseLink = buildReverseLinkMap(docs.value);
 
   const { byPath, byBasename } = buildPathIndexes(docs.value);
+  const vanishedCompiledByArtifact = new Map<string, Set<string>>();
+  for (const edge of currentConsumesEdges(consumes.value)) {
+    const unit = validCompiledUnitPath(edge.unit);
+    if (unit === null || byPath.has(unit)) continue;
+    const missing = vanishedCompiledByArtifact.get(edge.artifact) ?? new Set<string>();
+    missing.add(unit);
+    vanishedCompiledByArtifact.set(edge.artifact, missing);
+  }
   const retracted = new Set(
     docs.value
       .filter((d) => d.frontmatter.status === "deprecated" || d.frontmatter.status === "superseded")
@@ -116,6 +191,7 @@ export async function runSleepCycle(
   const staleness = { fresh: 0, aging: 0, stale: 0, total: 0 };
   const wake: WakeTask[] = [];
   const decayedQuiet: QuietDecay[] = [];
+  const sourceHistoryCache = new Map<string, SourceHistoryEvidence>();
   let generativeStale = 0;
 
   for (const doc of docs.value) {
@@ -148,11 +224,27 @@ export async function runSleepCycle(
     // Scope is intentionally locked to the sources frontmatter edge only — not
     // markdown body links. Self-terminating once the source is re-pointed.
     const citedRetracted = (doc.frontmatter.sources ?? [])
-      .map((raw) => resolveLink(raw, doc.path, byPath, byBasename))
+      .map((raw) => {
+        const source = resolveVaultSourceRef(raw, doc.path, byPath, byBasename);
+        return source.kind === "vault" ? source.target : null;
+      })
       .filter((t): t is string => t !== null && retracted.has(t));
     const citesRetracted = citedRetracted.length > 0;
 
-    if (!s.expired && !validityEnded && !citesRetracted) continue;
+    // Fourth reason to wake: an explicit declared vault source or a unit in
+    // the artifact's current compiled edge group no longer exists. Unresolved
+    // legacy refs stay opaque by contract, and external refs are not vault
+    // dependencies. This is recomputed from live files and current edge state;
+    // no tombstone or stale flag is persisted.
+    const vanishedSources = new Set(vanishedCompiledByArtifact.get(doc.path) ?? []);
+    for (const raw of doc.frontmatter.sources ?? []) {
+      const target = explicitVaultSourceTarget(raw);
+      if (target !== null && !byPath.has(target)) vanishedSources.add(target);
+    }
+    const vanished = [...vanishedSources].sort();
+    const hasVanishedSource = vanished.length > 0;
+
+    if (!s.expired && !validityEnded && !citesRetracted && !hasVanishedSource) continue;
     if (doc.frontmatter.domain === "generative") {
       generativeStale += 1;
       continue;
@@ -160,10 +252,18 @@ export async function runSleepCycle(
     if (doc.frontmatter.status !== "canonical") continue;
 
     const blast = computeBlast({ seeds: [doc.path], reverseSource, reverseLink });
-    if (blast.downstream.length === 0 && !citesRetracted) {
+    if (blast.downstream.length === 0 && !citesRetracted && !hasVanishedSource) {
       decayedQuiet.push({ path: doc.path, ageDays: s.ageDays });
       continue;
     }
+    // Sleep is an operator-only surface, so exact readable paths and Git SHAs
+    // are safe here. Do not move this recovery detail onto caller-scoped MCP
+    // read/list surfaces without applying their omission rules first.
+    const vanishedDetail = hasVanishedSource
+      ? await Promise.all(
+          vanished.map((path) => vanishedSourceDetail(vaultRoot, path, sourceHistoryCache)),
+        )
+      : [];
     wake.push({
       path: doc.path,
       title: doc.frontmatter.title,
@@ -174,18 +274,22 @@ export async function runSleepCycle(
       blastAdvisory: blast.advisory_blast,
       blastTotal: blast.downstream.length,
       sources: doc.frontmatter.sources,
-      reason: citesRetracted
-        ? `canonical, cites retracted source(s): ${citedRetracted.join(", ")} — ` +
-          `re-verify grounding, re-point to the successor if one exists, and ` +
-          `stage the diff for ratification`
-        : validityEnded
-          ? `canonical, but its validity ended ${validity?.until} and nothing ` +
-            `supersedes it; ${blast.downstream.length} downstream document(s) ` +
-            "depend on it — find what replaced the claim and stage the diff for " +
-            "ratification"
-          : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
-            `${blast.downstream.length} downstream document(s) depend on it — ` +
-            `re-verify against its sources and stage the diff for ratification`,
+      reason: hasVanishedSource
+        ? `source-vanished: canonical grounding disappeared: ${vanishedDetail.join("; ")} — ` +
+          `re-verify grounding, restore or replace the source where appropriate, and ` +
+          `stage any dependent diff for ratification`
+        : citesRetracted
+          ? `canonical, cites retracted source(s): ${citedRetracted.join(", ")} — ` +
+            `re-verify grounding, re-point to the successor if one exists, and ` +
+            `stage the diff for ratification`
+          : validityEnded
+            ? `canonical, but its validity ended ${validity?.until} and nothing ` +
+              `supersedes it; ${blast.downstream.length} downstream document(s) ` +
+              "depend on it — find what replaced the claim and stage the diff for " +
+              "ratification"
+            : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
+              `${blast.downstream.length} downstream document(s) depend on it — ` +
+              `re-verify against its sources and stage the diff for ratification`,
     });
   }
 
@@ -345,6 +449,7 @@ export async function runSleepCycle(
 
   return ok({
     staleness,
+    compiledEdgeCoverage,
     wake,
     decayedQuiet,
     generativeStale,

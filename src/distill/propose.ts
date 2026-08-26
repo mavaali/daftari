@@ -18,14 +18,18 @@
 //   so a future config hook can override it without touching call sites.
 
 import { join } from "node:path";
-import { dump } from "js-yaml";
 import type { AccessContext } from "../access/rbac.js";
 import { type StageOutcome, stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { slugifyKey } from "../import/langgraph-store.js";
 import { vaultSearch } from "../tools/search.js";
 import type { ClaimRunMeta, ExtractedClaim } from "./extract.js";
 import { refuseRawDistillOutput } from "./output-fence.js";
-import { encodeReader, READER_PROMPT_VERSION } from "./reader-fingerprint.js";
+import {
+  encodeLineageEntry,
+  encodeReader,
+  type LineageOp,
+  READER_PROMPT_VERSION,
+} from "./reader-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -211,13 +215,16 @@ export interface ReaderFrontmatter {
   reader_chunk_window: number;
   reader_input_cap: number;
   readers: string[];
+  /** Append-only lineage (6mf.4 R1). Raw-only; never enters typed Frontmatter. */
+  reader_lineage: string[];
 }
 
 /**
  * Build the reader_* frontmatter fields from a claim's run_meta. The prompt
  * version is READER_PROMPT_VERSION (the hash of the effective extraction prompt
  * contract at this build). `readers` carries exactly ONE entry at ingest — the
- * parentage SET a later merge bead unions.
+ * parentage SET a later merge bead unions. `reader_lineage` carries the first
+ * append-only provenance entry for this belief (6mf.4 R1).
  *
  * Locked field rules (see the bead spec):
  *   - reader_served_model uses the "unreported" sentinel when servedModel is
@@ -225,8 +232,17 @@ export interface ReaderFrontmatter {
  *   - reader_temperature is OMITTED when effectiveTemperature is undefined — a
  *     number field cannot hold a sentinel.
  *   - reader_via_retry defaults to false when viaRetry is undefined.
+ *
+ * @param runMeta  The extraction run metadata.
+ * @param op       The lineage op for this write. Defaults to `"ingest"` (new
+ *                 belief). Pass `"update"` for update-in-place re-distillations.
  */
-export function buildReaderFrontmatter(runMeta: ClaimRunMeta): ReaderFrontmatter {
+export function buildReaderFrontmatter(
+  runMeta: ClaimRunMeta,
+  op: LineageOp = "ingest",
+): ReaderFrontmatter {
+  const readerStr = encodeReader(runMeta, READER_PROMPT_VERSION);
+  const ts = new Date().toISOString();
   const fm: ReaderFrontmatter = {
     reader_model: runMeta.requestedModel,
     reader_served_model: runMeta.servedModel ?? "unreported",
@@ -234,7 +250,8 @@ export function buildReaderFrontmatter(runMeta: ClaimRunMeta): ReaderFrontmatter
     reader_prompt_version: READER_PROMPT_VERSION,
     reader_chunk_window: runMeta.chunkWindow,
     reader_input_cap: runMeta.inputCap,
-    readers: [encodeReader(runMeta, READER_PROMPT_VERSION)],
+    readers: [readerStr],
+    reader_lineage: [encodeLineageEntry(ts, op, readerStr)],
   };
   // Omit reader_temperature entirely when unknown: a number can't hold a
   // sentinel and null would delete a declared extension.
@@ -276,15 +293,10 @@ function readerProvenanceLines(reader: ReaderFrontmatter | null): string[] {
 
 function assembleBody(
   claim: ExtractedClaim,
-  frontmatter: Record<string, unknown>,
   ids: DistillIds,
   reader: ReaderFrontmatter | null,
 ): string {
   return [
-    "---",
-    dump(frontmatter).trimEnd(),
-    "---",
-    "",
     claim.statement.trim(),
     "",
     "## Provenance",
@@ -425,13 +437,19 @@ export async function proposeAllClaims(
     // `claim.run_meta` (ClaimRunMeta | undefined) — servedModel,
     // effectiveTemperature, viaRetry, requestedModel, chunkWindow, inputCap. When
     // present, stamp the reader fingerprint onto the belief's frontmatter as
-    // declared-optional schema_extensions (reader_*/readers). When ABSENT (older
-    // paths, mocks that omit it), skip every reader field entirely — they are
-    // optional and must not crash or write empty/null placeholders.
-    const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta) : null;
+    // declared-optional schema_extensions (reader_*/readers/reader_lineage). When
+    // ABSENT (older paths, mocks that omit it), skip every reader field entirely —
+    // they are optional and must not crash or write empty/null placeholders.
+    //
+    // 6mf.4: the op is "update" iff this claim has a path override (meaning it is
+    // an update-in-place re-distillation of an existing landed belief), else "ingest".
+    // The land-time union (Task 2) merges the incoming lineage with the existing one.
+    const isUpdate = pathOverrides?.[claim.claim_key] !== undefined;
+    const lineageOp: LineageOp = isUpdate ? "update" : "ingest";
+    const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta, lineageOp) : null;
     if (reader) Object.assign(frontmatter, reader);
 
-    const body = assembleBody(claim, frontmatter, ids, reader);
+    const body = assembleBody(claim, ids, reader);
 
     // U8/R5 + R7: overlap-hint. Attach top-K likely-collision neighbor paths to
     // the rationale so the ratifier can see possible overlaps at a glance, and

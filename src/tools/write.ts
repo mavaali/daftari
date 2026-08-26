@@ -17,6 +17,7 @@ import { mintConsumesEdges } from "../curation/consumes.js";
 import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
+import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import {
@@ -27,16 +28,20 @@ import {
   computeBlast,
   type HiddenDownstream,
 } from "../curation/tension-blast.js";
-import { EXTERNAL_REF } from "../curation/tier0.js";
 import {
   buildPathIndexes,
   extractLinks,
   loadDocuments,
   outgoingLinkTargets,
-  resolveLink,
 } from "../curation/vault-docs.js";
+import {
+  encodeLineageEntry,
+  readersFromLineage,
+  unionLineage,
+} from "../distill/reader-fingerprint.js";
 import { type ParsedDocument, parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
+import { parseSourceRef } from "../frontmatter/source-ref.js";
 import {
   CONFIDENCES,
   DOMAINS,
@@ -870,7 +875,10 @@ function generativeDomainRefs(
   if (doc.domain !== "accumulation") return null;
   // Most accumulation writes reference nothing; skip the index entirely
   // rather than loading every vault path to resolve an empty candidate set.
-  const localSources = doc.sources.filter((s) => !EXTERNAL_REF.test(s));
+  const localSources = doc.sources.filter((s) => {
+    const kind = parseSourceRef(s).kind;
+    return kind === "vault" || kind === "legacy";
+  });
   if (localSources.length === 0 && extractLinks(doc.body).length === 0) return null;
   const db = openIndexForAccessOrNull(vaultRoot);
   if (!db) return null;
@@ -878,7 +886,8 @@ function generativeDomainRefs(
     const indexes = buildPathIndexes(allDocumentPaths(db).map((p) => ({ path: p })));
     const candidates = new Set<string>(outgoingLinkTargets(doc.body, doc.relPath, indexes));
     for (const raw of localSources) {
-      const target = resolveLink(raw, doc.relPath, indexes.byPath, indexes.byBasename);
+      const source = resolveVaultSourceRef(raw, doc.relPath, indexes.byPath, indexes.byBasename);
+      const target = source.kind === "vault" ? source.target : null;
       if (target && target !== doc.relPath) candidates.add(target);
     }
     if (candidates.size === 0) return null;
@@ -1103,12 +1112,111 @@ export async function vaultWrite(
   // object is written back into `rawFrontmatter` in place, so transform hooks,
   // validation, and serialization all operate on it. The create path is
   // unchanged — there is no existing frontmatter to preserve.
+  //
+  // Field-aware special cases (6mf.4 R2, R6, R7):
+  //   `readers` and `reader_lineage` are append-only provenance fields; instead
+  //   of letting the payload win, we union existing ∪ payload at land time.
+  //   This fixes the clobber without any writer having to read the doc first.
+  //   Null-delete is evaluated BEFORE the union (R7 escape hatch preserved).
+  //   Non-array on-disk lineage is filtered as absent, never bricks a write.
+  //   After the union, the 6mf.1 rule applies: >1 distinct reader ⇒ drop all
+  //   scalar reader_* fields from the merged raw.
   if (isUpdate && oldRaw !== null) {
     const merged: Record<string, unknown> = { ...oldRaw };
+
+    // Step 1: apply null-delete and regular payload keys (null-delete first).
     for (const [key, value] of Object.entries(rawFrontmatter)) {
-      if (value === null) delete merged[key];
-      else merged[key] = value;
+      if (value === null) {
+        delete merged[key];
+      } else if (key === "readers" || key === "reader_lineage") {
+        // Defer these — handled below as append-only union.
+        // (We do NOT write them here yet; we'll union after the loop.)
+      } else {
+        merged[key] = value;
+      }
     }
+
+    // Step 2: field-aware union for readers / reader_lineage.
+    // Only runs when NOT null-deleted (null case handled above).
+    const readersNulled = rawFrontmatter.readers === null;
+    const lineageNulled = rawFrontmatter.reader_lineage === null;
+
+    if (!readersNulled && !lineageNulled) {
+      // Union readers[]
+      const existingReaders = Array.isArray(merged.readers)
+        ? (merged.readers as unknown[]).filter((r): r is string => typeof r === "string")
+        : [];
+      const payloadReaders =
+        "readers" in rawFrontmatter && Array.isArray(rawFrontmatter.readers)
+          ? (rawFrontmatter.readers as unknown[]).filter((r): r is string => typeof r === "string")
+          : null;
+      if (payloadReaders !== null) {
+        const unioned: string[] = [...existingReaders];
+        for (const r of payloadReaders) {
+          if (!unioned.includes(r)) unioned.push(r);
+        }
+        merged.readers = unioned;
+      }
+
+      // Union reader_lineage[]
+      let existingLineage = Array.isArray(merged.reader_lineage)
+        ? (merged.reader_lineage as unknown[]).filter((e): e is string => typeof e === "string")
+        : []; // malformed (non-array) treated as absent (R7)
+
+      // Lazy backfill (6mf.4 R8): if the existing doc has readers[] but NO
+      // reader_lineage yet, synthesize one `ingest` entry per reader at
+      // doc.created so the lineage history isn't blank. Only when lineage is
+      // absent — docs that already have lineage are not re-synthesized. Docs
+      // with no readers at all (human/legacy) get no fabricated ingest entries.
+      if (existingLineage.length === 0 && existingReaders.length > 0) {
+        const createdTs =
+          typeof merged.created === "string" && merged.created.length >= 10
+            ? `${merged.created.slice(0, 10)}T00:00:00Z`
+            : new Date().toISOString();
+        existingLineage = existingReaders.map((r) => encodeLineageEntry(createdTs, "ingest", r));
+      }
+
+      const payloadLineage =
+        "reader_lineage" in rawFrontmatter && Array.isArray(rawFrontmatter.reader_lineage)
+          ? (rawFrontmatter.reader_lineage as unknown[]).filter(
+              (e): e is string => typeof e === "string",
+            )
+          : null;
+      if (payloadLineage !== null) {
+        merged.reader_lineage = unionLineage(existingLineage, payloadLineage);
+        // Recompute readers[] from the unioned lineage to keep the invariant:
+        // readers[] == dedupe(reader-part of reader_lineage). Only when a
+        // lineage is being written — if neither source has a lineage, readers[]
+        // stays as the simpler union computed above.
+        const lineageDerivedReaders = readersFromLineage(merged.reader_lineage as string[]);
+        if (lineageDerivedReaders.length > 0) {
+          // Lineage-derived readers may include readers that aren't in lineage
+          // entries yet (e.g. readers[] added without a lineage entry). Merge:
+          // start from lineage-derived, then add any extras from merged.readers.
+          const lineageSet = new Set(lineageDerivedReaders);
+          const extras = (Array.isArray(merged.readers) ? (merged.readers as string[]) : []).filter(
+            (r) => !lineageSet.has(r),
+          );
+          merged.readers = [...lineageDerivedReaders, ...extras];
+        }
+      }
+
+      // Step 3: 6mf.1 scalar-drop rule — if unioned readers > 1, drop scalars.
+      const finalReaders = Array.isArray(merged.readers) ? (merged.readers as string[]) : [];
+      if (finalReaders.length > 1) {
+        const READER_SCALAR_FIELDS = [
+          "reader_model",
+          "reader_served_model",
+          "reader_temperature",
+          "reader_via_retry",
+          "reader_prompt_version",
+          "reader_chunk_window",
+          "reader_input_cap",
+        ];
+        for (const field of READER_SCALAR_FIELDS) delete merged[field];
+      }
+    }
+
     for (const key of Object.keys(rawFrontmatter)) delete rawFrontmatter[key];
     Object.assign(rawFrontmatter, merged);
   }
@@ -2003,6 +2111,11 @@ interface MergeWrite {
   action: WriteResult["action"];
 }
 
+interface MergeSnapshot {
+  absPath: string;
+  contentHash: string | null;
+}
+
 // Combines two source documents into a target and supersedes both sources to
 // point at it. Mechanical, not generative: the merged body is supplied by the
 // caller (a human at ratification, or the loop) — vault_merge never synthesizes
@@ -2114,6 +2227,29 @@ export async function vaultMerge(
     }
   }
 
+  // The merge payload below is composed from these exact bytes. File locks
+  // prevent overlap only after they are acquired; they do not detect a writer
+  // that lands after these reads and releases its lock before this merge takes
+  // its own locks. Preserve one snapshot per canonical path so the locked
+  // section can reject that non-overlapping stale-read race before any write.
+  // First snapshot wins: when the target aliases path_a, target's later read
+  // must not replace the earlier source snapshot that targetRaw is based on.
+  const mergeSnapshots = new Map<string, MergeSnapshot>();
+  mergeSnapshots.set(resolvedA.value.relPath, {
+    absPath: resolvedA.value.absPath,
+    contentHash: sha256Hex(existingA.value),
+  });
+  mergeSnapshots.set(resolvedB.value.relPath, {
+    absPath: resolvedB.value.absPath,
+    contentHash: sha256Hex(existingB.value),
+  });
+  if (!mergeSnapshots.has(resolvedTarget.value.relPath)) {
+    mergeSnapshots.set(resolvedTarget.value.relPath, {
+      absPath: resolvedTarget.value.absPath,
+      contentHash: existingTarget.ok ? sha256Hex(existingTarget.value) : null,
+    });
+  }
+
   // Tier guard (#141): the merged body wholly replaces the target's. path_a
   // and path_b only receive a frontmatter-level supersede, so their tiers
   // don't gate the merge.
@@ -2183,6 +2319,41 @@ export async function vaultMerge(
       // Mixed parentage: drop every single-parent scalar claim.
       for (const field of READER_SCALAR_FIELDS) delete targetRaw[field];
     }
+  }
+
+  // reader_lineage fusion (6mf.4 R4). Mirror the readers fusion above:
+  // union A's lineage entries then B's not-already-present (dedup key =
+  // (op, reader) — same as the Task 2 land-time union). Neither source having
+  // a lineage ⇒ no key at all (avoids an empty-array placeholder).
+  const lineageA = Array.isArray(parsedA.value.raw.reader_lineage)
+    ? (parsedA.value.raw.reader_lineage as unknown[]).filter(
+        (e): e is string => typeof e === "string",
+      )
+    : [];
+  const lineageB = Array.isArray(parsedB.value.raw.reader_lineage)
+    ? (parsedB.value.raw.reader_lineage as unknown[]).filter(
+        (e): e is string => typeof e === "string",
+      )
+    : [];
+  if (lineageA.length > 0 || lineageB.length > 0) {
+    targetRaw.reader_lineage = unionLineage(lineageA, lineageB);
+    // Keep readers[] consistent with the fused lineage (invariant: readers[] ==
+    // dedupe(reader-part of lineage)). Only overwrite if we actually have lineage.
+    const lineageDerivedReaders = readersFromLineage(targetRaw.reader_lineage as string[]);
+    if (lineageDerivedReaders.length > 0) {
+      // Union any readers already in targetRaw that aren't in the lineage
+      // (e.g., from the readers-only path above) to avoid narrowing the set.
+      const combined = [...lineageDerivedReaders];
+      for (const r of unionReaders) {
+        if (!combined.includes(r)) combined.push(r);
+      }
+      targetRaw.readers = combined;
+      if (combined.length > 1) {
+        for (const field of READER_SCALAR_FIELDS) delete targetRaw[field];
+      }
+    }
+  } else {
+    delete targetRaw.reader_lineage;
   }
 
   const { frontmatter: targetFm, report: targetReport } = validateFrontmatter(
@@ -2322,6 +2493,24 @@ export async function vaultMerge(
       const lock = acquireLock(lockDb, relPath, holder);
       if (!lock.ok) return lock;
       held.push(relPath);
+    }
+
+    // Revalidate every input while holding the complete lock set. A null hash
+    // records a target that did not exist when the merge was composed; if a
+    // concurrent writer created it before these locks were acquired, that is
+    // stale too. Compliant writers cannot change the files between this check
+    // and the writes below because they must acquire one of the held locks.
+    for (const [relPath, snapshot] of mergeSnapshots) {
+      const current = await readFile(snapshot.absPath);
+      const currentHash = current.ok ? sha256Hex(current.value) : null;
+      if (currentHash !== snapshot.contentHash) {
+        return err(
+          new Error(
+            `stale merge: ${relPath} changed after vault_merge read it; ` +
+              "retry against the current documents",
+          ),
+        );
+      }
     }
 
     // Write all files, then a single git commit. This is NOT crash-atomic on

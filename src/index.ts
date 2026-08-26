@@ -25,7 +25,7 @@ import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mou
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import { setCoverageEnabled } from "./search/coverage.js";
 import { setGraphExpandConfig } from "./search/graph-expansion.js";
-import { setVecKnnK } from "./search/hybrid.js";
+import { setDefaultWeights, setVecKnnK } from "./search/hybrid.js";
 import {
   markIndexError,
   markIndexing,
@@ -121,6 +121,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // per process, same lifecycle as the provider above.
   setCoverageEnabled(config.value.search.coverage);
   setVecKnnK(config.value.search.vecKnnK);
+  setDefaultWeights(config.value.search.weights);
   setSuppressSuperseded(config.value.search.suppressSuperseded);
   setGraphExpandConfig(config.value.search.graphExpand);
 
@@ -297,6 +298,14 @@ export async function startVaultServices(
 // per process — the server runs against one vault for its lifetime.
 let activeWatcher: VaultWatcher | null = null;
 
+// Set once a signal-driven shutdown begins. Two jobs: (1) stop a watcher from
+// starting after shutdown has run — the background reindex's onDone fires the
+// watcher start AFTER the transport is up, so a SIGTERM that lands mid-reindex
+// would otherwise spawn a fresh watcher post-shutdown and pin the event loop
+// open forever; (2) make the intent explicit that we are tearing down. See
+// the SIGTERM-during-reindex hang (takeover left two writers on one vault).
+let shuttingDown = false;
+
 // Install once, regardless of whether the watcher starts. The lock release
 // must run for all exit paths:
 //   - SIGTERM / SIGINT (parent MCP client closing the pipe, or another
@@ -310,6 +319,7 @@ let activeWatcher: VaultWatcher | null = null;
 // and every live session) to run before the lock releases.
 export function installShutdownHandlers(vaultRoot: string, extra?: () => void): void {
   const onShutdown = () => {
+    shuttingDown = true;
     if (activeWatcher) {
       const w = activeWatcher;
       activeWatcher = null;
@@ -317,6 +327,15 @@ export function installShutdownHandlers(vaultRoot: string, extra?: () => void): 
     }
     extra?.();
     releaseLock(vaultRoot);
+    // Terminate deterministically. Relying on the event loop to drain does not
+    // work when a SIGTERM lands mid-reindex: the unawaited background reindex
+    // keeps running and open handles (and the post-reindex watcher) pin the
+    // loop, so the process hangs past the takeover's SIGTERM grace, leaving two
+    // instances writing one vault's index.db. Exiting is safe here because the
+    // index is SQLite/WAL with per-batch-committed, resumable reindex writes: a
+    // kill mid-reindex cannot corrupt index.db (uncommitted work rolls back;
+    // the next startup resumes from the committed batches).
+    process.exit(0);
   };
   process.once("SIGTERM", onShutdown);
   process.once("SIGINT", onShutdown);
@@ -328,6 +347,10 @@ export function installShutdownHandlers(vaultRoot: string, extra?: () => void): 
 // a config that disables it. Idempotent: a second call is a no-op while the
 // first watcher is still alive.
 function maybeStartWatcher(vaultRoot: string, watchEnabled: boolean): void {
+  // A signal-driven shutdown may have already run (e.g. SIGTERM during the
+  // background reindex, whose onDone calls this). Never start a watcher after
+  // that — it would re-pin the event loop the shutdown is trying to release.
+  if (shuttingDown) return;
   if (!watchEnabled) {
     process.stderr.write(`daftari: vault watcher disabled (watch: false in config)\n`);
     return;
