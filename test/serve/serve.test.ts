@@ -573,6 +573,7 @@ describe("serve integration runtime wiring", () => {
     const cfg = loadedConfig(vault);
     const started: string[] = [];
     let closed = false;
+    let allowClose: (() => void) | undefined;
     const runtime: IntegrationRuntime = {
       start: async (localBaseUrl) => {
         started.push(localBaseUrl);
@@ -586,6 +587,9 @@ describe("serve integration runtime wiring", () => {
       },
       runOnce: async () => undefined,
       close: async () => {
+        await new Promise<void>((resolveClose) => {
+          allowClose = resolveClose;
+        });
         closed = true;
       },
     };
@@ -597,7 +601,11 @@ describe("serve integration runtime wiring", () => {
       const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`);
       expect(response.status).toBe(204);
     } finally {
-      await handle.close();
+      const closing = handle.close();
+      await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+      expect(closed).toBe(false);
+      allowClose?.();
+      await closing;
       rmSync(vault, { recursive: true, force: true });
     }
     expect(closed).toBe(true);

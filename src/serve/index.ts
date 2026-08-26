@@ -1346,8 +1346,8 @@ export async function runServe(argv: string[]): Promise<number> {
   // a failure between here and the listener opening must still release the
   // lock on exit. `handle` is assigned once the listener is up.
   let handle: ServeHandle | null = null;
-  installShutdownHandlers(vaultRoot, () => {
-    if (handle) void handle.close();
+  installShutdownHandlers(vaultRoot, async () => {
+    if (handle) await handle.close();
   });
 
   try {
