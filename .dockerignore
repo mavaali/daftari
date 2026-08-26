@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.daftari
+test
+docs
+examples
+integrations
+packages
+scripts
+.github
+.husky
+*.md
+.env*

@@ -93,3 +93,61 @@ describe("two daftari processes against one vault", () => {
     await new Promise((r) => procB.once("exit", r));
   }, 40_000);
 });
+
+describe("crash-orphaned lock naming the acquirer's own pid", () => {
+  let vault: string;
+
+  beforeAll(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-lockself-"));
+    cpSync(FIXTURE, vault, {
+      recursive: true,
+      filter: (src) => !src.includes(".daftari"),
+    });
+  });
+
+  afterAll(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  // The container scenario: a persistent vault volume outlives the process,
+  // and pids in a fresh container are near-deterministic — so a crash-orphaned
+  // lock routinely names the REPLACEMENT process's own pid. The child spawned
+  // here has the vault path in its argv (so the ps-based liveness check would
+  // match) and a lock naming its own pid; it must treat that lock as stale and
+  // acquire, not mistake itself for a live holder and SIGTERM itself.
+  it("is treated as stale, not as a live holder", async () => {
+    const lockModule = resolve("dist/lifecycle/lock.js");
+    expect(existsSync(lockModule)).toBe(true);
+
+    const script =
+      `import { mkdirSync } from "node:fs";` +
+      `import { join } from "node:path";` +
+      `const [lockModulePath, vault] = process.argv.slice(1);` +
+      `const { acquireLock, writeLockfile } = await import(lockModulePath);` +
+      `mkdirSync(join(vault, ".daftari"), { recursive: true });` +
+      `writeLockfile(vault, { daftari: true, pid: process.pid, vaultRoot: vault,` +
+      ` startedAt: new Date().toISOString(), version: "0.0.0" });` +
+      `const r = await acquireLock(vault, "0.0.0");` +
+      `process.exit(r.ok ? 0 : 7);`;
+
+    const child = spawn("node", ["--input-type=module", "-e", script, lockModule, vault], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    const outcome = await new Promise<{ code: number | null; signal: string | null }>(
+      (resolveExit) => {
+        child.once("exit", (code, signal) => resolveExit({ code, signal }));
+      },
+    );
+
+    // A self-SIGTERM shows up as signal-terminated; a live-holder refusal as
+    // exit 7. Both are the bug.
+    expect(outcome.signal, stderr).toBeNull();
+    expect(outcome.code, stderr).toBe(0);
+    expect(lockHolderPid(vault)).toBe(child.pid);
+  }, 30_000);
+});

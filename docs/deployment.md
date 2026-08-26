@@ -142,6 +142,103 @@ balancer, or another upstream component. Daftari does not terminate TLS.
 It uses the same per-request identity model and does not reintroduce server-side
 sessions.
 
+## Run in a container
+
+The repository `Dockerfile` builds a self-contained image for `daftari serve`:
+compiled code, production dependencies (the native SQLite modules are built in
+the image), git for the auto-commit layer, and the default embedding model
+baked in so a cold start needs no network egress. The process runs as a
+non-root user under a pid-1 init.
+
+The vault is not in the image. Mount a persistent volume at `/vault`
+containing the markdown files and `.daftari/config.yaml`. The default command
+binds `0.0.0.0:8787`, so that config must declare authentication and
+`transport_security: external` — TLS terminates at your ingress or reverse
+proxy, never in daftari.
+
+```bash
+docker build -t daftari .
+docker run -p 8787:8787 \
+  -v /path/to/my-vault:/vault \
+  -e DAFTARI_TOKEN_ETL=… \
+  daftari
+```
+
+Container notes:
+
+- One replica, always. The single-writer invariant does not survive two
+  containers sharing one vault volume: the process lock detects liveness by
+  PID, which is meaningless across container boundaries, so a second
+  container would silently treat the first's lock as stale. Scale settings
+  must pin exactly one replica.
+- A lock left behind by a killed container is recovered automatically on the
+  next start, including when the replacement process lands on the same PID.
+- The SQLite index (`.daftari/index.db`) is ephemeral and rebuilt from
+  markdown; losing it to a volume quirk costs a reindex, not data.
+
+## Azure Container Apps
+
+Container Apps fits the model well: built-in HTTPS ingress (satisfying
+`transport_security: external`), Azure Files volumes, and scale rules that can
+pin a single replica.
+
+Attach an Azure Files share to the environment, then deploy with the vault
+mounted:
+
+```bash
+az containerapp env storage set \
+  --name my-env --resource-group my-rg \
+  --storage-name vault-files \
+  --azure-file-account-name mystorageacct \
+  --azure-file-account-key "$STORAGE_KEY" \
+  --azure-file-share-name vault \
+  --access-mode ReadWrite
+
+az containerapp create \
+  --name daftari --resource-group my-rg --environment my-env \
+  --image myregistry.azurecr.io/daftari:latest \
+  --ingress external --target-port 8787 \
+  --min-replicas 1 --max-replicas 1 \
+  --secrets daftari-token=… \
+  --env-vars DAFTARI_TOKEN_ETL=secretref:daftari-token
+```
+
+Volume mounts are declared in the app's YAML (`az containerapp update
+--yaml`). The mount options matter: `nobrl` because SQLite's byte-range locks
+misbehave over SMB, `mfsymlinks` for git, and `uid`/`gid` `1000` to match the
+image's non-root user:
+
+```yaml
+properties:
+  template:
+    volumes:
+      - name: vault
+        storageName: vault-files
+        storageType: AzureFile
+        mountOptions: nobrl,mfsymlinks,uid=1000,gid=1000
+    containers:
+      - name: daftari
+        image: myregistry.azurecr.io/daftari:latest
+        volumeMounts:
+          - volumeName: vault
+            mountPath: /vault
+```
+
+Azure specifics:
+
+- Keep the app in single-revision mode (the default). Multiple-revision mode
+  can run two replicas against the same vault during a deployment — exactly
+  what the one-replica rule above forbids. Even single-revision deployments
+  overlap briefly while the new revision passes startup; keep deploys rare and
+  off-peak, or stop before starting when strict single-writer matters.
+- Seed the share before first start: the vault directory with
+  `.daftari/config.yaml` must exist, or use `daftari sync --restore` from a
+  storage backend.
+- Git and SQLite over SMB are slower than local disk. If write latency hurts,
+  the alternative shape is a local (ephemeral) vault restored from object
+  storage at startup with `sync_interval_minutes` pushing changes back —
+  accepting the sync interval as the durability window.
+
 ## Mount another vault read-only
 
 One process can search its writable vault together with mounted read-only
