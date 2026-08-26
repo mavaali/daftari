@@ -21,6 +21,10 @@ const NOTION_AUTHORIZATION_URL = "https://api.notion.com/v1/oauth/authorize";
 const NOTION_API_URL = "https://api.notion.com/v1";
 const NOTION_TOKEN_URL = `${NOTION_API_URL}/oauth/token`;
 const NOTION_VERSION = "2026-03-11";
+const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_BLOCK_DEPTH = 32;
+const DEFAULT_MAX_BLOCKS_PER_PAGE = 10_000;
 
 interface NotionTokenResponse {
   access_token?: unknown;
@@ -77,6 +81,24 @@ export interface NotionAdapterOptions {
   redirectUri: string;
   transport?: NotionHttpTransport;
   now?: () => Date;
+  requestTimeoutMilliseconds?: number;
+  maxResponseBytes?: number;
+  maxBlockDepth?: number;
+  maxBlocksPerPage?: number;
+}
+
+interface RequestLimits {
+  timeoutMilliseconds: number;
+  maxResponseBytes: number;
+}
+
+interface BlockLimits {
+  maxDepth: number;
+  maxBlocks: number;
+}
+
+interface BlockBudget extends BlockLimits {
+  blocks: number;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -103,22 +125,73 @@ function tokenExpiration(expiresIn: unknown, now: () => Date): string | undefine
   return new Date(now().getTime() + expiresIn * 1000).toISOString();
 }
 
+async function boundedJson(
+  response: Response,
+  limits: RequestLimits,
+): Promise<Result<unknown, Error>> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > limits.maxResponseBytes) {
+    return err(new Error("Notion response body is too large"));
+  }
+  if (response.body === null) return err(new Error("Notion returned an invalid JSON response"));
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > limits.maxResponseBytes) {
+        await reader.cancel();
+        return err(new Error("Notion response body is too large"));
+      }
+      chunks.push(next.value);
+    }
+  } catch {
+    return err(new Error("Notion request failed"));
+  }
+  const body = Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk)),
+    length,
+  ).toString("utf8");
+  try {
+    return ok(JSON.parse(body));
+  } catch {
+    return err(new Error("Notion returned an invalid JSON response"));
+  }
+}
+
 async function jsonResponse(
   transport: NotionHttpTransport,
   url: string,
   init: RequestInit,
+  limits: RequestLimits,
 ): Promise<Result<unknown, Error>> {
-  let response: Response;
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    response = await transport(url, init);
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error("deadline"));
+      }, limits.timeoutMilliseconds);
+    });
+    const response = await Promise.race([
+      transport(url, { ...init, signal: controller.signal }),
+      deadline,
+    ]);
+    if (!response.ok) return err(new Error(`Notion request failed with status ${response.status}`));
+    return await Promise.race([
+      boundedJson(response, limits),
+      deadline.finally(() => {
+        void response.body?.cancel();
+      }),
+    ]);
   } catch {
     return err(new Error("Notion request failed"));
-  }
-  if (!response.ok) return err(new Error(`Notion request failed with status ${response.status}`));
-  try {
-    return ok(await response.json());
-  } catch {
-    return err(new Error("Notion returned an invalid JSON response"));
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -164,16 +237,22 @@ async function exchangeCode(
   redirectUri: string,
   now: () => Date,
   input: CodeExchange,
+  limits: RequestLimits,
 ): Promise<Result<ProviderTokens, Error>> {
-  const response = await jsonResponse(transport, NOTION_TOKEN_URL, {
-    method: "POST",
-    headers: tokenRequestHeaders(input.clientId, input.clientSecret),
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code: input.code,
-      redirect_uri: redirectUri,
-    }),
-  });
+  const response = await jsonResponse(
+    transport,
+    NOTION_TOKEN_URL,
+    {
+      method: "POST",
+      headers: tokenRequestHeaders(input.clientId, input.clientSecret),
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code: input.code,
+        redirect_uri: redirectUri,
+      }),
+    },
+    limits,
+  );
   return response.ok ? providerTokens(response.value, now) : response;
 }
 
@@ -181,15 +260,21 @@ async function refreshTokens(
   transport: NotionHttpTransport,
   now: () => Date,
   input: RefreshTokenRequest,
+  limits: RequestLimits,
 ): Promise<Result<ProviderTokens, Error>> {
-  const response = await jsonResponse(transport, NOTION_TOKEN_URL, {
-    method: "POST",
-    headers: tokenRequestHeaders(input.clientId, input.clientSecret),
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: input.refreshToken,
-    }),
-  });
+  const response = await jsonResponse(
+    transport,
+    NOTION_TOKEN_URL,
+    {
+      method: "POST",
+      headers: tokenRequestHeaders(input.clientId, input.clientSecret),
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: input.refreshToken,
+      }),
+    },
+    limits,
+  );
   return response.ok ? providerTokens(response.value, now) : response;
 }
 
@@ -217,18 +302,24 @@ function validPage(results: unknown): results is unknown[] {
 async function discoverPages(
   transport: NotionHttpTransport,
   state: ProviderState,
+  limits: RequestLimits,
 ): Promise<Result<RemoteSource[], Error>> {
   const sources = new Map<string, RemoteSource>();
   let cursor: string | undefined;
   do {
-    const response = await jsonResponse(transport, `${NOTION_API_URL}/search`, {
-      method: "POST",
-      headers: notionHeaders(state.accessToken),
-      body: JSON.stringify({
-        page_size: 100,
-        ...(cursor === undefined ? {} : { start_cursor: cursor }),
-      }),
-    });
+    const response = await jsonResponse(
+      transport,
+      `${NOTION_API_URL}/search`,
+      {
+        method: "POST",
+        headers: notionHeaders(state.accessToken),
+        body: JSON.stringify({
+          page_size: 100,
+          ...(cursor === undefined ? {} : { start_cursor: cursor }),
+        }),
+      },
+      limits,
+    );
     if (!response.ok) return response;
     const page = response.value as NotionSearchResponse;
     if (!validPage(page.results)) return err(new Error("Notion search response is invalid"));
@@ -305,6 +396,8 @@ async function blockChildren(
   transport: NotionHttpTransport,
   state: ProviderState,
   blockId: string,
+  budget: BlockBudget,
+  requestLimits: RequestLimits,
 ): Promise<Result<NotionBlock[], Error>> {
   const blocks: NotionBlock[] = [];
   let cursor: string | undefined;
@@ -312,16 +405,27 @@ async function blockChildren(
     const url = new URL(`${NOTION_API_URL}/blocks/${encodeURIComponent(blockId)}/children`);
     url.searchParams.set("page_size", "100");
     if (cursor !== undefined) url.searchParams.set("start_cursor", cursor);
-    const response = await jsonResponse(transport, url.toString(), {
-      headers: notionHeaders(state.accessToken),
-    });
+    const response = await jsonResponse(
+      transport,
+      url.toString(),
+      {
+        headers: notionHeaders(state.accessToken),
+      },
+      requestLimits,
+    );
     if (!response.ok) return response;
     const page = response.value as NotionBlockChildrenResponse;
     if (!Array.isArray(page.results)) {
       return err(new Error("Notion block children response is invalid"));
     }
     for (const value of page.results) {
-      if (typeof value === "object" && value !== null) blocks.push(value as NotionBlock);
+      if (typeof value === "object" && value !== null) {
+        budget.blocks += 1;
+        if (budget.blocks > budget.maxBlocks) {
+          return err(new Error("Notion page exceeds the block limit"));
+        }
+        blocks.push(value as NotionBlock);
+      }
     }
     if (page.has_more === true) {
       cursor = stringValue(page.next_cursor);
@@ -337,9 +441,12 @@ async function renderBlocks(
   transport: NotionHttpTransport,
   state: ProviderState,
   parentId: string,
+  budget: BlockBudget,
+  requestLimits: RequestLimits,
   depth = 0,
 ): Promise<Result<string[], Error>> {
-  const children = await blockChildren(transport, state, parentId);
+  if (depth > budget.maxDepth) return err(new Error("Notion page exceeds the block depth limit"));
+  const children = await blockChildren(transport, state, parentId, budget, requestLimits);
   if (!children.ok) return children;
   const lines: string[] = [];
   for (const block of children.value) {
@@ -348,7 +455,7 @@ async function renderBlocks(
     if (block.has_children === true) {
       const id = stringValue(block.id);
       if (id === undefined) return err(new Error("Notion child block ID is missing"));
-      const nested = await renderBlocks(transport, state, id, depth + 1);
+      const nested = await renderBlocks(transport, state, id, budget, requestLimits, depth + 1);
       if (!nested.ok) return nested;
       lines.push(...nested.value);
     }
@@ -360,11 +467,14 @@ async function fetchPage(
   transport: NotionHttpTransport,
   source: RemoteSource,
   state: ProviderState,
+  requestLimits: RequestLimits,
+  blockLimits: BlockLimits,
 ): Promise<Result<{ id: string; revision: string; text: string }, Error>> {
   const pageResponse = await jsonResponse(
     transport,
     `${NOTION_API_URL}/pages/${encodeURIComponent(source.id)}`,
     { headers: notionHeaders(state.accessToken) },
+    requestLimits,
   );
   if (!pageResponse.ok) return pageResponse;
   if (typeof pageResponse.value !== "object" || pageResponse.value === null) {
@@ -374,7 +484,13 @@ async function fetchPage(
   if (page.object !== "page" || stringValue(page.id) !== source.id) {
     return err(new Error("Notion page response is invalid"));
   }
-  const blocks = await renderBlocks(transport, state, source.id);
+  const blocks = await renderBlocks(
+    transport,
+    state,
+    source.id,
+    { ...blockLimits, blocks: 0 },
+    requestLimits,
+  );
   if (!blocks.ok) return blocks;
   const title = pageTitle(page);
   const content = blocks.value.join("\n").replace(/\n+$/, "");
@@ -476,18 +592,27 @@ function webhookHint(input: WebhookRequest, state: ProviderState): Result<Verifi
 export function createNotionAdapter(options: NotionAdapterOptions): ProviderAdapter {
   const transport = options.transport ?? globalThis.fetch;
   const now = options.now ?? (() => new Date());
+  const requestLimits: RequestLimits = {
+    timeoutMilliseconds: options.requestTimeoutMilliseconds ?? DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
+    maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+  };
+  const blockLimits: BlockLimits = {
+    maxDepth: options.maxBlockDepth ?? DEFAULT_MAX_BLOCK_DEPTH,
+    maxBlocks: options.maxBlocksPerPage ?? DEFAULT_MAX_BLOCKS_PER_PAGE,
+  };
   return {
     name: "notion",
     webhookSetup: "manual",
     authorizationUrl: (input) => authorizationUrl(input, options.redirectUri),
-    exchangeCode: (input) => exchangeCode(transport, options.redirectUri, now, input),
-    refreshTokens: (input) => refreshTokens(transport, now, input),
+    exchangeCode: (input) =>
+      exchangeCode(transport, options.redirectUri, now, input, requestLimits),
+    refreshTokens: (input) => refreshTokens(transport, now, input, requestLimits),
     ensureWebhook: async (state) =>
       state.webhook === undefined
         ? err(new Error("Notion webhook subscription requires manual verification"))
         : ok(state.webhook),
     verifyWebhook: (input, state) => Promise.resolve(webhookHint(input, state)),
-    discover: (state) => discoverPages(transport, state),
-    fetch: (source, state) => fetchPage(transport, source, state),
+    discover: (state) => discoverPages(transport, state, requestLimits),
+    fetch: (source, state) => fetchPage(transport, source, state, requestLimits, blockLimits),
   };
 }

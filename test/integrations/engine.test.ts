@@ -120,6 +120,150 @@ describe("provider reconciliation", () => {
     );
   });
 
+  it("does not fetch a source whose stable revision already has a content hash", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              stable: {
+                id: "stable",
+                revision: "7",
+                contentHash: sha256Hex("already distilled"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const fetch = vi.fn(async () => err(new Error("must not fetch")));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([{ id: "stable", revision: "7" }]), fetch }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.unchangedSourceIds).toEqual(["google:stable"]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("scopes a source hint without discovering or marking other sources unavailable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              changed: {
+                id: "changed",
+                revision: "1",
+                contentHash: sha256Hex("old"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+              unscoped: {
+                id: "unscoped",
+                revision: "1",
+                contentHash: sha256Hex("keep"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const discover = vi.fn(async () => err(new Error("must not discover")));
+    const fetch = vi.fn(async () => ok({ id: "changed", revision: "2", text: "new" }));
+
+    const result = await reconcileProvider(vault, adapter({ discover, fetch }), deps(), {
+      kind: "sources",
+      sourceIds: ["changed"],
+      rediscover: false,
+    });
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: ["google:changed"],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: [],
+      }),
+    );
+    expect(discover).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const persisted = readIntegrationState(vault, KEY).value.providers.google?.sources;
+    expect(persisted?.changed.revision).toBe("2");
+    expect(persisted?.unscoped.available).toBe(true);
+  });
+
+  it("bounds source count and normalized text accepted during a reconcile", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const tooMany = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([
+            { id: "one", revision: "1" },
+            { id: "two", revision: "1" },
+          ]),
+      }),
+      deps({ reconcileLimits: { maxSources: 1 } }),
+    );
+    expect(tooMany.ok).toBe(false);
+
+    const fetched: string[] = [];
+    const distilled: string[] = [];
+    const bounded = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([
+            { id: "large", revision: "1" },
+            { id: "first", revision: "1" },
+            { id: "second", revision: "1" },
+            { id: "unfetched", revision: "1" },
+          ]),
+        fetch: async (source) => {
+          fetched.push(source.id);
+          return ok({
+            ...source,
+            text: source.id === "large" ? "12345" : "abc",
+          });
+        },
+      }),
+      deps({
+        reconcileLimits: { maxSources: 4, maxSourceTextBytes: 4, maxCycleTextBytes: 5 },
+        distill: async (input) => {
+          distilled.push(input.providerSourceId);
+          return ok({ runId: input.providerSourceId });
+        },
+      }),
+    );
+
+    expect(bounded.ok && bounded.value.failedSourceIds).toEqual([
+      "google:large",
+      "google:second",
+      "google:unfetched",
+    ]);
+    expect(distilled).toEqual(["google:first"]);
+    expect(fetched).toEqual(["large", "first", "second"]);
+  });
+
   it("persists provider discovery metadata when no sources are returned", async () => {
     expect(
       writeIntegrationState(

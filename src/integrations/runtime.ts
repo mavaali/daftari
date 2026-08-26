@@ -18,6 +18,7 @@ import { readIntegrationState, resolveIntegrationStateKey } from "./state.js";
 import type { IntegrationConfig, ProviderName } from "./types.js";
 
 const WEBHOOK_RENEWAL_LEAD_MILLISECONDS = 24 * 60 * 60 * 1000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MILLISECONDS = 5_000;
 
 export type IntegrationAdapterFactory = (redirectUri: string) => ProviderAdapter;
 
@@ -52,6 +53,8 @@ export interface ConfiguredIntegrationRuntimeOptions {
   onError?: (message: string) => void;
   /** Ready distill dependency for tests or callers that preflight externally. */
   distill?: IntegrationDistill;
+  shutdownTimeoutMilliseconds?: number;
+  waitForShutdown?: (cycle: Promise<void>, timeoutMilliseconds: number) => Promise<void>;
 }
 
 const DEFAULT_FACTORIES: Record<ProviderName, IntegrationAdapterFactory> = {
@@ -101,6 +104,23 @@ function validateBaseUrl(value: string): Result<string, Error> {
     return ok(parsed.toString().replace(/\/$/, ""));
   } catch {
     return err(new Error("integration callback base URL is invalid"));
+  }
+}
+
+async function boundedShutdownWait(
+  cycle: Promise<void>,
+  timeoutMilliseconds: number,
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      cycle,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, timeoutMilliseconds);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -156,6 +176,7 @@ export function createConfiguredIntegrationRuntime(
   const factories = { ...DEFAULT_FACTORIES, ...options.adapterFactories };
   const now = options.now ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
+  const waitForShutdown = options.waitForShutdown ?? boundedShutdownWait;
   let adapters: ProviderAdapter[] = [];
   let engineDeps: EngineDeps | undefined;
   let interval: ReturnType<typeof setInterval> | undefined;
@@ -165,6 +186,7 @@ export function createConfiguredIntegrationRuntime(
   let integrationRoutePrefix =
     options.publicBaseUrl === undefined ? "" : routePrefix(options.publicBaseUrl);
   let started = false;
+  let closing = false;
 
   async function cycle(): Promise<void> {
     const deps = engineDeps;
@@ -174,7 +196,7 @@ export function createConfiguredIntegrationRuntime(
       attemptedProviders.add(batch.provider);
       const adapter = adapters.find((candidate) => candidate.name === batch.provider);
       if (adapter === undefined) return err(new Error("integration queue provider is unavailable"));
-      const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps);
+      const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps, batch.hint);
       if (!reconciled.ok) return reconciled;
       if (reconciled.value.failedSourceIds.length > 0) {
         const count = reconciled.value.failedSourceIds.length;
@@ -218,6 +240,7 @@ export function createConfiguredIntegrationRuntime(
   }
 
   function runOnce(): Promise<void> {
+    if (!started || closing) return Promise.resolve();
     if (currentCycle !== undefined) {
       rerunRequested = true;
       return currentCycle;
@@ -226,7 +249,7 @@ export function createConfiguredIntegrationRuntime(
       do {
         rerunRequested = false;
         await cycle();
-      } while (rerunRequested);
+      } while (rerunRequested && !closing);
     })()
       .catch(() => onError("integration cycle failed"))
       .finally(() => {
@@ -237,7 +260,7 @@ export function createConfiguredIntegrationRuntime(
 
   return ok({
     async start(localBaseUrl) {
-      if (started) return err(new Error("integration runtime is already started"));
+      if (started || closing) return err(new Error("integration runtime is already started"));
       const fallback = validateBaseUrl(localBaseUrl);
       if (!fallback.ok) return fallback;
       const resolvedRouteBaseUrl = options.publicBaseUrl ?? fallback.value;
@@ -264,6 +287,7 @@ export function createConfiguredIntegrationRuntime(
         distill: preparedDistill.value,
         recordUnavailable: (event) => appendUnavailableReview(options.vaultRoot, event),
       };
+      closing = false;
       started = true;
       interval = setInterval(() => {
         void runOnce();
@@ -296,6 +320,7 @@ export function createConfiguredIntegrationRuntime(
         admitPublic: authorization.admitPublic,
         checkCsrf: authorization.checkCsrf,
         wake: () => {
+          if (closing || !started) return;
           queueMicrotask(() => {
             void runOnce();
           });
@@ -306,10 +331,18 @@ export function createConfiguredIntegrationRuntime(
     runOnce,
 
     async close() {
+      closing = true;
+      started = false;
+      rerunRequested = false;
       if (interval !== undefined) clearInterval(interval);
       interval = undefined;
-      await currentCycle;
-      started = false;
+      const activeCycle = currentCycle;
+      if (activeCycle !== undefined) {
+        await waitForShutdown(
+          activeCycle,
+          options.shutdownTimeoutMilliseconds ?? DEFAULT_SHUTDOWN_TIMEOUT_MILLISECONDS,
+        );
+      }
     },
   });
 }

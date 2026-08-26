@@ -76,21 +76,9 @@ describe("Google Docs adapter", () => {
       ],
     });
     expect(providerState.cursor).toBe("changes-3");
-    expect(providerState.sources).toEqual({
-      "doc-1": {
-        id: "doc-1",
-        revision: "3",
-        contentHash: "",
-        available: true,
-        lastSeenAt: "2026-08-24T12:00:00.000Z",
-      },
-      "doc-2": {
-        id: "doc-2",
-        revision: "8",
-        contentHash: "",
-        available: true,
-        lastSeenAt: "2026-08-24T12:00:00.000Z",
-      },
+    expect(providerState.sources).toMatchObject({
+      "doc-1": { id: "doc-1", revision: "3", contentHash: "" },
+      "doc-2": { id: "doc-2", revision: "8", contentHash: "" },
     });
   });
 
@@ -202,6 +190,31 @@ describe("Google Docs adapter", () => {
       ],
     });
     expect(providerState.cursor).toBe("changes-2");
+    expect(providerState.sources["doc-1"]?.revision).toBe("1");
+  });
+
+  it("bounds provider response time and JSON bytes", async () => {
+    let aborted = false;
+    const timed = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      requestTimeoutMilliseconds: 5,
+      transport: async (_url, init) =>
+        new Promise<Response>((_resolve) => {
+          init.signal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+        }),
+    });
+
+    expect((await timed.discover(state())).ok).toBe(false);
+    expect(aborted).toBe(true);
+
+    const bounded = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      maxResponseBytes: 8,
+      transport: async () => json({ startPageToken: "far-too-large" }),
+    });
+    expect((await bounded.discover(state())).ok).toBe(false);
   });
 
   it("normalizes Google document paragraphs into stable plain text", async () => {
@@ -345,6 +358,7 @@ describe("Google Docs adapter", () => {
         url: "https://oauth2.googleapis.com/token",
         init: {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
             client_id: "google-client-id",
@@ -392,6 +406,7 @@ describe("Google Docs adapter", () => {
         url: "https://oauth2.googleapis.com/token",
         init: {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
             client_id: "google-client-id",

@@ -193,6 +193,90 @@ describe("Notion adapter", () => {
     });
   });
 
+  it("bounds provider response time and JSON bytes", async () => {
+    let aborted = false;
+    const timed = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      requestTimeoutMilliseconds: 5,
+      transport: async (_url, init) =>
+        new Promise<Response>((_resolve) => {
+          init.signal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+        }),
+    });
+    expect((await timed.discover(state())).ok).toBe(false);
+    expect(aborted).toBe(true);
+
+    const bounded = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      maxResponseBytes: 8,
+      transport: async () => json({ results: [], has_more: false }),
+    });
+    expect((await bounded.discover(state())).ok).toBe(false);
+  });
+
+  it("rejects pages that exceed configured block depth or count limits", async () => {
+    const page = json({
+      object: "page",
+      id: "page-1",
+      last_edited_time: "2026-08-24T12:01:00.000Z",
+      properties: {},
+    });
+    const depthLimited = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      maxBlockDepth: 0,
+      transport: transport({
+        "https://api.notion.com/v1/pages/page-1": [page],
+        "https://api.notion.com/v1/blocks/page-1/children": [
+          json({
+            results: [
+              {
+                id: "nested",
+                type: "paragraph",
+                has_children: true,
+                paragraph: { rich_text: [{ plain_text: "parent" }] },
+              },
+            ],
+            has_more: false,
+          }),
+        ],
+      }),
+    });
+    expect(
+      (await depthLimited.fetch({ id: "page-1", revision: "2026-08-24T12:01:00.000Z" }, state()))
+        .ok,
+    ).toBe(false);
+
+    const countLimited = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      maxBlocksPerPage: 1,
+      transport: transport({
+        "https://api.notion.com/v1/pages/page-1": [
+          json({
+            object: "page",
+            id: "page-1",
+            last_edited_time: "2026-08-24T12:01:00.000Z",
+            properties: {},
+          }),
+        ],
+        "https://api.notion.com/v1/blocks/page-1/children": [
+          json({
+            results: [
+              { id: "one", type: "divider", has_children: false, divider: {} },
+              { id: "two", type: "divider", has_children: false, divider: {} },
+            ],
+            has_more: false,
+          }),
+        ],
+      }),
+    });
+    expect(
+      (await countLimited.fetch({ id: "page-1", revision: "2026-08-24T12:01:00.000Z" }, state()))
+        .ok,
+    ).toBe(false);
+  });
+
   it("uses public OAuth and exchanges a code with HTTP Basic authentication", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const adapter = createNotionAdapter({
@@ -254,6 +338,7 @@ describe("Notion adapter", () => {
         url: "https://api.notion.com/v1/oauth/token",
         init: {
           method: "POST",
+          signal: expect.any(AbortSignal),
           headers: {
             accept: "application/json",
             authorization: `Basic ${Buffer.from("notion-client-id:notion-client-secret").toString(
@@ -305,6 +390,7 @@ describe("Notion adapter", () => {
       url: "https://api.notion.com/v1/oauth/token",
       init: {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           accept: "application/json",
           authorization: `Basic ${Buffer.from("notion-client-id:notion-client-secret").toString(

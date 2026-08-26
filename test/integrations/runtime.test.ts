@@ -218,6 +218,83 @@ describe("configured integration runtime", () => {
     await created.value.close();
   });
 
+  it("passes a coalesced source hint into reconciliation", async () => {
+    const queue = createIntegrationQueue(vault);
+    expect(
+      queue.enqueue({
+        provider: "google",
+        eventId: "source-event",
+        hint: { kind: "sources", sourceIds: ["doc-hinted"], rediscover: false },
+      }),
+    ).toEqual(ok({ enqueued: true }));
+    const discover = vi.fn(async () => ok([]));
+    const fetch = vi.fn(async () => ok({ id: "doc-hinted", revision: "2", text: "changed text" }));
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      adapterFactories: {
+        google: (redirectUri) => ({
+          ...factory({ discover: 0, ensure: 0 })(redirectUri),
+          discover,
+          fetch,
+        }),
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await vi.waitFor(() => expect(createIntegrationQueue(vault).pending()).toEqual(ok([])));
+
+    expect(discover).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      { id: "doc-hinted", revision: "targeted-refresh" },
+      expect.any(Object),
+    );
+    await created.value.close();
+  });
+
+  it("closes before waiting, ignores reruns, and delegates a bounded shutdown wait", async () => {
+    let release: (() => void) | undefined;
+    let discoveries = 0;
+    const waits: number[] = [];
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      shutdownTimeoutMilliseconds: 17,
+      waitForShutdown: async () => {
+        waits.push(17);
+      },
+      adapterFactories: {
+        google: (redirectUri) => ({
+          ...factory({ discover: 0, ensure: 0 })(redirectUri),
+          discover: async () => {
+            discoveries += 1;
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            return ok([]);
+          },
+        }),
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await vi.waitFor(() => expect(discoveries).toBe(1));
+
+    await created.value.close();
+    await created.value.runOnce();
+
+    expect(waits).toEqual([17]);
+    expect(discoveries).toBe(1);
+    release?.();
+  });
+
   it("preflights distill configuration before constructing adapters", () => {
     const factorySpy = vi.fn(factory({ discover: 0, ensure: 0 }));
     const created = createConfiguredIntegrationRuntime({

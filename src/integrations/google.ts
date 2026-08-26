@@ -26,6 +26,8 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/documents.readonly",
   "https://www.googleapis.com/auth/drive.metadata.readonly",
 ].join(" ");
+const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 interface GoogleFile {
   id?: unknown;
@@ -113,6 +115,13 @@ export interface GoogleDocsAdapterOptions {
   redirectUri: string;
   transport?: GoogleHttpTransport;
   now?: () => Date;
+  requestTimeoutMilliseconds?: number;
+  maxResponseBytes?: number;
+}
+
+interface RequestLimits {
+  timeoutMilliseconds: number;
+  maxResponseBytes: number;
 }
 
 function authorizationHeaders(accessToken: string): Record<string, string> {
@@ -214,28 +223,101 @@ function providerTokens(
   });
 }
 
+async function boundedJson(
+  response: Response,
+  limits: RequestLimits,
+): Promise<Result<unknown, Error>> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > limits.maxResponseBytes) {
+    return err(new Error("Google response body is too large"));
+  }
+  if (response.body === null) return err(new Error("Google returned an invalid JSON response"));
+  const reader = response.body.getReader();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const read = async (): Promise<Result<unknown, Error>> => {
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        length += next.value.byteLength;
+        if (length > limits.maxResponseBytes) {
+          await reader.cancel();
+          return err(new Error("Google response body is too large"));
+        }
+        chunks.push(next.value);
+      }
+      const body = Buffer.concat(
+        chunks.map((chunk) => Buffer.from(chunk)),
+        length,
+      ).toString("utf8");
+      try {
+        return ok(JSON.parse(body));
+      } catch {
+        return err(new Error("Google returned an invalid JSON response"));
+      }
+    };
+    return await Promise.race([
+      read(),
+      new Promise<Result<unknown, Error>>((resolve) => {
+        timeout = setTimeout(() => {
+          void reader.cancel();
+          resolve(err(new Error("Google request failed")));
+        }, limits.timeoutMilliseconds);
+      }),
+    ]);
+  } catch {
+    return err(new Error("Google request failed"));
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function providerResponse(
+  transport: GoogleHttpTransport,
+  url: string,
+  init: RequestInit,
+  limits: RequestLimits,
+): Promise<Result<Response, Error>> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error("deadline"));
+      }, limits.timeoutMilliseconds);
+    });
+    const response = await Promise.race([
+      transport(url, { ...init, signal: controller.signal }),
+      deadline,
+    ]);
+    return ok(response);
+  } catch {
+    return err(new Error("Google request failed"));
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 async function jsonResponse(
   transport: GoogleHttpTransport,
   url: string,
   init: RequestInit,
+  limits: RequestLimits,
 ): Promise<Result<unknown, Error>> {
-  let response: Response;
-  try {
-    response = await transport(url, init);
-  } catch {
-    return err(new Error("Google request failed"));
-  }
+  const fetched = await providerResponse(transport, url, init, limits);
+  if (!fetched.ok) return fetched;
+  const response = fetched.value;
   if (!response.ok) return err(new Error(`Google request failed with status ${response.status}`));
-  try {
-    return ok(await response.json());
-  } catch {
-    return err(new Error("Google returned an invalid JSON response"));
-  }
+  return boundedJson(response, limits);
 }
 
 async function listFiles(
   transport: GoogleHttpTransport,
   state: ProviderState,
+  limits: RequestLimits,
 ): Promise<Result<RemoteSource[], Error>> {
   const sources = new Map<string, RemoteSource>();
   let nextPageToken: string | undefined;
@@ -252,6 +334,7 @@ async function listFiles(
         supportsAllDrives: "true",
       }),
       { headers: authorizationHeaders(state.accessToken) },
+      limits,
     );
     if (!response.ok) return response;
     const page = response.value as GoogleFilesResponse;
@@ -274,11 +357,13 @@ async function listFiles(
 async function startPageToken(
   transport: GoogleHttpTransport,
   state: ProviderState,
+  limits: RequestLimits,
 ): Promise<Result<string, Error>> {
   const response = await jsonResponse(
     transport,
     requestUrl(`${GOOGLE_DRIVE_URL}/changes/startPageToken`, { supportsAllDrives: "true" }),
     { headers: authorizationHeaders(state.accessToken) },
+    limits,
   );
   if (!response.ok) return response;
   const cursor = pageToken((response.value as GoogleStartPageTokenResponse).startPageToken);
@@ -303,19 +388,16 @@ function rememberedSources(state: ProviderState): Map<string, RemoteSource> {
   return sources;
 }
 
-function rememberSources(state: ProviderState, sources: RemoteSource[], now: () => Date): void {
+function rememberNewSources(state: ProviderState, sources: RemoteSource[], now: () => Date): void {
   const lastSeenAt = now().toISOString();
   for (const source of sources) {
-    const previous = state.sources[source.id];
+    if (state.sources[source.id] !== undefined) continue;
     state.sources[source.id] = {
       id: source.id,
       revision: source.revision,
-      contentHash: previous?.contentHash ?? "",
+      contentHash: "",
       available: true,
       lastSeenAt,
-      ...(previous?.lastDistillRunId === undefined
-        ? {}
-        : { lastDistillRunId: previous.lastDistillRunId }),
     };
   }
 }
@@ -348,36 +430,33 @@ interface ChangedSources {
 async function changedSources(
   transport: GoogleHttpTransport,
   state: ProviderState,
+  limits: RequestLimits,
 ): Promise<Result<ChangedSources | undefined, Error>> {
   const sources = rememberedSources(state);
   let nextPageToken: string | undefined = state.cursor;
   let nextCursor: string | undefined;
   do {
-    let response: Response;
-    try {
-      response = await transport(
-        requestUrl(`${GOOGLE_DRIVE_URL}/changes`, {
-          fields:
-            "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,mimeType,version,trashed))",
-          includeItemsFromAllDrives: "true",
-          pageToken: nextPageToken,
-          supportsAllDrives: "true",
-        }),
-        { headers: authorizationHeaders(state.accessToken) },
-      );
-    } catch {
-      return err(new Error("Google request failed"));
-    }
+    const fetched = await providerResponse(
+      transport,
+      requestUrl(`${GOOGLE_DRIVE_URL}/changes`, {
+        fields:
+          "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,mimeType,version,trashed))",
+        includeItemsFromAllDrives: "true",
+        pageToken: nextPageToken,
+        supportsAllDrives: "true",
+      }),
+      { headers: authorizationHeaders(state.accessToken) },
+      limits,
+    );
+    if (!fetched.ok) return fetched;
+    const response = fetched.value;
     if (response.status === 410) {
       return ok(undefined);
     }
     if (!response.ok) return err(new Error(`Google request failed with status ${response.status}`));
-    let page: GoogleChangesResponse;
-    try {
-      page = (await response.json()) as GoogleChangesResponse;
-    } catch {
-      return err(new Error("Google returned an invalid JSON response"));
-    }
+    const parsed = await boundedJson(response, limits);
+    if (!parsed.ok) return parsed;
+    const page = parsed.value as GoogleChangesResponse;
     if (page.changes !== undefined && !Array.isArray(page.changes)) {
       return err(new Error("Google Drive changes response is invalid"));
     }
@@ -396,10 +475,11 @@ async function changedSources(
 async function fullDiscovery(
   transport: GoogleHttpTransport,
   state: ProviderState,
+  limits: RequestLimits,
 ): Promise<Result<RemoteSource[], Error>> {
-  const cursor = await startPageToken(transport, state);
+  const cursor = await startPageToken(transport, state, limits);
   if (!cursor.ok) return cursor;
-  const sources = await listFiles(transport, state);
+  const sources = await listFiles(transport, state, limits);
   if (!sources.ok) return sources;
   state.cursor = cursor.value;
   return sources;
@@ -425,19 +505,25 @@ async function exchangeCode(
   redirectUri: string,
   now: () => Date,
   input: CodeExchange,
+  limits: RequestLimits,
 ): Promise<Result<ProviderTokens, Error>> {
-  const response = await jsonResponse(transport, GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: input.clientId,
-      client_secret: input.clientSecret,
-      code: input.code,
-      code_verifier: input.pkceVerifier,
-      grant_type: "authorization_code",
-      redirect_uri: redirectUri,
-    }).toString(),
-  });
+  const response = await jsonResponse(
+    transport,
+    GOOGLE_TOKEN_URL,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        code: input.code,
+        code_verifier: input.pkceVerifier,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+      }).toString(),
+    },
+    limits,
+  );
   if (!response.ok) return response;
   return providerTokens(response.value as GoogleTokenResponse, now);
 }
@@ -446,17 +532,23 @@ async function refreshTokens(
   transport: GoogleHttpTransport,
   now: () => Date,
   input: RefreshTokenRequest,
+  limits: RequestLimits,
 ): Promise<Result<ProviderTokens, Error>> {
-  const response = await jsonResponse(transport, GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: input.clientId,
-      client_secret: input.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: input.refreshToken,
-    }).toString(),
-  });
+  const response = await jsonResponse(
+    transport,
+    GOOGLE_TOKEN_URL,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: input.refreshToken,
+      }).toString(),
+    },
+    limits,
+  );
   if (!response.ok) return response;
   return providerTokens(response.value as GoogleTokenResponse, now, input.refreshToken);
 }
@@ -492,6 +584,7 @@ async function ensureWebhook(
   transport: GoogleHttpTransport,
   state: ProviderState,
   input: EnsureWebhookInput,
+  limits: RequestLimits,
 ): Promise<Result<WebhookChannel, Error>> {
   if (!validHttpsUrl(input.callbackUrl)) {
     return err(new Error("Google webhook callback URL must use HTTPS"));
@@ -519,6 +612,7 @@ async function ensureWebhook(
       },
       body: JSON.stringify({ id, type: "web_hook", address: input.callbackUrl, token: secret }),
     },
+    limits,
   );
   if (!response.ok) return response;
   const channel = response.value as GoogleChannelResponse;
@@ -577,29 +671,32 @@ async function verifyWebhook(
 export function createGoogleDocsAdapter(options: GoogleDocsAdapterOptions): ProviderAdapter {
   const transport = options.transport ?? globalThis.fetch;
   const now = options.now ?? (() => new Date());
+  const limits: RequestLimits = {
+    timeoutMilliseconds: options.requestTimeoutMilliseconds ?? DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
+    maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+  };
   return {
     name: "google",
     authorizationUrl: (input) => authorizationUrl(input, options.redirectUri),
-    exchangeCode: (input) => exchangeCode(transport, options.redirectUri, now, input),
-    refreshTokens: (input) => refreshTokens(transport, now, input),
-    ensureWebhook: (state, input) => ensureWebhook(transport, state, input),
+    exchangeCode: (input) => exchangeCode(transport, options.redirectUri, now, input, limits),
+    refreshTokens: (input) => refreshTokens(transport, now, input, limits),
+    ensureWebhook: (state, input) => ensureWebhook(transport, state, input, limits),
     verifyWebhook,
     discover: async (state) => {
       let discovered: Result<RemoteSource[], Error>;
       if (state.cursor === undefined) {
-        discovered = await fullDiscovery(transport, state);
+        discovered = await fullDiscovery(transport, state, limits);
       } else {
-        const changes = await changedSources(transport, state);
+        const changes = await changedSources(transport, state, limits);
         if (!changes.ok) return changes;
         if (changes.value === undefined) {
-          discovered = await fullDiscovery(transport, state);
+          discovered = await fullDiscovery(transport, state, limits);
         } else {
           state.cursor = changes.value.cursor;
           discovered = ok(changes.value.sources);
         }
       }
-      if (!discovered.ok) return discovered;
-      rememberSources(state, discovered.value, now);
+      if (discovered.ok) rememberNewSources(state, discovered.value, now);
       return discovered;
     },
     fetch: async (source, state) => {
@@ -609,6 +706,7 @@ export function createGoogleDocsAdapter(options: GoogleDocsAdapterOptions): Prov
           includeTabsContent: "true",
         }),
         { headers: authorizationHeaders(state.accessToken) },
+        limits,
       );
       if (!response.ok) return response;
       return ok({ ...source, text: normalizeGoogleDocument(response.value as GoogleDocument) });

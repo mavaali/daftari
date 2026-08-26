@@ -131,6 +131,13 @@ export interface EngineDeps {
   distill(input: DistillationInput): Promise<Result<DistillationRun, Error>>;
   recordUnavailable?(event: UnavailableSourceEvent): Result<void, Error>;
   writeIntegrationState?: typeof writeIntegrationState;
+  reconcileLimits?: Partial<ReconcileLimits>;
+}
+
+export interface ReconcileLimits {
+  maxSources: number;
+  maxSourceTextBytes: number;
+  maxCycleTextBytes: number;
 }
 
 export interface ReconcileOutcome {
@@ -146,6 +153,15 @@ export interface ContinuousAdapterCapabilityOptions {
 
 const activeReconciliations = new Set<string>();
 const activeWebhookVerifications = new Set<string>();
+const DEFAULT_RECONCILE_LIMITS: ReconcileLimits = {
+  maxSources: 10_000,
+  maxSourceTextBytes: 8 * 1024 * 1024,
+  maxCycleTextBytes: 64 * 1024 * 1024,
+};
+
+function reconcileLimits(deps: Pick<EngineDeps, "reconcileLimits">): ReconcileLimits {
+  return { ...DEFAULT_RECONCILE_LIMITS, ...deps.reconcileLimits };
+}
 
 export function providerConfig(
   config: IntegrationConfig,
@@ -454,6 +470,7 @@ export async function reconcileProvider(
   vaultRoot: string,
   adapter: ProviderAdapter,
   deps: EngineDeps,
+  hint: RefreshHint = { kind: "reconcile" },
 ): Promise<Result<ReconcileOutcome, Error>> {
   const lockKey = reconciliationKey(vaultRoot, adapter.name);
   if (activeReconciliations.has(lockKey)) {
@@ -484,24 +501,48 @@ export async function reconcileProvider(
       if (!refreshed.ok) return refreshed;
       providerState = refreshed.value;
 
+      const limits = reconcileLimits(deps);
+      const shouldDiscover = hint.kind === "reconcile" || hint.rediscover;
       let discovered: Result<RemoteSource[], Error>;
-      try {
-        discovered = await adapter.discover(providerState);
-      } catch {
+      if (shouldDiscover) {
+        try {
+          discovered = await adapter.discover(providerState);
+        } catch {
+          return err(new Error(`integration provider ${adapter.name} discovery failed`));
+        }
+        if (!discovered.ok)
+          return err(new Error(`integration provider ${adapter.name} discovery failed`));
+      } else {
+        discovered = ok(
+          [...new Set(hint.sourceIds)].map((sourceId) => ({
+            id: sourceId,
+            revision: providerState.sources[sourceId]?.revision ?? "targeted-refresh",
+          })),
+        );
+      }
+      if (!discovered.ok) {
         return err(new Error(`integration provider ${adapter.name} discovery failed`));
       }
-      if (!discovered.ok)
-        return err(new Error(`integration provider ${adapter.name} discovery failed`));
       if (!discovered.value.every(validRemoteSource)) {
         return err(new Error(`integration provider ${adapter.name} returned an invalid source`));
       }
+      if (discovered.value.length > limits.maxSources) {
+        return err(new Error(`integration provider ${adapter.name} returned too many sources`));
+      }
 
-      const currentSources = new Map(discovered.value.map((source) => [source.id, source]));
-      if (currentSources.size !== discovered.value.length) {
+      const allDiscoveredSources = new Map(discovered.value.map((source) => [source.id, source]));
+      if (allDiscoveredSources.size !== discovered.value.length) {
         return err(new Error(`integration provider ${adapter.name} returned duplicate source IDs`));
       }
-      const discoveryStateWritten = writeState(vaultRoot, key.value, persisted.value, deps);
-      if (!discoveryStateWritten.ok) return discoveryStateWritten;
+      const sourceScope = hint.kind === "sources" ? new Set(hint.sourceIds) : undefined;
+      const currentSources =
+        sourceScope === undefined
+          ? allDiscoveredSources
+          : new Map([...allDiscoveredSources].filter(([sourceId]) => sourceScope.has(sourceId)));
+      if (shouldDiscover) {
+        const discoveryStateWritten = writeState(vaultRoot, key.value, persisted.value, deps);
+        if (!discoveryStateWritten.ok) return discoveryStateWritten;
+      }
       const outcome: ReconcileOutcome = {
         distilledSourceIds: [],
         unchangedSourceIds: [],
@@ -511,7 +552,10 @@ export async function reconcileProvider(
       const seenAt = timestamp(deps);
 
       for (const [sourceId, previous] of Object.entries(providerState.sources)) {
-        if (currentSources.has(sourceId) || !previous.available) continue;
+        const inAvailabilityScope =
+          sourceScope === undefined ||
+          (hint.kind === "sources" && hint.rediscover && sourceScope.has(sourceId));
+        if (!inAvailabilityScope || currentSources.has(sourceId) || !previous.available) continue;
         const providerSourceId = sourceIdentity(adapter.name, sourceId);
         if (deps.recordUnavailable !== undefined) {
           const recorded = deps.recordUnavailable({
@@ -529,8 +573,24 @@ export async function reconcileProvider(
         outcome.unavailableSourceIds.push(providerSourceId);
       }
 
-      for (const remote of discovered.value) {
+      let cycleTextBytes = 0;
+      const scopedSources = [...currentSources.values()];
+      for (const [index, remote] of scopedSources.entries()) {
         const providerSourceId = sourceIdentity(adapter.name, remote.id);
+        const previous = providerState.sources[remote.id];
+        const targetedWithoutDiscovery = hint.kind === "sources" && !hint.rediscover;
+        if (
+          !targetedWithoutDiscovery &&
+          previous?.available === true &&
+          previous.revision === remote.revision &&
+          previous.contentHash.length > 0
+        ) {
+          providerState.sources[remote.id] = { ...previous, lastSeenAt: seenAt };
+          const written = writeState(vaultRoot, key.value, persisted.value, deps);
+          if (!written.ok) return written;
+          outcome.unchangedSourceIds.push(providerSourceId);
+          continue;
+        }
         let fetched: Result<NormalizedRemoteSource, Error>;
         try {
           fetched = await adapter.fetch(remote, providerState);
@@ -538,16 +598,37 @@ export async function reconcileProvider(
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
-        if (!fetched.ok || !validRemoteSource(fetched.ok ? fetched.value : remote)) {
+        if (
+          !fetched.ok ||
+          !validRemoteSource(fetched.ok ? fetched.value : remote) ||
+          typeof fetched.value.text !== "string"
+        ) {
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
-        if (fetched.value.id !== remote.id || fetched.value.revision !== remote.revision) {
+        if (
+          fetched.value.id !== remote.id ||
+          (!targetedWithoutDiscovery && fetched.value.revision !== remote.revision)
+        ) {
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
 
-        const previous = providerState.sources[remote.id];
+        const textBytes = Buffer.byteLength(fetched.value.text, "utf8");
+        if (
+          textBytes > limits.maxSourceTextBytes ||
+          cycleTextBytes + textBytes > limits.maxCycleTextBytes
+        ) {
+          outcome.failedSourceIds.push(providerSourceId);
+          if (cycleTextBytes + textBytes > limits.maxCycleTextBytes) {
+            for (const remaining of scopedSources.slice(index + 1)) {
+              outcome.failedSourceIds.push(sourceIdentity(adapter.name, remaining.id));
+            }
+            break;
+          }
+          continue;
+        }
+        cycleTextBytes += textBytes;
         const next = sourceState(fetched.value, previous, seenAt);
         providerState.sources[remote.id] = next;
         const contentHash = sha256Hex(fetched.value.text);
