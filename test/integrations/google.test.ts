@@ -217,6 +217,41 @@ describe("Google Docs adapter", () => {
     expect((await bounded.discover(state())).ok).toBe(false);
   });
 
+  it("bounds discovery sources and pagination before returning to the engine", async () => {
+    const sourceBounded = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      maxDiscoverySources: 1,
+      transport: transport({
+        "https://www.googleapis.com/drive/v3/changes/startPageToken": [
+          json({ startPageToken: "changes-1" }),
+        ],
+        "https://www.googleapis.com/drive/v3/files": [
+          json({
+            files: [
+              { id: "doc-1", mimeType: GOOGLE_DOCUMENT, version: "1" },
+              { id: "doc-2", mimeType: GOOGLE_DOCUMENT, version: "1" },
+            ],
+          }),
+        ],
+      }),
+    });
+    expect((await sourceBounded.discover(state())).ok).toBe(false);
+
+    const pageBounded = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      maxDiscoveryPages: 1,
+      transport: transport({
+        "https://www.googleapis.com/drive/v3/changes/startPageToken": [
+          json({ startPageToken: "changes-1" }),
+        ],
+        "https://www.googleapis.com/drive/v3/files": [
+          json({ nextPageToken: "files-2", files: [] }),
+        ],
+      }),
+    });
+    expect((await pageBounded.discover(state())).ok).toBe(false);
+  });
+
   it("normalizes Google document paragraphs into stable plain text", async () => {
     const adapter = createGoogleDocsAdapter({
       redirectUri: "https://vault.example/integrations/google/callback",

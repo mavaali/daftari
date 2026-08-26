@@ -25,6 +25,9 @@ const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_BLOCK_DEPTH = 32;
 const DEFAULT_MAX_BLOCKS_PER_PAGE = 10_000;
+const DEFAULT_MAX_BLOCK_PAGES = 10_000;
+const DEFAULT_MAX_DISCOVERY_SOURCES = 10_000;
+const DEFAULT_MAX_DISCOVERY_PAGES = 1_000;
 
 interface NotionTokenResponse {
   access_token?: unknown;
@@ -85,20 +88,27 @@ export interface NotionAdapterOptions {
   maxResponseBytes?: number;
   maxBlockDepth?: number;
   maxBlocksPerPage?: number;
+  maxBlockPages?: number;
+  maxDiscoverySources?: number;
+  maxDiscoveryPages?: number;
 }
 
 interface RequestLimits {
   timeoutMilliseconds: number;
   maxResponseBytes: number;
+  maxDiscoverySources: number;
+  maxDiscoveryPages: number;
 }
 
 interface BlockLimits {
   maxDepth: number;
   maxBlocks: number;
+  maxPages: number;
 }
 
 interface BlockBudget extends BlockLimits {
   blocks: number;
+  pages: number;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -306,7 +316,17 @@ async function discoverPages(
 ): Promise<Result<RemoteSource[], Error>> {
   const sources = new Map<string, RemoteSource>();
   let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  let pages = 0;
   do {
+    pages += 1;
+    if (pages > limits.maxDiscoveryPages) {
+      return err(new Error("Notion discovery exceeds the page limit"));
+    }
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor)) return err(new Error("Notion discovery repeated a cursor"));
+      seenCursors.add(cursor);
+    }
     const response = await jsonResponse(
       transport,
       `${NOTION_API_URL}/search`,
@@ -326,6 +346,9 @@ async function discoverPages(
     for (const item of page.results) {
       const source = remotePage(item);
       if (source !== undefined) sources.set(source.id, source);
+      if (sources.size > limits.maxDiscoverySources) {
+        return err(new Error("Notion discovery exceeds the source limit"));
+      }
     }
     if (page.has_more === true) {
       cursor = stringValue(page.next_cursor);
@@ -401,7 +424,16 @@ async function blockChildren(
 ): Promise<Result<NotionBlock[], Error>> {
   const blocks: NotionBlock[] = [];
   let cursor: string | undefined;
+  const seenCursors = new Set<string>();
   do {
+    budget.pages += 1;
+    if (budget.pages > budget.maxPages) {
+      return err(new Error("Notion page exceeds the block page limit"));
+    }
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor)) return err(new Error("Notion blocks repeated a cursor"));
+      seenCursors.add(cursor);
+    }
     const url = new URL(`${NOTION_API_URL}/blocks/${encodeURIComponent(blockId)}/children`);
     url.searchParams.set("page_size", "100");
     if (cursor !== undefined) url.searchParams.set("start_cursor", cursor);
@@ -488,7 +520,7 @@ async function fetchPage(
     transport,
     state,
     source.id,
-    { ...blockLimits, blocks: 0 },
+    { ...blockLimits, blocks: 0, pages: 0 },
     requestLimits,
   );
   if (!blocks.ok) return blocks;
@@ -595,10 +627,13 @@ export function createNotionAdapter(options: NotionAdapterOptions): ProviderAdap
   const requestLimits: RequestLimits = {
     timeoutMilliseconds: options.requestTimeoutMilliseconds ?? DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
     maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+    maxDiscoverySources: options.maxDiscoverySources ?? DEFAULT_MAX_DISCOVERY_SOURCES,
+    maxDiscoveryPages: options.maxDiscoveryPages ?? DEFAULT_MAX_DISCOVERY_PAGES,
   };
   const blockLimits: BlockLimits = {
     maxDepth: options.maxBlockDepth ?? DEFAULT_MAX_BLOCK_DEPTH,
     maxBlocks: options.maxBlocksPerPage ?? DEFAULT_MAX_BLOCKS_PER_PAGE,
+    maxPages: options.maxBlockPages ?? DEFAULT_MAX_BLOCK_PAGES,
   };
   return {
     name: "notion",

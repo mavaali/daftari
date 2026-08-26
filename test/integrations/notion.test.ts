@@ -104,6 +104,37 @@ describe("Notion adapter", () => {
     ]);
   });
 
+  it("bounds discovery sources and pagination before returning to the engine", async () => {
+    const sourceBounded = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      maxDiscoverySources: 1,
+      transport: async () =>
+        json({
+          has_more: false,
+          results: [
+            {
+              object: "page",
+              id: "page-1",
+              last_edited_time: "2026-08-24T12:01:00.000Z",
+            },
+            {
+              object: "page",
+              id: "page-2",
+              last_edited_time: "2026-08-24T12:02:00.000Z",
+            },
+          ],
+        }),
+    });
+    expect((await sourceBounded.discover(state())).ok).toBe(false);
+
+    const pageBounded = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      maxDiscoveryPages: 1,
+      transport: async () => json({ has_more: true, next_cursor: "search-2", results: [] }),
+    });
+    expect((await pageBounded.discover(state())).ok).toBe(false);
+  });
+
   it("renders a page title and recursively paginated nested blocks into deterministic text", async () => {
     const adapter = createNotionAdapter({
       redirectUri: "https://vault.example/integrations/notion/callback",

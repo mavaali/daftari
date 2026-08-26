@@ -28,6 +28,8 @@ const GOOGLE_SCOPES = [
 ].join(" ");
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_DISCOVERY_SOURCES = 10_000;
+const DEFAULT_MAX_DISCOVERY_PAGES = 1_000;
 
 interface GoogleFile {
   id?: unknown;
@@ -117,11 +119,15 @@ export interface GoogleDocsAdapterOptions {
   now?: () => Date;
   requestTimeoutMilliseconds?: number;
   maxResponseBytes?: number;
+  maxDiscoverySources?: number;
+  maxDiscoveryPages?: number;
 }
 
 interface RequestLimits {
   timeoutMilliseconds: number;
   maxResponseBytes: number;
+  maxDiscoverySources: number;
+  maxDiscoveryPages: number;
 }
 
 function authorizationHeaders(accessToken: string): Record<string, string> {
@@ -321,7 +327,19 @@ async function listFiles(
 ): Promise<Result<RemoteSource[], Error>> {
   const sources = new Map<string, RemoteSource>();
   let nextPageToken: string | undefined;
+  const seenPageTokens = new Set<string>();
+  let pages = 0;
   do {
+    pages += 1;
+    if (pages > limits.maxDiscoveryPages) {
+      return err(new Error("Google Drive discovery exceeds the page limit"));
+    }
+    if (nextPageToken !== undefined) {
+      if (seenPageTokens.has(nextPageToken)) {
+        return err(new Error("Google Drive discovery repeated a page token"));
+      }
+      seenPageTokens.add(nextPageToken);
+    }
     const response = await jsonResponse(
       transport,
       requestUrl(`${GOOGLE_DRIVE_URL}/files`, {
@@ -348,6 +366,9 @@ async function listFiles(
     for (const file of page.files ?? []) {
       const source = nativeGoogleDoc(file);
       if (source !== undefined) sources.set(source.id, source);
+      if (sources.size > limits.maxDiscoverySources) {
+        return err(new Error("Google Drive discovery exceeds the source limit"));
+      }
     }
     nextPageToken = pageToken(page.nextPageToken);
   } while (nextPageToken !== undefined);
@@ -433,9 +454,24 @@ async function changedSources(
   limits: RequestLimits,
 ): Promise<Result<ChangedSources | undefined, Error>> {
   const sources = rememberedSources(state);
+  if (sources.size > limits.maxDiscoverySources) {
+    return err(new Error("Google Drive discovery exceeds the source limit"));
+  }
   let nextPageToken: string | undefined = state.cursor;
   let nextCursor: string | undefined;
+  const seenPageTokens = new Set<string>();
+  let pages = 0;
   do {
+    pages += 1;
+    if (pages > limits.maxDiscoveryPages) {
+      return err(new Error("Google Drive discovery exceeds the page limit"));
+    }
+    if (nextPageToken !== undefined) {
+      if (seenPageTokens.has(nextPageToken)) {
+        return err(new Error("Google Drive discovery repeated a page token"));
+      }
+      seenPageTokens.add(nextPageToken);
+    }
     const fetched = await providerResponse(
       transport,
       requestUrl(`${GOOGLE_DRIVE_URL}/changes`, {
@@ -461,6 +497,9 @@ async function changedSources(
       return err(new Error("Google Drive changes response is invalid"));
     }
     for (const change of page.changes ?? []) applyChange(sources, change);
+    if (sources.size > limits.maxDiscoverySources) {
+      return err(new Error("Google Drive discovery exceeds the source limit"));
+    }
     nextPageToken = pageToken(page.nextPageToken);
     const terminalCursor = pageToken(page.newStartPageToken);
     if (terminalCursor !== undefined) nextCursor = terminalCursor;
@@ -674,6 +713,8 @@ export function createGoogleDocsAdapter(options: GoogleDocsAdapterOptions): Prov
   const limits: RequestLimits = {
     timeoutMilliseconds: options.requestTimeoutMilliseconds ?? DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
     maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+    maxDiscoverySources: options.maxDiscoverySources ?? DEFAULT_MAX_DISCOVERY_SOURCES,
+    maxDiscoveryPages: options.maxDiscoveryPages ?? DEFAULT_MAX_DISCOVERY_PAGES,
   };
   return {
     name: "google",

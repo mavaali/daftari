@@ -193,9 +193,11 @@ provider afterward, so one poison event cannot starve other provider work.
 
 Each provider response is limited to 8 MiB and 30 seconds. A reconciliation
 accepts at most 10,000 sources, 8 MiB of normalized text per source, and 64 MiB
-of normalized text in total. Notion traversal is additionally capped at 10,000
-blocks per page and 32 nested block levels. Crossing a bound fails the affected
-source or batch without advancing its successful-content marker.
+of normalized text in total. Discovery rejects repeated cursors and more than
+1,000 provider pages. Notion traversal is additionally capped at 10,000 blocks
+per page, 10,000 block-response pages, and 32 nested block levels. Crossing a
+bound fails the affected source or batch without advancing its
+successful-content marker.
 
 Only a changed normalized-content hash invokes the LLM. Successful extraction
 creates staged proposals with a stable source ID such as `google:<file-id>` or
