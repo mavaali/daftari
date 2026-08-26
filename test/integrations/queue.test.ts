@@ -39,8 +39,8 @@ describe("durable integration queue", () => {
     expect(recovered.pending().ok && recovered.pending().value).toHaveLength(1);
     const seen: string[] = [];
     expect(
-      await recovered.drain(async (item) => {
-        seen.push(item.eventId);
+      await recovered.drain(async (batch) => {
+        seen.push(...batch.items.map((item) => item.eventId));
         return ok(undefined);
       }),
     ).toEqual(ok({ processed: 1, skipped: false }));
@@ -72,8 +72,8 @@ describe("durable integration queue", () => {
       queue.enqueue({ provider: "google", eventId: "evt-a", hint: { kind: "reconcile" } }),
     ).toEqual(ok({ enqueued: true }));
     let release: (() => void) | undefined;
-    const draining = queue.drain(async (item) => {
-      if (item.eventId === "evt-a") {
+    const draining = queue.drain(async (batch) => {
+      if (batch.items.some((item) => item.eventId === "evt-a")) {
         await new Promise<void>((resolve) => {
           release = resolve;
         });
@@ -86,7 +86,7 @@ describe("durable integration queue", () => {
       queue.enqueue({ provider: "google", eventId: "evt-b", hint: { kind: "reconcile" } }),
     ).toEqual(ok({ enqueued: true }));
     release?.();
-    expect((await draining).ok).toBe(false);
+    expect(await draining).toEqual(ok({ processed: 1, skipped: false }));
     expect(queue.pending()).toEqual(ok([expect.objectContaining({ eventId: "evt-b" })]));
   });
 
@@ -99,6 +99,77 @@ describe("durable integration queue", () => {
       queue.enqueue({ provider: "notion", eventId: "evt-2", hint: { kind: "reconcile" } }),
     ).toEqual(ok({ enqueued: true }));
     expect(queue.pending().ok && queue.pending().value).toHaveLength(2);
+  });
+
+  it("coalesces ten thousand provider events into one bounded durable batch", async () => {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      integrationQueuePath(vault),
+      JSON.stringify({
+        version: 2,
+        pending: Array.from({ length: 10_000 }, (_, index) => ({
+          provider: "google",
+          eventId: `evt-${index}`,
+          hint: { kind: "reconcile" },
+          enqueuedAt: "2026-08-24T12:00:00.000Z",
+          attempts: 0,
+        })),
+        processedEvents: [],
+      }),
+    );
+    const queue = createIntegrationQueue(vault, () => new Date("2026-08-25T12:00:00.000Z"));
+    let calls = 0;
+    const drained = await queue.drain(async (batch) => {
+      calls += 1;
+      expect(batch.provider).toBe("google");
+      expect(batch.items).toHaveLength(10_000);
+      return ok(undefined);
+    });
+
+    expect(drained).toEqual(ok({ processed: 10_000, skipped: false }));
+    expect(calls).toBe(1);
+    const raw = readFileSync(integrationQueuePath(vault), "utf8");
+    const durable = JSON.parse(raw) as { pending: unknown[]; processedEvents: unknown[] };
+    expect(durable.pending).toEqual([]);
+    expect(durable.processedEvents).toHaveLength(10_000);
+    expect(raw.length).toBeLessThan(1_500_000);
+  });
+
+  it("retains a fatal provider batch without starving a later provider batch", async () => {
+    const queue = createIntegrationQueue(vault);
+    queue.enqueue({ provider: "google", eventId: "google-poison", hint: { kind: "reconcile" } });
+    queue.enqueue({ provider: "notion", eventId: "notion-later", hint: { kind: "reconcile" } });
+    const seen: string[] = [];
+
+    const drained = await queue.drain(async (batch) => {
+      seen.push(batch.provider);
+      return batch.provider === "google" ? err(new Error("provider offline")) : ok(undefined);
+    });
+
+    expect(drained.ok).toBe(false);
+    expect(seen).toEqual(["google", "notion"]);
+    expect(queue.pending()).toEqual(
+      ok([expect.objectContaining({ provider: "google", eventId: "google-poison", attempts: 1 })]),
+    );
+    expect(
+      queue.enqueue({ provider: "notion", eventId: "notion-later", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: false }));
+  });
+
+  it("bounds fatal provider delivery retries and tombstones the exhausted event", async () => {
+    const queue = createIntegrationQueue(vault);
+    expect(
+      queue.enqueue({ provider: "google", eventId: "fatal-event", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await queue.drain(async () => err(new Error("provider offline")))).ok).toBe(false);
+    }
+
+    expect(queue.pending()).toEqual(ok([]));
+    expect(
+      queue.enqueue({ provider: "google", eventId: "fatal-event", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: false }));
   });
 
   it("retains replay tombstones beyond ten thousand events for a bounded thirty-day horizon", () => {

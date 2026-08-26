@@ -72,6 +72,18 @@ function normalizedVerbatim(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function containsVerbatimSpan(source: string, candidate: string, spanLength: number): boolean {
+  if (spanLength < 1 || source.length < spanLength || candidate.length < spanLength) return false;
+  const sourceSpans = new Set<string>();
+  for (let offset = 0; offset <= source.length - spanLength; offset += 1) {
+    sourceSpans.add(source.slice(offset, offset + spanLength));
+  }
+  for (let offset = 0; offset <= candidate.length - spanLength; offset += 1) {
+    if (sourceSpans.has(candidate.slice(offset, offset + spanLength))) return true;
+  }
+  return false;
+}
+
 function exceedsVerbatimFence(
   source: string,
   claims: ExtractOutcome["claims"],
@@ -84,6 +96,8 @@ function exceedsVerbatimFence(
     const statement = normalizedVerbatim(claim.statement);
     if (statement.length === 0) continue;
     if (statement === normalizedSource) return true;
+    if (statement.includes(normalizedSource)) return true;
+    if (containsVerbatimSpan(normalizedSource, statement, maxVerbatimChars + 1)) return true;
     if (normalizedSource.includes(statement)) copiedCharacters += statement.length;
     if (copiedCharacters > maxVerbatimChars) return true;
   }

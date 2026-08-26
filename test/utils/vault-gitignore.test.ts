@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -48,5 +49,41 @@ describe("ensureVaultGitignore", () => {
     const after = readFileSync(path, "utf-8");
     expect(after).toBe(before);
     expect(after.length).toBe(before.length);
+  });
+
+  it("upgrades an older Daftari block with local integration state rules", async () => {
+    const path = join(dir, ".gitignore");
+    writeFileSync(path, "# old Daftari block\n.daftari/index.db\n.daftari/distill-state.json\n");
+
+    const result = await ensureVaultGitignore(dir);
+
+    expect(result).toBe("appended");
+    const content = readFileSync(path, "utf-8");
+    expect(content).toContain(".daftari/integrations.state.enc.*.tmp");
+    expect(content).toContain(".daftari/integration-queue.json.tmp-*");
+    expect(content).toContain(".daftari/integration-review.jsonl");
+  });
+
+  it("makes every integration state file and temporary variant ignored by git", async () => {
+    await ensureVaultGitignore(dir);
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    const paths = [
+      ".daftari/integrations.state.enc",
+      ".daftari/integrations.state.enc.42.abcdef.tmp",
+      ".daftari/integration-queue.json",
+      ".daftari/integration-queue.json.tmp-42-abcdef",
+      ".daftari/integration-review.jsonl",
+    ];
+    for (const relativePath of paths) writeFileSync(join(dir, relativePath), "local state\n");
+
+    const ignored = execFileSync("git", ["check-ignore", "--stdin"], {
+      cwd: dir,
+      input: `${paths.join("\n")}\n`,
+      encoding: "utf-8",
+    })
+      .trim()
+      .split("\n");
+    expect(ignored).toEqual(paths);
   });
 });

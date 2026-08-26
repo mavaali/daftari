@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok } from "../../src/frontmatter/types.js";
 import type { ProviderAdapter } from "../../src/integrations/engine.js";
-import { createIntegrationQueue } from "../../src/integrations/queue.js";
+import { createIntegrationQueue, integrationQueuePath } from "../../src/integrations/queue.js";
 import { createConfiguredIntegrationRuntime } from "../../src/integrations/runtime.js";
 import { writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig } from "../../src/integrations/types.js";
@@ -231,11 +231,14 @@ describe("configured integration runtime", () => {
     expect(factorySpy).not.toHaveBeenCalled();
   });
 
-  it("retains webhook queue work and reports a safe diagnostic when a source fails", async () => {
+  it("tombstones partial-source events without starving later work and reports safely", async () => {
     const messages: string[] = [];
     const queue = createIntegrationQueue(vault);
     expect(
       queue.enqueue({ provider: "google", eventId: "evt-failed", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+    expect(
+      queue.enqueue({ provider: "google", eventId: "evt-later", hint: { kind: "reconcile" } }),
     ).toEqual(ok({ enqueued: true }));
     const created = createConfiguredIntegrationRuntime({
       vaultRoot: vault,
@@ -256,10 +259,55 @@ describe("configured integration runtime", () => {
     expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
     await created.value.runOnce();
 
-    expect(queue.pending().value.map((item) => item.eventId)).toEqual(["evt-failed"]);
+    expect(queue.pending()).toEqual(ok([]));
     expect(messages).toContain("integration google reconcile incomplete (1 source)");
-    expect(messages).toContain("integration queue drain failed");
+    expect(messages).not.toContain("integration queue drain failed");
     expect(messages.join(" ")).not.toContain("provider response with secret");
     await created.value.close();
+  });
+
+  it("coalesces ten thousand queued events into one provider reconcile", async () => {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      integrationQueuePath(vault),
+      JSON.stringify({
+        version: 2,
+        pending: Array.from({ length: 10_000 }, (_, index) => ({
+          provider: "google",
+          eventId: `evt-${index}`,
+          hint: { kind: "reconcile" },
+          enqueuedAt: "2026-08-25T12:00:00.000Z",
+          attempts: 0,
+        })),
+        processedEvents: [],
+      }),
+    );
+    let discoveries = 0;
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      adapterFactories: {
+        google: (redirectUri) => ({
+          ...factory({ discover: 0, ensure: 0 })(redirectUri),
+          discover: async () => {
+            discoveries += 1;
+            return ok([]);
+          },
+        }),
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await vi.waitFor(() => expect(createIntegrationQueue(vault).pending()).toEqual(ok([])));
+    await created.value.close();
+
+    expect(discoveries).toBeLessThanOrEqual(2);
+    const raw = readFileSync(integrationQueuePath(vault), "utf8");
+    const durable = JSON.parse(raw) as { processedEvents: unknown[] };
+    expect(durable.processedEvents).toHaveLength(10_000);
+    expect(raw.length).toBeLessThan(1_500_000);
   });
 });

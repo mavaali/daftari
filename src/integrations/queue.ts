@@ -18,6 +18,8 @@ import type { ProviderName } from "./types.js";
 
 const QUEUE_VERSION = 2;
 const REPLAY_HORIZON_MS = 30 * 24 * 60 * 60 * 1_000;
+const MAX_PROCESSED_EVENTS = 20_000;
+const MAX_DELIVERY_ATTEMPTS = 5;
 
 export interface IntegrationQueueInput {
   provider: ProviderName;
@@ -28,6 +30,12 @@ export interface IntegrationQueueInput {
 export interface IntegrationQueueItem extends IntegrationQueueInput {
   enqueuedAt: string;
   attempts: number;
+}
+
+export interface IntegrationQueueBatch {
+  provider: ProviderName;
+  items: IntegrationQueueItem[];
+  hint: RefreshHint;
 }
 
 interface ProcessedEvent {
@@ -51,7 +59,7 @@ export interface IntegrationQueue {
   enqueue(input: IntegrationQueueInput): Result<{ enqueued: boolean }, Error>;
   pending(): Result<IntegrationQueueItem[], Error>;
   drain(
-    worker: (item: IntegrationQueueItem) => Promise<Result<void, Error>>,
+    worker: (batch: IntegrationQueueBatch) => Promise<Result<void, Error>>,
   ): Promise<Result<{ processed: number; skipped: boolean }, Error>>;
 }
 
@@ -107,12 +115,40 @@ function validProcessedEvent(value: unknown): value is ProcessedEvent {
 
 function pruneProcessedEvents(state: QueueState, now: Date): QueueState {
   const cutoff = now.getTime() - REPLAY_HORIZON_MS;
+  const retained = state.processedEvents.filter((event) => Date.parse(event.processedAt) >= cutoff);
   return {
     ...state,
-    processedEvents: state.processedEvents.filter(
-      (event) => Date.parse(event.processedAt) >= cutoff,
-    ),
+    processedEvents:
+      retained.length > MAX_PROCESSED_EVENTS
+        ? retained.slice(retained.length - MAX_PROCESSED_EVENTS)
+        : retained,
   };
+}
+
+function mergeHints(items: IntegrationQueueItem[]): RefreshHint {
+  if (items.some((item) => item.hint.kind === "reconcile")) return { kind: "reconcile" };
+  const sourceIds = new Set<string>();
+  let rediscover = false;
+  for (const item of items) {
+    if (item.hint.kind !== "sources") continue;
+    for (const sourceId of item.hint.sourceIds) sourceIds.add(sourceId);
+    rediscover ||= item.hint.rediscover;
+  }
+  return { kind: "sources", sourceIds: [...sourceIds].sort(), rediscover };
+}
+
+function snapshotBatches(items: IntegrationQueueItem[]): IntegrationQueueBatch[] {
+  const byProvider = new Map<ProviderName, IntegrationQueueItem[]>();
+  for (const item of items) {
+    const providerItems = byProvider.get(item.provider) ?? [];
+    providerItems.push({ ...item });
+    byProvider.set(item.provider, providerItems);
+  }
+  return [...byProvider.entries()].map(([provider, providerItems]) => ({
+    provider,
+    items: providerItems,
+    hint: mergeHints(providerItems),
+  }));
 }
 
 function readQueue(vaultRoot: string, now: () => Date): Result<QueueState, Error> {
@@ -218,40 +254,68 @@ export function createIntegrationQueue(
       draining = true;
       let processed = 0;
       try {
-        while (true) {
-          const read = readQueue(vaultRoot, now);
-          if (!read.ok) return read;
-          const item = read.value.pending[0];
-          if (item === undefined) return ok({ processed, skipped: false });
+        const initial = readQueue(vaultRoot, now);
+        if (!initial.ok) return initial;
+        const batches = snapshotBatches(initial.value.pending);
+        let failed = false;
+        for (const batch of batches) {
           let outcome: Result<void, Error>;
           try {
-            outcome = await worker({ ...item });
+            outcome = await worker({
+              provider: batch.provider,
+              hint: batch.hint,
+              items: batch.items.map((item) => ({ ...item })),
+            });
           } catch {
             outcome = err(new Error("integration queue worker failed"));
           }
           const fresh = readQueue(vaultRoot, now);
           if (!fresh.ok) return fresh;
-          const key = itemKey(item.provider, item.eventId);
-          const freshIndex = fresh.value.pending.findIndex(
-            (candidate) => itemKey(candidate.provider, candidate.eventId) === key,
+          const batchKeys = new Set(
+            batch.items.map((item) => itemKey(item.provider, item.eventId)),
           );
-          if (freshIndex === -1) {
-            return err(new Error("integration queue item disappeared during drain"));
-          }
           if (!outcome.ok) {
-            fresh.value.pending[freshIndex] = {
-              ...fresh.value.pending[freshIndex],
-              attempts: fresh.value.pending[freshIndex].attempts + 1,
-            };
-            const written = writeQueue(vaultRoot, fresh.value);
-            return written.ok ? outcome : written;
+            failed = true;
+            const exhaustedKeys = new Set<string>();
+            fresh.value.pending = fresh.value.pending.map((item) =>
+              batchKeys.has(itemKey(item.provider, item.eventId))
+                ? (() => {
+                    const attempts = item.attempts + 1;
+                    if (attempts >= MAX_DELIVERY_ATTEMPTS) {
+                      exhaustedKeys.add(itemKey(item.provider, item.eventId));
+                    }
+                    return { ...item, attempts };
+                  })()
+                : item,
+            );
+            fresh.value.pending = fresh.value.pending.filter(
+              (item) => !exhaustedKeys.has(itemKey(item.provider, item.eventId)),
+            );
+            const processedAt = now().toISOString();
+            for (const key of exhaustedKeys) {
+              fresh.value.processedEvents.push({ key, processedAt });
+            }
+            const written = writeQueue(vaultRoot, pruneProcessedEvents(fresh.value, now()));
+            if (!written.ok) return written;
+            continue;
           }
-          fresh.value.pending.splice(freshIndex, 1);
-          fresh.value.processedEvents.push({ key, processedAt: now().toISOString() });
+          const presentKeys = new Set(
+            fresh.value.pending
+              .map((item) => itemKey(item.provider, item.eventId))
+              .filter((key) => batchKeys.has(key)),
+          );
+          fresh.value.pending = fresh.value.pending.filter(
+            (item) => !presentKeys.has(itemKey(item.provider, item.eventId)),
+          );
+          const processedAt = now().toISOString();
+          for (const key of presentKeys) fresh.value.processedEvents.push({ key, processedAt });
           const written = writeQueue(vaultRoot, pruneProcessedEvents(fresh.value, now()));
           if (!written.ok) return written;
-          processed += 1;
+          processed += presentKeys.size;
         }
+        return failed
+          ? err(new Error("one or more integration queue batches failed"))
+          : ok({ processed, skipped: false });
       } finally {
         draining = false;
       }

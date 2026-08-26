@@ -197,6 +197,81 @@ describe("integration distillation", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
+  it("rejects model output that wraps the full source before staging", async () => {
+    const source = "private provider document text that must not survive extraction";
+    const upsert = vi.fn();
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 1,
+            maxClaims: 3,
+            maxVerbatimChars: 10,
+            inCallInputCap: 128,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract: async () => ({
+        claims: [
+          {
+            claim_key: "claim-1",
+            statement: `The document says: ${source}`,
+            proposed_frontmatter: { title: "Unsafe wrapped output" },
+          },
+        ],
+        budget_exhausted: false,
+        llmCalls: 1,
+        chunkErrors: [],
+      }),
+      upsert,
+    });
+
+    const result = await distill({ providerSourceId: "google:doc-1", revision: "1", text: source });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).not.toContain(source);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-limit source excerpt wrapped in model prose", async () => {
+    const source = "prefix SECRET-COPIED-PASSAGE suffix";
+    const upsert = vi.fn();
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 1,
+            maxClaims: 3,
+            maxVerbatimChars: 8,
+            inCallInputCap: 128,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract: async () => ({
+        claims: [
+          {
+            claim_key: "claim-1",
+            statement: "The relevant excerpt is SECRET-COPIED-PASSAGE.",
+            proposed_frontmatter: { title: "Unsafe excerpt" },
+          },
+        ],
+        budget_exhausted: false,
+        llmCalls: 1,
+        chunkErrors: [],
+      }),
+      upsert,
+    });
+
+    const result = await distill({ providerSourceId: "google:doc-1", revision: "1", text: source });
+    expect(result.ok).toBe(false);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("prepares and resolves the distill dependency before it can be invoked", async () => {
     const resolve = vi.fn(() =>
       ok({

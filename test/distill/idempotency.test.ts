@@ -215,35 +215,51 @@ describe("distillUpsert (U5 idempotency)", () => {
     });
   });
 
-  it("retries unchanged source content after an incomplete proposal batch", async () => {
-    let calls = 0;
-    const proposeClaims = async (): Promise<ProposeOutcome> => {
-      calls += 1;
-      return calls === 1
+  it("retries only claims that failed in an incomplete proposal batch", async () => {
+    const batches: string[][] = [];
+    const staged = (claimKey: string) => ({
+      id: `proposal-${claimKey}`,
+      expires_at: "2026-09-24T00:00:00.000Z",
+      conflicts_with: [],
+      tension_id: null,
+      claim_key: claimKey,
+      targetPath: `distill/${claimKey}.md`,
+    });
+    const proposeClaims = async (
+      _vaultRoot: string,
+      claims: ExtractedClaim[],
+    ): Promise<ProposeOutcome> => {
+      batches.push(claims.map((claim) => claim.claim_key));
+      return batches.length === 1
         ? {
-            proposed: 0,
-            results: [],
-            errors: [{ claim_key: CLAIM_A.claim_key, error: "stage failed" }],
+            proposed: 1,
+            results: [staged(CLAIM_A.claim_key)],
+            errors: [{ claim_key: CLAIM_B.claim_key, error: "stage failed" }],
           }
-        : { proposed: 1, results: [], errors: [] };
+        : { proposed: 1, results: [staged(CLAIM_B.claim_key)], errors: [] };
     };
     const input = {
       sourceId: SOURCE_ID,
       sourceContent: CONTENT_V1,
-      claims: [CLAIM_A],
+      claims: [CLAIM_A, CLAIM_B],
       proposeClaims,
     };
 
     const first = await distillUpsert(vault, { ...input, runId: "run-failed" });
     expect(first.ok && first.value.propose?.errors).toHaveLength(1);
-    expect(readDistillState(vault).sources[SOURCE_ID]).toBeUndefined();
+    expect(readDistillState(vault).sources[SOURCE_ID]).toMatchObject({
+      content_hash: "",
+      pending_content_hash: sourceContentHash(CONTENT_V1),
+      emitted_claim_keys: [CLAIM_A.claim_key],
+    });
 
     const second = await distillUpsert(vault, { ...input, runId: "run-retry" });
     expect(second.ok && second.value.noop).toBe(false);
-    expect(calls).toBe(2);
-    expect(readDistillState(vault).sources[SOURCE_ID]?.content_hash).toBe(
-      sourceContentHash(CONTENT_V1),
-    );
+    expect(batches).toEqual([[CLAIM_A.claim_key, CLAIM_B.claim_key], [CLAIM_B.claim_key]]);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toEqual({
+      content_hash: sourceContentHash(CONTENT_V1),
+      claims: {},
+    });
   });
 
   // -------------------------------------------------------------------------

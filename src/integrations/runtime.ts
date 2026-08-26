@@ -169,8 +169,10 @@ export function createConfiguredIntegrationRuntime(
   async function cycle(): Promise<void> {
     const deps = engineDeps;
     if (deps === undefined) return;
-    const drained = await queue.drain(async (item) => {
-      const adapter = adapters.find((candidate) => candidate.name === item.provider);
+    const attemptedProviders = new Set<ProviderName>();
+    const drained = await queue.drain(async (batch) => {
+      attemptedProviders.add(batch.provider);
+      const adapter = adapters.find((candidate) => candidate.name === batch.provider);
       if (adapter === undefined) return err(new Error("integration queue provider is unavailable"));
       const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps);
       if (!reconciled.ok) return reconciled;
@@ -179,23 +181,24 @@ export function createConfiguredIntegrationRuntime(
         onError(
           `integration ${adapter.name} reconcile incomplete (${count} source${count === 1 ? "" : "s"})`,
         );
-        return err(new Error(`integration ${adapter.name} reconcile incomplete`));
       }
       return ok(undefined);
     });
     if (!drained.ok) onError("integration queue drain failed");
 
     for (const adapter of adapters) {
-      const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps);
-      if (!reconciled.ok) {
-        onError(`integration ${adapter.name} reconcile failed`);
-        continue;
-      }
-      if (reconciled.value.failedSourceIds.length > 0) {
-        const count = reconciled.value.failedSourceIds.length;
-        onError(
-          `integration ${adapter.name} reconcile incomplete (${count} source${count === 1 ? "" : "s"})`,
-        );
+      if (!attemptedProviders.has(adapter.name)) {
+        const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps);
+        if (!reconciled.ok) {
+          onError(`integration ${adapter.name} reconcile failed`);
+          continue;
+        }
+        if (reconciled.value.failedSourceIds.length > 0) {
+          const count = reconciled.value.failedSourceIds.length;
+          onError(
+            `integration ${adapter.name} reconcile incomplete (${count} source${count === 1 ? "" : "s"})`,
+          );
+        }
       }
       if (options.publicBaseUrl === undefined) continue;
       if (adapter.webhookSetup === "manual") continue;
