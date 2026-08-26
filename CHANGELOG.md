@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-08-26
+
+### Added
+
+- **Continuous Google Docs and Notion distillation** (#490) — a provider-neutral integration engine ingests external documents (Google Docs, Notion) into the distill pipeline on a refresh/webhook contract, with encrypted integration state, validated adapter capabilities, verified webhook result contracts, deduplicated unavailable-source events, and preserved review retries.
+- **Containerized `daftari serve`** (#488) — a multi-stage Dockerfile (native modules built in-image, git for the auto-commit layer, default embedding model baked in for offline cold starts, non-root under `tini`) plus a `.dockerignore` and Azure Container Apps deployment guidance in `docs/deployment.md` (single pinned replica, Azure Files mount with `nobrl` for SQLite over SMB, secrets as env vars). Also fixes a container-specific process-lock footgun: a crash-orphaned lock naming the replacement process's own pid is now treated as stale rather than mistaken for a live holder.
+- **Graph-augmented retrieval** (#453) — `vault_search` can expand results across the belief graph, surfacing documents connected to a hit rather than only lexical/vector matches. Opt-in and default-off, so existing retrieval behavior is unchanged unless enabled.
+
+### Changed
+
+- **Outcome-driven README** (#482) — the README is reworked into an outcome-driven front door that leads with what Daftari does for a reader before the mechanics.
+- **Dependency bump** (#484) — the npm-minor-and-patch group is bumped with 5 updates.
+
+### Fixed
+
+- **Robust model-JSON parsing** (#486) — `completeJson` in the OpenRouter eval path now parses model JSON robustly instead of failing on well-formed-but-unexpected shapes.
+- **Load-sensitive test suite stabilized under concurrency** (#485, mpn.1) — teardown races and tight timeouts in the concurrency-sensitive suite are fixed, eliminating CI false-reds under load.
+
 ## [3.11.0] - 2026-08-23
 
 ### Added
