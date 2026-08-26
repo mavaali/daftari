@@ -293,16 +293,22 @@ export async function distillUpsert(
     input.overlapSearch,
   );
 
+  const successfulClaimKeys = new Set(attempted.results.map((result) => result.claim_key));
+  // A durable success wins over a contradictory error for the same claim.
+  // Retrying that claim would create a duplicate proposal.
+  const unresolvedErrors = attempted.errors.filter(
+    (failure) => !successfulClaimKeys.has(failure.claim_key),
+  );
   const reportedClaimKeys = new Set([
-    ...attempted.results.map((result) => result.claim_key),
-    ...attempted.errors.map((failure) => failure.claim_key),
+    ...successfulClaimKeys,
+    ...unresolvedErrors.map((failure) => failure.claim_key),
   ]);
   const unaccounted = toPropose
     .filter((claim) => !reportedClaimKeys.has(claim.claim_key))
     .map((claim) => ({ claim_key: claim.claim_key, error: "proposal result was missing" }));
   const propose: ProposeOutcome = {
     ...attempted,
-    errors: [...attempted.errors, ...unaccounted],
+    errors: [...unresolvedErrors, ...unaccounted],
   };
 
   if (propose.errors.length > 0) {

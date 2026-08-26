@@ -503,6 +503,7 @@ export async function reconcileProvider(
 
       const limits = reconcileLimits(deps);
       const shouldDiscover = hint.kind === "reconcile" || hint.rediscover;
+      const previousCursor = providerState.cursor;
       let discovered: Result<RemoteSource[], Error>;
       if (shouldDiscover) {
         try {
@@ -523,6 +524,11 @@ export async function reconcileProvider(
       if (!discovered.ok) {
         return err(new Error(`integration provider ${adapter.name} discovery failed`));
       }
+      const discoveredCursor = providerState.cursor;
+      // Discovery adapters may advance a remote change cursor. Keep that
+      // cursor provisional until every source in this page has been handled;
+      // all intermediate state writes must retain the replayable cursor.
+      providerState.cursor = previousCursor;
       if (!discovered.value.every(validRemoteSource)) {
         return err(new Error(`integration provider ${adapter.name} returned an invalid source`));
       }
@@ -539,10 +545,6 @@ export async function reconcileProvider(
         sourceScope === undefined
           ? allDiscoveredSources
           : new Map([...allDiscoveredSources].filter(([sourceId]) => sourceScope.has(sourceId)));
-      if (shouldDiscover) {
-        const discoveryStateWritten = writeState(vaultRoot, key.value, persisted.value, deps);
-        if (!discoveryStateWritten.ok) return discoveryStateWritten;
-      }
       const outcome: ReconcileOutcome = {
         distilledSourceIds: [],
         unchangedSourceIds: [],
@@ -665,6 +667,12 @@ export async function reconcileProvider(
         if (!written.ok) return written;
         outcome.distilledSourceIds.push(providerSourceId);
       }
+
+      if (shouldDiscover && outcome.failedSourceIds.length === 0) {
+        providerState.cursor = discoveredCursor;
+      }
+      const finalStateWritten = writeState(vaultRoot, key.value, persisted.value, deps);
+      if (!finalStateWritten.ok) return finalStateWritten;
       return ok(outcome);
     });
   } finally {

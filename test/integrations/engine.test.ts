@@ -290,28 +290,40 @@ describe("provider reconciliation", () => {
     );
   });
 
-  it("persists provider discovery metadata when every source fetch fails", async () => {
+  it("commits a discovery cursor only after every discovered source succeeds", async () => {
     expect(
       writeIntegrationState(
         vault,
-        { providers: { google: providerState() }, oauthStates: {} },
+        {
+          providers: { google: { ...providerState(), cursor: "cursor-before-discovery" } },
+          oauthStates: {},
+        },
         KEY,
       ),
     ).toEqual(ok(undefined));
+    let fetchFails = true;
 
-    const result = await reconcileProvider(
-      vault,
-      adapter({
-        discover: async (state) => {
-          state.cursor = "cursor-after-discovery";
-          return ok([{ id: "doc-1", revision: "1" }]);
-        },
-        fetch: async () => err(new Error("unavailable")),
-      }),
-      deps(),
+    const provider = adapter({
+      discover: async (state) => {
+        state.cursor = "cursor-after-discovery";
+        return ok([{ id: "doc-1", revision: "1" }]);
+      },
+      fetch: async () =>
+        fetchFails
+          ? err(new Error("unavailable"))
+          : ok({ id: "doc-1", revision: "1", text: "eventually available" }),
+    });
+    const first = await reconcileProvider(vault, provider, deps());
+
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
+      "cursor-before-discovery",
     );
 
-    expect(result.ok && result.value.failedSourceIds).toEqual(["google:doc-1"]);
+    fetchFails = false;
+    const second = await reconcileProvider(vault, provider, deps());
+
+    expect(second.ok && second.value.distilledSourceIds).toEqual(["google:doc-1"]);
     expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
       "cursor-after-discovery",
     );
@@ -1253,7 +1265,7 @@ describe("provider reconciliation", () => {
         recordUnavailable,
         writeIntegrationState: (root, state, key) => {
           writes += 1;
-          return writes === 2
+          return writes === 1
             ? err(new Error("state disk unavailable"))
             : writeIntegrationState(root, state, key);
         },

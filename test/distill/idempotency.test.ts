@@ -270,6 +270,36 @@ describe("distillUpsert (U5 idempotency)", () => {
     });
   });
 
+  it("does not retry a claim reported as both staged and failed", async () => {
+    const staged = {
+      id: "proposal-a",
+      expires_at: "2026-09-24T00:00:00.000Z",
+      conflicts_with: [],
+      tension_id: null,
+      claim_key: CLAIM_A.claim_key,
+      targetPath: `distill/${CLAIM_A.claim_key}.md`,
+    };
+    const proposeClaims = async (): Promise<ProposeOutcome> => ({
+      proposed: 1,
+      results: [staged],
+      errors: [{ claim_key: CLAIM_A.claim_key, error: "ambiguous writer response" }],
+    });
+
+    const result = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-ambiguous",
+      proposeClaims,
+    });
+
+    expect(result.ok && result.value.propose?.errors).toEqual([]);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toEqual({
+      content_hash: sourceContentHash(CONTENT_V1),
+      claims: {},
+    });
+  });
+
   // -------------------------------------------------------------------------
   // State file hygiene: absent or corrupt ⇒ empty default
   // -------------------------------------------------------------------------
