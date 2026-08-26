@@ -20,7 +20,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
-RUN npm ci
+# HUSKY=0 skips the "prepare": "husky" lifecycle script — there is no .git in
+# the build context for it to install hooks into. Not --ignore-scripts: the
+# native modules need their install scripts.
+RUN HUSKY=0 npm ci
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
