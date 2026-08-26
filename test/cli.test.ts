@@ -24,6 +24,9 @@ describe("daftari --init", () => {
     expect(code).toBe(0);
 
     expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+    expect(readFileSync(join(vault, ".daftari", "config.yaml"), "utf8")).toContain(
+      "manage_integrations: true",
+    );
     expect(existsSync(join(vault, ".gitignore"))).toBe(true);
     for (const collection of ["competitive-intel", "pricing", "moonshot", "_drafts"]) {
       expect(existsSync(join(vault, collection))).toBe(true);

@@ -10,6 +10,7 @@ backups around it.
 |---|---|---|
 | One local MCP client | stdio | `daftari --vault ./my-vault --user me --role admin` |
 | Several clients sharing one vault | Streamable HTTP | `daftari serve --vault ./my-vault` |
+| Continuously distill Google Docs or Notion | Streamable HTTP + integrations | Follow the [integration guide](integrations.md) |
 | Read across several vaults while writing to one | federation mounts | Configure `federation.mounts` |
 | Write to several independent vaults through one MCP connection | router package | Follow the [multi-vault how-to](multi-vault-howto.md) |
 
@@ -54,11 +55,16 @@ roles:
     promote: true
     ratify: true
     verify_repo_sources: true
+    manage_integrations: true
 ```
 
 `verify_repo_sources` is separate from vault read access. It permits the role
 to check the existence and metadata of `repo:` provenance targets under the
 configured `repo_root`; it does not grant arbitrary file reads.
+
+`manage_integrations` is also separate. It permits OAuth connection and webhook
+verification management for vault-wide source integrations. Leave it off agent
+and reader roles.
 
 No `--role`, or a role name absent from config, becomes the deny-all guest.
 Create a separate role for unattended curation: grant the reads and writes it
@@ -310,6 +316,17 @@ Credentials come from each SDK's standard environment chain, never from vault
 config. Restore refuses a non-empty target and rebuilds the index after
 materializing the vault.
 
+## Connect Google Docs or Notion
+
+Source integrations are a `daftari serve` capability. They use deployment-owned
+OAuth clients, encrypted local connector state, webhook-first change delivery
+when public HTTPS is configured, and polling as a retry/fallback path. Changed
+sources enter the staged distillation pipeline and are never auto-ratified.
+
+See [Google Docs and Notion integrations](integrations.md) for configuration,
+callback registration, connection, Notion verification, retention, and failure
+behavior.
+
 ## Deployment checklist
 
 - Use an absolute vault path.
@@ -323,10 +340,14 @@ materializing the vault.
 - Run `daftari sync --dry-run` before the first backup.
 - Test restore into a new empty directory; an untested backup is not a recovery
   plan.
+- If integrations are enabled, back up the encryption key separately and test
+  both provider callbacks before enabling webhooks.
 
 ## Related guides
 
 - [Getting started](getting-started.md) — local stdio setup.
 - [Multi-vault how-to](multi-vault-howto.md) — several writable vaults.
 - [Adopting existing notes](adoption.md) — local and cloud-synced wikis.
+- [Google Docs and Notion integrations](integrations.md) — OAuth, continuous
+  distillation, webhooks, and local retention.
 - [Privacy](../PRIVACY.md) — data and network boundaries.
