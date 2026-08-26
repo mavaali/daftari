@@ -347,6 +347,33 @@ function validVerifiedWebhook(value: VerifiedWebhook): boolean {
   );
 }
 
+async function invokeWebhookVerification(
+  adapter: ProviderAdapter,
+  input: WebhookRequest,
+  providerState: ProviderState,
+): Promise<Result<VerifiedWebhook, Error>> {
+  if (adapter.verifyWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
+  }
+  let verified: Result<VerifiedWebhook, Error>;
+  try {
+    verified = await adapter.verifyWebhook(input, providerState);
+  } catch {
+    return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
+  }
+  if (!verified.ok) {
+    return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
+  }
+  if (!validVerifiedWebhook(verified.value)) {
+    return err(
+      new Error(
+        `integration provider ${adapter.name} webhook verification returned invalid result`,
+      ),
+    );
+  }
+  return verified;
+}
+
 function equalSecret(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "utf8");
   const rightBytes = Buffer.from(right, "utf8");
@@ -621,6 +648,41 @@ export async function verifyProviderWebhook(
   input: WebhookRequest,
   deps: EngineDeps,
 ): Promise<Result<VerifiedWebhook, Error>> {
+  if (adapter.verifyWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
+  }
+  const configured = providerConfig(deps.config, adapter.name);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const snapshot = readIntegrationState(vaultRoot, key.value);
+  if (!snapshot.ok) return snapshot;
+  const snapshotProvider = snapshot.value.providers[adapter.name];
+  if (snapshotProvider === undefined) {
+    return err(new Error(`integration provider ${adapter.name} is not authorized`));
+  }
+
+  // Configured signed events only consume an atomic encrypted-state snapshot.
+  // They neither wait for reconciliation's read/await/write transaction nor
+  // exclude another independently valid event verification.
+  if (snapshotProvider.webhook !== undefined) {
+    if (snapshotProvider.webhook.verificationRequired === true) {
+      return err(
+        new Error(`integration provider ${adapter.name} webhook verification is not confirmed`),
+      );
+    }
+    const verified = await invokeWebhookVerification(adapter, input, snapshotProvider);
+    if (!verified.ok) return verified;
+    if (verified.value.kind !== "event") {
+      return err(
+        new Error(`integration provider ${adapter.name} webhook verification is already captured`),
+      );
+    }
+    return verified;
+  }
+
+  // Unsigned manual capture consumes the armed nonce and writes a secret, so
+  // it remains a serialized single-writer transaction.
   const lockKey = reconciliationKey(vaultRoot, adapter.name);
   if (activeWebhookVerifications.has(lockKey)) {
     return err(new Error(`integration provider ${adapter.name} webhook verification is busy`));
@@ -628,75 +690,44 @@ export async function verifyProviderWebhook(
   activeWebhookVerifications.add(lockKey);
   try {
     return await withIntegrationStateLock(vaultRoot, async () => {
-      if (adapter.verifyWebhook === undefined) {
-        return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
-      }
-      const configured = providerConfig(deps.config, adapter.name);
-      if (!configured.ok) return configured;
-      const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
-      if (!key.ok) return key;
       const persisted = readIntegrationState(vaultRoot, key.value);
       if (!persisted.ok) return persisted;
       const providerState = persisted.value.providers[adapter.name];
       if (providerState === undefined) {
         return err(new Error(`integration provider ${adapter.name} is not authorized`));
       }
-      const manualCapture = providerState.webhook === undefined;
-      if (manualCapture) {
-        const expected = providerState.webhookSetupToken;
-        if (
-          expected === undefined ||
-          input.setupToken === undefined ||
-          !equalSecret(input.setupToken, expected)
-        ) {
-          return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
-        }
-      } else if (providerState.webhook?.verificationRequired === true) {
-        return err(
-          new Error(`integration provider ${adapter.name} webhook verification is not confirmed`),
-        );
-      }
-
-      let verified: Result<VerifiedWebhook, Error>;
-      try {
-        verified = await adapter.verifyWebhook(input, providerState);
-      } catch {
-        return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
-      }
-      if (!verified.ok)
-        return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
-      if (!validVerifiedWebhook(verified.value)) {
+      if (providerState.webhook !== undefined) {
         return err(
           new Error(
-            `integration provider ${adapter.name} webhook verification returned invalid result`,
+            `integration provider ${adapter.name} webhook verification is already captured`,
           ),
         );
       }
-      if (manualCapture && verified.value.kind !== "verification") {
+      const expected = providerState.webhookSetupToken;
+      if (
+        expected === undefined ||
+        input.setupToken === undefined ||
+        !equalSecret(input.setupToken, expected)
+      ) {
+        return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
+      }
+
+      const verified = await invokeWebhookVerification(adapter, input, providerState);
+      if (!verified.ok) return verified;
+      if (verified.value.kind !== "verification") {
         return err(
           new Error(`integration provider ${adapter.name} webhook setup did not verify a channel`),
         );
       }
-      if (verified.value.kind === "verification") {
-        if (providerState.webhook !== undefined) {
-          return err(
-            new Error(
-              `integration provider ${adapter.name} webhook verification is already captured`,
-            ),
-          );
-        }
-        if (verified.value.channel.verificationRequired !== true) {
-          return err(
-            new Error(
-              `integration provider ${adapter.name} returned an unsafe verification channel`,
-            ),
-          );
-        }
-        delete providerState.webhookSetupToken;
-        providerState.webhook = verified.value.channel;
-        const written = writeState(vaultRoot, key.value, persisted.value, deps);
-        if (!written.ok) return written;
+      if (verified.value.channel.verificationRequired !== true) {
+        return err(
+          new Error(`integration provider ${adapter.name} returned an unsafe verification channel`),
+        );
       }
+      delete providerState.webhookSetupToken;
+      providerState.webhook = verified.value.channel;
+      const written = writeState(vaultRoot, key.value, persisted.value, deps);
+      if (!written.ok) return written;
       return ok(verified.value);
     });
   } finally {

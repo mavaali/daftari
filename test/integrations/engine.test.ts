@@ -646,6 +646,53 @@ describe("provider reconciliation", () => {
     );
   });
 
+  it("verifies concurrent configured webhook events without waiting for reconciliation", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), webhook: { id: "channel", secret: "secret" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let releaseDiscovery: (() => void) | undefined;
+    const provider = adapter({
+      discover: () =>
+        new Promise((resolve) => {
+          releaseDiscovery = () => resolve(ok([]));
+        }),
+      verifyWebhook: async (request) =>
+        ok({
+          kind: "event",
+          eventId: Buffer.from(request.body).toString("utf8"),
+          hint: { kind: "reconcile" },
+        }),
+    });
+    const reconciling = reconcileProvider(vault, provider, deps());
+    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
+
+    let verified: Awaited<ReturnType<typeof verifyProviderWebhook>>[] | undefined;
+    const verification = Promise.all([
+      verifyProviderWebhook(vault, provider, { headers: {}, body: Buffer.from("evt-1") }, deps()),
+      verifyProviderWebhook(vault, provider, { headers: {}, body: Buffer.from("evt-2") }, deps()),
+    ]).then((results) => {
+      verified = results;
+    });
+
+    await vi.waitFor(() => expect(verified).toBeDefined(), { timeout: 100 });
+    expect(verified).toEqual([
+      ok({ kind: "event", eventId: "evt-1", hint: { kind: "reconcile" } }),
+      ok({ kind: "event", eventId: "evt-2", hint: { kind: "reconcile" } }),
+    ]);
+    releaseDiscovery?.();
+    await verification;
+    expect((await reconciling).ok).toBe(true);
+  });
+
   it("persists a provider verification channel before returning it", async () => {
     expect(
       writeIntegrationState(
