@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok } from "../../src/frontmatter/types.js";
 import type { ProviderAdapter } from "../../src/integrations/engine.js";
+import { createIntegrationQueue } from "../../src/integrations/queue.js";
 import { createConfiguredIntegrationRuntime } from "../../src/integrations/runtime.js";
 import { writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig } from "../../src/integrations/types.js";
@@ -19,6 +20,7 @@ const environment = {
   GOOGLE_ID: "id",
   GOOGLE_SECRET: "secret",
 };
+const distill = async () => ok({ runId: "test-run" });
 
 describe("configured integration runtime", () => {
   let vault: string;
@@ -67,6 +69,7 @@ describe("configured integration runtime", () => {
       vaultRoot: vault,
       config,
       environment,
+      distill,
       adapterFactories: { google: factory(spy) },
     });
     expect(created.ok).toBe(true);
@@ -85,6 +88,7 @@ describe("configured integration runtime", () => {
       vaultRoot: vault,
       config,
       environment,
+      distill,
       publicBaseUrl: "https://vault.example/daftari",
       adapterFactories: { google: factory(spy) },
     });
@@ -103,6 +107,7 @@ describe("configured integration runtime", () => {
       vaultRoot: vault,
       config,
       environment: { ...environment, GOOGLE_SECRET: undefined },
+      distill,
       adapterFactories: { google: factorySpy },
     });
     expect(created.ok).toBe(false);
@@ -115,6 +120,7 @@ describe("configured integration runtime", () => {
       vaultRoot: vault,
       config,
       environment,
+      distill,
       adapterFactories: {
         google: () => ({
           ...factory({ discover: 0, ensure: 0 })("http://localhost/callback"),
@@ -139,6 +145,7 @@ describe("configured integration runtime", () => {
       vaultRoot: vault,
       config,
       environment,
+      distill,
       adapterFactories: {
         google: (redirectUri) => ({
           ...factory({ discover: 0, ensure: 0 })(redirectUri),
@@ -162,6 +169,51 @@ describe("configured integration runtime", () => {
     release?.();
     await followUp;
     expect(discoveries).toBe(2);
+    await created.value.close();
+  });
+
+  it("preflights distill configuration before constructing adapters", () => {
+    const factorySpy = vi.fn(factory({ discover: 0, ensure: 0 }));
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      adapterFactories: { google: factorySpy },
+    });
+
+    expect(created.ok).toBe(false);
+    expect(factorySpy).not.toHaveBeenCalled();
+  });
+
+  it("retains webhook queue work and reports a safe diagnostic when a source fails", async () => {
+    const messages: string[] = [];
+    const queue = createIntegrationQueue(vault);
+    expect(
+      queue.enqueue({ provider: "google", eventId: "evt-failed", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      adapterFactories: {
+        google: (redirectUri) => ({
+          ...factory({ discover: 0, ensure: 0 })(redirectUri),
+          discover: async () => ok([{ id: "doc-failed", revision: "1" }]),
+          fetch: async () => err(new Error("provider response with secret")),
+        }),
+      },
+      onError: (message) => messages.push(message),
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+
+    expect(queue.pending().value.map((item) => item.eventId)).toEqual(["evt-failed"]);
+    expect(messages).toContain("integration google reconcile incomplete (1 source)");
+    expect(messages).toContain("integration queue drain failed");
+    expect(messages.join(" ")).not.toContain("provider response with secret");
     await created.value.close();
   });
 });

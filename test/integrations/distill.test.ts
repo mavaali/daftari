@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ok } from "../../src/frontmatter/types.js";
-import { createIntegrationDistill } from "../../src/integrations/distill.js";
+import {
+  createIntegrationDistill,
+  prepareIntegrationDistill,
+} from "../../src/integrations/distill.js";
 
 describe("integration distillation", () => {
   let vault: string;
@@ -154,5 +157,79 @@ describe("integration distillation", () => {
     expect(
       (await distill({ providerSourceId: "google:doc-1", revision: "2", text: "text" })).ok,
     ).toBe(false);
+  });
+
+  it("rejects exact-source model output before staging without echoing source text", async () => {
+    const source = "private exact provider document text";
+    const upsert = vi.fn();
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 1,
+            maxClaims: 3,
+            maxVerbatimChars: 100,
+            inCallInputCap: 128,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract: async () => ({
+        claims: [
+          {
+            claim_key: "claim-1",
+            statement: source,
+            proposed_frontmatter: { title: "Unsafe output" },
+          },
+        ],
+        budget_exhausted: false,
+        llmCalls: 1,
+        chunkErrors: [],
+      }),
+      upsert,
+    });
+
+    const result = await distill({ providerSourceId: "google:doc-1", revision: "1", text: source });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).not.toContain(source);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("prepares and resolves the distill dependency before it can be invoked", async () => {
+    const resolve = vi.fn(() =>
+      ok({
+        client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+        config: {
+          model: "test-model",
+          maxLlmCalls: 1,
+          maxClaims: 3,
+          maxVerbatimChars: 100,
+          inCallInputCap: 128,
+          corroborationThreshold: 0.8,
+        },
+        transport: "anthropic" as const,
+      }),
+    );
+    const prepared = prepareIntegrationDistill(vault, {
+      resolve,
+      extract: async () => ({ claims: [], budget_exhausted: false, llmCalls: 0, chunkErrors: [] }),
+      upsert: async () =>
+        ok({
+          noop: false,
+          skipped: [],
+          updated: [],
+          created: [],
+          propose: null,
+          stateWritten: true,
+        }),
+    });
+
+    expect(prepared.ok).toBe(true);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    if (!prepared.ok) return;
+    await prepared.value({ providerSourceId: "google:doc-1", revision: "1", text: "safe" });
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 });

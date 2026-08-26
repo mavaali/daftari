@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { createIntegrationDistill } from "./distill.js";
+import { type IntegrationDistill, prepareIntegrationDistill } from "./distill.js";
 import {
   configuredCredential,
   type EngineDeps,
@@ -49,6 +49,8 @@ export interface ConfiguredIntegrationRuntimeOptions {
   adapterFactories?: Partial<Record<ProviderName, IntegrationAdapterFactory>>;
   now?: () => Date;
   onError?: (message: string) => void;
+  /** Ready distill dependency for tests or callers that preflight externally. */
+  distill?: IntegrationDistill;
 }
 
 const DEFAULT_FACTORIES: Record<ProviderName, IntegrationAdapterFactory> = {
@@ -128,6 +130,11 @@ export function createConfiguredIntegrationRuntime(
     );
     if (!clientSecret.ok) return clientSecret;
   }
+  const preparedDistill =
+    options.distill === undefined
+      ? prepareIntegrationDistill(options.vaultRoot)
+      : ok(options.distill);
+  if (!preparedDistill.ok) return preparedDistill;
 
   const queue = createIntegrationQueue(options.vaultRoot, options.now);
   const readableQueue = queue.pending();
@@ -150,7 +157,15 @@ export function createConfiguredIntegrationRuntime(
       const adapter = adapters.find((candidate) => candidate.name === item.provider);
       if (adapter === undefined) return err(new Error("integration queue provider is unavailable"));
       const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps);
-      return reconciled.ok ? ok(undefined) : reconciled;
+      if (!reconciled.ok) return reconciled;
+      if (reconciled.value.failedSourceIds.length > 0) {
+        const count = reconciled.value.failedSourceIds.length;
+        onError(
+          `integration ${adapter.name} reconcile incomplete (${count} source${count === 1 ? "" : "s"})`,
+        );
+        return err(new Error(`integration ${adapter.name} reconcile incomplete`));
+      }
+      return ok(undefined);
     });
     if (!drained.ok) onError("integration queue drain failed");
 
@@ -159,6 +174,12 @@ export function createConfiguredIntegrationRuntime(
       if (!reconciled.ok) {
         onError(`integration ${adapter.name} reconcile failed`);
         continue;
+      }
+      if (reconciled.value.failedSourceIds.length > 0) {
+        const count = reconciled.value.failedSourceIds.length;
+        onError(
+          `integration ${adapter.name} reconcile incomplete (${count} source${count === 1 ? "" : "s"})`,
+        );
       }
       if (options.publicBaseUrl === undefined) continue;
       if (adapter.webhookSetup === "manual") continue;
@@ -220,7 +241,7 @@ export function createConfiguredIntegrationRuntime(
         environment: options.environment,
         adapters: Object.fromEntries(adapters.map((adapter) => [adapter.name, adapter])),
         now,
-        distill: createIntegrationDistill(options.vaultRoot),
+        distill: preparedDistill.value,
         recordUnavailable: (event) => appendUnavailableReview(options.vaultRoot, event),
       };
       started = true;

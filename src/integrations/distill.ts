@@ -23,6 +23,10 @@ export interface IntegrationDistillDependencies {
   runNonce(): string;
 }
 
+export type IntegrationDistill = (
+  input: DistillationInput,
+) => Promise<Result<DistillationRun, Error>>;
+
 const DEFAULT_DEPENDENCIES: IntegrationDistillDependencies = {
   resolve: resolveDistillClient,
   extract: extractClaims,
@@ -64,15 +68,35 @@ function splitNormalizedText(text: string, limit: number): string[] {
   return parts;
 }
 
-export function createIntegrationDistill(
+function normalizedVerbatim(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function exceedsVerbatimFence(
+  source: string,
+  claims: ExtractOutcome["claims"],
+  maxVerbatimChars: number,
+): boolean {
+  const normalizedSource = normalizedVerbatim(source);
+  if (normalizedSource.length === 0) return false;
+  let copiedCharacters = 0;
+  for (const claim of claims) {
+    const statement = normalizedVerbatim(claim.statement);
+    if (statement.length === 0) continue;
+    if (statement === normalizedSource) return true;
+    if (normalizedSource.includes(statement)) copiedCharacters += statement.length;
+    if (copiedCharacters > maxVerbatimChars) return true;
+  }
+  return false;
+}
+
+function preparedIntegrationDistill(
   vaultRoot: string,
-  overrides: Partial<IntegrationDistillDependencies> = {},
-): (input: DistillationInput) => Promise<Result<DistillationRun, Error>> {
-  const deps = { ...DEFAULT_DEPENDENCIES, ...overrides };
+  deps: IntegrationDistillDependencies,
+  resolved: ResolvedDistill,
+): IntegrationDistill {
   return async (input) => {
-    const resolved = deps.resolve(vaultRoot);
-    if (!resolved.ok) return resolved;
-    const config = resolved.value.config;
+    const config = resolved.config;
     const messageTimestamp = deps.now().toISOString().slice(0, 19);
     const renderedPrefixLength = `[${messageTimestamp}] ${input.providerSourceId}: `.length;
     const sourceTextLimit = config.inCallInputCap - renderedPrefixLength;
@@ -89,7 +113,7 @@ export function createIntegrationDistill(
       })),
       1,
     );
-    const budgeted = withCallBudget(resolved.value.client, config.maxLlmCalls);
+    const budgeted = withCallBudget(resolved.client, config.maxLlmCalls);
     let extracted: ExtractOutcome;
     try {
       extracted = await deps.extract(chunks, budgeted, {
@@ -102,6 +126,9 @@ export function createIntegrationDistill(
     }
     if (extracted.budget_exhausted || extracted.chunkErrors.length > 0) {
       return err(new Error("integration claim extraction was incomplete"));
+    }
+    if (exceedsVerbatimFence(input.text, extracted.claims, config.maxVerbatimChars)) {
+      return err(new Error("integration claim extraction exceeded the verbatim safety limit"));
     }
 
     const id = runId(input, deps);
@@ -120,5 +147,25 @@ export function createIntegrationDistill(
       return err(new Error("integration distillation state could not be written"));
     }
     return ok({ runId: id });
+  };
+}
+
+export function prepareIntegrationDistill(
+  vaultRoot: string,
+  overrides: Partial<IntegrationDistillDependencies> = {},
+): Result<IntegrationDistill, Error> {
+  const deps = { ...DEFAULT_DEPENDENCIES, ...overrides };
+  const resolved = deps.resolve(vaultRoot);
+  if (!resolved.ok) return resolved;
+  return ok(preparedIntegrationDistill(vaultRoot, deps, resolved.value));
+}
+
+export function createIntegrationDistill(
+  vaultRoot: string,
+  overrides: Partial<IntegrationDistillDependencies> = {},
+): IntegrationDistill {
+  return async (input) => {
+    const prepared = prepareIntegrationDistill(vaultRoot, overrides);
+    return prepared.ok ? prepared.value(input) : prepared;
   };
 }

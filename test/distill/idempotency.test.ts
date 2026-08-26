@@ -215,6 +215,37 @@ describe("distillUpsert (U5 idempotency)", () => {
     });
   });
 
+  it("retries unchanged source content after an incomplete proposal batch", async () => {
+    let calls = 0;
+    const proposeClaims = async (): Promise<ProposeOutcome> => {
+      calls += 1;
+      return calls === 1
+        ? {
+            proposed: 0,
+            results: [],
+            errors: [{ claim_key: CLAIM_A.claim_key, error: "stage failed" }],
+          }
+        : { proposed: 1, results: [], errors: [] };
+    };
+    const input = {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      proposeClaims,
+    };
+
+    const first = await distillUpsert(vault, { ...input, runId: "run-failed" });
+    expect(first.ok && first.value.propose?.errors).toHaveLength(1);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toBeUndefined();
+
+    const second = await distillUpsert(vault, { ...input, runId: "run-retry" });
+    expect(second.ok && second.value.noop).toBe(false);
+    expect(calls).toBe(2);
+    expect(readDistillState(vault).sources[SOURCE_ID]?.content_hash).toBe(
+      sourceContentHash(CONTENT_V1),
+    );
+  });
+
   // -------------------------------------------------------------------------
   // State file hygiene: absent or corrupt ⇒ empty default
   // -------------------------------------------------------------------------

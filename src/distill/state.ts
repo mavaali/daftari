@@ -195,6 +195,8 @@ export interface DistillUpsertInput {
    * callers remain valid — this field is optional.
    */
   overlapSearch?: OverlapSearchFn;
+  /** Injectable proposal writer used to verify atomic retry behavior. */
+  proposeClaims?: typeof proposeAllClaims;
 }
 
 export interface DistillUpsertOutcome {
@@ -264,13 +266,25 @@ export async function distillUpsert(
     }
   }
 
-  const propose = await proposeAllClaims(
+  const propose = await (input.proposeClaims ?? proposeAllClaims)(
     vaultRoot,
     toPropose,
     { sourceId: input.sourceId, runId: input.runId },
     pathOverrides,
     input.overlapSearch,
   );
+
+  if (propose.errors.length > 0) {
+    return ok({
+      noop: false,
+      skipped,
+      updated,
+      created,
+      propose,
+      stateWritten: false,
+      stateError: "proposal staging was incomplete",
+    });
+  }
 
   // Advance the emit clock; the landed map only moves via recordLandedClaim.
   state.sources[input.sourceId] = {
