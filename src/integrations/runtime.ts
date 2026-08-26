@@ -78,6 +78,19 @@ function integrationEndpoint(baseUrl: string, provider: ProviderName, leaf: stri
   return parsed.toString();
 }
 
+function routePrefix(baseUrl: string): string {
+  const pathname = new URL(baseUrl).pathname.replace(/\/$/, "");
+  return pathname === "/" ? "" : pathname;
+}
+
+function routedIntegrationUrl(url: URL, prefix: string): URL | null {
+  const integrationRoot = `${prefix}/integrations/`;
+  if (!url.pathname.startsWith(integrationRoot)) return null;
+  const routed = new URL(url);
+  routed.pathname = url.pathname.slice(prefix.length);
+  return routed;
+}
+
 function validateBaseUrl(value: string): Result<string, Error> {
   try {
     const parsed = new URL(value);
@@ -148,6 +161,8 @@ export function createConfiguredIntegrationRuntime(
   let currentCycle: Promise<void> | undefined;
   let rerunRequested = false;
   let routeBaseUrl: string | undefined;
+  let integrationRoutePrefix =
+    options.publicBaseUrl === undefined ? "" : routePrefix(options.publicBaseUrl);
   let started = false;
 
   async function cycle(): Promise<void> {
@@ -223,6 +238,7 @@ export function createConfiguredIntegrationRuntime(
       if (!fallback.ok) return fallback;
       const resolvedRouteBaseUrl = options.publicBaseUrl ?? fallback.value;
       routeBaseUrl = resolvedRouteBaseUrl;
+      integrationRoutePrefix = routePrefix(resolvedRouteBaseUrl);
       try {
         adapters = providers.map((provider) =>
           factories[provider](callbackUrl(resolvedRouteBaseUrl, provider)),
@@ -254,8 +270,9 @@ export function createConfiguredIntegrationRuntime(
     },
 
     async handle(request, response, url, authorization) {
+      const routedUrl = routedIntegrationUrl(url, integrationRoutePrefix);
+      if (routedUrl === null) return false;
       if (!started || engineDeps === undefined || routeBaseUrl === undefined) {
-        if (!url.pathname.startsWith("/integrations/")) return false;
         response.writeHead(503, {
           "content-type": "application/json",
           "cache-control": "no-store",
@@ -263,7 +280,7 @@ export function createConfiguredIntegrationRuntime(
         response.end(JSON.stringify({ error: "integration_runtime_unavailable" }));
         return true;
       }
-      return handleIntegrationRoute(request, response, url, {
+      return handleIntegrationRoute(request, response, routedUrl, {
         vaultRoot: options.vaultRoot,
         config: options.config,
         environment: options.environment,

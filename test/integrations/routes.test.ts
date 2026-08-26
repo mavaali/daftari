@@ -58,7 +58,7 @@ describe("integration routes", () => {
 
   async function start(
     providerAdapter: ProviderAdapter,
-    authorize = vi.fn(async () => ({ cookieAuthenticated: false })),
+    authorize = vi.fn(async () => ({ cookieAuthenticated: false, canManageIntegrations: true })),
     csrf = vi.fn(() => null),
     wake = vi.fn(),
   ) {
@@ -116,7 +116,10 @@ describe("integration routes", () => {
       },
       KEY,
     );
-    const authorize = vi.fn(async () => ({ cookieAuthenticated: false }));
+    const authorize = vi.fn(async () => ({
+      cookieAuthenticated: false,
+      canManageIntegrations: true,
+    }));
     const running = await start(adapter(), authorize);
     try {
       const first = await fetch(`${running.base}/integrations/google/webhook`, {
@@ -177,7 +180,7 @@ describe("integration routes", () => {
         engineDeps,
         queue,
         publicBaseUrl: "https://vault.example/daftari",
-        authorize: async () => ({ cookieAuthenticated: false }),
+        authorize: async () => ({ cookieAuthenticated: false, canManageIntegrations: true }),
         checkCsrf: () => null,
       });
     });
@@ -227,7 +230,10 @@ describe("integration routes", () => {
   });
 
   it("requires authentication and cookie CSRF for authorization starts", async () => {
-    const authorize = vi.fn(async () => ({ cookieAuthenticated: true }));
+    const authorize = vi.fn(async () => ({
+      cookieAuthenticated: true,
+      canManageIntegrations: true,
+    }));
     const csrf = vi.fn(() => "missing CSRF token");
     const running = await start(adapter(), authorize, csrf);
     try {
@@ -238,6 +244,33 @@ describe("integration routes", () => {
       expect(csrf).toHaveBeenCalledTimes(1);
     } finally {
       await running.close();
+    }
+  });
+
+  it("rejects guest and read-only principals while allowing an integration operator", async () => {
+    const readOnly = await start(
+      adapter(),
+      vi.fn(async () => ({ cookieAuthenticated: false, canManageIntegrations: false })),
+    );
+    try {
+      const denied = await fetch(`${readOnly.base}/integrations/google/connect`, {
+        method: "POST",
+        redirect: "manual",
+      });
+      expect(denied.status).toBe(403);
+    } finally {
+      await readOnly.close();
+    }
+
+    const operator = await start(adapter());
+    try {
+      const allowed = await fetch(`${operator.base}/integrations/google/connect`, {
+        method: "POST",
+        redirect: "manual",
+      });
+      expect(allowed.status).toBe(302);
+    } finally {
+      await operator.close();
     }
   });
 

@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,6 +100,50 @@ describe("configured integration runtime", () => {
     expect(spy.redirect).toBe("https://vault.example/daftari/integrations/google/callback");
     expect(spy.ensure).toBeGreaterThan(0);
     await created.value.close();
+  });
+
+  it("routes the public base path prefix to provider-neutral integration routes", async () => {
+    const spy = { discover: 0, ensure: 0 };
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      publicBaseUrl: "https://vault.example/daftari",
+      adapterFactories: { google: factory(spy) },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    const server = createServer((request, response) => {
+      void created.value
+        .handle(request, response, new URL(request.url ?? "/", "http://localhost"), {
+          authorize: async () => ({
+            cookieAuthenticated: false,
+            canManageIntegrations: true,
+          }),
+          checkCsrf: () => null,
+        })
+        .then((handled) => {
+          if (!handled) {
+            response.statusCode = 404;
+            response.end();
+          }
+        });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (typeof address !== "object" || address === null) throw new Error("missing address");
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/daftari/integrations/google/connect`,
+        { method: "POST", redirect: "manual" },
+      );
+      expect(response.status).toBe(302);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await created.value.close();
+    }
   });
 
   it("fails before constructing an adapter when a named secret is missing", async () => {

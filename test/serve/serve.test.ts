@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ok } from "../../src/frontmatter/types.js";
 import type { IntegrationRuntime } from "../../src/integrations/runtime.js";
 import {
+  httpCallbackBase,
   matchToken,
   prepareStorageSync,
   runServe,
@@ -21,6 +22,7 @@ import {
   startPeriodicSync,
   validateServeStartup,
 } from "../../src/serve/index.js";
+import { makeSlotGate, tryAcquireSlot } from "../../src/serve/limits.js";
 import type { StorageBackend } from "../../src/storage/backend.js";
 import { vaultReindex } from "../../src/tools/search.js";
 import { type DaftariConfig, loadConfig } from "../../src/utils/config.js";
@@ -68,6 +70,7 @@ roles:
   admin:
     read: ["*"]
     write: ["*"]
+    manage_integrations: true
 ${tokensBlock}`,
   );
   return dir;
@@ -580,7 +583,9 @@ describe("serve integration runtime wiring", () => {
         return ok(undefined);
       },
       handle: async (_request, response, url) => {
-        if (url.pathname !== "/integrations/test") return false;
+        if (!["/integrations/test", "/daftari/integrations/test"].includes(url.pathname)) {
+          return false;
+        }
         response.writeHead(204);
         response.end();
         return true;
@@ -600,6 +605,8 @@ describe("serve integration runtime wiring", () => {
       expect(started).toEqual([`http://127.0.0.1:${handle.port}`]);
       const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`);
       expect(response.status).toBe(204);
+      const prefixed = await fetch(`http://127.0.0.1:${handle.port}/daftari/integrations/test`);
+      expect(prefixed.status).toBe(204);
     } finally {
       const closing = handle.close();
       await new Promise<void>((resolveTick) => setImmediate(resolveTick));
@@ -609,6 +616,81 @@ describe("serve integration runtime wiring", () => {
       rmSync(vault, { recursive: true, force: true });
     }
     expect(closed).toBe(true);
+  });
+
+  it("brackets an IPv6 loopback callback host", () => {
+    expect(httpCallbackBase("::1", 8787)).toBe("http://[::1]:8787");
+    expect(httpCallbackBase("127.0.0.1", 8787)).toBe("http://127.0.0.1:8787");
+  });
+
+  it("enforces connector capability, authentication penalty, and in-flight limits", async () => {
+    const vault = buildVault(true);
+    process.env.DAFTARI_TEST_TOKEN_ANALYST = "analyst-secret";
+    process.env.DAFTARI_TEST_TOKEN_ADMIN = "admin-secret";
+    const cfg = loadedConfig(vault);
+    const startup = validateServeStartup(cfg, "127.0.0.1", process.env);
+    if (!startup.ok) throw new Error(startup.error);
+    const runtime: IntegrationRuntime = {
+      start: async () => ok(undefined),
+      handle: async (request, response, url, authorization) => {
+        if (url.pathname !== "/integrations/test") return false;
+        const access = await authorization.authorize(request, response);
+        if (access === null) return true;
+        response.writeHead(access.canManageIntegrations ? 204 : 403);
+        response.end();
+        return true;
+      },
+      runOnce: async () => undefined,
+      close: async () => undefined,
+    };
+    const handle = await startHttpServer(vault, cfg, startup.tokens, "127.0.0.1", 0, {
+      integrationRuntime: runtime,
+    });
+    try {
+      const reader = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`, {
+        headers: { authorization: "Bearer analyst-secret" },
+      });
+      expect(reader.status).toBe(403);
+      const operator = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`, {
+        headers: { authorization: "Bearer admin-secret" },
+      });
+      expect(operator.status).toBe(204);
+      const badStatuses: number[] = [];
+      for (let attempt = 0; attempt < 11; attempt += 1) {
+        const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`, {
+          headers: { authorization: "Bearer wrong-token" },
+        });
+        badStatuses.push(response.status);
+      }
+      expect(badStatuses.at(-1)).toBe(429);
+    } finally {
+      await handle.close();
+      rmSync(vault, { recursive: true, force: true });
+    }
+
+    const capacityVault = buildVault(true);
+    const capacityCfg = loadedConfig(capacityVault);
+    const capacityStartup = validateServeStartup(capacityCfg, "127.0.0.1", process.env);
+    if (!capacityStartup.ok) throw new Error(capacityStartup.error);
+    const fullGate = makeSlotGate(1);
+    expect(tryAcquireSlot(fullGate)).toBe(true);
+    const capacity = await startHttpServer(
+      capacityVault,
+      capacityCfg,
+      capacityStartup.tokens,
+      "127.0.0.1",
+      0,
+      { integrationRuntime: runtime, slotGate: fullGate },
+    );
+    try {
+      const response = await fetch(`http://127.0.0.1:${capacity.port}/integrations/test`, {
+        headers: { authorization: "Bearer admin-secret" },
+      });
+      expect(response.status).toBe(503);
+    } finally {
+      await capacity.close();
+      rmSync(capacityVault, { recursive: true, force: true });
+    }
   });
 });
 

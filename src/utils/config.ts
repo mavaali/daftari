@@ -55,6 +55,9 @@ export interface RoleConfig {
   // larger tree than the vault ACL covers. YAML key: verify_repo_sources.
   // Optional; absent means false.
   verifyRepoSources?: boolean;
+  // May connect providers and manage webhook verification material. This is
+  // independent of vault content grants. YAML key: manage_integrations.
+  manageIntegrations?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -658,6 +661,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     verifyRepoSources = obj.verify_repo_sources;
   }
 
+  let manageIntegrations = false;
+  if (obj.manage_integrations !== undefined) {
+    if (typeof obj.manage_integrations !== "boolean") {
+      return err(new Error(`role '${name}' manage_integrations must be true or false`));
+    }
+    manageIntegrations = obj.manage_integrations;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -687,6 +698,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ...(erase ? { erase } : {}),
     ...(dispose ? { dispose } : {}),
     ...(verifyRepoSources ? { verifyRepoSources } : {}),
+    ...(manageIntegrations ? { manageIntegrations } : {}),
   });
 }
 

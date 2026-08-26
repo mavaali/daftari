@@ -33,7 +33,12 @@ import { resolve } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canManageIntegrations,
+  GUEST_ROLE,
+  resolveAccess,
+} from "../access/rbac.js";
 import { loadAttestKey } from "../attest/sign.js";
 import type { BoardFilters } from "../board/board.js";
 import { listBoard } from "../board/board.js";
@@ -133,6 +138,12 @@ export interface ResolvedSession {
 }
 
 const LOOPBACK_BINDS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+export function httpCallbackBase(bind: string, port: number): string {
+  const callbackHost = isLoopbackBind(bind) ? bind : "127.0.0.1";
+  const authority = callbackHost.includes(":") ? `[${callbackHost}]` : callbackHost;
+  return `http://${authority}:${port}`;
+}
 
 function remoteOf(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
@@ -777,13 +788,83 @@ export function startHttpServer(
 
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-    if (opts.integrationRuntime !== undefined && url.pathname.startsWith("/integrations/")) {
+    if (opts.integrationRuntime !== undefined) {
       const handled = await opts.integrationRuntime.handle(req, res, url, {
         authorize: async (integrationRequest, integrationResponse) => {
+          const remote = remoteOf(integrationRequest);
+          const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
+          const penalty = penaltyAllows(penaltyBox, remote, Date.now());
+          if (!penalty.allowed) {
+            integrationResponse.setHeader("Retry-After", String(penalty.retryAfterSeconds));
+            audit({
+              outcome: "rate-limited",
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 429, {
+              error: "rate_limited",
+              message: "too many failed authentication attempts",
+            });
+            return null;
+          }
           const access = await authenticate(integrationRequest, integrationResponse, url.pathname);
-          return access === null
-            ? null
-            : { cookieAuthenticated: cookieAuthedReqs.has(integrationRequest) };
+          if (access === null) return null;
+          let bucket = principalBuckets.get(access.user);
+          if (bucket === undefined) {
+            bucket = makeBucket(limits.burst, limits.ratePerMinute, Date.now());
+            principalBuckets.set(access.user, bucket);
+          }
+          const take = tryTake(bucket, Date.now());
+          if (!take.allowed) {
+            integrationResponse.setHeader("Retry-After", String(take.retryAfterSeconds));
+            audit({
+              outcome: "rate-limited",
+              principal: access.user,
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 429, {
+              error: "rate_limited",
+              message: "per-principal rate limit reached",
+            });
+            return null;
+          }
+          if (!tryAcquireSlot(slotGate)) {
+            integrationResponse.setHeader("Retry-After", "1");
+            audit({
+              outcome: "over-capacity",
+              principal: access.user,
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 503, {
+              error: "over_capacity",
+              message: "server is at its request ceiling",
+            });
+            return null;
+          }
+          let released = false;
+          const release = (): void => {
+            if (released) return;
+            released = true;
+            releaseSlot(slotGate);
+          };
+          integrationResponse.once("finish", release);
+          integrationResponse.once("close", release);
+          audit({
+            outcome: "allow",
+            principal: access.user,
+            remote,
+            method: integrationRequest.method ?? "",
+            path,
+          });
+          return {
+            cookieAuthenticated: cookieAuthedReqs.has(integrationRequest),
+            canManageIntegrations: canManageIntegrations(access.role),
+          };
         },
         checkCsrf,
       });
@@ -1189,10 +1270,7 @@ export function startHttpServer(
       if (isLoopbackBind(bind)) loopbackGuard = makeLoopbackGuard(boundPort);
       void (async () => {
         if (opts.integrationRuntime !== undefined) {
-          const callbackHost = isLoopbackBind(bind) ? bind : "127.0.0.1";
-          const started = await opts.integrationRuntime.start(
-            `http://${callbackHost}:${boundPort}`,
-          );
+          const started = await opts.integrationRuntime.start(httpCallbackBase(bind, boundPort));
           if (!started.ok) {
             await new Promise<void>((done) => httpServer.close(() => done()));
             rejectStart(started.error);

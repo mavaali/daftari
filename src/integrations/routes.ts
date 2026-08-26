@@ -15,6 +15,7 @@ const DEFAULT_WEBHOOK_BODY_LIMIT = 256 * 1024;
 
 export interface IntegrationRouteAuthorization {
   cookieAuthenticated: boolean;
+  canManageIntegrations: boolean;
 }
 
 export interface IntegrationRouteDependencies {
@@ -99,6 +100,10 @@ async function requireAuthorization(
 ): Promise<boolean> {
   const authorized = await deps.authorize(request, response);
   if (authorized === null) return false;
+  if (!authorized.canManageIntegrations) {
+    writeJson(response, 403, { error: "forbidden" });
+    return false;
+  }
   if (csrfProtected && authorized.cookieAuthenticated) {
     const csrfError = deps.checkCsrf(request);
     if (csrfError !== null) {

@@ -1054,6 +1054,26 @@ describe("loadConfig — schema extensions", () => {
       expect(malformed.error.message).toContain("verify_repo_sources");
     });
   });
+
+  describe("manage_integrations role flag", () => {
+    it("parses an explicit grant and otherwise defaults to absent", () => {
+      writeConfig(
+        "roles:\n  operator:\n    read: ['*']\n    manage_integrations: true\n  reader:\n    read: ['*']\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.manageIntegrations).toBe(true);
+      expect(result.value.roles.reader?.manageIntegrations).toBeUndefined();
+    });
+
+    it("rejects a non-boolean grant", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    manage_integrations: yes\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toContain("manage_integrations");
+    });
+  });
 });
 
 describe("malformed-comment hint on YAML parse errors (#26)", () => {
