@@ -633,6 +633,17 @@ describe("serve integration runtime wiring", () => {
     const runtime: IntegrationRuntime = {
       start: async () => ok(undefined),
       handle: async (request, response, url, authorization) => {
+        if (url.pathname === "/integrations/test/public") {
+          const release = authorization.admitPublic(request, response);
+          if (release === null) return true;
+          try {
+            response.writeHead(204);
+            response.end();
+            return true;
+          } finally {
+            release();
+          }
+        }
         if (url.pathname !== "/integrations/test") return false;
         const access = await authorization.authorize(request, response);
         if (access === null) return true;
@@ -663,6 +674,12 @@ describe("serve integration runtime wiring", () => {
         badStatuses.push(response.status);
       }
       expect(badStatuses.at(-1)).toBe(429);
+      const publicStatuses: number[] = [];
+      for (let attempt = 0; attempt <= cfg.server.limits.burst; attempt += 1) {
+        const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test/public`);
+        publicStatuses.push(response.status);
+      }
+      expect(publicStatuses.at(-1)).toBe(429);
     } finally {
       await handle.close();
       rmSync(vault, { recursive: true, force: true });
@@ -683,9 +700,7 @@ describe("serve integration runtime wiring", () => {
       { integrationRuntime: runtime, slotGate: fullGate },
     );
     try {
-      const response = await fetch(`http://127.0.0.1:${capacity.port}/integrations/test`, {
-        headers: { authorization: "Bearer admin-secret" },
-      });
+      const response = await fetch(`http://127.0.0.1:${capacity.port}/integrations/test/public`);
       expect(response.status).toBe(503);
     } finally {
       await capacity.close();

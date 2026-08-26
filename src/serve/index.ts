@@ -588,6 +588,7 @@ export function startHttpServer(
   const limits = config.server.limits;
   const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
   const principalBuckets = new Map<string, Bucket>();
+  const publicIntegrationBuckets = new Map<string, Bucket>();
   // Marks requests authenticated via the browser-session COOKIE (bead 7q9).
   // CSRF enforcement (double-submit) applies only to these — bearer-authed
   // requests carry no ambient credential a cross-site page could ride.
@@ -790,6 +791,56 @@ export function startHttpServer(
 
     if (opts.integrationRuntime !== undefined) {
       const handled = await opts.integrationRuntime.handle(req, res, url, {
+        admitPublic: (integrationRequest, integrationResponse) => {
+          const remote = remoteOf(integrationRequest);
+          const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
+          let bucket = publicIntegrationBuckets.get(remote);
+          if (bucket === undefined) {
+            bucket = makeBucket(limits.burst, limits.ratePerMinute, Date.now());
+            publicIntegrationBuckets.set(remote, bucket);
+          }
+          const take = tryTake(bucket, Date.now());
+          if (!take.allowed) {
+            integrationResponse.setHeader("Retry-After", String(take.retryAfterSeconds));
+            audit({
+              outcome: "rate-limited",
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 429, {
+              error: "rate_limited",
+              message: "public integration request rate limit reached",
+            });
+            return null;
+          }
+          if (!tryAcquireSlot(slotGate)) {
+            integrationResponse.setHeader("Retry-After", "1");
+            audit({
+              outcome: "over-capacity",
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 503, {
+              error: "over_capacity",
+              message: "server is at its request ceiling",
+            });
+            return null;
+          }
+          audit({
+            outcome: "allow",
+            remote,
+            method: integrationRequest.method ?? "",
+            path,
+          });
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            releaseSlot(slotGate);
+          };
+        },
         authorize: async (integrationRequest, integrationResponse) => {
           const remote = remoteOf(integrationRequest);
           const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;

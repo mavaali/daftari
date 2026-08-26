@@ -26,6 +26,7 @@ export interface IntegrationRuntimeAuthorization {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<IntegrationRouteAuthorization | null>;
+  admitPublic(request: IncomingMessage, response: ServerResponse): (() => void) | null;
   checkCsrf(request: IncomingMessage): string | null;
 }
 
@@ -289,6 +290,7 @@ export function createConfiguredIntegrationRuntime(
         queue,
         publicBaseUrl: options.publicBaseUrl,
         authorize: authorization.authorize,
+        admitPublic: authorization.admitPublic,
         checkCsrf: authorization.checkCsrf,
         wake: () => {
           queueMicrotask(() => {

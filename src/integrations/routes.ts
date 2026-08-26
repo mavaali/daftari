@@ -30,6 +30,8 @@ export interface IntegrationRouteDependencies {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<IntegrationRouteAuthorization | null>;
+  /** Admits an unauthenticated callback/webhook before body or state work. */
+  admitPublic(request: IncomingMessage, response: ServerResponse): (() => void) | null;
   checkCsrf(request: IncomingMessage): string | null;
   maxWebhookBodyBytes?: number;
   wake?: () => void;
@@ -158,22 +160,28 @@ export async function handleIntegrationRoute(
       writeJson(response, 405, { error: "method_not_allowed" });
       return true;
     }
-    const state = url.searchParams.get("state") ?? "";
-    const code = url.searchParams.get("code") ?? "";
-    const completed = await completeAuthorization(
-      deps.vaultRoot,
-      provider,
-      state,
-      code,
-      deps.engineDeps,
-    );
-    if (!completed.ok) {
-      writeJson(response, 400, { error: "oauth_callback_rejected" });
+    const release = deps.admitPublic(request, response);
+    if (release === null) return true;
+    try {
+      const state = url.searchParams.get("state") ?? "";
+      const code = url.searchParams.get("code") ?? "";
+      const completed = await completeAuthorization(
+        deps.vaultRoot,
+        provider,
+        state,
+        code,
+        deps.engineDeps,
+      );
+      if (!completed.ok) {
+        writeJson(response, 400, { error: "oauth_callback_rejected" });
+        return true;
+      }
+      writeJson(response, 200, { connected: true, provider });
+      deps.wake?.();
       return true;
+    } finally {
+      release();
     }
-    writeJson(response, 200, { connected: true, provider });
-    deps.wake?.();
-    return true;
   }
 
   if (url.pathname === `/integrations/${provider}/webhook/setup`) {
@@ -258,46 +266,52 @@ export async function handleIntegrationRoute(
       writeJson(response, 405, { error: "method_not_allowed" });
       return true;
     }
-    const body = await readBoundedBody(
-      request,
-      deps.maxWebhookBodyBytes ?? DEFAULT_WEBHOOK_BODY_LIMIT,
-    );
-    if (!body.ok) {
-      writeJson(response, 413, { error: "payload_too_large" });
+    const release = deps.admitPublic(request, response);
+    if (release === null) return true;
+    try {
+      const body = await readBoundedBody(
+        request,
+        deps.maxWebhookBodyBytes ?? DEFAULT_WEBHOOK_BODY_LIMIT,
+      );
+      if (!body.ok) {
+        writeJson(response, 413, { error: "payload_too_large" });
+        return true;
+      }
+      const verified = await verifyProviderWebhook(
+        deps.vaultRoot,
+        adapter,
+        {
+          headers: nodeHeaders(request),
+          body: body.value,
+          ...(url.searchParams.get("setup_token") === null
+            ? {}
+            : { setupToken: url.searchParams.get("setup_token") as string }),
+        },
+        deps.engineDeps,
+      );
+      if (!verified.ok) {
+        writeJson(response, 401, { error: "webhook_rejected" });
+        return true;
+      }
+      if (verified.value.kind === "verification") {
+        writeJson(response, 200, { verificationReceived: true });
+        return true;
+      }
+      const queued = deps.queue.enqueue({
+        provider,
+        eventId: verified.value.eventId,
+        hint: verified.value.hint,
+      });
+      if (!queued.ok) {
+        writeJson(response, 503, { error: "queue_unavailable" });
+        return true;
+      }
+      writeJson(response, 202, { accepted: true });
+      deps.wake?.();
       return true;
+    } finally {
+      release();
     }
-    const verified = await verifyProviderWebhook(
-      deps.vaultRoot,
-      adapter,
-      {
-        headers: nodeHeaders(request),
-        body: body.value,
-        ...(url.searchParams.get("setup_token") === null
-          ? {}
-          : { setupToken: url.searchParams.get("setup_token") as string }),
-      },
-      deps.engineDeps,
-    );
-    if (!verified.ok) {
-      writeJson(response, 401, { error: "webhook_rejected" });
-      return true;
-    }
-    if (verified.value.kind === "verification") {
-      writeJson(response, 200, { verificationReceived: true });
-      return true;
-    }
-    const queued = deps.queue.enqueue({
-      provider,
-      eventId: verified.value.eventId,
-      hint: verified.value.hint,
-    });
-    if (!queued.ok) {
-      writeJson(response, 503, { error: "queue_unavailable" });
-      return true;
-    }
-    writeJson(response, 202, { accepted: true });
-    deps.wake?.();
-    return true;
   }
 
   writeJson(response, 404, { error: "not_found" });

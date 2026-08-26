@@ -118,6 +118,7 @@ describe("configured integration runtime", () => {
     const server = createServer((request, response) => {
       void created.value
         .handle(request, response, new URL(request.url ?? "/", "http://localhost"), {
+          admitPublic: () => () => undefined,
           authorize: async () => ({
             cookieAuthenticated: false,
             canManageIntegrations: true,

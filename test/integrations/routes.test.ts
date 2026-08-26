@@ -61,6 +61,7 @@ describe("integration routes", () => {
     authorize = vi.fn(async () => ({ cookieAuthenticated: false, canManageIntegrations: true })),
     csrf = vi.fn(() => null),
     wake = vi.fn(),
+    admitPublic = vi.fn(() => () => undefined),
   ) {
     const queue = createIntegrationQueue(vault, () => new Date("2026-08-24T12:00:00.000Z"));
     const engineDeps: EngineDeps = {
@@ -80,6 +81,7 @@ describe("integration routes", () => {
         queue,
         publicBaseUrl: "https://vault.example/daftari",
         authorize,
+        admitPublic,
         checkCsrf: csrf,
         wake,
       }).then((handled) => {
@@ -142,6 +144,52 @@ describe("integration routes", () => {
     }
   });
 
+  it("rejects a public webhook before reading or verifying its body when admission is full", async () => {
+    const verifyWebhook = vi.fn(async () =>
+      ok({ kind: "event" as const, eventId: "evt-full", hint: { kind: "reconcile" as const } }),
+    );
+    const admitPublic = vi.fn((_request, response) => {
+      response.writeHead(503);
+      response.end();
+      return null;
+    });
+    const running = await start(
+      adapter({ verifyWebhook }),
+      undefined,
+      undefined,
+      undefined,
+      admitPublic,
+    );
+    try {
+      const response = await fetch(`${running.base}/integrations/google/webhook`, {
+        method: "POST",
+        body: "must-not-be-buffered",
+      });
+      expect(response.status).toBe(503);
+      expect(admitPublic).toHaveBeenCalledTimes(1);
+      expect(verifyWebhook).not.toHaveBeenCalled();
+      expect(running.queue.pending()).toEqual(ok([]));
+    } finally {
+      await running.close();
+    }
+  });
+
+  it("admits OAuth callbacks through the public gate and releases it afterward", async () => {
+    const release = vi.fn();
+    const admitPublic = vi.fn(() => release);
+    const running = await start(adapter(), undefined, undefined, undefined, admitPublic);
+    try {
+      const response = await fetch(
+        `${running.base}/integrations/google/callback?state=invalid&code=invalid`,
+      );
+      expect(response.status).toBe(400);
+      expect(admitPublic).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      await running.close();
+    }
+  });
+
   it("captures initial provider verification without enqueueing an event", async () => {
     const channel = {
       id: "notion-verification",
@@ -181,6 +229,7 @@ describe("integration routes", () => {
         queue,
         publicBaseUrl: "https://vault.example/daftari",
         authorize: async () => ({ cookieAuthenticated: false, canManageIntegrations: true }),
+        admitPublic: () => () => undefined,
         checkCsrf: () => null,
       });
     });
