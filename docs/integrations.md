@@ -191,11 +191,19 @@ one reconciliation pass. A fatal provider batch is retried five times before
 its event IDs are tombstoned; the periodic reconciler continues trying the
 provider afterward, so one poison event cannot starve other provider work.
 
+Each provider response is limited to 8 MiB and 30 seconds. A reconciliation
+accepts at most 10,000 sources, 8 MiB of normalized text per source, and 64 MiB
+of normalized text in total. Notion traversal is additionally capped at 10,000
+blocks per page and 32 nested block levels. Crossing a bound fails the affected
+source or batch without advancing its successful-content marker.
+
 Only a changed normalized-content hash invokes the LLM. Successful extraction
 creates staged proposals with a stable source ID such as `google:<file-id>` or
 `notion:<page-id>`. Extraction, budget, or proposal errors leave the previous
 hash unadvanced so the source is retried. Existing knowledge is never modified
-or removed by the integration.
+or removed by the integration. A provider change cursor advances only after
+every source discovered on that change page succeeds; partial failures replay
+from the prior cursor.
 
 If a source is deleted or becomes inaccessible, Daftari marks its metadata
 unavailable and appends an operator event to

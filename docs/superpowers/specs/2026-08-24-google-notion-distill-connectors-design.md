@@ -183,7 +183,8 @@ review queue. A later rediscovery restores availability without erasing history.
   provider batches retry five times before tombstoning; periodic reconciliation
   continues afterward, and a poison event cannot starve another provider.
 - One source fetch or distillation failure does not stop other changed sources.
-  Its hash is not advanced, so the source is retried.
+  Its hash is not advanced, and the provider change cursor remains on the prior
+  page, so the source is retried without losing successful siblings.
 - A provider authorization failure leaves all existing source records and
   Daftari documents intact and surfaces a safe reconcile failure.
 
