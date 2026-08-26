@@ -4,6 +4,7 @@
 // is driven by the SDK's own client transport — no spawn, no network flake
 // surface (spec 2026-07-20, test posture).
 
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -738,7 +739,7 @@ describe("runServe --help", () => {
     }
   });
 
-  it("upgrades an existing vault ignore block before integration startup", async () => {
+  it("does not mutate an existing ignore block when integration preflight fails", async () => {
     const vault = mkdtempSync(join(tmpdir(), "daftari-serve-ignore-upgrade-"));
     mkdirSync(join(vault, ".daftari"), { recursive: true });
     writeFileSync(join(vault, ".gitignore"), ".daftari/index.db\n.daftari/distill-state.json\n");
@@ -751,10 +752,66 @@ describe("runServe --help", () => {
     try {
       expect(await runServe(["--vault", vault, "--port", "0"])).toBe(2);
       const ignore = readFileSync(join(vault, ".gitignore"), "utf8");
-      expect(ignore).toContain(".daftari/integrations.state.enc.*.tmp");
-      expect(ignore).toContain(".daftari/integration-queue.json.tmp-*");
-      expect(ignore).toContain(".daftari/integration-review.jsonl");
+      expect(ignore).toBe(".daftari/index.db\n.daftari/distill-state.json\n");
     } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mutate integration ignore state when another process owns the vault", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-serve-ignore-locked-"));
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    const originalIgnore = ".daftari/index.db\n.daftari/distill-state.json\n";
+    writeFileSync(join(vault, ".gitignore"), originalIgnore);
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\ndistill:\n  model: test-model\nintegrations:\n" +
+        "  encryption_key_env: TEST_INTEGRATION_KEY\n  google:\n" +
+        "    client_id_env: TEST_GOOGLE_ID\n    client_secret_env: TEST_GOOGLE_SECRET\n",
+    );
+    let holder: ChildProcess | undefined;
+    const previous = {
+      key: process.env.TEST_INTEGRATION_KEY,
+      clientId: process.env.TEST_GOOGLE_ID,
+      clientSecret: process.env.TEST_GOOGLE_SECRET,
+      anthropic: process.env.ANTHROPIC_API_KEY,
+    };
+    try {
+      process.env.TEST_INTEGRATION_KEY = Buffer.alloc(32, 9).toString("base64");
+      process.env.TEST_GOOGLE_ID = "client-id";
+      process.env.TEST_GOOGLE_SECRET = "client-secret";
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", vault], {
+        stdio: "ignore",
+      });
+      if (holder.pid === undefined) throw new Error("holder spawn failed");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      writeFileSync(
+        join(vault, ".daftari", "process.lock"),
+        JSON.stringify({
+          daftari: true,
+          pid: holder.pid,
+          vaultRoot: vault,
+          startedAt: "2026-08-26T00:00:00.000Z",
+          version: "test",
+          mode: "serve",
+          bind: "127.0.0.1:8787",
+        }),
+      );
+
+      expect(await runServe(["--vault", vault, "--port", "0"])).toBe(2);
+      expect(readFileSync(join(vault, ".gitignore"), "utf8")).toBe(originalIgnore);
+    } finally {
+      holder?.kill("SIGKILL");
+      for (const [name, value] of [
+        ["TEST_INTEGRATION_KEY", previous.key],
+        ["TEST_GOOGLE_ID", previous.clientId],
+        ["TEST_GOOGLE_SECRET", previous.clientSecret],
+        ["ANTHROPIC_API_KEY", previous.anthropic],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
       rmSync(vault, { recursive: true, force: true });
     }
   });

@@ -49,7 +49,7 @@ import {
   createConfiguredIntegrationRuntime,
   type IntegrationRuntime,
 } from "../integrations/runtime.js";
-import { acquireLock } from "../lifecycle/lock.js";
+import { acquireLock, releaseLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
 import { setGraphExpandConfig } from "../search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "../search/hybrid.js";
@@ -1464,13 +1464,6 @@ export async function runServe(argv: string[]): Promise<number> {
 
   let integrationRuntime: IntegrationRuntime | undefined;
   if (config.value.integrations !== undefined) {
-    try {
-      await ensureVaultGitignore(vaultRoot);
-    } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause);
-      process.stderr.write(`daftari serve: cannot secure local integration state: ${reason}\n`);
-      return 3;
-    }
     const created = createConfiguredIntegrationRuntime({
       vaultRoot,
       config: config.value.integrations,
@@ -1513,6 +1506,20 @@ export async function runServe(argv: string[]): Promise<number> {
   installShutdownHandlers(vaultRoot, async () => {
     if (handle) await handle.close();
   });
+
+  // Existing vaults may predate the integration-state ignore block. Upgrade
+  // it only after this process owns the vault: a refused second process must
+  // remain read-only.
+  if (config.value.integrations !== undefined) {
+    try {
+      await ensureVaultGitignore(vaultRoot);
+    } catch (cause) {
+      releaseLock(vaultRoot);
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      process.stderr.write(`daftari serve: cannot secure local integration state: ${reason}\n`);
+      return 3;
+    }
+  }
 
   try {
     setProvider(config.value.embeddingProvider);
