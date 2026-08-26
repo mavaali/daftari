@@ -243,13 +243,14 @@ describe("loadConfig — schema extensions", () => {
 
     it("parses the server block and rejects malformed shapes loud (#5)", () => {
       writeConfig(
-        "version: 1\nserver:\n  transport_security: external\n  auth:\n" +
+        "version: 1\nserver:\n  transport_security: external\n  trust_proxy: true\n  auth:\n" +
           "    tokens:\n      - env: T_A\n        user: human:a\n        role: analyst\n",
       );
       const good = loadConfig(dir);
       expect(good.ok).toBe(true);
       if (!good.ok) return;
       expect(good.value.server.transportSecurity).toBe("external");
+      expect(good.value.server.trustProxy).toBe(true);
       expect(good.value.server.tokens).toEqual([{ env: "T_A", user: "human:a", role: "analyst" }]);
     });
 
@@ -266,6 +267,12 @@ describe("loadConfig — schema extensions", () => {
         maxInFlight: 32,
       });
       expect(good.value.server.audit).toBe(true);
+      expect(good.value.server.trustProxy).toBe(false);
+    });
+
+    it("rejects a non-boolean server.trust_proxy", () => {
+      writeConfig("version: 1\nserver:\n  trust_proxy: proxy.example\n");
+      expect(loadConfig(dir).ok).toBe(false);
     });
 
     it("parses server.limits overrides and server.audit", () => {

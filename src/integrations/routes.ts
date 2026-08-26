@@ -12,6 +12,7 @@ import type { IntegrationQueue } from "./queue.js";
 import type { IntegrationConfig, ProviderName } from "./types.js";
 
 const DEFAULT_WEBHOOK_BODY_LIMIT = 256 * 1024;
+const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
 
 export interface IntegrationRouteAuthorization {
   cookieAuthenticated: boolean;
@@ -34,6 +35,7 @@ export interface IntegrationRouteDependencies {
   admitPublic(request: IncomingMessage, response: ServerResponse): (() => void) | null;
   checkCsrf(request: IncomingMessage): string | null;
   maxWebhookBodyBytes?: number;
+  webhookBodyTimeoutMs?: number;
   wake?: () => void;
 }
 
@@ -59,6 +61,7 @@ function nodeHeaders(request: IncomingMessage): WebhookRequest["headers"] {
 function readBoundedBody(
   request: IncomingMessage,
   limit: number,
+  timeoutMs: number,
 ): Promise<Result<Uint8Array, Error>> {
   return new Promise((resolve) => {
     const contentLength = Number(request.headers["content-length"] ?? "0");
@@ -70,12 +73,22 @@ function readBoundedBody(
     const chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
+    const finish = (result: Result<Uint8Array, Error>): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      request.resume();
+      finish(err(new Error("request body timed out")));
+    }, timeoutMs);
+    timer.unref();
     request.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > limit) {
         if (settled) return;
-        settled = true;
-        resolve(err(new Error("request body is too large")));
+        finish(err(new Error("request body is too large")));
         request.resume();
         return;
       }
@@ -83,13 +96,11 @@ function readBoundedBody(
     });
     request.on("end", () => {
       if (settled) return;
-      settled = true;
-      resolve(ok(Buffer.concat(chunks)));
+      finish(ok(Buffer.concat(chunks)));
     });
     request.on("error", () => {
       if (settled) return;
-      settled = true;
-      resolve(err(new Error("request body could not be read")));
+      finish(err(new Error("request body could not be read")));
     });
   });
 }
@@ -272,9 +283,13 @@ export async function handleIntegrationRoute(
       const body = await readBoundedBody(
         request,
         deps.maxWebhookBodyBytes ?? DEFAULT_WEBHOOK_BODY_LIMIT,
+        deps.webhookBodyTimeoutMs ?? DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
       );
       if (!body.ok) {
-        writeJson(response, 413, { error: "payload_too_large" });
+        const timedOut = body.error.message === "request body timed out";
+        writeJson(response, timedOut ? 408 : 413, {
+          error: timedOut ? "request_timeout" : "payload_too_large",
+        });
         return true;
       }
       const verified = await verifyProviderWebhook(

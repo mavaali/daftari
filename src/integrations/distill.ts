@@ -72,16 +72,30 @@ function normalizedVerbatim(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function containsVerbatimSpan(source: string, candidate: string, spanLength: number): boolean {
-  if (spanLength < 1 || source.length < spanLength || candidate.length < spanLength) return false;
-  const sourceSpans = new Set<string>();
+function sourceSpanIndex(source: string, spanLength: number): Set<string> {
+  const spans = new Set<string>();
   for (let offset = 0; offset <= source.length - spanLength; offset += 1) {
-    sourceSpans.add(source.slice(offset, offset + spanLength));
+    spans.add(source.slice(offset, offset + spanLength));
   }
+  return spans;
+}
+
+function copiedSpanCharacters(
+  source: string,
+  candidate: string,
+  spanLength: number,
+  sourceSpans: Set<string>,
+): number {
+  if (source.includes(candidate)) return candidate.length;
+  if (candidate.length < spanLength || source.length < spanLength) return 0;
+  const copied = new Uint8Array(candidate.length);
   for (let offset = 0; offset <= candidate.length - spanLength; offset += 1) {
-    if (sourceSpans.has(candidate.slice(offset, offset + spanLength))) return true;
+    if (!sourceSpans.has(candidate.slice(offset, offset + spanLength))) continue;
+    copied.fill(1, offset, offset + spanLength);
   }
-  return false;
+  let total = 0;
+  for (const character of copied) total += character;
+  return total;
 }
 
 function exceedsVerbatimFence(
@@ -91,14 +105,18 @@ function exceedsVerbatimFence(
 ): boolean {
   const normalizedSource = normalizedVerbatim(source);
   if (normalizedSource.length === 0) return false;
+  // Four-character overlapping windows count exact copied coverage without
+  // requiring the model's whole statement to be a source substring. For very
+  // small configured allowances, shrink the window so the fence remains exact.
+  const spanLength = Math.max(1, Math.min(4, maxVerbatimChars + 1));
+  const sourceSpans = sourceSpanIndex(normalizedSource, spanLength);
   let copiedCharacters = 0;
   for (const claim of claims) {
     const statement = normalizedVerbatim(claim.statement);
     if (statement.length === 0) continue;
     if (statement === normalizedSource) return true;
     if (statement.includes(normalizedSource)) return true;
-    if (containsVerbatimSpan(normalizedSource, statement, maxVerbatimChars + 1)) return true;
-    if (normalizedSource.includes(statement)) copiedCharacters += statement.length;
+    copiedCharacters += copiedSpanCharacters(normalizedSource, statement, spanLength, sourceSpans);
     if (copiedCharacters > maxVerbatimChars) return true;
   }
   return false;

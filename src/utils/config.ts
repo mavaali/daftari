@@ -168,6 +168,8 @@ export interface ServerConfig {
   // upstream (or the network is trusted). Required for non-loopback binds —
   // the shadow_mode precedent applied to transport.
   transportSecurity?: "external";
+  /** Trust the first X-Forwarded-For hop for public-route rate limiting. */
+  trustProxy?: boolean;
   tokens: ServerTokenConfig[];
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
@@ -1221,6 +1223,7 @@ function validateFederation(raw: unknown): Result<FederationConfig | undefined, 
 
 const RECOGNISED_SERVER_KEYS = [
   "transport_security",
+  "trust_proxy",
   "public_base_url",
   "auth",
   "limits",
@@ -1355,14 +1358,30 @@ function validateSession(raw: unknown): Result<SessionConfig, Error> {
 // are validated there, not here.
 function validateServer(raw: unknown): Result<ServerConfig, Error> {
   if (raw === undefined) {
-    return ok({ tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true });
+    return ok({
+      tokens: [],
+      limits: { ...DEFAULT_SERVE_LIMITS },
+      audit: true,
+      trustProxy: false,
+    });
   }
   const mapping = requireMapping(raw, "'server'");
   if (!mapping.ok) return mapping;
   const obj = mapping.value;
   const known = rejectUnknownKeys(obj, RECOGNISED_SERVER_KEYS, "server");
   if (!known.ok) return known;
-  const out: ServerConfig = { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true };
+  const out: ServerConfig = {
+    tokens: [],
+    limits: { ...DEFAULT_SERVE_LIMITS },
+    audit: true,
+    trustProxy: false,
+  };
+  if (obj.trust_proxy !== undefined) {
+    if (typeof obj.trust_proxy !== "boolean") {
+      return err(new Error("'server.trust_proxy' must be true or false"));
+    }
+    out.trustProxy = obj.trust_proxy;
+  }
   if (obj.public_base_url !== undefined) {
     if (typeof obj.public_base_url !== "string" || obj.public_base_url.trim().length === 0) {
       return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));

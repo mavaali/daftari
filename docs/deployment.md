@@ -327,6 +327,9 @@ See [Google Docs and Notion integrations](integrations.md) for configuration,
 callback registration, connection, Notion verification, retention, and failure
 behavior.
 
+For a reverse-proxied public callback, set `server.trust_proxy: true` only when
+the proxy overwrites `X-Forwarded-For`; otherwise leave it false.
+
 ## Deployment checklist
 
 - Use an absolute vault path.

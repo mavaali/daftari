@@ -272,6 +272,48 @@ describe("integration distillation", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
+  it("rejects cumulatively over-limit copied fragments wrapped across claims", async () => {
+    const source = "ABCDEFGHIJ KLMNOPQRST";
+    const upsert = vi.fn();
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 1,
+            maxClaims: 3,
+            maxVerbatimChars: 10,
+            inCallInputCap: 128,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract: async () => ({
+        claims: [
+          {
+            claim_key: "claim-1",
+            statement: "ABCDEFGHIJX",
+            proposed_frontmatter: { title: "First wrapped fragment" },
+          },
+          {
+            claim_key: "claim-2",
+            statement: "KLMNOPQRSTY",
+            proposed_frontmatter: { title: "Second wrapped fragment" },
+          },
+        ],
+        budget_exhausted: false,
+        llmCalls: 1,
+        chunkErrors: [],
+      }),
+      upsert,
+    });
+
+    const result = await distill({ providerSourceId: "google:doc-1", revision: "1", text: source });
+    expect(result.ok).toBe(false);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("prepares and resolves the distill dependency before it can be invoked", async () => {
     const resolve = vi.fn(() =>
       ok({

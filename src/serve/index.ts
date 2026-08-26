@@ -29,6 +29,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
@@ -60,17 +61,20 @@ import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
 import { vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
+import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 import { renderBoardPage } from "../view/board-page.js";
 import { type AuthEvent, appendAuthEvent, tokenHint } from "./auth-log.js";
 import {
   type Bucket,
   chargePenalty,
   makeBucket,
+  makeBucketRegistry,
   makePenaltyBox,
   makeSlotGate,
   penaltyAllows,
   releaseSlot,
   type SlotGate,
+  takeFromRegistry,
   tryAcquireSlot,
   tryTake,
 } from "./limits.js";
@@ -147,6 +151,21 @@ export function httpCallbackBase(bind: string, port: number): string {
 
 function remoteOf(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
+}
+
+export function resolvePublicRemote(
+  socketRemote: string | undefined,
+  forwardedFor: string | string[] | undefined,
+  trustProxy: boolean,
+): string {
+  const fallback = socketRemote ?? "unknown";
+  if (!trustProxy || typeof forwardedFor !== "string") return fallback;
+  const firstHop =
+    forwardedFor
+      .split(",", 1)[0]
+      ?.trim()
+      .replace(/^\[|\]$/g, "") ?? "";
+  return isIP(firstHop) === 0 ? fallback : firstHop;
 }
 
 export function isLoopbackBind(bind: string): boolean {
@@ -588,7 +607,10 @@ export function startHttpServer(
   const limits = config.server.limits;
   const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
   const principalBuckets = new Map<string, Bucket>();
-  const publicIntegrationBuckets = new Map<string, Bucket>();
+  const publicIntegrationBuckets = makeBucketRegistry(limits.burst, limits.ratePerMinute);
+  // Public delivery never competes with MCP work or another provider route
+  // for the same slots. This reserves bounded callback/webhook capacity.
+  const publicIntegrationSlotGates = new Map<string, SlotGate>();
   // Marks requests authenticated via the browser-session COOKIE (bead 7q9).
   // CSRF enforcement (double-submit) applies only to these — bearer-authed
   // requests carry no ambient credential a cross-site page could ride.
@@ -792,14 +814,13 @@ export function startHttpServer(
     if (opts.integrationRuntime !== undefined) {
       const handled = await opts.integrationRuntime.handle(req, res, url, {
         admitPublic: (integrationRequest, integrationResponse) => {
-          const remote = remoteOf(integrationRequest);
+          const remote = resolvePublicRemote(
+            integrationRequest.socket.remoteAddress,
+            integrationRequest.headers["x-forwarded-for"],
+            config.server.trustProxy === true,
+          );
           const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
-          let bucket = publicIntegrationBuckets.get(remote);
-          if (bucket === undefined) {
-            bucket = makeBucket(limits.burst, limits.ratePerMinute, Date.now());
-            publicIntegrationBuckets.set(remote, bucket);
-          }
-          const take = tryTake(bucket, Date.now());
+          const take = takeFromRegistry(publicIntegrationBuckets, `${path}\0${remote}`, Date.now());
           if (!take.allowed) {
             integrationResponse.setHeader("Retry-After", String(take.retryAfterSeconds));
             audit({
@@ -814,7 +835,12 @@ export function startHttpServer(
             });
             return null;
           }
-          if (!tryAcquireSlot(slotGate)) {
+          let publicGate = publicIntegrationSlotGates.get(path);
+          if (publicGate === undefined) {
+            publicGate = makeSlotGate(Math.max(2, Math.ceil(limits.maxInFlight / 4)));
+            publicIntegrationSlotGates.set(path, publicGate);
+          }
+          if (!tryAcquireSlot(publicGate)) {
             integrationResponse.setHeader("Retry-After", "1");
             audit({
               outcome: "over-capacity",
@@ -838,7 +864,7 @@ export function startHttpServer(
           return () => {
             if (released) return;
             released = true;
-            releaseSlot(slotGate);
+            releaseSlot(publicGate);
           };
         },
         authorize: async (integrationRequest, integrationResponse) => {
@@ -1436,6 +1462,13 @@ export async function runServe(argv: string[]): Promise<number> {
 
   let integrationRuntime: IntegrationRuntime | undefined;
   if (config.value.integrations !== undefined) {
+    try {
+      await ensureVaultGitignore(vaultRoot);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      process.stderr.write(`daftari serve: cannot secure local integration state: ${reason}\n`);
+      return 3;
+    }
     const created = createConfiguredIntegrationRuntime({
       vaultRoot,
       config: config.value.integrations,

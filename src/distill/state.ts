@@ -53,6 +53,8 @@ export interface DistillSourceState {
   pending_content_hash?: string;
   /** Claims durably staged during the incomplete emit for pending_content_hash. */
   emitted_claim_keys?: string[];
+  /** Exact failed remainder from an incomplete emit; authoritative on retry. */
+  pending_claims?: ExtractedClaim[];
 }
 
 export interface DistillState {
@@ -252,7 +254,13 @@ export async function distillUpsert(
     });
   }
 
-  const actions = joinClaims(prior, input.claims);
+  const resumingPendingEmit =
+    prior?.pending_content_hash === contentHash && (prior.pending_claims?.length ?? 0) > 0;
+  // LLM extraction is nondeterministic. Once any claim in a batch fails, the
+  // exact failed remainder becomes the retry manifest: accepting a fresh
+  // paraphrase could duplicate a successful claim or omit a failed one.
+  const claims = resumingPendingEmit ? (prior?.pending_claims ?? []) : input.claims;
+  const actions = joinClaims(prior, claims);
   const alreadyEmitted = new Set(
     prior?.pending_content_hash === contentHash ? (prior.emitted_claim_keys ?? []) : [],
   );
@@ -277,7 +285,7 @@ export async function distillUpsert(
     }
   }
 
-  const propose = await (input.proposeClaims ?? proposeAllClaims)(
+  const attempted = await (input.proposeClaims ?? proposeAllClaims)(
     vaultRoot,
     toPropose,
     { sourceId: input.sourceId, runId: input.runId },
@@ -285,14 +293,28 @@ export async function distillUpsert(
     input.overlapSearch,
   );
 
+  const reportedClaimKeys = new Set([
+    ...attempted.results.map((result) => result.claim_key),
+    ...attempted.errors.map((failure) => failure.claim_key),
+  ]);
+  const unaccounted = toPropose
+    .filter((claim) => !reportedClaimKeys.has(claim.claim_key))
+    .map((claim) => ({ claim_key: claim.claim_key, error: "proposal result was missing" }));
+  const propose: ProposeOutcome = {
+    ...attempted,
+    errors: [...attempted.errors, ...unaccounted],
+  };
+
   if (propose.errors.length > 0) {
     const emittedClaimKeys = new Set(alreadyEmitted);
     for (const result of propose.results) emittedClaimKeys.add(result.claim_key);
+    const failedClaimKeys = new Set(propose.errors.map((failure) => failure.claim_key));
     state.sources[input.sourceId] = {
       content_hash: prior?.content_hash ?? "",
       claims: prior?.claims ?? {},
       pending_content_hash: contentHash,
       emitted_claim_keys: [...emittedClaimKeys].sort(),
+      pending_claims: toPropose.filter((claim) => failedClaimKeys.has(claim.claim_key)),
     };
     const wrote = writeDistillState(vaultRoot, state);
     return ok({

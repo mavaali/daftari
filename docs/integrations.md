@@ -45,6 +45,7 @@ roles:
 
 server:
   transport_security: external
+  trust_proxy: true
   public_base_url: https://vault.example.com/daftari
   auth:
     tokens:
@@ -68,6 +69,12 @@ but when present it must be an absolute HTTPS URL without credentials, a query,
 or a fragment. Its path prefix is preserved in every callback URL and mounted
 by Daftari's integration router. `manage_integrations` is deny-by-default and
 independent of read, write, promotion, and ratification grants.
+
+Set `server.trust_proxy: true` only when Daftari is directly behind a reverse
+proxy that removes any client-supplied `X-Forwarded-For` value and writes the
+real client address. This keeps public callback/webhook rate limits per client
+instead of collapsing every provider and attacker onto the proxy socket. Leave
+it false for direct or localhost serving.
 
 Export the named secrets before starting the server:
 
@@ -204,6 +211,7 @@ The following files are local operator state and are ignored by Git:
 | `.daftari/integrations.state.enc` | AES-256-GCM encrypted tokens, OAuth transactions, cursors, webhook secrets, source IDs/revisions/hashes, and run references |
 | `.daftari/integration-queue.json` | Metadata-only durable webhook work and processed-event replay tombstones retained for up to 30 days and capped at 20,000 IDs |
 | `.daftari/integration-review.jsonl` | Append-only unavailable-source review events |
+| `.daftari/distill-state.json` | Distill hashes, landed claim keys, and an exact distilled-claim remainder while a partial proposal batch is retrying |
 
 Fetched document text and provider response bodies are held in memory only for
 normalization and distillation, then discarded. The staged Markdown proposals

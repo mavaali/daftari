@@ -251,9 +251,17 @@ describe("distillUpsert (U5 idempotency)", () => {
       content_hash: "",
       pending_content_hash: sourceContentHash(CONTENT_V1),
       emitted_claim_keys: [CLAIM_A.claim_key],
+      pending_claims: [CLAIM_B],
     });
 
-    const second = await distillUpsert(vault, { ...input, runId: "run-retry" });
+    // Retry extraction is deliberately nondeterministic: it paraphrases the
+    // already-staged A and omits failed B. The durable failed remainder must
+    // be authoritative so A is not duplicated and B is not lost.
+    const second = await distillUpsert(vault, {
+      ...input,
+      claims: [CLAIM_A_EDITED],
+      runId: "run-retry",
+    });
     expect(second.ok && second.value.noop).toBe(false);
     expect(batches).toEqual([[CLAIM_A.claim_key, CLAIM_B.claim_key], [CLAIM_B.claim_key]]);
     expect(readDistillState(vault).sources[SOURCE_ID]).toEqual({

@@ -4,7 +4,7 @@
 // is driven by the SDK's own client transport — no spawn, no network flake
 // surface (spec 2026-07-20, test posture).
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
   httpCallbackBase,
   matchToken,
   prepareStorageSync,
+  resolvePublicRemote,
   runServe,
   type ServeHandle,
   startHttpServer,
@@ -623,6 +624,12 @@ describe("serve integration runtime wiring", () => {
     expect(httpCallbackBase("127.0.0.1", 8787)).toBe("http://127.0.0.1:8787");
   });
 
+  it("trusts a validated forwarded client IP only when proxy trust is explicit", () => {
+    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9, 10.0.0.4", true)).toBe("203.0.113.9");
+    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9", false)).toBe("10.0.0.5");
+    expect(resolvePublicRemote("10.0.0.5", "attacker.example", true)).toBe("10.0.0.5");
+  });
+
   it("enforces connector capability, authentication penalty, and in-flight limits", async () => {
     const vault = buildVault(true);
     process.env.DAFTARI_TEST_TOKEN_ANALYST = "analyst-secret";
@@ -633,7 +640,7 @@ describe("serve integration runtime wiring", () => {
     const runtime: IntegrationRuntime = {
       start: async () => ok(undefined),
       handle: async (request, response, url, authorization) => {
-        if (url.pathname === "/integrations/test/public") {
+        if (url.pathname.startsWith("/integrations/test/public")) {
           const release = authorization.admitPublic(request, response);
           if (release === null) return true;
           try {
@@ -680,6 +687,10 @@ describe("serve integration runtime wiring", () => {
         publicStatuses.push(response.status);
       }
       expect(publicStatuses.at(-1)).toBe(429);
+      const isolated = await fetch(
+        `http://127.0.0.1:${handle.port}/integrations/test/public-other-provider`,
+      );
+      expect(isolated.status).toBe(204);
     } finally {
       await handle.close();
       rmSync(vault, { recursive: true, force: true });
@@ -701,7 +712,9 @@ describe("serve integration runtime wiring", () => {
     );
     try {
       const response = await fetch(`http://127.0.0.1:${capacity.port}/integrations/test/public`);
-      expect(response.status).toBe(503);
+      // Public provider delivery has reserved capacity independent from the
+      // MCP request gate, so saturated agent work cannot suppress webhooks.
+      expect(response.status).toBe(204);
     } finally {
       await capacity.close();
       rmSync(capacityVault, { recursive: true, force: true });
@@ -722,6 +735,27 @@ describe("runServe --help", () => {
       expect(chunks.join("")).toContain("--legacy-http");
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("upgrades an existing vault ignore block before integration startup", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-serve-ignore-upgrade-"));
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(join(vault, ".gitignore"), ".daftari/index.db\n.daftari/distill-state.json\n");
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\ndistill:\n  model: test-model\nintegrations:\n" +
+        "  encryption_key_env: MISSING_INTEGRATION_KEY\n  google:\n" +
+        "    client_id_env: MISSING_GOOGLE_ID\n    client_secret_env: MISSING_GOOGLE_SECRET\n",
+    );
+    try {
+      expect(await runServe(["--vault", vault, "--port", "0"])).toBe(2);
+      const ignore = readFileSync(join(vault, ".gitignore"), "utf8");
+      expect(ignore).toContain(".daftari/integrations.state.enc.*.tmp");
+      expect(ignore).toContain(".daftari/integration-queue.json.tmp-*");
+      expect(ignore).toContain(".daftari/integration-review.jsonl");
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
     }
   });
 });

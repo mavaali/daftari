@@ -331,7 +331,7 @@ git commit -m "feat: wire continuous integration sync into serve"
 `daftari serve` exposes integration callbacks only when integrations are configured. A public HTTPS callback enables webhooks; localhost deployments retain full functionality through polling. Fetched source text is discarded after the distill attempt.
 ```
 
-- [ ] **Step 2: Run the complete quality gate**
+- [x] **Step 2: Run the complete quality gate**
 
 Run: `npm run build && npm run lint && npm test`
 
