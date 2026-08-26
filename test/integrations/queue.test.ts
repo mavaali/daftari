@@ -66,6 +66,61 @@ describe("durable integration queue", () => {
     expect(await blocked).toEqual(ok({ processed: 1, skipped: false }));
   });
 
+  it("preserves a durably enqueued event that arrives while another item is draining", async () => {
+    const queue = createIntegrationQueue(vault);
+    expect(
+      queue.enqueue({ provider: "google", eventId: "evt-a", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+    let release: (() => void) | undefined;
+    const draining = queue.drain(async (item) => {
+      if (item.eventId === "evt-a") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return ok(undefined);
+      }
+      return err(new Error("leave successor pending"));
+    });
+    await Promise.resolve();
+    expect(
+      queue.enqueue({ provider: "google", eventId: "evt-b", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+    release?.();
+    expect((await draining).ok).toBe(false);
+    expect(queue.pending()).toEqual(ok([expect.objectContaining({ eventId: "evt-b" })]));
+  });
+
+  it("does not erase distinct accepted events merely because their hints match", () => {
+    const queue = createIntegrationQueue(vault);
+    expect(
+      queue.enqueue({ provider: "notion", eventId: "evt-1", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+    expect(
+      queue.enqueue({ provider: "notion", eventId: "evt-2", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: true }));
+    expect(queue.pending().ok && queue.pending().value).toHaveLength(2);
+  });
+
+  it("retains replay tombstones beyond ten thousand events for a bounded thirty-day horizon", () => {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    const processedAt = "2026-08-24T12:00:00.000Z";
+    writeFileSync(
+      integrationQueuePath(vault),
+      JSON.stringify({
+        version: 2,
+        pending: [],
+        processedEvents: Array.from({ length: 10_001 }, (_, index) => ({
+          key: `notion:evt-${index}`,
+          processedAt,
+        })),
+      }),
+    );
+    const queue = createIntegrationQueue(vault, () => new Date("2026-08-25T12:00:00.000Z"));
+    expect(
+      queue.enqueue({ provider: "notion", eventId: "evt-0", hint: { kind: "reconcile" } }),
+    ).toEqual(ok({ enqueued: false }));
+  });
+
   it("reports a malformed durable queue instead of treating it as empty", () => {
     mkdirSync(join(vault, ".daftari"), { recursive: true });
     writeFileSync(integrationQueuePath(vault), "not-json\n");
