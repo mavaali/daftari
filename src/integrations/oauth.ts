@@ -14,6 +14,7 @@ import {
 import {
   readIntegrationState,
   resolveIntegrationStateKey,
+  withIntegrationStateLock,
   writeIntegrationState,
 } from "./state.js";
 import type { IntegrationConfig, ProviderName, ProviderState } from "./types.js";
@@ -41,45 +42,47 @@ function oauthNow(deps: Pick<EngineDeps, "now">): () => Date {
   return deps.now ?? (() => new Date());
 }
 
-export function beginAuthorization(
+export async function beginAuthorization(
   vaultRoot: string,
   provider: ProviderName,
   config: IntegrationConfig,
   environment: NodeJS.ProcessEnv,
   now: () => Date = () => new Date(),
-): Result<AuthorizationStart, Error> {
-  const integrationProvider = providerConfig(config, provider);
-  if (!integrationProvider.ok) return integrationProvider;
-  const key = resolveIntegrationStateKey(config.encryptionKeyEnv, environment);
-  if (!key.ok) return key;
-  const clientId = configuredCredential(
-    environment,
-    integrationProvider.value.clientIdEnv,
-    `${provider} OAuth client ID`,
-  );
-  if (!clientId.ok) return clientId;
-  const integrationState = readIntegrationState(vaultRoot, key.value);
-  if (!integrationState.ok) return integrationState;
+): Promise<Result<AuthorizationStart, Error>> {
+  return withIntegrationStateLock(vaultRoot, () => {
+    const integrationProvider = providerConfig(config, provider);
+    if (!integrationProvider.ok) return integrationProvider;
+    const key = resolveIntegrationStateKey(config.encryptionKeyEnv, environment);
+    if (!key.ok) return key;
+    const clientId = configuredCredential(
+      environment,
+      integrationProvider.value.clientIdEnv,
+      `${provider} OAuth client ID`,
+    );
+    if (!clientId.ok) return clientId;
+    const integrationState = readIntegrationState(vaultRoot, key.value);
+    if (!integrationState.ok) return integrationState;
 
-  const state = base64Url(randomBytes(32));
-  const pkceVerifier = base64Url(randomBytes(32));
-  integrationState.value.oauthStates[state] = {
-    provider,
-    callbackNonce: base64Url(randomBytes(16)),
-    pkceVerifier,
-    expiresAt: expiration(now),
-  };
-  const written = writeIntegrationState(vaultRoot, integrationState.value, key.value);
-  if (!written.ok) return written;
-  return ok({
-    state,
-    authorization: {
+    const state = base64Url(randomBytes(32));
+    const pkceVerifier = base64Url(randomBytes(32));
+    integrationState.value.oauthStates[state] = {
       provider,
-      clientId: clientId.value,
+      callbackNonce: base64Url(randomBytes(16)),
+      pkceVerifier,
+      expiresAt: expiration(now),
+    };
+    const written = writeIntegrationState(vaultRoot, integrationState.value, key.value);
+    if (!written.ok) return written;
+    return ok({
       state,
-      codeChallenge: pkceChallenge(pkceVerifier),
-      codeChallengeMethod: "S256",
-    },
+      authorization: {
+        provider,
+        clientId: clientId.value,
+        state,
+        codeChallenge: pkceChallenge(pkceVerifier),
+        codeChallengeMethod: "S256",
+      },
+    });
   });
 }
 
@@ -89,14 +92,14 @@ export interface AuthorizationRedirect extends AuthorizationStart {
 
 // This is the explicit route-facing seam: the engine persists the transaction,
 // while the provider adapter owns the provider-specific authorization URL.
-export function beginAuthorizationRedirect(
+export async function beginAuthorizationRedirect(
   vaultRoot: string,
   adapter: ProviderAdapter,
   config: IntegrationConfig,
   environment: NodeJS.ProcessEnv,
   now: () => Date = () => new Date(),
-): Result<AuthorizationRedirect, Error> {
-  const started = beginAuthorization(vaultRoot, adapter.name, config, environment, now);
+): Promise<Result<AuthorizationRedirect, Error>> {
+  const started = await beginAuthorization(vaultRoot, adapter.name, config, environment, now);
   if (!started.ok) return started;
   try {
     return ok({ ...started.value, url: adapter.authorizationUrl(started.value.authorization) });
@@ -128,67 +131,69 @@ export async function completeAuthorization(
   code: string,
   deps: EngineDeps,
 ): Promise<Result<void, Error>> {
-  if (
-    typeof state !== "string" ||
-    state.length === 0 ||
-    typeof code !== "string" ||
-    code.length === 0
-  ) {
-    return err(new Error("OAuth callback is missing state or code"));
-  }
-  const integrationProvider = providerConfig(deps.config, provider);
-  if (!integrationProvider.ok) return integrationProvider;
-  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
-  if (!key.ok) return key;
-  const persisted = readIntegrationState(vaultRoot, key.value);
-  if (!persisted.ok) return persisted;
-  const transaction = persisted.value.oauthStates[state];
-  if (transaction === undefined || transaction.provider !== provider) {
-    return err(new Error("OAuth callback state is invalid or already used"));
-  }
+  return withIntegrationStateLock(vaultRoot, async () => {
+    if (
+      typeof state !== "string" ||
+      state.length === 0 ||
+      typeof code !== "string" ||
+      code.length === 0
+    ) {
+      return err(new Error("OAuth callback is missing state or code"));
+    }
+    const integrationProvider = providerConfig(deps.config, provider);
+    if (!integrationProvider.ok) return integrationProvider;
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) return key;
+    const persisted = readIntegrationState(vaultRoot, key.value);
+    if (!persisted.ok) return persisted;
+    const transaction = persisted.value.oauthStates[state];
+    if (transaction === undefined || transaction.provider !== provider) {
+      return err(new Error("OAuth callback state is invalid or already used"));
+    }
 
-  delete persisted.value.oauthStates[state];
-  const consumed = writeIntegrationState(vaultRoot, persisted.value, key.value);
-  if (!consumed.ok) return consumed;
-  if (Date.parse(transaction.expiresAt) <= oauthNow(deps)().getTime()) {
-    return err(new Error("OAuth callback state has expired"));
-  }
+    delete persisted.value.oauthStates[state];
+    const consumed = writeIntegrationState(vaultRoot, persisted.value, key.value);
+    if (!consumed.ok) return consumed;
+    if (Date.parse(transaction.expiresAt) <= oauthNow(deps)().getTime()) {
+      return err(new Error("OAuth callback state has expired"));
+    }
 
-  const clientId = configuredCredential(
-    deps.environment,
-    integrationProvider.value.clientIdEnv,
-    `${provider} OAuth client ID`,
-  );
-  if (!clientId.ok) return clientId;
-  const clientSecret = configuredCredential(
-    deps.environment,
-    integrationProvider.value.clientSecretEnv,
-    `${provider} OAuth client secret`,
-  );
-  if (!clientSecret.ok) return clientSecret;
-  const adapter = deps.adapters[provider];
-  if (adapter === undefined)
-    return err(new Error(`integration provider ${provider} adapter is unavailable`));
-  let exchanged: Result<ProviderTokens, Error>;
-  try {
-    exchanged = await adapter.exchangeCode({
-      code,
-      clientId: clientId.value,
-      clientSecret: clientSecret.value,
-      callbackNonce: transaction.callbackNonce,
-      pkceVerifier: transaction.pkceVerifier,
-    });
-  } catch {
-    return err(new Error(`OAuth code exchange failed for ${provider}`));
-  }
-  if (!exchanged.ok) return err(new Error(`OAuth code exchange failed for ${provider}`));
-  if (exchanged.value.accessToken.length === 0 || exchanged.value.refreshToken.length === 0) {
-    return err(new Error(`OAuth code exchange returned incomplete tokens for ${provider}`));
-  }
+    const clientId = configuredCredential(
+      deps.environment,
+      integrationProvider.value.clientIdEnv,
+      `${provider} OAuth client ID`,
+    );
+    if (!clientId.ok) return clientId;
+    const clientSecret = configuredCredential(
+      deps.environment,
+      integrationProvider.value.clientSecretEnv,
+      `${provider} OAuth client secret`,
+    );
+    if (!clientSecret.ok) return clientSecret;
+    const adapter = deps.adapters[provider];
+    if (adapter === undefined)
+      return err(new Error(`integration provider ${provider} adapter is unavailable`));
+    let exchanged: Result<ProviderTokens, Error>;
+    try {
+      exchanged = await adapter.exchangeCode({
+        code,
+        clientId: clientId.value,
+        clientSecret: clientSecret.value,
+        callbackNonce: transaction.callbackNonce,
+        pkceVerifier: transaction.pkceVerifier,
+      });
+    } catch {
+      return err(new Error(`OAuth code exchange failed for ${provider}`));
+    }
+    if (!exchanged.ok) return err(new Error(`OAuth code exchange failed for ${provider}`));
+    if (exchanged.value.accessToken.length === 0 || exchanged.value.refreshToken.length === 0) {
+      return err(new Error(`OAuth code exchange returned incomplete tokens for ${provider}`));
+    }
 
-  persisted.value.providers[provider] = providerState(
-    exchanged.value,
-    persisted.value.providers[provider],
-  );
-  return writeIntegrationState(vaultRoot, persisted.value, key.value);
+    persisted.value.providers[provider] = providerState(
+      exchanged.value,
+      persisted.value.providers[provider],
+    );
+    return writeIntegrationState(vaultRoot, persisted.value, key.value);
+  });
 }

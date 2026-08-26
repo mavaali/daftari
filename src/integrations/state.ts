@@ -17,6 +17,7 @@ import type {
 const STATE_VERSION = 1;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
+const stateTransactions = new Map<string, Promise<void>>();
 
 interface StateEnvelope {
   version: number;
@@ -31,6 +32,27 @@ export function emptyIntegrationState(): IntegrationState {
 
 export function integrationStatePath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "integrations.state.enc");
+}
+
+/** Serializes every read/await/write transaction over the vault-wide encrypted envelope. */
+export async function withIntegrationStateLock<T>(
+  vaultRoot: string,
+  action: () => Promise<T> | T,
+): Promise<T> {
+  const previous = stateTransactions.get(vaultRoot) ?? Promise.resolve();
+  let release = (): void => undefined;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => turn);
+  stateTransactions.set(vaultRoot, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await action();
+  } finally {
+    release();
+    if (stateTransactions.get(vaultRoot) === tail) stateTransactions.delete(vaultRoot);
+  }
 }
 
 function validKey(key: Buffer): Result<void, Error> {

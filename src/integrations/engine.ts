@@ -7,6 +7,7 @@ import { sha256Hex } from "../utils/hash.js";
 import {
   readIntegrationState,
   resolveIntegrationStateKey,
+  withIntegrationStateLock,
   writeIntegrationState,
 } from "./state.js";
 import type {
@@ -352,32 +353,34 @@ function equalSecret(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-export function armProviderWebhookSetup(
+export async function armProviderWebhookSetup(
   vaultRoot: string,
   provider: ProviderName,
   deps: Pick<EngineDeps, "config" | "environment" | "writeIntegrationState">,
   createToken: () => string = () => randomBytes(32).toString("base64url"),
-): Result<{ setupToken: string }, Error> {
-  const configured = providerConfig(deps.config, provider);
-  if (!configured.ok) return configured;
-  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
-  if (!key.ok) return key;
-  const persisted = readIntegrationState(vaultRoot, key.value);
-  if (!persisted.ok) return persisted;
-  const providerState = persisted.value.providers[provider];
-  if (providerState === undefined) {
-    return err(new Error(`integration provider ${provider} is not authorized`));
-  }
-  if (providerState.webhook !== undefined) {
-    return err(new Error(`integration provider ${provider} already has a webhook channel`));
-  }
-  const setupToken = createToken();
-  if (typeof setupToken !== "string" || setupToken.length < 16) {
-    return err(new Error("integration webhook setup token generation failed"));
-  }
-  providerState.webhookSetupToken = setupToken;
-  const written = writeState(vaultRoot, key.value, persisted.value, deps);
-  return written.ok ? ok({ setupToken }) : written;
+): Promise<Result<{ setupToken: string }, Error>> {
+  return withIntegrationStateLock(vaultRoot, () => {
+    const configured = providerConfig(deps.config, provider);
+    if (!configured.ok) return configured;
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) return key;
+    const persisted = readIntegrationState(vaultRoot, key.value);
+    if (!persisted.ok) return persisted;
+    const providerState = persisted.value.providers[provider];
+    if (providerState === undefined) {
+      return err(new Error(`integration provider ${provider} is not authorized`));
+    }
+    if (providerState.webhook !== undefined) {
+      return err(new Error(`integration provider ${provider} already has a webhook channel`));
+    }
+    const setupToken = createToken();
+    if (typeof setupToken !== "string" || setupToken.length < 16) {
+      return err(new Error("integration webhook setup token generation failed"));
+    }
+    providerState.webhookSetupToken = setupToken;
+    const written = writeState(vaultRoot, key.value, persisted.value, deps);
+    return written.ok ? ok({ setupToken }) : written;
+  });
 }
 
 export function readProviderWebhookVerificationToken(
@@ -399,23 +402,25 @@ export function readProviderWebhookVerificationToken(
   return ok({ verificationToken: webhook.secret });
 }
 
-export function confirmProviderWebhookVerification(
+export async function confirmProviderWebhookVerification(
   vaultRoot: string,
   provider: ProviderName,
   deps: Pick<EngineDeps, "config" | "environment" | "writeIntegrationState">,
-): Result<void, Error> {
-  const configured = providerConfig(deps.config, provider);
-  if (!configured.ok) return configured;
-  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
-  if (!key.ok) return key;
-  const persisted = readIntegrationState(vaultRoot, key.value);
-  if (!persisted.ok) return persisted;
-  const webhook = persisted.value.providers[provider]?.webhook;
-  if (webhook?.verificationRequired !== true) {
-    return err(new Error(`integration provider ${provider} has no pending webhook verification`));
-  }
-  webhook.verificationRequired = false;
-  return writeState(vaultRoot, key.value, persisted.value, deps);
+): Promise<Result<void, Error>> {
+  return withIntegrationStateLock(vaultRoot, () => {
+    const configured = providerConfig(deps.config, provider);
+    if (!configured.ok) return configured;
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) return key;
+    const persisted = readIntegrationState(vaultRoot, key.value);
+    if (!persisted.ok) return persisted;
+    const webhook = persisted.value.providers[provider]?.webhook;
+    if (webhook?.verificationRequired !== true) {
+      return err(new Error(`integration provider ${provider} has no pending webhook verification`));
+    }
+    webhook.verificationRequired = false;
+    return writeState(vaultRoot, key.value, persisted.value, deps);
+  });
 }
 
 export async function reconcileProvider(
@@ -430,6 +435,145 @@ export async function reconcileProvider(
   activeReconciliations.add(lockKey);
 
   try {
+    return await withIntegrationStateLock(vaultRoot, async () => {
+      const configured = providerConfig(deps.config, adapter.name);
+      if (!configured.ok) return configured;
+      const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+      if (!key.ok) return key;
+      const persisted = readIntegrationState(vaultRoot, key.value);
+      if (!persisted.ok) return persisted;
+      let providerState = persisted.value.providers[adapter.name];
+      if (providerState === undefined) {
+        return err(new Error(`integration provider ${adapter.name} is not authorized`));
+      }
+      const refreshed = await refreshExpiredTokens(
+        vaultRoot,
+        adapter,
+        key.value,
+        persisted.value,
+        providerState,
+        deps,
+      );
+      if (!refreshed.ok) return refreshed;
+      providerState = refreshed.value;
+
+      let discovered: Result<RemoteSource[], Error>;
+      try {
+        discovered = await adapter.discover(providerState);
+      } catch {
+        return err(new Error(`integration provider ${adapter.name} discovery failed`));
+      }
+      if (!discovered.ok)
+        return err(new Error(`integration provider ${adapter.name} discovery failed`));
+      if (!discovered.value.every(validRemoteSource)) {
+        return err(new Error(`integration provider ${adapter.name} returned an invalid source`));
+      }
+
+      const currentSources = new Map(discovered.value.map((source) => [source.id, source]));
+      if (currentSources.size !== discovered.value.length) {
+        return err(new Error(`integration provider ${adapter.name} returned duplicate source IDs`));
+      }
+      const discoveryStateWritten = writeState(vaultRoot, key.value, persisted.value, deps);
+      if (!discoveryStateWritten.ok) return discoveryStateWritten;
+      const outcome: ReconcileOutcome = {
+        distilledSourceIds: [],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: [],
+      };
+      const seenAt = timestamp(deps);
+
+      for (const [sourceId, previous] of Object.entries(providerState.sources)) {
+        if (currentSources.has(sourceId) || !previous.available) continue;
+        const providerSourceId = sourceIdentity(adapter.name, sourceId);
+        if (deps.recordUnavailable !== undefined) {
+          const recorded = deps.recordUnavailable({
+            idempotencyKey: unavailableEventKey(adapter.name, sourceId, previous.revision),
+            providerSourceId,
+            reason: "no_longer_discovered",
+            revision: previous.revision,
+            occurredAt: seenAt,
+          });
+          if (!recorded.ok) return recorded;
+        }
+        providerState.sources[sourceId] = { ...previous, available: false, lastSeenAt: seenAt };
+        const written = writeState(vaultRoot, key.value, persisted.value, deps);
+        if (!written.ok) return written;
+        outcome.unavailableSourceIds.push(providerSourceId);
+      }
+
+      for (const remote of discovered.value) {
+        const providerSourceId = sourceIdentity(adapter.name, remote.id);
+        let fetched: Result<NormalizedRemoteSource, Error>;
+        try {
+          fetched = await adapter.fetch(remote, providerState);
+        } catch {
+          outcome.failedSourceIds.push(providerSourceId);
+          continue;
+        }
+        if (!fetched.ok || !validRemoteSource(fetched.ok ? fetched.value : remote)) {
+          outcome.failedSourceIds.push(providerSourceId);
+          continue;
+        }
+        if (fetched.value.id !== remote.id || fetched.value.revision !== remote.revision) {
+          outcome.failedSourceIds.push(providerSourceId);
+          continue;
+        }
+
+        const previous = providerState.sources[remote.id];
+        const next = sourceState(fetched.value, previous, seenAt);
+        providerState.sources[remote.id] = next;
+        const contentHash = sha256Hex(fetched.value.text);
+        if (previous?.contentHash === contentHash) {
+          const written = writeState(vaultRoot, key.value, persisted.value, deps);
+          if (!written.ok) return written;
+          outcome.unchangedSourceIds.push(providerSourceId);
+          continue;
+        }
+
+        const beforeDistill = writeState(vaultRoot, key.value, persisted.value, deps);
+        if (!beforeDistill.ok) return beforeDistill;
+        let distilled: Result<DistillationRun, Error>;
+        try {
+          distilled = await deps.distill({
+            providerSourceId,
+            revision: fetched.value.revision,
+            text: fetched.value.text,
+          });
+        } catch {
+          outcome.failedSourceIds.push(providerSourceId);
+          continue;
+        }
+        if (!distilled.ok) {
+          outcome.failedSourceIds.push(providerSourceId);
+          continue;
+        }
+        providerState.sources[remote.id] = {
+          ...next,
+          contentHash,
+          lastDistillRunId: distilled.value.runId,
+        };
+        const written = writeState(vaultRoot, key.value, persisted.value, deps);
+        if (!written.ok) return written;
+        outcome.distilledSourceIds.push(providerSourceId);
+      }
+      return ok(outcome);
+    });
+  } finally {
+    activeReconciliations.delete(lockKey);
+  }
+}
+
+export async function ensureProviderWebhook(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  input: EnsureWebhookInput,
+  deps: EngineDeps,
+): Promise<Result<WebhookChannel, Error>> {
+  return withIntegrationStateLock(vaultRoot, async () => {
+    if (adapter.ensureWebhook === undefined) {
+      return err(new Error(`integration provider ${adapter.name} cannot ensure webhooks`));
+    }
     const configured = providerConfig(deps.config, adapter.name);
     if (!configured.ok) return configured;
     const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
@@ -451,157 +595,24 @@ export async function reconcileProvider(
     if (!refreshed.ok) return refreshed;
     providerState = refreshed.value;
 
-    let discovered: Result<RemoteSource[], Error>;
+    let ensured: Result<WebhookChannel, Error>;
     try {
-      discovered = await adapter.discover(providerState);
+      ensured = await adapter.ensureWebhook(providerState, input);
     } catch {
-      return err(new Error(`integration provider ${adapter.name} discovery failed`));
+      return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
     }
-    if (!discovered.ok)
-      return err(new Error(`integration provider ${adapter.name} discovery failed`));
-    if (!discovered.value.every(validRemoteSource)) {
-      return err(new Error(`integration provider ${adapter.name} returned an invalid source`));
+    if (!ensured.ok)
+      return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    if (!validWebhookChannel(ensured.value)) {
+      return err(
+        new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
+      );
     }
-
-    const currentSources = new Map(discovered.value.map((source) => [source.id, source]));
-    if (currentSources.size !== discovered.value.length) {
-      return err(new Error(`integration provider ${adapter.name} returned duplicate source IDs`));
-    }
-    const outcome: ReconcileOutcome = {
-      distilledSourceIds: [],
-      unchangedSourceIds: [],
-      failedSourceIds: [],
-      unavailableSourceIds: [],
-    };
-    const seenAt = timestamp(deps);
-
-    for (const [sourceId, previous] of Object.entries(providerState.sources)) {
-      if (currentSources.has(sourceId) || !previous.available) continue;
-      const providerSourceId = sourceIdentity(adapter.name, sourceId);
-      if (deps.recordUnavailable !== undefined) {
-        const recorded = deps.recordUnavailable({
-          idempotencyKey: unavailableEventKey(adapter.name, sourceId, previous.revision),
-          providerSourceId,
-          reason: "no_longer_discovered",
-          revision: previous.revision,
-          occurredAt: seenAt,
-        });
-        if (!recorded.ok) return recorded;
-      }
-      providerState.sources[sourceId] = { ...previous, available: false, lastSeenAt: seenAt };
-      const written = writeState(vaultRoot, key.value, persisted.value, deps);
-      if (!written.ok) return written;
-      outcome.unavailableSourceIds.push(providerSourceId);
-    }
-
-    for (const remote of discovered.value) {
-      const providerSourceId = sourceIdentity(adapter.name, remote.id);
-      let fetched: Result<NormalizedRemoteSource, Error>;
-      try {
-        fetched = await adapter.fetch(remote, providerState);
-      } catch {
-        outcome.failedSourceIds.push(providerSourceId);
-        continue;
-      }
-      if (!fetched.ok || !validRemoteSource(fetched.ok ? fetched.value : remote)) {
-        outcome.failedSourceIds.push(providerSourceId);
-        continue;
-      }
-      if (fetched.value.id !== remote.id || fetched.value.revision !== remote.revision) {
-        outcome.failedSourceIds.push(providerSourceId);
-        continue;
-      }
-
-      const previous = providerState.sources[remote.id];
-      const next = sourceState(fetched.value, previous, seenAt);
-      providerState.sources[remote.id] = next;
-      const contentHash = sha256Hex(fetched.value.text);
-      if (previous?.contentHash === contentHash) {
-        const written = writeState(vaultRoot, key.value, persisted.value, deps);
-        if (!written.ok) return written;
-        outcome.unchangedSourceIds.push(providerSourceId);
-        continue;
-      }
-
-      const beforeDistill = writeState(vaultRoot, key.value, persisted.value, deps);
-      if (!beforeDistill.ok) return beforeDistill;
-      let distilled: Result<DistillationRun, Error>;
-      try {
-        distilled = await deps.distill({
-          providerSourceId,
-          revision: fetched.value.revision,
-          text: fetched.value.text,
-        });
-      } catch {
-        outcome.failedSourceIds.push(providerSourceId);
-        continue;
-      }
-      if (!distilled.ok) {
-        outcome.failedSourceIds.push(providerSourceId);
-        continue;
-      }
-      providerState.sources[remote.id] = {
-        ...next,
-        contentHash,
-        lastDistillRunId: distilled.value.runId,
-      };
-      const written = writeState(vaultRoot, key.value, persisted.value, deps);
-      if (!written.ok) return written;
-      outcome.distilledSourceIds.push(providerSourceId);
-    }
-    return ok(outcome);
-  } finally {
-    activeReconciliations.delete(lockKey);
-  }
-}
-
-export async function ensureProviderWebhook(
-  vaultRoot: string,
-  adapter: ProviderAdapter,
-  input: EnsureWebhookInput,
-  deps: EngineDeps,
-): Promise<Result<WebhookChannel, Error>> {
-  if (adapter.ensureWebhook === undefined) {
-    return err(new Error(`integration provider ${adapter.name} cannot ensure webhooks`));
-  }
-  const configured = providerConfig(deps.config, adapter.name);
-  if (!configured.ok) return configured;
-  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
-  if (!key.ok) return key;
-  const persisted = readIntegrationState(vaultRoot, key.value);
-  if (!persisted.ok) return persisted;
-  let providerState = persisted.value.providers[adapter.name];
-  if (providerState === undefined) {
-    return err(new Error(`integration provider ${adapter.name} is not authorized`));
-  }
-  const refreshed = await refreshExpiredTokens(
-    vaultRoot,
-    adapter,
-    key.value,
-    persisted.value,
-    providerState,
-    deps,
-  );
-  if (!refreshed.ok) return refreshed;
-  providerState = refreshed.value;
-
-  let ensured: Result<WebhookChannel, Error>;
-  try {
-    ensured = await adapter.ensureWebhook(providerState, input);
-  } catch {
-    return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
-  }
-  if (!ensured.ok)
-    return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
-  if (!validWebhookChannel(ensured.value)) {
-    return err(
-      new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
-    );
-  }
-  providerState.webhook = ensured.value;
-  const written = writeState(vaultRoot, key.value, persisted.value, deps);
-  if (!written.ok) return written;
-  return ok(ensured.value);
+    providerState.webhook = ensured.value;
+    const written = writeState(vaultRoot, key.value, persisted.value, deps);
+    if (!written.ok) return written;
+    return ok(ensured.value);
+  });
 }
 
 export async function verifyProviderWebhook(
@@ -616,74 +627,78 @@ export async function verifyProviderWebhook(
   }
   activeWebhookVerifications.add(lockKey);
   try {
-    if (adapter.verifyWebhook === undefined) {
-      return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
-    }
-    const configured = providerConfig(deps.config, adapter.name);
-    if (!configured.ok) return configured;
-    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
-    if (!key.ok) return key;
-    const persisted = readIntegrationState(vaultRoot, key.value);
-    if (!persisted.ok) return persisted;
-    const providerState = persisted.value.providers[adapter.name];
-    if (providerState === undefined) {
-      return err(new Error(`integration provider ${adapter.name} is not authorized`));
-    }
-    const manualCapture = providerState.webhook === undefined;
-    if (manualCapture) {
-      const expected = providerState.webhookSetupToken;
-      if (
-        expected === undefined ||
-        input.setupToken === undefined ||
-        !equalSecret(input.setupToken, expected)
-      ) {
-        return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
+    return await withIntegrationStateLock(vaultRoot, async () => {
+      if (adapter.verifyWebhook === undefined) {
+        return err(new Error(`integration provider ${adapter.name} cannot verify webhooks`));
       }
-    } else if (providerState.webhook?.verificationRequired === true) {
-      return err(
-        new Error(`integration provider ${adapter.name} webhook verification is not confirmed`),
-      );
-    }
+      const configured = providerConfig(deps.config, adapter.name);
+      if (!configured.ok) return configured;
+      const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+      if (!key.ok) return key;
+      const persisted = readIntegrationState(vaultRoot, key.value);
+      if (!persisted.ok) return persisted;
+      const providerState = persisted.value.providers[adapter.name];
+      if (providerState === undefined) {
+        return err(new Error(`integration provider ${adapter.name} is not authorized`));
+      }
+      const manualCapture = providerState.webhook === undefined;
+      if (manualCapture) {
+        const expected = providerState.webhookSetupToken;
+        if (
+          expected === undefined ||
+          input.setupToken === undefined ||
+          !equalSecret(input.setupToken, expected)
+        ) {
+          return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
+        }
+      } else if (providerState.webhook?.verificationRequired === true) {
+        return err(
+          new Error(`integration provider ${adapter.name} webhook verification is not confirmed`),
+        );
+      }
 
-    let verified: Result<VerifiedWebhook, Error>;
-    try {
-      verified = await adapter.verifyWebhook(input, providerState);
-    } catch {
-      return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
-    }
-    if (!verified.ok)
-      return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
-    if (!validVerifiedWebhook(verified.value)) {
-      return err(
-        new Error(
-          `integration provider ${adapter.name} webhook verification returned invalid result`,
-        ),
-      );
-    }
-    if (manualCapture && verified.value.kind !== "verification") {
-      return err(
-        new Error(`integration provider ${adapter.name} webhook setup did not verify a channel`),
-      );
-    }
-    if (verified.value.kind === "verification") {
-      if (providerState.webhook !== undefined) {
+      let verified: Result<VerifiedWebhook, Error>;
+      try {
+        verified = await adapter.verifyWebhook(input, providerState);
+      } catch {
+        return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
+      }
+      if (!verified.ok)
+        return err(new Error(`integration provider ${adapter.name} webhook verification failed`));
+      if (!validVerifiedWebhook(verified.value)) {
         return err(
           new Error(
-            `integration provider ${adapter.name} webhook verification is already captured`,
+            `integration provider ${adapter.name} webhook verification returned invalid result`,
           ),
         );
       }
-      if (verified.value.channel.verificationRequired !== true) {
+      if (manualCapture && verified.value.kind !== "verification") {
         return err(
-          new Error(`integration provider ${adapter.name} returned an unsafe verification channel`),
+          new Error(`integration provider ${adapter.name} webhook setup did not verify a channel`),
         );
       }
-      delete providerState.webhookSetupToken;
-      providerState.webhook = verified.value.channel;
-      const written = writeState(vaultRoot, key.value, persisted.value, deps);
-      if (!written.ok) return written;
-    }
-    return ok(verified.value);
+      if (verified.value.kind === "verification") {
+        if (providerState.webhook !== undefined) {
+          return err(
+            new Error(
+              `integration provider ${adapter.name} webhook verification is already captured`,
+            ),
+          );
+        }
+        if (verified.value.channel.verificationRequired !== true) {
+          return err(
+            new Error(
+              `integration provider ${adapter.name} returned an unsafe verification channel`,
+            ),
+          );
+        }
+        delete providerState.webhookSetupToken;
+        providerState.webhook = verified.value.channel;
+        const written = writeState(vaultRoot, key.value, persisted.value, deps);
+        if (!written.ok) return written;
+      }
+      return ok(verified.value);
+    });
   } finally {
     activeWebhookVerifications.delete(lockKey);
   }

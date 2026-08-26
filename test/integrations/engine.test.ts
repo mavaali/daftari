@@ -120,6 +120,109 @@ describe("provider reconciliation", () => {
     );
   });
 
+  it("persists provider discovery metadata when no sources are returned", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async (state) => {
+          state.cursor = "cursor-after-empty-page";
+          return ok([]);
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
+      "cursor-after-empty-page",
+    );
+  });
+
+  it("persists provider discovery metadata when every source fetch fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async (state) => {
+          state.cursor = "cursor-after-discovery";
+          return ok([{ id: "doc-1", revision: "1" }]);
+        },
+        fetch: async () => err(new Error("unavailable")),
+      }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
+      "cursor-after-discovery",
+    );
+  });
+
+  it("serializes encrypted state changes across different providers", async () => {
+    const bothProviders: IntegrationConfig = {
+      ...config,
+      notion: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" },
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: { google: providerState(), notion: providerState() },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let releaseDiscovery: (() => void) | undefined;
+    const reconciling = reconcileProvider(
+      vault,
+      adapter({
+        discover: () =>
+          new Promise((resolve) => {
+            releaseDiscovery = () => resolve(ok([{ id: "doc-1", revision: "1" }]));
+          }),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "normalized" }),
+      }),
+      deps({ config: bothProviders }),
+    );
+    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
+
+    let armSettled = false;
+    const arming = armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: bothProviders }),
+      () => "notion-cross-provider-token",
+    ).then((result) => {
+      armSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(armSettled).toBe(false);
+    releaseDiscovery?.();
+
+    expect((await reconciling).ok).toBe(true);
+    expect((await arming).ok).toBe(true);
+    const state = readIntegrationState(vault, KEY);
+    expect(state.value.providers.google?.sources["doc-1"]?.contentHash).toBeTypeOf("string");
+    expect(state.value.providers.notion?.webhookSetupToken).toBe("notion-cross-provider-token");
+  });
+
   it("stages only changed normalized text and never persists that text", async () => {
     const text = "A changed normalized document";
     expect(
@@ -556,7 +659,7 @@ describe("provider reconciliation", () => {
       secret: "operator-verification-token",
       verificationRequired: true,
     };
-    const armed = armProviderWebhookSetup(
+    const armed = await armProviderWebhookSetup(
       vault,
       "notion",
       deps({ config: { ...config, google: undefined, notion: config.google } }),
@@ -627,7 +730,8 @@ describe("provider reconciliation", () => {
     ).toBe(false);
     expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook).toBeUndefined();
     expect(
-      armProviderWebhookSetup(vault, "notion", notionDeps, () => "armed-setup-token-value").ok,
+      (await armProviderWebhookSetup(vault, "notion", notionDeps, () => "armed-setup-token-value"))
+        .ok,
     ).toBe(true);
     expect(
       (
@@ -673,7 +777,8 @@ describe("provider reconciliation", () => {
       ),
     ).toEqual(ok(undefined));
     expect(
-      armProviderWebhookSetup(vault, "notion", notionDeps, () => "concurrent-setup-token").ok,
+      (await armProviderWebhookSetup(vault, "notion", notionDeps, () => "concurrent-setup-token"))
+        .ok,
     ).toBe(true);
     let release: (() => void) | undefined;
     const verifyWebhook = vi.fn(
@@ -754,7 +859,9 @@ describe("provider reconciliation", () => {
         )
       ).ok,
     ).toBe(false);
-    expect(confirmProviderWebhookVerification(vault, "notion", notionDeps)).toEqual(ok(undefined));
+    expect(await confirmProviderWebhookVerification(vault, "notion", notionDeps)).toEqual(
+      ok(undefined),
+    );
     expect(
       (
         await verifyProviderWebhook(
@@ -947,12 +1054,18 @@ describe("provider reconciliation", () => {
       return ok(undefined);
     };
 
+    let writes = 0;
     const first = await reconcileProvider(
       vault,
       adapter({ discover: async () => ok([]) }),
       deps({
         recordUnavailable,
-        writeIntegrationState: () => err(new Error("state disk unavailable")),
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writes === 2
+            ? err(new Error("state disk unavailable"))
+            : writeIntegrationState(root, state, key);
+        },
       }),
     );
     expect(first.ok).toBe(false);

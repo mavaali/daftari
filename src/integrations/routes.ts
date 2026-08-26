@@ -133,7 +133,7 @@ export async function handleIntegrationRoute(
       return true;
     }
     if (!(await requireAuthorization(request, response, deps, true))) return true;
-    const started = beginAuthorizationRedirect(
+    const started = await beginAuthorizationRedirect(
       deps.vaultRoot,
       adapter,
       deps.config,
@@ -185,7 +185,7 @@ export async function handleIntegrationRoute(
       writeJson(response, 409, { error: "public_webhook_url_required" });
       return true;
     }
-    const armed = armProviderWebhookSetup(deps.vaultRoot, provider, deps.engineDeps);
+    const armed = await armProviderWebhookSetup(deps.vaultRoot, provider, deps.engineDeps);
     if (!armed.ok) {
       writeJson(response, 409, { error: "webhook_setup_unavailable" });
       return true;
@@ -234,7 +234,11 @@ export async function handleIntegrationRoute(
       return true;
     }
     if (!(await requireAuthorization(request, response, deps, true))) return true;
-    const confirmed = confirmProviderWebhookVerification(deps.vaultRoot, provider, deps.engineDeps);
+    const confirmed = await confirmProviderWebhookVerification(
+      deps.vaultRoot,
+      provider,
+      deps.engineDeps,
+    );
     if (!confirmed.ok) {
       writeJson(response, 409, { error: "verification_not_pending" });
       return true;

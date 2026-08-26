@@ -3,13 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok } from "../../src/frontmatter/types.js";
-import type { EngineDeps, ProviderAdapter } from "../../src/integrations/engine.js";
+import {
+  type EngineDeps,
+  type ProviderAdapter,
+  reconcileProvider,
+} from "../../src/integrations/engine.js";
 import {
   beginAuthorization,
   beginAuthorizationRedirect,
   completeAuthorization,
 } from "../../src/integrations/oauth.js";
-import { readIntegrationState } from "../../src/integrations/state.js";
+import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig } from "../../src/integrations/types.js";
 
 const KEY = Buffer.alloc(32, 7);
@@ -60,7 +64,7 @@ describe("integration OAuth transactions", () => {
 
   it("consumes a replayed OAuth state before a second code exchange", async () => {
     const provider = adapter();
-    const started = beginAuthorization(vault, "google", config, environment, now);
+    const started = await beginAuthorization(vault, "google", config, environment, now);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -89,7 +93,7 @@ describe("integration OAuth transactions", () => {
 
   it("rejects an expired OAuth state without exchanging a code", async () => {
     const provider = adapter();
-    const started = beginAuthorization(vault, "google", config, environment, now);
+    const started = await beginAuthorization(vault, "google", config, environment, now);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -110,7 +114,7 @@ describe("integration OAuth transactions", () => {
         throw new Error("provider response included a secret");
       }),
     );
-    const started = beginAuthorization(vault, "google", config, environment, now);
+    const started = await beginAuthorization(vault, "google", config, environment, now);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -126,9 +130,9 @@ describe("integration OAuth transactions", () => {
     expect(readIntegrationState(vault, KEY)).toEqual(ok({ providers: {}, oauthStates: {} }));
   });
 
-  it("composes a provider authorization URL from a persisted OAuth transaction", () => {
+  it("composes a provider authorization URL from a persisted OAuth transaction", async () => {
     const provider = adapter();
-    const started = beginAuthorizationRedirect(vault, provider, config, environment, now);
+    const started = await beginAuthorizationRedirect(vault, provider, config, environment, now);
 
     expect(started.ok).toBe(true);
     if (!started.ok) return;
@@ -141,6 +145,60 @@ describe("integration OAuth transactions", () => {
     });
     expect(readIntegrationState(vault, KEY).value.oauthStates[started.value.state]).toMatchObject({
       provider: "google",
+    });
+  });
+
+  it("serializes an OAuth token replacement with an in-flight reconciliation", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { accessToken: "old-access", refreshToken: "old-refresh", sources: {} },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const started = await beginAuthorization(vault, "google", config, environment, now);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    let releaseDiscovery: (() => void) | undefined;
+    const reconcileAdapter = adapter();
+    reconcileAdapter.discover = () =>
+      new Promise((resolve) => {
+        releaseDiscovery = () => resolve(ok([{ id: "doc-1", revision: "1" }]));
+      });
+    reconcileAdapter.fetch = async () => ok({ id: "doc-1", revision: "1", text: "normalized" });
+    const reconciling = reconcileProvider(vault, reconcileAdapter, deps(reconcileAdapter));
+    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
+
+    const replacement = adapter(
+      vi.fn(async () => ok({ accessToken: "new-access", refreshToken: "new-refresh" })),
+    );
+    let oauthSettled = false;
+    const completing = completeAuthorization(
+      vault,
+      "google",
+      started.value.state,
+      "code",
+      deps(replacement),
+    ).then((result) => {
+      oauthSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(oauthSettled).toBe(false);
+    releaseDiscovery?.();
+
+    expect((await reconciling).ok).toBe(true);
+    expect(await completing).toEqual(ok(undefined));
+    expect(readIntegrationState(vault, KEY).value.providers.google).toMatchObject({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      sources: { "doc-1": expect.objectContaining({ contentHash: expect.any(String) }) },
     });
   });
 });
