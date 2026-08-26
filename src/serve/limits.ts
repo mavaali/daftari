@@ -65,6 +65,55 @@ export function tryTake(b: Bucket, nowMs: number): TakeResult {
   return { allowed: false, retryAfterSeconds: secondsUntilOneToken(b) };
 }
 
+export interface BucketRegistry {
+  buckets: Map<string, { bucket: Bucket; lastSeenMs: number }>;
+  capacity: number;
+  refillPerMinute: number;
+  maxEntries: number;
+  idleTtlMs: number;
+}
+
+export function makeBucketRegistry(
+  capacity: number,
+  refillPerMinute: number,
+  maxEntries = 10_000,
+  idleTtlMs = 10 * 60_000,
+): BucketRegistry {
+  return {
+    buckets: new Map(),
+    capacity,
+    refillPerMinute,
+    maxEntries,
+    idleTtlMs,
+  };
+}
+
+/** Bounded, idle-expiring LRU registry for attacker-influenced bucket keys. */
+export function takeFromRegistry(registry: BucketRegistry, key: string, nowMs: number): TakeResult {
+  let tracked = registry.buckets.get(key);
+  if (tracked === undefined) {
+    for (const [existingKey, existing] of registry.buckets) {
+      if (nowMs - existing.lastSeenMs >= registry.idleTtlMs) {
+        registry.buckets.delete(existingKey);
+      }
+    }
+    while (registry.buckets.size >= registry.maxEntries) {
+      const oldest = registry.buckets.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      registry.buckets.delete(oldest);
+    }
+    tracked = {
+      bucket: makeBucket(registry.capacity, registry.refillPerMinute, nowMs),
+      lastSeenMs: nowMs,
+    };
+  } else {
+    registry.buckets.delete(key);
+    tracked.lastSeenMs = nowMs;
+  }
+  registry.buckets.set(key, tracked);
+  return tryTake(tracked.bucket, nowMs);
+}
+
 // The pre-auth penalty box: keyed per remote IP, CHECKED before any auth
 // work runs (bounding the CPU an unauthenticated flood can spend on
 // constant-time token matching and JWT verification) but CHARGED only by a

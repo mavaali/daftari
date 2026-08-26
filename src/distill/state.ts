@@ -10,9 +10,11 @@
 // Two clocks, deliberately different (the birthProcessed lesson — mark
 // processed only after the durable event):
 //
-//   - content_hash advances at EMIT time. Staging is durable (the proposals
-//     sit in the staged-actions jsonl), so an unchanged re-run must be a free
-//     no-op — re-emitting would duplicate pending proposals.
+//   - content_hash advances after a COMPLETE emit. Staging is durable (the
+//     proposals sit in the staged-actions jsonl), so an incomplete batch also
+//     records its successful claim keys under pending_content_hash. A retry
+//     emits only the failed remainder; a completed unchanged re-run is a free
+//     no-op.
 //   - claims[claim_key] advances only at LAND time (ratify), via
 //     recordLandedClaim. A staged proposal is not landed; only a ratified one
 //     is. The batch-ratify path (U9) is the intended caller.
@@ -47,6 +49,12 @@ export interface DistillSourceState {
   content_hash: string;
   /** claim_key -> landed vault-relative path, recorded at ratify time only. */
   claims: Record<string, string>;
+  /** Content hash for an incomplete emit whose successful claims must not be retried. */
+  pending_content_hash?: string;
+  /** Claims durably staged during the incomplete emit for pending_content_hash. */
+  emitted_claim_keys?: string[];
+  /** Exact failed remainder from an incomplete emit; authoritative on retry. */
+  pending_claims?: ExtractedClaim[];
 }
 
 export interface DistillState {
@@ -91,8 +99,9 @@ export function readDistillState(vaultRoot: string): DistillState {
 }
 
 // Result-not-throw (house style): a failed state write is a recoverable
-// degrade — the next run re-joins against stale state and the queue's
-// conflict check catches any duplicates loudly.
+// degrade — the next run re-joins against stale state and the queue's conflict
+// check catches any duplicates loudly. Partial-emit state uses the same write
+// path, so a write failure is surfaced rather than hidden.
 export function writeDistillState(vaultRoot: string, state: DistillState): Result<void, Error> {
   if (typeof vaultRoot !== "string" || vaultRoot.trim().length === 0) {
     return err(new Error("writeDistillState requires a non-empty vaultRoot"));
@@ -195,6 +204,8 @@ export interface DistillUpsertInput {
    * callers remain valid — this field is optional.
    */
   overlapSearch?: OverlapSearchFn;
+  /** Injectable proposal writer used to verify atomic retry behavior. */
+  proposeClaims?: typeof proposeAllClaims;
 }
 
 export interface DistillUpsertOutcome {
@@ -243,7 +254,16 @@ export async function distillUpsert(
     });
   }
 
-  const actions = joinClaims(prior, input.claims);
+  const resumingPendingEmit =
+    prior?.pending_content_hash === contentHash && (prior.pending_claims?.length ?? 0) > 0;
+  // LLM extraction is nondeterministic. Once any claim in a batch fails, the
+  // exact failed remainder becomes the retry manifest: accepting a fresh
+  // paraphrase could duplicate a successful claim or omit a failed one.
+  const claims = resumingPendingEmit ? (prior?.pending_claims ?? []) : input.claims;
+  const actions = joinClaims(prior, claims);
+  const alreadyEmitted = new Set(
+    prior?.pending_content_hash === contentHash ? (prior.emitted_claim_keys ?? []) : [],
+  );
   const skipped: string[] = [];
   const updated: Array<{ claim_key: string; landedPath: string }> = [];
   const created: string[] = [];
@@ -255,6 +275,7 @@ export async function distillUpsert(
       skipped.push(action.claim.claim_key);
       continue;
     }
+    if (alreadyEmitted.has(action.claim.claim_key)) continue;
     toPropose.push(action.claim);
     if (action.kind === "update") {
       updated.push({ claim_key: action.claim.claim_key, landedPath: action.landedPath });
@@ -264,13 +285,56 @@ export async function distillUpsert(
     }
   }
 
-  const propose = await proposeAllClaims(
+  const attempted = await (input.proposeClaims ?? proposeAllClaims)(
     vaultRoot,
     toPropose,
     { sourceId: input.sourceId, runId: input.runId },
     pathOverrides,
     input.overlapSearch,
   );
+
+  const successfulClaimKeys = new Set(attempted.results.map((result) => result.claim_key));
+  // A durable success wins over a contradictory error for the same claim.
+  // Retrying that claim would create a duplicate proposal.
+  const unresolvedErrors = attempted.errors.filter(
+    (failure) => !successfulClaimKeys.has(failure.claim_key),
+  );
+  const reportedClaimKeys = new Set([
+    ...successfulClaimKeys,
+    ...unresolvedErrors.map((failure) => failure.claim_key),
+  ]);
+  const unaccounted = toPropose
+    .filter((claim) => !reportedClaimKeys.has(claim.claim_key))
+    .map((claim) => ({ claim_key: claim.claim_key, error: "proposal result was missing" }));
+  const propose: ProposeOutcome = {
+    ...attempted,
+    errors: [...unresolvedErrors, ...unaccounted],
+  };
+
+  if (propose.errors.length > 0) {
+    const emittedClaimKeys = new Set(alreadyEmitted);
+    for (const result of propose.results) emittedClaimKeys.add(result.claim_key);
+    const failedClaimKeys = new Set(propose.errors.map((failure) => failure.claim_key));
+    state.sources[input.sourceId] = {
+      content_hash: prior?.content_hash ?? "",
+      claims: prior?.claims ?? {},
+      pending_content_hash: contentHash,
+      emitted_claim_keys: [...emittedClaimKeys].sort(),
+      pending_claims: toPropose.filter((claim) => failedClaimKeys.has(claim.claim_key)),
+    };
+    const wrote = writeDistillState(vaultRoot, state);
+    return ok({
+      noop: false,
+      skipped,
+      updated,
+      created,
+      propose,
+      stateWritten: wrote.ok,
+      stateError: wrote.ok
+        ? "proposal staging was incomplete"
+        : `proposal staging was incomplete; ${wrote.error.message}`,
+    });
+  }
 
   // Advance the emit clock; the landed map only moves via recordLandedClaim.
   state.sources[input.sourceId] = {

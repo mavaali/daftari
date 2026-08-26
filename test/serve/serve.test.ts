@@ -4,21 +4,27 @@
 // is driven by the SDK's own client transport — no spawn, no network flake
 // surface (spec 2026-07-20, test posture).
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcess, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { ok } from "../../src/frontmatter/types.js";
+import type { IntegrationRuntime } from "../../src/integrations/runtime.js";
 import {
+  httpCallbackBase,
   matchToken,
   prepareStorageSync,
+  resolvePublicRemote,
   runServe,
   type ServeHandle,
   startHttpServer,
   startPeriodicSync,
   validateServeStartup,
 } from "../../src/serve/index.js";
+import { makeSlotGate, tryAcquireSlot } from "../../src/serve/limits.js";
 import type { StorageBackend } from "../../src/storage/backend.js";
 import { vaultReindex } from "../../src/tools/search.js";
 import { type DaftariConfig, loadConfig } from "../../src/utils/config.js";
@@ -66,6 +72,7 @@ roles:
   admin:
     read: ["*"]
     write: ["*"]
+    manage_integrations: true
 ${tokensBlock}`,
   );
   return dir;
@@ -565,6 +572,157 @@ describe("legacy HTTP compatibility (--legacy-http, #366)", () => {
   }, 30_000);
 });
 
+describe("serve integration runtime wiring", () => {
+  it("starts, routes, and closes an injected provider-neutral runtime", async () => {
+    const vault = buildVault(false);
+    const cfg = loadedConfig(vault);
+    const started: string[] = [];
+    let closed = false;
+    let allowClose: (() => void) | undefined;
+    const runtime: IntegrationRuntime = {
+      start: async (localBaseUrl) => {
+        started.push(localBaseUrl);
+        return ok(undefined);
+      },
+      handle: async (_request, response, url) => {
+        if (!["/integrations/test", "/daftari/integrations/test"].includes(url.pathname)) {
+          return false;
+        }
+        response.writeHead(204);
+        response.end();
+        return true;
+      },
+      runOnce: async () => undefined,
+      close: async () => {
+        await new Promise<void>((resolveClose) => {
+          allowClose = resolveClose;
+        });
+        closed = true;
+      },
+    };
+    const handle = await startHttpServer(vault, cfg, [], "127.0.0.1", 0, {
+      integrationRuntime: runtime,
+    });
+    try {
+      expect(started).toEqual([`http://127.0.0.1:${handle.port}`]);
+      const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`);
+      expect(response.status).toBe(204);
+      const prefixed = await fetch(`http://127.0.0.1:${handle.port}/daftari/integrations/test`);
+      expect(prefixed.status).toBe(204);
+    } finally {
+      const closing = handle.close();
+      await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+      expect(closed).toBe(false);
+      allowClose?.();
+      await closing;
+      rmSync(vault, { recursive: true, force: true });
+    }
+    expect(closed).toBe(true);
+  });
+
+  it("brackets an IPv6 loopback callback host", () => {
+    expect(httpCallbackBase("::1", 8787)).toBe("http://[::1]:8787");
+    expect(httpCallbackBase("127.0.0.1", 8787)).toBe("http://127.0.0.1:8787");
+  });
+
+  it("trusts a validated forwarded client IP only when proxy trust is explicit", () => {
+    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9, 10.0.0.4", true)).toBe("203.0.113.9");
+    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9", false)).toBe("10.0.0.5");
+    expect(resolvePublicRemote("10.0.0.5", "attacker.example", true)).toBe("10.0.0.5");
+  });
+
+  it("enforces connector capability, authentication penalty, and in-flight limits", async () => {
+    const vault = buildVault(true);
+    process.env.DAFTARI_TEST_TOKEN_ANALYST = "analyst-secret";
+    process.env.DAFTARI_TEST_TOKEN_ADMIN = "admin-secret";
+    const cfg = loadedConfig(vault);
+    const startup = validateServeStartup(cfg, "127.0.0.1", process.env);
+    if (!startup.ok) throw new Error(startup.error);
+    const runtime: IntegrationRuntime = {
+      start: async () => ok(undefined),
+      handle: async (request, response, url, authorization) => {
+        if (url.pathname.startsWith("/integrations/test/public")) {
+          const release = authorization.admitPublic(request, response);
+          if (release === null) return true;
+          try {
+            response.writeHead(204);
+            response.end();
+            return true;
+          } finally {
+            release();
+          }
+        }
+        if (url.pathname !== "/integrations/test") return false;
+        const access = await authorization.authorize(request, response);
+        if (access === null) return true;
+        response.writeHead(access.canManageIntegrations ? 204 : 403);
+        response.end();
+        return true;
+      },
+      runOnce: async () => undefined,
+      close: async () => undefined,
+    };
+    const handle = await startHttpServer(vault, cfg, startup.tokens, "127.0.0.1", 0, {
+      integrationRuntime: runtime,
+    });
+    try {
+      const reader = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`, {
+        headers: { authorization: "Bearer analyst-secret" },
+      });
+      expect(reader.status).toBe(403);
+      const operator = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`, {
+        headers: { authorization: "Bearer admin-secret" },
+      });
+      expect(operator.status).toBe(204);
+      const badStatuses: number[] = [];
+      for (let attempt = 0; attempt < 11; attempt += 1) {
+        const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test`, {
+          headers: { authorization: "Bearer wrong-token" },
+        });
+        badStatuses.push(response.status);
+      }
+      expect(badStatuses.at(-1)).toBe(429);
+      const publicStatuses: number[] = [];
+      for (let attempt = 0; attempt <= cfg.server.limits.burst; attempt += 1) {
+        const response = await fetch(`http://127.0.0.1:${handle.port}/integrations/test/public`);
+        publicStatuses.push(response.status);
+      }
+      expect(publicStatuses.at(-1)).toBe(429);
+      const isolated = await fetch(
+        `http://127.0.0.1:${handle.port}/integrations/test/public-other-provider`,
+      );
+      expect(isolated.status).toBe(204);
+    } finally {
+      await handle.close();
+      rmSync(vault, { recursive: true, force: true });
+    }
+
+    const capacityVault = buildVault(true);
+    const capacityCfg = loadedConfig(capacityVault);
+    const capacityStartup = validateServeStartup(capacityCfg, "127.0.0.1", process.env);
+    if (!capacityStartup.ok) throw new Error(capacityStartup.error);
+    const fullGate = makeSlotGate(1);
+    expect(tryAcquireSlot(fullGate)).toBe(true);
+    const capacity = await startHttpServer(
+      capacityVault,
+      capacityCfg,
+      capacityStartup.tokens,
+      "127.0.0.1",
+      0,
+      { integrationRuntime: runtime, slotGate: fullGate },
+    );
+    try {
+      const response = await fetch(`http://127.0.0.1:${capacity.port}/integrations/test/public`);
+      // Public provider delivery has reserved capacity independent from the
+      // MCP request gate, so saturated agent work cannot suppress webhooks.
+      expect(response.status).toBe(204);
+    } finally {
+      await capacity.close();
+      rmSync(capacityVault, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("runServe --help", () => {
   it("documents --legacy-http", async () => {
     const chunks: string[] = [];
@@ -578,6 +736,83 @@ describe("runServe --help", () => {
       expect(chunks.join("")).toContain("--legacy-http");
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("does not mutate an existing ignore block when integration preflight fails", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-serve-ignore-upgrade-"));
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(join(vault, ".gitignore"), ".daftari/index.db\n.daftari/distill-state.json\n");
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\ndistill:\n  model: test-model\nintegrations:\n" +
+        "  encryption_key_env: MISSING_INTEGRATION_KEY\n  google:\n" +
+        "    client_id_env: MISSING_GOOGLE_ID\n    client_secret_env: MISSING_GOOGLE_SECRET\n",
+    );
+    try {
+      expect(await runServe(["--vault", vault, "--port", "0"])).toBe(2);
+      const ignore = readFileSync(join(vault, ".gitignore"), "utf8");
+      expect(ignore).toBe(".daftari/index.db\n.daftari/distill-state.json\n");
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mutate integration ignore state when another process owns the vault", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-serve-ignore-locked-"));
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    const originalIgnore = ".daftari/index.db\n.daftari/distill-state.json\n";
+    writeFileSync(join(vault, ".gitignore"), originalIgnore);
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\ndistill:\n  model: test-model\nintegrations:\n" +
+        "  encryption_key_env: TEST_INTEGRATION_KEY\n  google:\n" +
+        "    client_id_env: TEST_GOOGLE_ID\n    client_secret_env: TEST_GOOGLE_SECRET\n",
+    );
+    let holder: ChildProcess | undefined;
+    const previous = {
+      key: process.env.TEST_INTEGRATION_KEY,
+      clientId: process.env.TEST_GOOGLE_ID,
+      clientSecret: process.env.TEST_GOOGLE_SECRET,
+      anthropic: process.env.ANTHROPIC_API_KEY,
+    };
+    try {
+      process.env.TEST_INTEGRATION_KEY = Buffer.alloc(32, 9).toString("base64");
+      process.env.TEST_GOOGLE_ID = "client-id";
+      process.env.TEST_GOOGLE_SECRET = "client-secret";
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", vault], {
+        stdio: "ignore",
+      });
+      if (holder.pid === undefined) throw new Error("holder spawn failed");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      writeFileSync(
+        join(vault, ".daftari", "process.lock"),
+        JSON.stringify({
+          daftari: true,
+          pid: holder.pid,
+          vaultRoot: vault,
+          startedAt: "2026-08-26T00:00:00.000Z",
+          version: "test",
+          mode: "serve",
+          bind: "127.0.0.1:8787",
+        }),
+      );
+
+      expect(await runServe(["--vault", vault, "--port", "0"])).toBe(2);
+      expect(readFileSync(join(vault, ".gitignore"), "utf8")).toBe(originalIgnore);
+    } finally {
+      holder?.kill("SIGKILL");
+      for (const [name, value] of [
+        ["TEST_INTEGRATION_KEY", previous.key],
+        ["TEST_GOOGLE_ID", previous.clientId],
+        ["TEST_GOOGLE_SECRET", previous.clientSecret],
+        ["ANTHROPIC_API_KEY", previous.anthropic],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      rmSync(vault, { recursive: true, force: true });
     }
   });
 });

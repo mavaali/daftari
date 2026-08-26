@@ -243,13 +243,14 @@ describe("loadConfig — schema extensions", () => {
 
     it("parses the server block and rejects malformed shapes loud (#5)", () => {
       writeConfig(
-        "version: 1\nserver:\n  transport_security: external\n  auth:\n" +
+        "version: 1\nserver:\n  transport_security: external\n  trust_proxy: true\n  auth:\n" +
           "    tokens:\n      - env: T_A\n        user: human:a\n        role: analyst\n",
       );
       const good = loadConfig(dir);
       expect(good.ok).toBe(true);
       if (!good.ok) return;
       expect(good.value.server.transportSecurity).toBe("external");
+      expect(good.value.server.trustProxy).toBe(true);
       expect(good.value.server.tokens).toEqual([{ env: "T_A", user: "human:a", role: "analyst" }]);
     });
 
@@ -266,6 +267,12 @@ describe("loadConfig — schema extensions", () => {
         maxInFlight: 32,
       });
       expect(good.value.server.audit).toBe(true);
+      expect(good.value.server.trustProxy).toBe(false);
+    });
+
+    it("rejects a non-boolean server.trust_proxy", () => {
+      writeConfig("version: 1\nserver:\n  trust_proxy: proxy.example\n");
+      expect(loadConfig(dir).ok).toBe(false);
     });
 
     it("parses server.limits overrides and server.audit", () => {
@@ -1054,6 +1061,26 @@ describe("loadConfig — schema extensions", () => {
       expect(malformed.error.message).toContain("verify_repo_sources");
     });
   });
+
+  describe("manage_integrations role flag", () => {
+    it("parses an explicit grant and otherwise defaults to absent", () => {
+      writeConfig(
+        "roles:\n  operator:\n    read: ['*']\n    manage_integrations: true\n  reader:\n    read: ['*']\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.manageIntegrations).toBe(true);
+      expect(result.value.roles.reader?.manageIntegrations).toBeUndefined();
+    });
+
+    it("rejects a non-boolean grant", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    manage_integrations: yes\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toContain("manage_integrations");
+    });
+  });
 });
 
 describe("malformed-comment hint on YAML parse errors (#26)", () => {
@@ -1112,5 +1139,74 @@ describe("malformed-comment hint on YAML parse errors (#26)", () => {
     ].join("\n");
     expect(malformedCommentHint(text, 3)).toBeNull();
     expect(malformedCommentHint(text, null)).toBeNull();
+  });
+});
+
+describe("loadConfig — integrations", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-integrations-config-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  it("parses environment-variable references for the enabled providers", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+        "  polling_interval_minutes: 20\n" +
+        "  google:\n" +
+        "    client_id_env: GOOGLE_CLIENT_ID\n" +
+        "    client_secret_env: GOOGLE_CLIENT_SECRET\n" +
+        "  notion:\n" +
+        "    client_id_env: NOTION_CLIENT_ID\n" +
+        "    client_secret_env: NOTION_CLIENT_SECRET\n",
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.integrations).toEqual({
+      encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+      pollingIntervalMinutes: 20,
+      google: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" },
+      notion: { clientIdEnv: "NOTION_CLIENT_ID", clientSecretEnv: "NOTION_CLIENT_SECRET" },
+    });
+  });
+
+  it("rejects a client secret declared directly in YAML", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: KEY\n" +
+        "  google:\n" +
+        "    client_id_env: ID\n" +
+        "    client_secret: leaked\n",
+    );
+    expect(loadConfig(dir).ok).toBe(false);
+  });
+
+  it("accepts only an absolute HTTPS server public base URL", () => {
+    writeConfig("server:\n  public_base_url: https://vault.example/daftari\n");
+    const valid = loadConfig(dir);
+    expect(valid.ok).toBe(true);
+    if (valid.ok) expect(valid.value.server.publicBaseUrl).toBe("https://vault.example/daftari");
+
+    for (const value of [
+      "http://vault.example",
+      "/relative",
+      "not a url",
+      "https://vault.example/path?secret=value",
+      "https://vault.example/path#fragment",
+    ]) {
+      writeConfig(`server:\n  public_base_url: ${JSON.stringify(value)}\n`);
+      expect(loadConfig(dir).ok).toBe(false);
+    }
   });
 });

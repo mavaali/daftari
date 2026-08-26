@@ -8,10 +8,12 @@ import {
   chargePenalty,
   DEFAULT_LIMITS,
   makeBucket,
+  makeBucketRegistry,
   makePenaltyBox,
   makeSlotGate,
   penaltyAllows,
   releaseSlot,
+  takeFromRegistry,
   tryAcquireSlot,
   tryTake,
 } from "../../src/serve/limits.js";
@@ -74,6 +76,20 @@ describe("auth-failure penalty box", () => {
     chargePenalty(box, "b", T0 + 3_600_000);
     chargePenalty(box, "b", T0 + 3_600_000);
     expect(penaltyAllows(box, "b", T0 + 3_600_000).allowed).toBe(false);
+  });
+});
+
+describe("bounded bucket registry", () => {
+  it("expires idle keys and evicts least-recently-used keys at the hard cap", () => {
+    const registry = makeBucketRegistry(2, 60, 2, 1_000);
+    expect(takeFromRegistry(registry, "a", T0).allowed).toBe(true);
+    expect(takeFromRegistry(registry, "b", T0).allowed).toBe(true);
+    expect(takeFromRegistry(registry, "a", T0 + 1).allowed).toBe(true);
+    expect(takeFromRegistry(registry, "c", T0 + 2).allowed).toBe(true);
+    expect([...registry.buckets.keys()]).toEqual(["a", "c"]);
+
+    expect(takeFromRegistry(registry, "d", T0 + 2_000).allowed).toBe(true);
+    expect([...registry.buckets.keys()]).toEqual(["d"]);
   });
 });
 

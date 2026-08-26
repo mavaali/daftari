@@ -29,17 +29,27 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { type AccessContext, GUEST_ROLE, resolveAccess } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canManageIntegrations,
+  GUEST_ROLE,
+  resolveAccess,
+} from "../access/rbac.js";
 import { loadAttestKey } from "../attest/sign.js";
 import type { BoardFilters } from "../board/board.js";
 import { listBoard } from "../board/board.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { installShutdownHandlers, parseFlag, startVaultServices } from "../index.js";
-import { acquireLock } from "../lifecycle/lock.js";
+import {
+  createConfiguredIntegrationRuntime,
+  type IntegrationRuntime,
+} from "../integrations/runtime.js";
+import { acquireLock, releaseLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
 import { setGraphExpandConfig } from "../search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "../search/hybrid.js";
@@ -51,17 +61,20 @@ import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
 import { vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
+import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 import { renderBoardPage } from "../view/board-page.js";
 import { type AuthEvent, appendAuthEvent, tokenHint } from "./auth-log.js";
 import {
   type Bucket,
   chargePenalty,
   makeBucket,
+  makeBucketRegistry,
   makePenaltyBox,
   makeSlotGate,
   penaltyAllows,
   releaseSlot,
   type SlotGate,
+  takeFromRegistry,
   tryAcquireSlot,
   tryTake,
 } from "./limits.js";
@@ -130,8 +143,29 @@ export interface ResolvedSession {
 
 const LOOPBACK_BINDS = new Set(["127.0.0.1", "::1", "localhost"]);
 
+export function httpCallbackBase(bind: string, port: number): string {
+  const callbackHost = isLoopbackBind(bind) ? bind : "127.0.0.1";
+  const authority = callbackHost.includes(":") ? `[${callbackHost}]` : callbackHost;
+  return `http://${authority}:${port}`;
+}
+
 function remoteOf(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
+}
+
+export function resolvePublicRemote(
+  socketRemote: string | undefined,
+  forwardedFor: string | string[] | undefined,
+  trustProxy: boolean,
+): string {
+  const fallback = socketRemote ?? "unknown";
+  if (!trustProxy || typeof forwardedFor !== "string") return fallback;
+  const firstHop =
+    forwardedFor
+      .split(",", 1)[0]
+      ?.trim()
+      .replace(/^\[|\]$/g, "") ?? "";
+  return isIP(firstHop) === 0 ? fallback : firstHop;
 }
 
 export function isLoopbackBind(bind: string): boolean {
@@ -550,6 +584,8 @@ export interface StartHttpServerOptions {
   // The resolved browser-session credential (bead 7q9), or null when no
   // server.auth.session block is configured. Threaded from validateServeStartup.
   session?: ResolvedSession | null;
+  /** Provider-neutral connector runtime; provider behavior stays outside serve. */
+  integrationRuntime?: IntegrationRuntime;
 }
 
 export function startHttpServer(
@@ -571,6 +607,10 @@ export function startHttpServer(
   const limits = config.server.limits;
   const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
   const principalBuckets = new Map<string, Bucket>();
+  const publicIntegrationBuckets = makeBucketRegistry(limits.burst, limits.ratePerMinute);
+  // Public delivery never competes with MCP work or another provider route
+  // for the same slots. This reserves bounded callback/webhook capacity.
+  const publicIntegrationSlotGates = new Map<string, SlotGate>();
   // Marks requests authenticated via the browser-session COOKIE (bead 7q9).
   // CSRF enforcement (double-submit) applies only to these — bearer-authed
   // requests carry no ambient credential a cross-site page could ride.
@@ -770,6 +810,143 @@ export function startHttpServer(
     }
 
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+    if (opts.integrationRuntime !== undefined) {
+      const handled = await opts.integrationRuntime.handle(req, res, url, {
+        admitPublic: (integrationRequest, integrationResponse) => {
+          const remote = resolvePublicRemote(
+            integrationRequest.socket.remoteAddress,
+            integrationRequest.headers["x-forwarded-for"],
+            config.server.trustProxy === true,
+          );
+          const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
+          const take = takeFromRegistry(publicIntegrationBuckets, `${path}\0${remote}`, Date.now());
+          if (!take.allowed) {
+            integrationResponse.setHeader("Retry-After", String(take.retryAfterSeconds));
+            audit({
+              outcome: "rate-limited",
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 429, {
+              error: "rate_limited",
+              message: "public integration request rate limit reached",
+            });
+            return null;
+          }
+          let publicGate = publicIntegrationSlotGates.get(path);
+          if (publicGate === undefined) {
+            publicGate = makeSlotGate(Math.max(2, Math.ceil(limits.maxInFlight / 4)));
+            publicIntegrationSlotGates.set(path, publicGate);
+          }
+          if (!tryAcquireSlot(publicGate)) {
+            integrationResponse.setHeader("Retry-After", "1");
+            audit({
+              outcome: "over-capacity",
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 503, {
+              error: "over_capacity",
+              message: "server is at its request ceiling",
+            });
+            return null;
+          }
+          audit({
+            outcome: "allow",
+            remote,
+            method: integrationRequest.method ?? "",
+            path,
+          });
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            releaseSlot(publicGate);
+          };
+        },
+        authorize: async (integrationRequest, integrationResponse) => {
+          const remote = remoteOf(integrationRequest);
+          const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
+          const penalty = penaltyAllows(penaltyBox, remote, Date.now());
+          if (!penalty.allowed) {
+            integrationResponse.setHeader("Retry-After", String(penalty.retryAfterSeconds));
+            audit({
+              outcome: "rate-limited",
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 429, {
+              error: "rate_limited",
+              message: "too many failed authentication attempts",
+            });
+            return null;
+          }
+          const access = await authenticate(integrationRequest, integrationResponse, url.pathname);
+          if (access === null) return null;
+          let bucket = principalBuckets.get(access.user);
+          if (bucket === undefined) {
+            bucket = makeBucket(limits.burst, limits.ratePerMinute, Date.now());
+            principalBuckets.set(access.user, bucket);
+          }
+          const take = tryTake(bucket, Date.now());
+          if (!take.allowed) {
+            integrationResponse.setHeader("Retry-After", String(take.retryAfterSeconds));
+            audit({
+              outcome: "rate-limited",
+              principal: access.user,
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 429, {
+              error: "rate_limited",
+              message: "per-principal rate limit reached",
+            });
+            return null;
+          }
+          if (!tryAcquireSlot(slotGate)) {
+            integrationResponse.setHeader("Retry-After", "1");
+            audit({
+              outcome: "over-capacity",
+              principal: access.user,
+              remote,
+              method: integrationRequest.method ?? "",
+              path,
+            });
+            writeJson(integrationResponse, 503, {
+              error: "over_capacity",
+              message: "server is at its request ceiling",
+            });
+            return null;
+          }
+          let released = false;
+          const release = (): void => {
+            if (released) return;
+            released = true;
+            releaseSlot(slotGate);
+          };
+          integrationResponse.once("finish", release);
+          integrationResponse.once("close", release);
+          audit({
+            outcome: "allow",
+            principal: access.user,
+            remote,
+            method: integrationRequest.method ?? "",
+            path,
+          });
+          return {
+            cookieAuthenticated: cookieAuthedReqs.has(integrationRequest),
+            canManageIntegrations: canManageIntegrations(access.role),
+          };
+        },
+        checkCsrf,
+      });
+      if (handled) return;
+    }
 
     // ---------------------------------------------------------------------------
     // Board login shim (bead 7q9, U5) — mounted BEFORE authenticate(): the login
@@ -1165,23 +1342,41 @@ export function startHttpServer(
   return new Promise((resolveStart, rejectStart) => {
     httpServer.once("error", rejectStart);
     httpServer.listen(port, bind, () => {
-      httpServer.removeListener("error", rejectStart);
       const address = httpServer.address();
       const boundPort = typeof address === "object" && address !== null ? address.port : port;
       if (isLoopbackBind(bind)) loopbackGuard = makeLoopbackGuard(boundPort);
-      resolveStart({
-        port: boundPort,
-        close: async () => {
-          // close() aborts in-flight exchanges and resolves once every
-          // per-request instance has terminated — there is no session table
-          // to drain.
-          await mcpHandler.close();
-          await new Promise<void>((r) => httpServer.close(() => r()));
-          // Drain fire-and-forget audit appends last: no request can start a
-          // new one once the listener is closed, so this settles the tail and
-          // guarantees no append resurrects .daftari/ after shutdown.
-          await Promise.allSettled([...pendingAudits]);
-        },
+      void (async () => {
+        if (opts.integrationRuntime !== undefined) {
+          const started = await opts.integrationRuntime.start(httpCallbackBase(bind, boundPort));
+          if (!started.ok) {
+            await new Promise<void>((done) => httpServer.close(() => done()));
+            rejectStart(started.error);
+            return;
+          }
+        }
+        httpServer.removeListener("error", rejectStart);
+        resolveStart({
+          port: boundPort,
+          close: async () => {
+            // Freeze network admission first so a webhook stream cannot keep
+            // requesting connector reruns while shutdown drains the active
+            // cycle. The callback resolves after existing HTTP exchanges end.
+            const listenerClosed = new Promise<void>((done) => httpServer.close(() => done()));
+            await opts.integrationRuntime?.close();
+            // close() aborts in-flight exchanges and resolves once every
+            // per-request instance has terminated — there is no session table
+            // to drain.
+            await mcpHandler.close();
+            await listenerClosed;
+            // Drain fire-and-forget audit appends last: no request can start a
+            // new one once the listener is closed, so this settles the tail and
+            // guarantees no append resurrects .daftari/ after shutdown.
+            await Promise.allSettled([...pendingAudits]);
+          },
+        });
+      })().catch(async (cause) => {
+        await new Promise<void>((done) => httpServer.close(() => done()));
+        rejectStart(cause);
       });
     });
   });
@@ -1267,6 +1462,24 @@ export async function runServe(argv: string[]): Promise<number> {
     return 2;
   }
 
+  let integrationRuntime: IntegrationRuntime | undefined;
+  if (config.value.integrations !== undefined) {
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot,
+      config: config.value.integrations,
+      environment: process.env,
+      ...(config.value.server.publicBaseUrl === undefined
+        ? {}
+        : { publicBaseUrl: config.value.server.publicBaseUrl }),
+      onError: (message) => process.stderr.write(`daftari: warning: ${message}\n`),
+    });
+    if (!created.ok) {
+      process.stderr.write(`daftari serve: ${created.error.message}\n`);
+      return 2;
+    }
+    integrationRuntime = created.value;
+  }
+
   // Storage backing for periodic sync (#6): created and validated BEFORE the
   // lock and the listener. A config-declared capability that cannot run must
   // refuse at startup — returning an exit code after the listener is up
@@ -1290,9 +1503,23 @@ export async function runServe(argv: string[]): Promise<number> {
   // a failure between here and the listener opening must still release the
   // lock on exit. `handle` is assigned once the listener is up.
   let handle: ServeHandle | null = null;
-  installShutdownHandlers(vaultRoot, () => {
-    if (handle) void handle.close();
+  installShutdownHandlers(vaultRoot, async () => {
+    if (handle) await handle.close();
   });
+
+  // Existing vaults may predate the integration-state ignore block. Upgrade
+  // it only after this process owns the vault: a refused second process must
+  // remain read-only.
+  if (config.value.integrations !== undefined) {
+    try {
+      await ensureVaultGitignore(vaultRoot);
+    } catch (cause) {
+      releaseLock(vaultRoot);
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      process.stderr.write(`daftari serve: cannot secure local integration state: ${reason}\n`);
+      return 3;
+    }
+  }
 
   try {
     setProvider(config.value.embeddingProvider);
@@ -1319,6 +1546,7 @@ export async function runServe(argv: string[]): Promise<number> {
     handle = await startHttpServer(vaultRoot, config.value, gate.tokens, bind, port, {
       legacyHttp,
       session: gate.session,
+      ...(integrationRuntime === undefined ? {} : { integrationRuntime }),
     });
   } catch (e) {
     process.stderr.write(

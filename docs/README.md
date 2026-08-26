@@ -19,6 +19,7 @@ door; these guides carry the operating detail and design rationale.
 | Act on lint findings and unresolved tensions | [Curation workflow](curation-workflow.md) |
 | Run sleep, court, interview, archaeology, witness, viewer, and audit workflows | [Operator workflows](operator-workflows.md) |
 | Configure roles, HTTP serving, federation, process ownership, and backups | [Deployment and access](deployment.md) |
+| Continuously distill Google Docs or Notion into staged proposals | [Google Docs and Notion integrations](integrations.md) |
 | Use the multi-vault MCP router | [Multi-vault how-to](multi-vault-howto.md) |
 | Remove sensitive material from files and Git history | [Erasure protocol](erasure-protocol.md) |
 

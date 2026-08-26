@@ -90,6 +90,12 @@ export function canVerifyRepoSources(role: RoleConfig | null): boolean {
   return role?.verifyRepoSources ?? false;
 }
 
+// Connector control routes expose OAuth and webhook-management capabilities,
+// so a vault read/write grant alone never implies access to them.
+export function canManageIntegrations(role: RoleConfig | null): boolean {
+  return role?.manageIntegrations ?? false;
+}
+
 // True if the role is propose-only (#235): its writes must land as staged
 // `write` proposals, never as direct mutations. vault_write and vault_assert
 // coerce into staged proposals; every other write tool denies. The write
