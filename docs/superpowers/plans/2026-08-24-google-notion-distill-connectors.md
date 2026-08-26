@@ -341,7 +341,7 @@ Expected: all checks exit 0. If an existing non-feature failure remains, add its
 
 Review the complete diff against the spec. Fix critical and important findings, then rerun Step 2.
 
-- [ ] **Step 4: Commit, push, open PR, and enable auto-merge**
+- [x] **Step 4: Commit, push, open PR, and enable auto-merge**
 
 ```bash
 git add docs src test
