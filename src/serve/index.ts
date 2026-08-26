@@ -1358,14 +1358,16 @@ export function startHttpServer(
         resolveStart({
           port: boundPort,
           close: async () => {
-            // Stop connector timers and drain their active cycle before the
-            // request transport closes.
+            // Freeze network admission first so a webhook stream cannot keep
+            // requesting connector reruns while shutdown drains the active
+            // cycle. The callback resolves after existing HTTP exchanges end.
+            const listenerClosed = new Promise<void>((done) => httpServer.close(() => done()));
             await opts.integrationRuntime?.close();
             // close() aborts in-flight exchanges and resolves once every
             // per-request instance has terminated — there is no session table
             // to drain.
             await mcpHandler.close();
-            await new Promise<void>((r) => httpServer.close(() => r()));
+            await listenerClosed;
             // Drain fire-and-forget audit appends last: no request can start a
             // new one once the listener is closed, so this settles the tail and
             // guarantees no append resurrects .daftari/ after shutdown.
