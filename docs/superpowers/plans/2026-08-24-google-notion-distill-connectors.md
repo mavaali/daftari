@@ -337,7 +337,7 @@ Run: `npm run build && npm run lint && npm test`
 
 Expected: all checks exit 0. If an existing non-feature failure remains, add its exact command/output to a separate Beads issue and do not attribute it to this feature.
 
-- [ ] **Step 3: Request and apply independent review**
+- [x] **Step 3: Request and apply independent review**
 
 Review the complete diff against the spec. Fix critical and important findings, then rerun Step 2.
 
