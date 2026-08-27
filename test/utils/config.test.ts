@@ -265,6 +265,7 @@ describe("loadConfig — schema extensions", () => {
         authFailureBurst: 10,
         authFailuresPerMinute: 6,
         maxInFlight: 32,
+        maxBodyBytes: 4_194_304,
       });
       expect(good.value.server.audit).toBe(true);
       expect(good.value.server.trustProxy).toBe(false);
@@ -279,6 +280,7 @@ describe("loadConfig — schema extensions", () => {
       writeConfig(
         "version: 1\nserver:\n  limits:\n    rate_per_minute: 30\n    burst: 5\n" +
           "    auth_failure_burst: 3\n    auth_failures_per_minute: 2\n    max_in_flight: 8\n" +
+          "    max_body_bytes: 8388608\n" +
           "  audit: false\n",
       );
       const good = loadConfig(dir);
@@ -290,6 +292,7 @@ describe("loadConfig — schema extensions", () => {
         authFailureBurst: 3,
         authFailuresPerMinute: 2,
         maxInFlight: 8,
+        maxBodyBytes: 8388608,
       });
       expect(good.value.server.audit).toBe(false);
     });

@@ -214,6 +214,7 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
         authFailureBurst: 10,
         authFailuresPerMinute: 6,
         maxInFlight: 32,
+        maxBodyBytes: 4_194_304,
       },
       audit: false,
     },

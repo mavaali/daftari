@@ -193,6 +193,10 @@ export interface ServeLimitsConfig {
   authFailureBurst: number;
   authFailuresPerMinute: number;
   maxInFlight: number;
+  // Hard ceiling on a request body, in bytes. The MCP adapter buffers the
+  // whole body in memory, so this bounds what one request (× maxInFlight) can
+  // pin. 4 MiB clears real tool-call payloads while staying far below a DoS.
+  maxBodyBytes: number;
 }
 
 export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
@@ -201,6 +205,7 @@ export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
   authFailureBurst: 10,
   authFailuresPerMinute: 6,
   maxInFlight: 32,
+  maxBodyBytes: 4_194_304,
 };
 
 // `storage` block (#6, spec 2026-07-20 Decision 3): a durable sync target
@@ -1235,6 +1240,7 @@ const RECOGNISED_SERVER_LIMITS_KEYS = [
   "auth_failure_burst",
   "auth_failures_per_minute",
   "max_in_flight",
+  "max_body_bytes",
 ] as const;
 const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth", "session"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
@@ -1418,6 +1424,7 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
       ["auth_failure_burst", "authFailureBurst"],
       ["auth_failures_per_minute", "authFailuresPerMinute"],
       ["max_in_flight", "maxInFlight"],
+      ["max_body_bytes", "maxBodyBytes"],
     ];
     for (const [key, field] of numeric) {
       const v = limits[key];
