@@ -170,7 +170,11 @@ async function readDocResource(
   if (!parsed.ok) return err(notFound(uri));
 
   if (access) {
-    const collection = collectionOf(relPath, parsed.value.frontmatter);
+    // Gate on the canonical path the filesystem read, not the caller's raw
+    // `relPath`: `resolveVaultPath` collapses `..`, so a `public/../restricted/…`
+    // alias would otherwise be checked against collection `public` while
+    // returning the restricted doc (F1).
+    const collection = collectionOf(resolved.value.relPath, parsed.value.frontmatter);
     if (!canRead(access.role, collection)) return err(notFound(uri));
   }
 
