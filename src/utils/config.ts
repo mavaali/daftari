@@ -18,6 +18,7 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
+import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
 
@@ -54,6 +55,9 @@ export interface RoleConfig {
   // larger tree than the vault ACL covers. YAML key: verify_repo_sources.
   // Optional; absent means false.
   verifyRepoSources?: boolean;
+  // May connect providers and manage webhook verification material. This is
+  // independent of vault content grants. YAML key: manage_integrations.
+  manageIntegrations?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -164,6 +168,8 @@ export interface ServerConfig {
   // upstream (or the network is trusted). Required for non-loopback binds —
   // the shadow_mode precedent applied to transport.
   transportSecurity?: "external";
+  /** Trust the first X-Forwarded-For hop for public-route rate limiting. */
+  trustProxy?: boolean;
   tokens: ServerTokenConfig[];
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
@@ -177,6 +183,8 @@ export interface ServerConfig {
   limits: ServeLimitsConfig;
   // .daftari/auth-log.jsonl on/off (operator-only audit; serve only).
   audit: boolean;
+  /** Public HTTPS origin/base path used for connector OAuth and webhook callbacks. */
+  publicBaseUrl?: string;
 }
 
 export interface ServeLimitsConfig {
@@ -414,12 +422,23 @@ export interface DaftariConfig {
   // — no mounts, no principals grants. stdio-only in v1: `daftari serve`
   // refuses to start on a config carrying a `mounts` list.
   federation?: FederationConfig;
+  // Deployment-owned OAuth settings. Secret values never live in YAML: this
+  // block names only environment variables that the deployment must supply.
+  integrations?: IntegrationConfig;
   // U10: optional explicit principal list (`principals:` top-level key).
   // Supplements the implicit set derived from server.auth.tokens[].user.
   // The union of both sets is the configured principal set. Absent ⇒ []
   // (leniently parsed; not required). Used by isConfiguredPrincipal to gate
   // board owner/reassign actions to known identities only.
   principals: string[];
+}
+
+export type GraphExpandSubset = "trigger" | "all" | "tensions";
+export interface GraphExpandConfig {
+  enabled: boolean;
+  cap: number;
+  tau: number;
+  subset: GraphExpandSubset;
 }
 
 export interface SearchTuningConfig {
@@ -436,6 +455,12 @@ export interface SearchTuningConfig {
   // head into the list when absent. Default off until the hallucination-
   // judged bench decides; the deterministic mechanics ship gated.
   suppressSuperseded: boolean;
+  // off.1/MAV-154: one-hop edge expansion post-pass in vault_search. Default off
+  // — the $0 ceiling arm cleared but wild-alignment is unproven (bead off.6).
+  // `subset` picks the edge kinds (trigger = tensions + trigger-bearing
+  // derives_from, the ceiling winner). `tau` is the vector-cosine affinity floor;
+  // `cap` the fixed global add budget.
+  graphExpand: GraphExpandConfig;
 }
 
 export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
@@ -446,9 +471,16 @@ export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
   // depending on budget, distractor load flat, K=512 byte-identical to 256.
   vecKnnK: 256,
   suppressSuperseded: false,
+  graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
 };
 
-const RECOGNISED_SEARCH_KEYS = ["coverage", "vec_knn_k", "suppress_superseded", "weights"] as const;
+const RECOGNISED_SEARCH_KEYS = [
+  "coverage",
+  "vec_knn_k",
+  "suppress_superseded",
+  "graph_expand",
+  "weights",
+] as const;
 
 // Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
 // larger than any realistic per-query candidate need and the config is more
@@ -483,12 +515,80 @@ function emptyConfig(): DaftariConfig {
     autoRepin: true,
     distill: undefined,
     federation: undefined,
+    integrations: undefined,
     principals: [],
   };
 }
 
 export function configPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "config.yaml");
+}
+
+const RECOGNISED_INTEGRATIONS_KEYS = [
+  "encryption_key_env",
+  "polling_interval_minutes",
+  "google",
+  "notion",
+] as const;
+const RECOGNISED_INTEGRATION_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
+
+function validateIntegrationProvider(
+  provider: "google" | "notion",
+  raw: unknown,
+): Result<IntegrationProviderConfig, Error> {
+  const mapping = requireMapping(raw, `'integrations.${provider}'`);
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(
+    mapping.value,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS,
+    `integrations.${provider}`,
+  );
+  if (!known.ok) return known;
+  for (const key of RECOGNISED_INTEGRATION_PROVIDER_KEYS) {
+    const value = mapping.value[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
+    }
+  }
+  return ok({
+    clientIdEnv: (mapping.value.client_id_env as string).trim(),
+    clientSecretEnv: (mapping.value.client_secret_env as string).trim(),
+  });
+}
+
+function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefined, Error> {
+  if (raw === undefined) return ok(undefined);
+  const mapping = requireMapping(raw, "'integrations'");
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(mapping.value, RECOGNISED_INTEGRATIONS_KEYS, "integrations");
+  if (!known.ok) return known;
+
+  const encryptionKeyEnv = mapping.value.encryption_key_env;
+  if (typeof encryptionKeyEnv !== "string" || encryptionKeyEnv.trim().length === 0) {
+    return err(new Error("'integrations.encryption_key_env' must be a non-empty string"));
+  }
+
+  let pollingIntervalMinutes = DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES;
+  if (mapping.value.polling_interval_minutes !== undefined) {
+    const interval = mapping.value.polling_interval_minutes;
+    if (typeof interval !== "number" || !Number.isInteger(interval) || interval <= 0) {
+      return err(new Error("'integrations.polling_interval_minutes' must be a positive integer"));
+    }
+    pollingIntervalMinutes = interval;
+  }
+
+  const integrations: IntegrationConfig = {
+    encryptionKeyEnv: encryptionKeyEnv.trim(),
+    pollingIntervalMinutes,
+  };
+  for (const provider of ["google", "notion"] as const) {
+    if (mapping.value[provider] === undefined) continue;
+    const config = validateIntegrationProvider(provider, mapping.value[provider]);
+    if (!config.ok) return config;
+    integrations[provider] = config.value;
+  }
+  return ok(integrations);
 }
 
 function asStringArray(value: unknown, where: string): Result<string[], Error> {
@@ -563,6 +663,14 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     verifyRepoSources = obj.verify_repo_sources;
   }
 
+  let manageIntegrations = false;
+  if (obj.manage_integrations !== undefined) {
+    if (typeof obj.manage_integrations !== "boolean") {
+      return err(new Error(`role '${name}' manage_integrations must be true or false`));
+    }
+    manageIntegrations = obj.manage_integrations;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -592,6 +700,7 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ...(erase ? { erase } : {}),
     ...(dispose ? { dispose } : {}),
     ...(verifyRepoSources ? { verifyRepoSources } : {}),
+    ...(manageIntegrations ? { manageIntegrations } : {}),
   });
 }
 
@@ -1112,7 +1221,14 @@ function validateFederation(raw: unknown): Result<FederationConfig | undefined, 
   return ok({ mounts, principals });
 }
 
-const RECOGNISED_SERVER_KEYS = ["transport_security", "auth", "limits", "audit"] as const;
+const RECOGNISED_SERVER_KEYS = [
+  "transport_security",
+  "trust_proxy",
+  "public_base_url",
+  "auth",
+  "limits",
+  "audit",
+] as const;
 const RECOGNISED_SERVER_LIMITS_KEYS = [
   "rate_per_minute",
   "burst",
@@ -1242,14 +1358,50 @@ function validateSession(raw: unknown): Result<SessionConfig, Error> {
 // are validated there, not here.
 function validateServer(raw: unknown): Result<ServerConfig, Error> {
   if (raw === undefined) {
-    return ok({ tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true });
+    return ok({
+      tokens: [],
+      limits: { ...DEFAULT_SERVE_LIMITS },
+      audit: true,
+      trustProxy: false,
+    });
   }
   const mapping = requireMapping(raw, "'server'");
   if (!mapping.ok) return mapping;
   const obj = mapping.value;
   const known = rejectUnknownKeys(obj, RECOGNISED_SERVER_KEYS, "server");
   if (!known.ok) return known;
-  const out: ServerConfig = { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true };
+  const out: ServerConfig = {
+    tokens: [],
+    limits: { ...DEFAULT_SERVE_LIMITS },
+    audit: true,
+    trustProxy: false,
+  };
+  if (obj.trust_proxy !== undefined) {
+    if (typeof obj.trust_proxy !== "boolean") {
+      return err(new Error("'server.trust_proxy' must be true or false"));
+    }
+    out.trustProxy = obj.trust_proxy;
+  }
+  if (obj.public_base_url !== undefined) {
+    if (typeof obj.public_base_url !== "string" || obj.public_base_url.trim().length === 0) {
+      return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+    }
+    try {
+      const publicUrl = new URL(obj.public_base_url.trim());
+      if (
+        publicUrl.protocol !== "https:" ||
+        publicUrl.username ||
+        publicUrl.password ||
+        publicUrl.search ||
+        publicUrl.hash
+      ) {
+        return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+      }
+      out.publicBaseUrl = publicUrl.toString().replace(/\/$/, "");
+    } catch {
+      return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+    }
+  }
   if (obj.limits !== undefined) {
     const limitsMapping = requireMapping(obj.limits, "'server.limits'");
     if (!limitsMapping.ok) return limitsMapping;
@@ -1739,6 +1891,11 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     return err(new Error(`malformed config: ${federationConfig.error.message}`));
   }
 
+  const integrationsConfig = validateIntegrations(root.integrations);
+  if (!integrationsConfig.ok) {
+    return err(new Error(`malformed config: ${integrationsConfig.error.message}`));
+  }
+
   const toolsConfig = validateTools(root.tools);
   if (!toolsConfig.ok) return err(new Error(`malformed config: ${toolsConfig.error.message}`));
 
@@ -1878,6 +2035,52 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       }
       search.vecKnnK = block.vec_knn_k;
     }
+    if (block.graph_expand !== undefined) {
+      if (
+        typeof block.graph_expand !== "object" ||
+        block.graph_expand === null ||
+        Array.isArray(block.graph_expand)
+      ) {
+        return err(new Error("malformed config: 'search.graph_expand' must be a mapping"));
+      }
+      const ge = block.graph_expand as Record<string, unknown>;
+      const g = { ...SEARCH_TUNING_DEFAULTS.graphExpand };
+      if (ge.enabled !== undefined) {
+        if (typeof ge.enabled !== "boolean") {
+          return err(
+            new Error("malformed config: 'search.graph_expand.enabled' must be true or false"),
+          );
+        }
+        g.enabled = ge.enabled;
+      }
+      if (ge.cap !== undefined) {
+        if (typeof ge.cap !== "number" || !Number.isInteger(ge.cap) || ge.cap < 0) {
+          return err(
+            new Error("malformed config: 'search.graph_expand.cap' must be a non-negative integer"),
+          );
+        }
+        g.cap = ge.cap;
+      }
+      if (ge.tau !== undefined) {
+        if (typeof ge.tau !== "number" || ge.tau < -1 || ge.tau > 1) {
+          return err(
+            new Error("malformed config: 'search.graph_expand.tau' must be a number in [-1, 1]"),
+          );
+        }
+        g.tau = ge.tau;
+      }
+      if (ge.subset !== undefined) {
+        if (ge.subset !== "trigger" && ge.subset !== "all" && ge.subset !== "tensions") {
+          return err(
+            new Error(
+              "malformed config: 'search.graph_expand.subset' must be trigger | all | tensions",
+            ),
+          );
+        }
+        g.subset = ge.subset;
+      }
+      search.graphExpand = g;
+    }
   }
 
   // Optional `principals:` top-level list (U10). Union with tokens[].user in
@@ -1913,6 +2116,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     autoRepin,
     distill: distillConfig.value,
     federation: federationConfig.value,
+    integrations: integrationsConfig.value,
     principals: principalsList.value,
   });
 }

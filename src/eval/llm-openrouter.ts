@@ -19,9 +19,9 @@ import {
   type CompleteResult,
   type CompleteWithToolsOpts,
   type CompleteWithToolsResult,
+  completeJsonWithRetry,
   type LlmClient,
   retry,
-  stripCodeFence,
 } from "./llm.js";
 import type { CortexEvalError } from "./types.js";
 
@@ -203,27 +203,10 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
     });
   };
 
-  const completeJson = async (
-    o: CompleteJsonOpts,
-  ): Promise<Result<CompleteJsonResult, CortexEvalError>> => {
-    // Same contract as createAnthropicClient.completeJson: schema embedded as
-    // a system-prompt hint, fence-stripped JSON.parse, shape checks stay with
-    // the caller.
-    const sysWithSchema = `${o.system}\n\nReturn JSON matching:\n${JSON.stringify(o.schema, null, 2)}\nReturn ONLY JSON, no prose.`;
-    const r = await complete({ ...o, system: sysWithSchema });
-    if (!r.ok) return r;
-    try {
-      const parsed = JSON.parse(stripCodeFence(r.value.text));
-      return ok({ ...r.value, parsed });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return err({
-        kind: "llm",
-        message: `JSON parse: ${msg} — output was: ${r.value.text.slice(0, 200)}`,
-        retryable: false,
-      });
-    }
-  };
+  // Delegates to the shared completeJsonWithRetry so the schema-hint + retry
+  // + parseModelJson contract (strict fence-strip then lenient brace-slice)
+  // cannot drift between the anthropic and openrouter transports.
+  const completeJson = (o: CompleteJsonOpts) => completeJsonWithRetry(complete, o);
 
   // The OpenAI-style function-calling loop, mirroring the anthropic client's
   // round structure exactly: ask, execute every returned tool call through

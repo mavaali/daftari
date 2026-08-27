@@ -192,6 +192,7 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
       vecKnnK: 64,
       weights: { bm25: 0.8, vector: 0.2 },
       suppressSuperseded: false,
+      graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
     },
     backfillIdentityMap: {},
     holderAliases: {},

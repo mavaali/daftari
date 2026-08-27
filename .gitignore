@@ -24,6 +24,10 @@ test/fixtures/sample-vault/.daftari/index.db
 **/.daftari/wake-queue.jsonl
 **/.daftari/process.lock
 **/.daftari/distill-receipts.jsonl
+**/.daftari/integrations.state.enc
+**/.daftari/integrations.state.enc.*.tmp
+**/.daftari/integration-queue.json
+**/.daftari/integration-review.jsonl
 **/.daftari/board-dispositions.jsonl
 # Ephemeral eval artifacts (regeneratable from .md sources + LLM calls).
 **/.daftari/eval/
@@ -72,3 +76,6 @@ integrations/recall-bench/results/
 # one. The durable artifact is the design record under docs/superpowers/specs/,
 # which is where a decision's rationale and its rejected alternatives belong.
 .jugalbandi/
+
+# Connector metadata queue temporary files (interrupted atomic writes).
+**/.daftari/integration-queue.json.tmp-*

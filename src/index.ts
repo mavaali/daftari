@@ -24,6 +24,7 @@ import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
 import { setCoverageEnabled } from "./search/coverage.js";
+import { setGraphExpandConfig } from "./search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "./search/hybrid.js";
 import {
   markIndexError,
@@ -122,6 +123,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   setVecKnnK(config.value.search.vecKnnK);
   setDefaultWeights(config.value.search.weights);
   setSuppressSuperseded(config.value.search.suppressSuperseded);
+  setGraphExpandConfig(config.value.search.graphExpand);
 
   // Resolve the access identity. With no --role the server runs as the
   // deny-all guest; an unknown role name resolves the same way.
@@ -313,27 +315,63 @@ let shuttingDown = false;
 // The 'exit' listener is sync-only (Node guarantees the loop is closed by
 // then), which is why releaseLock is sync.
 //
-// `extra` (#5): serve registers its own teardown (close the HTTP listener
-// and every live session) to run before the lock releases.
-export function installShutdownHandlers(vaultRoot: string, extra?: () => void): void {
+// `extra` (#5): serve registers its own teardown (close the HTTP listener,
+// integration runtime, and every live session) to run before the lock
+// releases. Keep this below the takeover grace so a replacement process does
+// not begin writing while the old server is still draining.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+
+export function installShutdownHandlers(
+  vaultRoot: string,
+  extra?: () => void | Promise<void>,
+): void {
+  let shutdownStarted = false;
   const onShutdown = () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     shuttingDown = true;
+    const drains: Promise<void>[] = [];
     if (activeWatcher) {
       const w = activeWatcher;
       activeWatcher = null;
-      void w.close();
+      drains.push(w.close());
     }
-    extra?.();
-    releaseLock(vaultRoot);
-    // Terminate deterministically. Relying on the event loop to drain does not
-    // work when a SIGTERM lands mid-reindex: the unawaited background reindex
-    // keeps running and open handles (and the post-reindex watcher) pin the
-    // loop, so the process hangs past the takeover's SIGTERM grace, leaving two
-    // instances writing one vault's index.db. Exiting is safe here because the
-    // index is SQLite/WAL with per-batch-committed, resumable reindex writes: a
-    // kill mid-reindex cannot corrupt index.db (uncommitted work rolls back;
-    // the next startup resumes from the committed batches).
-    process.exit(0);
+    if (extra) drains.push(Promise.resolve().then(extra));
+
+    void (async () => {
+      let timeout: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled(drains).then((results) => {
+          for (const result of results) {
+            if (result.status === "rejected") {
+              const reason =
+                result.reason instanceof Error ? result.reason.message : String(result.reason);
+              process.stderr.write(`daftari: warning: shutdown drain failed: ${reason}\n`);
+            }
+          }
+        }),
+        new Promise<void>((resolveTimeout) => {
+          timeout = setTimeout(() => {
+            process.stderr.write(
+              `daftari: warning: shutdown drain exceeded ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; forcing exit\n`,
+            );
+            resolveTimeout();
+          }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      releaseLock(vaultRoot);
+      // Terminate deterministically. Relying on the event loop to drain does
+      // not work when a SIGTERM lands mid-reindex: the unawaited background
+      // reindex keeps running and open handles (and the post-reindex watcher)
+      // pin the loop, so the process hangs past the takeover's SIGTERM grace,
+      // leaving two instances writing one vault's index.db. Exiting is safe
+      // here because the index is SQLite/WAL with per-batch-committed,
+      // resumable reindex writes: a kill mid-reindex cannot corrupt index.db
+      // (uncommitted work rolls back; the next startup resumes from the
+      // committed batches).
+      process.exit(0);
+    })();
   };
   process.once("SIGTERM", onShutdown);
   process.once("SIGINT", onShutdown);

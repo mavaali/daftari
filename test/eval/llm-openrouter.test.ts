@@ -272,6 +272,25 @@ describe("completeJson", () => {
     expect(sys).toMatch(/"type": "object"/);
   });
 
+  it("recovers JSON from a fenced block with leading prose (local-model preamble case)", async () => {
+    const text =
+      'Here is the JSON you asked for:\n\n```json\n{"related": true, "premise": "B"}\n```';
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody(text)));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await client.completeJson({ ...OPTS, schema: { type: "object" } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ related: true, premise: "B" });
+  });
+
+  it("recovers a bare object preceded by reasoning preamble (no fence)", async () => {
+    const text = 'Sure, here you go:\n{"related": false, "premise": "C"}';
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody(text)));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await client.completeJson({ ...OPTS, schema: { type: "object" } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ related: false, premise: "C" });
+  });
+
   it("unparseable output → non-retryable llm error with an output snippet", async () => {
     const fetchImpl = vi.fn(async () => fakeRes(200, okBody("not json at all")));
     const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });

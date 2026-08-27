@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  canManageIntegrations,
   canPromote,
   canRatify,
   canRead,
@@ -124,6 +125,20 @@ describe("rbac", () => {
       ).toBe(true);
       expect(canVerifyRepoSources(admin.role)).toBe(false);
       expect(canVerifyRepoSources(null)).toBe(false);
+    });
+
+    it("grants integration management only where explicitly declared", () => {
+      expect(
+        canManageIntegrations({
+          read: ["*"],
+          write: [],
+          promote: false,
+          ratify: false,
+          manageIntegrations: true,
+        }),
+      ).toBe(true);
+      expect(canManageIntegrations(admin.role)).toBe(false);
+      expect(canManageIntegrations(null)).toBe(false);
     });
 
     it("reports propose-only from the flag, defaulting false (#235)", () => {

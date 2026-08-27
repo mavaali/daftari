@@ -28,6 +28,7 @@ npx daftari --init ./my-vault
 | Run the curation loop | [Curation workflow](docs/curation-workflow.md) |
 | Review tensions, stale beliefs, or historical state | [Operator workflows](docs/operator-workflows.md) |
 | Configure access, HTTP serving, federation, or storage | [Deployment and access](docs/deployment.md) |
+| Continuously distill Google Docs or Notion | [Source integrations](docs/integrations.md) |
 | Understand the design and its boundaries | [Architecture](docs/architecture.md) |
 | Look up frontmatter fields | [File format](docs/file-format.md) |
 | Find the rest of the documentation | [Documentation map](docs/README.md) |
@@ -268,6 +269,7 @@ main paths are:
 - [Curation workflow](docs/curation-workflow.md)
 - [Operator workflows](docs/operator-workflows.md)
 - [Deployment and access](docs/deployment.md)
+- [Google Docs and Notion integrations](docs/integrations.md)
 - [Adopting existing notes](docs/adoption.md)
 - [Architecture](docs/architecture.md)
 - [File format](docs/file-format.md)

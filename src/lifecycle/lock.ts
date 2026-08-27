@@ -266,7 +266,14 @@ export async function acquireLock(
     }
 
     const prior = existing.value;
-    if (isDaftariProcess(prior.pid, vaultRoot)) {
+    // A lock naming OUR OWN pid cannot be a live other holder — it is a
+    // leftover from a previous incarnation that happened to get the same pid
+    // (containers with a persistent vault volume make this common: pids are
+    // near-deterministic there, so a crash-orphaned lock routinely names the
+    // replacement process's own pid). Without this check the process would
+    // mistake itself for a live holder — refusing to start, or SIGTERMing
+    // itself under --takeover.
+    if (prior.pid !== process.pid && isDaftariProcess(prior.pid, vaultRoot)) {
       const priorMode: LockMode = prior.mode ?? "stdio";
       const holder =
         `pid=${prior.pid}, mode=${priorMode}, started=${prior.startedAt}` +
@@ -307,6 +314,14 @@ export async function acquireLock(
             `${SIGTERM_GRACE_MS}ms; proceeding anyway\n`,
         );
       }
+    } else if (prior.pid === process.pid) {
+      // The own-pid case short-circuited above: the lock IS "a live daftari
+      // instance" — this very process — so the generic message below would
+      // be factually wrong and confusing in container logs.
+      process.stderr.write(
+        `daftari: removing stale lockfile (names our own pid ${prior.pid} — ` +
+          `a leftover from a previous incarnation that had the same pid)\n`,
+      );
     } else {
       process.stderr.write(
         `daftari: removing stale lockfile (pid=${prior.pid} not a live daftari instance)\n`,

@@ -101,6 +101,11 @@ export interface HybridHit {
   retiredStillLinked?: boolean;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
+  // off.1/MAV-154: set when the graph-expansion pass injected this hit (not the
+  // ranker, not the coverage pass). `seed` is the ranked doc it was reached from;
+  // `edgeType` is which edge kind bridged them. Distinct signal from viaCoverage/
+  // coverageReason — an edge-injected hit sets viaEdge and NO coverageReason.
+  viaEdge?: { seed: string; edgeType: "derives_from" | "tension" };
   // MAV-161 supersession suppression (src/search/suppression.ts). Both are
   // set by the tool handler's post-pass, never the ranker.
   viaForeground?: boolean; // a current head pulled into the stale doc's rank slot

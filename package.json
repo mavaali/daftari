@@ -1,6 +1,6 @@
 {
   "name": "daftari",
-  "version": "3.11.0",
+  "version": "3.12.0",
   "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
   "mcpName": "io.github.mavaali/daftari",
   "license": "MIT",
@@ -56,7 +56,7 @@
     ]
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",

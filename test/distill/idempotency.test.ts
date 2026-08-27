@@ -215,6 +215,91 @@ describe("distillUpsert (U5 idempotency)", () => {
     });
   });
 
+  it("retries only claims that failed in an incomplete proposal batch", async () => {
+    const batches: string[][] = [];
+    const staged = (claimKey: string) => ({
+      id: `proposal-${claimKey}`,
+      expires_at: "2026-09-24T00:00:00.000Z",
+      conflicts_with: [],
+      tension_id: null,
+      claim_key: claimKey,
+      targetPath: `distill/${claimKey}.md`,
+    });
+    const proposeClaims = async (
+      _vaultRoot: string,
+      claims: ExtractedClaim[],
+    ): Promise<ProposeOutcome> => {
+      batches.push(claims.map((claim) => claim.claim_key));
+      return batches.length === 1
+        ? {
+            proposed: 1,
+            results: [staged(CLAIM_A.claim_key)],
+            errors: [{ claim_key: CLAIM_B.claim_key, error: "stage failed" }],
+          }
+        : { proposed: 1, results: [staged(CLAIM_B.claim_key)], errors: [] };
+    };
+    const input = {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A, CLAIM_B],
+      proposeClaims,
+    };
+
+    const first = await distillUpsert(vault, { ...input, runId: "run-failed" });
+    expect(first.ok && first.value.propose?.errors).toHaveLength(1);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toMatchObject({
+      content_hash: "",
+      pending_content_hash: sourceContentHash(CONTENT_V1),
+      emitted_claim_keys: [CLAIM_A.claim_key],
+      pending_claims: [CLAIM_B],
+    });
+
+    // Retry extraction is deliberately nondeterministic: it paraphrases the
+    // already-staged A and omits failed B. The durable failed remainder must
+    // be authoritative so A is not duplicated and B is not lost.
+    const second = await distillUpsert(vault, {
+      ...input,
+      claims: [CLAIM_A_EDITED],
+      runId: "run-retry",
+    });
+    expect(second.ok && second.value.noop).toBe(false);
+    expect(batches).toEqual([[CLAIM_A.claim_key, CLAIM_B.claim_key], [CLAIM_B.claim_key]]);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toEqual({
+      content_hash: sourceContentHash(CONTENT_V1),
+      claims: {},
+    });
+  });
+
+  it("does not retry a claim reported as both staged and failed", async () => {
+    const staged = {
+      id: "proposal-a",
+      expires_at: "2026-09-24T00:00:00.000Z",
+      conflicts_with: [],
+      tension_id: null,
+      claim_key: CLAIM_A.claim_key,
+      targetPath: `distill/${CLAIM_A.claim_key}.md`,
+    };
+    const proposeClaims = async (): Promise<ProposeOutcome> => ({
+      proposed: 1,
+      results: [staged],
+      errors: [{ claim_key: CLAIM_A.claim_key, error: "ambiguous writer response" }],
+    });
+
+    const result = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-ambiguous",
+      proposeClaims,
+    });
+
+    expect(result.ok && result.value.propose?.errors).toEqual([]);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toEqual({
+      content_hash: sourceContentHash(CONTENT_V1),
+      claims: {},
+    });
+  });
+
   // -------------------------------------------------------------------------
   // State file hygiene: absent or corrupt ⇒ empty default
   // -------------------------------------------------------------------------
