@@ -153,6 +153,16 @@ export function chargePenalty(box: PenaltyBox, key: string, nowMs: number): void
         refill(existing, nowMs);
         if (existing.tokens >= existing.capacity) box.buckets.delete(k);
       }
+      // The lossless sweep frees nothing when every bucket is still draining
+      // (source-IP churn under a sustained flood). Fall back to evicting the
+      // oldest entries so the map is a HARD cap, matching the bounded bucket
+      // registry — dropping a partially drained bucket lets that IP back in,
+      // the accepted cost of bounding memory under churn.
+      while (box.buckets.size >= box.maxEntries) {
+        const oldest = box.buckets.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        box.buckets.delete(oldest);
+      }
     }
     box.buckets.set(key, b);
   }
