@@ -77,6 +77,17 @@ describe("auth-failure penalty box", () => {
     chargePenalty(box, "b", T0 + 3_600_000);
     expect(penaltyAllows(box, "b", T0 + 3_600_000).allowed).toBe(false);
   });
+
+  it("holds a hard cap even when no bucket is fully refilled (F7)", () => {
+    const box = makePenaltyBox(2, 6, 3); // maxEntries 3
+    // Drain many distinct source IPs at the same instant: none can refill, so
+    // the full-bucket sweep frees nothing. The map must still stay bounded
+    // (source-IP churn otherwise grows it without limit).
+    for (let i = 0; i < 50; i++) {
+      chargePenalty(box, `10.0.0.${i}`, T0);
+    }
+    expect(box.buckets.size).toBeLessThanOrEqual(3);
+  });
 });
 
 describe("bounded bucket registry", () => {

@@ -29,7 +29,6 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
@@ -78,6 +77,7 @@ import {
   tryAcquireSlot,
   tryTake,
 } from "./limits.js";
+import { type CidrRange, parseTrustedProxies, resolvePublicRemote } from "./proxy-trust.js";
 import { signSession, verifySession } from "./session.js";
 
 export const DEFAULT_PORT = 8787;
@@ -151,21 +151,6 @@ export function httpCallbackBase(bind: string, port: number): string {
 
 function remoteOf(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
-}
-
-export function resolvePublicRemote(
-  socketRemote: string | undefined,
-  forwardedFor: string | string[] | undefined,
-  trustProxy: boolean,
-): string {
-  const fallback = socketRemote ?? "unknown";
-  if (!trustProxy || typeof forwardedFor !== "string") return fallback;
-  const firstHop =
-    forwardedFor
-      .split(",", 1)[0]
-      ?.trim()
-      .replace(/^\[|\]$/g, "") ?? "";
-  return isIP(firstHop) === 0 ? fallback : firstHop;
 }
 
 export function isLoopbackBind(bind: string): boolean {
@@ -507,6 +492,64 @@ function readBody(req: IncomingMessage): Promise<string | null> {
   });
 }
 
+// Absolute wall-clock deadline for receiving a full request body. Bounds a
+// slow-loris that dribbles bytes under the size cap forever; a stalled body is
+// abandoned and the socket destroyed.
+const MCP_BODY_DEADLINE_MS = 30_000;
+
+export type BoundedBodyResult =
+  | { status: "ok"; body: string }
+  | { status: "too_large" }
+  | { status: "timeout" }
+  | { status: "error" };
+
+// Read a request body under a HARD byte cap and an absolute deadline. Unlike
+// readBody (which only size-caps and collapses every failure to null), this
+// distinguishes too-large from timed-out from errored so the caller can answer
+// 413 / 408 / 400. It exists for the /mcp path: the MCP adapter's toWebRequest
+// buffers the whole stream with `for await (const chunk of req)` and no ceiling,
+// so the bound must be enforced here, before the adapter runs. The caller then
+// hands the parsed value to the adapter as `parsedBody` and the adapter reads
+// nothing from `req`.
+export function readBodyBounded(
+  req: IncomingMessage,
+  maxBytes: number,
+  deadlineMs: number,
+): Promise<BoundedBodyResult> {
+  return new Promise((resolve) => {
+    // Cheap pre-check: an honest oversized upload declares its length, so we
+    // refuse it without reading (or buffering) a single byte.
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      resolve({ status: "too_large" });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const finish = (result: BoundedBodyResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    // The reader never destroys the socket — it is shared with the response, so
+    // the CALLER answers 413/408 with `Connection: close`. Past the cap we stop
+    // BUFFERING (memory stays bounded) but keep the `data` listener attached so
+    // the rest of the body drains into nowhere rather than back-pressuring.
+    // A declared length can lie (or be absent on a chunked body): count the
+    // bytes actually delivered and cut the moment they cross the cap.
+    const timer = setTimeout(() => finish({ status: "timeout" }), deadlineMs);
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) finish({ status: "too_large" });
+      else if (!settled) chunks.push(chunk);
+    });
+    req.on("end", () => finish({ status: "ok", body: Buffer.concat(chunks).toString("utf-8") }));
+    req.on("error", () => finish({ status: "error" }));
+  });
+}
+
 // Parse BoardFilters from a URLSearchParams instance (query string).
 function filtersFromQuery(query: URLSearchParams): BoardFilters {
   const filters: BoardFilters = {};
@@ -605,6 +648,9 @@ export function startHttpServer(
   // (.daftari/process.lock), the principal set is config-declared and
   // finite, and a restart re-arms the floor immediately.
   const limits = config.server.limits;
+  // Parsed once: which immediate peers are our own proxies, so X-Forwarded-For
+  // is honored only from them (finding F4).
+  const trustedProxies: CidrRange[] = parseTrustedProxies(config.server.trustedProxies);
   const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
   const principalBuckets = new Map<string, Bucket>();
   const publicIntegrationBuckets = makeBucketRegistry(limits.burst, limits.ratePerMinute);
@@ -817,7 +863,7 @@ export function startHttpServer(
           const remote = resolvePublicRemote(
             integrationRequest.socket.remoteAddress,
             integrationRequest.headers["x-forwarded-for"],
-            config.server.trustProxy === true,
+            trustedProxies,
           );
           const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
           const take = takeFromRegistry(publicIntegrationBuckets, `${path}\0${remote}`, Date.now());
@@ -1324,6 +1370,46 @@ export function startHttpServer(
     });
 
     try {
+      // Bound the body BEFORE the MCP adapter reads it. toWebRequest buffers
+      // the whole stream unbounded, so a large or slow body would pin memory /
+      // this in-flight slot. We pre-read under the byte cap + deadline and hand
+      // the parsed value to the adapter as `parsedBody` — the documented
+      // pass-through that makes it read nothing from `req`.
+      let parsedBody: unknown;
+      if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+        const read = await readBodyBounded(req, limits.maxBodyBytes, MCP_BODY_DEADLINE_MS);
+        if (read.status !== "ok") {
+          // The body was never fully read, so close the connection rather than
+          // try to reuse it — the unread remainder would corrupt keep-alive.
+          res.setHeader("Connection", "close");
+          if (read.status === "too_large") {
+            writeJson(res, 413, {
+              error: "payload_too_large",
+              message: "request body exceeds the configured limit",
+            });
+          } else if (read.status === "timeout") {
+            writeJson(res, 408, {
+              error: "request_timeout",
+              message: "request body was not received in time",
+            });
+          } else {
+            writeJson(res, 400, { error: "bad_request", message: "could not read request body" });
+          }
+          return;
+        }
+        if (read.body.length > 0) {
+          try {
+            parsedBody = JSON.parse(read.body);
+          } catch {
+            writeJson(res, 400, {
+              jsonrpc: "2.0",
+              id: null,
+              error: { code: -32700, message: "Parse error" },
+            });
+            return;
+          }
+        }
+      }
       // toNodeHandler forwards req.auth as the handler's pass-through authInfo
       // (it performs no verification of its own — ours ran above). The bearer
       // is the credential; `_meta` client info is diagnostics, never identity.
@@ -1333,7 +1419,7 @@ export function startHttpServer(
         scopes: [],
         extra: { access },
       };
-      await nodeHandler(req, res);
+      await nodeHandler(req, res, parsedBody);
     } finally {
       releaseSlot(slotGate);
     }

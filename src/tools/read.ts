@@ -314,7 +314,13 @@ export async function vaultRead(
   if (!parsed.ok) return parsed;
 
   if (access) {
-    const collection = collectionOf(path, parsed.value.frontmatter);
+    // Gate on the canonical vault-relative path, not the caller-controlled
+    // `path`: `resolveVaultPath` collapses `..` so a `public/../restricted/…`
+    // alias reads the canonical `restricted/…` file. Deriving the collection
+    // from the raw first segment would check `public` while returning the
+    // restricted doc (F1). `resolved.value.relPath` is the realpath-canonical
+    // form the filesystem actually read.
+    const collection = collectionOf(resolved.value.relPath, parsed.value.frontmatter);
     if (!canRead(access.role, collection)) {
       return err(
         new Error(

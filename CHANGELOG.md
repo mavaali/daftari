@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.1] - 2026-08-27
+
+### Security
+
+Hardening pass from an internal security audit (advisories GHSA-8896-gmfh-87m5 and a companion advisory covering the serve findings).
+
+- **RBAC read gated on the canonical path** — `vault_read` and the `daftari://` resource read now derive the access-control collection from the resolved canonical path, not the caller-supplied path, closing a read-authorization bypass via noncanonical paths.
+- **Backups no longer carry executable hook modules** — vault hook modules are excluded from the sync/backup channel in both directions and the hook loader is realpath-confined, so a poisoned restore cannot deliver code a later write would execute.
+- **Bounded `/mcp` request body** — the request body is capped (`server.limits.max_body_bytes`, default 4 MiB) and read under an absolute deadline before processing, bounding memory/slot exhaustion from oversized or slow bodies.
+- **Trusted-proxy CIDRs** — `X-Forwarded-For` is honored only from configured `server.trusted_proxies` CIDRs, with the client taken from the first non-proxy hop, so a direct client cannot forge their rate-limit/penalty key. **Breaking:** the boolean `server.trust_proxy` is removed — set `server.trusted_proxies` (a CIDR list) instead.
+- **Filesystem storage backend realpath-confined** — the fs backend rejects symlinked path components that escape the vault root.
+- **CI security-review action pinned** — the third-party GitHub Action that holds repository secrets is pinned to a commit SHA.
+- **Penalty box hard cap** — the per-source auth-failure penalty box stays bounded under source-IP churn.
+
 ## [3.12.0] - 2026-08-26
 
 ### Added

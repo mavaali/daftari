@@ -243,14 +243,15 @@ describe("loadConfig — schema extensions", () => {
 
     it("parses the server block and rejects malformed shapes loud (#5)", () => {
       writeConfig(
-        "version: 1\nserver:\n  transport_security: external\n  trust_proxy: true\n  auth:\n" +
+        "version: 1\nserver:\n  transport_security: external\n" +
+          "  trusted_proxies:\n    - 10.0.0.0/24\n    - 127.0.0.1\n  auth:\n" +
           "    tokens:\n      - env: T_A\n        user: human:a\n        role: analyst\n",
       );
       const good = loadConfig(dir);
       expect(good.ok).toBe(true);
       if (!good.ok) return;
       expect(good.value.server.transportSecurity).toBe("external");
-      expect(good.value.server.trustProxy).toBe(true);
+      expect(good.value.server.trustedProxies).toEqual(["10.0.0.0/24", "127.0.0.1"]);
       expect(good.value.server.tokens).toEqual([{ env: "T_A", user: "human:a", role: "analyst" }]);
     });
 
@@ -265,13 +266,19 @@ describe("loadConfig — schema extensions", () => {
         authFailureBurst: 10,
         authFailuresPerMinute: 6,
         maxInFlight: 32,
+        maxBodyBytes: 4_194_304,
       });
       expect(good.value.server.audit).toBe(true);
-      expect(good.value.server.trustProxy).toBe(false);
+      expect(good.value.server.trustedProxies).toEqual([]);
     });
 
-    it("rejects a non-boolean server.trust_proxy", () => {
-      writeConfig("version: 1\nserver:\n  trust_proxy: proxy.example\n");
+    it("rejects a malformed server.trusted_proxies entry", () => {
+      writeConfig("version: 1\nserver:\n  trusted_proxies:\n    - not-a-cidr\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+
+    it("rejects a non-list server.trusted_proxies", () => {
+      writeConfig("version: 1\nserver:\n  trusted_proxies: 10.0.0.0/24\n");
       expect(loadConfig(dir).ok).toBe(false);
     });
 
@@ -279,6 +286,7 @@ describe("loadConfig — schema extensions", () => {
       writeConfig(
         "version: 1\nserver:\n  limits:\n    rate_per_minute: 30\n    burst: 5\n" +
           "    auth_failure_burst: 3\n    auth_failures_per_minute: 2\n    max_in_flight: 8\n" +
+          "    max_body_bytes: 8388608\n" +
           "  audit: false\n",
       );
       const good = loadConfig(dir);
@@ -290,6 +298,7 @@ describe("loadConfig — schema extensions", () => {
         authFailureBurst: 3,
         authFailuresPerMinute: 2,
         maxInFlight: 8,
+        maxBodyBytes: 8388608,
       });
       expect(good.value.server.audit).toBe(false);
     });

@@ -17,7 +17,6 @@ import {
   httpCallbackBase,
   matchToken,
   prepareStorageSync,
-  resolvePublicRemote,
   runServe,
   type ServeHandle,
   startHttpServer,
@@ -623,12 +622,6 @@ describe("serve integration runtime wiring", () => {
   it("brackets an IPv6 loopback callback host", () => {
     expect(httpCallbackBase("::1", 8787)).toBe("http://[::1]:8787");
     expect(httpCallbackBase("127.0.0.1", 8787)).toBe("http://127.0.0.1:8787");
-  });
-
-  it("trusts a validated forwarded client IP only when proxy trust is explicit", () => {
-    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9, 10.0.0.4", true)).toBe("203.0.113.9");
-    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9", false)).toBe("10.0.0.5");
-    expect(resolvePublicRemote("10.0.0.5", "attacker.example", true)).toBe("10.0.0.5");
   });
 
   it("enforces connector capability, authentication penalty, and in-flight limits", async () => {
