@@ -19,6 +19,7 @@ import {
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
 import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
+import { parseCidr } from "../serve/proxy-trust.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
 
@@ -168,8 +169,12 @@ export interface ServerConfig {
   // upstream (or the network is trusted). Required for non-loopback binds —
   // the shadow_mode precedent applied to transport.
   transportSecurity?: "external";
-  /** Trust the first X-Forwarded-For hop for public-route rate limiting. */
-  trustProxy?: boolean;
+  // CIDRs of the reverse proxies we operate. X-Forwarded-For is honored for
+  // public-route rate limiting ONLY when the immediate peer is inside one of
+  // these; from any other peer the header is ignored (it is spoofable). Empty
+  // = trust no proxy, the safe default. Replaces the old boolean trust_proxy,
+  // which trusted a forged header from a direct attacker (finding F4).
+  trustedProxies: string[];
   tokens: ServerTokenConfig[];
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
@@ -513,7 +518,7 @@ function emptyConfig(): DaftariConfig {
     lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
-    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true },
+    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true, trustedProxies: [] },
     storage: undefined,
     codeRepos: {},
     jitAnchors: true,
@@ -1228,7 +1233,7 @@ function validateFederation(raw: unknown): Result<FederationConfig | undefined, 
 
 const RECOGNISED_SERVER_KEYS = [
   "transport_security",
-  "trust_proxy",
+  "trusted_proxies",
   "public_base_url",
   "auth",
   "limits",
@@ -1368,7 +1373,7 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
       tokens: [],
       limits: { ...DEFAULT_SERVE_LIMITS },
       audit: true,
-      trustProxy: false,
+      trustedProxies: [],
     });
   }
   const mapping = requireMapping(raw, "'server'");
@@ -1380,13 +1385,22 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
     tokens: [],
     limits: { ...DEFAULT_SERVE_LIMITS },
     audit: true,
-    trustProxy: false,
+    trustedProxies: [],
   };
-  if (obj.trust_proxy !== undefined) {
-    if (typeof obj.trust_proxy !== "boolean") {
-      return err(new Error("'server.trust_proxy' must be true or false"));
+  if (obj.trusted_proxies !== undefined) {
+    if (!Array.isArray(obj.trusted_proxies)) {
+      return err(new Error("'server.trusted_proxies' must be a list of CIDR strings"));
     }
-    out.trustProxy = obj.trust_proxy;
+    for (const entry of obj.trusted_proxies) {
+      if (typeof entry !== "string" || parseCidr(entry) === null) {
+        return err(
+          new Error(
+            `'server.trusted_proxies' entries must be CIDRs or IPs (got ${JSON.stringify(entry)})`,
+          ),
+        );
+      }
+    }
+    out.trustedProxies = obj.trusted_proxies as string[];
   }
   if (obj.public_base_url !== undefined) {
     if (typeof obj.public_base_url !== "string" || obj.public_base_url.trim().length === 0) {

@@ -217,6 +217,7 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
         maxBodyBytes: 4_194_304,
       },
       audit: false,
+      trustedProxies: [],
     },
     storage: undefined,
     codeRepos: {},

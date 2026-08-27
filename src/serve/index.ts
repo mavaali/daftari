@@ -29,7 +29,6 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { type AuthInfo, createMcpHandler } from "@modelcontextprotocol/server";
@@ -78,6 +77,7 @@ import {
   tryAcquireSlot,
   tryTake,
 } from "./limits.js";
+import { type CidrRange, parseTrustedProxies, resolvePublicRemote } from "./proxy-trust.js";
 import { signSession, verifySession } from "./session.js";
 
 export const DEFAULT_PORT = 8787;
@@ -151,21 +151,6 @@ export function httpCallbackBase(bind: string, port: number): string {
 
 function remoteOf(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
-}
-
-export function resolvePublicRemote(
-  socketRemote: string | undefined,
-  forwardedFor: string | string[] | undefined,
-  trustProxy: boolean,
-): string {
-  const fallback = socketRemote ?? "unknown";
-  if (!trustProxy || typeof forwardedFor !== "string") return fallback;
-  const firstHop =
-    forwardedFor
-      .split(",", 1)[0]
-      ?.trim()
-      .replace(/^\[|\]$/g, "") ?? "";
-  return isIP(firstHop) === 0 ? fallback : firstHop;
 }
 
 export function isLoopbackBind(bind: string): boolean {
@@ -663,6 +648,9 @@ export function startHttpServer(
   // (.daftari/process.lock), the principal set is config-declared and
   // finite, and a restart re-arms the floor immediately.
   const limits = config.server.limits;
+  // Parsed once: which immediate peers are our own proxies, so X-Forwarded-For
+  // is honored only from them (finding F4).
+  const trustedProxies: CidrRange[] = parseTrustedProxies(config.server.trustedProxies);
   const penaltyBox = makePenaltyBox(limits.authFailureBurst, limits.authFailuresPerMinute);
   const principalBuckets = new Map<string, Bucket>();
   const publicIntegrationBuckets = makeBucketRegistry(limits.burst, limits.ratePerMinute);
@@ -875,7 +863,7 @@ export function startHttpServer(
           const remote = resolvePublicRemote(
             integrationRequest.socket.remoteAddress,
             integrationRequest.headers["x-forwarded-for"],
-            config.server.trustProxy === true,
+            trustedProxies,
           );
           const path = new URL(integrationRequest.url ?? "/", "http://localhost").pathname;
           const take = takeFromRegistry(publicIntegrationBuckets, `${path}\0${remote}`, Date.now());
