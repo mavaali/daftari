@@ -45,7 +45,8 @@ roles:
 
 server:
   transport_security: external
-  trust_proxy: true
+  trusted_proxies:
+    - 10.0.0.0/8
   public_base_url: https://vault.example.com/daftari
   auth:
     tokens:
@@ -70,11 +71,14 @@ or a fragment. Its path prefix is preserved in every callback URL and mounted
 by Daftari's integration router. `manage_integrations` is deny-by-default and
 independent of read, write, promotion, and ratification grants.
 
-Set `server.trust_proxy: true` only when Daftari is directly behind a reverse
-proxy that removes any client-supplied `X-Forwarded-For` value and writes the
-real client address. This keeps public callback/webhook rate limits per client
-instead of collapsing every provider and attacker onto the proxy socket. Leave
-it false for direct or localhost serving.
+Set `server.trusted_proxies` to the CIDR(s) of the reverse proxy(ies) you run in
+front of Daftari. `X-Forwarded-For` is honored only when the immediate peer is
+inside one of those ranges, and the client is taken from the first hop that is
+not itself a trusted proxy — so a direct attacker cannot forge the header to
+move their rate-limit key onto another address. This keeps public
+callback/webhook rate limits per client instead of collapsing every provider
+onto the proxy socket. Leave the list empty (the default) for direct or
+localhost serving.
 
 Export the named secrets before starting the server:
 
