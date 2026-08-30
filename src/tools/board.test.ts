@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
 import { boardDispositionsPath } from "../board/ledger.js";
-import type { Finding, LedgerEvent } from "../board/types.js";
+import type { LedgerEvent } from "../board/types.js";
 import { requireDefined } from "../test-utils/require-defined.js";
 import type { DaftariConfig, RoleConfig } from "../utils/config.js";
 import { vaultBoardDispose, vaultBoardList, vaultBoardResolve } from "./board.js";
@@ -118,11 +118,6 @@ function readLedgerEvents(vaultRoot: string): LedgerEvent[] {
     .split("\n")
     .filter((l) => l.trim().length > 0)
     .map((l) => JSON.parse(l) as LedgerEvent);
-}
-
-/** Find all ledger events with a given event type. */
-function eventsOfType(vaultRoot: string, eventType: string): LedgerEvent[] {
-  return readLedgerEvents(vaultRoot).filter((e) => e.event === eventType);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +229,6 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
 // ---------------------------------------------------------------------------
 
 const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
-const STALE_DATE = new Date(FIXED_NOW.getTime() - 200 * 86_400_000).toISOString().slice(0, 10);
 
 // ---------------------------------------------------------------------------
 // Vault seeders
@@ -925,7 +919,7 @@ describe("R15 — no tool path can emit or accept 'reopened'", () => {
     });
 
     // Resolve while condition still exists
-    const result = await vaultBoardResolve(vaultRoot, humanAccess, config, {
+    await vaultBoardResolve(vaultRoot, humanAccess, config, {
       finding_id: finding.identity_key,
     });
 

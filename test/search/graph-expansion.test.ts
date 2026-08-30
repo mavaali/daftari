@@ -76,7 +76,6 @@ describe("selectExpansion", () => {
   });
 });
 
-// biome-ignore lint/suspicious/noExplicitAny: hermetic fakes for the injected pass deps
 const hit = (path: string) =>
   ({
     path,
