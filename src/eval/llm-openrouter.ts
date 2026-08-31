@@ -14,7 +14,6 @@
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   type CompleteJsonOpts,
-  type CompleteJsonResult,
   type CompleteOpts,
   type CompleteResult,
   type CompleteWithToolsOpts,

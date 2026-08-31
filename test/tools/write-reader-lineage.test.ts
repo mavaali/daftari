@@ -7,11 +7,7 @@
 // them at land time rather than overwriting.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  encodeLineageEntry,
-  readersFromLineage,
-  unionLineage,
-} from "../../src/distill/reader-fingerprint.js";
+import { encodeLineageEntry, readersFromLineage } from "../../src/distill/reader-fingerprint.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultMerge, vaultSupersede, vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";

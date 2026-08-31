@@ -9,29 +9,29 @@
 
 import { describe, expect, it } from "vitest";
 import { ipInAnyCidr, parseCidr, resolvePublicRemote } from "../../src/serve/proxy-trust.js";
+import { requireDefined } from "../../src/test-utils/require-defined.js";
 
 describe("parseCidr / ipInAnyCidr", () => {
   it("matches IPv4 addresses inside a CIDR and rejects those outside", () => {
-    const c = parseCidr("10.0.0.0/24");
-    expect(c).not.toBeNull();
-    expect(ipInAnyCidr("10.0.0.7", [c!])).toBe(true);
-    expect(ipInAnyCidr("10.0.1.7", [c!])).toBe(false);
+    const c = requireDefined(parseCidr("10.0.0.0/24"));
+    expect(ipInAnyCidr("10.0.0.7", [c])).toBe(true);
+    expect(ipInAnyCidr("10.0.1.7", [c])).toBe(false);
   });
 
   it("treats a bare IPv4 as a /32 host route", () => {
-    const c = parseCidr("127.0.0.1");
-    expect(ipInAnyCidr("127.0.0.1", [c!])).toBe(true);
-    expect(ipInAnyCidr("127.0.0.2", [c!])).toBe(false);
+    const c = requireDefined(parseCidr("127.0.0.1"));
+    expect(ipInAnyCidr("127.0.0.1", [c])).toBe(true);
+    expect(ipInAnyCidr("127.0.0.2", [c])).toBe(false);
   });
 
   it("matches IPv6 CIDRs and normalizes IPv4-mapped IPv6 to IPv4", () => {
-    const v6 = parseCidr("2001:db8::/32");
-    expect(ipInAnyCidr("2001:db8::1", [v6!])).toBe(true);
-    expect(ipInAnyCidr("2001:dead::1", [v6!])).toBe(false);
+    const v6 = requireDefined(parseCidr("2001:db8::/32"));
+    expect(ipInAnyCidr("2001:db8::1", [v6])).toBe(true);
+    expect(ipInAnyCidr("2001:dead::1", [v6])).toBe(false);
     // A dual-stack loopback peer arrives as ::ffff:127.0.0.1 — a v4 CIDR must
     // still match it.
-    const v4 = parseCidr("127.0.0.1/32");
-    expect(ipInAnyCidr("::ffff:127.0.0.1", [v4!])).toBe(true);
+    const v4 = requireDefined(parseCidr("127.0.0.1/32"));
+    expect(ipInAnyCidr("::ffff:127.0.0.1", [v4])).toBe(true);
   });
 
   it("rejects malformed CIDRs and out-of-range prefixes", () => {
@@ -43,7 +43,7 @@ describe("parseCidr / ipInAnyCidr", () => {
 });
 
 describe("resolvePublicRemote", () => {
-  const trusted = [parseCidr("10.0.0.0/24")!];
+  const trusted = [requireDefined(parseCidr("10.0.0.0/24"))];
 
   it("returns the client hop when the peer is a trusted proxy", () => {
     // Peer 10.0.0.5 is our proxy; it appended the client 203.0.113.9.
