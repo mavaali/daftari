@@ -882,6 +882,32 @@ suite, not a manual exercise.
 6. `pdfjs-dist` legacy build in a Node worker without DOM polyfills for
    `getTextContent` only.
 
+### 18.1 Probe results (2026-09-02)
+
+- **Probe 6 — PASS.** `pdfjs-dist` **v6.3.289** legacy build
+  (`pdfjs-dist/legacy/build/pdf.mjs`) runs inside a `node:worker_threads` Worker
+  on Node 22 and extracts full text-layer content via `getDocument` →
+  `page.getTextContent()` with **no DOM polyfill**. The only DOM-ish global in
+  the worker is Node 22's own core `navigator`; `window`/`document`/`DOMMatrix`/
+  `HTMLElement` are absent and unneeded. A reportlab-generated fixture round-trips
+  exactly (`"…decision-critical sentence: revenue fell 12% in Q3."` + a second
+  line). Caveat for the extractor: pass `standardFontDataUrl` to
+  `getDocument` — without it a non-fatal `UnknownErrorException:
+  Ensure that the standardFontDataUrl API parameter is provided` warning fires;
+  text-layer extraction still succeeds, but embedded/non-standard fonts can lose
+  glyph mapping, so the extractor should ship the standard font data. `doc.destroy`
+  is not a method in v6; use `doc.cleanup()` / `loadingTask.destroy()`.
+  Evidence: `/tmp/pdfjs-probe/probe.mjs` (worker-thread probe, ephemeral).
+- **Probes 1–5 — BLOCKED (require a live Microsoft 365 tenant).** Each needs an
+  Entra app registration + delegated Graph credentials + specific tenant
+  artifacts (a SharePoint library, an IRM-protected `.docx`, a live change-
+  notification subscription, the File Picker) that do not exist in this
+  environment. Per the §17 test constraint they are deliberately out of the
+  automated suite; they are operator spikes against a real tenant and must be run
+  by whoever holds tenant access before `writing-plans` fixes the `scope_profile`,
+  the delta-scope fallback (§7.1), the encrypted-file guardrail (§9.3), and the
+  event-id strategy (§6.3).
+
 ---
 
 ## Verdict
