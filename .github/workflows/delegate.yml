@@ -184,7 +184,7 @@ jobs:
       # signal is "N permission denials". Short retention: it's debug data.
       - name: Upload session transcript for diagnosis
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: delegate-session-issue${{ github.event.issue.number }}-run${{ github.run_id }}
           path: ${{ runner.temp }}/claude-execution-output.json
