@@ -117,6 +117,57 @@ describe("run metadata — anthropic complete()", () => {
   });
 });
 
+describe("completeJson — anthropic transport (end-to-end)", () => {
+  // Same contract as the openrouter client's completeJson tests: the anthropic
+  // client's completeJson delegates to the shared completeJsonWithRetry, so
+  // fenced/preamble model output must be recovered the same way on both
+  // transports (mavaali-beads-12a — the openrouter path got this coverage in
+  // #486; the anthropic path never did).
+  function makeClientWith(create: ReturnType<typeof vi.fn>) {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    // biome-ignore lint/suspicious/noExplicitAny: minimal SDK stand-in
+    const client = createAnthropicClient({ messages: { create } } as any);
+    if (prev) process.env.ANTHROPIC_API_KEY = prev;
+    else delete process.env.ANTHROPIC_API_KEY;
+    return client;
+  }
+  function createReturning(text: string) {
+    return vi.fn(async () => ({
+      model: "claude-3-5-sonnet-20241022",
+      content: [{ type: "text", text, citations: null }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+      stop_reason: "end_turn",
+    }));
+  }
+
+  it("recovers JSON from a fenced block with leading prose (local-model preamble case)", async () => {
+    const client = makeClientWith(
+      createReturning('Here is the JSON you asked for:\n\n```json\n{"related": true}\n```'),
+    );
+    const r = await client.completeJson({
+      model: "m",
+      system: "s",
+      user: "u",
+      schema: { type: "object" },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ related: true });
+  });
+
+  it("recovers a bare object preceded by reasoning preamble (no fence)", async () => {
+    const client = makeClientWith(createReturning('Sure, here you go:\n{"related": false}'));
+    const r = await client.completeJson({
+      model: "m",
+      system: "s",
+      user: "u",
+      schema: { type: "object" },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.parsed).toEqual({ related: false });
+  });
+});
+
 describe("run metadata — completeJsonWithRetry", () => {
   const okText = (text: string, servedModel = "served-x") =>
     ok({
