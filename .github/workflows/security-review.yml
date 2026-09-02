@@ -42,6 +42,10 @@ jobs:
           github.event.pull_request.user.login != 'dependabot[bot]'))
       }}
     runs-on: ubuntu-latest
+    # A hung Claude review otherwise sits until GitHub's 6h default, wedging
+    # the auto-merge queue with no recovery (see PR #446: ~1h52m hang). A
+    # normal review is a few minutes; 20 fails a stuck run fast + visibly.
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write

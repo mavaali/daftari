@@ -41,6 +41,9 @@ jobs:
         github.event.issue.user.type != 'Bot' &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
     runs-on: ubuntu-latest
+    # A hung Claude session otherwise holds a runner until GitHub's 6h
+    # default. 60 is well above any legit @claude run.
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
