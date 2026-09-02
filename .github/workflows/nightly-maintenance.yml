@@ -24,6 +24,10 @@ jobs:
       group: nightly-maintenance
       cancel-in-progress: false
     runs-on: ubuntu-latest
+    # A hung Claude session otherwise holds the concurrency lock (and a
+    # runner) until GitHub's 6h default, potentially into the next night.
+    # 60 is well above any legit maintenance run.
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
