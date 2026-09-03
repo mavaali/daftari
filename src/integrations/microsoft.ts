@@ -12,11 +12,16 @@
 // resolution/describeStatus.
 
 import { randomBytes, randomUUID } from "node:crypto";
+import { canRatify, canRead } from "../access/rbac.js";
 import { DEFAULT_EXTRACT_LIMITS, type ExtractKind, extractText } from "../extract/index.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { DISTILL_NUMERIC_DEFAULTS, type RoleConfig } from "../utils/config.js";
 import type {
   AuthorizationRequest,
   CodeExchange,
+  EnrollmentContext,
+  EnrollmentDraft,
+  EnrollmentEstimate,
   EnsureWebhookInput,
   NormalizedRemoteSource,
   ProviderAdapter,
@@ -74,6 +79,14 @@ export interface MicrosoftAdapterOptions {
   // defaults (30s / 8MiB) as Google. Overridable for tests only.
   requestTimeoutMilliseconds?: number;
   maxResponseBytes?: number;
+  // U17: the RBAC role table, used to compute resolveEnrollment's
+  // readersAtEnrollment and estimateEnrollment's readers/ratifiers for the
+  // target collection (design §9.2). Absent -> every role list is empty
+  // (no config-driven RBAC available to this adapter instance).
+  roles?: Record<string, RoleConfig>;
+  // U17/R39: `distill.estimated_usd_per_call`, forwarded unchanged. Absent ->
+  // estimateEnrollment omits `estimatedUsd` entirely rather than guessing.
+  estimatedUsdPerCall?: number;
 }
 
 interface MicrosoftTokenResponse {
@@ -1882,6 +1895,430 @@ async function fetchSource(
   return ok(normalized);
 }
 
+// ---------------------------------------------------------------------------
+// Enrollment (U17): resolveEnrollment + estimateEnrollment (R11, R12, R13,
+// R33, R39). `selection` is an UNTRUSTED File-Picker payload — every
+// referenced item is re-fetched with the server's own delegated token and
+// validated (readable, supported type) before it can ever reach the draft.
+// Folder expansion reuses U14's delta-walk primitives (walkMicrosoftDeltaPages
+// + containerInitUrl/containerFallbackUrl + foldContainerAncestry) rather than
+// duplicating them; it runs a one-shot, non-cursored walk (this is a resolve-
+// time/estimate-time preview, not the persisted discovery cursor).
+
+// §5.3 bounds: a single container may not expand past this many eligible
+// files (enroll sub-folders instead of one giant one), and a vault may not
+// carry more than this many enrolled sources in total.
+const MICROSOFT_MAX_ELIGIBLE_PER_CONTAINER = 1_000;
+const MICROSOFT_MAX_ENROLLED_SOURCES = 2_000;
+
+// Measured docx/pptx/pdf text_chars/source_bytes ratios (U10,
+// test/fixtures/extract/ratios.json). Copied here as named constants — this
+// module must NOT read that file at runtime (it's a test artifact); a
+// drift-guard test in microsoft.test.ts asserts these equal the fixture.
+// Exported (not just module-private) so microsoft.test.ts's drift-guard test
+// asserts against the actual constant this module computes with, rather than
+// a second hardcoded copy that could silently diverge from it.
+export const MICROSOFT_ESTIMATE_RATIOS = {
+  docx: 0.12354847077613262,
+  pptx: 0.07532872743481168,
+  pdf: 0.10687655343827672,
+} as const;
+
+function enrollmentItemMetadataUrl(driveId: string, itemId: string): string {
+  return requestUrl(
+    `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`,
+    { $select: "id,name,eTag,file,folder,size,webUrl,sharepointIds,parentReference,malware" },
+  );
+}
+
+interface MicrosoftEnrollmentItemMetadata {
+  id?: unknown;
+  name?: unknown;
+  eTag?: unknown;
+  file?: unknown;
+  folder?: unknown;
+  size?: unknown;
+  webUrl?: unknown;
+  malware?: unknown;
+}
+
+async function fetchEnrollmentItemMetadata(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  driveId: string,
+  itemId: string,
+): Promise<Result<MicrosoftJsonResponse, Error>> {
+  return requestJson(
+    transport,
+    enrollmentItemMetadataUrl(driveId, itemId),
+    { headers: { authorization: `Bearer ${accessToken}` } },
+    limits,
+  );
+}
+
+interface MicrosoftPickerRef {
+  driveId: string;
+  itemId: string;
+}
+
+// Parses one untrusted picker-payload entry into a bare {driveId, itemId}
+// reference — nothing here is trusted; it only shapes what gets re-fetched
+// from Graph next. Accepts either `id` or `itemId` as the item id key (File
+// Picker v8 payloads vary on this).
+function parsePickerRef(raw: unknown): MicrosoftPickerRef | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const driveId = stringValue(obj.driveId);
+  const itemId = stringValue(obj.itemId) ?? stringValue(obj.id);
+  if (driveId === undefined || itemId === undefined) return undefined;
+  return { driveId, itemId };
+}
+
+function pickerRefFallbackName(raw: unknown): string {
+  if (typeof raw !== "object" || raw === null) return "unknown";
+  const obj = raw as Record<string, unknown>;
+  return stringValue(obj.name) ?? stringValue(obj.itemId) ?? stringValue(obj.id) ?? "unknown";
+}
+
+interface MicrosoftContainerChildFile {
+  id: string;
+  name: string;
+  size: number;
+}
+
+interface MicrosoftContainerExpansion {
+  eligible: MicrosoftContainerChildFile[];
+  legacyCount: number;
+}
+
+// One-shot folder expansion (resolve/estimate time, not the persisted
+// discovery cursor from U14): walks the folder-scoped delta once (falling
+// back to the drive-root delta + ancestry fold on a 400, exactly as
+// walkContainerRoot's freshWalk does for discovery), then filters the
+// resulting item set down to in-subtree, non-deleted files with a supported
+// extension.
+async function walkContainerChildren(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  driveId: string,
+  folderId: string,
+): Promise<Result<MicrosoftContainerExpansion, Error>> {
+  const primary = await walkMicrosoftDeltaPages(
+    transport,
+    accessToken,
+    limits,
+    sleep,
+    containerInitUrl(driveId, folderId),
+  );
+  let items: unknown[];
+  let ancestorIds: ReadonlySet<string> | undefined;
+  if (primary.ok) {
+    items = primary.value.items;
+  } else if (isBadRequestError(primary.error)) {
+    const fallback = await walkMicrosoftDeltaPages(
+      transport,
+      accessToken,
+      limits,
+      sleep,
+      containerFallbackUrl(driveId),
+    );
+    if (!fallback.ok) return fallback;
+    ancestorIds = foldContainerAncestry(fallback.value.items, folderId, []);
+    items = fallback.value.items;
+  } else {
+    return primary;
+  }
+
+  const eligible: MicrosoftContainerChildFile[] = [];
+  let legacyCount = 0;
+  for (const raw of items) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const item = raw as MicrosoftDeltaItem & {
+      name?: unknown;
+      size?: unknown;
+      malware?: unknown;
+    };
+    const id = deltaItemId(raw);
+    if (id === undefined || id === folderId) continue;
+    if (item.deleted !== undefined || item.folder !== undefined || item.file === undefined) {
+      continue;
+    }
+    if (ancestorIds !== undefined) {
+      const parentId = deltaParentId(item);
+      if (parentId === undefined || !ancestorIds.has(parentId)) continue;
+    }
+    // Same defense-in-depth malware exclusion as the top-level item check
+    // above — a flagged child is silently excluded from the eligible set
+    // (fetchSource's own R29 precheck is the authoritative gate at fetch
+    // time; this just keeps a malware-flagged file out of the cost preview).
+    if (typeof item.malware === "object" && item.malware !== null) continue;
+    const name = stringValue(item.name) ?? "";
+    const classification = classifyExtension(name);
+    if (classification === "unsupported") continue;
+    if (classification === "legacy") legacyCount += 1;
+    const size = typeof item.size === "number" ? item.size : 0;
+    eligible.push({ id, name, size });
+  }
+  return ok({ eligible, legacyCount });
+}
+
+function readersForCollection(
+  roles: Record<string, RoleConfig> | undefined,
+  collection: string,
+): string[] {
+  if (roles === undefined) return [];
+  return Object.keys(roles)
+    .filter((name) => canRead(roles[name], collection))
+    .sort();
+}
+
+function ratifiersForCollection(roles: Record<string, RoleConfig> | undefined): string[] {
+  if (roles === undefined) return [];
+  return Object.keys(roles)
+    .filter((name) => canRatify(roles[name]))
+    .sort();
+}
+
+async function resolveEnrollment(
+  transport: MicrosoftHttpTransport,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  roles: Record<string, RoleConfig> | undefined,
+  selection: unknown,
+  state: ProviderState,
+  ctx: EnrollmentContext,
+): Promise<Result<EnrollmentDraft, Error>> {
+  if (!Array.isArray(selection) || selection.length === 0) {
+    return err(new Error("Microsoft enrollment selection must be a non-empty array"));
+  }
+
+  const items: EnrollmentDraft["items"] = [];
+  const skipped: EnrollmentDraft["skipped"] = [];
+  let newEligibleTotal = 0;
+
+  for (const raw of selection) {
+    const ref = parsePickerRef(raw);
+    if (ref === undefined) {
+      skipped.push({ name: pickerRefFallbackName(raw), reason: "invalid_reference" });
+      continue;
+    }
+
+    const metadata = await fetchEnrollmentItemMetadata(
+      transport,
+      state.accessToken,
+      limits,
+      ref.driveId,
+      ref.itemId,
+    );
+    // A transport-level failure (network/timeout) is never a positive
+    // "unreadable" signal — this can't be confirmed at all, so it fails the
+    // whole resolve rather than silently skipping the item (R12).
+    if (!metadata.ok) return metadata;
+    if (metadata.value.status === 403 || metadata.value.status === 404) {
+      // The picker-supplied `name` is untrusted (just a display label the
+      // caller can't use to bypass the metadata check above), but it's fine
+      // to echo it back into the skip list purely for identification.
+      skipped.push({ name: pickerRefFallbackName(raw), reason: "not_readable" });
+      continue;
+    }
+    if (metadata.value.status < 200 || metadata.value.status >= 300) {
+      return err(
+        new Error(
+          `Microsoft Graph enrollment metadata request failed with status ${metadata.value.status}`,
+        ),
+      );
+    }
+
+    const body = metadata.value.body as MicrosoftEnrollmentItemMetadata;
+    const name = stringValue(body.name) ?? ref.itemId;
+    const webUrl = stringValue(body.webUrl);
+    const isFolder = typeof body.folder === "object" && body.folder !== null;
+    const isFile = typeof body.file === "object" && body.file !== null;
+
+    if (isFolder) {
+      const expanded = await walkContainerChildren(
+        transport,
+        state.accessToken,
+        limits,
+        sleep,
+        ref.driveId,
+        ref.itemId,
+      );
+      if (!expanded.ok) return expanded;
+      if (expanded.value.eligible.length > MICROSOFT_MAX_ELIGIBLE_PER_CONTAINER) {
+        return err(
+          new Error(
+            `Microsoft folder "${name}" has ${expanded.value.eligible.length} eligible files ` +
+              `(limit ${MICROSOFT_MAX_ELIGIBLE_PER_CONTAINER}); enroll sub-folders instead`,
+          ),
+        );
+      }
+      newEligibleTotal += expanded.value.eligible.length;
+      items.push({
+        driveId: ref.driveId,
+        remoteId: ref.itemId,
+        kind: "container",
+        label: name,
+        ...(webUrl === undefined ? {} : { webUrl }),
+      });
+      continue;
+    }
+
+    if (!isFile) {
+      skipped.push({ name, reason: "unsupported_type" });
+      continue;
+    }
+    // Same truthy/object malware check as fetchSource's R29 precheck (a
+    // `null` malware facet must not false-positive) — defense in depth at
+    // enrollment time too, not just on every subsequent fetch cycle.
+    if (typeof body.malware === "object" && body.malware !== null) {
+      skipped.push({ name, reason: "malware" });
+      continue;
+    }
+    if (classifyExtension(name) === "unsupported") {
+      skipped.push({ name, reason: "unsupported_type" });
+      continue;
+    }
+
+    newEligibleTotal += 1;
+    items.push({
+      driveId: ref.driveId,
+      remoteId: ref.itemId,
+      kind: "item",
+      label: name,
+      ...(webUrl === undefined ? {} : { webUrl }),
+    });
+  }
+
+  const existingSourceCount = Object.keys(state.sources).length;
+  if (existingSourceCount + newEligibleTotal > MICROSOFT_MAX_ENROLLED_SOURCES) {
+    return err(
+      new Error(
+        `Microsoft enrollment would exceed the ${MICROSOFT_MAX_ENROLLED_SOURCES}-source vault ` +
+          `limit (${existingSourceCount} existing + ${newEligibleTotal} new)`,
+      ),
+    );
+  }
+
+  return ok({
+    items,
+    collection: ctx.collection,
+    includeSpeakerNotes: ctx.includeSpeakerNotes,
+    readersAtEnrollment: readersForCollection(roles, ctx.collection),
+    skipped,
+  });
+}
+
+async function estimateEnrollment(
+  transport: MicrosoftHttpTransport,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  roles: Record<string, RoleConfig> | undefined,
+  estimatedUsdPerCall: number | undefined,
+  draft: EnrollmentDraft,
+  state: ProviderState,
+): Promise<Result<EnrollmentEstimate, Error>> {
+  const skipped: Array<{ name: string; reason: string }> = [...draft.skipped];
+  const byType: Record<"docx" | "pptx" | "pdf", number> = { docx: 0, pptx: 0, pdf: 0 };
+  let bytes = 0;
+  let eligible = 0;
+  let legacyCount = 0;
+  let estimatedCallsTotal = 0;
+
+  const accumulate = (name: string, size: number): void => {
+    const classification = classifyExtension(name);
+    if (classification === "unsupported") return;
+    const bucket = classification === "legacy" ? "pdf" : classification;
+    if (classification === "legacy") legacyCount += 1;
+    const cappedSize = Math.min(size, MICROSOFT_MAX_CONTENT_BYTES);
+    const estChars = cappedSize * MICROSOFT_ESTIMATE_RATIOS[bucket];
+    const calls = Math.min(
+      DISTILL_NUMERIC_DEFAULTS.maxLlmCalls,
+      Math.ceil(estChars / DISTILL_NUMERIC_DEFAULTS.inCallInputCap),
+    );
+    bytes += cappedSize;
+    byType[bucket] += cappedSize;
+    estimatedCallsTotal += calls;
+    eligible += 1;
+  };
+
+  for (const item of draft.items) {
+    if (item.kind === "item") {
+      const metadata = await fetchEnrollmentItemMetadata(
+        transport,
+        state.accessToken,
+        limits,
+        item.driveId,
+        item.remoteId,
+      );
+      if (!metadata.ok) return metadata;
+      if (metadata.value.status === 403 || metadata.value.status === 404) {
+        skipped.push({ name: item.label, reason: "not_readable" });
+        continue;
+      }
+      if (metadata.value.status < 200 || metadata.value.status >= 300) {
+        return err(
+          new Error(
+            `Microsoft Graph enrollment metadata request failed with status ${metadata.value.status}`,
+          ),
+        );
+      }
+      const body = metadata.value.body as MicrosoftEnrollmentItemMetadata;
+      const name = stringValue(body.name) ?? item.label;
+      const size = typeof body.size === "number" ? body.size : 0;
+      if (typeof body.malware === "object" && body.malware !== null) {
+        skipped.push({ name, reason: "malware" });
+        continue;
+      }
+      if (classifyExtension(name) === "unsupported") {
+        skipped.push({ name, reason: "unsupported_type" });
+        continue;
+      }
+      accumulate(name, size);
+      continue;
+    }
+
+    const expanded = await walkContainerChildren(
+      transport,
+      state.accessToken,
+      limits,
+      sleep,
+      item.driveId,
+      item.remoteId,
+    );
+    if (!expanded.ok) return expanded;
+    for (const child of expanded.value.eligible) accumulate(child.name, child.size);
+  }
+
+  const expected = estimatedCallsTotal;
+  const low = Math.floor(expected * 0.8);
+  const high = Math.ceil(expected * 1.2);
+  const warnings: string[] = [];
+  if (legacyCount > 0) {
+    warnings.push(
+      `${legacyCount} legacy .ppt/.doc file${legacyCount === 1 ? "" : "s"} will use lossy PDF conversion`,
+    );
+  }
+
+  return ok({
+    eligible,
+    skipped,
+    bytes,
+    byType,
+    estimatedCalls: { low, expected, high },
+    ...(estimatedUsdPerCall === undefined
+      ? {}
+      : { estimatedUsd: { expected: expected * estimatedUsdPerCall } }),
+    collection: draft.collection,
+    readers: readersForCollection(roles, draft.collection),
+    ratifiers: ratifiersForCollection(roles),
+    warnings,
+  });
+}
+
 export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): ProviderAdapter {
   const { config, redirectUri } = options;
   const transport = options.transport ?? globalThis.fetch;
@@ -1902,5 +2339,17 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
     verifyLifecycleWebhook: (input, state) => verifyLifecycleWebhook(input, state, now),
     discover: (state) => discoverMicrosoftSources(transport, limits, defaultSleep, state),
     fetch: (source, state) => fetchSource(transport, limits, defaultSleep, config, source, state),
+    resolveEnrollment: (selection, state, ctx) =>
+      resolveEnrollment(transport, limits, defaultSleep, options.roles, selection, state, ctx),
+    estimateEnrollment: (draft, state) =>
+      estimateEnrollment(
+        transport,
+        limits,
+        defaultSleep,
+        options.roles,
+        options.estimatedUsdPerCall,
+        draft,
+        state,
+      ),
   };
 }

@@ -110,9 +110,14 @@ export interface EnrollmentDraft {
     remoteId: string;
     kind: "item" | "container";
     label: string;
+    webUrl?: string;
   }>;
   collection: string;
   includeSpeakerNotes: boolean;
+  /** The roles that may read `collection` at resolve time (design §9.2 audience disclosure). */
+  readersAtEnrollment: string[];
+  /** Picker references rejected by name — unreadable, unsupported, or malformed (R12). */
+  skipped: Array<{ name: string; reason: string }>;
 }
 
 /** The cost/preview estimate for an enrollment draft (design §12). */

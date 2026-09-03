@@ -1,9 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { validateContinuousAdapterCapabilities } from "../../src/integrations/engine.js";
-import { createMicrosoftAdapter } from "../../src/integrations/microsoft.js";
+import {
+  createMicrosoftAdapter,
+  MICROSOFT_ESTIMATE_RATIOS,
+} from "../../src/integrations/microsoft.js";
 import { createConfiguredIntegrationRuntime } from "../../src/integrations/runtime.js";
 import { writeIntegrationState } from "../../src/integrations/state.js";
 import type {
@@ -12,6 +15,7 @@ import type {
   ProviderState,
   SourceState,
 } from "../../src/integrations/types.js";
+import type { RoleConfig } from "../../src/utils/config.js";
 import { buildDeck, buildDocxZip, buildPdf, textOp, wrapDocument } from "../extract/fixtures.js";
 import {
   createFixtureTransport,
@@ -2623,5 +2627,295 @@ describe("Microsoft adapter webhooks (U16)", () => {
       value: { kind: "lifecycle", eventId: expect.any(String), action: "reconcile" },
     });
     expect(wrongSecret.ok).toBe(false);
+  });
+});
+
+describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
+  function role(overrides: Partial<RoleConfig> = {}): RoleConfig {
+    return { read: [], write: [], promote: false, ratify: false, ...overrides };
+  }
+
+  const ctx = {
+    user: "user-1",
+    role: "editor",
+    collection: "distill",
+    includeSpeakerNotes: true,
+  };
+
+  it("rejects a forged picker item the account can't read (403) by name; it never reaches the draft", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/secret-1")) {
+          return graphJson({ error: { code: "accessDenied" } }, 403);
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/ok-1")) {
+          return graphJson({ id: "ok-1", name: "ok.docx", file: {}, eTag: "e1", size: 100 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [
+      { driveId: "drive-a", itemId: "secret-1", name: "secret.docx" },
+      { driveId: "drive-a", itemId: "ok-1" },
+    ];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.items).toEqual([
+      { driveId: "drive-a", remoteId: "ok-1", kind: "item", label: "ok.docx" },
+    ]);
+    expect(result.value.skipped).toEqual([{ name: "secret.docx", reason: "not_readable" }]);
+  });
+
+  it("skips an unsupported .xlsx in the pick, never enrolling it", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/sheet-1")) {
+          return graphJson({ id: "sheet-1", name: "budget.xlsx", file: {}, eTag: "e1", size: 10 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [{ driveId: "drive-a", itemId: "sheet-1" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.items).toEqual([]);
+    expect(result.value.skipped).toEqual([{ name: "budget.xlsx", reason: "unsupported_type" }]);
+  });
+
+  it("a container expanding past 1,000 eligible files fails resolve instead of silently truncating", async () => {
+    const manyFiles = Array.from({ length: 1_001 }, (_, i) => ({
+      id: `f${i}`,
+      name: `doc-${i}.docx`,
+      eTag: `e${i}`,
+      size: 10,
+      file: {},
+      parentReference: { id: "folder-big" },
+    }));
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-big/delta")
+        ) {
+          return graphJson({
+            value: manyFiles,
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-big",
+          });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-big")) {
+          return graphJson({ id: "folder-big", name: "Big Folder", folder: {} });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [{ driveId: "drive-a", itemId: "folder-big" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(false);
+    if (result?.ok) return;
+    expect(result.error.message).toMatch(/1,?001 eligible files/);
+    expect(result.error.message).toMatch(/sub-folders/);
+  });
+
+  it("fails resolve when existing + newly-eligible sources would exceed the 2,000-source vault bound", async () => {
+    const existingSources: ProviderState["sources"] = {};
+    for (let i = 0; i < 1_995; i += 1) {
+      existingSources[`drive-a:existing-${i}`] = {
+        id: `drive-a:existing-${i}`,
+        revision: "e",
+        contentHash: "h",
+        available: true,
+        lastSeenAt: "2026-08-24T00:00:00.000Z",
+      };
+    }
+    const manyFiles = Array.from({ length: 10 }, (_, i) => ({
+      id: `f${i}`,
+      name: `doc-${i}.docx`,
+      eTag: `e${i}`,
+      size: 10,
+      file: {},
+      parentReference: { id: "folder-near" },
+    }));
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-near/delta")
+        ) {
+          return graphJson({
+            value: manyFiles,
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-near",
+          });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-near")) {
+          return graphJson({ id: "folder-near", name: "Near Folder", folder: {} });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState({}, existingSources);
+    const selection = [{ driveId: "drive-a", itemId: "folder-near" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(false);
+    if (result?.ok) return;
+    expect(result.error.message).toMatch(/2000-source vault/);
+  });
+
+  it("draft.readersAtEnrollment reflects the target collection's reader roles", async () => {
+    const roles: Record<string, RoleConfig> = {
+      editor: role({ read: ["distill"] }),
+      viewer: role({ read: ["*"] }),
+      other: role({ read: ["other-collection"] }),
+    };
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      roles,
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/doc-1")) {
+          return graphJson({ id: "doc-1", name: "doc.docx", file: {}, eTag: "e1", size: 10 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [{ driveId: "drive-a", itemId: "doc-1" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.readersAtEnrollment).toEqual(["editor", "viewer"]);
+  });
+
+  it("estimateEnrollment returns the §12 shape, with estimatedUsd present when configured, and readers/ratifiers reflect the collection's roles", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      estimatedUsdPerCall: 0.02,
+      roles: {
+        editor: role({ read: ["distill"] }),
+        curator: role({ read: ["distill"], ratify: true }),
+        unrelated: role({ read: ["other-collection"] }),
+      },
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/doc-1")) {
+          return graphJson({
+            id: "doc-1",
+            name: "report.docx",
+            file: {},
+            eTag: "e1",
+            size: 1_000_000,
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const draft = {
+      items: [
+        { driveId: "drive-a", remoteId: "doc-1", kind: "item" as const, label: "report.docx" },
+      ],
+      collection: "distill",
+      includeSpeakerNotes: true,
+      readersAtEnrollment: [],
+      skipped: [],
+    };
+    const state = microsoftProviderState();
+
+    const result = await adapter.estimateEnrollment?.(draft, state);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.eligible).toBe(1);
+    expect(result.value.skipped).toEqual([]);
+    expect(result.value.bytes).toBe(1_000_000);
+    expect(result.value.byType).toEqual({ docx: 1_000_000, pptx: 0, pdf: 0 });
+    // 1_000_000 * docxRatio(0.12354847077613262) / 16000 = 7.72..., ceil -> 8
+    expect(result.value.estimatedCalls).toEqual({ low: 6, expected: 8, high: 10 });
+    expect(result.value.estimatedUsd).toEqual({ expected: 0.16 });
+    expect(result.value.collection).toBe("distill");
+    expect(result.value.readers).toEqual(["curator", "editor"]);
+    expect(result.value.ratifiers).toEqual(["curator"]);
+  });
+
+  it("omits estimatedUsd entirely when distill.estimated_usd_per_call is not configured", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/doc-1")) {
+          return graphJson({ id: "doc-1", name: "report.docx", file: {}, eTag: "e1", size: 1_000 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const draft = {
+      items: [
+        { driveId: "drive-a", remoteId: "doc-1", kind: "item" as const, label: "report.docx" },
+      ],
+      collection: "distill",
+      includeSpeakerNotes: true,
+      readersAtEnrollment: [],
+      skipped: [],
+    };
+    const state = microsoftProviderState();
+
+    const result = await adapter.estimateEnrollment?.(draft, state);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value).not.toHaveProperty("estimatedUsd");
+  });
+
+  it("warns about lossy PDF conversion when the enrollment includes a legacy .ppt", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/legacy-1")) {
+          return graphJson({ id: "legacy-1", name: "deck.ppt", file: {}, eTag: "e1", size: 5_000 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const draft = {
+      items: [
+        { driveId: "drive-a", remoteId: "legacy-1", kind: "item" as const, label: "deck.ppt" },
+      ],
+      collection: "distill",
+      includeSpeakerNotes: true,
+      readersAtEnrollment: [],
+      skipped: [],
+    };
+    const state = microsoftProviderState();
+
+    const result = await adapter.estimateEnrollment?.(draft, state);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    // Legacy .doc/.ppt are converted to PDF by Graph before extraction, so
+    // they're counted under the pdf ratio/bucket, not a separate one.
+    expect(result.value.byType.pdf).toBe(5_000);
+    expect(result.value.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/lossy PDF conversion/)]),
+    );
+  });
+
+  it("the ratio constants match the committed U10 ratios.json (drift guard)", () => {
+    const ratiosPath = new URL("../fixtures/extract/ratios.json", import.meta.url);
+    const committed = JSON.parse(readFileSync(ratiosPath, "utf-8")) as Record<string, number>;
+    expect(MICROSOFT_ESTIMATE_RATIOS.docx).toBe(committed.docx);
+    expect(MICROSOFT_ESTIMATE_RATIOS.pptx).toBe(committed.pptx);
+    expect(MICROSOFT_ESTIMATE_RATIOS.pdf).toBe(committed.pdf);
   });
 });
