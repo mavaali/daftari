@@ -434,4 +434,117 @@ describe("configured integration runtime", () => {
     expect(created.value.lastOutcome("google")).toBeUndefined();
     await created.value.close();
   });
+
+  it("wires RBAC roles + distill.estimated_usd_per_call into the DEFAULT Microsoft adapter factory (U19)", async () => {
+    const microsoftConfig: IntegrationConfig = {
+      encryptionKeyEnv: "INTEGRATION_KEY",
+      pollingIntervalMinutes: 10,
+      microsoft: {
+        clientIdEnv: "MICROSOFT_ID",
+        clientSecretEnv: "MICROSOFT_SECRET",
+        tenantId: "tenant-id",
+        scopeProfile: "sharepoint",
+        collections: ["distill"],
+        includeSpeakerNotes: true,
+      },
+    };
+    const microsoftEnvironment = {
+      ...environment,
+      MICROSOFT_ID: "client-id",
+      MICROSOFT_SECRET: "client-secret",
+    };
+    writeIntegrationState(
+      vault,
+      {
+        providers: {
+          microsoft: { accessToken: "access", refreshToken: "refresh", sources: {} },
+        },
+        oauthStates: {},
+      },
+      KEY,
+    );
+    const roles = {
+      editor: { read: ["distill"], write: ["distill"], promote: false, ratify: false },
+      admin: { read: ["distill"], write: ["distill"], promote: true, ratify: true },
+    };
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/item-1")) {
+        return new Response(
+          JSON.stringify({ id: "item-1", name: "a.docx", file: {}, eTag: "e1", size: 1_000 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      // No adapterFactories override for microsoft — this exercises
+      // defaultFactories()'s own createMicrosoftAdapter call, proving
+      // roles/estimatedUsdPerCall reach production adapter construction.
+      const created = createConfiguredIntegrationRuntime({
+        vaultRoot: vault,
+        config: microsoftConfig,
+        environment: microsoftEnvironment,
+        distill,
+        roles,
+        estimatedUsdPerCall: 0.02,
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+
+      const server = createServer((request, response) => {
+        void created.value
+          .handle(request, response, new URL(request.url ?? "/", "http://localhost"), {
+            admitPublic: () => () => undefined,
+            authorize: async () => ({
+              cookieAuthenticated: false,
+              canManageIntegrations: true,
+              user: "alice",
+              roleName: "editor",
+              role: roles.editor,
+            }),
+            checkCsrf: () => null,
+          })
+          .then((handled) => {
+            if (!handled) {
+              response.statusCode = 404;
+              response.end();
+            }
+          });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (typeof address !== "object" || address === null) throw new Error("missing address");
+      try {
+        const response = await originalFetch(
+          `http://127.0.0.1:${address.port}/integrations/microsoft/enrollments/preview`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              collection: "distill",
+              selection: [{ driveId: "drive-a", itemId: "item-1" }],
+            }),
+          },
+        );
+        expect(response.status).toBe(200);
+        const estimate = (await response.json()) as {
+          readers: string[];
+          ratifiers: string[];
+          estimatedUsd?: { expected: number };
+        };
+        expect(estimate.readers).toEqual(["admin", "editor"]);
+        expect(estimate.ratifiers).toEqual(["admin"]);
+        expect(estimate.estimatedUsd?.expected).toBeGreaterThan(0);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await created.value.close();
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

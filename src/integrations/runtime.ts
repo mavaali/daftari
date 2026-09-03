@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { RoleConfig } from "../utils/config.js";
 import { type IntegrationDistill, prepareIntegrationDistill } from "./distill.js";
 import {
   configuredCredential,
@@ -65,10 +66,20 @@ export interface ConfiguredIntegrationRuntimeOptions {
   distill?: IntegrationDistill;
   shutdownTimeoutMilliseconds?: number;
   waitForShutdown?: (cycle: Promise<void>, timeoutMilliseconds: number) => Promise<void>;
+  // U19: threaded into createMicrosoftAdapter so U17's resolveEnrollment/
+  // estimateEnrollment compute real readers/ratifiers (RBAC role→collection
+  // config) and estimateEnrollment can emit a USD estimate, in production —
+  // not just in tests that construct the adapter directly.
+  /** The config-declared RBAC role table (`.daftari/config.yaml` `roles:`). */
+  roles?: Record<string, RoleConfig>;
+  /** `distill.estimated_usd_per_call` (R39), forwarded unchanged. */
+  estimatedUsdPerCall?: number;
 }
 
 function defaultFactories(
   config: IntegrationConfig,
+  roles: Record<string, RoleConfig> | undefined,
+  estimatedUsdPerCall: number | undefined,
 ): Record<ProviderName, IntegrationAdapterFactory> {
   return {
     google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
@@ -81,7 +92,12 @@ function defaultFactories(
       if (config.microsoft === undefined) {
         throw new Error("microsoft integration is not configured");
       }
-      return createMicrosoftAdapter({ redirectUri, config: config.microsoft });
+      return createMicrosoftAdapter({
+        redirectUri,
+        config: config.microsoft,
+        roles,
+        estimatedUsdPerCall,
+      });
     },
   };
 }
@@ -197,7 +213,10 @@ export function createConfiguredIntegrationRuntime(
   const queue = createIntegrationQueue(options.vaultRoot, options.now);
   const readableQueue = queue.pending();
   if (!readableQueue.ok) return readableQueue;
-  const factories = { ...defaultFactories(options.config), ...options.adapterFactories };
+  const factories = {
+    ...defaultFactories(options.config, options.roles, options.estimatedUsdPerCall),
+    ...options.adapterFactories,
+  };
   const now = options.now ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const waitForShutdown = options.waitForShutdown ?? boundedShutdownWait;
@@ -350,6 +369,7 @@ export function createConfiguredIntegrationRuntime(
         authorize: authorization.authorize,
         admitPublic: authorization.admitPublic,
         checkCsrf: authorization.checkCsrf,
+        lastOutcome: (p) => lastOutcomes.get(p),
         wake: () => {
           if (closing || !started) return;
           queueMicrotask(() => {

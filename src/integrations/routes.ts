@@ -1,6 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { canWrite } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import type { EngineDeps, ProviderAdapter, WebhookRequest } from "./engine.js";
+import type { RoleConfig } from "../utils/config.js";
+import type {
+  EngineDeps,
+  EnrollmentContext,
+  ProviderAdapter,
+  ProviderStatus,
+  UnavailableSourceEvent,
+  WebhookRequest,
+} from "./engine.js";
 import {
   armProviderWebhookSetup,
   confirmProviderWebhookVerification,
@@ -10,7 +20,19 @@ import {
 } from "./engine.js";
 import { beginAuthorizationRedirect, completeAuthorization } from "./oauth.js";
 import type { IntegrationQueue } from "./queue.js";
-import { type IntegrationConfig, PROVIDER_NAMES, type ProviderName } from "./types.js";
+import { appendUnavailableReview } from "./review.js";
+import {
+  readIntegrationState,
+  resolveIntegrationStateKey,
+  withIntegrationStateLock,
+  writeIntegrationState,
+} from "./state.js";
+import {
+  type EnrollmentRecord,
+  type IntegrationConfig,
+  PROVIDER_NAMES,
+  type ProviderName,
+} from "./types.js";
 
 const DEFAULT_WEBHOOK_BODY_LIMIT = 256 * 1024;
 const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
@@ -18,6 +40,21 @@ const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
 export interface IntegrationRouteAuthorization {
   cookieAuthenticated: boolean;
   canManageIntegrations: boolean;
+  /** U19: the resolved caller identity, for enrollment routes' collection-allowlist + canWrite gate. */
+  user: string;
+  role: RoleConfig | null;
+  /** U19: the caller's role NAME (as opposed to its resolved RoleConfig above) — EnrollmentContext.role is a plain string. */
+  roleName: string;
+}
+
+export interface IntegrationRouteLastOutcome {
+  at: string;
+  outcome: {
+    distilledSourceIds: string[];
+    unchangedSourceIds: string[];
+    failedSourceIds: string[];
+    unavailableSourceIds: string[];
+  };
 }
 
 export interface IntegrationRouteDependencies {
@@ -38,6 +75,8 @@ export interface IntegrationRouteDependencies {
   maxWebhookBodyBytes?: number;
   webhookBodyTimeoutMs?: number;
   wake?: () => void;
+  /** R36: the runtime's last-cycle summary for a provider, merged into the /status response. */
+  lastOutcome?(provider: ProviderName): IntegrationRouteLastOutcome | undefined;
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
@@ -113,21 +152,56 @@ async function requireAuthorization(
   response: ServerResponse,
   deps: IntegrationRouteDependencies,
   csrfProtected: boolean,
-): Promise<boolean> {
+): Promise<IntegrationRouteAuthorization | null> {
   const authorized = await deps.authorize(request, response);
-  if (authorized === null) return false;
+  if (authorized === null) return null;
   if (!authorized.canManageIntegrations) {
     writeJson(response, 403, { error: "forbidden" });
-    return false;
+    return null;
   }
   if (csrfProtected && authorized.cookieAuthenticated) {
     const csrfError = deps.checkCsrf(request);
     if (csrfError !== null) {
       writeJson(response, 403, { error: "forbidden", message: csrfError });
-      return false;
+      return null;
     }
   }
-  return true;
+  return authorized;
+}
+
+const DEFAULT_ENROLLMENT_BODY_LIMIT = 1024 * 1024;
+const DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS = 10_000;
+
+async function readJsonBody(
+  request: IncomingMessage,
+  limit: number,
+  timeoutMs: number,
+): Promise<Result<unknown, Error>> {
+  const body = await readBoundedBody(request, limit, timeoutMs);
+  if (!body.ok) return body;
+  try {
+    return ok(JSON.parse(Buffer.from(body.value).toString("utf8")) as unknown);
+  } catch {
+    return err(new Error("request body is not valid JSON"));
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Only Microsoft's provider config carries a `collections` enrollment
+// allowlist (R33/R39) — Google/Notion never implement resolveEnrollment, so
+// their providerConfig[provider] simply yields an empty allowlist here (moot,
+// since those routes 404 on the missing-capability check before this is read).
+function collectionAllowlist(config: IntegrationConfig, provider: ProviderName): string[] {
+  const providerConfig = config[provider] as { collections?: string[] } | undefined;
+  return providerConfig?.collections ?? [];
+}
+
+function includeSpeakerNotesDefault(config: IntegrationConfig, provider: ProviderName): boolean {
+  const providerConfig = config[provider] as { includeSpeakerNotes?: boolean } | undefined;
+  return providerConfig?.includeSpeakerNotes ?? true;
 }
 
 export async function handleIntegrationRoute(
@@ -416,6 +490,317 @@ export async function handleIntegrationRoute(
     } finally {
       release();
     }
+  }
+
+  // U19: enrollment/status routes (R10, R13, R14, R33, R36, R39). Provider-
+  // neutral — Google/Notion never implement resolveEnrollment/
+  // estimateEnrollment/describeStatus, so these 404 for them before any
+  // authorization work happens, exactly like the webhookSetup/
+  // verifyLifecycleWebhook capability checks above.
+  if (url.pathname === `/integrations/${provider}/enrollments/preview`) {
+    if (adapter.resolveEnrollment === undefined || adapter.estimateEnrollment === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const authorized = await requireAuthorization(request, response, deps, true);
+    if (authorized === null) return true;
+
+    const parsedBody = await readJsonBody(
+      request,
+      DEFAULT_ENROLLMENT_BODY_LIMIT,
+      DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS,
+    );
+    if (!parsedBody.ok) {
+      writeJson(response, 400, { error: "invalid_request", message: parsedBody.error.message });
+      return true;
+    }
+    const body = isRecord(parsedBody.value) ? parsedBody.value : {};
+    const collection = typeof body.collection === "string" ? body.collection : undefined;
+    if (
+      collection === undefined ||
+      !collectionAllowlist(deps.config, provider).includes(collection)
+    ) {
+      writeJson(response, 422, { error: "collection_not_allowed" });
+      return true;
+    }
+    if (!canWrite(authorized.role, collection)) {
+      writeJson(response, 403, { error: "forbidden" });
+      return true;
+    }
+
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const persisted = readIntegrationState(deps.vaultRoot, key.value);
+    if (!persisted.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const providerState = persisted.value.providers[provider];
+    if (providerState === undefined) {
+      writeJson(response, 409, { error: "provider_not_connected" });
+      return true;
+    }
+
+    const includeSpeakerNotes =
+      typeof body.includeSpeakerNotes === "boolean"
+        ? body.includeSpeakerNotes
+        : includeSpeakerNotesDefault(deps.config, provider);
+    const ctx: EnrollmentContext = {
+      user: authorized.user,
+      role: authorized.roleName,
+      collection,
+      includeSpeakerNotes,
+    };
+    const draft = await adapter.resolveEnrollment(body.selection, providerState, ctx);
+    if (!draft.ok) {
+      writeJson(response, 422, { error: "enrollment_rejected", message: draft.error.message });
+      return true;
+    }
+    const estimate = await adapter.estimateEnrollment(draft.value, providerState);
+    if (!estimate.ok) {
+      writeJson(response, 422, { error: "enrollment_rejected", message: estimate.error.message });
+      return true;
+    }
+    writeJson(response, 200, estimate.value);
+    return true;
+  }
+
+  if (url.pathname === `/integrations/${provider}/enrollments`) {
+    const resolveEnrollment = adapter.resolveEnrollment;
+    if (resolveEnrollment === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const authorized = await requireAuthorization(request, response, deps, true);
+    if (authorized === null) return true;
+
+    const parsedBody = await readJsonBody(
+      request,
+      DEFAULT_ENROLLMENT_BODY_LIMIT,
+      DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS,
+    );
+    if (!parsedBody.ok) {
+      writeJson(response, 400, { error: "invalid_request", message: parsedBody.error.message });
+      return true;
+    }
+    const body = isRecord(parsedBody.value) ? parsedBody.value : {};
+    const collection = typeof body.collection === "string" ? body.collection : undefined;
+    if (
+      collection === undefined ||
+      !collectionAllowlist(deps.config, provider).includes(collection)
+    ) {
+      writeJson(response, 422, { error: "collection_not_allowed" });
+      return true;
+    }
+    if (!canWrite(authorized.role, collection)) {
+      writeJson(response, 403, { error: "forbidden" });
+      return true;
+    }
+    // R33: the audience ACL disclosure must be explicitly acknowledged by the
+    // enrolling caller — never inferred from the request merely existing.
+    if (body.acknowledged !== true) {
+      writeJson(response, 422, { error: "acknowledgement_required" });
+      return true;
+    }
+
+    const includeSpeakerNotes =
+      typeof body.includeSpeakerNotes === "boolean"
+        ? body.includeSpeakerNotes
+        : includeSpeakerNotesDefault(deps.config, provider);
+    const selection = body.selection;
+
+    const created = await withIntegrationStateLock(deps.vaultRoot, async () => {
+      const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+      if (!key.ok) return key;
+      const persisted = readIntegrationState(deps.vaultRoot, key.value);
+      if (!persisted.ok) return persisted;
+      const providerState = persisted.value.providers[provider];
+      if (providerState === undefined) {
+        return err(new Error("provider is not connected"));
+      }
+      const ctx: EnrollmentContext = {
+        user: authorized.user,
+        role: authorized.roleName,
+        collection,
+        includeSpeakerNotes,
+      };
+      const draft = await resolveEnrollment(selection, providerState, ctx);
+      if (!draft.ok) return draft;
+
+      const now = deps.engineDeps.now?.() ?? new Date();
+      const nowIso = now.toISOString();
+      const records: EnrollmentRecord[] = draft.value.items.map((item) => {
+        const id = randomUUID();
+        return {
+          id,
+          kind: item.kind,
+          driveId: item.driveId,
+          remoteId: item.remoteId,
+          label: item.label,
+          ...(item.webUrl === undefined ? {} : { webUrl: item.webUrl }),
+          collection: draft.value.collection,
+          includeSpeakerNotes: draft.value.includeSpeakerNotes,
+          enrolledBy: authorized.user,
+          enrolledAt: nowIso,
+          audienceAckAt: nowIso,
+          readersAtEnrollment: draft.value.readersAtEnrollment,
+          // §7.1 cursorKey convention: one container enrollment is its own
+          // delta root; item enrollments sharing a drive share one root.
+          cursorKey: item.kind === "container" ? `enrollment:${id}` : `drive:${item.driveId}`,
+        };
+      });
+      const enrollments = { ...(providerState.enrollments ?? {}) };
+      for (const record of records) enrollments[record.id] = record;
+      persisted.value.providers[provider] = { ...providerState, enrollments };
+      const written = writeIntegrationState(deps.vaultRoot, persisted.value, key.value);
+      if (!written.ok) return written;
+      return ok(records);
+    });
+
+    if (!created.ok) {
+      writeJson(response, 422, { error: "enrollment_rejected", message: created.error.message });
+      return true;
+    }
+    writeJson(response, 201, { enrollmentIds: created.value.map((record) => record.id) });
+    deps.wake?.();
+    return true;
+  }
+
+  if (url.pathname === `/integrations/${provider}/status`) {
+    if (adapter.describeStatus === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    // Read-level: no CSRF requirement for a GET.
+    const authorized = await requireAuthorization(request, response, deps, false);
+    if (authorized === null) return true;
+
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const persisted = readIntegrationState(deps.vaultRoot, key.value);
+    if (!persisted.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    // A provider that is configured but never connected still reports status
+    // (as "disconnected") rather than 404ing — describeStatus is a pure
+    // projection that tolerates an empty ProviderState.
+    const providerState = persisted.value.providers[provider] ?? {
+      accessToken: "",
+      refreshToken: "",
+      sources: {},
+    };
+    const status: ProviderStatus = adapter.describeStatus(providerState);
+    const lastOutcome = deps.lastOutcome?.(provider);
+    const merged: ProviderStatus =
+      lastOutcome === undefined
+        ? status
+        : {
+            ...status,
+            lastCycle: {
+              at: lastOutcome.at,
+              distilled: lastOutcome.outcome.distilledSourceIds.length,
+              unchanged: lastOutcome.outcome.unchangedSourceIds.length,
+              failed: lastOutcome.outcome.failedSourceIds.length,
+              unavailable: lastOutcome.outcome.unavailableSourceIds.length,
+            },
+          };
+    writeJson(response, 200, merged);
+    return true;
+  }
+
+  const enrollmentIdMatch = new RegExp(`^/integrations/${provider}/enrollments/([^/]+)$`).exec(
+    url.pathname,
+  );
+  if (enrollmentIdMatch !== null && enrollmentIdMatch[1] !== "preview") {
+    if (request.method !== "DELETE") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const authorized = await requireAuthorization(request, response, deps, true);
+    if (authorized === null) return true;
+
+    const enrollmentId = decodeURIComponent(enrollmentIdMatch[1]);
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const snapshot = readIntegrationState(deps.vaultRoot, key.value);
+    if (!snapshot.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const snapshotRecord = snapshot.value.providers[provider]?.enrollments?.[enrollmentId];
+    if (snapshotRecord === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (!canWrite(authorized.role, snapshotRecord.collection)) {
+      writeJson(response, 403, { error: "forbidden" });
+      return true;
+    }
+
+    const removed = await withIntegrationStateLock(deps.vaultRoot, async () => {
+      const persisted = readIntegrationState(deps.vaultRoot, key.value);
+      if (!persisted.ok) return persisted;
+      const providerState = persisted.value.providers[provider];
+      const record = providerState?.enrollments?.[enrollmentId];
+      if (providerState === undefined || record === undefined) {
+        // Already gone (a concurrent delete won the race) — idempotent no-op.
+        return ok([]);
+      }
+      const enrollments = { ...providerState.enrollments };
+      delete enrollments[enrollmentId];
+      // R38: source metadata is RETAINED, never deleted — only the
+      // enrollment record and its grouping are removed. The sources
+      // themselves (and their contentHash/available history) are untouched.
+      const orphanedSources = Object.values(providerState.sources).filter(
+        (source) => source.enrollmentId === enrollmentId,
+      );
+      persisted.value.providers[provider] = { ...providerState, enrollments };
+      const written = writeIntegrationState(deps.vaultRoot, persisted.value, key.value);
+      if (!written.ok) return written;
+      return ok(orphanedSources);
+    });
+    if (!removed.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+
+    const now = deps.engineDeps.now?.() ?? new Date();
+    for (const source of removed.value) {
+      const event: UnavailableSourceEvent = {
+        idempotencyKey: `${provider}:${source.id}:${source.revision}:unenrolled`,
+        providerSourceId: source.id,
+        reason: "unenrolled",
+        revision: source.revision,
+        occurredAt: now.toISOString(),
+      };
+      appendUnavailableReview(deps.vaultRoot, event);
+    }
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    deps.wake?.();
+    return true;
   }
 
   writeJson(response, 404, { error: "not_found" });
