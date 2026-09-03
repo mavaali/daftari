@@ -580,4 +580,106 @@ describe("proposeAllClaims (U4)", () => {
     expect(body).toContain("## Provenance");
     expect(body).toContain("### Reader");
   });
+
+  // -------------------------------------------------------------------------
+  // Collection override (U3): optional, default byte-identical to today.
+  // -------------------------------------------------------------------------
+
+  describe("collection override (U3)", () => {
+    // Fetch the staged frontmatter + targetPath for a single-claim run.
+    async function stageAndRead(
+      runId: string,
+      collection?: string,
+    ): Promise<{ fm: Record<string, unknown>; targetPath: string }> {
+      const claim = makeClaim({
+        claim_key: `chunk-coll:collection-override-claim-${runId.slice(-8).padEnd(8, "0")}`,
+      });
+      const outcome = await proposeAllClaims(vault, [claim], {
+        sourceId: "chat-export-1",
+        runId,
+        collection,
+      });
+      expect(outcome.proposed).toBe(1);
+      expect(outcome.errors).toHaveLength(0);
+
+      const listed = await listStagedActions(vault, "pending");
+      if (!listed.ok) throw listed.error;
+      const action = listed.value.find((a) => a.runId === runId);
+      if (!action) throw new Error("expected a staged action for this run");
+      const diff = action.proposedDiff as Record<string, unknown>;
+      return {
+        fm: diff.frontmatter as Record<string, unknown>,
+        targetPath: action.targetPath,
+      };
+    }
+
+    it("collection unset ⇒ byte-identical to today (regression golden)", async () => {
+      // ids with no `collection` key at all (the pre-U3 shape).
+      const claim = makeClaim({ claim_key: "chunk-coll:unset-key-deadbeef" });
+      const runId = "run-coll-unset-nokey";
+      const outcome = await proposeAllClaims(vault, [claim], {
+        sourceId: "chat-export-1",
+        runId,
+      });
+      expect(outcome.proposed).toBe(1);
+
+      const listed = await listStagedActions(vault, "pending");
+      if (!listed.ok) throw listed.error;
+      const action = listed.value.find((a) => a.runId === runId);
+      if (!action) throw new Error("expected a staged action for this run");
+      const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+        string,
+        unknown
+      >;
+
+      expect(fm.collection).toBe(DISTILL_COLLECTION);
+      expect(fm.status).toBe("draft");
+      expect(fm.confidence).toBe("low");
+      expect(fm.provenance).toBe("synthesized");
+      expect(fm.proposed_by).toBe("agent:distill");
+      expect(fm.domain).toBe("accumulation");
+      expect(action.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+
+      // And explicitly passing collection: undefined must produce the exact
+      // same frontmatter + path (minus the run-specific claim_key/hash8/path
+      // suffix, which we hold constant by reusing the same claim shape).
+      const explicit = await stageAndRead("run-coll-unset-explicit", undefined);
+      expect(explicit.fm.collection).toBe(fm.collection);
+      expect(explicit.fm.status).toBe(fm.status);
+      expect(explicit.fm.confidence).toBe(fm.confidence);
+      expect(explicit.fm.provenance).toBe(fm.provenance);
+      expect(explicit.fm.proposed_by).toBe(fm.proposed_by);
+      expect(explicit.fm.domain).toBe(fm.domain);
+      expect(explicit.targetPath.split("/")[0]).toBe(action.targetPath.split("/")[0]);
+    });
+
+    it('collection:"" is treated as unset, falling back to the default (not an empty write)', async () => {
+      const result = await stageAndRead("run-coll-empty-string", "");
+      expect(result.fm.collection).toBe(DISTILL_COLLECTION);
+      expect(result.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+      // Every other invariant unchanged.
+      expect(result.fm.status).toBe("draft");
+      expect(result.fm.confidence).toBe("low");
+      expect(result.fm.provenance).toBe("synthesized");
+      expect(result.fm.proposed_by).toBe("agent:distill");
+      expect(result.fm.domain).toBe("accumulation");
+    });
+
+    it('collection:"decisions" overrides the frontmatter and path root, all other fields unchanged', async () => {
+      const overridden = await stageAndRead("run-coll-decisions", "decisions");
+      const defaulted = await stageAndRead("run-coll-decisions-default", undefined);
+
+      expect(overridden.fm.collection).toBe("decisions");
+      expect(overridden.targetPath).toMatch(/^decisions\//);
+      expect(overridden.targetPath).not.toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+
+      // Every other frontmatter field is unchanged vs the default.
+      expect(overridden.fm.status).toBe(defaulted.fm.status);
+      expect(overridden.fm.confidence).toBe(defaulted.fm.confidence);
+      expect(overridden.fm.provenance).toBe(defaulted.fm.provenance);
+      expect(overridden.fm.proposed_by).toBe(defaulted.fm.proposed_by);
+      expect(overridden.fm.domain).toBe(defaulted.fm.domain);
+      expect(overridden.fm.title).toBe(defaulted.fm.title);
+    });
+  });
 });

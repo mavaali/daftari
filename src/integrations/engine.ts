@@ -117,6 +117,13 @@ export interface DistillationInput {
   providerSourceId: string;
   revision: string;
   text: string;
+  /**
+   * Optional distill collection override (U3), forwarded unchanged to
+   * DistillUpsertInput.collection. Unset ⇒ the default `distill` collection
+   * — provider-neutral pass-through only; no Microsoft-specific logic here.
+   * Existing providers (Google/Notion) simply never set it.
+   */
+  collection?: string;
 }
 
 export interface DistillationRun {

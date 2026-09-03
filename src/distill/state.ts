@@ -206,6 +206,12 @@ export interface DistillUpsertInput {
   overlapSearch?: OverlapSearchFn;
   /** Injectable proposal writer used to verify atomic retry behavior. */
   proposeClaims?: typeof proposeAllClaims;
+  /**
+   * Optional collection override (U3), forwarded to proposeAllClaims's
+   * DistillIds.collection unchanged. Unset OR the empty string ⇒ the
+   * default `distill` collection/path root — byte-identical to today.
+   */
+  collection?: string;
 }
 
 export interface DistillUpsertOutcome {
@@ -288,7 +294,7 @@ export async function distillUpsert(
   const attempted = await (input.proposeClaims ?? proposeAllClaims)(
     vaultRoot,
     toPropose,
-    { sourceId: input.sourceId, runId: input.runId },
+    { sourceId: input.sourceId, runId: input.runId, collection: input.collection },
     pathOverrides,
     input.overlapSearch,
   );
