@@ -1288,6 +1288,155 @@ describe("provider reconciliation", () => {
     ).toBe(false);
   });
 
+  it("persists a fetch failure reason and clears it once the source succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let fetchFails = true;
+    const provider = adapter({
+      discover: async () => ok([{ id: "flaky", revision: "1" }]),
+      fetch: async (source) =>
+        fetchFails
+          ? err(new Error("temporary provider failure"))
+          : ok({ id: source.id, revision: source.revision, text: "Recovered" }),
+    });
+
+    const first = await reconcileProvider(vault, provider, deps());
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "fetch" });
+
+    fetchFails = false;
+    const second = await reconcileProvider(vault, provider, deps());
+    expect(second.ok && second.value.distilledSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toBeUndefined();
+  });
+
+  it("threads a specific failure reason from a fetch error when the adapter provides one", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const specificError = Object.assign(new Error("file is encrypted"), {
+      reason: "encrypted",
+    });
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "locked", revision: "1" }]),
+        fetch: async () => err(specificError),
+      }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:locked"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.locked?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "encrypted" });
+  });
+
+  it("persists a distill failure reason distinct from a fetch failure", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "Some content" }),
+      }),
+      deps({ distill: async () => err(new Error("distillation failed")) }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "distill" });
+  });
+
+  it("persists a limit failure reason for a source that exceeds the per-source byte cap", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "huge", revision: "1" }]),
+        fetch: async () => ok({ id: "huge", revision: "1", text: "12345" }),
+      }),
+      deps({ reconcileLimits: { maxSourceTextBytes: 4 } }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:huge"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.huge?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "limit" });
+  });
+
+  it("sets reconnect_required after a terminal refresh failure and clears it on the next success", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const failing = await reconcileProvider(
+      vault,
+      adapter({ refreshTokens: async () => err(new Error("invalid_grant")) }),
+      deps(),
+    );
+    expect(failing.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "invalid_grant",
+    });
+
+    const succeeding = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          ok({ accessToken: "rotated-access", refreshToken: "rotated-refresh" }),
+      }),
+      deps(),
+    );
+    expect(succeeding.ok).toBe(true);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "ok",
+      at: "2026-08-24T12:00:00.000Z",
+    });
+  });
+
   it("returns a stop function that prevents future periodic reconciliations", async () => {
     vi.useFakeTimers();
     expect(

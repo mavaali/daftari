@@ -148,6 +148,85 @@ describe("integration OAuth transactions", () => {
     });
   });
 
+  it("reconnect carries enrollments, account, sources, cursor, and webhook, and resets authorization", async () => {
+    const priorSources = {
+      "doc-1": {
+        id: "doc-1",
+        revision: "1",
+        contentHash: "hash-1",
+        available: true,
+        lastSeenAt: "2026-08-20T12:00:00.000Z",
+      },
+    };
+    const enrollment = {
+      id: "enrollment-1",
+      kind: "item" as const,
+      driveId: "drive-1",
+      remoteId: "remote-1",
+      label: "Quarterly Plan",
+      collection: "distill",
+      includeSpeakerNotes: false,
+      enrolledBy: "operator@example.com",
+      enrolledAt: "2026-08-01T00:00:00.000Z",
+      audienceAckAt: "2026-08-01T00:00:00.000Z",
+      readersAtEnrollment: ["operator@example.com"],
+      cursorKey: "cursor-key-1",
+    };
+    const account = { id: "account-1", tenantId: "tenant-1", displayName: "Operator" };
+    const webhook = { id: "channel-1", secret: "webhook-secret" };
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              accessToken: "old-access",
+              refreshToken: "old-refresh",
+              sources: priorSources,
+              cursor: "cursor-before-reconnect",
+              webhook,
+              enrollments: { [enrollment.id]: enrollment },
+              account,
+              authorization: {
+                status: "reconnect_required",
+                at: "2026-08-23T00:00:00.000Z",
+                reason: "invalid_grant",
+              },
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const started = await beginAuthorization(vault, "google", config, environment, now);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    const provider = adapter(
+      vi.fn(async () => ok({ accessToken: "new-access", refreshToken: "new-refresh" })),
+    );
+    const result = await completeAuthorization(
+      vault,
+      "google",
+      started.value.state,
+      "code",
+      deps(provider),
+    );
+    expect(result).toEqual(ok(undefined));
+
+    expect(readIntegrationState(vault, KEY).value.providers.google).toEqual({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      sources: priorSources,
+      cursor: "cursor-before-reconnect",
+      webhook,
+      enrollments: { [enrollment.id]: enrollment },
+      account,
+      authorization: { status: "ok", at: "2026-08-24T12:00:00.000Z" },
+    });
+  });
+
   it("serializes an OAuth token replacement with an in-flight reconciliation", async () => {
     expect(
       writeIntegrationState(

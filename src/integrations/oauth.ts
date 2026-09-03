@@ -110,7 +110,8 @@ export async function beginAuthorizationRedirect(
 
 function providerState(
   tokens: { accessToken: string; refreshToken: string; accessTokenExpiresAt?: string },
-  previous?: ProviderState,
+  previous: ProviderState | undefined,
+  now: () => Date,
 ): ProviderState {
   return {
     accessToken: tokens.accessToken,
@@ -118,6 +119,14 @@ function providerState(
     sources: previous?.sources ?? {},
     ...(previous?.cursor === undefined ? {} : { cursor: previous.cursor }),
     ...(previous?.webhook === undefined ? {} : { webhook: previous.webhook }),
+    ...(previous?.enrollments === undefined ? {} : { enrollments: previous.enrollments }),
+    ...(previous?.account === undefined ? {} : { account: previous.account }),
+    // A reconnect (previous state exists) always clears any prior
+    // reconnect_required/failure signal — the operator just re-authorized.
+    // A first-time connect has no authorization concept yet, so it's left unset.
+    ...(previous === undefined
+      ? {}
+      : { authorization: { status: "ok" as const, at: now().toISOString() } }),
     ...(tokens.accessTokenExpiresAt === undefined
       ? {}
       : { accessTokenExpiresAt: tokens.accessTokenExpiresAt }),
@@ -193,6 +202,7 @@ export async function completeAuthorization(
     persisted.value.providers[provider] = providerState(
       exchanged.value,
       persisted.value.providers[provider],
+      oauthNow(deps),
     );
     return writeIntegrationState(vaultRoot, persisted.value, key.value);
   });

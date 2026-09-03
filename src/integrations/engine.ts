@@ -10,13 +10,15 @@ import {
   withIntegrationStateLock,
   writeIntegrationState,
 } from "./state.js";
-import type {
-  IntegrationConfig,
-  IntegrationProviderConfig,
-  ProviderAccount,
-  ProviderName,
-  ProviderState,
-  SourceState,
+import {
+  type IntegrationConfig,
+  type IntegrationProviderConfig,
+  isSourceFailureReason,
+  type ProviderAccount,
+  type ProviderName,
+  type ProviderState,
+  type SourceFailureReason,
+  type SourceState,
 } from "./types.js";
 
 export interface AuthorizationRequest {
@@ -262,6 +264,35 @@ function sourceState(
   };
 }
 
+// Prefers a specific reason an adapter/extract error already carries (duck-typed,
+// since ProviderAdapter.fetch returns a plain Error) over the generic stage name.
+function failureReason(error: unknown, fallback: SourceFailureReason): SourceFailureReason {
+  if (typeof error === "object" && error !== null) {
+    const candidate = (error as { reason?: unknown }).reason;
+    if (isSourceFailureReason(candidate)) return candidate;
+  }
+  return fallback;
+}
+
+function markSourceFailure(
+  previous: SourceState | undefined,
+  remoteId: string,
+  revision: string,
+  reason: SourceFailureReason,
+  at: string,
+): SourceState {
+  return {
+    ...(previous ?? {
+      id: remoteId,
+      revision,
+      contentHash: "",
+      available: true,
+      lastSeenAt: at,
+    }),
+    lastFailure: { at, reason },
+  };
+}
+
 function validRemoteSource(source: RemoteSource): boolean {
   return (
     typeof source.id === "string" &&
@@ -313,6 +344,18 @@ async function refreshExpiredTokens(
   );
   if (!clientSecret.ok) return clientSecret;
 
+  // A refresh either rotates tokens or fails terminally (invalid_grant,
+  // interaction_required, an expired refresh token) — today's adapters collapse
+  // all of those into one generic Error, so every refresh failure here is
+  // treated as reconnect_required. This marks state only; it does not change
+  // which error refreshExpiredTokens itself returns.
+  const markReconnectRequired = (reason: string): Result<ProviderState, Error> => {
+    state.authorization = { status: "reconnect_required", at: timestamp(deps), reason };
+    const written = writeState(vaultRoot, key, persisted, deps);
+    if (!written.ok) return written;
+    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  };
+
   let refreshed: Result<ProviderTokens, Error>;
   try {
     refreshed = await adapter.refreshTokens({
@@ -320,11 +363,12 @@ async function refreshExpiredTokens(
       clientSecret: clientSecret.value,
       refreshToken: state.refreshToken,
     });
-  } catch {
-    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  } catch (error) {
+    return markReconnectRequired(
+      error instanceof Error ? error.message : "token refresh request failed",
+    );
   }
-  if (!refreshed.ok)
-    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  if (!refreshed.ok) return markReconnectRequired(refreshed.error.message);
   if (refreshed.value.accessToken.length === 0 || refreshed.value.refreshToken.length === 0) {
     return err(
       new Error(`integration provider ${adapter.name} token refresh returned incomplete tokens`),
@@ -336,6 +380,7 @@ async function refreshExpiredTokens(
     ...unchanged,
     accessToken: refreshed.value.accessToken,
     refreshToken: refreshed.value.refreshToken,
+    authorization: { status: "ok", at: timestamp(deps) },
     ...(refreshed.value.accessTokenExpiresAt === undefined
       ? {}
       : { accessTokenExpiresAt: refreshed.value.accessTokenExpiresAt }),
@@ -617,7 +662,11 @@ export async function reconcileProvider(
           previous.revision === remote.revision &&
           previous.contentHash.length > 0
         ) {
-          providerState.sources[remote.id] = { ...previous, lastSeenAt: seenAt };
+          providerState.sources[remote.id] = {
+            ...previous,
+            lastSeenAt: seenAt,
+            lastFailure: undefined,
+          };
           const written = writeState(vaultRoot, key.value, persisted.value, deps);
           if (!written.ok) return written;
           outcome.unchangedSourceIds.push(providerSourceId);
@@ -626,7 +675,14 @@ export async function reconcileProvider(
         let fetched: Result<NormalizedRemoteSource, Error>;
         try {
           fetched = await adapter.fetch(remote, providerState);
-        } catch {
+        } catch (error) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            failureReason(error, "fetch"),
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -635,6 +691,13 @@ export async function reconcileProvider(
           !validRemoteSource(fetched.ok ? fetched.value : remote) ||
           typeof fetched.value.text !== "string"
         ) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            fetched.ok ? "fetch" : failureReason(fetched.error, "fetch"),
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -642,6 +705,13 @@ export async function reconcileProvider(
           fetched.value.id !== remote.id ||
           (!targetedWithoutDiscovery && fetched.value.revision !== remote.revision)
         ) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            "fetch",
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -651,9 +721,23 @@ export async function reconcileProvider(
           textBytes > limits.maxSourceTextBytes ||
           cycleTextBytes + textBytes > limits.maxCycleTextBytes
         ) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            "limit",
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           if (cycleTextBytes + textBytes > limits.maxCycleTextBytes) {
             for (const remaining of scopedSources.slice(index + 1)) {
+              providerState.sources[remaining.id] = markSourceFailure(
+                providerState.sources[remaining.id],
+                remaining.id,
+                remaining.revision,
+                "limit",
+                seenAt,
+              );
               outcome.failedSourceIds.push(sourceIdentity(adapter.name, remaining.id));
             }
             break;
@@ -680,11 +764,19 @@ export async function reconcileProvider(
             revision: fetched.value.revision,
             text: fetched.value.text,
           });
-        } catch {
+        } catch (error) {
+          providerState.sources[remote.id] = {
+            ...next,
+            lastFailure: { at: seenAt, reason: failureReason(error, "distill") },
+          };
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
         if (!distilled.ok) {
+          providerState.sources[remote.id] = {
+            ...next,
+            lastFailure: { at: seenAt, reason: failureReason(distilled.error, "distill") },
+          };
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
