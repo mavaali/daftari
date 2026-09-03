@@ -10,6 +10,7 @@ import {
   validateContinuousAdapterCapabilities,
 } from "./engine.js";
 import { createGoogleDocsAdapter } from "./google.js";
+import { createMicrosoftAdapter } from "./microsoft.js";
 import { createNotionAdapter } from "./notion.js";
 import { createIntegrationQueue } from "./queue.js";
 import { appendUnavailableReview } from "./review.js";
@@ -57,13 +58,24 @@ export interface ConfiguredIntegrationRuntimeOptions {
   waitForShutdown?: (cycle: Promise<void>, timeoutMilliseconds: number) => Promise<void>;
 }
 
-const DEFAULT_FACTORIES: Record<ProviderName, IntegrationAdapterFactory> = {
-  google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
-  notion: (redirectUri) => createNotionAdapter({ redirectUri }),
-  microsoft: () => {
-    throw new Error("microsoft integration not yet implemented");
-  },
-};
+function defaultFactories(
+  config: IntegrationConfig,
+): Record<ProviderName, IntegrationAdapterFactory> {
+  return {
+    google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
+    notion: (redirectUri) => createNotionAdapter({ redirectUri }),
+    microsoft: (redirectUri) => {
+      // configuredProviders() only calls this factory for a provider present
+      // in config, so config.microsoft is guaranteed here; the runtime
+      // construction path (start()) already validated its clientId/secret
+      // env vars before any factory runs.
+      if (config.microsoft === undefined) {
+        throw new Error("microsoft integration is not configured");
+      }
+      return createMicrosoftAdapter({ redirectUri, config: config.microsoft });
+    },
+  };
+}
 
 function configuredProviders(config: IntegrationConfig): ProviderName[] {
   return PROVIDER_NAMES.filter((provider) => config[provider] !== undefined);
@@ -176,7 +188,7 @@ export function createConfiguredIntegrationRuntime(
   const queue = createIntegrationQueue(options.vaultRoot, options.now);
   const readableQueue = queue.pending();
   if (!readableQueue.ok) return readableQueue;
-  const factories = { ...DEFAULT_FACTORIES, ...options.adapterFactories };
+  const factories = { ...defaultFactories(options.config), ...options.adapterFactories };
   const now = options.now ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const waitForShutdown = options.waitForShutdown ?? boundedShutdownWait;
