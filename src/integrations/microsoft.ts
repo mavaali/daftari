@@ -38,6 +38,7 @@ import type {
   WebhookChannel,
   WebhookRequest,
 } from "./engine.js";
+import { SOURCE_STATUS_STATES } from "./engine.js";
 import {
   boundedJson,
   DEFAULT_MAX_RESPONSE_BYTES,
@@ -524,6 +525,20 @@ async function deleteSubscription(
   return ok(undefined);
 }
 
+// Shared by ensureWebhook's channel-level expiresAt and describeStatus's
+// webhook status (U18 follow-up): Date.parse, not a lexical string compare
+// — Graph doesn't guarantee every expiresAt shares the same timezone
+// designator or fractional-second precision, so ISO-8601 strings aren't
+// safely comparable as plain strings.
+function earliestSubscriptionExpiry(
+  subscriptions: ReadonlyArray<{ expiresAt: string }>,
+): string | undefined {
+  if (subscriptions.length === 0) return undefined;
+  return subscriptions.reduce((min, current) =>
+    Date.parse(current.expiresAt) < Date.parse(min.expiresAt) ? current : min,
+  ).expiresAt;
+}
+
 async function ensureWebhook(
   transport: MicrosoftHttpTransport,
   state: ProviderState,
@@ -608,12 +623,7 @@ async function ensureWebhook(
     if (!deleted.ok) return deleted;
   }
 
-  const expiresAt =
-    subscriptions.length === 0
-      ? undefined
-      : subscriptions.reduce((min, current) =>
-          Date.parse(current.expiresAt) < Date.parse(min.expiresAt) ? current : min,
-        ).expiresAt;
+  const expiresAt = earliestSubscriptionExpiry(subscriptions);
 
   return ok({
     id,
@@ -2435,14 +2445,16 @@ function describeMicrosoftStatus(state: ProviderState): ProviderStatus {
       ? {
           kind: "active",
           eventCount: subscriptions.length,
-          earliestExpiry: subscriptions
-            .map((subscription) => subscription.expiresAt)
-            .reduce((earliest, expiresAt) => (expiresAt < earliest ? expiresAt : earliest)),
+          earliestExpiry: earliestSubscriptionExpiry(subscriptions),
         }
       : { kind: "off" };
 
   const allSources = Object.values(state.sources);
-  const emptyCounts = { pending: 0, current: 0, failed: 0, unavailable: 0, over_limit: 0 };
+  // Derived from SOURCE_STATUS_STATES rather than hand-listed, so a sixth
+  // state added to the union can't be silently missed here.
+  const emptyCounts = Object.fromEntries(
+    SOURCE_STATUS_STATES.map((sourceStatusState) => [sourceStatusState, 0]),
+  ) as Record<SourceStatusState, number>;
   const enrollments: EnrollmentStatusSummary[] = Object.values(state.enrollments ?? {}).map(
     (record) => {
       const enrolledSources = allSources.filter((source) => source.enrollmentId === record.id);

@@ -175,7 +175,15 @@ export type ProviderWebhookStatus =
   | { kind: "degraded"; reason: string };
 
 /** The §13 per-source lifecycle state, derived from real SourceState fields. */
-export type SourceStatusState = "pending" | "current" | "failed" | "unavailable" | "over_limit";
+export const SOURCE_STATUS_STATES = [
+  "pending",
+  "current",
+  "failed",
+  "unavailable",
+  "over_limit",
+] as const;
+
+export type SourceStatusState = (typeof SOURCE_STATUS_STATES)[number];
 
 /** Per-enrollment state summary surfaced to a status route (design §13). */
 export interface EnrollmentStatusSummary {
@@ -185,13 +193,7 @@ export interface EnrollmentStatusSummary {
   sourceCount: number;
   failedSourceCount: number;
   /** Per-state breakdown of this enrollment's sources (design §13). */
-  counts: {
-    pending: number;
-    current: number;
-    failed: number;
-    unavailable: number;
-    over_limit: number;
-  };
+  counts: Record<SourceStatusState, number>;
 }
 
 /** Per-source state summary surfaced to a status route (design §13). */

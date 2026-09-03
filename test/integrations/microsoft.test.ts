@@ -3300,6 +3300,23 @@ describe("Microsoft adapter describeStatus (U18)", () => {
     ]);
   });
 
+  it("pins unavailable as taking precedence over failed/over_limit when both are set", () => {
+    const sources: ProviderState["sources"] = {
+      "drive-a:gone-failed-1": source({
+        id: "drive-a:gone-failed-1",
+        available: false,
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "too_large" },
+      }),
+      "drive-a:gone-over-limit-1": source({
+        id: "drive-a:gone-over-limit-1",
+        available: false,
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "limit" },
+      }),
+    };
+    const status = adapter.describeStatus?.(microsoftProviderState({ account }, sources));
+    expect(status?.sources.map((s) => s.state)).toEqual(["unavailable", "unavailable"]);
+  });
+
   it("summarizes per enrollment using SourceState.enrollmentId where populated, with collection + per-state counts", () => {
     const record = enrollment({
       id: "enr-1",
