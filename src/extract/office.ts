@@ -531,3 +531,304 @@ export async function extractDocx(
 export async function handleDocx(request: ExtractRequest): Promise<ExtractWorkerResponse> {
   return extractDocx(request.bytes, request.limits);
 }
+
+// ---------------------------------------------------------------------------
+// Pptx driver (DrawingML / PresentationML)
+// ---------------------------------------------------------------------------
+
+const PPT_PRESENTATION = "ppt/presentation.xml";
+const PPT_PRESENTATION_RELS = "ppt/_rels/presentation.xml.rels";
+const SLIDE_RE = /^ppt\/slides\/slide\d+\.xml$/;
+const SLIDE_RELS_RE = /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/;
+const NOTES_RE = /^ppt\/notesSlides\/notesSlide\d+\.xml$/;
+const NOTES_REL_TYPE_SUFFIX = "/relationships/notesSlide";
+
+/** First direct child element matching `name` (local, prefix-stripped). */
+function findChild(el: XmlElement, name: string): XmlElement | undefined {
+  for (const child of el.children) {
+    if (isXmlElement(child) && child.name === name) return child;
+  }
+  return undefined;
+}
+
+/** First descendant element matching `name`, depth-first. Used only for the
+ * table lookup inside a p:graphicFrame, which is a handful of levels deep
+ * and not worth hand-walking level by level. */
+function findDescendant(el: XmlElement, name: string): XmlElement | undefined {
+  for (const child of el.children) {
+    if (!isXmlElement(child)) continue;
+    if (child.name === name) return child;
+    const found = findDescendant(child, name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Reads an `r:id`-style attribute — unlike `getAttr` (prefix-agnostic, so it
+ * would match a bare `id` attribute first if one is also present on the same
+ * element, which p:sldId's `id`+`r:id` pair actually has), this matches only
+ * the `r:`-prefixed relationship-id attribute. */
+function getRAttr(el: XmlElement, localAttrName: string): string | undefined {
+  const re = new RegExp(`(?:^|\\s)r:${localAttrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`);
+  const m = re.exec(el.attrsRaw);
+  if (!m) return undefined;
+  return decodeXmlEntities(m[1] ?? m[2] ?? "");
+}
+
+interface RelEntry {
+  id: string;
+  type: string;
+  target: string;
+}
+
+/** Parses a `.rels` part (`<Relationships><Relationship Id=… Type=… Target=…/>…`)
+ * into a map keyed by relationship id. */
+function parseRelationships(xml: string): Map<string, RelEntry> {
+  const map = new Map<string, RelEntry>();
+  const relsEl = findChild(parseXml(xml), "Relationships");
+  if (!relsEl) return map;
+  for (const child of relsEl.children) {
+    if (!isXmlElement(child) || child.name !== "Relationship") continue;
+    const id = getAttr(child, "Id");
+    if (id === undefined) continue;
+    map.set(id, {
+      id,
+      type: getAttr(child, "Type") ?? "",
+      target: getAttr(child, "Target") ?? "",
+    });
+  }
+  return map;
+}
+
+/** Resolves a Relationship `Target` (relative to the referencing part's own
+ * directory, per OPC conventions) into a package-absolute part name. */
+function resolveRelTarget(basePartName: string, target: string): string {
+  if (target.startsWith("/")) return target.slice(1);
+  const baseDir = basePartName.split("/").slice(0, -1);
+  for (const seg of target.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") baseDir.pop();
+    else baseDir.push(seg);
+  }
+  return baseDir.join("/");
+}
+
+/** The `.rels` part name for a given package part, per OPC convention
+ * (`dir/_rels/file.ext.rels`). */
+function relsPathFor(partName: string): string {
+  const slash = partName.lastIndexOf("/");
+  const dir = slash === -1 ? "" : partName.slice(0, slash);
+  const file = slash === -1 ? partName : partName.slice(slash + 1);
+  return `${dir}/_rels/${file}.rels`;
+}
+
+/** Collects run-level text under an a:p (or any element containing runs):
+ * a:t is a text run, a:br is a line break. No tracked-changes/footnote
+ * analog exists in DrawingML, so this is simpler than docx's collectRunText. */
+function collectRunTextPptx(el: XmlElement): string {
+  switch (el.name) {
+    case "t": {
+      let out = "";
+      for (const child of el.children) {
+        if (!isXmlElement(child)) out += child.text;
+      }
+      return out;
+    }
+    case "br":
+      return "\n";
+    default: {
+      let out = "";
+      for (const child of el.children) {
+        if (isXmlElement(child)) out += collectRunTextPptx(child);
+      }
+      return out;
+    }
+  }
+}
+
+/** Walks a container (p:txBody, p:tc) for a:p paragraphs, one line each. */
+function collectParagraphsPptx(container: XmlElement): string[] {
+  const lines: string[] = [];
+  for (const child of container.children) {
+    if (!isXmlElement(child)) continue;
+    if (child.name === "p") {
+      lines.push(collectRunTextPptx(child));
+    } else {
+      lines.push(...collectParagraphsPptx(child));
+    }
+  }
+  return lines;
+}
+
+/** DrawingML table (a:tbl/a:tr/a:tc): one line per row, cells joined " | ",
+ * matching docx's table-row convention (spec §3.2). */
+function collectTableLinesPptx(tbl: XmlElement): string[] {
+  const rows: string[] = [];
+  for (const child of tbl.children) {
+    if (!isXmlElement(child) || child.name !== "tr") continue;
+    const cells: string[] = [];
+    for (const cellNode of child.children) {
+      if (!isXmlElement(cellNode) || cellNode.name !== "tc") continue;
+      const cellLines = collectParagraphsPptx(cellNode);
+      cells.push(cellLines.join(" ").replace(/\n+/g, " ").trim());
+    }
+    rows.push(cells.join(" | "));
+  }
+  return rows;
+}
+
+/** Walks a shape tree (p:spTree, or a p:grpSp's own contents) in document
+ * order: p:sp contributes its p:txBody paragraphs, p:graphicFrame contributes
+ * its a:tbl (if any) as table rows, p:grpSp recurses. Other shape kinds
+ * (p:pic, p:cxnSp, …) contribute no text. */
+function collectShapeTreeLines(container: XmlElement): string[] {
+  const lines: string[] = [];
+  for (const child of container.children) {
+    if (!isXmlElement(child)) continue;
+    switch (child.name) {
+      case "sp": {
+        const txBody = findChild(child, "txBody");
+        if (txBody) lines.push(...collectParagraphsPptx(txBody));
+        break;
+      }
+      case "grpSp":
+        lines.push(...collectShapeTreeLines(child));
+        break;
+      case "graphicFrame": {
+        const tbl = findDescendant(child, "tbl");
+        if (tbl) lines.push(...collectTableLinesPptx(tbl));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return lines;
+}
+
+/** Extracts the text lines from a p:sld or p:notes root's p:cSld/p:spTree. */
+function extractSlideBodyLines(root: XmlElement): string[] {
+  const cSld = findChild(root, "cSld");
+  const spTree = cSld ? findChild(cSld, "spTree") : undefined;
+  return spTree ? collectShapeTreeLines(spTree) : [];
+}
+
+/** Extracts normalized text from a .pptx byte buffer per design spec §3.1/§3.2.
+ * Reuses all the shared primitives above (readOoxmlParts, tokenizeXml/
+ * parseXml, decodeXmlEntities, getAttr, the OLE `encrypted` check,
+ * normalize()) — no zip/tokenizer logic is duplicated here. */
+export async function extractPptx(
+  bytes: Uint8Array,
+  limits: ExtractLimits,
+  includeSpeakerNotes = true,
+): Promise<ExtractWorkerResponse> {
+  if (isOleCompoundFile(bytes)) {
+    return {
+      ok: false,
+      error: {
+        reason: "encrypted",
+        message: "OLE compound-file container (IRM/password-protected)",
+      },
+    };
+  }
+
+  const partsResult = readOoxmlParts(
+    bytes,
+    limits,
+    (name) =>
+      name === PPT_PRESENTATION ||
+      name === PPT_PRESENTATION_RELS ||
+      SLIDE_RE.test(name) ||
+      SLIDE_RELS_RE.test(name) ||
+      (includeSpeakerNotes && NOTES_RE.test(name)),
+  );
+  if (!partsResult.ok) return { ok: false, error: partsResult.error };
+
+  const { parts } = partsResult.value;
+  const presentationBytes = parts[PPT_PRESENTATION];
+  if (!presentationBytes) {
+    return { ok: false, error: { reason: "malformed", message: `missing ${PPT_PRESENTATION}` } };
+  }
+
+  const presentationEl = findChild(parseXml(decodeUtf8Lenient(presentationBytes)), "presentation");
+  const sldIdLst = presentationEl ? findChild(presentationEl, "sldIdLst") : undefined;
+
+  const presentationRels = parts[PPT_PRESENTATION_RELS]
+    ? parseRelationships(decodeUtf8Lenient(parts[PPT_PRESENTATION_RELS]))
+    : new Map<string, RelEntry>();
+
+  // Slide part names in PRESENTATION order (§3.1) — resolved via
+  // p:sldIdLst's r:id sequence through presentation.xml.rels, NOT via
+  // slideN.xml filename order (they can differ).
+  const orderedSlideParts: string[] = [];
+  if (sldIdLst) {
+    for (const child of sldIdLst.children) {
+      if (!isXmlElement(child) || child.name !== "sldId") continue;
+      const rId = getRAttr(child, "id");
+      if (rId === undefined) continue;
+      const rel = presentationRels.get(rId);
+      if (!rel) continue;
+      orderedSlideParts.push(resolveRelTarget(PPT_PRESENTATION, rel.target));
+    }
+  }
+
+  const sections: string[] = [];
+  let visibleIndex = 0;
+  for (const slidePartName of orderedSlideParts) {
+    const slideBytes = parts[slidePartName];
+    if (!slideBytes) continue;
+
+    const sldEl = findChild(parseXml(decodeUtf8Lenient(slideBytes)), "sld");
+    if (!sldEl) continue;
+    if (getAttr(sldEl, "show") === "0") continue; // hidden slide: excluded entirely (§3.1)
+
+    visibleIndex += 1;
+    const section: string[] = [`## Slide ${visibleIndex}`, ...extractSlideBodyLines(sldEl)];
+
+    if (includeSpeakerNotes) {
+      const slideRelsBytes = parts[relsPathFor(slidePartName)];
+      const slideRels = slideRelsBytes
+        ? parseRelationships(decodeUtf8Lenient(slideRelsBytes))
+        : new Map<string, RelEntry>();
+      const notesRel = [...slideRels.values()].find((r) => r.type.endsWith(NOTES_REL_TYPE_SUFFIX));
+      const notesBytes = notesRel
+        ? parts[resolveRelTarget(slidePartName, notesRel.target)]
+        : undefined;
+
+      if (notesBytes) {
+        const notesEl = findChild(parseXml(decodeUtf8Lenient(notesBytes)), "notes");
+        const notesLines = notesEl ? extractSlideBodyLines(notesEl) : [];
+        if (notesLines.join("\n").trim().length > 0) {
+          section.push("[speaker notes]", ...notesLines);
+        }
+      }
+    }
+
+    sections.push(section.join("\n"));
+  }
+
+  const rawText = sections.join("\n");
+  if (rawText.trim().length === 0) {
+    return { ok: false, error: { reason: "empty" } };
+  }
+
+  let text: string;
+  try {
+    text = normalize(rawText);
+  } catch (e) {
+    return {
+      ok: false,
+      error: { reason: "malformed", message: e instanceof Error ? e.message : String(e) },
+    };
+  }
+  if (text.trim().length === 0) {
+    return { ok: false, error: { reason: "empty" } };
+  }
+
+  return { ok: true, value: { text } };
+}
+
+/** Worker dispatch entry point (matches the Handler shape in worker.ts). */
+export async function handlePptx(request: ExtractRequest): Promise<ExtractWorkerResponse> {
+  return extractPptx(request.bytes, request.limits, request.includeSpeakerNotes ?? true);
+}

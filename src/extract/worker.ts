@@ -31,11 +31,11 @@ async function notYetImplemented(unit: string): Promise<ExtractWorkerResponse> {
 // needed either way.
 const isTs = import.meta.url.endsWith(".ts");
 const officeUrl = new URL(isTs ? "./office.ts" : "./office.js", import.meta.url);
-const { handleDocx } = (await import(officeUrl.href)) as typeof import("./office.js");
+const { handleDocx, handlePptx } = (await import(officeUrl.href)) as typeof import("./office.js");
 
 const dispatch: Record<ExtractRequest["kind"], Handler> = {
   docx: handleDocx,
-  pptx: () => notYetImplemented("U8"),
+  pptx: handlePptx,
   pdf: () => notYetImplemented("U9"),
 };
 

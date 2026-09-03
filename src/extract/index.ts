@@ -63,11 +63,17 @@ export async function extractText(
   kind: ExtractKind,
   limits: ExtractLimits,
   opts: ExtractOptions = {},
+  // pptx-only, per-enrollment (default on): whether to include speaker
+  // notes in the extracted text. Kept as its own trailing parameter rather
+  // than a field on `opts` — `opts` is the main-thread-only Worker-spawning
+  // seam (workerUrl/execArgv, never sent to the worker), while this really
+  // is request data and must reach the worker via ExtractRequest below.
+  includeSpeakerNotes = true,
 ): Promise<Result<ExtractResult, ExtractError>> {
   const target = defaultWorkerTarget();
   const workerUrl = opts.workerUrl ?? target.url;
   const execArgv = opts.execArgv ?? target.execArgv;
-  const request: ExtractRequest = { bytes, kind, limits };
+  const request: ExtractRequest = { bytes, kind, limits, includeSpeakerNotes };
 
   return new Promise((resolve) => {
     let settled = false;

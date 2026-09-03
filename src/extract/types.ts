@@ -78,6 +78,14 @@ export interface ExtractRequest {
   bytes: Uint8Array;
   kind: ExtractKind;
   limits: ExtractLimits;
+  /**
+   * pptx-only: whether to append each slide's speaker notes (spec §3.2).
+   * Structured-cloned into the worker alongside `limits` — unlike
+   * ExtractOptions.workerUrl/execArgv (main-thread-only Worker-construction
+   * seams), this is real request data the worker driver reads. Ignored by
+   * the docx driver. Defaults to `true` when unset (U8).
+   */
+  includeSpeakerNotes?: boolean;
 }
 
 export type ExtractWorkerResponse =
