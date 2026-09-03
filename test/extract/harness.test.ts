@@ -36,8 +36,10 @@ describe("extractText harness", () => {
     }
   });
 
-  test("dispatches to the real worker and reports unsupported_type before U7/U8/U9 land", async () => {
-    const result = await extractText(new Uint8Array([1, 2, 3]), "docx", DEFAULT_EXTRACT_LIMITS);
+  test("dispatches to the real worker and reports unsupported_type before U8/U9 land", async () => {
+    // docx (U7) is now implemented — use pptx (still a U8 stub) to exercise
+    // the "not yet implemented" dispatch path.
+    const result = await extractText(new Uint8Array([1, 2, 3]), "pptx", DEFAULT_EXTRACT_LIMITS);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {

@@ -16,8 +16,25 @@ async function notYetImplemented(unit: string): Promise<ExtractWorkerResponse> {
   return { ok: false, error: { reason: "unsupported_type", message: `implemented in ${unit}` } };
 }
 
+// A static `import "./office.js"` here resolves fine when this worker runs
+// compiled (dist/extract/worker.js importing the real dist/extract/office.js
+// — plain Node ESM resolution, no loader involved). But in dev/test, this
+// file is loaded as a worker_threads entry with execArgv ["--import","tsx"]
+// (see index.ts's defaultWorkerTarget), and tsx's resolve hook — which maps
+// a ".js" specifier to its sibling ".ts" source just fine for a normal
+// import — does not reliably do that remapping for a *value* import
+// resolved from inside a worker thread. The worker entry URL itself always
+// resolves (it's passed to `new Worker()` with its real, exact extension
+// already), so mirror that exact-extension trick for this one nested
+// import: build the sibling module's URL with the same extension as this
+// file, then dynamically import that exact URL — no extension remapping
+// needed either way.
+const isTs = import.meta.url.endsWith(".ts");
+const officeUrl = new URL(isTs ? "./office.ts" : "./office.js", import.meta.url);
+const { handleDocx } = (await import(officeUrl.href)) as typeof import("./office.js");
+
 const dispatch: Record<ExtractRequest["kind"], Handler> = {
-  docx: () => notYetImplemented("U7"),
+  docx: handleDocx,
   pptx: () => notYetImplemented("U8"),
   pdf: () => notYetImplemented("U9"),
 };
