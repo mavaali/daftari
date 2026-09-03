@@ -76,18 +76,25 @@ export interface OoxmlParts {
 }
 
 /**
- * Opens a zip, decompressing ONLY the entries named in `wanted`, and only if
- * their DECLARED (pre-inflation) size fits within the per-entry and running
- * total caps. The size check happens inside fflate's `filter` callback,
- * which fires before that entry is inflated — an entry that fails the check
- * is skipped and never decompressed, so a small physical file that declares
- * a huge inflated size is caught without ever allocating for it.
+ * Opens a zip, decompressing ONLY the entries selected by `wanted`, and only
+ * if their DECLARED (pre-inflation) size fits within the per-entry and
+ * running total caps. The size check happens inside fflate's `filter`
+ * callback, which fires before that entry is inflated — an entry that fails
+ * the check is skipped and never decompressed, so a small physical file that
+ * declares a huge inflated size is caught without ever allocating for it.
+ *
+ * `wanted` is either an exact-name allowlist (docx's fixed part names:
+ * word/document.xml, word/footnotes.xml, word/endnotes.xml) or a predicate,
+ * for callers whose part names aren't known in advance — e.g. pptx's
+ * ppt/slides/slideN.xml for an a-priori-unknown N.
  */
 export function readOoxmlParts(
   bytes: Uint8Array,
   limits: ExtractLimits,
-  wanted: readonly string[],
+  wanted: readonly string[] | ((name: string) => boolean),
 ): Result<OoxmlParts, ExtractError> {
+  const isWanted = typeof wanted === "function" ? wanted : (name: string) => wanted.includes(name);
+
   let total = 0;
   let tooLarge = false;
   let hasContentTypes = false;
@@ -100,7 +107,7 @@ export function readOoxmlParts(
           hasContentTypes = true;
           return false; // presence check only; content is never needed
         }
-        if (!wanted.includes(info.name)) return false;
+        if (!isWanted(info.name)) return false;
         if (info.originalSize > limits.maxInflatedBytesPerEntry) {
           tooLarge = true;
           return false;
@@ -325,7 +332,14 @@ interface NoteRef {
 }
 
 /** Collects run-level (inline) text under a w:p (or any element containing
- * runs), applying the tracked-changes and text-box rules from spec §3.1. */
+ * runs), applying the tracked-changes and text-box rules from spec §3.1.
+ * NOTE: this recurses with document nesting depth and has no explicit depth
+ * cap — it relies on V8's *catchable* `RangeError: Maximum call stack size
+ * exceeded` for a pathologically deep document, which propagates up through
+ * collectBlockLines/extractDocx to worker.ts's top-level `.catch` and is
+ * reported as `malformed`. This is not a bounded-recursion guard, just an
+ * accepted fallback — a future reader should not assume depth is enforced
+ * here. */
 function collectRunText(el: XmlElement, refs: NoteRef[]): string {
   switch (el.name) {
     case "del":
@@ -371,6 +385,11 @@ function collectTableLines(tbl: XmlElement, refs: NoteRef[]): string[] {
     const cells: string[] = [];
     for (const cellNode of child.children) {
       if (!isXmlElement(cellNode) || cellNode.name !== "tc") continue;
+      // Deliberately collapses a multi-paragraph cell to one line (joined by
+      // a single space): the output format is one line per table row, so a
+      // cell can't contribute its own line breaks. Same intent applies to
+      // buildNotesLines below, and should carry over to U8's pptx text
+      // boxes if those get a similar one-line-per-shape treatment.
       const cellLines = collectBlockLines(cellNode, refs);
       cells.push(cellLines.join(" ").replace(/\n+/g, " ").trim());
     }
@@ -404,6 +423,8 @@ function indexNotesById(root: XmlElement, tagName: "footnote" | "endnote"): Map<
       if (child.name === tagName) {
         const id = getAttr(child, "id");
         if (id !== undefined) {
+          // Same one-line-per-note collapse as collectTableLines' cell join
+          // above — a multi-paragraph footnote/endnote becomes one line.
           const localRefs: NoteRef[] = [];
           const lines = collectBlockLines(child, localRefs);
           map.set(id, lines.join(" ").replace(/\n+/g, " ").trim());
@@ -438,6 +459,12 @@ const DOCX_DOCUMENT = "word/document.xml";
 const DOCX_FOOTNOTES = "word/footnotes.xml";
 const DOCX_ENDNOTES = "word/endnotes.xml";
 
+// Deliberately lenient (non-fatal) decode: invalid byte sequences become
+// U+FFFD replacement characters instead of throwing here. This is
+// intentional, not an oversight — the final assembled text still passes
+// through normalize()'s stricter guard (assertUtf8NoNul/containsNulByte in
+// normalize.ts), which rejects a NUL byte before the result is returned, so
+// the one guard that matters for downstream hashing is still enforced.
 function decodeUtf8Lenient(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }

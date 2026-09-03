@@ -5,7 +5,7 @@
 
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, test } from "vitest";
-import { extractDocx } from "../../src/extract/office.js";
+import { extractDocx, readOoxmlParts } from "../../src/extract/office.js";
 import { DEFAULT_EXTRACT_LIMITS } from "../../src/extract/types.js";
 
 const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
@@ -170,6 +170,37 @@ describe("extractDocx", () => {
     if (result.ok) return;
     expect(result.error.reason).toBe("too_large");
     expect(elapsedMs).toBeLessThan(2000); // returns fast, no 40MB allocation
+  });
+});
+
+describe("readOoxmlParts with a predicate `wanted`", () => {
+  test("selects entries by predicate instead of exact name (pptx-style unknown-N part names)", async () => {
+    const bytes = buildDocxZip({
+      "ppt/slides/slide1.xml": "<p>one</p>",
+      "ppt/slides/slide2.xml": "<p>two</p>",
+      "ppt/slideLayouts/slideLayout1.xml": "<p>not wanted</p>",
+    });
+
+    const result = readOoxmlParts(bytes, DEFAULT_EXTRACT_LIMITS, (name) =>
+      /^ppt\/slides\/slide\d+\.xml$/.test(name),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.keys(result.value.parts).sort()).toEqual([
+      "ppt/slides/slide1.xml",
+      "ppt/slides/slide2.xml",
+    ]);
+  });
+
+  test("still supports the exact-name array form (docx's existing behavior, unchanged)", async () => {
+    const bytes = buildDocxZip({ "word/document.xml": wrapDocument("<w:p/>") });
+
+    const result = readOoxmlParts(bytes, DEFAULT_EXTRACT_LIMITS, ["word/document.xml"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.keys(result.value.parts)).toEqual(["word/document.xml"]);
   });
 });
 
