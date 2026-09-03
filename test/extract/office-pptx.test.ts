@@ -219,6 +219,60 @@ describe("extractPptx", () => {
     expect(result.error.reason).toBe("empty");
   });
 
+  test("dangling r:id in presentation.xml.rels: the unresolved slide is dropped, no throw", async () => {
+    const parts: Record<string, string> = {
+      "ppt/presentation.xml": wrapPresentation(
+        `<p:sldId id="256" r:id="rId999"/><p:sldId id="257" r:id="rId101"/>`,
+      ),
+      // rId999 is never defined here — a dangling relationship reference.
+      "ppt/_rels/presentation.xml.rels": wrapRelationships([
+        { id: "rId101", type: SLIDE_REL_TYPE, target: "slides/slide1.xml" },
+      ]),
+      "ppt/slides/slide1.xml": wrapSlide(textShape("Only real slide")),
+    };
+
+    const result = await extractPptx(buildPptxZip(parts), DEFAULT_EXTRACT_LIMITS, true);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Only real slide");
+    expect(result.value.text).toContain("## Slide 1");
+    expect(result.value.text).not.toContain("## Slide 2");
+  });
+
+  test("missing presentation.xml.rels part entirely: all slides unresolved, returns empty, no throw", async () => {
+    const parts: Record<string, string> = {
+      "ppt/presentation.xml": wrapPresentation(`<p:sldId id="256" r:id="rId101"/>`),
+      "ppt/slides/slide1.xml": wrapSlide(textShape("Unreachable slide")),
+      // ppt/_rels/presentation.xml.rels is deliberately absent.
+    };
+
+    const result = await extractPptx(buildPptxZip(parts), DEFAULT_EXTRACT_LIMITS, true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("empty");
+  });
+
+  test("dangling notes relationship target: slide body still extracted, no [speaker notes] block, no throw", async () => {
+    const parts: Record<string, string> = {
+      "ppt/presentation.xml": wrapPresentation(`<p:sldId id="256" r:id="rId101"/>`),
+      "ppt/_rels/presentation.xml.rels": wrapRelationships([
+        { id: "rId101", type: SLIDE_REL_TYPE, target: "slides/slide1.xml" },
+      ]),
+      "ppt/slides/slide1.xml": wrapSlide(textShape("Slide with dangling notes ref")),
+      "ppt/slides/_rels/slide1.xml.rels": wrapRelationships([
+        { id: "rId1", type: NOTES_REL_TYPE, target: "../notesSlides/notesSlide1.xml" },
+      ]),
+      // ppt/notesSlides/notesSlide1.xml is deliberately absent — the notes
+      // relationship resolves to a target that doesn't exist in the package.
+    };
+
+    const result = await extractPptx(buildPptxZip(parts), DEFAULT_EXTRACT_LIMITS, true);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Slide with dangling notes ref");
+    expect(result.value.text).not.toContain("[speaker notes]");
+  });
+
   test("classifies an OLE compound-file (EncryptedPackage) container as encrypted", async () => {
     const oleHeader = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0]);
 

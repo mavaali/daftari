@@ -624,7 +624,15 @@ function relsPathFor(partName: string): string {
 
 /** Collects run-level text under an a:p (or any element containing runs):
  * a:t is a text run, a:br is a line break. No tracked-changes/footnote
- * analog exists in DrawingML, so this is simpler than docx's collectRunText. */
+ * analog exists in DrawingML, so this is simpler than docx's collectRunText.
+ * NOTE: like collectRunText/collectBlockLines above (~line 336), this — and
+ * collectParagraphsPptx, collectShapeTreeLines, and findDescendant below —
+ * recurses with document nesting depth and has no explicit depth cap. Same
+ * accepted fallback applies: a pathologically deep/nested slide relies on
+ * V8's catchable `RangeError: Maximum call stack size exceeded` propagating
+ * up to worker.ts's top-level `.catch`, reported as `malformed`. Not a
+ * bounded-recursion guard — a future reader should not assume depth is
+ * enforced here either. */
 function collectRunTextPptx(el: XmlElement): string {
   switch (el.name) {
     case "t": {
