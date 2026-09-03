@@ -127,8 +127,11 @@ const pdfImageOnly = buildPdf([{ contentOps: "0 0 1 rg 0 0 200 200 re f" }]);
 
 const pdfNotAPdf = new TextEncoder().encode("this is not a PDF, just plain text bytes");
 
-const PDF_TOO_LARGE_LIMITS: ExtractLimits = { ...DEFAULT_EXTRACT_LIMITS, maxPdfPages: 500 };
-const pdfTooLargePages: PageSpec[] = Array.from({ length: 501 }, () => ({}));
+// A genuinely smaller cap than the default (500), so this exercises the
+// too_large branch independent of whatever DEFAULT_EXTRACT_LIMITS happens to
+// be set to, rather than a no-op override that just restates the default.
+const PDF_TOO_LARGE_LIMITS: ExtractLimits = { ...DEFAULT_EXTRACT_LIMITS, maxPdfPages: 10 };
+const pdfTooLargePages: PageSpec[] = Array.from({ length: 11 }, () => ({}));
 const pdfTooLarge = buildPdf(pdfTooLargePages);
 
 // ---------------------------------------------------------------------------
@@ -318,13 +321,29 @@ describe("extraction evaluation corpus (R31)", () => {
 
 // ---------------------------------------------------------------------------
 // Ratio measurement — text_chars / source_bytes over the happy fixtures,
-// written to test/fixtures/extract/ratios.json for U17 to read.
+// checked against the COMMITTED test/fixtures/extract/ratios.json that U17
+// (enrollment cost-preview) reads to estimate extracted-text volume from a
+// file's byte size before enrolling it.
+//
+// This is a golden-file COMPARE, not a self-healing snapshot: a normal test
+// run reads the committed file first, recomputes the ratios from the happy
+// fixtures, and asserts they match within a tight tolerance — it never
+// overwrites ratios.json. If extractor behavior drifts (e.g. a change to
+// normalize() or a parser), this fails loudly instead of silently rewriting
+// the committed number and staying green, which would leave U17 trusting a
+// stale estimate.
+//
+// To deliberately regenerate the committed file after an intentional
+// extractor change, run: UPDATE_RATIOS=1 npx vitest run test/extract/corpus.test.ts
 // ---------------------------------------------------------------------------
 
 describe("text_chars / source_bytes ratios (seeds U17's cost-preview estimate)", () => {
-  let ratios: Record<CorpusType, number>;
+  let committed: Record<CorpusType, number>;
+  let measured: Record<CorpusType, number>;
 
   beforeAll(async () => {
+    committed = JSON.parse(fs.readFileSync(RATIOS_PATH, "utf-8"));
+
     const perType: Record<CorpusType, number[]> = { docx: [], pptx: [], pdf: [] };
 
     for (const c of CORPUS) {
@@ -337,30 +356,34 @@ describe("text_chars / source_bytes ratios (seeds U17's cost-preview estimate)",
     }
 
     const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-    ratios = {
+    measured = {
       docx: mean(perType.docx),
       pptx: mean(perType.pptx),
       pdf: mean(perType.pdf),
     };
 
-    fs.writeFileSync(RATIOS_PATH, `${JSON.stringify(ratios, null, 2)}\n`);
+    // Opt-in regeneration path only — never runs on a normal test/CI pass.
+    if (process.env.UPDATE_RATIOS) {
+      fs.writeFileSync(RATIOS_PATH, `${JSON.stringify(measured, null, 2)}\n`);
+    }
   });
 
   test("docx/pptx ratio is > 0 and < 1 (zip-compressed source, plain-text output)", () => {
-    expect(ratios.docx).toBeGreaterThan(0);
-    expect(ratios.docx).toBeLessThan(1);
-    expect(ratios.pptx).toBeGreaterThan(0);
-    expect(ratios.pptx).toBeLessThan(1);
+    expect(measured.docx).toBeGreaterThan(0);
+    expect(measured.docx).toBeLessThan(1);
+    expect(measured.pptx).toBeGreaterThan(0);
+    expect(measured.pptx).toBeLessThan(1);
   });
 
   test("pdf ratio is > 0 (object/xref overhead means it may exceed 1 for small fixtures)", () => {
-    expect(ratios.pdf).toBeGreaterThan(0);
-    expect(ratios.pdf).toBeLessThan(50); // loose sanity bound, not a precision target
+    expect(measured.pdf).toBeGreaterThan(0);
+    expect(measured.pdf).toBeLessThan(50); // loose sanity bound, not a precision target
   });
 
-  test("ratios.json on disk matches what was measured this run", () => {
-    const onDisk = JSON.parse(fs.readFileSync(RATIOS_PATH, "utf-8"));
-    expect(onDisk).toEqual(ratios);
+  test("measured ratios match the committed ratios.json (fails loudly on extractor drift)", () => {
+    for (const type of ["docx", "pptx", "pdf"] as const) {
+      expect(committed[type]).toBeCloseTo(measured[type], 6);
+    }
   });
 });
 
