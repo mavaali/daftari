@@ -14,8 +14,11 @@
 //   is the existing boundary — no new gate is introduced here.
 //
 // Collection:
-//   Defaulting to "distill". This is a named constant (DISTILL_COLLECTION)
-//   so a future config hook can override it without touching call sites.
+//   Defaults to "distill" (DISTILL_COLLECTION). The default is resolved ONCE
+//   in proposeAllClaims (see the `collection` local there, ~line 407-408):
+//   DistillIds.collection unset or "" ⇒ DISTILL_COLLECTION, else the caller's
+//   override, verbatim. derivePath (below) just receives the already-resolved
+//   value — it does not know about defaulting.
 
 import { join } from "node:path";
 import type { AccessContext } from "../access/rbac.js";
@@ -186,6 +189,14 @@ function hash8FromClaimKey(claimKey: string): string {
 // Path-traversal safety: slugifyKey strips everything except [a-z0-9-], so
 // none of the join components can contain ".." or path separators — the
 // sanitizer is the invariant; don't remove it in a future refactor.
+//
+// `collection` is NOT covered by that invariant (U3 follow-up). It is
+// caller-supplied free text threaded straight from DistillIds.collection into
+// `join()` below with no slugifyKey pass — a value like ".." or "a/../b"
+// would flow through unguarded. This is deliberately deferred: U3 only wires
+// the optional field through; U19 MUST validate `collection` (allowlist)
+// before any provider that accepts untrusted collection input reaches this
+// path. Do not treat this parameter as already-guarded.
 function derivePath(claim: ExtractedClaim, sourceId: string, collection: string): string {
   const title = claim.proposed_frontmatter.title;
   const hash8 = hash8FromClaimKey(claim.claim_key);
