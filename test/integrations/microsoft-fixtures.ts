@@ -13,6 +13,12 @@ import type { MicrosoftProviderConfig, ProviderState } from "../../src/integrati
  */
 export type MicrosoftFixtures = Record<string, Response[]>;
 
+// Scripts CANNED RESPONSES only, matched by URL prefix — `init` (method,
+// headers, body) is received but discarded, so this cannot assert what a
+// caller sent. U13 (token-exchange request body) and U16 (webhook signature
+// headers) need to assert on the request, not just script the response: use
+// a bespoke inline transport with a `requests` capture array instead (see
+// the pattern in test/integrations/google.test.ts), not this helper.
 export function createFixtureTransport(fixtures: MicrosoftFixtures): MicrosoftHttpTransport {
   return async (url) => {
     const match = Object.entries(fixtures).find(([prefix]) => url.startsWith(prefix));

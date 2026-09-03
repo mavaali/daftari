@@ -15,6 +15,7 @@ import type {
   AuthorizationRequest,
   CodeExchange,
   EnsureWebhookInput,
+  NormalizedRemoteSource,
   ProviderAdapter,
   ProviderTokens,
   RefreshTokenRequest,
@@ -100,9 +101,17 @@ async function discover(_state: ProviderState): Promise<Result<RemoteSource[], E
   return ok([]);
 }
 
-async function fetchSource(): Promise<
-  Result<{ id: string; revision: string; text: string }, Error>
-> {
+// Throws rather than returning err(...) like exchangeCode does, because the
+// two are unreachable at different points: exchangeCode is reachable today
+// via a real "connect Microsoft" OAuth click, so it returns a Result the
+// route layer can surface to the user as a normal failure. fetch is never
+// reachable in U12 — discover() always returns an empty source list, so
+// reconcileProvider has nothing to call fetch on. U15 should implement this
+// for real, not "fix" it into an err() to match exchangeCode.
+async function fetchSource(
+  _source: RemoteSource,
+  _state: ProviderState,
+): Promise<Result<NormalizedRemoteSource, Error>> {
   throw new Error("microsoft fetch not yet implemented (U15)");
 }
 
