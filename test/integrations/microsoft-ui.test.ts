@@ -100,7 +100,8 @@ describe("GET /integrations/microsoft/ui", () => {
       expect(res.headers.get("content-security-policy")).toBe(
         "default-src 'self'; script-src 'self'; " +
           "connect-src 'self' https://login.microsoftonline.com https://*.sharepoint.com; " +
-          "form-action 'self' https://*.sharepoint.com",
+          "form-action 'self' https://*.sharepoint.com; " +
+          "frame-src https://login.microsoftonline.com",
       );
       const body = await res.text();
       expect(body).toContain("<!doctype html>");

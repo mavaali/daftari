@@ -28,10 +28,21 @@ const ASSETS_ROOT = resolve(HERE, "microsoft", "assets");
 // widened only to the two hosts a picker round-trip actually talks to, and
 // form-action widened to SharePoint since the picker's own internal forms
 // post there. Exported verbatim so a test can assert byte-for-byte equality.
+//
+// `frame-src` EXTENDS §5.1 (the design doc's CSP omitted it): msal-browser's
+// `acquireTokenSilent` opens a hidden iframe against login.microsoftonline.com
+// to renew a token without user interaction, and with no frame-src/child-src
+// that iframe inherits `default-src 'self'` and gets blocked outright — every
+// session would be forced into the interactive `acquireTokenPopup` fallback
+// even with a valid SSO session, silently defeating silent-first auth. The
+// picker itself is a `window.open` popup, not an iframe, so it needs no
+// frame-src entry of its own. Worth reconfirming against the design doc and
+// at the probe-5 live smoke.
 export const MICROSOFT_UI_CSP =
   "default-src 'self'; script-src 'self'; " +
   "connect-src 'self' https://login.microsoftonline.com https://*.sharepoint.com; " +
-  "form-action 'self' https://*.sharepoint.com";
+  "form-action 'self' https://*.sharepoint.com; " +
+  "frame-src https://login.microsoftonline.com";
 
 // Same Entra host the OAuth adapter (microsoft.ts) authorizes/exchanges
 // against and the CSP's connect-src names — msal-browser's `authority` is

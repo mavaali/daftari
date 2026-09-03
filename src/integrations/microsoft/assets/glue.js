@@ -121,9 +121,23 @@ function openFilePickerPopup(token, msgChannelId) {
     }
 
     let port;
+    // The trusted origin the popup must be showing to have its messages
+    // accepted. `event.source === popup` alone is NOT enough: `source` is the
+    // window handle, and it persists across navigations of that window — if
+    // the popup were ever navigated away from pickerHost (an open redirect on
+    // the SharePoint host, a third-party script injected into that origin,
+    // etc.), messages from whatever now occupies that window would still pass
+    // an `event.source`-only check and could forge the `authenticate` command
+    // to solicit the SharePoint token, or forge a `pick` result. Requiring
+    // `event.origin` to match pickerHost's origin closes that gap. Only the
+    // window-message gate needs this: once handoff to the MessageChannel port
+    // happens, that channel is scoped to the two endpoints that shared it and
+    // inherits the trust established here.
+    const trustedOrigin = new URL(pickerHost).origin;
 
     function onMessage(event) {
       if (event.source !== popup) return;
+      if (event.origin !== trustedOrigin) return;
       const data = event.data;
       if (data?.type === "initialize" && data.channelId === msgChannelId) {
         port = event.ports[0];
@@ -154,12 +168,27 @@ function openFilePickerPopup(token, msgChannelId) {
       }
     }
 
+    let closedPollTimer;
+
     function cleanup() {
       window.removeEventListener("message", onMessage);
+      if (closedPollTimer !== undefined) clearInterval(closedPollTimer);
       popup?.close();
     }
 
     window.addEventListener("message", onMessage);
+
+    // Recovery for a manually-closed popup (OS window close, not the SDK's
+    // own `close` command): without this, closing the popup by hand leaves
+    // the Promise pending forever and the button stuck on "Opening file
+    // picker…". Polling `popup.closed` is the only reliable cross-browser
+    // signal for that — there's no event for it.
+    closedPollTimer = setInterval(() => {
+      if (popup.closed) {
+        cleanup();
+        rejectPick(new Error("picker popup was closed"));
+      }
+    }, 500);
 
     const form = new URLSearchParams();
     form.set("filePicker", JSON.stringify(fileBrowserConfig(msgChannelId)));

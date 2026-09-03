@@ -599,6 +599,9 @@ export async function handleIntegrationRoute(
   // way: none of this is secret, and requiring a session here would only
   // break the very first (unauthenticated, by definition, since it's static
   // JS) <script> fetch a browser makes while loading the page above.
+  // `provider` here is already constrained to one of PROVIDER_NAMES by
+  // providerFrom()'s own regex above (the enum, not free text off the
+  // request) — safe to interpolate into this RegExp unescaped.
   const uiAssetMatch = new RegExp(`^/integrations/${provider}/ui/assets/(.+)$`).exec(url.pathname);
   if (uiAssetMatch !== null) {
     if (provider !== "microsoft" || deps.config.microsoft === undefined) {
