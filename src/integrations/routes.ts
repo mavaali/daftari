@@ -332,7 +332,7 @@ export async function handleIntegrationRoute(
         const queued = deps.queue.enqueue({
           provider,
           eventId: verified.value.eventId,
-          hint: { kind: "reconcile" },
+          hint: { kind: "lifecycle", action: verified.value.action },
         });
         if (!queued.ok) {
           writeJson(response, 503, { error: "queue_unavailable" });
@@ -398,12 +398,13 @@ export async function handleIntegrationRoute(
         return true;
       }
       // R18 (route side): the verified lifecycle notification is durably
-      // enqueued through the same queue the change-notification path uses —
-      // dispatch on the carried `action` is a later task's concern.
+      // enqueued through the same queue the change-notification path uses,
+      // carrying its `action` unchanged — dispatch on that action is a later
+      // task's concern (U16), not this route's.
       const queued = deps.queue.enqueue({
         provider,
         eventId: verified.value.eventId,
-        hint: { kind: "reconcile" },
+        hint: { kind: "lifecycle", action: verified.value.action },
       });
       if (!queued.ok) {
         writeJson(response, 503, { error: "queue_unavailable" });

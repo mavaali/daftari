@@ -77,7 +77,8 @@ export interface WebhookRequest {
 
 export type RefreshHint =
   | { kind: "reconcile" }
-  | { kind: "sources"; sourceIds: string[]; rediscover: boolean };
+  | { kind: "sources"; sourceIds: string[]; rediscover: boolean }
+  | { kind: "lifecycle"; action: "reauthorize" | "recreate" | "reconcile" };
 
 export type VerifiedWebhook =
   | { kind: "verification"; channel: WebhookChannel }
@@ -561,6 +562,11 @@ function validWebhookChannel(channel: WebhookChannel): boolean {
 
 function validRefreshHint(hint: RefreshHint): boolean {
   if (hint.kind === "reconcile") return true;
+  if (hint.kind === "lifecycle") {
+    return (
+      hint.action === "reauthorize" || hint.action === "recreate" || hint.action === "reconcile"
+    );
+  }
   return (
     hint.kind === "sources" &&
     Array.isArray(hint.sourceIds) &&
@@ -723,10 +729,22 @@ export async function reconcileProvider(
       providerState = refreshed.value;
 
       const limits = reconcileLimits(deps);
-      const shouldDiscover = hint.kind === "reconcile" || hint.rediscover;
+      // A "lifecycle" hint reaching reconcileProvider directly (e.g. queued
+      // but not intercepted before this drain) falls back to the same full
+      // discovery a "reconcile" hint gets — conservative and lossless, since
+      // this function has no lifecycle-action dispatch of its own (that's a
+      // later unit's job; see the route-side queueing in routes.ts).
+      const shouldDiscover = hint.kind !== "sources" || hint.rediscover;
       const previousCursor = providerState.cursor;
       let discovered: Result<RemoteSource[], Error>;
-      if (shouldDiscover) {
+      if (hint.kind === "sources" && !hint.rediscover) {
+        discovered = ok(
+          [...new Set(hint.sourceIds)].map((sourceId) => ({
+            id: sourceId,
+            revision: providerState.sources[sourceId]?.revision ?? "targeted-refresh",
+          })),
+        );
+      } else {
         try {
           discovered = await adapter.discover(providerState);
         } catch {
@@ -734,13 +752,6 @@ export async function reconcileProvider(
         }
         if (!discovered.ok)
           return err(new Error(`integration provider ${adapter.name} discovery failed`));
-      } else {
-        discovered = ok(
-          [...new Set(hint.sourceIds)].map((sourceId) => ({
-            id: sourceId,
-            revision: providerState.sources[sourceId]?.revision ?? "targeted-refresh",
-          })),
-        );
       }
       if (!discovered.ok) {
         return err(new Error(`integration provider ${adapter.name} discovery failed`));

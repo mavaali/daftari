@@ -198,4 +198,50 @@ describe("durable integration queue", () => {
     const queue = createIntegrationQueue(vault);
     expect(queue.pending().ok).toBe(false);
   });
+
+  it("preserves a lifecycle action when an unrelated reconcile hint shares its drain batch", async () => {
+    const queue = createIntegrationQueue(vault);
+    queue.enqueue({
+      provider: "microsoft",
+      eventId: "lifecycle-1",
+      hint: { kind: "lifecycle", action: "reauthorize" },
+    });
+    queue.enqueue({
+      provider: "microsoft",
+      eventId: "change-1",
+      hint: { kind: "reconcile" },
+    });
+
+    const seenHints: unknown[] = [];
+    expect(
+      await queue.drain(async (batch) => {
+        seenHints.push(batch.hint);
+        return ok(undefined);
+      }),
+    ).toEqual(ok({ processed: 2, skipped: false }));
+
+    expect(seenHints).toEqual([{ kind: "lifecycle", action: "reauthorize" }]);
+  });
+
+  it("keeps the strongest lifecycle action when several coalesce in one batch", async () => {
+    const queue = createIntegrationQueue(vault);
+    queue.enqueue({
+      provider: "microsoft",
+      eventId: "lifecycle-recreate",
+      hint: { kind: "lifecycle", action: "recreate" },
+    });
+    queue.enqueue({
+      provider: "microsoft",
+      eventId: "lifecycle-reauthorize",
+      hint: { kind: "lifecycle", action: "reauthorize" },
+    });
+
+    const seenHints: unknown[] = [];
+    await queue.drain(async (batch) => {
+      seenHints.push(batch.hint);
+      return ok(undefined);
+    });
+
+    expect(seenHints).toEqual([{ kind: "lifecycle", action: "reauthorize" }]);
+  });
 });

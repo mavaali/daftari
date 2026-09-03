@@ -470,7 +470,7 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
     const providerAdapter = adapter({
       name: "microsoft",
       verifyLifecycleWebhook: async () =>
-        ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reconcile" }),
+        ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
     });
     const running = await startWithAdapter(providerAdapter);
     try {
@@ -482,6 +482,10 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
       const pending = running.queue.pending();
       expect(pending.ok && pending.value).toHaveLength(1);
       expect(pending.ok && pending.value[0]?.eventId).toBe("lifecycle-1");
+      expect(pending.ok && pending.value[0]?.hint).toEqual({
+        kind: "lifecycle",
+        action: "reauthorize",
+      });
       expect(running.wake).toHaveBeenCalledTimes(1);
     } finally {
       await running.close();
