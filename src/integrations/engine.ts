@@ -93,6 +93,83 @@ export interface NormalizedRemoteSource extends RemoteSource {
   text: string;
 }
 
+/** The enrolling request context passed to an adapter's enrollment resolver. */
+export interface EnrollmentContext {
+  user: string;
+  role: string;
+  collection: string;
+  includeSpeakerNotes: boolean;
+}
+
+/** A validated, pre-persistence enrollment produced by an adapter's resolver. */
+export interface EnrollmentDraft {
+  items: Array<{
+    driveId: string;
+    remoteId: string;
+    kind: "item" | "container";
+    label: string;
+  }>;
+  collection: string;
+  includeSpeakerNotes: boolean;
+}
+
+/** The cost/preview estimate for an enrollment draft (design §12). */
+export interface EnrollmentEstimate {
+  eligible: number;
+  skipped: Array<{ name: string; reason: string }>;
+  bytes: number;
+  byType: Record<string, number>;
+  estimatedCalls: { low: number; expected: number; high: number };
+  estimatedUsd?: { expected: number };
+  collection: string;
+  readers: string[];
+  ratifiers: string[];
+  warnings: string[];
+}
+
+/** Provider connection status surfaced to a status route (design §13). */
+export type ProviderConnectionStatus =
+  | { kind: "disconnected" }
+  | { kind: "connected"; account: ProviderAccount }
+  | { kind: "reconnect_required"; reason: string };
+
+/** Provider webhook status surfaced to a status route (design §13). */
+export type ProviderWebhookStatus =
+  | { kind: "off" }
+  | { kind: "active"; eventCount: number }
+  | { kind: "degraded"; reason: string };
+
+/** Per-enrollment state summary surfaced to a status route (design §13). */
+export interface EnrollmentStatusSummary {
+  id: string;
+  label: string;
+  sourceCount: number;
+  failedSourceCount: number;
+}
+
+/** Per-source state summary surfaced to a status route (design §13). */
+export interface SourceStatusSummary {
+  id: string;
+  available: boolean;
+  lastSeenAt: string;
+  lastFailure?: { at: string; reason: SourceFailureReason };
+}
+
+/** The provider-neutral status shape a status route renders (design §13). */
+export interface ProviderStatus {
+  connection: ProviderConnectionStatus;
+  webhook: ProviderWebhookStatus;
+  enrollments: EnrollmentStatusSummary[];
+  sources: SourceStatusSummary[];
+  lastCycle?: {
+    at: string;
+    distilled: number;
+    unchanged: number;
+    failed: number;
+    unavailable: number;
+  };
+}
+
 export interface ProviderAdapter {
   readonly name: ProviderName;
   /** Manual providers use the armed verification flow instead of subscription APIs. */
@@ -113,6 +190,27 @@ export interface ProviderAdapter {
   ): Promise<Result<VerifiedWebhook, Error>>;
   discover(state: ProviderState): Promise<Result<RemoteSource[], Error>>;
   fetch(source: RemoteSource, state: ProviderState): Promise<Result<NormalizedRemoteSource, Error>>;
+  // Provider-neutral optional surface (U5). Microsoft implements these
+  // starting U12+; Google/Notion never provide them, so a route that needs
+  // one 404s for those providers (see the capability-missing pattern in
+  // routes.ts).
+  /** Echoes a provider's webhook validation-challenge token, if this request is one. */
+  answerWebhookChallenge?(input: WebhookRequest): string | undefined;
+  /** Verifies a lifecycle (as opposed to a change) notification. */
+  verifyLifecycleWebhook?(
+    input: WebhookRequest,
+    state: ProviderState,
+  ): Promise<Result<VerifiedWebhook, Error>>;
+  resolveEnrollment?(
+    selection: unknown,
+    state: ProviderState,
+    ctx: EnrollmentContext,
+  ): Promise<Result<EnrollmentDraft, Error>>;
+  estimateEnrollment?(
+    draft: EnrollmentDraft,
+    state: ProviderState,
+  ): Promise<Result<EnrollmentEstimate, Error>>;
+  describeStatus?(state: ProviderState): ProviderStatus;
 }
 
 export interface DistillationInput {
@@ -992,6 +1090,46 @@ export async function verifyProviderWebhook(
   } finally {
     activeWebhookVerifications.delete(lockKey);
   }
+}
+
+export async function verifyProviderLifecycleWebhook(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  input: WebhookRequest,
+  deps: EngineDeps,
+): Promise<Result<Extract<VerifiedWebhook, { kind: "lifecycle" }>, Error>> {
+  if (adapter.verifyLifecycleWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot verify lifecycle webhooks`));
+  }
+  const configured = providerConfig(deps.config, adapter.name);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const snapshot = readIntegrationState(vaultRoot, key.value);
+  if (!snapshot.ok) return snapshot;
+  const snapshotProvider = snapshot.value.providers[adapter.name];
+  if (snapshotProvider === undefined) {
+    return err(new Error(`integration provider ${adapter.name} is not authorized`));
+  }
+
+  let verified: Result<VerifiedWebhook, Error>;
+  try {
+    verified = await adapter.verifyLifecycleWebhook(input, snapshotProvider);
+  } catch {
+    return err(new Error(`integration provider ${adapter.name} lifecycle verification failed`));
+  }
+  if (!verified.ok) {
+    return err(new Error(`integration provider ${adapter.name} lifecycle verification failed`));
+  }
+  const value = verified.value;
+  if (!validVerifiedWebhook(value) || value.kind !== "lifecycle") {
+    return err(
+      new Error(
+        `integration provider ${adapter.name} lifecycle verification returned invalid result`,
+      ),
+    );
+  }
+  return ok(value);
 }
 
 export function startPeriodicIntegrationSync(

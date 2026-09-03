@@ -5,6 +5,7 @@ import {
   armProviderWebhookSetup,
   confirmProviderWebhookVerification,
   readProviderWebhookVerificationToken,
+  verifyProviderLifecycleWebhook,
   verifyProviderWebhook,
 } from "./engine.js";
 import { beginAuthorizationRedirect, completeAuthorization } from "./oauth.js";
@@ -294,16 +295,29 @@ export async function handleIntegrationRoute(
         });
         return true;
       }
+      const webhookRequest: WebhookRequest = {
+        headers: nodeHeaders(request),
+        body: body.value,
+        query: Object.fromEntries(url.searchParams),
+        ...(url.searchParams.get("setup_token") === null
+          ? {}
+          : { setupToken: url.searchParams.get("setup_token") as string }),
+      };
+      // R16: a provider's webhook validation challenge is answered directly,
+      // ahead of signature verification — it never touches state or the
+      // durable queue.
+      if (adapter.answerWebhookChallenge !== undefined) {
+        const challenge = adapter.answerWebhookChallenge(webhookRequest);
+        if (challenge !== undefined) {
+          response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
+          response.end(challenge);
+          return true;
+        }
+      }
       const verified = await verifyProviderWebhook(
         deps.vaultRoot,
         adapter,
-        {
-          headers: nodeHeaders(request),
-          body: body.value,
-          ...(url.searchParams.get("setup_token") === null
-            ? {}
-            : { setupToken: url.searchParams.get("setup_token") as string }),
-        },
+        webhookRequest,
         deps.engineDeps,
       );
       if (!verified.ok) {
@@ -315,15 +329,81 @@ export async function handleIntegrationRoute(
         return true;
       }
       if (verified.value.kind === "lifecycle") {
-        // Lifecycle webhook handling (reauthorize/recreate/reconcile dispatch)
-        // is wired in a later task; acknowledge without enqueueing for now.
+        const queued = deps.queue.enqueue({
+          provider,
+          eventId: verified.value.eventId,
+          hint: { kind: "reconcile" },
+        });
+        if (!queued.ok) {
+          writeJson(response, 503, { error: "queue_unavailable" });
+          return true;
+        }
         writeJson(response, 202, { accepted: true });
+        deps.wake?.();
         return true;
       }
       const queued = deps.queue.enqueue({
         provider,
         eventId: verified.value.eventId,
         hint: verified.value.hint,
+      });
+      if (!queued.ok) {
+        writeJson(response, 503, { error: "queue_unavailable" });
+        return true;
+      }
+      writeJson(response, 202, { accepted: true });
+      deps.wake?.();
+      return true;
+    } finally {
+      release();
+    }
+  }
+
+  if (url.pathname === `/integrations/${provider}/webhook/lifecycle`) {
+    if (adapter.verifyLifecycleWebhook === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const release = deps.admitPublic(request, response);
+    if (release === null) return true;
+    try {
+      const body = await readBoundedBody(
+        request,
+        deps.maxWebhookBodyBytes ?? DEFAULT_WEBHOOK_BODY_LIMIT,
+        deps.webhookBodyTimeoutMs ?? DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
+      );
+      if (!body.ok) {
+        const timedOut = body.error.message === "request body timed out";
+        writeJson(response, timedOut ? 408 : 413, {
+          error: timedOut ? "request_timeout" : "payload_too_large",
+        });
+        return true;
+      }
+      const verified = await verifyProviderLifecycleWebhook(
+        deps.vaultRoot,
+        adapter,
+        {
+          headers: nodeHeaders(request),
+          body: body.value,
+          query: Object.fromEntries(url.searchParams),
+        },
+        deps.engineDeps,
+      );
+      if (!verified.ok) {
+        writeJson(response, 401, { error: "webhook_rejected" });
+        return true;
+      }
+      // R18 (route side): the verified lifecycle notification is durably
+      // enqueued through the same queue the change-notification path uses —
+      // dispatch on the carried `action` is a later task's concern.
+      const queued = deps.queue.enqueue({
+        provider,
+        eventId: verified.value.eventId,
+        hint: { kind: "reconcile" },
       });
       if (!queued.ok) {
         writeJson(response, 503, { error: "queue_unavailable" });

@@ -14,6 +14,7 @@ import {
   reconcileProvider,
   startPeriodicIntegrationSync,
   validateContinuousAdapterCapabilities,
+  verifyProviderLifecycleWebhook,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
 import { createGoogleDocsAdapter } from "../../src/integrations/google.js";
@@ -1663,5 +1664,60 @@ describe("provider reconciliation", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(discoveries).toBe(1);
     vi.useRealTimers();
+  });
+
+  it("verifies a lifecycle webhook and returns the adapter's verified result", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+    );
+  });
+
+  it("rejects a lifecycle webhook for a provider that lacks verifyLifecycleWebhook", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter(),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects an unauthorized provider's lifecycle webhook", async () => {
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "e", action: "reconcile" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
   });
 });

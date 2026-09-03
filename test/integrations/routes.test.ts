@@ -344,4 +344,147 @@ describe("integration routes", () => {
       await running.close();
     }
   });
+
+  it("404s the lifecycle webhook route for a provider without verifyLifecycleWebhook", async () => {
+    const running = await start(adapter());
+    try {
+      const response = await fetch(`${running.base}/integrations/google/webhook/lifecycle`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(404);
+    } finally {
+      await running.close();
+    }
+  });
+});
+
+describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-routes-m365-"));
+  });
+
+  afterEach(() => rmSync(vault, { recursive: true, force: true }));
+
+  async function startWithAdapter(providerAdapter: ProviderAdapter) {
+    const microsoftConfig: IntegrationConfig = {
+      ...config,
+      microsoft: { clientIdEnv: "MICROSOFT_ID", clientSecretEnv: "MICROSOFT_SECRET" },
+    };
+    const microsoftEnvironment = {
+      ...environment,
+      MICROSOFT_ID: "client-id",
+      MICROSOFT_SECRET: "client-secret",
+    };
+    const queue = createIntegrationQueue(vault, () => new Date("2026-08-24T12:00:00.000Z"));
+    const engineDeps: EngineDeps = {
+      config: microsoftConfig,
+      environment: microsoftEnvironment,
+      adapters: { microsoft: providerAdapter },
+      distill: async () => ok({ runId: "run" }),
+    };
+    const wake = vi.fn();
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      void handleIntegrationRoute(req, res, url, {
+        vaultRoot: vault,
+        config: microsoftConfig,
+        environment: microsoftEnvironment,
+        adapters: { microsoft: providerAdapter },
+        engineDeps,
+        queue,
+        publicBaseUrl: "https://vault.example/daftari",
+        authorize: async () => ({ cookieAuthenticated: false, canManageIntegrations: true }),
+        admitPublic: () => () => undefined,
+        checkCsrf: () => null,
+        wake,
+      }).then((handled) => {
+        if (!handled) {
+          res.statusCode = 404;
+          res.end();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (typeof address !== "object" || address === null) throw new Error("missing address");
+    return {
+      base: `http://127.0.0.1:${address.port}`,
+      queue,
+      wake,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  it("answers a webhook validation challenge directly, without touching state or the queue", async () => {
+    const providerAdapter = adapter({
+      name: "microsoft",
+      answerWebhookChallenge: (input) => input.query?.validationToken,
+      verifyWebhook: async () => {
+        throw new Error("must not be called for a challenge request");
+      },
+    });
+    const running = await startWithAdapter(providerAdapter);
+    try {
+      const response = await fetch(
+        `${running.base}/integrations/microsoft/webhook?validationToken=abc123`,
+        { method: "POST", body: "" },
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toMatch(/^text\/plain/);
+      expect(await response.text()).toBe("abc123");
+      expect(running.queue.pending()).toEqual(ok([]));
+      expect(running.wake).not.toHaveBeenCalled();
+    } finally {
+      await running.close();
+    }
+  });
+
+  it("404s the lifecycle webhook route for a provider without verifyLifecycleWebhook", async () => {
+    const providerAdapter = adapter({ name: "microsoft" });
+    const running = await startWithAdapter(providerAdapter);
+    try {
+      const response = await fetch(`${running.base}/integrations/microsoft/webhook/lifecycle`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(404);
+    } finally {
+      await running.close();
+    }
+  });
+
+  it("enqueues a verified lifecycle notification through the durable queue and responds 202", async () => {
+    writeIntegrationState(
+      vault,
+      {
+        providers: {
+          microsoft: { accessToken: "access", refreshToken: "refresh", sources: {} },
+        },
+        oauthStates: {},
+      },
+      KEY,
+    );
+    const providerAdapter = adapter({
+      name: "microsoft",
+      verifyLifecycleWebhook: async () =>
+        ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reconcile" }),
+    });
+    const running = await startWithAdapter(providerAdapter);
+    try {
+      const response = await fetch(`${running.base}/integrations/microsoft/webhook/lifecycle`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(202);
+      const pending = running.queue.pending();
+      expect(pending.ok && pending.value).toHaveLength(1);
+      expect(pending.ok && pending.value[0]?.eventId).toBe("lifecycle-1");
+      expect(running.wake).toHaveBeenCalledTimes(1);
+    } finally {
+      await running.close();
+    }
+  });
 });
