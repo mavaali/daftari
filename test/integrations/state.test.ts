@@ -188,6 +188,51 @@ describe("encrypted integration state", () => {
       expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
     });
 
+    it("rejects a lastFailure.reason that is not a known SourceFailureReason", () => {
+      const input = stateWithExtensions();
+      const google = input.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      const source = google.sources["doc-1"];
+      if (source === undefined) throw new Error("missing test source");
+      // @ts-expect-error intentionally malformed for the validator test
+      source.lastFailure = { at: "2026-09-01T12:00:00.000Z", reason: "kaboom" };
+      expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
+    });
+
+    it("rejects an EnrollmentRecord missing a required field", () => {
+      const input = stateWithExtensions();
+      const google = input.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      const incomplete = { ...enrollment } as Partial<EnrollmentRecord>;
+      delete incomplete.driveId;
+      google.enrollments = { [enrollment.id]: incomplete as EnrollmentRecord };
+      expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
+    });
+
+    it("rejects an EnrollmentRecord with an unrecognized kind", () => {
+      const input = stateWithExtensions();
+      const google = input.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      google.enrollments = {
+        [enrollment.id]: {
+          ...enrollment,
+          // @ts-expect-error intentionally malformed for the validator test
+          kind: "file",
+        },
+      };
+      expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
+    });
+
+    it("rejects a ProviderAccount missing tenantId", () => {
+      const input = stateWithExtensions();
+      const google = input.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      const incompleteAccount = { id: "account-1" };
+      // @ts-expect-error intentionally malformed for the validator test
+      google.account = incompleteAccount;
+      expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
+    });
+
     it("round-trips a webhook channel with subscriptions and an unenrolled unavailable event reason", () => {
       const input = stateWithExtensions();
       const google = input.providers.google;

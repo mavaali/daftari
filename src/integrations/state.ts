@@ -12,7 +12,9 @@ import {
   isProviderName,
   isSourceFailureReason,
   type OAuthState,
+  type ProviderAccount,
   type ProviderState,
+  type SourceFailureReason,
   type SourceState,
 } from "./types.js";
 
@@ -117,7 +119,9 @@ function validOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
 }
 
-function validSourceFailure(value: unknown): boolean {
+function validSourceFailure(
+  value: unknown,
+): value is { at: string; reason: SourceFailureReason } | undefined {
   if (value === undefined) return true;
   return (
     isStringRecord(value) && typeof value.at === "string" && isSourceFailureReason(value.reason)
@@ -160,7 +164,7 @@ function validEnrollmentRecord(value: unknown): value is EnrollmentRecord {
   );
 }
 
-function validProviderAccount(value: unknown): boolean {
+function validProviderAccount(value: unknown): value is ProviderAccount | undefined {
   if (value === undefined) return true;
   return (
     isStringRecord(value) &&
@@ -171,7 +175,9 @@ function validProviderAccount(value: unknown): boolean {
   );
 }
 
-function validAuthorization(value: unknown): boolean {
+function validAuthorization(
+  value: unknown,
+): value is { status: "ok" | "reconnect_required"; at: string; reason?: string } | undefined {
   if (value === undefined) return true;
   return (
     isStringRecord(value) &&
