@@ -12,7 +12,7 @@ import type {
   ProviderState,
   SourceState,
 } from "../../src/integrations/types.js";
-import { buildDeck, buildPdf, textOp } from "../extract/fixtures.js";
+import { buildDeck, buildDocxZip, buildPdf, textOp, wrapDocument } from "../extract/fixtures.js";
 import {
   createFixtureTransport,
   meFixture,
@@ -1770,5 +1770,140 @@ describe("Microsoft adapter fetch (U15)", () => {
     if (withoutEnrollmentResult.ok) {
       expect(withoutEnrollmentResult.value.text).toContain("[speaker notes]");
     }
+  });
+
+  it("a 429 on the metadata GET with a short Retry-After retries once and succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      let metadataAttempts = 0;
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      const deckBytes = buildDeck({ slideOrder: [1] });
+      const transport = async (url: string, init: RequestInit): Promise<Response> => {
+        requests.push({ url, init });
+        if (url.startsWith(`${GRAPH}/drives/drive1/items/item1/content`)) {
+          return redirectFixture("https://sas.example/blob1");
+        }
+        if (url.startsWith("https://sas.example/blob1")) {
+          return bytesFixture(deckBytes);
+        }
+        if (url.startsWith(`${GRAPH}/drives/drive1/items/item1`)) {
+          metadataAttempts += 1;
+          if (metadataAttempts === 1) {
+            return new Response(null, { status: 429, headers: { "retry-after": "10" } });
+          }
+          return jsonFixture(pptxMetadata());
+        }
+        throw new Error(`unexpected request: ${url}`);
+      };
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
+
+      const fetchPromise = adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await fetchPromise;
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value.text).toContain("Slide 1 body text");
+      expect(metadataAttempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a 429 on the content GET beyond the retry budget fails without a partial result or further calls", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    let contentAttempts = 0;
+    const transport = async (url: string, init: RequestInit): Promise<Response> => {
+      requests.push({ url, init });
+      if (url.startsWith(`${GRAPH}/drives/drive1/items/item1/content`)) {
+        contentAttempts += 1;
+        return new Response(null, { status: 429, headers: { "retry-after": "60" } });
+      }
+      if (url.startsWith(`${GRAPH}/drives/drive1/items/item1`)) {
+        return jsonFixture(pptxMetadata());
+      }
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+
+    expect(result.ok).toBe(false);
+    // A Retry-After beyond the budget is a single hard failure, not a retry
+    // loop: exactly one content request, and no SAS follow-up was ever
+    // reached (there's nothing to follow — the content GET itself failed).
+    expect(contentAttempts).toBe(1);
+    expect(requests.some((r) => r.url.startsWith("https://sas.example"))).toBe(false);
+  });
+
+  it("routes a native .docx through the docx extractor with no ?format=pdf conversion", async () => {
+    const docxBytes = buildDocxZip({
+      "word/document.xml": wrapDocument("<w:p><w:r><w:t>Native docx content</w:t></w:r></w:p>"),
+    });
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/drives/drive1/items/item3/content`]: [
+          redirectFixture("https://sas.example/blob3"),
+        ],
+        [`${GRAPH}/drives/drive1/items/item3`]: [
+          jsonFixture(pptxMetadata({ id: "item3", name: "Doc.docx" })),
+        ],
+        "https://sas.example/blob3": [bytesFixture(docxBytes)],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item3", revision: "etag-3" }, fetchState());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Native docx content");
+    const contentRequest = requests.find((r) => r.url.includes("/item3/content"));
+    expect(contentRequest?.url).not.toContain("format=pdf");
+  });
+
+  it("routes a native .pdf through the pdf extractor with no ?format=pdf conversion", async () => {
+    const pdfBytes = buildPdf([
+      { contentOps: textOp("F1", 12, 50, 250, "Native pdf content"), fonts: { F1: "Helvetica" } },
+    ]);
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/drives/drive1/items/item4/content`]: [
+          redirectFixture("https://sas.example/blob4"),
+        ],
+        [`${GRAPH}/drives/drive1/items/item4`]: [
+          jsonFixture(pptxMetadata({ id: "item4", name: "File.pdf" })),
+        ],
+        "https://sas.example/blob4": [bytesFixture(pdfBytes)],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item4", revision: "etag-4" }, fetchState());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Native pdf content");
+    const contentRequest = requests.find((r) => r.url.includes("/item4/content"));
+    expect(contentRequest?.url).not.toContain("format=pdf");
   });
 });
