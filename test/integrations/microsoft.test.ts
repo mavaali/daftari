@@ -1020,4 +1020,88 @@ describe("Microsoft adapter discover (U14)", () => {
     expect(discovered.error.message).toMatch(/page limit/);
     expect(pages).toBe(1_000);
   });
+
+  it("falls back to drive-root delta with ancestry filtering when the folder-scoped container delta 400s", async () => {
+    const requests: string[] = [];
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        requests.push(url);
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/items/folder-root/delta")
+        ) {
+          return new Response(null, { status: 400 });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/root/delta")) {
+          return graphJson({
+            value: [
+              // Out-of-subtree item, appearing on page 1 BEFORE any subfolder
+              // of the enrolled tree is seen — ancestry is seeded with only
+              // {folderId}, so this must be excluded purely on that basis.
+              {
+                id: "outside-1",
+                eTag: "eo1",
+                file: {},
+                parentReference: { id: "some-other-folder" },
+              },
+              // The enrolled root folder itself — skipped as a source (id
+              // matches folderId) but already a seeded ancestor.
+              { id: "folder-root", folder: {}, parentReference: { id: "root" } },
+              // A subfolder directly under the enrolled root: grows ancestry.
+              { id: "folder-child", folder: {}, parentReference: { id: "folder-root" } },
+              // A file under that just-discovered subfolder: included because
+              // ancestry grew earlier in this same page.
+              { id: "f-nested", eTag: "e2", file: {}, parentReference: { id: "folder-child" } },
+              // A file directly under the enrolled root: included.
+              { id: "f-direct", eTag: "e3", file: {}, parentReference: { id: "folder-root" } },
+            ],
+            "@odata.deltaLink":
+              "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-fallback",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-c",
+            remoteId: "folder-root",
+            cursorKey: "enrollment:c1",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered.ok).toBe(true);
+    if (!discovered.ok) return;
+    expect([...discovered.value].sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: "drive-c:f-direct", revision: "e3" },
+      { id: "drive-c:f-nested", revision: "e2" },
+    ]);
+    expect(JSON.parse(state.cursor as string)).toEqual({
+      v: 1,
+      roots: {
+        "enrollment:c1": "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-fallback",
+      },
+    });
+
+    expect(
+      requests.some((url) =>
+        url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/items/folder-root/delta"),
+      ),
+    ).toBe(true);
+    expect(
+      requests.some((url) =>
+        url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/root/delta"),
+      ),
+    ).toBe(true);
+  });
 });

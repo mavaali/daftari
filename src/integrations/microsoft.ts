@@ -452,14 +452,26 @@ function deriveMicrosoftDeltaRoots(
 // ProviderState.sources has no per-root tag, so this reconstructs root
 // membership from the id namespace itself (`<driveId>:<itemId>`) plus, for
 // item-group roots, the current enrollment's member ids. KNOWN LIMITATION
-// (flagged for self-review): if two roots share the same driveId (e.g. two
-// separate container enrollments inside one SharePoint drive), this prefix
-// filter can't disambiguate which root a remembered item belongs to; a stale
-// item from root A could be redundantly re-seeded into root B's walk. It is
-// harmless when the item is unchanged (both roots agree on the same id ->
-// revision), but is a genuine gap if root B's classifier would otherwise have
-// excluded it. No required test scenario exercises this; not fixable without
-// widening ProviderState/EnrollmentRecord, which is out of this unit's scope.
+// (flagged for self-review, bead filed as a follow-up): if two roots share
+// the same driveId (e.g. two separate container enrollments inside one
+// SharePoint drive), this prefix filter can't disambiguate which root a
+// remembered item belongs to. This is NOT merely redundant work — it is an
+// availability-state correctness bug: an item DELETED from root A's subtree
+// (and correctly dropped by root A's own walk) can be silently RESURRECTED
+// into the merged present set because root B's remembered-set filter still
+// matches it by driveId prefix and re-seeds it, unchanged, into root B's
+// walk. That defeats R37's not-returned -> unavailable contract for that
+// item. The fix is not "widen EnrollmentRecord" — EnrollmentRecord already
+// carries driveId/cursorKey/id, i.e. everything needed to know which root an
+// item truly belongs to. The missing wiring is downstream, in the
+// provider-neutral engine: RemoteSource/NormalizedRemoteSource carry only
+// {id, revision} with no root/cursorKey tag, and engine.ts's sourceState()
+// never populates SourceState.enrollmentId for any provider, so
+// state.sources has nowhere to record which root produced an entry. Fixing
+// this properly means threading a root/enrollment tag through the engine's
+// RemoteSource contract for every adapter, not just Microsoft — out of this
+// unit's scope; a follow-up bead tracks it. No required test scenario for
+// U14 exercises this cross-root case.
 function rememberedRootSources(
   state: ProviderState,
   root: MicrosoftDeltaRoot,
