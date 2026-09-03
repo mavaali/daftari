@@ -314,6 +314,12 @@ export async function handleIntegrationRoute(
         writeJson(response, 200, { verificationReceived: true });
         return true;
       }
+      if (verified.value.kind === "lifecycle") {
+        // Lifecycle webhook handling (reauthorize/recreate/reconcile dispatch)
+        // is wired in a later task; acknowledge without enqueueing for now.
+        writeJson(response, 202, { accepted: true });
+        return true;
+      }
       const queued = deps.queue.enqueue({
         provider,
         eventId: verified.value.eventId,

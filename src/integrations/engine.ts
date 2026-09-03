@@ -13,6 +13,7 @@ import {
 import type {
   IntegrationConfig,
   IntegrationProviderConfig,
+  ProviderAccount,
   ProviderName,
   ProviderState,
   SourceState,
@@ -38,6 +39,8 @@ export interface ProviderTokens {
   accessToken: string;
   refreshToken: string;
   accessTokenExpiresAt?: string;
+  /** Which remote account exchangeCode authenticated as. */
+  account?: ProviderAccount;
 }
 
 export interface RefreshTokenRequest {
@@ -51,6 +54,8 @@ export interface WebhookChannel {
   secret: string;
   expiresAt?: string;
   verificationRequired?: boolean;
+  /** One channel can fan out to N provider-side subscriptions. */
+  subscriptions?: Array<{ id: string; resource: string; expiresAt: string }>;
 }
 
 export interface EnsureWebhookInput {
@@ -64,6 +69,8 @@ export interface WebhookRequest {
   body: Uint8Array;
   /** One-time route nonce for an unsigned manual provider verification request. */
   setupToken?: string;
+  /** Webhook validation token arrives as a query param for some providers. */
+  query?: Record<string, string>;
 }
 
 export type RefreshHint =
@@ -72,7 +79,8 @@ export type RefreshHint =
 
 export type VerifiedWebhook =
   | { kind: "verification"; channel: WebhookChannel }
-  | { kind: "event"; eventId: string; hint: RefreshHint };
+  | { kind: "event"; eventId: string; hint: RefreshHint }
+  | { kind: "lifecycle"; eventId: string; action: "reauthorize" | "recreate" | "reconcile" };
 
 export interface RemoteSource {
   id: string;
@@ -118,7 +126,7 @@ export interface DistillationRun {
 export interface UnavailableSourceEvent {
   idempotencyKey: string;
   providerSourceId: string;
-  reason: "no_longer_discovered";
+  reason: "no_longer_discovered" | "unenrolled";
   revision: string;
   occurredAt: string;
 }
@@ -339,7 +347,17 @@ function validWebhookChannel(channel: WebhookChannel): boolean {
     channel.secret.length > 0 &&
     (channel.expiresAt === undefined || typeof channel.expiresAt === "string") &&
     (channel.verificationRequired === undefined ||
-      typeof channel.verificationRequired === "boolean")
+      typeof channel.verificationRequired === "boolean") &&
+    (channel.subscriptions === undefined ||
+      (Array.isArray(channel.subscriptions) &&
+        channel.subscriptions.every(
+          (subscription) =>
+            typeof subscription.id === "string" &&
+            subscription.id.length > 0 &&
+            typeof subscription.resource === "string" &&
+            subscription.resource.length > 0 &&
+            typeof subscription.expiresAt === "string",
+        )))
   );
 }
 
@@ -355,11 +373,16 @@ function validRefreshHint(hint: RefreshHint): boolean {
 
 function validVerifiedWebhook(value: VerifiedWebhook): boolean {
   if (value.kind === "verification") return validWebhookChannel(value.channel);
+  if (value.kind === "event") {
+    return (
+      typeof value.eventId === "string" && value.eventId.length > 0 && validRefreshHint(value.hint)
+    );
+  }
   return (
-    value.kind === "event" &&
+    value.kind === "lifecycle" &&
     typeof value.eventId === "string" &&
     value.eventId.length > 0 &&
-    validRefreshHint(value.hint)
+    (value.action === "reauthorize" || value.action === "recreate" || value.action === "reconcile")
   );
 }
 

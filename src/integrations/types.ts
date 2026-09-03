@@ -22,6 +22,27 @@ export interface IntegrationConfig {
   microsoft?: IntegrationProviderConfig;
 }
 
+export const SOURCE_FAILURE_REASONS = [
+  "too_large",
+  "encrypted",
+  "malformed",
+  "empty",
+  "unsupported_type",
+  "timeout",
+  "malware",
+  "permission_revoked",
+  "converted_unavailable",
+  "fetch",
+  "distill",
+  "limit",
+] as const;
+
+export type SourceFailureReason = (typeof SOURCE_FAILURE_REASONS)[number];
+
+export function isSourceFailureReason(value: unknown): value is SourceFailureReason {
+  return (SOURCE_FAILURE_REASONS as readonly unknown[]).includes(value);
+}
+
 export interface SourceState {
   id: string;
   revision: string;
@@ -29,6 +50,40 @@ export interface SourceState {
   available: boolean;
   lastSeenAt: string;
   lastDistillRunId?: string;
+  /** Groups this source under a human-selected enrollment. */
+  enrollmentId?: string;
+  /** Last per-source failure encountered while extracting, fetching, or distilling. */
+  lastFailure?: {
+    at: string;
+    reason: SourceFailureReason;
+  };
+}
+
+/** Which remote account a connected provider is authenticated as. */
+export interface ProviderAccount {
+  id: string;
+  tenantId: string;
+  displayName?: string;
+  upn?: string;
+}
+
+/** A human-selected item or container enrolled for ingestion. */
+export interface EnrollmentRecord {
+  id: string;
+  kind: "item" | "container";
+  driveId: string;
+  remoteId: string;
+  siteId?: string;
+  listId?: string;
+  label: string;
+  webUrl?: string;
+  collection: string;
+  includeSpeakerNotes: boolean;
+  enrolledBy: string;
+  enrolledAt: string;
+  audienceAckAt: string;
+  readersAtEnrollment: string[];
+  cursorKey: string;
 }
 
 export interface ProviderState {
@@ -43,8 +98,20 @@ export interface ProviderState {
     secret: string;
     expiresAt?: string;
     verificationRequired?: boolean;
+    /** One webhook channel can fan out to N provider-side subscriptions. */
+    subscriptions?: Array<{ id: string; resource: string; expiresAt: string }>;
   };
   sources: Record<string, SourceState>;
+  /** The human-selected subset of remote items/containers enrolled for ingestion. */
+  enrollments?: Record<string, EnrollmentRecord>;
+  /** Which remote account is connected. */
+  account?: ProviderAccount;
+  /** Reconnect state, when the provider requires re-authorization. */
+  authorization?: {
+    status: "ok" | "reconnect_required";
+    at: string;
+    reason?: string;
+  };
 }
 
 // OAuth transactions are encrypted alongside provider credentials. A callback

@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ok } from "../../src/frontmatter/types.js";
+import type { UnavailableSourceEvent } from "../../src/integrations/engine.js";
 import {
   integrationStatePath,
   readIntegrationState,
   resolveIntegrationStateKey,
   writeIntegrationState,
 } from "../../src/integrations/state.js";
-import type { IntegrationState } from "../../src/integrations/types.js";
+import type { EnrollmentRecord, IntegrationState } from "../../src/integrations/types.js";
 
 const KEY = Buffer.alloc(32, 7);
 
@@ -118,5 +119,97 @@ describe("encrypted integration state", () => {
     if (bothGoogle === undefined) throw new Error("missing test provider");
     bothGoogle.webhookSetupToken = "long-enough-setup-token";
     expect(writeIntegrationState(vault, both, KEY).ok).toBe(false);
+  });
+
+  describe("provider-neutral state extensions (U2)", () => {
+    const enrollment: EnrollmentRecord = {
+      id: "enrollment-1",
+      kind: "item",
+      driveId: "drive-1",
+      remoteId: "remote-1",
+      label: "Quarterly plan.docx",
+      webUrl: "https://example.sharepoint.com/quarterly-plan.docx",
+      collection: "work",
+      includeSpeakerNotes: false,
+      enrolledBy: "mihir",
+      enrolledAt: "2026-09-01T12:00:00.000Z",
+      audienceAckAt: "2026-09-01T12:00:00.000Z",
+      readersAtEnrollment: ["mihir@example.com"],
+      cursorKey: "quarterly-plan",
+    };
+
+    function stateWithExtensions(): IntegrationState {
+      const base = state("refresh-token");
+      const google = base.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      google.enrollments = { [enrollment.id]: enrollment };
+      google.account = {
+        id: "account-1",
+        tenantId: "tenant-1",
+        displayName: "Mihir Wagle",
+        upn: "mihir@example.com",
+      };
+      google.authorization = { status: "reconnect_required", at: "2026-09-01T12:00:00.000Z" };
+      const source = google.sources["doc-1"];
+      if (source === undefined) throw new Error("missing test source");
+      source.enrollmentId = enrollment.id;
+      source.lastFailure = { at: "2026-09-01T12:00:00.000Z", reason: "too_large" };
+      return base;
+    }
+
+    it("round-trips enrollments, account, and authorization through the encrypted envelope", () => {
+      const input = stateWithExtensions();
+      expect(writeIntegrationState(vault, input, KEY)).toEqual(ok(undefined));
+      expect(readIntegrationState(vault, KEY)).toEqual(ok(input));
+    });
+
+    it("parses a pre-existing envelope with none of the new fields (backward compatibility)", () => {
+      const input = state("refresh-token");
+      expect(writeIntegrationState(vault, input, KEY)).toEqual(ok(undefined));
+
+      const result = readIntegrationState(vault, KEY);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected parse to succeed");
+      const google = result.value.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      expect(google.enrollments).toBeUndefined();
+      expect(google.account).toBeUndefined();
+      expect(google.authorization).toBeUndefined();
+      expect(google.sources["doc-1"]?.enrollmentId).toBeUndefined();
+      expect(google.sources["doc-1"]?.lastFailure).toBeUndefined();
+    });
+
+    it("rejects a malformed authorization.status", () => {
+      const input = stateWithExtensions();
+      const google = input.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      // @ts-expect-error intentionally malformed for the validator test
+      google.authorization = { status: "maybe", at: "2026-09-01T12:00:00.000Z" };
+      expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
+    });
+
+    it("round-trips a webhook channel with subscriptions and an unenrolled unavailable event reason", () => {
+      const input = stateWithExtensions();
+      const google = input.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      google.webhook = {
+        id: "channel-1",
+        secret: "webhook-secret",
+        subscriptions: [
+          { id: "sub-1", resource: "drive-1/root", expiresAt: "2026-09-08T00:00:00.000Z" },
+        ],
+      };
+      expect(writeIntegrationState(vault, input, KEY)).toEqual(ok(undefined));
+      expect(readIntegrationState(vault, KEY)).toEqual(ok(input));
+
+      const event: UnavailableSourceEvent = {
+        idempotencyKey: "key-1",
+        providerSourceId: "doc-1",
+        reason: "unenrolled",
+        revision: "3",
+        occurredAt: "2026-09-01T12:00:00.000Z",
+      };
+      expect(event.reason).toBe("unenrolled");
+    });
   });
 });
