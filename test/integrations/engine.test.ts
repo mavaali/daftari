@@ -16,6 +16,7 @@ import {
   validateContinuousAdapterCapabilities,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
+import { createGoogleDocsAdapter } from "../../src/integrations/google.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
 import { sha256Hex } from "../../src/utils/hash.js";
@@ -1551,6 +1552,85 @@ describe("provider reconciliation", () => {
     expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
       "reconnect_required",
     );
+  });
+
+  it("advances lastSeenAt and revision for a source that fails on consecutive cycles", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "1" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-24T12:00:00.000Z") }),
+    );
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-24T12:00:00.000Z", revision: "1" });
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "2" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-25T09:00:00.000Z") }),
+    );
+    expect(second.ok && second.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-25T09:00:00.000Z", revision: "2" });
+  });
+
+  it("marks reconnect_required through the real Google refresh-failure formatting (golden, end to end)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const realGoogleAdapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      now,
+      transport: async (url) => {
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const result = await reconcileProvider(vault, realGoogleAdapter, deps());
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "Google request failed with status 400",
+    });
   });
 
   it("returns a stop function that prevents future periodic reconciliations", async () => {

@@ -438,6 +438,29 @@ describe("Notion adapter", () => {
     });
   });
 
+  it("rejects a failed Notion token refresh with the exact golden-pinned message", async () => {
+    const adapter = createNotionAdapter({
+      redirectUri: "https://vault.example/integrations/notion/callback",
+      transport: async () => json({ error: "invalid_grant" }, 400),
+    });
+
+    const refreshed = await adapter.refreshTokens?.({
+      clientId: "notion-client-id",
+      clientSecret: "notion-client-secret",
+      refreshToken: "prior-refresh-token",
+    });
+
+    expect(refreshed?.ok).toBe(false);
+    // Golden-pinned: engine.ts's isTerminalRefreshError sniffs this exact
+    // wording (a "status <4xx>" substring) as its fallback terminal signal,
+    // since Notion's adapter has no structured error code today. If this
+    // message ever changes, that detector silently stops firing — this
+    // assertion exists so a refactor here trips a test instead.
+    expect(refreshed && (refreshed.ok || refreshed.error.message)).toBe(
+      "Notion request failed with status 400",
+    );
+  });
+
   it("keeps an existing manually configured webhook channel", async () => {
     const adapter = createNotionAdapter({
       redirectUri: "https://vault.example/integrations/notion/callback",

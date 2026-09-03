@@ -289,6 +289,14 @@ function markSourceFailure(
       available: true,
       lastSeenAt: at,
     }),
+    // A source that fails every cycle is still attempted every cycle — advance
+    // lastSeenAt/revision to reflect that attempt, so a status/staleness
+    // surface reading this state doesn't read a month-old "last seen" for a
+    // source that's actually failing daily. Retry logic already keys off the
+    // freshly-discovered remote.revision passed in here, not off this stored
+    // field, so this only fixes the stored reflection — no behavior change.
+    revision,
+    lastSeenAt: at,
     lastFailure: { at, reason },
   };
 }
