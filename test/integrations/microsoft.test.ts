@@ -1,19 +1,36 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { validateContinuousAdapterCapabilities } from "../../src/integrations/engine.js";
 import { createMicrosoftAdapter } from "../../src/integrations/microsoft.js";
 import { createConfiguredIntegrationRuntime } from "../../src/integrations/runtime.js";
 import { writeIntegrationState } from "../../src/integrations/state.js";
-import type { IntegrationConfig } from "../../src/integrations/types.js";
+import type { EnrollmentRecord, IntegrationConfig } from "../../src/integrations/types.js";
 import {
   createFixtureTransport,
   meFixture,
   microsoftProviderConfig,
+  microsoftProviderState,
 } from "./microsoft-fixtures.js";
 
 const KEY = Buffer.alloc(32, 7);
+
+function enrollment(
+  overrides: Partial<EnrollmentRecord> &
+    Pick<EnrollmentRecord, "id" | "kind" | "driveId" | "remoteId" | "cursorKey">,
+): EnrollmentRecord {
+  return {
+    label: overrides.id,
+    collection: "distill",
+    includeSpeakerNotes: true,
+    enrolledBy: "user-1",
+    enrolledAt: "2026-08-24T00:00:00.000Z",
+    audienceAckAt: "2026-08-24T00:00:00.000Z",
+    readersAtEnrollment: [],
+    ...overrides,
+  };
+}
 
 describe("Microsoft adapter skeleton (U12)", () => {
   it("satisfies the continuous-adapter capability gate (refreshTokens + webhook methods present)", () => {
@@ -59,7 +76,7 @@ describe("Microsoft adapter skeleton (U12)", () => {
     expect(parsed.searchParams.get("response_type")).toBe("code");
   });
 
-  it("leaves discover a safe no-op and the remaining not-yet-implemented methods clearly labelled", async () => {
+  it("discover with no enrollments returns an empty set without any HTTP call; the remaining not-yet-implemented methods are clearly labelled", async () => {
     const adapter = createMicrosoftAdapter({
       redirectUri: "https://vault.example/integrations/microsoft/callback",
       config: microsoftProviderConfig(),
@@ -551,5 +568,456 @@ describe("runtime wiring accepts the microsoft adapter at start()", () => {
     const started = await created.value.start("http://127.0.0.1:8788");
     expect(started).toEqual({ ok: true, value: undefined });
     await created.value.close();
+  });
+});
+
+function graphJson(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+describe("Microsoft adapter discover (U14)", () => {
+  it("has no enrollments -> ok([]) without an HTTP call", async () => {
+    let calls = 0;
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async () => {
+        calls += 1;
+        throw new Error("unexpected request");
+      },
+    });
+    const state = microsoftProviderState();
+    await expect(adapter.discover(state)).resolves.toEqual({ ok: true, value: [] });
+    expect(calls).toBe(0);
+  });
+
+  it("walks a container root's folder-scoped delta and an item-group root's drive-root delta, merges both into the full present set, and threads both terminal deltaLinks into the new cursor", async () => {
+    const requests: string[] = [];
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        requests.push(url);
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-a/delta")
+        ) {
+          return graphJson({
+            value: [{ id: "f1", eTag: "e1", file: {}, parentReference: { id: "folder-a" } }],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-page-2",
+          });
+        }
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-a/delta-page-2") {
+          return graphJson({
+            value: [{ id: "f2", eTag: "e2", file: {}, parentReference: { id: "folder-a" } }],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-c",
+          });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta")) {
+          expect(url).toContain("token=latest");
+          return graphJson({
+            value: [
+              { id: "item-1", eTag: "e3", file: {}, parentReference: { id: "root-b" } },
+              { id: "item-999", eTag: "unrelated", file: {}, parentReference: { id: "root-b" } },
+            ],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link-i",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-a",
+            remoteId: "folder-a",
+            cursorKey: "enrollment:c1",
+          }),
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered.ok).toBe(true);
+    if (!discovered.ok) return;
+    expect([...discovered.value].sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: "drive-a:f1", revision: "e1" },
+      { id: "drive-a:f2", revision: "e2" },
+      { id: "drive-b:item-1", revision: "e3" },
+    ]);
+
+    expect(JSON.parse(state.cursor as string)).toEqual({
+      v: 1,
+      roots: {
+        "enrollment:c1": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-c",
+        "drive:drive-b": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link-i",
+      },
+    });
+
+    // Container uses the folder-scoped delta; item-group uses root/delta?token=latest.
+    expect(
+      requests.some((url) =>
+        url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-a/delta"),
+      ),
+    ).toBe(true);
+    expect(
+      requests.some((url) =>
+        url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta"),
+      ),
+    ).toBe(true);
+  });
+
+  it("a deleted-facet item drops out of the returned present set", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-b/stored-delta-link") {
+          return graphJson({
+            value: [{ id: "item-1", deleted: {} }],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link-2",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        cursor: JSON.stringify({
+          v: 1,
+          roots: {
+            "drive:drive-b": "https://graph.microsoft.com/v1.0/drives/drive-b/stored-delta-link",
+          },
+        }),
+        enrollments: {
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {
+        "drive-b:item-1": {
+          id: "drive-b:item-1",
+          revision: "e1",
+          contentHash: "h",
+          available: true,
+          lastSeenAt: "2026-08-24T00:00:00.000Z",
+        },
+      },
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [] });
+  });
+
+  it("a container item whose parent moved outside the enrolled subtree is removed from the present set", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-a/stored-delta-link") {
+          return graphJson({
+            value: [
+              {
+                id: "f-outside",
+                eTag: "e2",
+                file: {},
+                parentReference: { id: "some-other-folder" },
+              },
+            ],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-2",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        cursor: JSON.stringify({
+          v: 1,
+          roots: {
+            "enrollment:c1": "https://graph.microsoft.com/v1.0/drives/drive-a/stored-delta-link",
+          },
+        }),
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-a",
+            remoteId: "folder-a",
+            cursorKey: "enrollment:c1",
+          }),
+        },
+      },
+      {
+        "drive-a:f-outside": {
+          id: "drive-a:f-outside",
+          revision: "e1",
+          contentHash: "h",
+          available: true,
+          lastSeenAt: "2026-08-24T00:00:00.000Z",
+        },
+      },
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [] });
+  });
+
+  it("410 Gone on one root only re-initializes that root; the other root's stored link is retained", async () => {
+    const requests: string[] = [];
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        requests.push(url);
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-a/stale-delta-link") {
+          return new Response(null, { status: 410 });
+        }
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-a/delta")
+        ) {
+          return graphJson({
+            value: [{ id: "f1", eTag: "e1", file: {}, parentReference: { id: "folder-a" } }],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-fresh",
+          });
+        }
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-b/stored-delta-link") {
+          return graphJson({
+            value: [],
+            "@odata.deltaLink":
+              "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link-still-b",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        cursor: JSON.stringify({
+          v: 1,
+          roots: {
+            "enrollment:c1": "https://graph.microsoft.com/v1.0/drives/drive-a/stale-delta-link",
+            "drive:drive-b": "https://graph.microsoft.com/v1.0/drives/drive-b/stored-delta-link",
+          },
+        }),
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-a",
+            remoteId: "folder-a",
+            cursorKey: "enrollment:c1",
+          }),
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered.ok).toBe(true);
+    if (!discovered.ok) return;
+    expect(discovered.value).toEqual([{ id: "drive-a:f1", revision: "e1" }]);
+
+    expect(JSON.parse(state.cursor as string)).toEqual({
+      v: 1,
+      roots: {
+        "enrollment:c1": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-fresh",
+        "drive:drive-b": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link-still-b",
+      },
+    });
+    // Root B resumed straight from its stored link — never re-initialized.
+    expect(
+      requests.some((url) =>
+        url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta"),
+      ),
+    ).toBe(false);
+    expect(requests).toContain("https://graph.microsoft.com/v1.0/drives/drive-b/stored-delta-link");
+  });
+
+  it("429 with a short Retry-After retries once and succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport: async (url) => {
+          if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta")) {
+            attempts += 1;
+            if (attempts === 1) {
+              return new Response(null, { status: 429, headers: { "retry-after": "10" } });
+            }
+            return graphJson({
+              value: [{ id: "item-1", eTag: "e1", file: {}, parentReference: { id: "root-b" } }],
+              "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link",
+            });
+          }
+          throw new Error(`unexpected request: ${url}`);
+        },
+      });
+      const state = microsoftProviderState(
+        {
+          enrollments: {
+            i1: enrollment({
+              id: "i1",
+              kind: "item",
+              driveId: "drive-b",
+              remoteId: "item-1",
+              cursorKey: "drive:drive-b",
+            }),
+          },
+        },
+        {},
+      );
+
+      const discoverPromise = adapter.discover(state);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const discovered = await discoverPromise;
+
+      expect(discovered).toEqual({ ok: true, value: [{ id: "drive-b:item-1", revision: "e1" }] });
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("429 with a Retry-After beyond the retry budget fails without advancing the cursor", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta")) {
+          return new Response(null, { status: 429, headers: { "retry-after": "60" } });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered.ok).toBe(false);
+    expect(state.cursor).toBeUndefined();
+  });
+
+  it("bounds pagination against a repeated nextLink instead of looping forever", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta") ||
+          url === "https://graph.microsoft.com/v1.0/drives/drive-b/loop-link"
+        ) {
+          return graphJson({
+            value: [],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/drives/drive-b/loop-link",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered.ok).toBe(false);
+    if (discovered.ok) return;
+    expect(discovered.error.message).toMatch(/repeated a page link/);
+    expect(state.cursor).toBeUndefined();
+  });
+
+  it("bounds pagination at the page limit when every nextLink is distinct", async () => {
+    let pages = 0;
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta") ||
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/unbounded-page-")
+        ) {
+          pages += 1;
+          return graphJson({
+            value: [],
+            "@odata.nextLink": `https://graph.microsoft.com/v1.0/drives/drive-b/unbounded-page-${pages}`,
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered.ok).toBe(false);
+    if (discovered.ok) return;
+    expect(discovered.error.message).toMatch(/page limit/);
+    expect(pages).toBe(1_000);
   });
 });

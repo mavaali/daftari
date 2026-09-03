@@ -3,10 +3,11 @@
 // reconciliation, and distillation.
 //
 // SCAFFOLDING NOTICE: `ensureWebhook`, `verifyWebhook`, and `fetch` are still
-// throwing not-implemented stubs; `discover` is a safe no-op. U13 (this unit)
-// implements authorizationUrl/exchangeCode/refreshTokens. U15-U17 land
-// discover/fetch/ensureWebhook/verifyWebhook, U18 describeStatus/enrollment.
-// Do not add real discovery/fetch/webhook Graph logic here until those units
+// throwing not-implemented stubs. U13 implemented
+// authorizationUrl/exchangeCode/refreshTokens. U14 (this unit) implements
+// `discover` (Graph delta over the cursor contract). U16/U17/U18 land
+// ensureWebhook/verifyWebhook/enrollment resolution/describeStatus. U15 lands
+// fetch. Do not add real fetch/webhook Graph logic here until those units
 // land.
 
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -34,7 +35,7 @@ import {
   TERMINAL_REFRESH_STATUSES,
   tokenExpiration,
 } from "./http-json.js";
-import type { MicrosoftProviderConfig, ProviderState } from "./types.js";
+import type { EnrollmentRecord, MicrosoftProviderConfig, ProviderState } from "./types.js";
 
 const MICROSOFT = "Microsoft";
 
@@ -339,14 +340,508 @@ async function verifyWebhook(
   throw new Error("microsoft verifyWebhook not yet implemented (U16)");
 }
 
-// Safe no-op: an empty discovery page is a valid (if useless) result under
-// the engine's reconcile contract — it never corrupts state, it just finds
-// nothing until U15 lands. Real discovery must not throw here because
-// reconcileProvider treats a throw from discover() the same as an err()
-// result (both fail the cycle), so an empty ok([]) is the more honest
-// "nothing to do yet" signal than a fabricated failure.
-async function discover(_state: ProviderState): Promise<Result<RemoteSource[], Error>> {
-  return ok([]);
+// ---------------------------------------------------------------------------
+// Discovery (U14): Microsoft Graph `delta` over the engine's opaque-cursor
+// contract.
+//
+// Cursor threading mirrors google.ts EXACTLY: `discover` mutates
+// `state.cursor` in place (only once every root has succeeded) and returns
+// the discovered RemoteSource[] as its Result value. reconcileProvider
+// (engine.ts ~636-673) snapshots `previousCursor` before calling discover,
+// lets discover mutate `providerState.cursor` freely, then immediately rolls
+// it back to `previousCursor` ("provisional") until every scoped source has
+// been fetched/distilled without failure — only then does it re-apply the
+// mutated value. If discover() itself returns err (e.g. one root's request
+// was rate-limited past the retry budget), reconcileProvider returns before
+// ever reading `providerState.cursor` again, and — because this whole
+// invocation runs inside withIntegrationStateLock without a matching
+// writeState — nothing is persisted. So this function's own contract is:
+// mutate `state.cursor` only after EVERY root has fully succeeded; return
+// err() untouched otherwise. That "all-or-nothing" cursor mutation is a
+// belt-and-braces mirror of the engine's own commit-on-success rule, not a
+// substitute for it.
+//
+// The cursor is `{"v":1,"roots":{"<cursorKey>":"<@odata.deltaLink>"}}` — an
+// opaque string to the engine, parsed defensively (garbage/missing -> no
+// roots, i.e. every root initializes fresh).
+
+const MICROSOFT_DELTA_SELECT = "id,name,eTag,cTag,size,file,folder,deleted,parentReference,malware";
+const MICROSOFT_DELTA_PREFER = "deltaExcludeParent";
+const MICROSOFT_MAX_DELTA_PAGES = 1_000;
+// Graph honors Retry-After on 429s; bounded to a single retry and only when
+// the wait is short enough that a reconcile cycle can absorb it inline (an
+// unbounded/looping retry would starve the cycle — see http-json.ts's "don't
+// add unbounded retries" note, which this mirrors at the delta layer since
+// the shared helper has no built-in 429 semantics).
+const MICROSOFT_MAX_RETRY_AFTER_SECONDS = 30;
+
+interface MicrosoftCursorRoots {
+  [cursorKey: string]: string;
+}
+
+function parseMicrosoftCursor(raw: string | undefined): MicrosoftCursorRoots {
+  if (raw === undefined) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const roots = (parsed as { roots?: unknown }).roots;
+  if (typeof roots !== "object" || roots === null) return {};
+  const result: MicrosoftCursorRoots = {};
+  for (const [cursorKey, deltaLink] of Object.entries(roots)) {
+    const value = stringValue(deltaLink);
+    if (value !== undefined) result[cursorKey] = value;
+  }
+  return result;
+}
+
+function serializeMicrosoftCursor(roots: MicrosoftCursorRoots): string {
+  return JSON.stringify({ v: 1, roots });
+}
+
+// A root groups one or more enrollments under a single delta walk/cursor
+// entry (design §7.1): one container enrollment == one root (cursorKey
+// "enrollment:<id>"); all item enrollments sharing a drive == one root
+// (cursorKey "drive:<driveId>"), so a large library is never fully
+// enumerated just to pick up a handful of individually-enrolled files.
+interface MicrosoftDeltaRoot {
+  cursorKey: string;
+  kind: "container" | "item";
+  driveId: string;
+  /** Container only: the enrolled folder's item id (the delta subtree root). */
+  folderId?: string;
+  /** Item-group only: the enrolled item ids — the membership filter. */
+  memberIds?: Set<string>;
+}
+
+function deriveMicrosoftDeltaRoots(
+  enrollments: Record<string, EnrollmentRecord> | undefined,
+): MicrosoftDeltaRoot[] {
+  const roots = new Map<string, MicrosoftDeltaRoot>();
+  for (const record of Object.values(enrollments ?? {})) {
+    if (record.kind === "container") {
+      roots.set(record.cursorKey, {
+        cursorKey: record.cursorKey,
+        kind: "container",
+        driveId: record.driveId,
+        folderId: record.remoteId,
+      });
+      continue;
+    }
+    const existing = roots.get(record.cursorKey);
+    if (existing !== undefined && existing.kind === "item" && existing.memberIds !== undefined) {
+      existing.memberIds.add(record.remoteId);
+      continue;
+    }
+    roots.set(record.cursorKey, {
+      cursorKey: record.cursorKey,
+      kind: "item",
+      driveId: record.driveId,
+      memberIds: new Set([record.remoteId]),
+    });
+  }
+  return [...roots.values()];
+}
+
+// The per-root "remembered" set that incremental delta pages get merged onto
+// (Graph delta returns only CHANGED items after the first page, so anything
+// untouched since the last cursor must carry forward from prior state).
+// ProviderState.sources has no per-root tag, so this reconstructs root
+// membership from the id namespace itself (`<driveId>:<itemId>`) plus, for
+// item-group roots, the current enrollment's member ids. KNOWN LIMITATION
+// (flagged for self-review): if two roots share the same driveId (e.g. two
+// separate container enrollments inside one SharePoint drive), this prefix
+// filter can't disambiguate which root a remembered item belongs to; a stale
+// item from root A could be redundantly re-seeded into root B's walk. It is
+// harmless when the item is unchanged (both roots agree on the same id ->
+// revision), but is a genuine gap if root B's classifier would otherwise have
+// excluded it. No required test scenario exercises this; not fixable without
+// widening ProviderState/EnrollmentRecord, which is out of this unit's scope.
+function rememberedRootSources(
+  state: ProviderState,
+  root: MicrosoftDeltaRoot,
+): Map<string, RemoteSource> {
+  const prefix = `${root.driveId}:`;
+  const sources = new Map<string, RemoteSource>();
+  for (const source of Object.values(state.sources)) {
+    if (!source.available || !source.id.startsWith(prefix)) continue;
+    if (typeof source.revision !== "string" || source.revision.length === 0) continue;
+    if (root.kind === "item") {
+      const itemIdPart = source.id.slice(prefix.length);
+      if (!root.memberIds?.has(itemIdPart)) continue;
+    }
+    sources.set(source.id, { id: source.id, revision: source.revision });
+  }
+  return sources;
+}
+
+function microsoftDeltaSelectParameters(
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return { $select: MICROSOFT_DELTA_SELECT, ...extra };
+}
+
+function containerInitUrl(driveId: string, folderId: string): string {
+  return requestUrl(
+    `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folderId)}/delta`,
+    microsoftDeltaSelectParameters(),
+  );
+}
+
+// Probe-deferred fallback (design note): a folder-scoped delta 400s on some
+// SharePoint libraries; probe 2 will confirm whether the folder-scoped or
+// drive-root path is primary in practice. Until then, this is reached only
+// when a fresh (non-resumed) container init 400s.
+function containerFallbackUrl(driveId: string): string {
+  return requestUrl(
+    `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/root/delta`,
+    microsoftDeltaSelectParameters(),
+  );
+}
+
+function itemGroupInitUrl(driveId: string): string {
+  return requestUrl(
+    `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/root/delta`,
+    microsoftDeltaSelectParameters({ token: "latest" }),
+  );
+}
+
+interface MicrosoftDeltaItem {
+  id?: unknown;
+  eTag?: unknown;
+  deleted?: unknown;
+  file?: unknown;
+  folder?: unknown;
+  parentReference?: unknown;
+}
+
+interface MicrosoftDeltaPageBody {
+  value?: unknown;
+  "@odata.nextLink"?: unknown;
+  "@odata.deltaLink"?: unknown;
+}
+
+type MicrosoftDeltaClassification =
+  | { id: string; action: "remove" }
+  | { id: string; action: "upsert"; revision: string };
+
+function deltaItemId(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  return stringValue((raw as MicrosoftDeltaItem).id);
+}
+
+function deltaParentId(item: MicrosoftDeltaItem): string | undefined {
+  if (typeof item.parentReference !== "object" || item.parentReference === null) return undefined;
+  return stringValue((item.parentReference as { id?: unknown }).id);
+}
+
+// Item-group roots only ever track the specifically-enrolled item ids — the
+// drive-root delta walks the WHOLE drive, so everything else must be
+// filtered out (§8: a large library is never fully enumerated into sources).
+function classifyItemGroupDeltaItem(
+  raw: unknown,
+  driveId: string,
+  memberIds: Set<string>,
+): MicrosoftDeltaClassification | undefined {
+  const id = deltaItemId(raw);
+  if (id === undefined || !memberIds.has(id)) return undefined;
+  const item = raw as MicrosoftDeltaItem;
+  const sourceId = `${driveId}:${id}`;
+  if (item.deleted !== undefined || item.file === undefined) {
+    return { id: sourceId, action: "remove" };
+  }
+  const eTag = stringValue(item.eTag);
+  if (eTag === undefined) return { id: sourceId, action: "remove" };
+  return { id: sourceId, action: "upsert", revision: eTag };
+}
+
+// Container roots track ancestry by id (delta omits parentReference.path),
+// mutating `ancestorIds` as folders inside the subtree are discovered. This
+// runs the same whether the walk started from the folder-scoped delta or the
+// drive-root fallback: the folder-scoped endpoint already scopes results to
+// the subtree, but nested-folder moves can still surface items whose parent
+// isn't the direct root, so ancestry tracking is applied uniformly rather
+// than only in the fallback path.
+function classifyContainerDeltaItem(
+  raw: unknown,
+  driveId: string,
+  folderId: string,
+  ancestorIds: Set<string>,
+): MicrosoftDeltaClassification | undefined {
+  const id = deltaItemId(raw);
+  if (id === undefined) return undefined;
+  if (id === folderId) return undefined; // the enrolled root folder itself is not a source
+  const item = raw as MicrosoftDeltaItem;
+  const parentId = deltaParentId(item);
+  const inSubtree = parentId !== undefined && ancestorIds.has(parentId);
+  const sourceId = `${driveId}:${id}`;
+  if (item.deleted !== undefined) {
+    ancestorIds.delete(id);
+    return { id: sourceId, action: "remove" };
+  }
+  if (item.folder !== undefined) {
+    if (inSubtree) ancestorIds.add(id);
+    else ancestorIds.delete(id);
+    return undefined; // folders are tracked for ancestry only, never returned as sources
+  }
+  if (!inSubtree) return { id: sourceId, action: "remove" };
+  const eTag = stringValue(item.eTag);
+  if (item.file === undefined || eTag === undefined) return { id: sourceId, action: "remove" };
+  return { id: sourceId, action: "upsert", revision: eTag };
+}
+
+function taggedDeltaError(message: string, tags: { resync?: true; badRequest?: true }): Error {
+  return Object.assign(new Error(message), tags);
+}
+
+function isResyncError(error: Error): boolean {
+  return (error as { resync?: boolean }).resync === true;
+}
+
+function isBadRequestError(error: Error): boolean {
+  return (error as { badRequest?: boolean }).badRequest === true;
+}
+
+interface MicrosoftDeltaPageResult {
+  status: number;
+  retryAfterSeconds?: number;
+  body?: unknown;
+}
+
+async function requestDeltaPage(
+  transport: MicrosoftHttpTransport,
+  url: string,
+  accessToken: string,
+  limits: RequestLimits,
+): Promise<Result<MicrosoftDeltaPageResult, Error>> {
+  const fetched = await providerResponse(
+    MICROSOFT,
+    transport,
+    url,
+    { headers: { authorization: `Bearer ${accessToken}`, prefer: MICROSOFT_DELTA_PREFER } },
+    limits,
+  );
+  if (!fetched.ok) return fetched;
+  const response = fetched.value;
+  const retryAfterHeader = response.headers.get("retry-after");
+  const retryAfterSeconds =
+    retryAfterHeader !== null && /^\d+$/.test(retryAfterHeader)
+      ? Number(retryAfterHeader)
+      : undefined;
+  if (response.status !== 200) {
+    return ok({
+      status: response.status,
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    });
+  }
+  const parsed = await boundedJson(MICROSOFT, response, limits);
+  if (!parsed.ok) return parsed;
+  return ok({ status: response.status, body: parsed.value });
+}
+
+// Honors Retry-After exactly once, only when short enough to absorb inline;
+// a second 429 (or a longer wait) is a hard failure so this can never retry
+// unboundedly.
+async function requestDeltaPageWithRetry(
+  transport: MicrosoftHttpTransport,
+  url: string,
+  accessToken: string,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<Result<MicrosoftDeltaPageResult, Error>> {
+  const first = await requestDeltaPage(transport, url, accessToken, limits);
+  if (!first.ok) return first;
+  if (first.value.status !== 429) return first;
+  const retryAfterSeconds = first.value.retryAfterSeconds;
+  if (retryAfterSeconds === undefined || retryAfterSeconds > MICROSOFT_MAX_RETRY_AFTER_SECONDS) {
+    return err(new Error("Microsoft Graph delta request was rate limited"));
+  }
+  await sleep(retryAfterSeconds * 1000);
+  const retried = await requestDeltaPage(transport, url, accessToken, limits);
+  if (!retried.ok) return retried;
+  if (retried.value.status === 429) {
+    return err(new Error("Microsoft Graph delta request was rate limited"));
+  }
+  return retried;
+}
+
+interface MicrosoftDeltaWalkResult {
+  deltaLink: string;
+  sources: Map<string, RemoteSource>;
+}
+
+// Follows @odata.nextLink pages from `initialUrl` to a terminal
+// @odata.deltaLink, bounded by MICROSOFT_MAX_DELTA_PAGES with a repeated-link
+// guard (mirrors google.ts's Drive-changes pagination exactly). `classify`
+// applies each page's items to a mutable copy of `seed` — last occurrence in
+// the stream wins because later entries simply overwrite/delete the same map
+// key.
+async function walkMicrosoftDelta(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  initialUrl: string,
+  classify: (item: unknown) => MicrosoftDeltaClassification | undefined,
+  seed: Map<string, RemoteSource>,
+): Promise<Result<MicrosoftDeltaWalkResult, Error>> {
+  const sources = new Map(seed);
+  const seenLinks = new Set<string>();
+  let url = initialUrl;
+  let pages = 0;
+  for (;;) {
+    pages += 1;
+    if (pages > MICROSOFT_MAX_DELTA_PAGES) {
+      return err(new Error("Microsoft Graph delta discovery exceeds the page limit"));
+    }
+    if (seenLinks.has(url)) {
+      return err(new Error("Microsoft Graph delta discovery repeated a page link"));
+    }
+    seenLinks.add(url);
+
+    const page = await requestDeltaPageWithRetry(transport, url, accessToken, limits, sleep);
+    if (!page.ok) return page;
+    if (page.value.status === 410) {
+      return err(taggedDeltaError("Microsoft Graph delta requires a resync", { resync: true }));
+    }
+    if (page.value.status === 400) {
+      return err(
+        taggedDeltaError(`Microsoft Graph delta request failed with status 400`, {
+          badRequest: true,
+        }),
+      );
+    }
+    if (page.value.status !== 200) {
+      return err(
+        new Error(`Microsoft Graph delta request failed with status ${page.value.status}`),
+      );
+    }
+    const body = page.value.body as MicrosoftDeltaPageBody;
+    if (body.value !== undefined && !Array.isArray(body.value)) {
+      return err(new Error("Microsoft Graph delta response is invalid"));
+    }
+    for (const raw of body.value ?? []) {
+      const classified = classify(raw);
+      if (classified === undefined) continue;
+      if (classified.action === "remove") sources.delete(classified.id);
+      else sources.set(classified.id, { id: classified.id, revision: classified.revision });
+    }
+    const deltaLink = stringValue(body["@odata.deltaLink"]);
+    if (deltaLink !== undefined) return ok({ deltaLink, sources });
+    const nextLink = stringValue(body["@odata.nextLink"]);
+    if (nextLink === undefined) {
+      return err(new Error("Microsoft Graph delta response is missing a nextLink or deltaLink"));
+    }
+    url = nextLink;
+  }
+}
+
+async function walkMicrosoftDeltaRoot(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  root: MicrosoftDeltaRoot,
+  storedLink: string | undefined,
+  remembered: Map<string, RemoteSource>,
+): Promise<Result<MicrosoftDeltaWalkResult, Error>> {
+  const attempt = (url: string, seed: Map<string, RemoteSource>) => {
+    if (root.kind === "container") {
+      const folderId = root.folderId as string;
+      const ancestorIds = new Set<string>([folderId]);
+      return walkMicrosoftDelta(
+        transport,
+        accessToken,
+        limits,
+        sleep,
+        url,
+        (raw) => classifyContainerDeltaItem(raw, root.driveId, folderId, ancestorIds),
+        seed,
+      );
+    }
+    const memberIds = root.memberIds as Set<string>;
+    return walkMicrosoftDelta(
+      transport,
+      accessToken,
+      limits,
+      sleep,
+      url,
+      (raw) => classifyItemGroupDeltaItem(raw, root.driveId, memberIds),
+      seed,
+    );
+  };
+
+  const freshInitUrl = (): string =>
+    root.kind === "container"
+      ? containerInitUrl(root.driveId, root.folderId as string)
+      : itemGroupInitUrl(root.driveId);
+
+  const resumed = storedLink !== undefined;
+  let usedFallback = false;
+  let result = await attempt(
+    resumed ? storedLink : freshInitUrl(),
+    resumed ? remembered : new Map(),
+  );
+
+  // Container-only 400 fallback: only applies to a fresh (non-resumed) walk,
+  // since a resumed deltaLink was already proven to work in a prior cycle.
+  if (!result.ok && !resumed && root.kind === "container" && isBadRequestError(result.error)) {
+    usedFallback = true;
+    result = await attempt(containerFallbackUrl(root.driveId), new Map());
+  }
+
+  // 410 resync: drop this root's stored link and re-enumerate from scratch,
+  // bounded to a single re-init attempt so a persistently-invalid delta
+  // session can't loop forever.
+  if (!result.ok && isResyncError(result.error)) {
+    const reinitUrl = usedFallback ? containerFallbackUrl(root.driveId) : freshInitUrl();
+    result = await attempt(reinitUrl, new Map());
+  }
+
+  return result;
+}
+
+async function discoverMicrosoftSources(
+  transport: MicrosoftHttpTransport,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  state: ProviderState,
+): Promise<Result<RemoteSource[], Error>> {
+  const roots = deriveMicrosoftDeltaRoots(state.enrollments);
+  if (roots.length === 0) return ok([]);
+
+  const storedRoots = parseMicrosoftCursor(state.cursor);
+  const newRoots: MicrosoftCursorRoots = {};
+  const allSources = new Map<string, RemoteSource>();
+
+  for (const root of roots) {
+    const remembered = rememberedRootSources(state, root);
+    const walked = await walkMicrosoftDeltaRoot(
+      transport,
+      state.accessToken,
+      limits,
+      sleep,
+      root,
+      storedRoots[root.cursorKey],
+      remembered,
+    );
+    if (!walked.ok) return walked;
+    newRoots[root.cursorKey] = walked.value.deltaLink;
+    for (const [id, source] of walked.value.sources) allSources.set(id, source);
+  }
+
+  // Mutate state.cursor only now that every root has fully succeeded — same
+  // "all roots or none" cursor mutation the engine itself enforces on top of
+  // this (see the big comment above this section).
+  state.cursor = serializeMicrosoftCursor(newRoots);
+  return ok([...allSources.values()]);
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 // Throws rather than returning err(...) like exchangeCode does, because the
@@ -379,7 +874,7 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
     refreshTokens: (input) => refreshTokens(transport, now, config, limits, input),
     ensureWebhook,
     verifyWebhook,
-    discover,
+    discover: (state) => discoverMicrosoftSources(transport, limits, defaultSleep, state),
     fetch: fetchSource,
   };
 }
