@@ -44,6 +44,23 @@ describe("extractText harness", () => {
       expect(result.error.reason).toBe("unsupported_type");
     }
   });
+
+  test("maps a worker resourceLimits (heap-cap) kill to too_large, not malformed", async () => {
+    // A generous wallClockMs so the race is against the heap cap, not the
+    // timeout path — the fixture worker allocates until V8 kills it for
+    // exceeding this tiny heap, which should happen in well under a second.
+    const smallHeapLimits = { ...DEFAULT_EXTRACT_LIMITS, workerHeapMb: 8, wallClockMs: 20_000 };
+
+    const result = await extractText(new Uint8Array([1, 2, 3]), "docx", smallHeapLimits, {
+      workerUrl: new URL("oom-worker.ts", FIXTURES_DIR),
+      execArgv: ["--import", "tsx"],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.reason).toBe("too_large");
+    }
+  }, 25_000);
 });
 
 describe("normalize", () => {

@@ -40,6 +40,24 @@ function defaultWorkerTarget(): { url: URL; execArgv: string[] } {
   };
 }
 
+// Node reports a worker killed for exceeding resourceLimits (e.g.
+// maxOldGenerationSizeMb) as an "error" event carrying this specific code —
+// distinct from a generic thrown/uncaught error in worker code. We must not
+// collapse the two into "malformed": a caller acting on lastFailure.reason
+// needs to tell "give up, the parser choked on garbage" from "too big, could
+// retry with lower limits" (the latter maps to the existing too_large
+// reason, same as an oversized archive/page count caught before the OOM).
+const WORKER_OOM_ERROR_CODE = "ERR_WORKER_OUT_OF_MEMORY";
+
+function isWorkerOutOfMemoryError(e: unknown): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "code" in e &&
+    (e as { code?: unknown }).code === WORKER_OOM_ERROR_CODE
+  );
+}
+
 export async function extractText(
   bytes: Uint8Array,
   kind: ExtractKind,
@@ -88,9 +106,19 @@ export async function extractText(
     });
 
     worker.once("error", (e: unknown) => {
-      settle(err({ reason: "malformed", message: e instanceof Error ? e.message : String(e) }));
+      const message = e instanceof Error ? e.message : String(e);
+      settle(
+        isWorkerOutOfMemoryError(e)
+          ? err({ reason: "too_large", message })
+          : err({ reason: "malformed", message }),
+      );
     });
 
+    // Node emits "error" (with the OOM code above) before "exit" when a
+    // resourceLimits kill happens, so that branch is already handled by the
+    // handler above by the time this fires. A non-zero exit reaching here
+    // without a preceding error is some other abnormal termination we can't
+    // attribute to a specific cause, so it stays "malformed".
     worker.once("exit", (code: number) => {
       settle(
         err({ reason: "malformed", message: `worker exited with code ${code} before responding` }),

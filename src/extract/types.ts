@@ -42,7 +42,12 @@ export interface ExtractLimits {
   maxPdfPages: number;
   /** Wall-clock budget for the whole extraction, enforced by the harness (not the worker itself). */
   wallClockMs: number;
-  /** Worker heap cap in MiB, enforced via worker_threads resourceLimits. */
+  /**
+   * Worker heap cap in MiB, enforced via worker_threads resourceLimits
+   * (maxOldGenerationSizeMb). Not a hard ceiling on process memory: the
+   * worker also gets a maxYoungGenerationSizeMb allowance on top, so
+   * worst-case heap is old+young combined (~1.25x this value).
+   */
   workerHeapMb: number;
 }
 
