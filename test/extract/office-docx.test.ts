@@ -3,33 +3,16 @@
 // programmatically as synthetic, hand-built OOXML zips (via fflate) so no
 // binary fixtures need to be checked in.
 
-import { strToU8, zipSync } from "fflate";
 import { describe, expect, test } from "vitest";
 import { extractDocx, readOoxmlParts } from "../../src/extract/office.js";
 import { DEFAULT_EXTRACT_LIMITS } from "../../src/extract/types.js";
-
-const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
-const V_NS = 'xmlns:v="urn:schemas-microsoft-com:vml"';
-
-function wrapDocument(bodyXml: string): string {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${W_NS}><w:body>${bodyXml}</w:body></w:document>`;
-}
-
-function wrapFootnotes(footnotesXml: string): string {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:footnotes ${W_NS}>${footnotesXml}</w:footnotes>`;
-}
-
-function buildDocxZip(parts: Record<string, string>): Uint8Array {
-  const contentTypesXml =
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>';
-  const files: Record<string, Uint8Array> = {
-    "[Content_Types].xml": strToU8(contentTypesXml),
-  };
-  for (const [name, content] of Object.entries(parts)) {
-    files[name] = strToU8(content);
-  }
-  return zipSync(files);
-}
+import {
+  buildDocxZip,
+  forgeUncompressedSize,
+  V_NS,
+  wrapDocument,
+  wrapFootnotes,
+} from "./fixtures.js";
 
 describe("extractDocx", () => {
   test("extracts headings, lists, two tables, and a footnote", async () => {
@@ -203,59 +186,3 @@ describe("readOoxmlParts with a predicate `wanted`", () => {
     expect(Object.keys(result.value.parts)).toEqual(["word/document.xml"]);
   });
 });
-
-/**
- * Locates the local file header and central directory record for `entryName`
- * inside a zip produced by fflate's zipSync, and overwrites the
- * "uncompressed size" field (a 4-byte LE integer) in both places with
- * `forgedSize`, leaving the actual compressed bytes untouched.
- */
-function forgeUncompressedSize(
-  zipBytes: Uint8Array,
-  entryName: string,
-  forgedSize: number,
-): Uint8Array {
-  const out = new Uint8Array(zipBytes); // copy, don't mutate the caller's buffer
-  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
-  const nameBytes = strToU8(entryName);
-
-  const LOCAL_SIG = 0x04034b50;
-  const CENTRAL_SIG = 0x02014b50;
-
-  const matchesNameAt = (nameOffset: number): boolean => {
-    if (nameOffset + nameBytes.length > out.length) return false;
-    for (let i = 0; i < nameBytes.length; i += 1) {
-      if (out[nameOffset + i] !== nameBytes[i]) return false;
-    }
-    return true;
-  };
-
-  let patchedLocal = false;
-  let patchedCentral = false;
-  for (let i = 0; i + 4 <= out.length; i += 1) {
-    const sig = view.getUint32(i, true);
-    if (sig === LOCAL_SIG && !patchedLocal) {
-      const nameLen = view.getUint16(i + 26, true);
-      if (matchesNameAt(i + 30) && strFromBytes(out, i + 30, nameLen) === entryName) {
-        view.setUint32(i + 22, forgedSize, true); // uncompressed size
-        patchedLocal = true;
-      }
-    } else if (sig === CENTRAL_SIG && !patchedCentral) {
-      const nameLen = view.getUint16(i + 28, true);
-      if (matchesNameAt(i + 46) && strFromBytes(out, i + 46, nameLen) === entryName) {
-        view.setUint32(i + 24, forgedSize, true); // uncompressed size
-        patchedCentral = true;
-      }
-    }
-    if (patchedLocal && patchedCentral) break;
-  }
-
-  if (!patchedLocal || !patchedCentral) {
-    throw new Error(`forgeUncompressedSize: could not locate zip headers for ${entryName}`);
-  }
-  return out;
-}
-
-function strFromBytes(bytes: Uint8Array, offset: number, length: number): string {
-  return new TextDecoder("utf-8").decode(bytes.subarray(offset, offset + length));
-}
