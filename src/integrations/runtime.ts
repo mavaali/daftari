@@ -370,6 +370,7 @@ export function createConfiguredIntegrationRuntime(
         admitPublic: authorization.admitPublic,
         checkCsrf: authorization.checkCsrf,
         lastOutcome: (p) => lastOutcomes.get(p),
+        onError,
         wake: () => {
           if (closing || !started) return;
           queueMicrotask(() => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -597,6 +597,7 @@ describe("enrollment/status routes (U19)", () => {
     checkCsrf?: ReturnType<typeof vi.fn>;
     lastOutcome?: IntegrationRouteDependencies["lastOutcome"];
     wake?: ReturnType<typeof vi.fn>;
+    onError?: ReturnType<typeof vi.fn>;
   }) {
     const queue = createIntegrationQueue(vault, () => new Date("2026-09-01T00:00:00.000Z"));
     const engineDeps: EngineDeps = {
@@ -624,6 +625,7 @@ describe("enrollment/status routes (U19)", () => {
         checkCsrf,
         wake,
         ...(options.lastOutcome === undefined ? {} : { lastOutcome: options.lastOutcome }),
+        ...(options.onError === undefined ? {} : { onError: options.onError }),
       }).then((handled) => {
         if (!handled) {
           res.statusCode = 404;
@@ -1059,6 +1061,103 @@ describe("enrollment/status routes (U19)", () => {
       expect(response.status).toBe(404);
     } finally {
       await notFound.close();
+    }
+  });
+
+  it("404s DELETE for an adapter without resolveEnrollment, before any auth/CSRF work runs", async () => {
+    const authorize = vi.fn(async () => authorization());
+    const checkCsrf = vi.fn(() => null);
+    const running = await startRoute({
+      // No resolveEnrollment — same capability signal preview/POST/GET gate on.
+      adapter: microsoftAdapter({ resolveEnrollment: undefined, estimateEnrollment: undefined }),
+      authorize,
+      checkCsrf,
+    });
+    try {
+      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/enr-1`, {
+        method: "DELETE",
+      });
+      expect(response.status).toBe(404);
+      expect(authorize).not.toHaveBeenCalled();
+      expect(checkCsrf).not.toHaveBeenCalled();
+    } finally {
+      await running.close();
+    }
+  });
+
+  it("surfaces a failed unenroll review-event write through onError, without failing the delete", async () => {
+    writeState({
+      accessToken: "access",
+      refreshToken: "refresh",
+      sources: {
+        "item-1": {
+          id: "item-1",
+          revision: "rev-1",
+          contentHash: "hash-1",
+          available: true,
+          lastSeenAt: "2026-08-31T00:00:00.000Z",
+          enrollmentId: "enr-1",
+        },
+      },
+      enrollments: {
+        "enr-1": {
+          id: "enr-1",
+          kind: "item",
+          driveId: "drive-a",
+          remoteId: "item-1",
+          label: "a.docx",
+          collection: "distill",
+          includeSpeakerNotes: true,
+          enrolledBy: "alice",
+          enrolledAt: "2026-08-31T00:00:00.000Z",
+          audienceAckAt: "2026-08-31T00:00:00.000Z",
+          readersAtEnrollment: ["editor"],
+          cursorKey: "drive:drive-a",
+        },
+      },
+    });
+    // Force appendUnavailableReview's write to fail: pre-occupy its target
+    // path with a directory instead of a file, so its openSync(..., "a", ...)
+    // throws — unrelated to the (separate-path) state write, which still
+    // succeeds normally.
+    mkdirSync(integrationReviewPath(vault), { recursive: true });
+    const onError = vi.fn();
+    const running = await startRoute({ adapter: microsoftAdapter(), onError });
+    try {
+      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/enr-1`, {
+        method: "DELETE",
+      });
+      // The enrollment removal itself still succeeds...
+      expect(response.status).toBe(204);
+      const persisted = readIntegrationState(vault, KEY2);
+      expect(
+        persisted.ok && persisted.value.providers.microsoft?.enrollments?.["enr-1"],
+      ).toBeUndefined();
+      // ...but the audit-write failure is surfaced, not silently dropped.
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0]).toContain("item-1");
+    } finally {
+      await running.close();
+    }
+  });
+
+  it("returns a clean 400 (not a 500) for a malformed JSON body on preview and on enroll", async () => {
+    writeState({ accessToken: "access", refreshToken: "refresh", sources: {} });
+    const running = await startRoute({ adapter: microsoftAdapter() });
+    try {
+      const preview = await fetch(`${running.base}/integrations/microsoft/enrollments/preview`, {
+        method: "POST",
+        body: "{not valid json",
+      });
+      expect(preview.status).toBe(400);
+
+      const enroll = await fetch(`${running.base}/integrations/microsoft/enrollments`, {
+        method: "POST",
+        body: "{not valid json",
+      });
+      expect(enroll.status).toBe(400);
+    } finally {
+      await running.close();
     }
   });
 });

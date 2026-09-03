@@ -77,6 +77,14 @@ export interface IntegrationRouteDependencies {
   wake?: () => void;
   /** R36: the runtime's last-cycle summary for a provider, merged into the /status response. */
   lastOutcome?(provider: ProviderName): IntegrationRouteLastOutcome | undefined;
+  /**
+   * U19 follow-up: the runtime's existing error-surfacing channel (the same
+   * `onError` a reconcile cycle logs through). Used so a failed unenroll
+   * review-event write is surfaced rather than silently dropped — the
+   * enrollment removal itself still succeeds; only the audit write's failure
+   * needs somewhere to go.
+   */
+  onError?: (message: string) => void;
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
@@ -202,6 +210,53 @@ function collectionAllowlist(config: IntegrationConfig, provider: ProviderName):
 function includeSpeakerNotesDefault(config: IntegrationConfig, provider: ProviderName): boolean {
   const providerConfig = config[provider] as { includeSpeakerNotes?: boolean } | undefined;
   return providerConfig?.includeSpeakerNotes ?? true;
+}
+
+interface ParsedEnrollmentRequest {
+  body: Record<string, unknown>;
+  collection: string;
+  includeSpeakerNotes: boolean;
+}
+
+// Shared by preview and the full enroll POST (U19 follow-up): parse the JSON
+// body, then apply the two gates every enrollment route needs regardless of
+// whether it persists — the collection allowlist (422) and canWrite (403).
+// Writes the rejection response itself and returns null on any failure, so a
+// caller only has to check for that.
+async function parseEnrollmentRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  deps: IntegrationRouteDependencies,
+  provider: ProviderName,
+  authorized: IntegrationRouteAuthorization,
+): Promise<ParsedEnrollmentRequest | null> {
+  const parsedBody = await readJsonBody(
+    request,
+    DEFAULT_ENROLLMENT_BODY_LIMIT,
+    DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS,
+  );
+  if (!parsedBody.ok) {
+    writeJson(response, 400, { error: "invalid_request", message: parsedBody.error.message });
+    return null;
+  }
+  const body = isRecord(parsedBody.value) ? parsedBody.value : {};
+  const collection = typeof body.collection === "string" ? body.collection : undefined;
+  if (
+    collection === undefined ||
+    !collectionAllowlist(deps.config, provider).includes(collection)
+  ) {
+    writeJson(response, 422, { error: "collection_not_allowed" });
+    return null;
+  }
+  if (!canWrite(authorized.role, collection)) {
+    writeJson(response, 403, { error: "forbidden" });
+    return null;
+  }
+  const includeSpeakerNotes =
+    typeof body.includeSpeakerNotes === "boolean"
+      ? body.includeSpeakerNotes
+      : includeSpeakerNotesDefault(deps.config, provider);
+  return { body, collection, includeSpeakerNotes };
 }
 
 export async function handleIntegrationRoute(
@@ -509,28 +564,9 @@ export async function handleIntegrationRoute(
     const authorized = await requireAuthorization(request, response, deps, true);
     if (authorized === null) return true;
 
-    const parsedBody = await readJsonBody(
-      request,
-      DEFAULT_ENROLLMENT_BODY_LIMIT,
-      DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS,
-    );
-    if (!parsedBody.ok) {
-      writeJson(response, 400, { error: "invalid_request", message: parsedBody.error.message });
-      return true;
-    }
-    const body = isRecord(parsedBody.value) ? parsedBody.value : {};
-    const collection = typeof body.collection === "string" ? body.collection : undefined;
-    if (
-      collection === undefined ||
-      !collectionAllowlist(deps.config, provider).includes(collection)
-    ) {
-      writeJson(response, 422, { error: "collection_not_allowed" });
-      return true;
-    }
-    if (!canWrite(authorized.role, collection)) {
-      writeJson(response, 403, { error: "forbidden" });
-      return true;
-    }
+    const parsed = await parseEnrollmentRequest(request, response, deps, provider, authorized);
+    if (parsed === null) return true;
+    const { body, collection, includeSpeakerNotes } = parsed;
 
     const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
     if (!key.ok) {
@@ -548,10 +584,6 @@ export async function handleIntegrationRoute(
       return true;
     }
 
-    const includeSpeakerNotes =
-      typeof body.includeSpeakerNotes === "boolean"
-        ? body.includeSpeakerNotes
-        : includeSpeakerNotesDefault(deps.config, provider);
     const ctx: EnrollmentContext = {
       user: authorized.user,
       role: authorized.roleName,
@@ -585,28 +617,9 @@ export async function handleIntegrationRoute(
     const authorized = await requireAuthorization(request, response, deps, true);
     if (authorized === null) return true;
 
-    const parsedBody = await readJsonBody(
-      request,
-      DEFAULT_ENROLLMENT_BODY_LIMIT,
-      DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS,
-    );
-    if (!parsedBody.ok) {
-      writeJson(response, 400, { error: "invalid_request", message: parsedBody.error.message });
-      return true;
-    }
-    const body = isRecord(parsedBody.value) ? parsedBody.value : {};
-    const collection = typeof body.collection === "string" ? body.collection : undefined;
-    if (
-      collection === undefined ||
-      !collectionAllowlist(deps.config, provider).includes(collection)
-    ) {
-      writeJson(response, 422, { error: "collection_not_allowed" });
-      return true;
-    }
-    if (!canWrite(authorized.role, collection)) {
-      writeJson(response, 403, { error: "forbidden" });
-      return true;
-    }
+    const parsed = await parseEnrollmentRequest(request, response, deps, provider, authorized);
+    if (parsed === null) return true;
+    const { body, collection, includeSpeakerNotes } = parsed;
     // R33: the audience ACL disclosure must be explicitly acknowledged by the
     // enrolling caller — never inferred from the request merely existing.
     if (body.acknowledged !== true) {
@@ -614,10 +627,6 @@ export async function handleIntegrationRoute(
       return true;
     }
 
-    const includeSpeakerNotes =
-      typeof body.includeSpeakerNotes === "boolean"
-        ? body.includeSpeakerNotes
-        : includeSpeakerNotesDefault(deps.config, provider);
     const selection = body.selection;
 
     const created = await withIntegrationStateLock(deps.vaultRoot, async () => {
@@ -731,6 +740,15 @@ export async function handleIntegrationRoute(
     url.pathname,
   );
   if (enrollmentIdMatch !== null && enrollmentIdMatch[1] !== "preview") {
+    // Same provider-neutral capability gate as preview/POST/GET above: a
+    // provider that never implements resolveEnrollment never has enrollments
+    // to unenroll either, so the 404 must not depend on the enrollment id
+    // happening to be absent — otherwise google/notion would run real
+    // manage_integrations + CSRF work before falling through to a 404.
+    if (adapter.resolveEnrollment === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
     if (request.method !== "DELETE") {
       writeJson(response, 405, { error: "method_not_allowed" });
       return true;
@@ -795,7 +813,16 @@ export async function handleIntegrationRoute(
         revision: source.revision,
         occurredAt: now.toISOString(),
       };
-      appendUnavailableReview(deps.vaultRoot, event);
+      // The enrollment removal above already committed — a failed audit
+      // write must not be silently dropped, but it also must not turn a
+      // successful removal into an error response. Surface it through the
+      // runtime's existing error channel instead.
+      const appended = appendUnavailableReview(deps.vaultRoot, event);
+      if (!appended.ok) {
+        deps.onError?.(
+          `integration ${provider} unenrolled-review write failed for source ${source.id}: ${appended.error.message}`,
+        );
+      }
     }
     response.writeHead(204, { "cache-control": "no-store" });
     response.end();
