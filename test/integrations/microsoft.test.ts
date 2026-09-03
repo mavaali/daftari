@@ -2087,6 +2087,60 @@ describe("Microsoft adapter webhooks (U16)", () => {
     }
   });
 
+  it("two enrollments sharing the same driveId dedup to exactly one subscription for that drive", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/subscriptions`]: [
+          jsonFixture({ id: "sub-1", expirationDateTime: "2026-10-01T00:00:00.000Z" }),
+        ],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {
+        e1: enrollment({
+          id: "e1",
+          kind: "item",
+          driveId: "drive1",
+          remoteId: "item1",
+          cursorKey: "drive:drive1",
+        }),
+        // A second, distinct enrollment (a container, not an item) on the
+        // SAME driveId — this must not produce a second subscription.
+        e2: enrollment({
+          id: "e2",
+          kind: "container",
+          driveId: "drive1",
+          remoteId: "folder1",
+          cursorKey: "enrollment:e2",
+        }),
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({
+      ok: true,
+      value: {
+        subscriptions: [{ id: "sub-1", resource: "/drives/drive1/root" }],
+      },
+    });
+    if (!ensured.ok) return;
+    expect(ensured.value.subscriptions).toHaveLength(1);
+    const posts = requests.filter((r) => r.url === `${GRAPH}/subscriptions`);
+    expect(posts).toHaveLength(1);
+  });
+
   it("renews a soon-to-expire subscription via PATCH, recreating via POST on a 404", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const transport = capturingTransport(
@@ -2416,6 +2470,40 @@ describe("Microsoft adapter webhooks (U16)", () => {
     expect((first.value as { eventId: string }).eventId).not.toBe(
       (second.value as { eventId: string }).eventId,
     );
+  });
+
+  it("verifyWebhook rejects the WHOLE batch when only one entry in a multi-entry notification is invalid", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+    });
+
+    const wrongSecretInBatch = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {},
+        body: notificationBody([
+          { subscriptionId: "sub-1", clientState: "channel-secret" },
+          { subscriptionId: "sub-1", clientState: "attacker-secret" },
+        ]),
+      },
+      webhookState(),
+    );
+    const unknownSubscriptionInBatch = await requireCapability(
+      adapter.verifyWebhook,
+      "verifyWebhook",
+    )(
+      {
+        headers: {},
+        body: notificationBody([
+          { subscriptionId: "sub-1", clientState: "channel-secret" },
+          { subscriptionId: "sub-unknown", clientState: "channel-secret" },
+        ]),
+      },
+      webhookState(),
+    );
+
+    expect(wrongSecretInBatch.ok).toBe(false);
+    expect(unknownSubscriptionInBatch.ok).toBe(false);
   });
 
   it("verifyLifecycleWebhook maps each lifecycle event to its queued action, and rejects a wrong clientState", async () => {
