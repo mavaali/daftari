@@ -1,7 +1,7 @@
 // Google Docs integration adapter. It owns only Google OAuth and HTTP; the
 // provider-neutral engine owns persistence, reconciliation, and distillation.
 
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   AuthorizationRequest,
@@ -23,7 +23,9 @@ import {
   jsonResponse,
   providerResponse,
   stringValue,
+  timingSafeSecretEqual,
   tokenExpiration,
+  validHttpsUrl,
 } from "./http-json.js";
 import type { ProviderState } from "./types.js";
 
@@ -511,14 +513,6 @@ function currentWebhook(state: ProviderState, renewBefore: Date): WebhookChannel
   return Number.isFinite(expiresAt) && expiresAt > renewBefore.getTime() ? webhook : undefined;
 }
 
-function validHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function channelExpiration(value: unknown): Result<string | undefined, Error> {
   if (value === undefined) return ok(undefined);
   const raw = stringValue(value);
@@ -588,12 +582,6 @@ function webhookHeader(headers: WebhookRequest["headers"], name: string): string
   return undefined;
 }
 
-function equalWebhookSecret(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, "utf8");
-  const rightBuffer = Buffer.from(right, "utf8");
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-}
-
 async function verifyWebhook(
   input: WebhookRequest,
   state: ProviderState,
@@ -607,7 +595,7 @@ async function verifyWebhook(
     webhook === undefined ||
     channelId !== webhook.id ||
     token === undefined ||
-    !equalWebhookSecret(token, webhook.secret) ||
+    !timingSafeSecretEqual(token, webhook.secret) ||
     messageNumber === undefined ||
     (resourceState !== "sync" && resourceState !== "change" && resourceState !== "changed")
   ) {

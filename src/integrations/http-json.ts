@@ -10,6 +10,7 @@
 // parameter exists precisely so each adapter keeps its own exact error
 // message text (some tests/engine.ts message-sniffing pin those strings).
 
+import { timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 export type HttpTransport = (url: string, init: RequestInit) => Promise<Response>;
@@ -31,6 +32,30 @@ export const TERMINAL_REFRESH_STATUSES = new Set([400, 401, 403]);
 
 export function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+// Timing-safe secret/token comparison — the single canonical implementation
+// for every trust-boundary compare across the provider adapters and the
+// engine (a webhook clientState/token, a manual-setup nonce, ...). An
+// unequal length is rejected outright rather than passed to
+// timingSafeEqual (which throws on a length mismatch), so a length-derived
+// timing side channel never opens up either. Previously duplicated
+// verbatim in google.ts, microsoft.ts, and engine.ts (as `equalSecret`) —
+// consolidated here so a future fix to this logic only needs to land, and
+// be re-verified, once.
+export function timingSafeSecretEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+/** Rejects anything but an https:// URL — every provider's webhook callback must be public HTTPS. */
+export function validHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export function tokenExpiration(expiresIn: unknown, now: () => Date): string | undefined {

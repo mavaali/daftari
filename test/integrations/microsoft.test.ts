@@ -2289,6 +2289,47 @@ describe("Microsoft adapter webhooks (U16)", () => {
     expect(deleted?.init.method).toBe("DELETE");
   });
 
+  it("deletes a stored subscription whose resource doesn't parse to any drive, rather than silently leaking it untracked", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      { [`${GRAPH}/subscriptions/sub-malformed`]: [new Response(null, { status: 204 })] },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {},
+      webhook: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          // A resource that doesn't match the `/drives/{id}/root` shape at
+          // all — driveIdFromResource can't parse it, so it must never be
+          // silently dropped from tracking; it has to be deleted just like
+          // any other orphan.
+          {
+            id: "sub-malformed",
+            resource: "not-a-drive-resource",
+            expiresAt: "2026-09-10T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({ ok: true, value: { subscriptions: [] } });
+    const deleted = requests.find((r) => r.url === `${GRAPH}/subscriptions/sub-malformed`);
+    expect(deleted?.init.method).toBe("DELETE");
+  });
+
   it("R19: a non-HTTPS/loopback callback returns an empty channel and never calls Graph", async () => {
     const transport = capturingTransport({}, []);
     const adapter = createMicrosoftAdapter({

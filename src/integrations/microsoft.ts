@@ -11,7 +11,7 @@
 // answerWebhookChallenge/verifyLifecycleWebhook. U17/U18 land enrollment
 // resolution/describeStatus.
 
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { DEFAULT_EXTRACT_LIMITS, type ExtractKind, extractText } from "../extract/index.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
@@ -36,7 +36,9 @@ import {
   type RequestLimits,
   stringValue,
   TERMINAL_REFRESH_STATUSES,
+  timingSafeSecretEqual,
   tokenExpiration,
+  validHttpsUrl,
 } from "./http-json.js";
 import type {
   EnrollmentRecord,
@@ -346,14 +348,6 @@ async function refreshTokens(
 // while still comfortably clearing the engine's 24h renewal lead.
 const MICROSOFT_SUBSCRIPTION_EXPIRATION_MINUTES = 41_000;
 
-function validHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function subscriptionExpiration(now: Date): string {
   return new Date(now.getTime() + MICROSOFT_SUBSCRIPTION_EXPIRATION_MINUTES * 60_000).toISOString();
 }
@@ -529,21 +523,30 @@ async function ensureWebhook(
   }
 
   const driveIds = new Set(Object.values(state.enrollments ?? {}).map((record) => record.driveId));
+  const existingSubscriptions = state.webhook?.subscriptions ?? [];
   const existingByDrive = new Map<string, { id: string; resource: string; expiresAt: string }>();
-  for (const subscription of state.webhook?.subscriptions ?? []) {
+  for (const subscription of existingSubscriptions) {
     const driveId = driveIdFromResource(subscription.resource);
     if (driveId !== undefined) existingByDrive.set(driveId, subscription);
   }
 
   const notificationUrl = input.callbackUrl;
-  const lifecycleNotificationUrl = `${input.callbackUrl}/lifecycle`;
+  const lifecycleNotificationUrl = `${input.callbackUrl.replace(/\/$/, "")}/lifecycle`;
   const expirationDateTime = subscriptionExpiration(input.now);
   const accessToken = state.accessToken;
   const subscriptions: Array<{ id: string; resource: string; expiresAt: string }> = [];
+  // Tracks every existing subscription id that this cycle keeps, renews, or
+  // recreates for a currently-enrolled drive — everything else still
+  // present in `existingSubscriptions` afterward (an unparseable/foreign
+  // resource, or a resource whose drive is no longer enrolled) is an
+  // orphan and gets deleted below, so a stale subscription never survives
+  // untracked against the §11 subscription limit.
+  const claimedSubscriptionIds = new Set<string>();
 
   for (const driveId of driveIds) {
     const resource = `/drives/${driveId}/root`;
     const current = existingByDrive.get(driveId);
+    if (current !== undefined) claimedSubscriptionIds.add(current.id);
     if (current !== undefined && Date.parse(current.expiresAt) > input.renewBefore.getTime()) {
       subscriptions.push(current);
       continue;
@@ -575,9 +578,12 @@ async function ensureWebhook(
     subscriptions.push({ id: result.value.id, resource, expiresAt: result.value.expiresAt });
   }
 
-  // A drive that no longer has a current enrollment loses its subscription.
-  for (const [driveId, subscription] of existingByDrive) {
-    if (driveIds.has(driveId)) continue;
+  // Every existing subscription not claimed above is orphaned — either its
+  // resource didn't parse to a driveId at all, or it parsed to a drive that
+  // no longer has a current enrollment — and is deleted unconditionally so
+  // it can never linger untracked on the Graph side.
+  for (const subscription of existingSubscriptions) {
+    if (claimedSubscriptionIds.has(subscription.id)) continue;
     const deleted = await deleteSubscription(transport, accessToken, limits, subscription.id);
     if (!deleted.ok) return deleted;
   }
@@ -599,16 +605,6 @@ async function ensureWebhook(
 
 function answerWebhookChallenge(input: WebhookRequest): string | undefined {
   return input.query?.validationToken;
-}
-
-// Timing-safe clientState comparison (trust boundary, R17): an unequal
-// length is rejected outright rather than passed to timingSafeEqual (which
-// throws on a length mismatch), so a length-derived timing side channel
-// never opens up either.
-function equalWebhookSecret(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, "utf8");
-  const rightBuffer = Buffer.from(right, "utf8");
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function parseWebhookNotificationBody(body: Uint8Array): unknown {
@@ -659,7 +655,7 @@ async function verifyWebhook(
       subscriptionId === undefined ||
       !knownSubscriptionIds.has(subscriptionId) ||
       clientState === undefined ||
-      !equalWebhookSecret(clientState, webhook.secret)
+      !timingSafeSecretEqual(clientState, webhook.secret)
     ) {
       return err(new Error("Microsoft webhook notification is invalid"));
     }
@@ -669,9 +665,14 @@ async function verifyWebhook(
   const subscriptionId = stringValue(first.subscriptionId) as string;
   // Graph retries a delivery under the same notification if it isn't
   // acknowledged; when the payload carries no `id` of its own, minting a
-  // fresh id (rather than a stable derivation) means a retried delivery
-  // produces a distinct event the queue coalesces rather than a repeat the
-  // queue could mistake for a tombstoned duplicate.
+  // fresh random id (rather than a stable derivation from subscriptionId
+  // alone) means the queue's dedup-by-eventId does NOT catch a retried
+  // delivery — it gets re-enqueued and reprocessed as a distinct event.
+  // That's deliberate, not a missed optimization: this hint is always
+  // `{kind:"reconcile"}`, which is idempotent, so a harmless re-reconcile is
+  // the correct/safer trade against a stable id that could risk conflating
+  // two truly distinct notifications that happen to share a subscriptionId
+  // and arrive close together.
   const eventId =
     stringValue(first.id) ?? `${subscriptionId}:${now().toISOString()}:${randomUUID()}`;
   return ok({ kind: "event", eventId, hint: { kind: "reconcile" } });
@@ -721,7 +722,7 @@ async function verifyLifecycleWebhook(
     subscriptionId === undefined ||
     !knownSubscriptionIds.has(subscriptionId) ||
     clientState === undefined ||
-    !equalWebhookSecret(clientState, webhook.secret)
+    !timingSafeSecretEqual(clientState, webhook.secret)
   ) {
     return err(new Error("Microsoft lifecycle notification is invalid"));
   }

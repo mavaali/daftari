@@ -1,10 +1,10 @@
 // Provider-neutral reconciliation. Provider adapters own OAuth HTTP, discovery,
 // and normalization; this module owns encrypted metadata and the change gate.
 
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { sha256Hex } from "../utils/hash.js";
-import { TERMINAL_REFRESH_STATUSES } from "./http-json.js";
+import { TERMINAL_REFRESH_STATUSES, timingSafeSecretEqual } from "./http-json.js";
 import {
   readIntegrationState,
   resolveIntegrationStateKey,
@@ -619,12 +619,6 @@ async function invokeWebhookVerification(
   return verified;
 }
 
-function equalSecret(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left, "utf8");
-  const rightBytes = Buffer.from(right, "utf8");
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
-}
-
 export async function armProviderWebhookSetup(
   vaultRoot: string,
   provider: ProviderName,
@@ -1077,7 +1071,7 @@ export async function verifyProviderWebhook(
       if (
         expected === undefined ||
         input.setupToken === undefined ||
-        !equalSecret(input.setupToken, expected)
+        !timingSafeSecretEqual(input.setupToken, expected)
       ) {
         return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
       }
