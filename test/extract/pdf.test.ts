@@ -1,0 +1,265 @@
+// test/extract/pdf.test.ts
+// U9: .pdf text-layer extraction via pdfjs-dist. Fixtures are built
+// programmatically as tiny, synthetic, hand-written PDF object graphs (a
+// PDF's object/xref structure is plain ASCII, so — like U7/U8's OOXML
+// fixtures — no binary needs to be checked in for these). The one exception
+// is `fixtures/pdf-encrypted.pdf`: producing a genuinely password-protected
+// PDF requires real RC4/AES encryption math, impractical to hand-roll here,
+// so that one small (~1KB) synthetic fixture is checked in instead.
+
+import fs from "node:fs";
+import { readFile } from "node:fs/promises";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { describe, expect, test, vi } from "vitest";
+import { extractText } from "../../src/extract/index.js";
+import { extractPdf, handlePdf } from "../../src/extract/pdf.js";
+import { DEFAULT_EXTRACT_LIMITS, type ExtractLimits } from "../../src/extract/types.js";
+
+const FIXTURES_DIR = new URL("./fixtures/", import.meta.url);
+
+// ---------------------------------------------------------------------------
+// Minimal synthetic PDF builder — just enough object/xref syntax for pdfjs
+// to parse: a Catalog, a Pages tree, N Page objects, and (optionally) a
+// content stream per page plus a shared Type1 base-14 font. No compression,
+// no cross-reference streams — a classic-style xref table, which is all a
+// hand-built fixture needs.
+// ---------------------------------------------------------------------------
+
+interface PageSpec {
+  /** Content-stream operators (already valid PDF syntax), or omitted for a
+   * page with no /Contents at all (used for the "over the page cap" fixture
+   * — no content stream is ever needed to make `doc.numPages` see a page). */
+  contentOps?: string;
+  /** Font resource name -> PDF base-14 font name (e.g. "F1" -> "Helvetica"). */
+  fonts?: Record<string, string>;
+}
+
+function buildPdf(pages: PageSpec[]): Uint8Array {
+  const objs: string[] = []; // index 0 unused; objs[n] is object n's body
+  objs[0] = "";
+
+  const pageObjNums: number[] = [];
+  const contentObjNums: number[] = [];
+  const fontObjNums = new Map<string, number>(); // base-14 font name -> obj num
+
+  let nextObjNum = 3; // 1: catalog, 2: pages tree
+  for (const spec of pages) {
+    pageObjNums.push(nextObjNum);
+    nextObjNum += 1;
+    if (spec.contentOps !== undefined) {
+      contentObjNums.push(nextObjNum);
+      nextObjNum += 1;
+    } else {
+      contentObjNums.push(-1);
+    }
+  }
+  for (const spec of pages) {
+    for (const fontName of Object.values(spec.fonts ?? {})) {
+      if (!fontObjNums.has(fontName)) {
+        fontObjNums.set(fontName, nextObjNum);
+        nextObjNum += 1;
+      }
+    }
+  }
+  const maxObjNum = nextObjNum - 1;
+
+  objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objs[2] = `<< /Type /Pages /Kids [${pageObjNums.map((n) => `${n} 0 R`).join(" ")}] /Count ${pages.length} >>`;
+
+  pages.forEach((spec, i) => {
+    const pageObjNum = pageObjNums[i];
+    const contentObjNum = contentObjNums[i];
+    const fontEntries = Object.entries(spec.fonts ?? {})
+      .map(([resName, fontName]) => `/${resName} ${fontObjNums.get(fontName)} 0 R`)
+      .join(" ");
+    const resources = `<< /Font << ${fontEntries} >> >>`;
+    const contentsEntry = contentObjNum === -1 ? "" : ` /Contents ${contentObjNum} 0 R`;
+    // Wide enough that a full line of test text never exceeds the page's
+    // visible bounds — pdfjs's text-content extraction clips a text run
+    // once it runs past the MediaBox width, so a too-narrow page here would
+    // silently truncate the fixture's own text, not exercise pdf.ts at all.
+    objs[pageObjNum] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 300] /Resources ${resources}${contentsEntry} >>`;
+    if (contentObjNum !== -1) {
+      const stream = spec.contentOps ?? "";
+      objs[contentObjNum] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+    }
+  });
+
+  for (const [fontName, objNum] of fontObjNums) {
+    objs[objNum] = `<< /Type /Font /Subtype /Type1 /BaseFont /${fontName} >>`;
+  }
+
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (let n = 1; n <= maxObjNum; n += 1) {
+    offsets[n] = out.length;
+    out += `${n} 0 obj\n${objs[n]}\nendobj\n`;
+  }
+  const xrefStart = out.length;
+  out += `xref\n0 ${maxObjNum + 1}\n0000000000 65535 f \n`;
+  for (let n = 1; n <= maxObjNum; n += 1) {
+    out += `${String(offsets[n]).padStart(10, "0")} 00000 n \n`;
+  }
+  out += `trailer\n<< /Size ${maxObjNum + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return new TextEncoder().encode(out);
+}
+
+/** A single Tj text-showing operation at a fixed position, one line. */
+function textOp(font: string, size: number, x: number, y: number, text: string): string {
+  const escaped = text.replace(/([()\\])/g, "\\$1");
+  return `BT /${font} ${size} Tf ${x} ${y} Td (${escaped}) Tj ET`;
+}
+
+describe("extractPdf", () => {
+  test("extracts a 3-page text-layer PDF, pages separated by a blank line, in order", async () => {
+    const bytes = buildPdf([
+      { contentOps: textOp("F1", 24, 10, 100, "Page One Alpha"), fonts: { F1: "Helvetica" } },
+      { contentOps: textOp("F1", 24, 10, 100, "Page Two Bravo"), fonts: { F1: "Helvetica" } },
+      { contentOps: textOp("F1", 24, 10, 100, "Page Three Charlie"), fonts: { F1: "Helvetica" } },
+    ]);
+
+    const result = await extractPdf(bytes, DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.pages).toBe(3);
+    const parts = result.value.text.split("\n\n");
+    expect(parts).toHaveLength(3);
+    expect(parts[0]).toContain("Page One Alpha");
+    expect(parts[1]).toContain("Page Two Bravo");
+    expect(parts[2]).toContain("Page Three Charlie");
+    // Page order must be preserved, not just presence.
+    const idxOne = result.value.text.indexOf("Alpha");
+    const idxTwo = result.value.text.indexOf("Bravo");
+    const idxThree = result.value.text.indexOf("Charlie");
+    expect(idxOne).toBeLessThan(idxTwo);
+    expect(idxTwo).toBeLessThan(idxThree);
+  });
+
+  test("recovers text from multiple base-14 fonts in the same document (standardFontDataUrl supplied)", async () => {
+    const bytes = buildPdf([
+      {
+        contentOps: [
+          textOp("F1", 18, 10, 150, "Helvetica decision heading"),
+          textOp("F2", 14, 10, 100, "Times body ligature affine"),
+        ].join(" "),
+        fonts: { F1: "Helvetica", F2: "Times-Roman" },
+      },
+    ]);
+
+    const result = await extractPdf(bytes, DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Helvetica decision heading");
+    expect(result.value.text).toContain("Times body ligature affine");
+  });
+
+  test("classifies an image-only (no text layer) PDF as empty", async () => {
+    // A content stream that paints a filled rectangle only — no text
+    // operators at all, so getTextContent() yields zero items.
+    const bytes = buildPdf([{ contentOps: "0 0 1 rg 0 0 200 200 re f" }]);
+
+    const result = await extractPdf(bytes, DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("empty");
+  });
+
+  test("classifies a password-protected PDF as encrypted", async () => {
+    const bytes = await readFile(new URL("pdf-encrypted.pdf", FIXTURES_DIR));
+
+    const result = await extractPdf(new Uint8Array(bytes), DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("encrypted");
+  });
+
+  test("classifies malformed / not-a-PDF bytes as malformed", async () => {
+    const bytes = new TextEncoder().encode("this is not a PDF, just plain text bytes");
+
+    const result = await extractPdf(bytes, DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("malformed");
+  });
+
+  test("classifies a PDF over the page cap as too_large, without extracting any page's content", async () => {
+    const limits: ExtractLimits = { ...DEFAULT_EXTRACT_LIMITS, maxPdfPages: 500 };
+    const pages: PageSpec[] = Array.from({ length: 501 }, () => ({})); // no /Contents at all
+    const bytes = buildPdf(pages);
+
+    // Prove ordering, not just the returned reason: patch
+    // PDFDocumentProxy.prototype.getPage (shared across all instances,
+    // pdfjs-dist exports no named class for it) via a throwaway small
+    // document, then assert it's never invoked while extracting the
+    // over-the-cap fixture. If the implementation ever extracted pages
+    // before checking doc.numPages against the cap, this would fail.
+    const probeBytes = buildPdf([{}]);
+    const probeTask = getDocument({ data: probeBytes });
+    const probeDoc = await probeTask.promise;
+    const proto = Object.getPrototypeOf(probeDoc) as { getPage: unknown };
+    await probeDoc.cleanup();
+    await probeTask.destroy();
+    const getPageSpy = vi.spyOn(
+      proto as unknown as Record<string, (...args: unknown[]) => unknown>,
+      "getPage",
+    );
+
+    try {
+      const result = await extractPdf(bytes, limits);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.reason).toBe("too_large");
+      expect(getPageSpy).not.toHaveBeenCalled();
+    } finally {
+      getPageSpy.mockRestore();
+    }
+  });
+
+  test("handlePdf matches the worker dispatch Handler contract", async () => {
+    const bytes = buildPdf([
+      { contentOps: textOp("F1", 24, 10, 100, "Dispatch check"), fonts: { F1: "Helvetica" } },
+    ]);
+
+    const result = await handlePdf({ bytes, kind: "pdf", limits: DEFAULT_EXTRACT_LIMITS });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Dispatch check");
+  });
+});
+
+describe("extractText harness dispatching pdf through the real worker_threads path", () => {
+  // Unlike the extractPdf() unit tests above (which call the driver
+  // in-process), this goes through src/extract/index.ts's real Worker
+  // spawn with no workerUrl override — i.e. worker.ts's actual dispatch
+  // table and its sibling-import loading of pdf.ts, exactly the seam U7's
+  // comment warns doesn't reliably remap .js -> .ts for a value import.
+  test("extracts a real PDF's text through the worker_threads harness", async () => {
+    const bytes = buildPdf([
+      { contentOps: textOp("F1", 24, 10, 100, "Worker thread text"), fonts: { F1: "Helvetica" } },
+    ]);
+
+    const result = await extractText(bytes, "pdf", DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toContain("Worker thread text");
+  });
+
+  test("propagates encrypted classification through the worker_threads harness", async () => {
+    const bytes = fs.readFileSync(new URL("pdf-encrypted.pdf", FIXTURES_DIR));
+
+    const result = await extractText(new Uint8Array(bytes), "pdf", DEFAULT_EXTRACT_LIMITS);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("encrypted");
+  });
+});

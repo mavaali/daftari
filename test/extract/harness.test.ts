@@ -36,14 +36,15 @@ describe("extractText harness", () => {
     }
   });
 
-  test("dispatches to the real worker and reports unsupported_type before U9 lands", async () => {
-    // docx (U7) and pptx (U8) are now implemented — use pdf (still a U9
-    // stub) to exercise the "not yet implemented" dispatch path.
+  test("dispatches to the real worker for all three kinds (docx/pptx/pdf all implemented as of U9)", async () => {
+    // Not a valid PDF header, so the real pdf.ts driver (U9) reports
+    // malformed — proving the dispatch table reaches the real handler
+    // through the actual worker_threads path, not a stub.
     const result = await extractText(new Uint8Array([1, 2, 3]), "pdf", DEFAULT_EXTRACT_LIMITS);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.reason).toBe("unsupported_type");
+      expect(result.error.reason).toBe("malformed");
     }
   });
 

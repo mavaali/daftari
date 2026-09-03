@@ -12,10 +12,6 @@ import type { ExtractRequest, ExtractWorkerResponse } from "./types.js";
 
 type Handler = (request: ExtractRequest) => Promise<ExtractWorkerResponse>;
 
-async function notYetImplemented(unit: string): Promise<ExtractWorkerResponse> {
-  return { ok: false, error: { reason: "unsupported_type", message: `implemented in ${unit}` } };
-}
-
 // A static `import "./office.js"` here resolves fine when this worker runs
 // compiled (dist/extract/worker.js importing the real dist/extract/office.js
 // — plain Node ESM resolution, no loader involved). But in dev/test, this
@@ -33,10 +29,17 @@ const isTs = import.meta.url.endsWith(".ts");
 const officeUrl = new URL(isTs ? "./office.ts" : "./office.js", import.meta.url);
 const { handleDocx, handlePptx } = (await import(officeUrl.href)) as typeof import("./office.js");
 
+// pdf.ts (U9) is the same kind of new local sibling module as office.ts, so
+// it hits the identical gotcha — mirror the exact-extension dynamic-import
+// pattern above rather than a plain static `import "./pdf.js"`, which would
+// break resolving to ./pdf.ts under dev/test's tsx-in-worker execArgv.
+const pdfUrl = new URL(isTs ? "./pdf.ts" : "./pdf.js", import.meta.url);
+const { handlePdf } = (await import(pdfUrl.href)) as typeof import("./pdf.js");
+
 const dispatch: Record<ExtractRequest["kind"], Handler> = {
   docx: handleDocx,
   pptx: handlePptx,
-  pdf: () => notYetImplemented("U9"),
+  pdf: handlePdf,
 };
 
 async function run(): Promise<ExtractWorkerResponse> {
