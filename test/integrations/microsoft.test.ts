@@ -2671,6 +2671,152 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     expect(result.value.skipped).toEqual([{ name: "secret.docx", reason: "not_readable" }]);
   });
 
+  it("rejects a forged picker item the account can't read (404) by name; it never reaches the draft", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/gone-1")) {
+          return graphJson({ error: { code: "itemNotFound" } }, 404);
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [{ driveId: "drive-a", itemId: "gone-1", name: "gone.docx" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.items).toEqual([]);
+    expect(result.value.skipped).toEqual([{ name: "gone.docx", reason: "not_readable" }]);
+  });
+
+  it("a non-array selection fails cleanly without any HTTP call", async () => {
+    let calls = 0;
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async () => {
+        calls += 1;
+        throw new Error("unexpected request");
+      },
+    });
+    const state = microsoftProviderState();
+
+    const result = await adapter.resolveEnrollment?.({ not: "an array" }, state, ctx);
+    expect(result?.ok).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it("an empty selection fails cleanly without any HTTP call", async () => {
+    let calls = 0;
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async () => {
+        calls += 1;
+        throw new Error("unexpected request");
+      },
+    });
+    const state = microsoftProviderState();
+
+    const result = await adapter.resolveEnrollment?.([], state, ctx);
+    expect(result?.ok).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it("a malformed/non-object selection entry is skipped as invalid_reference, not enrolled", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/ok-1")) {
+          return graphJson({ id: "ok-1", name: "ok.docx", file: {}, eTag: "e1", size: 100 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = ["just-a-string", 42, null, { driveId: "drive-a", itemId: "ok-1" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.items).toEqual([
+      { driveId: "drive-a", remoteId: "ok-1", kind: "item", label: "ok.docx" },
+    ]);
+    expect(result.value.skipped).toEqual([
+      { name: "unknown", reason: "invalid_reference" },
+      { name: "unknown", reason: "invalid_reference" },
+      { name: "unknown", reason: "invalid_reference" },
+    ]);
+  });
+
+  it("a malware-flagged item in the pick is skipped, not enrolled", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/bad-1")) {
+          return graphJson({
+            id: "bad-1",
+            name: "invoice.docx",
+            file: {},
+            eTag: "e1",
+            size: 100,
+            malware: { description: "eicar-test" },
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [{ driveId: "drive-a", itemId: "bad-1" }];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.items).toEqual([]);
+    expect(result.value.skipped).toEqual([{ name: "invoice.docx", reason: "malware" }]);
+  });
+
+  it("a duplicate item id in one selection resolves to a single draft item, not double-counted", async () => {
+    let metadataCalls = 0;
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/dup-1")) {
+          metadataCalls += 1;
+          return graphJson({ id: "dup-1", name: "dup.docx", file: {}, eTag: "e1", size: 100 });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [
+      { driveId: "drive-a", itemId: "dup-1" },
+      { driveId: "drive-a", itemId: "dup-1" },
+    ];
+
+    const result = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return;
+    expect(result.value.items).toEqual([
+      { driveId: "drive-a", remoteId: "dup-1", kind: "item", label: "dup.docx" },
+    ]);
+    expect(result.value.skipped).toEqual([]);
+    // Deduped, not double-fetched or double-counted toward the eligible bound.
+    expect(metadataCalls).toBe(1);
+
+    const estimate = await adapter.estimateEnrollment?.(result.value, state);
+    expect(estimate?.ok).toBe(true);
+    if (!estimate?.ok) return;
+    expect(estimate.value.eligible).toBe(1);
+    expect(estimate.value.bytes).toBe(100);
+  });
+
   it("skips an unsupported .xlsx in the pick, never enrolling it", async () => {
     const adapter = createMicrosoftAdapter({
       redirectUri: "https://vault.example/integrations/microsoft/callback",
@@ -2772,7 +2918,7 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     const result = await adapter.resolveEnrollment?.(selection, state, ctx);
     expect(result?.ok).toBe(false);
     if (result?.ok) return;
-    expect(result.error.message).toMatch(/2000-source vault/);
+    expect(result.error.message).toMatch(/2000-source Microsoft-enrolled-source limit/);
   });
 
   it("draft.readersAtEnrollment reflects the target collection's reader roles", async () => {

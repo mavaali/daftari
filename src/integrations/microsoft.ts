@@ -1906,9 +1906,23 @@ async function fetchSource(
 // time/estimate-time preview, not the persisted discovery cursor).
 
 // §5.3 bounds: a single container may not expand past this many eligible
-// files (enroll sub-folders instead of one giant one), and a vault may not
-// carry more than this many enrolled sources in total.
+// files (enroll sub-folders instead of one giant one), and — see the note on
+// MICROSOFT_MAX_ENROLLED_SOURCES below — this Microsoft connector may not
+// carry more than this many enrolled sources of its own.
 const MICROSOFT_MAX_ELIGIBLE_PER_CONTAINER = 1_000;
+// PER-PROVIDER, not a cross-vault total: resolveEnrollment only ever sees
+// this Microsoft adapter's own ProviderState (the adapter interface has no
+// visibility into Google's or Notion's ProviderState), so this bound is
+// checked against `Object.keys(state.sources).length` — i.e. sources this
+// Microsoft connector has already discovered — plus this resolve's newly
+// eligible count. A vault with, say, 1,999 Google sources AND 1,999
+// Microsoft sources passes this check even though it's nowhere near
+// "2,000 sources total"; the design rationale is staying comfortably under
+// the ENGINE's own per-provider reconcile limit (DEFAULT_RECONCILE_LIMITS.
+// maxSources = 10,000 in engine.ts), which is itself per-provider. A true
+// cross-provider vault-wide cap would need to read the full IntegrationState
+// (every provider's ProviderState) at the engine/route layer, not from
+// inside a single adapter — out of scope here; a bead tracks that decision.
 const MICROSOFT_MAX_ENROLLED_SOURCES = 2_000;
 
 // Measured docx/pptx/pdf text_chars/source_bytes ratios (U10,
@@ -2098,6 +2112,12 @@ async function resolveEnrollment(
   const items: EnrollmentDraft["items"] = [];
   const skipped: EnrollmentDraft["skipped"] = [];
   let newEligibleTotal = 0;
+  // A picker payload can reference the same item twice (accidental
+  // double-click, a forged duplicate, ...); dedupe by driveId:itemId so a
+  // repeat neither re-fetches metadata nor double-counts toward the eligible
+  // bound below. Silent, not a `skipped` entry — the item IS being enrolled,
+  // just once.
+  const seenRefs = new Set<string>();
 
   for (const raw of selection) {
     const ref = parsePickerRef(raw);
@@ -2105,6 +2125,9 @@ async function resolveEnrollment(
       skipped.push({ name: pickerRefFallbackName(raw), reason: "invalid_reference" });
       continue;
     }
+    const refKey = `${ref.driveId}:${ref.itemId}`;
+    if (seenRefs.has(refKey)) continue;
+    seenRefs.add(refKey);
 
     const metadata = await fetchEnrollmentItemMetadata(
       transport,
@@ -2193,12 +2216,15 @@ async function resolveEnrollment(
     });
   }
 
+  // See the MICROSOFT_MAX_ENROLLED_SOURCES comment above: this is a
+  // per-Microsoft-connector count (this adapter's own state.sources), not a
+  // cross-provider vault total.
   const existingSourceCount = Object.keys(state.sources).length;
   if (existingSourceCount + newEligibleTotal > MICROSOFT_MAX_ENROLLED_SOURCES) {
     return err(
       new Error(
-        `Microsoft enrollment would exceed the ${MICROSOFT_MAX_ENROLLED_SOURCES}-source vault ` +
-          `limit (${existingSourceCount} existing + ${newEligibleTotal} new)`,
+        `Microsoft enrollment would exceed the ${MICROSOFT_MAX_ENROLLED_SOURCES}-source ` +
+          `Microsoft-enrolled-source limit (${existingSourceCount} existing + ${newEligibleTotal} new)`,
       ),
     );
   }
