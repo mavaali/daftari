@@ -290,6 +290,54 @@ describe("Microsoft adapter OAuth (U13)", () => {
     expect(requests).toContain("https://graph.microsoft.com/v1.0/organization");
   });
 
+  it("falls back to the /organization endpoint (without throwing) when the id_token is malformed", async () => {
+    const requests: string[] = [];
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      now: () => new Date("2026-08-24T12:00:00.000Z"),
+      config: microsoftProviderConfig({ tenantId: "contoso-tenant" }),
+      transport: async (url) => {
+        requests.push(url);
+        if (url.startsWith("https://login.microsoftonline.com/")) {
+          return new Response(
+            JSON.stringify({
+              access_token: "new-access-token",
+              refresh_token: "new-refresh-token",
+              expires_in: 3600,
+              // Not a valid JWT: no base64url-JSON middle segment.
+              id_token: "not-a-jwt",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/organization")) {
+          return new Response(JSON.stringify({ value: [{ id: "org-tenant-guid" }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/me")) {
+          return meFixture({ id: "user-1" });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const exchanged = await adapter.exchangeCode({
+      code: "authorization-code",
+      clientId: "microsoft-client-id",
+      clientSecret: "microsoft-client-secret",
+      callbackNonce: "unused-by-microsoft",
+      pkceVerifier: "pkce-verifier",
+    });
+
+    expect(exchanged.ok).toBe(true);
+    if (exchanged.ok) {
+      expect(exchanged.value.account?.tenantId).toBe("org-tenant-guid");
+    }
+    expect(requests).toContain("https://graph.microsoft.com/v1.0/organization");
+  });
+
   it("refreshes access tokens and persists Microsoft's rotated refresh token", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const adapter = createMicrosoftAdapter({
@@ -404,6 +452,60 @@ describe("Microsoft adapter OAuth (U13)", () => {
     const error = refreshed.error as Error & { status?: number; terminal?: boolean };
     expect(error.terminal).not.toBe(true);
     expect(error.status === 400 || error.status === 401 || error.status === 403).toBe(false);
+  });
+
+  it("bounds Graph request time (design §11) with a clean, non-terminal error", async () => {
+    let aborted = false;
+    const timed = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      requestTimeoutMilliseconds: 5,
+      transport: async (_url, init) =>
+        new Promise<Response>((_resolve) => {
+          init.signal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+        }),
+    });
+
+    const refreshed = await timed.refreshTokens?.({
+      clientId: "microsoft-client-id",
+      clientSecret: "microsoft-client-secret",
+      refreshToken: "durable-refresh-token",
+    });
+
+    expect(refreshed?.ok).toBe(false);
+    expect(aborted).toBe(true);
+    if (refreshed?.ok !== false) throw new Error("expected refresh failure");
+    const error = refreshed.error as Error & { status?: number; terminal?: boolean };
+    expect(error.status).toBeUndefined();
+    expect(error.terminal).not.toBe(true);
+  });
+
+  it("bounds Graph response bytes (design §11) with a clean, non-terminal error", async () => {
+    const bounded = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      maxResponseBytes: 8,
+      transport: async () =>
+        new Response(JSON.stringify({ access_token: "way-too-large-a-payload-for-the-cap" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    const refreshed = await bounded.refreshTokens?.({
+      clientId: "microsoft-client-id",
+      clientSecret: "microsoft-client-secret",
+      refreshToken: "durable-refresh-token",
+    });
+
+    expect(refreshed?.ok).toBe(false);
+    if (refreshed?.ok !== false) throw new Error("expected refresh failure");
+    const error = refreshed.error as Error & { status?: number; terminal?: boolean };
+    expect(error.message).toMatch(/too large/);
+    expect(error.status).toBeUndefined();
+    expect(error.terminal).not.toBe(true);
   });
 });
 

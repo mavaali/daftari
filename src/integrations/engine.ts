@@ -4,6 +4,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { sha256Hex } from "../utils/hash.js";
+import { TERMINAL_REFRESH_STATUSES } from "./http-json.js";
 import {
   readIntegrationState,
   resolveIntegrationStateKey,
@@ -441,7 +442,8 @@ function accessTokenExpired(state: ProviderState, deps: Pick<EngineDeps, "now">)
 //      "consent required" code, the Microsoft analog of interaction_required).
 // A missed terminal case degrades to "prior state retained, refresh retried
 // next cycle" — a lesser evil than a false "please reconnect" prompt.
-const TERMINAL_REFRESH_STATUSES = new Set([400, 401, 403]);
+// TERMINAL_REFRESH_STATUSES lives in http-json.ts so an adapter (e.g.
+// Microsoft) can import the same set it's classified against.
 const TERMINAL_REFRESH_MESSAGE_PATTERN = /invalid_grant|interaction_required|AADSTS70008/i;
 
 function isTerminalRefreshError(error: unknown): boolean {

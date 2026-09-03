@@ -23,7 +23,20 @@ import type {
   WebhookChannel,
   WebhookRequest,
 } from "./engine.js";
+import {
+  boundedJson,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
+  type HttpTransport,
+  providerResponse,
+  type RequestLimits,
+  stringValue,
+  TERMINAL_REFRESH_STATUSES,
+  tokenExpiration,
+} from "./http-json.js";
 import type { MicrosoftProviderConfig, ProviderState } from "./types.js";
+
+const MICROSOFT = "Microsoft";
 
 // Microsoft identity platform v2.0 authorize/token endpoints.
 const MICROSOFT_AUTHORITY_HOST = "https://login.microsoftonline.com";
@@ -39,20 +52,17 @@ const MICROSOFT_SHAREPOINT_SCOPE = "Files.Read.All";
 // `tid` claim without a second round trip in the common case).
 const MICROSOFT_BASE_SCOPES = "offline_access User.Read openid";
 
-// A refresh failure whose HTTP status lands in this set is a definite
-// terminal signal (bad grant / consent revoked / tenant-side block) per
-// engine.ts's isTerminalRefreshError, which checks `.status` before falling
-// back to message sniffing. Attaching status here lets the classifier work
-// without depending on message wording.
-const TERMINAL_REFRESH_STATUSES = new Set([400, 401, 403]);
-
-export type MicrosoftHttpTransport = (url: string, init: RequestInit) => Promise<Response>;
+export type MicrosoftHttpTransport = HttpTransport;
 
 export interface MicrosoftAdapterOptions {
   redirectUri: string;
   config: MicrosoftProviderConfig;
   transport?: MicrosoftHttpTransport;
   now?: () => Date;
+  // Design §11: bound every Graph/Entra HTTP call by size and time, same
+  // defaults (30s / 8MiB) as Google. Overridable for tests only.
+  requestTimeoutMilliseconds?: number;
+  maxResponseBytes?: number;
 }
 
 interface MicrosoftTokenResponse {
@@ -86,17 +96,6 @@ function requestUrl(path: string, parameters: Record<string, string | undefined>
   return url.toString();
 }
 
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function tokenExpiration(expiresIn: unknown, now: () => Date): string | undefined {
-  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-    return undefined;
-  }
-  return new Date(now().getTime() + expiresIn * 1000).toISOString();
-}
-
 function tokenEndpoint(config: MicrosoftProviderConfig): string {
   return `${MICROSOFT_AUTHORITY_HOST}/${config.tenantId}/oauth2/v2.0/token`;
 }
@@ -107,27 +106,25 @@ function resolveScope(config: MicrosoftProviderConfig): string {
   return `${resourceScope} ${MICROSOFT_BASE_SCOPES}`;
 }
 
+// Bounded + timed-out request (design §11), returning the HTTP status
+// alongside the parsed body regardless of 2xx/4xx/5xx — unlike the
+// convenience jsonResponse in http-json.ts, callers here (refreshTokens
+// especially) need the status/body of a non-2xx response to build a precise
+// terminal signal. A transport failure or a timeout/size-cap trip returns a
+// plain err() with no status attached, so it can never be misread as
+// terminal (see TERMINAL_REFRESH_STATUSES usage in refreshTokens).
 async function requestJson(
   transport: MicrosoftHttpTransport,
   url: string,
   init: RequestInit,
+  limits: RequestLimits,
 ): Promise<Result<MicrosoftJsonResponse, Error>> {
-  let response: Response;
-  try {
-    response = await transport(url, init);
-  } catch {
-    // Never reached an HTTP response, so it can never be positively
-    // identified as terminal — no `.status` is attached, matching the
-    // engine's "transient on network failure" contract.
-    return err(new Error("Microsoft request failed"));
-  }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return err(new Error("Microsoft returned an invalid JSON response"));
-  }
-  return ok({ status: response.status, body });
+  const fetched = await providerResponse(MICROSOFT, transport, url, init, limits);
+  if (!fetched.ok) return fetched;
+  const response = fetched.value;
+  const parsed = await boundedJson(MICROSOFT, response, limits);
+  if (!parsed.ok) return parsed;
+  return ok({ status: response.status, body: parsed.value });
 }
 
 // Decodes (never verifies) the id_token's middle JWT segment to read the
@@ -153,12 +150,16 @@ async function resolveTenantId(
   transport: MicrosoftHttpTransport,
   idToken: unknown,
   accessToken: string,
+  limits: RequestLimits,
 ): Promise<Result<string, Error>> {
   const fromIdToken = decodeIdTokenTenantId(idToken);
   if (fromIdToken !== undefined) return ok(fromIdToken);
-  const organization = await requestJson(transport, `${MICROSOFT_GRAPH_HOST}/organization`, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
+  const organization = await requestJson(
+    transport,
+    `${MICROSOFT_GRAPH_HOST}/organization`,
+    { headers: { authorization: `Bearer ${accessToken}` } },
+    limits,
+  );
   if (!organization.ok) return organization;
   if (organization.value.status < 200 || organization.value.status >= 300) {
     return err(
@@ -216,21 +217,27 @@ async function exchangeCode(
   redirectUri: string,
   now: () => Date,
   config: MicrosoftProviderConfig,
+  limits: RequestLimits,
   input: CodeExchange,
 ): Promise<Result<ProviderTokens, Error>> {
-  const token = await requestJson(transport, tokenEndpoint(config), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: input.clientId,
-      client_secret: input.clientSecret,
-      code: input.code,
-      code_verifier: input.pkceVerifier,
-      grant_type: "authorization_code",
-      redirect_uri: redirectUri,
-      scope: resolveScope(config),
-    }).toString(),
-  });
+  const token = await requestJson(
+    transport,
+    tokenEndpoint(config),
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        code: input.code,
+        code_verifier: input.pkceVerifier,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+        scope: resolveScope(config),
+      }).toString(),
+    },
+    limits,
+  );
   if (!token.ok) return token;
   if (token.value.status < 200 || token.value.status >= 300) {
     return err(new Error(`Microsoft OAuth code exchange failed with status ${token.value.status}`));
@@ -243,13 +250,14 @@ async function exchangeCode(
   }
   const accessTokenExpiresAt = tokenExpiration(tokenBody.expires_in, now);
 
-  const tenantId = await resolveTenantId(transport, tokenBody.id_token, accessToken);
+  const tenantId = await resolveTenantId(transport, tokenBody.id_token, accessToken, limits);
   if (!tenantId.ok) return tenantId;
 
   const me = await requestJson(
     transport,
     `${MICROSOFT_GRAPH_HOST}/me?$select=id,displayName,userPrincipalName`,
     { headers: { authorization: `Bearer ${accessToken}` } },
+    limits,
   );
   if (!me.ok) return me;
   if (me.value.status < 200 || me.value.status >= 300) {
@@ -278,19 +286,25 @@ async function refreshTokens(
   transport: MicrosoftHttpTransport,
   now: () => Date,
   config: MicrosoftProviderConfig,
+  limits: RequestLimits,
   input: RefreshTokenRequest,
 ): Promise<Result<ProviderTokens, Error>> {
-  const token = await requestJson(transport, tokenEndpoint(config), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: input.clientId,
-      client_secret: input.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: input.refreshToken,
-      scope: resolveScope(config),
-    }).toString(),
-  });
+  const token = await requestJson(
+    transport,
+    tokenEndpoint(config),
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: input.refreshToken,
+        scope: resolveScope(config),
+      }).toString(),
+    },
+    limits,
+  );
   if (!token.ok) return token;
   if (token.value.status < 200 || token.value.status >= 300) {
     return err(terminalRefreshError(token.value.status, token.value.body));
@@ -353,12 +367,16 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
   const { config, redirectUri } = options;
   const transport = options.transport ?? globalThis.fetch;
   const now = options.now ?? (() => new Date());
+  const limits: RequestLimits = {
+    timeoutMilliseconds: options.requestTimeoutMilliseconds ?? DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
+    maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+  };
   return {
     name: "microsoft",
     webhookSetup: "automatic",
     authorizationUrl: (input) => authorizationUrl(input, redirectUri, config),
-    exchangeCode: (input) => exchangeCode(transport, redirectUri, now, config, input),
-    refreshTokens: (input) => refreshTokens(transport, now, config, input),
+    exchangeCode: (input) => exchangeCode(transport, redirectUri, now, config, limits, input),
+    refreshTokens: (input) => refreshTokens(transport, now, config, limits, input),
     ensureWebhook,
     verifyWebhook,
     discover,
