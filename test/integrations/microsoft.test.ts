@@ -838,6 +838,130 @@ describe("Microsoft adapter discover (U14)", () => {
     expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-nested", revision: "e1" }] });
   });
 
+  it("the two-pass fixpoint resolves 3+ levels of nesting even when delivered file-first (grandparent and parent both arrive after the file)", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/items/folder-root/delta")
+        ) {
+          return new Response(null, { status: 400 });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/root/delta")) {
+          return graphJson({
+            value: [
+              // File first, then its parent ("folder-grandchild"), then the
+              // grandparent ("folder-child") whose own parent is the
+              // enrolled root. A single streaming pass could never resolve
+              // this; the fixpoint fold must run multiple sweeps.
+              {
+                id: "f-deep",
+                eTag: "e1",
+                file: {},
+                parentReference: { id: "folder-grandchild" },
+              },
+              {
+                id: "folder-grandchild",
+                folder: {},
+                parentReference: { id: "folder-child" },
+              },
+              { id: "folder-child", folder: {}, parentReference: { id: "folder-root" } },
+            ],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-c",
+            remoteId: "folder-root",
+            cursorKey: "enrollment:c1",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-deep", revision: "e1" }] });
+  });
+
+  // Locks in a conscious, documented R21/R37 deviation (fallback path only,
+  // see applyContainerFallbackItem's comment): a previously-tracked item
+  // that genuinely moves out of the enrolled subtree does NOT resolve to
+  // available:false the moment its parent changes — it lingers in the
+  // present set until an explicit `deleted` facet or a full resync. This is
+  // the accepted cost of the Critical-bug fix (treating an ambiguous/
+  // unresolved parent as "moved out" is exactly what caused the silent
+  // data-loss this unit fixed).
+  it("fallback mode: a previously-tracked item whose parent moves outside the enrolled subtree LINGERS in the present set (documented R21/R37 deviation)", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-c/stored-fallback-link") {
+          return graphJson({
+            value: [
+              {
+                id: "f-moved",
+                eTag: "e2",
+                file: {},
+                parentReference: { id: "some-other-folder-entirely" },
+              },
+            ],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-2",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        cursor: JSON.stringify({
+          v: 1,
+          roots: {
+            "enrollment:c1": {
+              link: "https://graph.microsoft.com/v1.0/drives/drive-c/stored-fallback-link",
+              folders: ["folder-root"],
+            },
+          },
+        }),
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-c",
+            remoteId: "folder-root",
+            cursorKey: "enrollment:c1",
+          }),
+        },
+      },
+      {
+        "drive-c:f-moved": {
+          id: "drive-c:f-moved",
+          revision: "e1",
+          contentHash: "h",
+          available: true,
+          lastSeenAt: "2026-08-24T00:00:00.000Z",
+        },
+      },
+    );
+
+    const discovered = await adapter.discover(state);
+    // Lingers: still present, now carrying the stale-but-latest-seen
+    // revision from this delta record, not removed.
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-moved", revision: "e1" }] });
+  });
+
   it("last-occurrence-wins across a page boundary: the same id changing on page 1 and page 2 resolves to page 2's revision", async () => {
     const adapter = createMicrosoftAdapter({
       redirectUri: "https://vault.example/integrations/microsoft/callback",

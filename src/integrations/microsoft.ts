@@ -610,6 +610,17 @@ function classifyItemGroupDeltaItem(
 // Graph itself scopes every returned item to that folder's subtree, so NO
 // parent/ancestry filtering is applied here — trust Graph's own scoping.
 //
+// PROBE-2-DEPENDENT ASSUMPTION: "folder-scoped delta is subtree-scoped" is
+// currently unverified against a real tenant — the same open question as
+// whether/when it 400s (see containerFallbackUrl's "probe-deferred" note
+// below; both are the same probe). If it turns out folder-scoped delta on
+// some SharePoint library is NOT subtree-scoped, this path would UNDER-filter
+// (include out-of-subtree items instead of excluding them) — a real residual
+// risk, but a strictly lower-severity failure mode than the Critical bug this
+// unit fixed: an under-filter means a few extra items get distilled that
+// shouldn't be, not a legitimately-enrolled item silently disappearing. Track
+// and confirm/correct when probe 2 runs against a live tenant.
+//
 // U14 Critical-bug fix note: an earlier version of this adapter re-derived
 // ancestry from scratch every discover() call (`new Set([folderId])`) and
 // applied an "outside subtree -> remove" check even on this primary path.
@@ -664,6 +675,25 @@ function classifyContainerPrimary(
 // possible late remove (an item that truly moved out lingers until an
 // explicit signal or a full resync) for never silently losing a legitimately
 // in-scope item — the correct tradeoff per the Critical-bug review.
+//
+// KNOWN, DELIBERATE DEVIATION from R21/R37 (fallback path ONLY): R21 calls
+// for removing an item whose parent has moved out of the enrolled subtree;
+// R37 calls for that to resolve to available:false. In THIS path only, a
+// genuinely moved-out item does NOT do either — it lingers in the present
+// set (available:true, stale revision) until either an explicit `deleted`
+// facet arrives or the root's next full resync (410) re-derives membership
+// from scratch. That is a conscious trade, not an oversight: the
+// alternative (treat an unresolved/ambiguous parent as "moved out") is
+// exactly the mechanism that caused the Critical silent-data-loss bug this
+// unit fixed, just relocated from every nested file to the narrower
+// moved-out case. The primary folder-scoped path is NOT affected by this
+// deviation — there, a moved-out file simply stops being returned by
+// Graph's own subtree-scoped delta, so the engine's ordinary
+// not-returned -> unavailable rule (R37) still fires correctly. A filed
+// bead tracks revisiting this fallback-path gap once probe 2 confirms
+// folder-scoped delta's real-world 400 rate; if folder-scoped delta turns
+// out to be reliable enough, the fallback path (and this deviation) may
+// rarely if ever be exercised in practice.
 function applyContainerFallbackItem(
   raw: unknown,
   driveId: string,
