@@ -581,6 +581,27 @@ const RECOGNISED_INTEGRATION_PROVIDER_KEYS: Record<ProviderName, readonly string
   microsoft: RECOGNISED_MICROSOFT_PROVIDER_KEYS,
 };
 
+// Compile-time drift guard: every field of MicrosoftProviderConfig must map to
+// one of the snake_case keys in RECOGNISED_MICROSOFT_PROVIDER_KEYS above. If a
+// field is later added to the config type without adding its YAML key to the
+// array, this Record literal fails to typecheck (missing property) rather
+// than letting rejectUnknownKeys silently reject that field's otherwise-valid
+// config as "not a recognised setting". (Runtime coverage lives in the
+// "recognises every Microsoft key" test in test/utils/config.test.ts.)
+const _MICROSOFT_CONFIG_FIELD_TO_KEY: Record<
+  keyof MicrosoftProviderConfig,
+  (typeof RECOGNISED_MICROSOFT_PROVIDER_KEYS)[number]
+> = {
+  clientIdEnv: "client_id_env",
+  clientSecretEnv: "client_secret_env",
+  tenantId: "tenant_id",
+  scopeProfile: "scope_profile",
+  collections: "collections",
+  includeSpeakerNotes: "include_speaker_notes",
+  pickerHost: "picker_host",
+};
+void _MICROSOFT_CONFIG_FIELD_TO_KEY;
+
 const MICROSOFT_SCOPE_PROFILES = ["onedrive", "sharepoint"] as const;
 const DEFAULT_MICROSOFT_SCOPE_PROFILE: MicrosoftProviderConfig["scopeProfile"] = "sharepoint";
 const DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES = true;

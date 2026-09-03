@@ -1379,6 +1379,39 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       if (result.ok) return;
       expect(result.error.message).toContain("integrations.google.tenant_id");
     });
+
+    // Drift guard: RECOGNISED_MICROSOFT_PROVIDER_KEYS is a hand-maintained
+    // array, not derived from MicrosoftProviderConfig. If a field is ever
+    // added to the config type without adding its snake_case key here,
+    // rejectUnknownKeys would start rejecting an otherwise-valid block. This
+    // test populates EVERY recognised key at once, so a key silently missing
+    // from the array (or never wired into the parser) fails loud here first.
+    it("recognises every Microsoft key at once — no unknown-key error", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
+          "    scope_profile: onedrive\n" +
+          "    collections:\n      - inbox\n      - notes\n" +
+          "    include_speaker_notes: false\n" +
+          "    picker_host: picker.example.com\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.microsoft).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+        scopeProfile: "onedrive",
+        collections: ["inbox", "notes"],
+        includeSpeakerNotes: false,
+        pickerHost: "picker.example.com",
+      });
+    });
   });
 
   describe("distill.estimated_usd_per_call (R39)", () => {
