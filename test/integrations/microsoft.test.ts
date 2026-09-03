@@ -12,6 +12,7 @@ import { writeIntegrationState } from "../../src/integrations/state.js";
 import type {
   EnrollmentRecord,
   IntegrationConfig,
+  ProviderAccount,
   ProviderState,
   SourceState,
 } from "../../src/integrations/types.js";
@@ -3146,5 +3147,175 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     expect(MICROSOFT_ESTIMATE_RATIOS.docx).toBe(committed.docx);
     expect(MICROSOFT_ESTIMATE_RATIOS.pptx).toBe(committed.pptx);
     expect(MICROSOFT_ESTIMATE_RATIOS.pdf).toBe(committed.pdf);
+  });
+});
+
+describe("Microsoft adapter describeStatus (U18)", () => {
+  const adapter = createMicrosoftAdapter({
+    redirectUri: "https://vault.example/integrations/microsoft/callback",
+    config: microsoftProviderConfig(),
+  });
+
+  function source(overrides: Partial<SourceState> & Pick<SourceState, "id">): SourceState {
+    return {
+      revision: "rev-1",
+      contentHash: "",
+      available: true,
+      lastSeenAt: "2026-08-24T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  const account: ProviderAccount = {
+    id: "user-1",
+    tenantId: "tenant-1",
+    displayName: "Test User",
+    upn: "test.user@example.com",
+  };
+
+  it("is a pure function: calling it twice on the same state yields identical output", () => {
+    const state = microsoftProviderState({ account });
+    expect(adapter.describeStatus?.(state)).toEqual(adapter.describeStatus?.(state));
+  });
+
+  it("reports disconnected when there is no connected account", () => {
+    const status = adapter.describeStatus?.(microsoftProviderState());
+    expect(status?.connection).toEqual({ kind: "disconnected" });
+  });
+
+  it("reports connected with the account when state.account is set", () => {
+    const status = adapter.describeStatus?.(microsoftProviderState({ account }));
+    expect(status?.connection).toEqual({ kind: "connected", account });
+  });
+
+  it("reports reconnect_required with the reason when authorization was revoked", () => {
+    const status = adapter.describeStatus?.(
+      microsoftProviderState({
+        account,
+        authorization: {
+          status: "reconnect_required",
+          at: "2026-09-01T00:00:00.000Z",
+          reason: "refresh token revoked",
+        },
+      }),
+    );
+    expect(status?.connection).toEqual({
+      kind: "reconnect_required",
+      reason: "refresh token revoked",
+    });
+  });
+
+  it("reports webhook off when there are no subscriptions", () => {
+    const status = adapter.describeStatus?.(microsoftProviderState({ account }));
+    expect(status?.webhook).toEqual({ kind: "off" });
+  });
+
+  it("reports webhook active with a count when subscriptions exist", () => {
+    const status = adapter.describeStatus?.(
+      microsoftProviderState({
+        account,
+        webhook: {
+          id: "channel-1",
+          secret: "secret",
+          subscriptions: [
+            { id: "sub-1", resource: "drives/drive-a/root", expiresAt: "2026-09-05T00:00:00.000Z" },
+            { id: "sub-2", resource: "drives/drive-b/root", expiresAt: "2026-09-06T00:00:00.000Z" },
+          ],
+        },
+      }),
+    );
+    expect(status?.webhook).toEqual({ kind: "active", eventCount: 2 });
+  });
+
+  it("classifies sources as available/current, failed (still available), and unavailable from real fields", () => {
+    const sources: ProviderState["sources"] = {
+      "drive-a:current-1": source({
+        id: "drive-a:current-1",
+        contentHash: "hash-1",
+        available: true,
+        lastSeenAt: "2026-09-01T00:00:00.000Z",
+      }),
+      "drive-a:failed-1": source({
+        id: "drive-a:failed-1",
+        available: true,
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "too_large" },
+      }),
+      "drive-a:gone-1": source({
+        id: "drive-a:gone-1",
+        available: false,
+        lastSeenAt: "2026-08-30T00:00:00.000Z",
+      }),
+    };
+    const status = adapter.describeStatus?.(microsoftProviderState({ account }, sources));
+    expect(status?.sources).toEqual([
+      {
+        id: "drive-a:current-1",
+        available: true,
+        lastSeenAt: "2026-09-01T00:00:00.000Z",
+      },
+      {
+        id: "drive-a:failed-1",
+        available: true,
+        lastSeenAt: "2026-08-24T00:00:00.000Z",
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "too_large" },
+      },
+      {
+        id: "drive-a:gone-1",
+        available: false,
+        lastSeenAt: "2026-08-30T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("summarizes per enrollment using SourceState.enrollmentId where populated", () => {
+    const record = enrollment({
+      id: "enr-1",
+      kind: "item",
+      driveId: "drive-a",
+      remoteId: "item-1",
+      cursorKey: "drive-a:item-1",
+    });
+    const sources: ProviderState["sources"] = {
+      "drive-a:item-1": source({
+        id: "drive-a:item-1",
+        enrollmentId: "enr-1",
+        contentHash: "hash-1",
+      }),
+      "drive-a:item-2": source({
+        id: "drive-a:item-2",
+        enrollmentId: "enr-1",
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "malformed" },
+      }),
+    };
+    const status = adapter.describeStatus?.(
+      microsoftProviderState({ account, enrollments: { "enr-1": record } }, sources),
+    );
+    expect(status?.enrollments).toEqual([
+      { id: "enr-1", label: record.label, sourceCount: 2, failedSourceCount: 1 },
+    ]);
+  });
+
+  it("does not crash when enrollmentId is unpopulated (today's actual engine state)", () => {
+    const record = enrollment({
+      id: "enr-1",
+      kind: "item",
+      driveId: "drive-a",
+      remoteId: "item-1",
+      cursorKey: "drive-a:item-1",
+    });
+    const sources: ProviderState["sources"] = {
+      "drive-a:item-1": source({ id: "drive-a:item-1", contentHash: "hash-1" }),
+    };
+    const status = adapter.describeStatus?.(
+      microsoftProviderState({ account, enrollments: { "enr-1": record } }, sources),
+    );
+    expect(status?.enrollments).toEqual([
+      { id: "enr-1", label: record.label, sourceCount: 0, failedSourceCount: 0 },
+    ]);
+  });
+
+  it("always discloses the constant V1 sensitivity-labels string (R34)", () => {
+    const status = adapter.describeStatus?.(microsoftProviderState());
+    expect(status?.sensitivityLabels).toBe("not checked (V1)");
   });
 });

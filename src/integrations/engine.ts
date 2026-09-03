@@ -191,6 +191,12 @@ export interface ProviderStatus {
   webhook: ProviderWebhookStatus;
   enrollments: EnrollmentStatusSummary[];
   sources: SourceStatusSummary[];
+  /**
+   * Constant V1 disclosure (R34): no provider adapter checks sensitivity
+   * labels yet, so every describeStatus() implementation reports the same
+   * fixed string rather than a per-source computed value.
+   */
+  sensitivityLabels: "not checked (V1)";
   lastCycle?: {
     at: string;
     distilled: number;

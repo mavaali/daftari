@@ -387,4 +387,51 @@ describe("configured integration runtime", () => {
     expect(durable.processedEvents).toHaveLength(10_000);
     expect(raw.length).toBeLessThan(1_500_000);
   });
+
+  it("retains the last reconcile outcome for a provider after a cycle (R36)", async () => {
+    const spy = { discover: 0, ensure: 0 };
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      adapterFactories: { google: factory(spy) },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.value.lastOutcome("google")).toBeUndefined();
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    const retained = created.value.lastOutcome("google");
+    expect(retained).toBeDefined();
+    expect(retained?.outcome).toEqual({
+      distilledSourceIds: [],
+      unchangedSourceIds: [],
+      failedSourceIds: [],
+      unavailableSourceIds: [],
+    });
+    expect(typeof retained?.at).toBe("string");
+    await created.value.close();
+  });
+
+  it("does not retain an outcome for a provider whose reconcile failed", async () => {
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config,
+      environment,
+      distill,
+      adapterFactories: {
+        google: () => ({
+          ...factory({ discover: 0, ensure: 0 })("http://localhost/callback"),
+          discover: async () => err(new Error("boom")),
+        }),
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    expect(created.value.lastOutcome("google")).toBeUndefined();
+    await created.value.close();
+  });
 });

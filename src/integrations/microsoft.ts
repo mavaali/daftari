@@ -22,12 +22,17 @@ import type {
   EnrollmentContext,
   EnrollmentDraft,
   EnrollmentEstimate,
+  EnrollmentStatusSummary,
   EnsureWebhookInput,
   NormalizedRemoteSource,
   ProviderAdapter,
+  ProviderConnectionStatus,
+  ProviderStatus,
   ProviderTokens,
+  ProviderWebhookStatus,
   RefreshTokenRequest,
   RemoteSource,
+  SourceStatusSummary,
   VerifiedWebhook,
   WebhookChannel,
   WebhookRequest,
@@ -2388,6 +2393,64 @@ async function estimateEnrollment(
   });
 }
 
+// U18: pure status projection over ProviderState (design §13). No Graph
+// calls, no I/O — everything here is a straight read of already-persisted
+// fields. Two known gaps, both flagged rather than faked:
+//
+// 1. `webhook.subscriptions` has no per-subscription health/error field, so
+//    a "degraded" (partial-failure) ProviderWebhookStatus can't be derived
+//    from state alone — this only ever reports "off" or "active".
+// 2. SourceState.enrollmentId is not populated by the engine for any
+//    adapter yet (see the rememberedRootSources comment above), so grouping
+//    sources under their enrollment is correct but, until that plumbing
+//    lands, every enrollment's sourceCount/failedSourceCount will read 0.
+function describeMicrosoftStatus(state: ProviderState): ProviderStatus {
+  const connection: ProviderConnectionStatus =
+    state.authorization?.status === "reconnect_required"
+      ? {
+          kind: "reconnect_required",
+          reason: state.authorization.reason ?? "Microsoft authorization was revoked",
+        }
+      : state.account !== undefined
+        ? { kind: "connected", account: state.account }
+        : { kind: "disconnected" };
+
+  const subscriptions = state.webhook?.subscriptions ?? [];
+  const webhook: ProviderWebhookStatus =
+    subscriptions.length > 0
+      ? { kind: "active", eventCount: subscriptions.length }
+      : { kind: "off" };
+
+  const allSources = Object.values(state.sources);
+  const enrollments: EnrollmentStatusSummary[] = Object.values(state.enrollments ?? {}).map(
+    (record) => {
+      const enrolledSources = allSources.filter((source) => source.enrollmentId === record.id);
+      return {
+        id: record.id,
+        label: record.label,
+        sourceCount: enrolledSources.length,
+        failedSourceCount: enrolledSources.filter((source) => source.lastFailure !== undefined)
+          .length,
+      };
+    },
+  );
+
+  const sources: SourceStatusSummary[] = allSources.map((source) => ({
+    id: source.id,
+    available: source.available,
+    lastSeenAt: source.lastSeenAt,
+    ...(source.lastFailure === undefined ? {} : { lastFailure: source.lastFailure }),
+  }));
+
+  return {
+    connection,
+    webhook,
+    enrollments,
+    sources,
+    sensitivityLabels: "not checked (V1)",
+  };
+}
+
 export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): ProviderAdapter {
   const { config, redirectUri } = options;
   const transport = options.transport ?? globalThis.fetch;
@@ -2420,5 +2483,6 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
         draft,
         state,
       ),
+    describeStatus: (state) => describeMicrosoftStatus(state),
   };
 }

@@ -6,6 +6,7 @@ import {
   type EngineDeps,
   ensureProviderWebhook,
   type ProviderAdapter,
+  type ReconcileOutcome,
   reconcileProvider,
   validateContinuousAdapterCapabilities,
 } from "./engine.js";
@@ -32,6 +33,12 @@ export interface IntegrationRuntimeAuthorization {
   checkCsrf(request: IncomingMessage): string | null;
 }
 
+/** The most recent reconcile cycle's outcome for one provider (R36 last-cycle summary). */
+export interface RuntimeReconcileOutcome {
+  at: string;
+  outcome: ReconcileOutcome;
+}
+
 export interface IntegrationRuntime {
   start(localBaseUrl: string): Promise<Result<void, Error>>;
   handle(
@@ -41,6 +48,8 @@ export interface IntegrationRuntime {
     authorization: IntegrationRuntimeAuthorization,
   ): Promise<boolean>;
   runOnce(): Promise<void>;
+  /** Provider-neutral: the last reconcile outcome retained in memory, for a future status route. */
+  lastOutcome(provider: ProviderName): RuntimeReconcileOutcome | undefined;
   close(): Promise<void>;
 }
 
@@ -202,6 +211,11 @@ export function createConfiguredIntegrationRuntime(
     options.publicBaseUrl === undefined ? "" : routePrefix(options.publicBaseUrl);
   let started = false;
   let closing = false;
+  const lastOutcomes = new Map<ProviderName, RuntimeReconcileOutcome>();
+
+  function retainOutcome(provider: ProviderName, outcome: ReconcileOutcome): void {
+    lastOutcomes.set(provider, { at: now().toISOString(), outcome });
+  }
 
   async function cycle(): Promise<void> {
     const deps = engineDeps;
@@ -213,6 +227,7 @@ export function createConfiguredIntegrationRuntime(
       if (adapter === undefined) return err(new Error("integration queue provider is unavailable"));
       const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps, batch.hint);
       if (!reconciled.ok) return reconciled;
+      retainOutcome(adapter.name, reconciled.value);
       if (reconciled.value.failedSourceIds.length > 0) {
         const count = reconciled.value.failedSourceIds.length;
         onError(
@@ -230,6 +245,7 @@ export function createConfiguredIntegrationRuntime(
           onError(`integration ${adapter.name} reconcile failed`);
           continue;
         }
+        retainOutcome(adapter.name, reconciled.value);
         if (reconciled.value.failedSourceIds.length > 0) {
           const count = reconciled.value.failedSourceIds.length;
           onError(
@@ -344,6 +360,10 @@ export function createConfiguredIntegrationRuntime(
     },
 
     runOnce,
+
+    lastOutcome(provider) {
+      return lastOutcomes.get(provider);
+    },
 
     async close() {
       closing = true;
