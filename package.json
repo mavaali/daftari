@@ -24,6 +24,7 @@
   "files": [
     "dist",
     "templates",
+    "src/integrations/microsoft/assets",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -77,6 +78,7 @@
     "unified": "^11.0.5"
   },
   "devDependencies": {
+    "@azure/msal-browser": "^5.20.0",
     "@biomejs/biome": "^2.4.15",
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",

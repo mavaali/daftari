@@ -18,6 +18,12 @@ import {
   verifyProviderLifecycleWebhook,
   verifyProviderWebhook,
 } from "./engine.js";
+import {
+  MICROSOFT_UI_CSP,
+  microsoftUiAuthority,
+  readMicrosoftUiAsset,
+  renderMicrosoftUiPage,
+} from "./microsoft.ui.js";
 import { beginAuthorizationRedirect, completeAuthorization } from "./oauth.js";
 import type { IntegrationQueue } from "./queue.js";
 import { appendUnavailableReview } from "./review.js";
@@ -545,6 +551,76 @@ export async function handleIntegrationRoute(
     } finally {
       release();
     }
+  }
+
+  // U20: the picker `/ui` page (R9). Microsoft-only — the picker is
+  // inherently a Microsoft/SharePoint concept (msal-browser + File Picker v8
+  // against a SharePoint host), so this 404s for google/notion exactly like
+  // the enrollment routes below 404 for adapters that never implement
+  // resolveEnrollment. Gated on deps.config.microsoft rather than the
+  // adapter, since the page needs the config's `collections` allowlist and
+  // tenant/client id — none of which the ProviderAdapter interface carries.
+  if (url.pathname === `/integrations/${provider}/ui`) {
+    const microsoftConfig = provider === "microsoft" ? deps.config.microsoft : undefined;
+    if (microsoftConfig === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    // Read-level: no CSRF requirement for a GET (matches /status above) — the
+    // page's later POSTs to /enrollments/preview and /enrollments carry the
+    // existing double-submit CSRF token that a cookie-authed browser already
+    // holds from board login; this route issues nothing new.
+    const authorized = await requireAuthorization(request, response, deps, false);
+    if (authorized === null) return true;
+    const clientId = deps.environment[microsoftConfig.clientIdEnv] ?? "";
+    const html = renderMicrosoftUiPage({
+      provider: "microsoft",
+      clientId,
+      authority: microsoftUiAuthority(microsoftConfig.tenantId),
+      pickerHost: microsoftConfig.pickerHost ?? "",
+      collections: microsoftConfig.collections,
+    });
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": MICROSOFT_UI_CSP,
+      "cache-control": "no-store",
+    });
+    response.end(html);
+    return true;
+  }
+
+  // U20: the page's own static assets — vendored msal-browser/msal-common +
+  // the hand-authored glue/serializer (R9). Unauthenticated, like the
+  // vendored cytoscape asset the `daftari view` server already serves this
+  // way: none of this is secret, and requiring a session here would only
+  // break the very first (unauthenticated, by definition, since it's static
+  // JS) <script> fetch a browser makes while loading the page above.
+  const uiAssetMatch = new RegExp(`^/integrations/${provider}/ui/assets/(.+)$`).exec(url.pathname);
+  if (uiAssetMatch !== null) {
+    if (provider !== "microsoft" || deps.config.microsoft === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const requested = decodeURIComponent(uiAssetMatch[1] as string);
+    const asset = readMicrosoftUiAsset(requested);
+    if (asset === null) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    response.writeHead(200, {
+      "content-type": asset.contentType,
+      "cache-control": "no-store",
+    });
+    response.end(asset.body);
+    return true;
   }
 
   // U19: enrollment/status routes (R10, R13, R14, R33, R36, R39). Provider-
