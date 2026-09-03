@@ -1437,6 +1437,122 @@ describe("provider reconciliation", () => {
     });
   });
 
+  it("treats a network-transport refresh failure as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => {
+          throw new Error("fetch failed: ECONNRESET");
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("treats a 5xx token-endpoint response as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 503")),
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("recognizes a 4xx status embedded in a message, or a structured terminal signal, as terminal", async () => {
+    const write = (refreshToken: string) =>
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken,
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      );
+
+    expect(write("old-refresh-1")).toEqual(ok(undefined));
+    const messageStatus = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 400")),
+      }),
+      deps(),
+    );
+    expect(messageStatus.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+
+    expect(write("old-refresh-2")).toEqual(ok(undefined));
+    const structuredSignal = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          err(Object.assign(new Error("token expired"), { terminal: true })),
+      }),
+      deps(),
+    );
+    expect(structuredSignal.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+  });
+
   it("returns a stop function that prevents future periodic reconciliations", async () => {
     vi.useFakeTimers();
     expect(

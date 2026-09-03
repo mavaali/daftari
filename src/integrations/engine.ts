@@ -317,6 +317,40 @@ function accessTokenExpired(state: ProviderState, deps: Pick<EngineDeps, "now">)
   return !Number.isFinite(expiration) || expiration <= currentTime(deps).getTime();
 }
 
+// Positive-identification only: default to transient (no reconnect_required)
+// unless a refresh failure is affirmatively an auth/consent rejection. A
+// network-transport throw or a 5xx response is the textbook transient case —
+// this function is never even consulted for the former (see the catch branch
+// in refreshExpiredTokens) and returns false for the latter. Two ways a
+// failure can be positively terminal:
+//   1. A structured signal on the error — `.terminal === true`, or a
+//      `.status` in {400, 401, 403}. This is the contract a future adapter
+//      (e.g. Microsoft/U13) should emit for a precise signal instead of
+//      relying on message sniffing.
+//   2. A fallback for today's Google/Notion adapters, whose jsonResponse only
+//      embeds the HTTP status in the Error message: a message naming a
+//      400/401/403 status, or a known terminal OAuth error code
+//      (invalid_grant, interaction_required, AADSTS70008 — Entra ID's
+//      "consent required" code, the Microsoft analog of interaction_required).
+// A missed terminal case degrades to "prior state retained, refresh retried
+// next cycle" — a lesser evil than a false "please reconnect" prompt.
+const TERMINAL_REFRESH_STATUSES = new Set([400, 401, 403]);
+const TERMINAL_REFRESH_MESSAGE_PATTERN = /invalid_grant|interaction_required|AADSTS70008/i;
+
+function isTerminalRefreshError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null) {
+    const signal = error as { terminal?: unknown; status?: unknown };
+    if (signal.terminal === true) return true;
+    if (typeof signal.status === "number" && TERMINAL_REFRESH_STATUSES.has(signal.status)) {
+      return true;
+    }
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (TERMINAL_REFRESH_MESSAGE_PATTERN.test(message)) return true;
+  const statusMatch = /\bstatus (\d{3})\b/.exec(message);
+  return statusMatch !== null && TERMINAL_REFRESH_STATUSES.has(Number(statusMatch[1]));
+}
+
 async function refreshExpiredTokens(
   vaultRoot: string,
   adapter: ProviderAdapter,
@@ -344,11 +378,9 @@ async function refreshExpiredTokens(
   );
   if (!clientSecret.ok) return clientSecret;
 
-  // A refresh either rotates tokens or fails terminally (invalid_grant,
-  // interaction_required, an expired refresh token) — today's adapters collapse
-  // all of those into one generic Error, so every refresh failure here is
-  // treated as reconnect_required. This marks state only; it does not change
-  // which error refreshExpiredTokens itself returns.
+  // Marks state only; it does not change which error refreshExpiredTokens
+  // itself returns. Only called for a positively-identified terminal failure
+  // — see isTerminalRefreshError.
   const markReconnectRequired = (reason: string): Result<ProviderState, Error> => {
     state.authorization = { status: "reconnect_required", at: timestamp(deps), reason };
     const written = writeState(vaultRoot, key, persisted, deps);
@@ -363,12 +395,20 @@ async function refreshExpiredTokens(
       clientSecret: clientSecret.value,
       refreshToken: state.refreshToken,
     });
-  } catch (error) {
-    return markReconnectRequired(
-      error instanceof Error ? error.message : "token refresh request failed",
-    );
+  } catch {
+    // A network-transport failure never reaches an HTTP response, so it can
+    // never be positively identified as terminal — always transient: retain
+    // state, retry next cycle.
+    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
   }
-  if (!refreshed.ok) return markReconnectRequired(refreshed.error.message);
+  if (!refreshed.ok) {
+    if (isTerminalRefreshError(refreshed.error)) {
+      return markReconnectRequired(refreshed.error.message);
+    }
+    // Transient (e.g. a 5xx from the token endpoint): prior state retained,
+    // same as before this task — no reconnect prompt for a momentary blip.
+    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  }
   if (refreshed.value.accessToken.length === 0 || refreshed.value.refreshToken.length === 0) {
     return err(
       new Error(`integration provider ${adapter.name} token refresh returned incomplete tokens`),
