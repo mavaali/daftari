@@ -3210,7 +3210,7 @@ describe("Microsoft adapter describeStatus (U18)", () => {
     expect(status?.webhook).toEqual({ kind: "off" });
   });
 
-  it("reports webhook active with a count when subscriptions exist", () => {
+  it("reports webhook active with a count and the earliest expiry across subscriptions", () => {
     const status = adapter.describeStatus?.(
       microsoftProviderState({
         account,
@@ -3218,17 +3218,27 @@ describe("Microsoft adapter describeStatus (U18)", () => {
           id: "channel-1",
           secret: "secret",
           subscriptions: [
-            { id: "sub-1", resource: "drives/drive-a/root", expiresAt: "2026-09-05T00:00:00.000Z" },
-            { id: "sub-2", resource: "drives/drive-b/root", expiresAt: "2026-09-06T00:00:00.000Z" },
+            { id: "sub-1", resource: "drives/drive-a/root", expiresAt: "2026-09-06T00:00:00.000Z" },
+            { id: "sub-2", resource: "drives/drive-b/root", expiresAt: "2026-09-05T00:00:00.000Z" },
           ],
         },
       }),
     );
-    expect(status?.webhook).toEqual({ kind: "active", eventCount: 2 });
+    expect(status?.webhook).toEqual({
+      kind: "active",
+      eventCount: 2,
+      earliestExpiry: "2026-09-05T00:00:00.000Z",
+    });
   });
 
-  it("classifies sources as available/current, failed (still available), and unavailable from real fields", () => {
+  it("classifies sources into all five §13 states from real fields", () => {
     const sources: ProviderState["sources"] = {
+      "drive-a:pending-1": source({
+        id: "drive-a:pending-1",
+        contentHash: "",
+        available: true,
+        lastSeenAt: "2026-09-01T00:00:00.000Z",
+      }),
       "drive-a:current-1": source({
         id: "drive-a:current-1",
         contentHash: "hash-1",
@@ -3240,6 +3250,11 @@ describe("Microsoft adapter describeStatus (U18)", () => {
         available: true,
         lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "too_large" },
       }),
+      "drive-a:over-limit-1": source({
+        id: "drive-a:over-limit-1",
+        available: true,
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "limit" },
+      }),
       "drive-a:gone-1": source({
         id: "drive-a:gone-1",
         available: false,
@@ -3249,31 +3264,50 @@ describe("Microsoft adapter describeStatus (U18)", () => {
     const status = adapter.describeStatus?.(microsoftProviderState({ account }, sources));
     expect(status?.sources).toEqual([
       {
+        id: "drive-a:pending-1",
+        available: true,
+        lastSeenAt: "2026-09-01T00:00:00.000Z",
+        state: "pending",
+      },
+      {
         id: "drive-a:current-1",
         available: true,
         lastSeenAt: "2026-09-01T00:00:00.000Z",
+        state: "current",
       },
       {
         id: "drive-a:failed-1",
         available: true,
         lastSeenAt: "2026-08-24T00:00:00.000Z",
         lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "too_large" },
+        state: "failed",
+      },
+      {
+        id: "drive-a:over-limit-1",
+        available: true,
+        lastSeenAt: "2026-08-24T00:00:00.000Z",
+        lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "limit" },
+        state: "over_limit",
       },
       {
         id: "drive-a:gone-1",
+        // "since" for unavailable is lastSeenAt — the best available proxy;
+        // SourceState has no dedicated became-unavailable timestamp.
         available: false,
         lastSeenAt: "2026-08-30T00:00:00.000Z",
+        state: "unavailable",
       },
     ]);
   });
 
-  it("summarizes per enrollment using SourceState.enrollmentId where populated", () => {
+  it("summarizes per enrollment using SourceState.enrollmentId where populated, with collection + per-state counts", () => {
     const record = enrollment({
       id: "enr-1",
       kind: "item",
       driveId: "drive-a",
       remoteId: "item-1",
       cursorKey: "drive-a:item-1",
+      collection: "engineering",
     });
     const sources: ProviderState["sources"] = {
       "drive-a:item-1": source({
@@ -3291,7 +3325,14 @@ describe("Microsoft adapter describeStatus (U18)", () => {
       microsoftProviderState({ account, enrollments: { "enr-1": record } }, sources),
     );
     expect(status?.enrollments).toEqual([
-      { id: "enr-1", label: record.label, sourceCount: 2, failedSourceCount: 1 },
+      {
+        id: "enr-1",
+        label: record.label,
+        collection: "engineering",
+        sourceCount: 2,
+        failedSourceCount: 1,
+        counts: { pending: 0, current: 1, failed: 1, unavailable: 0, over_limit: 0 },
+      },
     ]);
   });
 
@@ -3310,7 +3351,14 @@ describe("Microsoft adapter describeStatus (U18)", () => {
       microsoftProviderState({ account, enrollments: { "enr-1": record } }, sources),
     );
     expect(status?.enrollments).toEqual([
-      { id: "enr-1", label: record.label, sourceCount: 0, failedSourceCount: 0 },
+      {
+        id: "enr-1",
+        label: record.label,
+        collection: record.collection,
+        sourceCount: 0,
+        failedSourceCount: 0,
+        counts: { pending: 0, current: 0, failed: 0, unavailable: 0, over_limit: 0 },
+      },
     ]);
   });
 

@@ -32,6 +32,7 @@ import type {
   ProviderWebhookStatus,
   RefreshTokenRequest,
   RemoteSource,
+  SourceStatusState,
   SourceStatusSummary,
   VerifiedWebhook,
   WebhookChannel,
@@ -55,6 +56,7 @@ import type {
   MicrosoftProviderConfig,
   ProviderState,
   SourceFailureReason,
+  SourceState,
 } from "./types.js";
 
 const MICROSOFT = "Microsoft";
@@ -2404,6 +2406,18 @@ async function estimateEnrollment(
 //    adapter yet (see the rememberedRootSources comment above), so grouping
 //    sources under their enrollment is correct but, until that plumbing
 //    lands, every enrollment's sourceCount/failedSourceCount will read 0.
+// The §13 per-source lifecycle state, derived from the real SourceState
+// fields persisted by the engine (contentHash/available/lastFailure) — no
+// field is invented. Order matters: unavailable and over_limit both take
+// precedence over a plain "failed" classification.
+function microsoftSourceStatusState(source: SourceState): SourceStatusState {
+  if (!source.available) return "unavailable";
+  if (source.lastFailure !== undefined) {
+    return source.lastFailure.reason === "limit" ? "over_limit" : "failed";
+  }
+  return source.contentHash.length > 0 ? "current" : "pending";
+}
+
 function describeMicrosoftStatus(state: ProviderState): ProviderStatus {
   const connection: ProviderConnectionStatus =
     state.authorization?.status === "reconnect_required"
@@ -2418,19 +2432,30 @@ function describeMicrosoftStatus(state: ProviderState): ProviderStatus {
   const subscriptions = state.webhook?.subscriptions ?? [];
   const webhook: ProviderWebhookStatus =
     subscriptions.length > 0
-      ? { kind: "active", eventCount: subscriptions.length }
+      ? {
+          kind: "active",
+          eventCount: subscriptions.length,
+          earliestExpiry: subscriptions
+            .map((subscription) => subscription.expiresAt)
+            .reduce((earliest, expiresAt) => (expiresAt < earliest ? expiresAt : earliest)),
+        }
       : { kind: "off" };
 
   const allSources = Object.values(state.sources);
+  const emptyCounts = { pending: 0, current: 0, failed: 0, unavailable: 0, over_limit: 0 };
   const enrollments: EnrollmentStatusSummary[] = Object.values(state.enrollments ?? {}).map(
     (record) => {
       const enrolledSources = allSources.filter((source) => source.enrollmentId === record.id);
+      const counts = { ...emptyCounts };
+      for (const source of enrolledSources) counts[microsoftSourceStatusState(source)] += 1;
       return {
         id: record.id,
         label: record.label,
+        collection: record.collection,
         sourceCount: enrolledSources.length,
         failedSourceCount: enrolledSources.filter((source) => source.lastFailure !== undefined)
           .length,
+        counts,
       };
     },
   );
@@ -2440,6 +2465,7 @@ function describeMicrosoftStatus(state: ProviderState): ProviderStatus {
     available: source.available,
     lastSeenAt: source.lastSeenAt,
     ...(source.lastFailure === undefined ? {} : { lastFailure: source.lastFailure }),
+    state: microsoftSourceStatusState(source),
   }));
 
   return {

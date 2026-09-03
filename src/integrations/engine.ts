@@ -166,23 +166,47 @@ export type ProviderConnectionStatus =
 /** Provider webhook status surfaced to a status route (design §13). */
 export type ProviderWebhookStatus =
   | { kind: "off" }
-  | { kind: "active"; eventCount: number }
+  | {
+      kind: "active";
+      eventCount: number;
+      /** Earliest `expiresAt` across `ProviderState.webhook.subscriptions` (ISO string). */
+      earliestExpiry?: string;
+    }
   | { kind: "degraded"; reason: string };
+
+/** The §13 per-source lifecycle state, derived from real SourceState fields. */
+export type SourceStatusState = "pending" | "current" | "failed" | "unavailable" | "over_limit";
 
 /** Per-enrollment state summary surfaced to a status route (design §13). */
 export interface EnrollmentStatusSummary {
   id: string;
   label: string;
+  collection: string;
   sourceCount: number;
   failedSourceCount: number;
+  /** Per-state breakdown of this enrollment's sources (design §13). */
+  counts: {
+    pending: number;
+    current: number;
+    failed: number;
+    unavailable: number;
+    over_limit: number;
+  };
 }
 
 /** Per-source state summary surfaced to a status route (design §13). */
 export interface SourceStatusSummary {
   id: string;
   available: boolean;
+  /**
+   * Best-available proxy for "since" when `state` is `unavailable` —
+   * SourceState carries no dedicated became-unavailable timestamp, so this
+   * is the last time the source was actually seen, not a marked
+   * unavailable-since instant.
+   */
   lastSeenAt: string;
   lastFailure?: { at: string; reason: SourceFailureReason };
+  state: SourceStatusState;
 }
 
 /** The provider-neutral status shape a status route renders (design §13). */
