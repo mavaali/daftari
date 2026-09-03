@@ -1219,3 +1219,199 @@ describe("loadConfig — integrations", () => {
     }
   });
 });
+
+describe("loadConfig — microsoft provider config + distill USD key (U11)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-m365-config-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  describe("integrations.microsoft", () => {
+    it("parses a valid block, defaulting scope_profile and include_speaker_notes", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.microsoft).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+        scopeProfile: "sharepoint",
+        collections: ["inbox"],
+        includeSpeakerNotes: true,
+      });
+    });
+
+    it("accepts an explicit onedrive scope_profile", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: tenant.example.com\n" +
+          "    scope_profile: onedrive\n" +
+          "    collections:\n      - notes\n" +
+          "    include_speaker_notes: false\n" +
+          "    picker_host: picker.example.com\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.microsoft).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "tenant.example.com",
+        scopeProfile: "onedrive",
+        collections: ["notes"],
+        includeSpeakerNotes: false,
+        pickerHost: "picker.example.com",
+      });
+    });
+
+    it("rejects an unrecognised scope_profile value", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    scope_profile: dropbox\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.microsoft.scope_profile");
+    });
+
+    it("rejects a missing tenant_id", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.microsoft.tenant_id");
+    });
+
+    it("rejects missing/empty collections", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n",
+      );
+      const missing = loadConfig(dir);
+      expect(missing.ok).toBe(false);
+      if (missing.ok) return;
+      expect(missing.error.message).toContain("integrations.microsoft.collections");
+
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    collections: []\n",
+      );
+      const empty = loadConfig(dir);
+      expect(empty.ok).toBe(false);
+      if (empty.ok) return;
+      expect(empty.error.message).toContain("integrations.microsoft.collections");
+    });
+
+    it("rejects an unknown key under integrations.microsoft", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  microsoft:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    collections:\n      - inbox\n" +
+          "    foo: 1\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.microsoft.foo");
+    });
+
+    it("rejects a microsoft-only key under integrations.google (per-provider table works both ways)", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  google:\n" +
+          "    client_id_env: GOOGLE_CLIENT_ID\n" +
+          "    client_secret_env: GOOGLE_CLIENT_SECRET\n" +
+          "    tenant_id: should-not-be-accepted\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.google.tenant_id");
+    });
+  });
+
+  describe("distill.estimated_usd_per_call (R39)", () => {
+    it("parses a declared estimate", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: 0.002\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.estimatedUsdPerCall).toBe(0.002);
+    });
+
+    it("exposes it as undefined when absent (USD estimation disabled)", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.estimatedUsdPerCall).toBeUndefined();
+    });
+
+    it("rejects a negative estimate", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: -0.1\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("estimated_usd_per_call");
+    });
+
+    it("rejects a zero estimate — absence already means 'no estimate'", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: 0\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("estimated_usd_per_call");
+    });
+  });
+});

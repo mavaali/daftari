@@ -371,7 +371,14 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
   async function startWithAdapter(providerAdapter: ProviderAdapter) {
     const microsoftConfig: IntegrationConfig = {
       ...config,
-      microsoft: { clientIdEnv: "MICROSOFT_ID", clientSecretEnv: "MICROSOFT_SECRET" },
+      microsoft: {
+        clientIdEnv: "MICROSOFT_ID",
+        clientSecretEnv: "MICROSOFT_SECRET",
+        tenantId: "tenant-id",
+        scopeProfile: "sharepoint",
+        collections: ["inbox"],
+        includeSpeakerNotes: true,
+      },
     };
     const microsoftEnvironment = {
       ...environment,

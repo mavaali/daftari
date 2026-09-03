@@ -14,12 +14,29 @@ export interface IntegrationProviderConfig {
   clientSecretEnv: string;
 }
 
+// Microsoft's `integrations.microsoft` block (U11) carries extra keys beyond
+// the shared client_id_env/client_secret_env pair that Google/Notion use.
+// The parsed/normalized shape always carries concrete `scopeProfile` and
+// `includeSpeakerNotes` values — the config loader (src/utils/config.ts)
+// applies their defaults, so downstream code never has to.
+export interface MicrosoftProviderConfig extends IntegrationProviderConfig {
+  /** Entra tenant GUID or verified domain; used to build the authority URL. */
+  tenantId: string;
+  /** Default "sharepoint" when omitted from config. */
+  scopeProfile: "onedrive" | "sharepoint";
+  /** The allowlist of enrollment target collections. */
+  collections: string[];
+  /** Default true when omitted from config. */
+  includeSpeakerNotes: boolean;
+  pickerHost?: string;
+}
+
 export interface IntegrationConfig {
   encryptionKeyEnv: string;
   pollingIntervalMinutes: number;
   google?: IntegrationProviderConfig;
   notion?: IntegrationProviderConfig;
-  microsoft?: IntegrationProviderConfig;
+  microsoft?: MicrosoftProviderConfig;
 }
 
 export const SOURCE_FAILURE_REASONS = [
