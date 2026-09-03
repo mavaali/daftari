@@ -111,18 +111,41 @@ export interface EnrollmentDraft {
     kind: "item" | "container";
     label: string;
     webUrl?: string;
+    /**
+     * Cached metadata size (bytes) for an "item" kind, captured by the
+     * resolver's own metadata re-fetch — lets estimateEnrollment skip a
+     * redundant Graph round-trip for the common resolve-then-estimate
+     * preview flow. Optional: a caller that POSTs a bare draft straight to
+     * an /estimate route without this cached data still works via a
+     * stateless fallback (a fresh metadata fetch).
+     */
+    size?: number;
+    /**
+     * Cached, already-expanded eligible children for a "container" kind
+     * (the folder-scoped delta walk the resolver already performed to
+     * enforce the per-container bound) — same rationale as `size` above.
+     * Optional for the same stateless-fallback reason.
+     */
+    children?: Array<{ id: string; name: string; size: number }>;
   }>;
   collection: string;
   includeSpeakerNotes: boolean;
   /** The roles that may read `collection` at resolve time (design §9.2 audience disclosure). */
   readersAtEnrollment: string[];
-  /** Picker references rejected by name — unreadable, unsupported, or malformed (R12). */
+  /**
+   * Picker references rejected by name — unreadable, unsupported, or
+   * malformed (R12). This reason vocabulary (`not_readable`,
+   * `invalid_reference`, `unsupported_type`, `malware`, ...) is a
+   * PREVIEW-only space, distinct from `SourceFailureReason` — never pass one
+   * of these strings to `isSourceFailureReason`.
+   */
   skipped: Array<{ name: string; reason: string }>;
 }
 
 /** The cost/preview estimate for an enrollment draft (design §12). */
 export interface EnrollmentEstimate {
   eligible: number;
+  /** Same PREVIEW-only reason vocabulary as EnrollmentDraft.skipped above — not SourceFailureReason. */
   skipped: Array<{ name: string; reason: string }>;
   bytes: number;
   byType: Record<string, number>;

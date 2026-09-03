@@ -2079,6 +2079,34 @@ async function walkContainerChildren(
   return ok({ eligible, legacyCount });
 }
 
+// Shared "is this a file worth enrolling/estimating" check for both
+// resolveEnrollment's per-item branch and estimateEnrollment's stateless
+// fallback — a single place for the isFile/malware/classifyExtension rule so
+// the two call sites can't silently drift apart. (Folder handling is NOT
+// covered here — resolveEnrollment branches on `folder` before ever calling
+// this; a container's children are validated once, at expansion time, by
+// walkContainerChildren's own equivalent filter.)
+type MicrosoftEnrollmentItemValidation = { ok: true; size: number } | { ok: false; reason: string };
+
+function validateEnrollmentItemMetadata(
+  body: MicrosoftEnrollmentItemMetadata,
+  name: string,
+): MicrosoftEnrollmentItemValidation {
+  const isFile = typeof body.file === "object" && body.file !== null;
+  if (!isFile) return { ok: false, reason: "unsupported_type" };
+  // Same truthy/object malware check as fetchSource's R29 precheck (a `null`
+  // malware facet must not false-positive) — defense in depth at
+  // enrollment/estimate time too, not just on every subsequent fetch cycle.
+  if (typeof body.malware === "object" && body.malware !== null) {
+    return { ok: false, reason: "malware" };
+  }
+  if (classifyExtension(name) === "unsupported") {
+    return { ok: false, reason: "unsupported_type" };
+  }
+  const size = typeof body.size === "number" ? body.size : 0;
+  return { ok: true, size };
+}
+
 function readersForCollection(
   roles: Record<string, RoleConfig> | undefined,
   collection: string,
@@ -2159,7 +2187,6 @@ async function resolveEnrollment(
     const name = stringValue(body.name) ?? ref.itemId;
     const webUrl = stringValue(body.webUrl);
     const isFolder = typeof body.folder === "object" && body.folder !== null;
-    const isFile = typeof body.file === "object" && body.file !== null;
 
     if (isFolder) {
       const expanded = await walkContainerChildren(
@@ -2186,23 +2213,16 @@ async function resolveEnrollment(
         kind: "container",
         label: name,
         ...(webUrl === undefined ? {} : { webUrl }),
+        // Cached so estimateEnrollment can skip re-walking this folder's
+        // delta for the common resolve-then-estimate preview flow.
+        children: expanded.value.eligible,
       });
       continue;
     }
 
-    if (!isFile) {
-      skipped.push({ name, reason: "unsupported_type" });
-      continue;
-    }
-    // Same truthy/object malware check as fetchSource's R29 precheck (a
-    // `null` malware facet must not false-positive) — defense in depth at
-    // enrollment time too, not just on every subsequent fetch cycle.
-    if (typeof body.malware === "object" && body.malware !== null) {
-      skipped.push({ name, reason: "malware" });
-      continue;
-    }
-    if (classifyExtension(name) === "unsupported") {
-      skipped.push({ name, reason: "unsupported_type" });
+    const validation = validateEnrollmentItemMetadata(body, name);
+    if (!validation.ok) {
+      skipped.push({ name, reason: validation.reason });
       continue;
     }
 
@@ -2213,6 +2233,9 @@ async function resolveEnrollment(
       kind: "item",
       label: name,
       ...(webUrl === undefined ? {} : { webUrl }),
+      // Cached so estimateEnrollment can skip re-fetching this item's
+      // metadata for the common resolve-then-estimate preview flow.
+      size: validation.size,
     });
   }
 
@@ -2273,6 +2296,18 @@ async function estimateEnrollment(
 
   for (const item of draft.items) {
     if (item.kind === "item") {
+      // Common path: resolveEnrollment already validated and cached this
+      // item's size on the draft — accumulate from it directly, no Graph
+      // call. Re-validating (malware/type) here would only repeat work
+      // resolveEnrollment already did against the same, unchanged draft.
+      if (item.size !== undefined) {
+        accumulate(item.label, item.size);
+        continue;
+      }
+
+      // Stateless fallback: a caller can POST a bare EnrollmentDraft (no
+      // cached size) straight to an /estimate route without a matching
+      // resolve call first — re-fetch and re-validate in that case.
       const metadata = await fetchEnrollmentItemMetadata(
         transport,
         state.accessToken,
@@ -2294,19 +2329,24 @@ async function estimateEnrollment(
       }
       const body = metadata.value.body as MicrosoftEnrollmentItemMetadata;
       const name = stringValue(body.name) ?? item.label;
-      const size = typeof body.size === "number" ? body.size : 0;
-      if (typeof body.malware === "object" && body.malware !== null) {
-        skipped.push({ name, reason: "malware" });
+      const validation = validateEnrollmentItemMetadata(body, name);
+      if (!validation.ok) {
+        skipped.push({ name, reason: validation.reason });
         continue;
       }
-      if (classifyExtension(name) === "unsupported") {
-        skipped.push({ name, reason: "unsupported_type" });
-        continue;
-      }
-      accumulate(name, size);
+      accumulate(name, validation.size);
       continue;
     }
 
+    // Common path: resolveEnrollment already expanded and cached this
+    // container's eligible children on the draft — no delta re-walk needed.
+    if (item.children !== undefined) {
+      for (const child of item.children) accumulate(child.name, child.size);
+      continue;
+    }
+
+    // Stateless fallback (see the item branch above): re-walk when the
+    // draft carries no cached children.
     const expanded = await walkContainerChildren(
       transport,
       state.accessToken,
@@ -2327,6 +2367,9 @@ async function estimateEnrollment(
     warnings.push(
       `${legacyCount} legacy .ppt/.doc file${legacyCount === 1 ? "" : "s"} will use lossy PDF conversion`,
     );
+  }
+  if (roles === undefined) {
+    warnings.push("RBAC roles not supplied; readers/ratifiers omitted");
   }
 
   return ok({

@@ -2666,7 +2666,7 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     expect(result?.ok).toBe(true);
     if (!result?.ok) return;
     expect(result.value.items).toEqual([
-      { driveId: "drive-a", remoteId: "ok-1", kind: "item", label: "ok.docx" },
+      { driveId: "drive-a", remoteId: "ok-1", kind: "item", label: "ok.docx", size: 100 },
     ]);
     expect(result.value.skipped).toEqual([{ name: "secret.docx", reason: "not_readable" }]);
   });
@@ -2744,7 +2744,7 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     expect(result?.ok).toBe(true);
     if (!result?.ok) return;
     expect(result.value.items).toEqual([
-      { driveId: "drive-a", remoteId: "ok-1", kind: "item", label: "ok.docx" },
+      { driveId: "drive-a", remoteId: "ok-1", kind: "item", label: "ok.docx", size: 100 },
     ]);
     expect(result.value.skipped).toEqual([
       { name: "unknown", reason: "invalid_reference" },
@@ -2804,7 +2804,7 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     expect(result?.ok).toBe(true);
     if (!result?.ok) return;
     expect(result.value.items).toEqual([
-      { driveId: "drive-a", remoteId: "dup-1", kind: "item", label: "dup.docx" },
+      { driveId: "drive-a", remoteId: "dup-1", kind: "item", label: "dup.docx", size: 100 },
     ]);
     expect(result.value.skipped).toEqual([]);
     // Deduped, not double-fetched or double-counted toward the eligible bound.
@@ -2815,6 +2815,9 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     if (!estimate?.ok) return;
     expect(estimate.value.eligible).toBe(1);
     expect(estimate.value.bytes).toBe(100);
+    // estimateEnrollment read the cached size off the draft — no additional
+    // Graph call beyond the one resolveEnrollment already made.
+    expect(metadataCalls).toBe(1);
   });
 
   it("skips an unsupported .xlsx in the pick, never enrolling it", async () => {
@@ -3055,6 +3058,86 @@ describe("Microsoft adapter enrollment resolve + estimate (U17)", () => {
     expect(result.value.warnings).toEqual(
       expect.arrayContaining([expect.stringMatching(/lossy PDF conversion/)]),
     );
+  });
+
+  it("estimateEnrollment reads cached size/children off the draft after resolve, issuing NO additional Graph calls for either an item or a container", async () => {
+    let requestCount = 0;
+    const childFiles = [
+      {
+        id: "c1",
+        name: "one.docx",
+        eTag: "e1",
+        size: 200,
+        file: {},
+        parentReference: { id: "folder-cached" },
+      },
+      {
+        id: "c2",
+        name: "two.pptx",
+        eTag: "e2",
+        size: 300,
+        file: {},
+        parentReference: { id: "folder-cached" },
+      },
+    ];
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        requestCount += 1;
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/doc-1")) {
+          return graphJson({ id: "doc-1", name: "report.docx", file: {}, eTag: "e1", size: 1_000 });
+        }
+        if (
+          url.startsWith(
+            "https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-cached/delta",
+          )
+        ) {
+          return graphJson({
+            value: childFiles,
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-cached",
+          });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-a/items/folder-cached")) {
+          return graphJson({ id: "folder-cached", name: "Cached Folder", folder: {} });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+    const state = microsoftProviderState();
+    const selection = [
+      { driveId: "drive-a", itemId: "doc-1" },
+      { driveId: "drive-a", itemId: "folder-cached" },
+    ];
+
+    const resolved = await adapter.resolveEnrollment?.(selection, state, ctx);
+    expect(resolved?.ok).toBe(true);
+    if (!resolved?.ok) return;
+    expect(resolved.value.items).toEqual([
+      { driveId: "drive-a", remoteId: "doc-1", kind: "item", label: "report.docx", size: 1_000 },
+      {
+        driveId: "drive-a",
+        remoteId: "folder-cached",
+        kind: "container",
+        label: "Cached Folder",
+        children: [
+          { id: "c1", name: "one.docx", size: 200 },
+          { id: "c2", name: "two.pptx", size: 300 },
+        ],
+      },
+    ]);
+
+    const requestsAfterResolve = requestCount;
+    expect(requestsAfterResolve).toBeGreaterThan(0);
+
+    const estimate = await adapter.estimateEnrollment?.(resolved.value, state);
+    expect(estimate?.ok).toBe(true);
+    if (!estimate?.ok) return;
+    expect(estimate.value.eligible).toBe(3);
+    expect(estimate.value.bytes).toBe(1_000 + 200 + 300);
+    // No new Graph calls: estimateEnrollment read size/children straight off
+    // the cached draft rather than re-fetching/re-walking.
+    expect(requestCount).toBe(requestsAfterResolve);
   });
 
   it("the ratio constants match the committed U10 ratios.json (drift guard)", () => {
