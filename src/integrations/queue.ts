@@ -14,7 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { RefreshHint } from "./engine.js";
-import type { ProviderName } from "./types.js";
+import { isProviderName, type ProviderName } from "./types.js";
 
 const QUEUE_VERSION = 2;
 const REPLAY_HORIZON_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -91,7 +91,7 @@ function validQueueItem(value: unknown): value is IntegrationQueueItem {
   if (typeof value !== "object" || value === null) return false;
   const item = value as Record<string, unknown>;
   return (
-    (item.provider === "google" || item.provider === "notion") &&
+    isProviderName(item.provider) &&
     typeof item.eventId === "string" &&
     item.eventId.length > 0 &&
     validHint(item.hint) &&

@@ -15,7 +15,7 @@ import { createIntegrationQueue } from "./queue.js";
 import { appendUnavailableReview } from "./review.js";
 import { handleIntegrationRoute, type IntegrationRouteAuthorization } from "./routes.js";
 import { readIntegrationState, resolveIntegrationStateKey } from "./state.js";
-import type { IntegrationConfig, ProviderName } from "./types.js";
+import { type IntegrationConfig, PROVIDER_NAMES, type ProviderName } from "./types.js";
 
 const WEBHOOK_RENEWAL_LEAD_MILLISECONDS = 24 * 60 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MILLISECONDS = 5_000;
@@ -60,10 +60,13 @@ export interface ConfiguredIntegrationRuntimeOptions {
 const DEFAULT_FACTORIES: Record<ProviderName, IntegrationAdapterFactory> = {
   google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
   notion: (redirectUri) => createNotionAdapter({ redirectUri }),
+  microsoft: () => {
+    throw new Error("microsoft integration not yet implemented");
+  },
 };
 
 function configuredProviders(config: IntegrationConfig): ProviderName[] {
-  return (["google", "notion"] as const).filter((provider) => config[provider] !== undefined);
+  return PROVIDER_NAMES.filter((provider) => config[provider] !== undefined);
 }
 
 function callbackUrl(baseUrl: string, provider: ProviderName): string {

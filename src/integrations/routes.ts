@@ -9,7 +9,7 @@ import {
 } from "./engine.js";
 import { beginAuthorizationRedirect, completeAuthorization } from "./oauth.js";
 import type { IntegrationQueue } from "./queue.js";
-import type { IntegrationConfig, ProviderName } from "./types.js";
+import { type IntegrationConfig, PROVIDER_NAMES, type ProviderName } from "./types.js";
 
 const DEFAULT_WEBHOOK_BODY_LIMIT = 256 * 1024;
 const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
@@ -47,8 +47,10 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
   response.end(JSON.stringify(body));
 }
 
-function providerFrom(pathname: string): ProviderName | null {
-  const matched = /^\/integrations\/(google|notion)(?:\/|$)/.exec(pathname);
+const PROVIDER_ROUTE_PATTERN = new RegExp(`^/integrations/(${PROVIDER_NAMES.join("|")})(?:/|$)`);
+
+export function providerFrom(pathname: string): ProviderName | null {
+  const matched = PROVIDER_ROUTE_PATTERN.exec(pathname);
   return matched === null ? null : (matched[1] as ProviderName);
 }
 

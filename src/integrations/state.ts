@@ -6,12 +6,12 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import type {
-  IntegrationState,
-  OAuthState,
-  ProviderName,
-  ProviderState,
-  SourceState,
+import {
+  type IntegrationState,
+  isProviderName,
+  type OAuthState,
+  type ProviderState,
+  type SourceState,
 } from "./types.js";
 
 const STATE_VERSION = 1;
@@ -105,10 +105,6 @@ function asBase64(
   if (decoded.length === 0)
     return err(new Error(`integration state envelope has an invalid ${field}`));
   return ok(decoded);
-}
-
-function isProviderName(value: unknown): value is ProviderName {
-  return value === "google" || value === "notion";
 }
 
 function isStringRecord(value: unknown): value is Record<string, unknown> {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok } from "../../src/frontmatter/types.js";
 import type { EngineDeps, ProviderAdapter } from "../../src/integrations/engine.js";
 import { createIntegrationQueue } from "../../src/integrations/queue.js";
-import { handleIntegrationRoute } from "../../src/integrations/routes.js";
+import { handleIntegrationRoute, providerFrom } from "../../src/integrations/routes.js";
 import { writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig } from "../../src/integrations/types.js";
 
@@ -36,6 +36,16 @@ function adapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
     ...overrides,
   };
 }
+
+describe("providerFrom", () => {
+  it("matches the microsoft connect path", () => {
+    expect(providerFrom("/integrations/microsoft/connect")).toBe("microsoft");
+  });
+
+  it("rejects an unrecognised provider path", () => {
+    expect(providerFrom("/integrations/foo/connect")).toBeNull();
+  });
+});
 
 describe("integration routes", () => {
   let vault: string;

@@ -1,7 +1,13 @@
 // Shared, provider-neutral integration state. Source text never appears in
 // these types: connector state records only credentials and change metadata.
 
-export type ProviderName = "google" | "notion";
+export const PROVIDER_NAMES = ["google", "notion", "microsoft"] as const;
+
+export type ProviderName = (typeof PROVIDER_NAMES)[number];
+
+export function isProviderName(value: unknown): value is ProviderName {
+  return (PROVIDER_NAMES as readonly unknown[]).includes(value);
+}
 
 export interface IntegrationProviderConfig {
   clientIdEnv: string;
@@ -13,6 +19,7 @@ export interface IntegrationConfig {
   pollingIntervalMinutes: number;
   google?: IntegrationProviderConfig;
   notion?: IntegrationProviderConfig;
+  microsoft?: IntegrationProviderConfig;
 }
 
 export interface SourceState {

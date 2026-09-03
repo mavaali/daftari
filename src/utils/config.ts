@@ -18,7 +18,12 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
-import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
+import {
+  type IntegrationConfig,
+  type IntegrationProviderConfig,
+  PROVIDER_NAMES,
+  type ProviderName,
+} from "../integrations/types.js";
 import { parseCidr } from "../serve/proxy-trust.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
@@ -537,14 +542,13 @@ export function configPath(vaultRoot: string): string {
 const RECOGNISED_INTEGRATIONS_KEYS = [
   "encryption_key_env",
   "polling_interval_minutes",
-  "google",
-  "notion",
+  ...PROVIDER_NAMES,
 ] as const;
 const RECOGNISED_INTEGRATION_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
 const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
 
 function validateIntegrationProvider(
-  provider: "google" | "notion",
+  provider: ProviderName,
   raw: unknown,
 ): Result<IntegrationProviderConfig, Error> {
   const mapping = requireMapping(raw, `'integrations.${provider}'`);
@@ -592,7 +596,7 @@ function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefine
     encryptionKeyEnv: encryptionKeyEnv.trim(),
     pollingIntervalMinutes,
   };
-  for (const provider of ["google", "notion"] as const) {
+  for (const provider of PROVIDER_NAMES) {
     if (mapping.value[provider] === undefined) continue;
     const config = validateIntegrationProvider(provider, mapping.value[provider]);
     if (!config.ok) return config;
