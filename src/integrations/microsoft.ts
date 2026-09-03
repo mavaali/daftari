@@ -2,14 +2,15 @@
 // OAuth/Graph HTTP; the provider-neutral engine owns persistence,
 // reconciliation, and distillation.
 //
-// SCAFFOLDING NOTICE: `ensureWebhook`, `verifyWebhook`, and `fetch` are still
-// throwing not-implemented stubs. U13 implemented
-// authorizationUrl/exchangeCode/refreshTokens. U14 (this unit) implements
-// `discover` (Graph delta over the cursor contract). U16/U17/U18 land
-// ensureWebhook/verifyWebhook/enrollment resolution/describeStatus. U15 lands
-// fetch. Do not add real fetch/webhook Graph logic here until those units
-// land.
+// SCAFFOLDING NOTICE: `ensureWebhook` and `verifyWebhook` are still throwing
+// not-implemented stubs. U13 implemented
+// authorizationUrl/exchangeCode/refreshTokens. U14 implements `discover`
+// (Graph delta over the cursor contract). U15 (this unit) implements `fetch`
+// (download + extractor routing + legacy pdf conversion). U16/U17/U18 land
+// ensureWebhook/verifyWebhook/enrollment resolution/describeStatus. Do not
+// add real webhook Graph logic here until those units land.
 
+import { DEFAULT_EXTRACT_LIMITS, type ExtractKind, extractText } from "../extract/index.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   AuthorizationRequest,
@@ -35,7 +36,12 @@ import {
   TERMINAL_REFRESH_STATUSES,
   tokenExpiration,
 } from "./http-json.js";
-import type { EnrollmentRecord, MicrosoftProviderConfig, ProviderState } from "./types.js";
+import type {
+  EnrollmentRecord,
+  MicrosoftProviderConfig,
+  ProviderState,
+  SourceFailureReason,
+} from "./types.js";
 
 const MICROSOFT = "Microsoft";
 
@@ -1104,18 +1110,356 @@ function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-// Throws rather than returning err(...) like exchangeCode does, because the
-// two are unreachable at different points: exchangeCode is reachable today
-// via a real "connect Microsoft" OAuth click, so it returns a Result the
-// route layer can surface to the user as a normal failure. fetch is never
-// reachable in U12 — discover() always returns an empty source list, so
-// reconcileProvider has nothing to call fetch on. U15 should implement this
-// for real, not "fix" it into an err() to match exchangeCode.
+// ---------------------------------------------------------------------------
+// Fetch (U15): download + extractor routing + legacy pdf conversion.
+//
+// `source.id` is always `"<driveId>:<itemId>"` (the identity discover()
+// produces — see discoverMicrosoftSources above). This section owns turning
+// that id back into a Graph download, routing the downloaded bytes to
+// src/extract by file extension, and returning the provider-neutral
+// {id, revision, text} triple the engine persists.
+
+// 25 MiB (design §11) — the SAME cap is checked twice: against the metadata
+// `size` field BEFORE any download is attempted (the primary guard), and
+// again while streaming the content response (belt-and-braces against a
+// metadata/body size mismatch).
+const MICROSOFT_MAX_CONTENT_BYTES = 25 * 1024 * 1024;
+
+// R30: a prior failure with one of these reasons is a durable, re-download-
+// proof verdict on THIS revision of the file — malware/size/type are
+// properties of the bytes/metadata that a byte-identical re-download cannot
+// change. A prior "fetch"/"distill"/"timeout"/etc. failure is NOT in this
+// set: those can be transient (a network blip, a slow extractor that might
+// succeed on retry), so those always re-attempt.
+const MICROSOFT_SHORT_CIRCUIT_REASONS = new Set<SourceFailureReason>([
+  "empty",
+  "encrypted",
+  "unsupported_type",
+  "too_large",
+]);
+
+function taggedFetchError(reason: SourceFailureReason, message?: string): Error {
+  return Object.assign(new Error(message ?? `Microsoft fetch failed: ${reason}`), { reason });
+}
+
+function splitSourceId(id: string): { driveId: string; itemId: string } | undefined {
+  const index = id.indexOf(":");
+  if (index <= 0 || index === id.length - 1) return undefined;
+  return { driveId: id.slice(0, index), itemId: id.slice(index + 1) };
+}
+
+function fileExtension(name: string): string {
+  const index = name.lastIndexOf(".");
+  return index === -1 ? "" : name.slice(index).toLowerCase();
+}
+
+type MicrosoftFileClassification = "docx" | "pptx" | "pdf" | "legacy" | "unsupported";
+
+// §3.1 extension->path table. `.doc`/`.ppt` route through the legacy
+// Graph `?format=pdf` conversion (R28) instead of a native extractor.
+function classifyExtension(name: string): MicrosoftFileClassification {
+  const extension = fileExtension(name);
+  if (extension === ".docx") return "docx";
+  if (extension === ".pptx") return "pptx";
+  if (extension === ".pdf") return "pdf";
+  if (extension === ".doc" || extension === ".ppt") return "legacy";
+  return "unsupported";
+}
+
+function itemMetadataUrl(driveId: string, itemId: string): string {
+  return requestUrl(
+    `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`,
+    { $select: "id,name,size,file,malware" },
+  );
+}
+
+function itemContentUrl(driveId: string, itemId: string, legacyPdfConversion: boolean): string {
+  return requestUrl(
+    `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
+    legacyPdfConversion ? { format: "pdf" } : {},
+  );
+}
+
+interface MicrosoftItemMetadata {
+  id?: unknown;
+  name?: unknown;
+  size?: unknown;
+  file?: unknown;
+  malware?: unknown;
+}
+
+// Shared retry-on-429 wrapper for the fetch path's Graph calls (metadata GET
+// and the initial content GET) — mirrors requestDeltaPageWithRetry's "honor
+// Retry-After exactly once, only when short enough to absorb inline" policy,
+// generalized to a plain Response instead of a parsed delta page (fetch also
+// needs the raw Response here: to read a redirect Location header, and to
+// stream the content body under a size cap, neither of which boundedJson's
+// JSON-only contract supports).
+async function requestWithRetry(
+  transport: MicrosoftHttpTransport,
+  url: string,
+  init: RequestInit,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<Result<Response, Error>> {
+  const first = await providerResponse(MICROSOFT, transport, url, init, limits);
+  if (!first.ok) return first;
+  if (first.value.status !== 429) return first;
+  const retryAfterHeader = first.value.headers.get("retry-after");
+  const retryAfterSeconds =
+    retryAfterHeader !== null && /^\d+$/.test(retryAfterHeader)
+      ? Number(retryAfterHeader)
+      : undefined;
+  if (retryAfterSeconds === undefined || retryAfterSeconds > MICROSOFT_MAX_RETRY_AFTER_SECONDS) {
+    return err(new Error("Microsoft Graph request was rate limited"));
+  }
+  await sleep(retryAfterSeconds * 1000);
+  const retried = await providerResponse(MICROSOFT, transport, url, init, limits);
+  if (!retried.ok) return retried;
+  if (retried.value.status === 429) {
+    return err(new Error("Microsoft Graph request was rate limited"));
+  }
+  return retried;
+}
+
+// Reads a content Response body as raw bytes, bounded by
+// MICROSOFT_MAX_CONTENT_BYTES while streaming (not just trusting a declared
+// Content-Length) — mirrors boundedJson's streaming-cap shape but returns
+// bytes instead of parsed JSON, and reports a `too_large` SourceFailureReason
+// (not a generic Error) so a caller doesn't have to re-derive the reason.
+async function boundedContentBytes(
+  response: Response,
+  limits: RequestLimits,
+): Promise<Result<Uint8Array, Error>> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > MICROSOFT_MAX_CONTENT_BYTES) {
+    return err(taggedFetchError("too_large", "Microsoft Graph content response is too large"));
+  }
+  if (response.body === null) {
+    return err(new Error("Microsoft Graph content response is invalid"));
+  }
+  const reader = response.body.getReader();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const read = async (): Promise<Result<Uint8Array, Error>> => {
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        length += next.value.byteLength;
+        if (length > MICROSOFT_MAX_CONTENT_BYTES) {
+          await reader.cancel();
+          return err(
+            taggedFetchError("too_large", "Microsoft Graph content response is too large"),
+          );
+        }
+        chunks.push(next.value);
+      }
+      return ok(
+        new Uint8Array(
+          Buffer.concat(
+            chunks.map((chunk) => Buffer.from(chunk)),
+            length,
+          ),
+        ),
+      );
+    };
+    return await Promise.race([
+      read(),
+      new Promise<Result<Uint8Array, Error>>((resolve) => {
+        timeout = setTimeout(() => {
+          void reader.cancel();
+          resolve(err(new Error("Microsoft Graph content request failed")));
+        }, limits.timeoutMilliseconds);
+      }),
+    ]);
+  } catch {
+    return err(new Error("Microsoft Graph content request failed"));
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+// Resolves the per-enrollment includeSpeakerNotes flag (pptx-only; ignored
+// for docx/pdf) for a given source. SourceState.enrollmentId is checked
+// first (the forward-looking channel — see the U14 "KNOWN LIMITATION"
+// comment on rememberedRootSources: no adapter populates it today, so this
+// branch is currently always a miss in practice, kept for when that's
+// wired). Failing that, an item-kind enrollment is matched exactly by
+// driveId+remoteId (always unambiguous — an item enrollment names one
+// specific file). A container-kind enrollment has no per-file membership
+// recorded anywhere reachable from here, so it's matched only when exactly
+// one container enrollment shares this drive (an unambiguous best-effort
+// case); with more than one candidate, or none, this falls back to the
+// provider-level config default.
+function resolveIncludeSpeakerNotes(
+  sourceId: string,
+  driveId: string,
+  itemId: string,
+  state: ProviderState,
+  config: MicrosoftProviderConfig,
+): boolean {
+  const enrollmentId = state.sources[sourceId]?.enrollmentId;
+  if (enrollmentId !== undefined) {
+    const record = state.enrollments?.[enrollmentId];
+    if (record !== undefined) return record.includeSpeakerNotes;
+  }
+  const enrollments = Object.values(state.enrollments ?? {});
+  const itemMatch = enrollments.find(
+    (record) => record.kind === "item" && record.driveId === driveId && record.remoteId === itemId,
+  );
+  if (itemMatch !== undefined) return itemMatch.includeSpeakerNotes;
+  const containerMatches = enrollments.filter(
+    (record) => record.kind === "container" && record.driveId === driveId,
+  );
+  if (containerMatches.length === 1) return containerMatches[0].includeSpeakerNotes;
+  return config.includeSpeakerNotes;
+}
+
+// Extends the engine's NormalizedRemoteSource with an adapter-local
+// `extractor` tag for the legacy `.doc`/`.ppt` -> `?format=pdf` conversion
+// path (R28), so this unit's own tests (and any future caller reading
+// fetch()'s return value directly) can tell a lossy PDF-converted source
+// from a native extraction. KNOWN LIMITATION: NormalizedRemoteSource and
+// SourceState (src/integrations/engine.ts / types.ts) carry no field for
+// this — reconcileProvider only ever reads {id, revision, text} off what
+// fetch() returns and never persists an extractor tag, so this label does
+// NOT currently survive into ProviderState.sources or reach a status route.
+// A follow-up would need to thread an extractor/conversion tag through both
+// contracts (a cross-adapter change, out of this unit's scope) before
+// U18's status surface could display it.
+interface MicrosoftNormalizedSource extends NormalizedRemoteSource {
+  extractor?: "pdf-conversion";
+}
+
 async function fetchSource(
-  _source: RemoteSource,
-  _state: ProviderState,
+  transport: MicrosoftHttpTransport,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  config: MicrosoftProviderConfig,
+  source: RemoteSource,
+  state: ProviderState,
 ): Promise<Result<NormalizedRemoteSource, Error>> {
-  throw new Error("microsoft fetch not yet implemented (U15)");
+  const ids = splitSourceId(source.id);
+  if (ids === undefined) {
+    return err(taggedFetchError("fetch", "Microsoft source id is malformed"));
+  }
+  const { driveId, itemId } = ids;
+
+  // Step 1 (R30): short-circuit a durable prior failure on this exact,
+  // unchanged revision without downloading anything.
+  const previous = state.sources[source.id];
+  if (
+    previous?.lastFailure !== undefined &&
+    MICROSOFT_SHORT_CIRCUIT_REASONS.has(previous.lastFailure.reason) &&
+    previous.revision === source.revision
+  ) {
+    return err(taggedFetchError(previous.lastFailure.reason));
+  }
+
+  const accessToken = state.accessToken;
+
+  // Step 2: metadata precheck (R29) — malware/size/type must be checked
+  // BEFORE any content download is attempted.
+  const metadataResponse = await requestWithRetry(
+    transport,
+    itemMetadataUrl(driveId, itemId),
+    { headers: { authorization: `Bearer ${accessToken}` } },
+    limits,
+    sleep,
+  );
+  if (!metadataResponse.ok) return metadataResponse;
+  if (metadataResponse.value.status === 403 || metadataResponse.value.status === 404) {
+    return err(taggedFetchError("permission_revoked"));
+  }
+  if (metadataResponse.value.status < 200 || metadataResponse.value.status >= 300) {
+    return err(
+      new Error(
+        `Microsoft Graph item metadata request failed with status ${metadataResponse.value.status}`,
+      ),
+    );
+  }
+  const metadataBody = await boundedJson(MICROSOFT, metadataResponse.value, limits);
+  if (!metadataBody.ok) return metadataBody;
+  const metadata = metadataBody.value as MicrosoftItemMetadata;
+
+  if (metadata.malware !== undefined) {
+    return err(taggedFetchError("malware"));
+  }
+  const size = typeof metadata.size === "number" ? metadata.size : undefined;
+  if (size !== undefined && size > MICROSOFT_MAX_CONTENT_BYTES) {
+    return err(taggedFetchError("too_large"));
+  }
+  const name = stringValue(metadata.name) ?? "";
+  const classification = classifyExtension(name);
+  if (classification === "unsupported") {
+    return err(taggedFetchError("unsupported_type"));
+  }
+  const isLegacy = classification === "legacy";
+  const kind: ExtractKind = isLegacy ? "pdf" : (classification as ExtractKind);
+
+  // Step 3 (R21, SECURITY): download the content. Graph 302s to a
+  // short-lived pre-authenticated (SAS) URL; that redirect MUST be followed
+  // WITHOUT the Authorization header — sending the Graph bearer token to the
+  // SAS host would leak it. `redirect: "manual"` stops the transport from
+  // auto-following, so the Location header can be read and re-requested with
+  // an explicitly bare init (no authorization header at all).
+  const initialContent = await requestWithRetry(
+    transport,
+    itemContentUrl(driveId, itemId, isLegacy),
+    { headers: { authorization: `Bearer ${accessToken}` }, redirect: "manual" },
+    limits,
+    sleep,
+  );
+  if (!initialContent.ok) return initialContent;
+  let contentResponse = initialContent.value;
+  if (contentResponse.status >= 300 && contentResponse.status < 400) {
+    const location = contentResponse.headers.get("location");
+    if (location === null || location.length === 0) {
+      return err(new Error("Microsoft Graph content redirect is missing a Location header"));
+    }
+    // No Authorization header on this request — see the SECURITY note above.
+    const redirected = await providerResponse(MICROSOFT, transport, location, {}, limits);
+    if (!redirected.ok) return redirected;
+    contentResponse = redirected.value;
+  }
+  if (contentResponse.status === 403 || contentResponse.status === 404) {
+    return err(taggedFetchError("permission_revoked"));
+  }
+  if (contentResponse.status < 200 || contentResponse.status >= 300) {
+    return err(
+      new Error(`Microsoft Graph content request failed with status ${contentResponse.status}`),
+    );
+  }
+
+  const bytes = await boundedContentBytes(contentResponse, limits);
+  if (!bytes.ok) return bytes;
+
+  // Step 4/5: extract. Legacy `.doc`/`.ppt` bytes are already PDF (Graph did
+  // the conversion for us) and run through the same pdf extractor as a
+  // native .pdf — lossy (no speaker notes), which is expected (R28).
+  const includeSpeakerNotes = resolveIncludeSpeakerNotes(source.id, driveId, itemId, state, config);
+  const extracted = await extractText(
+    bytes.value,
+    kind,
+    DEFAULT_EXTRACT_LIMITS,
+    undefined,
+    includeSpeakerNotes,
+  );
+  if (!extracted.ok) {
+    return err(taggedFetchError(extracted.error.reason, extracted.error.message));
+  }
+
+  // Step 6: echo the discovered revision (R21) so the engine's
+  // fetched.value.revision === remote.revision equality check passes.
+  const normalized: MicrosoftNormalizedSource = {
+    id: source.id,
+    revision: source.revision,
+    text: extracted.value.text,
+    ...(isLegacy ? { extractor: "pdf-conversion" } : {}),
+  };
+  return ok(normalized);
 }
 
 export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): ProviderAdapter {
@@ -1135,6 +1479,6 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
     ensureWebhook,
     verifyWebhook,
     discover: (state) => discoverMicrosoftSources(transport, limits, defaultSleep, state),
-    fetch: fetchSource,
+    fetch: (source, state) => fetchSource(transport, limits, defaultSleep, config, source, state),
   };
 }
