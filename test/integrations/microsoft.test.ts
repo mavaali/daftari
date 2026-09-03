@@ -1906,4 +1906,106 @@ describe("Microsoft adapter fetch (U15)", () => {
     const contentRequest = requests.find((r) => r.url.includes("/item4/content"));
     expect(contentRequest?.url).not.toContain("format=pdf");
   });
+
+  it("a 3xx content response with no Location header fails without crashing", async () => {
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/drives/drive1/items/item1/content`]: [new Response(null, { status: 302 })],
+        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+      },
+      [],
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+
+    expect(result).toMatchObject({ ok: false, error: { reason: "fetch" } });
+  });
+
+  it("a double-302 (the SAS host redirects again) fails without following further, no infinite loop", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/drives/drive1/items/item1/content`]: [
+          redirectFixture("https://sas.example/blob1"),
+        ],
+        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+        "https://sas.example/blob1": [redirectFixture("https://sas.example/blob1-again")],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+
+    expect(result).toMatchObject({ ok: false, error: { reason: "fetch" } });
+    // Bounded: the second redirect target is never requested.
+    expect(requests.some((r) => r.url.startsWith("https://sas.example/blob1-again"))).toBe(false);
+  });
+
+  it("an unexpected 500 on the metadata GET fails tagged as reason 'fetch'", async () => {
+    const transport = capturingTransport(
+      { [`${GRAPH}/drives/drive1/items/item1`]: [new Response(null, { status: 500 })] },
+      [],
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+
+    expect(result).toMatchObject({ ok: false, error: { reason: "fetch" } });
+  });
+
+  it("an unexpected 500 on the content GET fails tagged as reason 'fetch'", async () => {
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/drives/drive1/items/item1/content`]: [new Response(null, { status: 500 })],
+        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+      },
+      [],
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+
+    expect(result).toMatchObject({ ok: false, error: { reason: "fetch" } });
+  });
+
+  it("a malware facet serialized as null is treated as no-malware, not refused", async () => {
+    const deckBytes = buildDeck({ slideOrder: [1] });
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/drives/drive1/items/item1/content`]: [
+          redirectFixture("https://sas.example/blob1"),
+        ],
+        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata({ malware: null }))],
+        "https://sas.example/blob1": [bytesFixture(deckBytes)],
+      },
+      [],
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+
+    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+
+    expect(result.ok).toBe(true);
+  });
 });

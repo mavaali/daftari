@@ -1375,7 +1375,8 @@ async function fetchSource(
   }
   if (metadataResponse.value.status < 200 || metadataResponse.value.status >= 300) {
     return err(
-      new Error(
+      taggedFetchError(
+        "fetch",
         `Microsoft Graph item metadata request failed with status ${metadataResponse.value.status}`,
       ),
     );
@@ -1384,7 +1385,11 @@ async function fetchSource(
   if (!metadataBody.ok) return metadataBody;
   const metadata = metadataBody.value as MicrosoftItemMetadata;
 
-  if (metadata.malware !== undefined) {
+  // A truthy/object check, not just `!== undefined`: some Graph facets
+  // serialize an absent facet as an explicit `null` rather than omitting the
+  // key, and a bare `!== undefined` check would treat that `null` as
+  // "malware facet present" — false-positiving every clean file as malware.
+  if (typeof metadata.malware === "object" && metadata.malware !== null) {
     return err(taggedFetchError("malware"));
   }
   const size = typeof metadata.size === "number" ? metadata.size : undefined;
@@ -1417,11 +1422,33 @@ async function fetchSource(
   if (contentResponse.status >= 300 && contentResponse.status < 400) {
     const location = contentResponse.headers.get("location");
     if (location === null || location.length === 0) {
-      return err(new Error("Microsoft Graph content redirect is missing a Location header"));
+      return err(
+        taggedFetchError("fetch", "Microsoft Graph content redirect is missing a Location header"),
+      );
     }
     // No Authorization header on this request — see the SECURITY note above.
+    // Single-hop policy, deliberate: Graph's content endpoint is documented
+    // to redirect exactly once to the SAS URL, so ONE hop is followed here
+    // and no further. A SAS response that is ITSELF a redirect is unexpected
+    // (not the normal shape) and is treated as a hard failure below rather
+    // than followed again — this bounds the request chain and avoids ever
+    // building an unbounded/looping redirect follow.
+    //
+    // Also deliberate: this uses plain providerResponse, not
+    // requestWithRetry — a SAS blob-storage GET rate-limited (429) is not
+    // retried the way the Graph-hosted metadata/content calls are; it's a
+    // single-file download off a short-lived pre-authenticated URL, not a
+    // Graph API subject to the same throttling contract.
     const redirected = await providerResponse(MICROSOFT, transport, location, {}, limits);
     if (!redirected.ok) return redirected;
+    if (redirected.value.status >= 300 && redirected.value.status < 400) {
+      return err(
+        taggedFetchError(
+          "fetch",
+          `Microsoft Graph content redirect chained to a second redirect (status ${redirected.value.status}), which is not followed`,
+        ),
+      );
+    }
     contentResponse = redirected.value;
   }
   if (contentResponse.status === 403 || contentResponse.status === 404) {
@@ -1429,7 +1456,10 @@ async function fetchSource(
   }
   if (contentResponse.status < 200 || contentResponse.status >= 300) {
     return err(
-      new Error(`Microsoft Graph content request failed with status ${contentResponse.status}`),
+      taggedFetchError(
+        "fetch",
+        `Microsoft Graph content request failed with status ${contentResponse.status}`,
+      ),
     );
   }
 
