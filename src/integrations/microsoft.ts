@@ -2,14 +2,16 @@
 // OAuth/Graph HTTP; the provider-neutral engine owns persistence,
 // reconciliation, and distillation.
 //
-// SCAFFOLDING NOTICE: `ensureWebhook` and `verifyWebhook` are still throwing
-// not-implemented stubs. U13 implemented
-// authorizationUrl/exchangeCode/refreshTokens. U14 implements `discover`
-// (Graph delta over the cursor contract). U15 (this unit) implements `fetch`
-// (download + extractor routing + legacy pdf conversion). U16/U17/U18 land
-// ensureWebhook/verifyWebhook/enrollment resolution/describeStatus. Do not
-// add real webhook Graph logic here until those units land.
+// U13 implemented authorizationUrl/exchangeCode/refreshTokens. U14
+// implements `discover` (Graph delta over the cursor contract). U15
+// implements `fetch` (download + extractor routing + legacy pdf
+// conversion). U16 (this unit) implements ensureWebhook/verifyWebhook
+// (subscription fan-out per enrolled drive, stateless challenge echo,
+// timing-safe clientState verification) and the optional
+// answerWebhookChallenge/verifyLifecycleWebhook. U17/U18 land enrollment
+// resolution/describeStatus.
 
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { DEFAULT_EXTRACT_LIMITS, type ExtractKind, extractText } from "../extract/index.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
@@ -332,18 +334,405 @@ async function refreshTokens(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Webhooks (U16): one Graph subscription per enrolled drive, fanned out
+// under a single stable channel id/secret; a stateless validation-token
+// echo; timing-safe clientState verification; lifecycle -> queued action
+// mapping. See design §6 (subscription model, validation, verification,
+// lifecycle) and §11 (subscription limits).
+
+// Graph's practical cap on a driveItem-resource subscription's lifetime is
+// ~42300 minutes; 41000 minutes (design §6) leaves headroom under that cap
+// while still comfortably clearing the engine's 24h renewal lead.
+const MICROSOFT_SUBSCRIPTION_EXPIRATION_MINUTES = 41_000;
+
+function validHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function subscriptionExpiration(now: Date): string {
+  return new Date(now.getTime() + MICROSOFT_SUBSCRIPTION_EXPIRATION_MINUTES * 60_000).toISOString();
+}
+
+function subscriptionsUrl(): string {
+  return `${MICROSOFT_GRAPH_HOST}/subscriptions`;
+}
+
+function subscriptionUrl(id: string): string {
+  return `${MICROSOFT_GRAPH_HOST}/subscriptions/${encodeURIComponent(id)}`;
+}
+
+// Subscriptions are matched back to the drive they cover by parsing their
+// own `resource` field (`/drives/{driveId}/root`) rather than threading a
+// separate driveId alongside each stored subscription — the resource string
+// is already the authoritative record of what a subscription covers.
+function driveIdFromResource(resource: string): string | undefined {
+  const match = /^\/drives\/([^/]+)\/root$/.exec(resource);
+  return match?.[1];
+}
+
+interface MicrosoftSubscriptionResponse {
+  id?: unknown;
+  expirationDateTime?: unknown;
+}
+
+function subscriptionBody(
+  driveId: string,
+  secret: string,
+  notificationUrl: string,
+  lifecycleNotificationUrl: string,
+  expirationDateTime: string,
+): string {
+  return JSON.stringify({
+    changeType: "updated",
+    notificationUrl,
+    lifecycleNotificationUrl,
+    resource: `/drives/${driveId}/root`,
+    expirationDateTime,
+    clientState: secret,
+  });
+}
+
+async function createSubscription(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  driveId: string,
+  secret: string,
+  notificationUrl: string,
+  lifecycleNotificationUrl: string,
+  expirationDateTime: string,
+): Promise<Result<{ id: string; expiresAt: string }, Error>> {
+  const response = await requestJson(
+    transport,
+    subscriptionsUrl(),
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: subscriptionBody(
+        driveId,
+        secret,
+        notificationUrl,
+        lifecycleNotificationUrl,
+        expirationDateTime,
+      ),
+    },
+    limits,
+  );
+  if (!response.ok) return response;
+  if (response.value.status < 200 || response.value.status >= 300) {
+    return err(
+      new Error(`Microsoft Graph subscription create failed with status ${response.value.status}`),
+    );
+  }
+  const body = response.value.body as MicrosoftSubscriptionResponse;
+  const id = stringValue(body.id);
+  const expiresAt = stringValue(body.expirationDateTime);
+  if (id === undefined || expiresAt === undefined) {
+    return err(new Error("Microsoft Graph subscription create response is incomplete"));
+  }
+  return ok({ id, expiresAt });
+}
+
+// PATCH renews an existing subscription's expiration; a 404 means Graph has
+// already forgotten it (expired past renewal, or externally deleted) so the
+// only remaining option is to recreate it from scratch.
+async function renewOrRecreateSubscription(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  existingId: string,
+  driveId: string,
+  secret: string,
+  notificationUrl: string,
+  lifecycleNotificationUrl: string,
+  expirationDateTime: string,
+): Promise<Result<{ id: string; expiresAt: string }, Error>> {
+  const patch = await requestJson(
+    transport,
+    subscriptionUrl(existingId),
+    {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ expirationDateTime }),
+    },
+    limits,
+  );
+  if (!patch.ok) return patch;
+  if (patch.value.status === 404) {
+    return createSubscription(
+      transport,
+      accessToken,
+      limits,
+      driveId,
+      secret,
+      notificationUrl,
+      lifecycleNotificationUrl,
+      expirationDateTime,
+    );
+  }
+  if (patch.value.status < 200 || patch.value.status >= 300) {
+    return err(
+      new Error(`Microsoft Graph subscription renew failed with status ${patch.value.status}`),
+    );
+  }
+  const body = patch.value.body as MicrosoftSubscriptionResponse;
+  const id = stringValue(body.id) ?? existingId;
+  const expiresAt = stringValue(body.expirationDateTime) ?? expirationDateTime;
+  return ok({ id, expiresAt });
+}
+
+// A plain status check (not requestJson/boundedJson): Graph's DELETE
+// response is 204 with no body, which a JSON-parsing helper would either
+// reject or has to special-case — simpler to just confirm the status here.
+async function deleteSubscription(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  id: string,
+): Promise<Result<void, Error>> {
+  const response = await providerResponse(
+    MICROSOFT,
+    transport,
+    subscriptionUrl(id),
+    { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+    limits,
+  );
+  if (!response.ok) return response;
+  const status = response.value.status;
+  if (status !== 404 && (status < 200 || status >= 300)) {
+    return err(new Error(`Microsoft Graph subscription delete failed with status ${status}`));
+  }
+  return ok(undefined);
+}
+
 async function ensureWebhook(
-  _state: ProviderState,
-  _input: EnsureWebhookInput,
+  transport: MicrosoftHttpTransport,
+  state: ProviderState,
+  input: EnsureWebhookInput,
+  limits: RequestLimits,
 ): Promise<Result<WebhookChannel, Error>> {
-  throw new Error("microsoft ensureWebhook not yet implemented (U16)");
+  // Reused (not regenerated) across calls so a renewal keeps the same
+  // channel id and clientState secret, which every already-running
+  // subscription's clientState was signed with.
+  const id = state.webhook?.id ?? randomUUID();
+  const secret = state.webhook?.secret ?? randomBytes(32).toString("base64url");
+
+  // R19: no public HTTPS callback (e.g. loopback/local dev) -> fall back to
+  // polling. Never throw; never call Graph.
+  if (!validHttpsUrl(input.callbackUrl)) {
+    return ok({ id, secret, subscriptions: [] });
+  }
+
+  const driveIds = new Set(Object.values(state.enrollments ?? {}).map((record) => record.driveId));
+  const existingByDrive = new Map<string, { id: string; resource: string; expiresAt: string }>();
+  for (const subscription of state.webhook?.subscriptions ?? []) {
+    const driveId = driveIdFromResource(subscription.resource);
+    if (driveId !== undefined) existingByDrive.set(driveId, subscription);
+  }
+
+  const notificationUrl = input.callbackUrl;
+  const lifecycleNotificationUrl = `${input.callbackUrl}/lifecycle`;
+  const expirationDateTime = subscriptionExpiration(input.now);
+  const accessToken = state.accessToken;
+  const subscriptions: Array<{ id: string; resource: string; expiresAt: string }> = [];
+
+  for (const driveId of driveIds) {
+    const resource = `/drives/${driveId}/root`;
+    const current = existingByDrive.get(driveId);
+    if (current !== undefined && Date.parse(current.expiresAt) > input.renewBefore.getTime()) {
+      subscriptions.push(current);
+      continue;
+    }
+    const result =
+      current !== undefined
+        ? await renewOrRecreateSubscription(
+            transport,
+            accessToken,
+            limits,
+            current.id,
+            driveId,
+            secret,
+            notificationUrl,
+            lifecycleNotificationUrl,
+            expirationDateTime,
+          )
+        : await createSubscription(
+            transport,
+            accessToken,
+            limits,
+            driveId,
+            secret,
+            notificationUrl,
+            lifecycleNotificationUrl,
+            expirationDateTime,
+          );
+    if (!result.ok) return result;
+    subscriptions.push({ id: result.value.id, resource, expiresAt: result.value.expiresAt });
+  }
+
+  // A drive that no longer has a current enrollment loses its subscription.
+  for (const [driveId, subscription] of existingByDrive) {
+    if (driveIds.has(driveId)) continue;
+    const deleted = await deleteSubscription(transport, accessToken, limits, subscription.id);
+    if (!deleted.ok) return deleted;
+  }
+
+  const expiresAt =
+    subscriptions.length === 0
+      ? undefined
+      : subscriptions.reduce((min, current) =>
+          Date.parse(current.expiresAt) < Date.parse(min.expiresAt) ? current : min,
+        ).expiresAt;
+
+  return ok({
+    id,
+    secret,
+    subscriptions,
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+  });
+}
+
+function answerWebhookChallenge(input: WebhookRequest): string | undefined {
+  return input.query?.validationToken;
+}
+
+// Timing-safe clientState comparison (trust boundary, R17): an unequal
+// length is rejected outright rather than passed to timingSafeEqual (which
+// throws on a length mismatch), so a length-derived timing side channel
+// never opens up either.
+function equalWebhookSecret(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseWebhookNotificationBody(body: Uint8Array): unknown {
+  try {
+    return JSON.parse(Buffer.from(body).toString("utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+interface MicrosoftNotificationEntry {
+  subscriptionId?: unknown;
+  clientState?: unknown;
+  id?: unknown;
+}
+
+interface MicrosoftNotificationBody {
+  value?: unknown;
 }
 
 async function verifyWebhook(
-  _input: WebhookRequest,
-  _state: ProviderState,
+  input: WebhookRequest,
+  state: ProviderState,
+  now: () => Date,
 ): Promise<Result<VerifiedWebhook, Error>> {
-  throw new Error("microsoft verifyWebhook not yet implemented (U16)");
+  const webhook = state.webhook;
+  if (webhook === undefined) {
+    return err(new Error("Microsoft webhook is not configured"));
+  }
+  const parsed = parseWebhookNotificationBody(input.body);
+  const body = parsed as MicrosoftNotificationBody | undefined;
+  if (body === undefined || !Array.isArray(body.value) || body.value.length === 0) {
+    return err(new Error("Microsoft webhook notification body is invalid"));
+  }
+  const knownSubscriptionIds = new Set((webhook.subscriptions ?? []).map((s) => s.id));
+
+  // Drive-root notifications carry no item identity — every entry is
+  // validated (a batch is all-or-nothing), but the change itself only ever
+  // triggers a full reconcile, same as google.ts.
+  for (const raw of body.value) {
+    if (typeof raw !== "object" || raw === null) {
+      return err(new Error("Microsoft webhook notification entry is invalid"));
+    }
+    const entry = raw as MicrosoftNotificationEntry;
+    const subscriptionId = stringValue(entry.subscriptionId);
+    const clientState = stringValue(entry.clientState);
+    if (
+      subscriptionId === undefined ||
+      !knownSubscriptionIds.has(subscriptionId) ||
+      clientState === undefined ||
+      !equalWebhookSecret(clientState, webhook.secret)
+    ) {
+      return err(new Error("Microsoft webhook notification is invalid"));
+    }
+  }
+
+  const first = body.value[0] as MicrosoftNotificationEntry;
+  const subscriptionId = stringValue(first.subscriptionId) as string;
+  // Graph retries a delivery under the same notification if it isn't
+  // acknowledged; when the payload carries no `id` of its own, minting a
+  // fresh id (rather than a stable derivation) means a retried delivery
+  // produces a distinct event the queue coalesces rather than a repeat the
+  // queue could mistake for a tombstoned duplicate.
+  const eventId =
+    stringValue(first.id) ?? `${subscriptionId}:${now().toISOString()}:${randomUUID()}`;
+  return ok({ kind: "event", eventId, hint: { kind: "reconcile" } });
+}
+
+interface MicrosoftLifecycleEntry {
+  subscriptionId?: unknown;
+  clientState?: unknown;
+  lifecycleEvent?: unknown;
+  id?: unknown;
+}
+
+interface MicrosoftLifecycleBody {
+  value?: unknown;
+}
+
+function mapLifecycleAction(event: string): "reauthorize" | "recreate" | "reconcile" | undefined {
+  if (event === "reauthorizationRequired") return "reauthorize";
+  if (event === "subscriptionRemoved") return "recreate";
+  if (event === "missed") return "reconcile";
+  return undefined;
+}
+
+async function verifyLifecycleWebhook(
+  input: WebhookRequest,
+  state: ProviderState,
+  now: () => Date,
+): Promise<Result<VerifiedWebhook, Error>> {
+  const webhook = state.webhook;
+  if (webhook === undefined) {
+    return err(new Error("Microsoft webhook is not configured"));
+  }
+  const parsed = parseWebhookNotificationBody(input.body);
+  const body = parsed as MicrosoftLifecycleBody | undefined;
+  if (body === undefined || !Array.isArray(body.value) || body.value.length === 0) {
+    return err(new Error("Microsoft lifecycle notification body is invalid"));
+  }
+  const first = body.value[0];
+  if (typeof first !== "object" || first === null) {
+    return err(new Error("Microsoft lifecycle notification entry is invalid"));
+  }
+  const entry = first as MicrosoftLifecycleEntry;
+  const subscriptionId = stringValue(entry.subscriptionId);
+  const clientState = stringValue(entry.clientState);
+  const knownSubscriptionIds = new Set((webhook.subscriptions ?? []).map((s) => s.id));
+  if (
+    subscriptionId === undefined ||
+    !knownSubscriptionIds.has(subscriptionId) ||
+    clientState === undefined ||
+    !equalWebhookSecret(clientState, webhook.secret)
+  ) {
+    return err(new Error("Microsoft lifecycle notification is invalid"));
+  }
+  const lifecycleEvent = stringValue(entry.lifecycleEvent);
+  const action = lifecycleEvent === undefined ? undefined : mapLifecycleAction(lifecycleEvent);
+  if (action === undefined) {
+    return err(new Error("Microsoft lifecycle notification has an unrecognized event"));
+  }
+  const eventId =
+    stringValue(entry.id) ?? `${subscriptionId}:${now().toISOString()}:${randomUUID()}`;
+  return ok({ kind: "lifecycle", eventId, action });
 }
 
 // ---------------------------------------------------------------------------
@@ -1506,8 +1895,10 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
     authorizationUrl: (input) => authorizationUrl(input, redirectUri, config),
     exchangeCode: (input) => exchangeCode(transport, redirectUri, now, config, limits, input),
     refreshTokens: (input) => refreshTokens(transport, now, config, limits, input),
-    ensureWebhook,
-    verifyWebhook,
+    ensureWebhook: (state, input) => ensureWebhook(transport, state, input, limits),
+    verifyWebhook: (input, state) => verifyWebhook(input, state, now),
+    answerWebhookChallenge,
+    verifyLifecycleWebhook: (input, state) => verifyLifecycleWebhook(input, state, now),
     discover: (state) => discoverMicrosoftSources(transport, limits, defaultSleep, state),
     fetch: (source, state) => fetchSource(transport, limits, defaultSleep, config, source, state),
   };

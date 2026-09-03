@@ -82,7 +82,7 @@ describe("Microsoft adapter skeleton (U12)", () => {
     expect(parsed.searchParams.get("response_type")).toBe("code");
   });
 
-  it("discover with no enrollments returns an empty set without any HTTP call; the remaining not-yet-implemented methods are clearly labelled", async () => {
+  it("discover with no enrollments returns an empty set without any HTTP call; webhook methods are wired (see the dedicated U16 describe block below)", async () => {
     const adapter = createMicrosoftAdapter({
       redirectUri: "https://vault.example/integrations/microsoft/callback",
       config: microsoftProviderConfig(),
@@ -101,18 +101,25 @@ describe("Microsoft adapter skeleton (U12)", () => {
         { accessToken: "a", refreshToken: "r", sources: {} },
       ),
     ).resolves.toMatchObject({ ok: false });
+    // ensureWebhook is implemented as of U16 (see the dedicated "Microsoft
+    // adapter webhooks (U16)" describe block below) — a non-HTTPS callback
+    // is rejected into an empty polling-fallback channel (R19) without any
+    // HTTP call, so this is safe to exercise here even without an injected
+    // transport.
     await expect(
       adapter.ensureWebhook?.(
         { accessToken: "a", refreshToken: "r", sources: {} },
-        { callbackUrl: "https://vault.example/hook", now: new Date(), renewBefore: new Date() },
+        { callbackUrl: "http://localhost/hook", now: new Date(), renewBefore: new Date() },
       ),
-    ).rejects.toThrow("microsoft ensureWebhook not yet implemented (U16)");
+    ).resolves.toMatchObject({ ok: true, value: { subscriptions: [] } });
+    // verifyWebhook is implemented as of U16 — an unconfigured webhook (no
+    // state.webhook) is rejected before any body parsing.
     await expect(
       adapter.verifyWebhook?.(
         { headers: {}, body: new Uint8Array() },
         { accessToken: "a", refreshToken: "r", sources: {} },
       ),
-    ).rejects.toThrow("microsoft verifyWebhook not yet implemented (U16)");
+    ).resolves.toMatchObject({ ok: false });
   });
 
   it("delivers a fixtured /me response through the injected-transport harness (R40 seam)", async () => {
@@ -2007,5 +2014,485 @@ describe("Microsoft adapter fetch (U15)", () => {
     const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
 
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("Microsoft adapter webhooks (U16)", () => {
+  function requireCapability<T>(capability: T | undefined, name: string): T {
+    if (capability === undefined) throw new Error(`adapter is missing capability: ${name}`);
+    return capability;
+  }
+
+  it("ensures one subscription per enrolled drive, fanned out under one channel; expiresAt is the earliest expiry", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/subscriptions`]: [
+          jsonFixture({ id: "sub-1", expirationDateTime: "2026-10-01T00:00:00.000Z" }),
+          jsonFixture({ id: "sub-2", expirationDateTime: "2026-09-25T00:00:00.000Z" }),
+        ],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {
+        e1: enrollment({
+          id: "e1",
+          kind: "item",
+          driveId: "drive1",
+          remoteId: "item1",
+          cursorKey: "drive:drive1",
+        }),
+        e2: enrollment({
+          id: "e2",
+          kind: "item",
+          driveId: "drive2",
+          remoteId: "item2",
+          cursorKey: "drive:drive2",
+        }),
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured.ok).toBe(true);
+    if (!ensured.ok) return;
+    expect(ensured.value.expiresAt).toBe("2026-09-25T00:00:00.000Z");
+    expect(ensured.value.subscriptions).toHaveLength(2);
+    expect(ensured.value.subscriptions?.map((s) => s.resource).sort()).toEqual([
+      "/drives/drive1/root",
+      "/drives/drive2/root",
+    ]);
+
+    const posts = requests.filter((r) => r.url === `${GRAPH}/subscriptions`);
+    expect(posts).toHaveLength(2);
+    for (const post of posts) {
+      const body = JSON.parse(String(post.init.body)) as Record<string, unknown>;
+      expect(body.changeType).toBe("updated");
+      expect(body.clientState).toBe(ensured.value.secret);
+      expect(body.notificationUrl).toBe("https://vault.example/integrations/microsoft/webhook");
+      expect(body.lifecycleNotificationUrl).toBe(
+        "https://vault.example/integrations/microsoft/webhook/lifecycle",
+      );
+      expect(body.resource).toMatch(/^\/drives\/drive[12]\/root$/);
+    }
+  });
+
+  it("renews a soon-to-expire subscription via PATCH, recreating via POST on a 404", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/subscriptions/sub-old`]: [jsonFixture({ error: "not found" }, 404)],
+        [`${GRAPH}/subscriptions`]: [
+          jsonFixture({ id: "sub-new", expirationDateTime: "2026-10-13T08:33:20.000Z" }),
+        ],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {
+        e1: enrollment({
+          id: "e1",
+          kind: "item",
+          driveId: "drive1",
+          remoteId: "item1",
+          cursorKey: "drive:drive1",
+        }),
+      },
+      webhook: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          { id: "sub-old", resource: "/drives/drive1/root", expiresAt: "2026-09-02T10:00:00.000Z" },
+        ],
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({
+      ok: true,
+      value: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          { id: "sub-new", resource: "/drives/drive1/root", expiresAt: "2026-10-13T08:33:20.000Z" },
+        ],
+      },
+    });
+    const patched = requests.find((r) => r.url === `${GRAPH}/subscriptions/sub-old`);
+    expect(patched?.init.method).toBe("PATCH");
+    const recreated = requests.find((r) => r.url === `${GRAPH}/subscriptions`);
+    expect(recreated?.init.method).toBe("POST");
+  });
+
+  it("keeps an unexpired subscription without any Graph call", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport({}, requests);
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {
+        e1: enrollment({
+          id: "e1",
+          kind: "item",
+          driveId: "drive1",
+          remoteId: "item1",
+          cursorKey: "drive:drive1",
+        }),
+      },
+      webhook: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          {
+            id: "sub-current",
+            resource: "/drives/drive1/root",
+            expiresAt: "2026-09-10T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({
+      ok: true,
+      value: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          {
+            id: "sub-current",
+            resource: "/drives/drive1/root",
+            expiresAt: "2026-09-10T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("deletes a subscription whose drive no longer has a current enrollment", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      { [`${GRAPH}/subscriptions/sub-gone`]: [new Response(null, { status: 204 })] },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {},
+      webhook: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          {
+            id: "sub-gone",
+            resource: "/drives/drive-unenrolled/root",
+            expiresAt: "2026-09-10T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({ ok: true, value: { subscriptions: [] } });
+    const deleted = requests.find((r) => r.url === `${GRAPH}/subscriptions/sub-gone`);
+    expect(deleted?.init.method).toBe("DELETE");
+  });
+
+  it("R19: a non-HTTPS/loopback callback returns an empty channel and never calls Graph", async () => {
+    const transport = capturingTransport({}, []);
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {
+        e1: enrollment({
+          id: "e1",
+          kind: "item",
+          driveId: "drive1",
+          remoteId: "item1",
+          cursorKey: "drive:drive1",
+        }),
+      },
+    });
+
+    const ensured = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "http://localhost/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+
+    expect(ensured).toMatchObject({ ok: true, value: { subscriptions: [] } });
+  });
+
+  it("the clientState secret and channel id are stable across a renewal cycle", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const transport = capturingTransport(
+      {
+        [`${GRAPH}/subscriptions`]: [
+          jsonFixture({ id: "sub-1", expirationDateTime: "2026-10-01T00:00:00.000Z" }),
+        ],
+      },
+      requests,
+    );
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport,
+    });
+    const providerState = fetchState({
+      enrollments: {
+        e1: enrollment({
+          id: "e1",
+          kind: "item",
+          driveId: "drive1",
+          remoteId: "item1",
+          cursorKey: "drive:drive1",
+        }),
+      },
+    });
+
+    const first = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T00:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T00:00:00.000Z"),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    providerState.webhook = first.value;
+
+    const second = await requireCapability(adapter.ensureWebhook, "ensureWebhook")(providerState, {
+      callbackUrl: "https://vault.example/integrations/microsoft/webhook",
+      now: new Date("2026-09-02T01:00:00.000Z"),
+      renewBefore: new Date("2026-09-03T01:00:00.000Z"),
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      value: { id: first.value.id, secret: first.value.secret },
+    });
+    // The unexpired subscription (expires 2026-10-01, well past renewBefore
+    // 2026-09-03T01:00:00) is retained without a second Graph call.
+    expect(requests.filter((r) => r.url === `${GRAPH}/subscriptions`)).toHaveLength(1);
+  });
+
+  it("answerWebhookChallenge echoes the validation token verbatim, or returns undefined when absent", () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+    });
+
+    expect(
+      requireCapability(
+        adapter.answerWebhookChallenge,
+        "answerWebhookChallenge",
+      )({
+        headers: {},
+        body: new Uint8Array(),
+        query: { validationToken: "abc" },
+      }),
+    ).toBe("abc");
+    expect(
+      requireCapability(
+        adapter.answerWebhookChallenge,
+        "answerWebhookChallenge",
+      )({
+        headers: {},
+        body: new Uint8Array(),
+      }),
+    ).toBeUndefined();
+  });
+
+  function webhookState(): ProviderState {
+    return fetchState({
+      webhook: {
+        id: "channel-1",
+        secret: "channel-secret",
+        subscriptions: [
+          { id: "sub-1", resource: "/drives/drive1/root", expiresAt: "2026-10-01T00:00:00.000Z" },
+        ],
+      },
+    });
+  }
+
+  function notificationBody(entries: Array<Record<string, unknown>>): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ value: entries }));
+  }
+
+  it("verifyWebhook accepts a valid clientState + known subscriptionId, and rejects a wrong secret or unknown subscription", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+    });
+
+    const valid = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {},
+        body: notificationBody([{ subscriptionId: "sub-1", clientState: "channel-secret" }]),
+      },
+      webhookState(),
+    );
+    const wrongSecret = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {},
+        body: notificationBody([{ subscriptionId: "sub-1", clientState: "attacker-secret" }]),
+      },
+      webhookState(),
+    );
+    const unknownSubscription = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      {
+        headers: {},
+        body: notificationBody([{ subscriptionId: "sub-unknown", clientState: "channel-secret" }]),
+      },
+      webhookState(),
+    );
+
+    expect(valid).toEqual({
+      ok: true,
+      value: { kind: "event", eventId: expect.any(String), hint: { kind: "reconcile" } },
+    });
+    expect(wrongSecret.ok).toBe(false);
+    expect(unknownSubscription.ok).toBe(false);
+  });
+
+  it("verifyWebhook mints a distinct event id for a duplicate Graph-retried notification with no id field", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+    });
+    const body = notificationBody([{ subscriptionId: "sub-1", clientState: "channel-secret" }]);
+
+    const first = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      { headers: {}, body },
+      webhookState(),
+    );
+    const second = await requireCapability(adapter.verifyWebhook, "verifyWebhook")(
+      { headers: {}, body },
+      webhookState(),
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value).toMatchObject({ kind: "event" });
+    expect(second.value).toMatchObject({ kind: "event" });
+    expect((first.value as { eventId: string }).eventId).not.toBe(
+      (second.value as { eventId: string }).eventId,
+    );
+  });
+
+  it("verifyLifecycleWebhook maps each lifecycle event to its queued action, and rejects a wrong clientState", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+    });
+
+    const reauthorize = await requireCapability(
+      adapter.verifyLifecycleWebhook,
+      "verifyLifecycleWebhook",
+    )(
+      {
+        headers: {},
+        body: notificationBody([
+          {
+            subscriptionId: "sub-1",
+            clientState: "channel-secret",
+            lifecycleEvent: "reauthorizationRequired",
+          },
+        ]),
+      },
+      webhookState(),
+    );
+    const recreate = await requireCapability(
+      adapter.verifyLifecycleWebhook,
+      "verifyLifecycleWebhook",
+    )(
+      {
+        headers: {},
+        body: notificationBody([
+          {
+            subscriptionId: "sub-1",
+            clientState: "channel-secret",
+            lifecycleEvent: "subscriptionRemoved",
+          },
+        ]),
+      },
+      webhookState(),
+    );
+    const reconcile = await requireCapability(
+      adapter.verifyLifecycleWebhook,
+      "verifyLifecycleWebhook",
+    )(
+      {
+        headers: {},
+        body: notificationBody([
+          { subscriptionId: "sub-1", clientState: "channel-secret", lifecycleEvent: "missed" },
+        ]),
+      },
+      webhookState(),
+    );
+    const wrongSecret = await requireCapability(
+      adapter.verifyLifecycleWebhook,
+      "verifyLifecycleWebhook",
+    )(
+      {
+        headers: {},
+        body: notificationBody([
+          { subscriptionId: "sub-1", clientState: "attacker-secret", lifecycleEvent: "missed" },
+        ]),
+      },
+      webhookState(),
+    );
+
+    expect(reauthorize).toEqual({
+      ok: true,
+      value: { kind: "lifecycle", eventId: expect.any(String), action: "reauthorize" },
+    });
+    expect(recreate).toEqual({
+      ok: true,
+      value: { kind: "lifecycle", eventId: expect.any(String), action: "recreate" },
+    });
+    expect(reconcile).toEqual({
+      ok: true,
+      value: { kind: "lifecycle", eventId: expect.any(String), action: "reconcile" },
+    });
+    expect(wrongSecret.ok).toBe(false);
   });
 });
