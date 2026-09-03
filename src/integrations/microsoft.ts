@@ -375,11 +375,23 @@ const MICROSOFT_MAX_DELTA_PAGES = 1_000;
 // the shared helper has no built-in 429 semantics).
 const MICROSOFT_MAX_RETRY_AFTER_SECONDS = 30;
 
-interface MicrosoftCursorRoots {
-  [cursorKey: string]: string;
+// A per-root cursor entry is either a bare deltaLink string (the folder-
+// scoped "primary" container path, and every item-group root: Graph itself
+// scopes these results, so no extra membership state needs to survive a
+// cycle) or `{link, folders}` (the container "fallback" path only: the
+// drive-root delta returns the WHOLE drive, so which folder ids are known to
+// be inside the enrolled subtree must be persisted and carried into the next
+// cycle's ancestry seed — see the U14 Critical-bug fix note on
+// classifyContainerFallback below). A legacy/garbage entry is treated as a
+// bare link with no persisted folders, which is always safe to parse.
+interface MicrosoftCursorRootEntry {
+  link: string;
+  folders?: string[];
 }
 
-function parseMicrosoftCursor(raw: string | undefined): MicrosoftCursorRoots {
+type MicrosoftCursorRootValue = string | MicrosoftCursorRootEntry;
+
+function parseMicrosoftCursor(raw: string | undefined): Record<string, MicrosoftCursorRootValue> {
   if (raw === undefined) return {};
   let parsed: unknown;
   try {
@@ -390,16 +402,36 @@ function parseMicrosoftCursor(raw: string | undefined): MicrosoftCursorRoots {
   if (typeof parsed !== "object" || parsed === null) return {};
   const roots = (parsed as { roots?: unknown }).roots;
   if (typeof roots !== "object" || roots === null) return {};
-  const result: MicrosoftCursorRoots = {};
-  for (const [cursorKey, deltaLink] of Object.entries(roots)) {
-    const value = stringValue(deltaLink);
-    if (value !== undefined) result[cursorKey] = value;
+  const result: Record<string, MicrosoftCursorRootValue> = {};
+  for (const [cursorKey, value] of Object.entries(roots)) {
+    if (typeof value === "string" && value.length > 0) {
+      result[cursorKey] = value;
+      continue;
+    }
+    if (typeof value !== "object" || value === null) continue;
+    const link = stringValue((value as { link?: unknown }).link);
+    if (link === undefined) continue;
+    const rawFolders = (value as { folders?: unknown }).folders;
+    const folders = Array.isArray(rawFolders)
+      ? rawFolders.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [];
+    result[cursorKey] = { link, folders };
   }
   return result;
 }
 
-function serializeMicrosoftCursor(roots: MicrosoftCursorRoots): string {
+function serializeMicrosoftCursor(roots: Record<string, MicrosoftCursorRootValue>): string {
   return JSON.stringify({ v: 1, roots });
+}
+
+function cursorEntryLink(entry: MicrosoftCursorRootValue | undefined): string | undefined {
+  if (entry === undefined) return undefined;
+  return typeof entry === "string" ? entry : entry.link;
+}
+
+function cursorEntryFolders(entry: MicrosoftCursorRootValue | undefined): string[] {
+  if (entry === undefined || typeof entry === "string") return [];
+  return entry.folders ?? [];
 }
 
 // A root groups one or more enrollments under a single delta walk/cursor
@@ -506,7 +538,9 @@ function containerInitUrl(driveId: string, folderId: string): string {
 // Probe-deferred fallback (design note): a folder-scoped delta 400s on some
 // SharePoint libraries; probe 2 will confirm whether the folder-scoped or
 // drive-root path is primary in practice. Until then, this is reached only
-// when a fresh (non-resumed) container init 400s.
+// when a fresh (non-resumed) container init 400s, or when a root already
+// known (via its persisted cursor entry shape) to be in fallback mode
+// resyncs.
 function containerFallbackUrl(driveId: string): string {
   return requestUrl(
     `${MICROSOFT_GRAPH_HOST}/drives/${encodeURIComponent(driveId)}/root/delta`,
@@ -553,6 +587,8 @@ function deltaParentId(item: MicrosoftDeltaItem): string | undefined {
 // Item-group roots only ever track the specifically-enrolled item ids — the
 // drive-root delta walks the WHOLE drive, so everything else must be
 // filtered out (§8: a large library is never fully enumerated into sources).
+// No ancestry/parent reasoning applies here (membership is a flat id
+// lookup), so this is unaffected by the U14 Critical-bug fix below.
 function classifyItemGroupDeltaItem(
   raw: unknown,
   driveId: string,
@@ -570,39 +606,129 @@ function classifyItemGroupDeltaItem(
   return { id: sourceId, action: "upsert", revision: eTag };
 }
 
-// Container roots track ancestry by id (delta omits parentReference.path),
-// mutating `ancestorIds` as folders inside the subtree are discovered. This
-// runs the same whether the walk started from the folder-scoped delta or the
-// drive-root fallback: the folder-scoped endpoint already scopes results to
-// the subtree, but nested-folder moves can still surface items whose parent
-// isn't the direct root, so ancestry tracking is applied uniformly rather
-// than only in the fallback path.
-function classifyContainerDeltaItem(
+// PRIMARY container path (folder-scoped delta, `/drives/{d}/items/{f}/delta`):
+// Graph itself scopes every returned item to that folder's subtree, so NO
+// parent/ancestry filtering is applied here — trust Graph's own scoping.
+//
+// U14 Critical-bug fix note: an earlier version of this adapter re-derived
+// ancestry from scratch every discover() call (`new Set([folderId])`) and
+// applied an "outside subtree -> remove" check even on this primary path.
+// That is provably wrong on a RESUMED incremental cycle: Graph delta sends
+// only CHANGED items, so an edited file two-or-more levels under the
+// enrolled folder can arrive in a page where its (unchanged) parent
+// subfolder record is absent. With only `{folderId}` seeded, the file's
+// `parentReference.id` never resolves into the ancestor set, so it was
+// wrongly classified "outside subtree" and silently dropped — a real, silent
+// data-loss bug on ordinary nested-folder edits. Leaning on Graph's own
+// folder-scoped delta guarantee for this path removes the need to
+// reconstruct ancestry at all. See classifyContainerFallback below for the
+// one path (drive-root fallback) where ancestry genuinely has to be tracked,
+// and how it's made safe across cycles.
+function classifyContainerPrimary(
   raw: unknown,
   driveId: string,
   folderId: string,
-  ancestorIds: Set<string>,
 ): MicrosoftDeltaClassification | undefined {
   const id = deltaItemId(raw);
-  if (id === undefined) return undefined;
-  if (id === folderId) return undefined; // the enrolled root folder itself is not a source
+  if (id === undefined || id === folderId) return undefined; // root folder itself is not a source
   const item = raw as MicrosoftDeltaItem;
-  const parentId = deltaParentId(item);
-  const inSubtree = parentId !== undefined && ancestorIds.has(parentId);
   const sourceId = `${driveId}:${id}`;
-  if (item.deleted !== undefined) {
-    ancestorIds.delete(id);
-    return { id: sourceId, action: "remove" };
-  }
-  if (item.folder !== undefined) {
-    if (inSubtree) ancestorIds.add(id);
-    else ancestorIds.delete(id);
-    return undefined; // folders are tracked for ancestry only, never returned as sources
-  }
-  if (!inSubtree) return { id: sourceId, action: "remove" };
+  if (item.deleted !== undefined) return { id: sourceId, action: "remove" };
+  if (item.folder !== undefined) return undefined; // folders are never sources
   const eTag = stringValue(item.eTag);
   if (item.file === undefined || eTag === undefined) return { id: sourceId, action: "remove" };
   return { id: sourceId, action: "upsert", revision: eTag };
+}
+
+// FALLBACK container path only (drive-root delta, used when the primary
+// folder-scoped delta 400s): the drive-root delta returns the WHOLE drive,
+// so ancestry filtering by parentReference.id IS genuinely required here to
+// restrict results to the enrolled subtree (delta omits parentReference.path
+// entirely). Made safe against both bugs the Critical-bug review flagged:
+//
+//  1. Cross-cycle: the folder-id set discovered so far is PERSISTED in the
+//     cursor (see MicrosoftCursorRootEntry.folders) and seeded back in on
+//     every resumed walk, so an unchanged ancestor folder not resent this
+//     cycle doesn't erase what was already learned.
+//  2. Intra-walk ordering: `foldContainerAncestry` runs a two-pass fixpoint
+//     over ALL items collected across every page of this walk BEFORE any
+//     file is classified, so a nested file arriving before its subfolder
+//     record (same page or a later one) still resolves correctly.
+//
+// Conservative-on-ambiguity rule: a file whose parent can't be resolved into
+// the (fully folded) ancestor set is never REMOVED if it was already
+// tracked — only an explicit `deleted` facet removes a previously-known
+// item. An unresolved parent only prevents ADDING a not-yet-tracked item
+// (the drive-root delta covers unrelated parts of the drive too, so an
+// unresolved new item is presumed foreign, not ours). This trades a
+// possible late remove (an item that truly moved out lingers until an
+// explicit signal or a full resync) for never silently losing a legitimately
+// in-scope item — the correct tradeoff per the Critical-bug review.
+function applyContainerFallbackItem(
+  raw: unknown,
+  driveId: string,
+  folderId: string,
+  ancestorIds: ReadonlySet<string>,
+  sources: Map<string, RemoteSource>,
+): void {
+  const id = deltaItemId(raw);
+  if (id === undefined || id === folderId) return; // root folder itself is not a source
+  const item = raw as MicrosoftDeltaItem;
+  const sourceId = `${driveId}:${id}`;
+  if (item.deleted !== undefined) {
+    sources.delete(sourceId);
+    return;
+  }
+  if (item.folder !== undefined) return; // folders: ancestry only, handled by foldContainerAncestry
+  const parentId = deltaParentId(item);
+  const inSubtree = parentId !== undefined && ancestorIds.has(parentId);
+  const eTag = stringValue(item.eTag);
+  if (inSubtree && item.file !== undefined && eTag !== undefined) {
+    sources.set(sourceId, { id: sourceId, revision: eTag });
+    return;
+  }
+  if (inSubtree) {
+    // Confirmed in-subtree but not a usable file record (missing eTag, or a
+    // non-file facet replacing a former file) — a definite signal, safe to
+    // drop.
+    sources.delete(sourceId);
+    return;
+  }
+  // Parent unresolved (or resolved outside the known ancestor set): never
+  // speculatively add an unconfirmed item, but never drop a previously-known
+  // one either. See the conservative-on-ambiguity note above.
+}
+
+// Two-pass ancestry fold (part of the drive-root fallback path only): grows
+// `ancestorIds` from `{folderId} ∪ persistedFolders` by repeatedly scanning
+// every folder record collected across the WHOLE walk (all pages) until no
+// further growth occurs. Running this to a fixpoint over the complete item
+// set — rather than once, streaming, per page — is what makes a nested
+// file's classification independent of whether its subfolder's record
+// happens to arrive before or after it.
+function foldContainerAncestry(
+  items: readonly unknown[],
+  folderId: string,
+  persistedFolders: readonly string[],
+): Set<string> {
+  const ancestorIds = new Set<string>([folderId, ...persistedFolders]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const raw of items) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const item = raw as MicrosoftDeltaItem;
+      if (item.folder === undefined || item.deleted !== undefined) continue;
+      const id = stringValue(item.id);
+      if (id === undefined || ancestorIds.has(id)) continue;
+      const parentId = deltaParentId(item);
+      if (parentId !== undefined && ancestorIds.has(parentId)) {
+        ancestorIds.add(id);
+        grew = true;
+      }
+    }
+  }
+  return ancestorIds;
 }
 
 function taggedDeltaError(message: string, tags: { resync?: true; badRequest?: true }): Error {
@@ -680,27 +806,30 @@ async function requestDeltaPageWithRetry(
   return retried;
 }
 
-interface MicrosoftDeltaWalkResult {
+interface MicrosoftDeltaPagesResult {
   deltaLink: string;
-  sources: Map<string, RemoteSource>;
+  /** Raw items across every page, in stream order (unclassified). */
+  items: unknown[];
 }
 
 // Follows @odata.nextLink pages from `initialUrl` to a terminal
 // @odata.deltaLink, bounded by MICROSOFT_MAX_DELTA_PAGES with a repeated-link
-// guard (mirrors google.ts's Drive-changes pagination exactly). `classify`
-// applies each page's items to a mutable copy of `seed` — last occurrence in
-// the stream wins because later entries simply overwrite/delete the same map
-// key.
-async function walkMicrosoftDelta(
+// guard (mirrors google.ts's Drive-changes pagination exactly). Deliberately
+// does NOT classify items itself — it just collects them in stream order —
+// so a caller needing ancestry (the container fallback path) can fold
+// ancestry over the COMPLETE item set before classifying anything, and a
+// caller that doesn't (item-group roots, container primary) can classify in
+// one pass. Last-occurrence-wins and delete-reappears-as-present both fall
+// out naturally from classifying this list in its original (page) order into
+// a Map.
+async function walkMicrosoftDeltaPages(
   transport: MicrosoftHttpTransport,
   accessToken: string,
   limits: RequestLimits,
   sleep: (milliseconds: number) => Promise<void>,
   initialUrl: string,
-  classify: (item: unknown) => MicrosoftDeltaClassification | undefined,
-  seed: Map<string, RemoteSource>,
-): Promise<Result<MicrosoftDeltaWalkResult, Error>> {
-  const sources = new Map(seed);
+): Promise<Result<MicrosoftDeltaPagesResult, Error>> {
+  const items: unknown[] = [];
   const seenLinks = new Set<string>();
   let url = initialUrl;
   let pages = 0;
@@ -735,14 +864,9 @@ async function walkMicrosoftDelta(
     if (body.value !== undefined && !Array.isArray(body.value)) {
       return err(new Error("Microsoft Graph delta response is invalid"));
     }
-    for (const raw of body.value ?? []) {
-      const classified = classify(raw);
-      if (classified === undefined) continue;
-      if (classified.action === "remove") sources.delete(classified.id);
-      else sources.set(classified.id, { id: classified.id, revision: classified.revision });
-    }
+    for (const raw of body.value ?? []) items.push(raw);
     const deltaLink = stringValue(body["@odata.deltaLink"]);
-    if (deltaLink !== undefined) return ok({ deltaLink, sources });
+    if (deltaLink !== undefined) return ok({ deltaLink, items });
     const nextLink = stringValue(body["@odata.nextLink"]);
     if (nextLink === undefined) {
       return err(new Error("Microsoft Graph delta response is missing a nextLink or deltaLink"));
@@ -751,7 +875,108 @@ async function walkMicrosoftDelta(
   }
 }
 
-async function walkMicrosoftDeltaRoot(
+interface MicrosoftContainerWalkResult {
+  mode: "primary" | "fallback";
+  deltaLink: string;
+  /** Fallback mode only: the subtree folder ids discovered/carried this walk. */
+  folders?: string[];
+  sources: Map<string, RemoteSource>;
+}
+
+async function walkContainerRoot(
+  transport: MicrosoftHttpTransport,
+  accessToken: string,
+  limits: RequestLimits,
+  sleep: (milliseconds: number) => Promise<void>,
+  root: MicrosoftDeltaRoot,
+  storedEntry: MicrosoftCursorRootValue | undefined,
+  remembered: Map<string, RemoteSource>,
+): Promise<Result<MicrosoftContainerWalkResult, Error>> {
+  const folderId = root.folderId as string;
+
+  const runPrimary = async (
+    url: string,
+    seed: Map<string, RemoteSource>,
+  ): Promise<Result<MicrosoftContainerWalkResult, Error>> => {
+    const pages = await walkMicrosoftDeltaPages(transport, accessToken, limits, sleep, url);
+    if (!pages.ok) return pages;
+    const sources = new Map(seed);
+    for (const raw of pages.value.items) {
+      const classified = classifyContainerPrimary(raw, root.driveId, folderId);
+      if (classified === undefined) continue;
+      if (classified.action === "remove") sources.delete(classified.id);
+      else sources.set(classified.id, { id: classified.id, revision: classified.revision });
+    }
+    return ok({ mode: "primary", deltaLink: pages.value.deltaLink, sources });
+  };
+
+  const runFallback = async (
+    url: string,
+    seed: Map<string, RemoteSource>,
+    persistedFolders: string[],
+  ): Promise<Result<MicrosoftContainerWalkResult, Error>> => {
+    const pages = await walkMicrosoftDeltaPages(transport, accessToken, limits, sleep, url);
+    if (!pages.ok) return pages;
+    const ancestorIds = foldContainerAncestry(pages.value.items, folderId, persistedFolders);
+    const sources = new Map(seed);
+    for (const raw of pages.value.items) {
+      applyContainerFallbackItem(raw, root.driveId, folderId, ancestorIds, sources);
+    }
+    return ok({
+      mode: "fallback",
+      deltaLink: pages.value.deltaLink,
+      folders: [...ancestorIds],
+      sources,
+    });
+  };
+
+  // A fresh (non-resumed) walk always tries the primary folder-scoped delta
+  // first, falling back to the drive-root delta only if that 400s.
+  const freshWalk = (): Promise<Result<MicrosoftContainerWalkResult, Error>> =>
+    runPrimary(containerInitUrl(root.driveId, folderId), new Map()).then((primary) =>
+      !primary.ok && isBadRequestError(primary.error)
+        ? runFallback(containerFallbackUrl(root.driveId), new Map(), [folderId])
+        : primary,
+    );
+
+  const resumedLink = cursorEntryLink(storedEntry);
+  // The persisted cursor entry's own shape says which mode a resumed walk is
+  // in — a bare string means primary (no ancestry needed), an object with a
+  // `folders` array means fallback (see MicrosoftCursorRootEntry above) —
+  // so a resumed walk never needs to re-probe with a 400 to rediscover this.
+  const resumedMode: "primary" | "fallback" | undefined =
+    resumedLink === undefined
+      ? undefined
+      : typeof storedEntry === "string"
+        ? "primary"
+        : "fallback";
+
+  let result: Result<MicrosoftContainerWalkResult, Error>;
+  if (resumedLink === undefined) {
+    result = await freshWalk();
+  } else if (resumedMode === "fallback") {
+    result = await runFallback(resumedLink, remembered, cursorEntryFolders(storedEntry));
+  } else {
+    result = await runPrimary(resumedLink, remembered);
+  }
+
+  // 410 resync: drop this root's stored link/folders and re-enumerate from
+  // scratch, bounded to a single re-init attempt so a persistently-invalid
+  // delta session can't loop forever. A root already known to be in
+  // fallback mode re-inits straight into the fallback endpoint (it already
+  // positively knows the primary endpoint 400s for this drive); everything
+  // else re-runs the fresh-walk probe.
+  if (!result.ok && isResyncError(result.error)) {
+    result =
+      resumedMode === "fallback"
+        ? await runFallback(containerFallbackUrl(root.driveId), new Map(), [folderId])
+        : await freshWalk();
+  }
+
+  return result;
+}
+
+async function walkItemGroupRoot(
   transport: MicrosoftHttpTransport,
   accessToken: string,
   limits: RequestLimits,
@@ -759,58 +984,33 @@ async function walkMicrosoftDeltaRoot(
   root: MicrosoftDeltaRoot,
   storedLink: string | undefined,
   remembered: Map<string, RemoteSource>,
-): Promise<Result<MicrosoftDeltaWalkResult, Error>> {
-  const attempt = (url: string, seed: Map<string, RemoteSource>) => {
-    if (root.kind === "container") {
-      const folderId = root.folderId as string;
-      const ancestorIds = new Set<string>([folderId]);
-      return walkMicrosoftDelta(
-        transport,
-        accessToken,
-        limits,
-        sleep,
-        url,
-        (raw) => classifyContainerDeltaItem(raw, root.driveId, folderId, ancestorIds),
-        seed,
-      );
+): Promise<Result<{ deltaLink: string; sources: Map<string, RemoteSource> }, Error>> {
+  const memberIds = root.memberIds as Set<string>;
+
+  const run = async (
+    url: string,
+    seed: Map<string, RemoteSource>,
+  ): Promise<Result<{ deltaLink: string; sources: Map<string, RemoteSource> }, Error>> => {
+    const pages = await walkMicrosoftDeltaPages(transport, accessToken, limits, sleep, url);
+    if (!pages.ok) return pages;
+    const sources = new Map(seed);
+    for (const raw of pages.value.items) {
+      const classified = classifyItemGroupDeltaItem(raw, root.driveId, memberIds);
+      if (classified === undefined) continue;
+      if (classified.action === "remove") sources.delete(classified.id);
+      else sources.set(classified.id, { id: classified.id, revision: classified.revision });
     }
-    const memberIds = root.memberIds as Set<string>;
-    return walkMicrosoftDelta(
-      transport,
-      accessToken,
-      limits,
-      sleep,
-      url,
-      (raw) => classifyItemGroupDeltaItem(raw, root.driveId, memberIds),
-      seed,
-    );
+    return ok({ deltaLink: pages.value.deltaLink, sources });
   };
 
-  const freshInitUrl = (): string =>
-    root.kind === "container"
-      ? containerInitUrl(root.driveId, root.folderId as string)
-      : itemGroupInitUrl(root.driveId);
+  let result =
+    storedLink !== undefined
+      ? await run(storedLink, remembered)
+      : await run(itemGroupInitUrl(root.driveId), new Map());
 
-  const resumed = storedLink !== undefined;
-  let usedFallback = false;
-  let result = await attempt(
-    resumed ? storedLink : freshInitUrl(),
-    resumed ? remembered : new Map(),
-  );
-
-  // Container-only 400 fallback: only applies to a fresh (non-resumed) walk,
-  // since a resumed deltaLink was already proven to work in a prior cycle.
-  if (!result.ok && !resumed && root.kind === "container" && isBadRequestError(result.error)) {
-    usedFallback = true;
-    result = await attempt(containerFallbackUrl(root.driveId), new Map());
-  }
-
-  // 410 resync: drop this root's stored link and re-enumerate from scratch,
-  // bounded to a single re-init attempt so a persistently-invalid delta
-  // session can't loop forever.
+  // 410 resync: re-enumerate this root only, bounded to a single re-init.
   if (!result.ok && isResyncError(result.error)) {
-    const reinitUrl = usedFallback ? containerFallbackUrl(root.driveId) : freshInitUrl();
-    result = await attempt(reinitUrl, new Map());
+    result = await run(itemGroupInitUrl(root.driveId), new Map());
   }
 
   return result;
@@ -826,23 +1026,41 @@ async function discoverMicrosoftSources(
   if (roots.length === 0) return ok([]);
 
   const storedRoots = parseMicrosoftCursor(state.cursor);
-  const newRoots: MicrosoftCursorRoots = {};
+  const newRoots: Record<string, MicrosoftCursorRootValue> = {};
   const allSources = new Map<string, RemoteSource>();
 
   for (const root of roots) {
     const remembered = rememberedRootSources(state, root);
-    const walked = await walkMicrosoftDeltaRoot(
-      transport,
-      state.accessToken,
-      limits,
-      sleep,
-      root,
-      storedRoots[root.cursorKey],
-      remembered,
-    );
-    if (!walked.ok) return walked;
-    newRoots[root.cursorKey] = walked.value.deltaLink;
-    for (const [id, source] of walked.value.sources) allSources.set(id, source);
+    if (root.kind === "container") {
+      const walked = await walkContainerRoot(
+        transport,
+        state.accessToken,
+        limits,
+        sleep,
+        root,
+        storedRoots[root.cursorKey],
+        remembered,
+      );
+      if (!walked.ok) return walked;
+      newRoots[root.cursorKey] =
+        walked.value.mode === "fallback"
+          ? { link: walked.value.deltaLink, folders: walked.value.folders ?? [] }
+          : walked.value.deltaLink;
+      for (const [id, source] of walked.value.sources) allSources.set(id, source);
+    } else {
+      const walked = await walkItemGroupRoot(
+        transport,
+        state.accessToken,
+        limits,
+        sleep,
+        root,
+        cursorEntryLink(storedRoots[root.cursorKey]),
+        remembered,
+      );
+      if (!walked.ok) return walked;
+      newRoots[root.cursorKey] = walked.value.deltaLink;
+      for (const [id, source] of walked.value.sources) allSources.set(id, source);
+    }
   }
 
   // Mutate state.cursor only now that every root has fully succeeded — same

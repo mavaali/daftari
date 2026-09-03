@@ -729,19 +729,29 @@ describe("Microsoft adapter discover (U14)", () => {
     expect(discovered).toEqual({ ok: true, value: [] });
   });
 
-  it("a container item whose parent moved outside the enrolled subtree is removed from the present set", async () => {
+  // Critical-bug regression (quality review of dd0d329): a RESUMED primary
+  // (folder-scoped) container walk must NOT drop a changed nested file just
+  // because its unchanged parent subfolder record isn't resent this cycle —
+  // Graph delta only sends CHANGED items, so a file 2+ levels deep can arrive
+  // with a parentReference the walk has never independently learned about.
+  // The fix: the primary path no longer reasons about ancestry/parents at
+  // all — it trusts Graph's own folder-scoped delta to have already scoped
+  // every returned item to the subtree.
+  it("a resumed primary container walk keeps a changed nested file whose parent subfolder record is absent from the page", async () => {
     const adapter = createMicrosoftAdapter({
       redirectUri: "https://vault.example/integrations/microsoft/callback",
       config: microsoftProviderConfig(),
       transport: async (url) => {
         if (url === "https://graph.microsoft.com/v1.0/drives/drive-a/stored-delta-link") {
           return graphJson({
+            // Only the changed nested file is sent — no record at all for
+            // "folder-child", its (unchanged) parent subfolder.
             value: [
               {
-                id: "f-outside",
+                id: "f-nested",
                 eTag: "e2",
                 file: {},
-                parentReference: { id: "some-other-folder" },
+                parentReference: { id: "folder-child" },
               },
             ],
             "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-a/delta-link-2",
@@ -770,8 +780,8 @@ describe("Microsoft adapter discover (U14)", () => {
         },
       },
       {
-        "drive-a:f-outside": {
-          id: "drive-a:f-outside",
+        "drive-a:f-nested": {
+          id: "drive-a:f-nested",
           revision: "e1",
           contentHash: "h",
           available: true,
@@ -781,7 +791,128 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [] });
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-a:f-nested", revision: "e2" }] });
+  });
+
+  it("the drive-root fallback walk classifies a nested file correctly even when its record arrives before its subfolder's, in the same page", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (
+          url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/items/folder-root/delta")
+        ) {
+          return new Response(null, { status: 400 });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/root/delta")) {
+          return graphJson({
+            value: [
+              // The nested file arrives FIRST, before "folder-child" (its
+              // parent) has been seen at all in this page.
+              { id: "f-nested", eTag: "e1", file: {}, parentReference: { id: "folder-child" } },
+              { id: "folder-child", folder: {}, parentReference: { id: "folder-root" } },
+            ],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-c",
+            remoteId: "folder-root",
+            cursorKey: "enrollment:c1",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-nested", revision: "e1" }] });
+  });
+
+  it("last-occurrence-wins across a page boundary: the same id changing on page 1 and page 2 resolves to page 2's revision", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta")) {
+          return graphJson({
+            value: [{ id: "item-1", eTag: "e1", file: {}, parentReference: { id: "root-b" } }],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/drives/drive-b/page-2",
+          });
+        }
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-b/page-2") {
+          return graphJson({
+            value: [{ id: "item-1", eTag: "e2", file: {}, parentReference: { id: "root-b" } }],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-b:item-1", revision: "e2" }] });
+  });
+
+  it("a deleted item that reappears later in the same stream resolves to present", async () => {
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-b/root/delta")) {
+          return graphJson({
+            value: [
+              { id: "item-1", deleted: {} },
+              { id: "item-1", eTag: "e2", file: {}, parentReference: { id: "root-b" } },
+            ],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-b/delta-link",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        enrollments: {
+          i1: enrollment({
+            id: "i1",
+            kind: "item",
+            driveId: "drive-b",
+            remoteId: "item-1",
+            cursorKey: "drive:drive-b",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-b:item-1", revision: "e2" }] });
   });
 
   it("410 Gone on one root only re-initializes that root; the other root's stored link is retained", async () => {
@@ -861,6 +992,71 @@ describe("Microsoft adapter discover (U14)", () => {
       ),
     ).toBe(false);
     expect(requests).toContain("https://graph.microsoft.com/v1.0/drives/drive-b/stored-delta-link");
+  });
+
+  it("410 Gone on a root already in fallback mode re-inits straight to the drive-root endpoint, never re-probing the folder-scoped primary", async () => {
+    const requests: string[] = [];
+    const adapter = createMicrosoftAdapter({
+      redirectUri: "https://vault.example/integrations/microsoft/callback",
+      config: microsoftProviderConfig(),
+      transport: async (url) => {
+        requests.push(url);
+        if (url === "https://graph.microsoft.com/v1.0/drives/drive-c/stale-fallback-link") {
+          return new Response(null, { status: 410 });
+        }
+        if (url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/root/delta")) {
+          return graphJson({
+            value: [{ id: "f1", eTag: "e1", file: {}, parentReference: { id: "folder-root" } }],
+            "@odata.deltaLink": "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-fresh",
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const state = microsoftProviderState(
+      {
+        cursor: JSON.stringify({
+          v: 1,
+          roots: {
+            "enrollment:c1": {
+              link: "https://graph.microsoft.com/v1.0/drives/drive-c/stale-fallback-link",
+              folders: ["folder-root"],
+            },
+          },
+        }),
+        enrollments: {
+          c1: enrollment({
+            id: "c1",
+            kind: "container",
+            driveId: "drive-c",
+            remoteId: "folder-root",
+            cursorKey: "enrollment:c1",
+          }),
+        },
+      },
+      {},
+    );
+
+    const discovered = await adapter.discover(state);
+    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f1", revision: "e1" }] });
+    // Never re-probed the folder-scoped primary endpoint — a root already
+    // known (from its persisted cursor shape) to be in fallback mode skips
+    // straight to the drive-root endpoint on resync.
+    expect(
+      requests.some((url) =>
+        url.startsWith("https://graph.microsoft.com/v1.0/drives/drive-c/items/folder-root/delta"),
+      ),
+    ).toBe(false);
+    expect(JSON.parse(state.cursor as string)).toEqual({
+      v: 1,
+      roots: {
+        "enrollment:c1": {
+          link: "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-fresh",
+          folders: ["folder-root"],
+        },
+      },
+    });
   });
 
   it("429 with a short Retry-After retries once and succeeds", async () => {
@@ -1086,10 +1282,16 @@ describe("Microsoft adapter discover (U14)", () => {
       { id: "drive-c:f-direct", revision: "e3" },
       { id: "drive-c:f-nested", revision: "e2" },
     ]);
+    // Fallback mode persists {link, folders} — not a bare link string — so a
+    // resumed cycle can seed ancestry from what was already learned instead
+    // of re-deriving it from just {folderId} (the Critical bug this fixes).
     expect(JSON.parse(state.cursor as string)).toEqual({
       v: 1,
       roots: {
-        "enrollment:c1": "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-fallback",
+        "enrollment:c1": {
+          link: "https://graph.microsoft.com/v1.0/drives/drive-c/delta-link-fallback",
+          folders: ["folder-root", "folder-child"],
+        },
       },
     });
 
