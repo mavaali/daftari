@@ -39,7 +39,41 @@ function resolveStandardFontDataUrl(): string {
   return fileURLToPath(new URL("standard_fonts/", dir));
 }
 
-const STANDARD_FONT_DATA_URL = resolveStandardFontDataUrl();
+// Deliberately lazy and memoized, NOT resolved at module top level: worker.ts
+// imports this module unconditionally (alongside office.ts) before building
+// its dispatch table, so a throw here at import time would take down docx
+// and pptx extraction too, not just pdf — e.g. a packaging layout that
+// strips pdfjs-dist's standard_fonts/ directory, or a stricter
+// pnpm/bundler install. Resolving lazily on first extractPdf() call, and
+// caching the outcome (including a resolution failure, so we don't retry
+// pointlessly on every request), confines that failure to pdf extraction
+// alone — and even then, degrades rather than fails outright: see
+// getStandardFontDataUrl's caller.
+const NOT_YET_RESOLVED = Symbol("standard-font-data-url-not-yet-resolved");
+let standardFontDataUrlCache: string | undefined | typeof NOT_YET_RESOLVED = NOT_YET_RESOLVED;
+
+function getStandardFontDataUrl(): string | undefined {
+  if (standardFontDataUrlCache === NOT_YET_RESOLVED) {
+    try {
+      standardFontDataUrlCache = resolveStandardFontDataUrl();
+    } catch {
+      standardFontDataUrlCache = undefined;
+    }
+  }
+  return standardFontDataUrlCache;
+}
+
+/**
+ * Test-only seam: forces the memoized standard-fonts resolution to a given
+ * value (pass `undefined` to simulate an environment where it couldn't be
+ * resolved, without actually breaking node_modules). Never called from
+ * production code — only from test/extract/pdf.test.ts, to prove
+ * extractPdf degrades gracefully rather than failing when this lookup comes
+ * up empty.
+ */
+export function __setStandardFontDataUrlCacheForTests(value: string | undefined): void {
+  standardFontDataUrlCache = value;
+}
 
 interface PdfTextItem {
   str: string;
@@ -73,9 +107,15 @@ export async function extractPdf(
   bytes: Uint8Array,
   limits: ExtractLimits,
 ): Promise<ExtractWorkerResponse> {
+  // If the standard-fonts dir can't be resolved (see getStandardFontDataUrl's
+  // comment), degrade rather than fail: pdfjs still extracts text without
+  // it, just with pdfjs's own non-fatal glyph-mapping warning for
+  // non-embedded/non-standard fonts, logged at ERRORS verbosity below (which
+  // won't surface it) — that's an acceptable quality trade against refusing
+  // to extract at all.
   const loadingTask = getDocument({
     data: bytes,
-    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    standardFontDataUrl: getStandardFontDataUrl(),
     useSystemFonts: false,
     verbosity: VerbosityLevel.ERRORS,
   });

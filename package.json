@@ -19,7 +19,7 @@
     "url": "https://github.com/mavaali/daftari/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   },
   "files": [
     "dist",

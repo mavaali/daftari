@@ -9,10 +9,15 @@
 
 import fs from "node:fs";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { describe, expect, test, vi } from "vitest";
 import { extractText } from "../../src/extract/index.js";
-import { extractPdf, handlePdf } from "../../src/extract/pdf.js";
+import {
+  __setStandardFontDataUrlCacheForTests,
+  extractPdf,
+  handlePdf,
+} from "../../src/extract/pdf.js";
 import { DEFAULT_EXTRACT_LIMITS, type ExtractLimits } from "../../src/extract/types.js";
 
 const FIXTURES_DIR = new URL("./fixtures/", import.meta.url);
@@ -232,6 +237,47 @@ describe("extractPdf", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.text).toContain("Dispatch check");
+  });
+});
+
+describe("standardFontDataUrl resolution resilience (U9 follow-up)", () => {
+  // Recomputes the real standard_fonts path the same way pdf.ts's
+  // resolveStandardFontDataUrl() does, so tests here can restore the
+  // module's memoized cache to its real value after simulating a failure.
+  function realStandardFontDataUrl(): string {
+    const pkgUrl = import.meta.resolve("pdfjs-dist/package.json");
+    const dir = new URL(".", pkgUrl);
+    return fileURLToPath(new URL("standard_fonts/", dir));
+  }
+
+  test("importing pdf.ts never throws, even before any font-dir resolution is attempted", async () => {
+    // Resolution used to run at module top level, which meant a throw here
+    // would take down worker.ts's unconditional import of pdf.ts (and thus
+    // docx/pptx too, since they share the same dispatch-table bootstrap).
+    // It's now lazy — this file's static top-level import already proves
+    // the module loads without resolving anything; this dynamic re-import
+    // makes that invariant an explicit, independent assertion.
+    await expect(import("../../src/extract/pdf.js")).resolves.toBeDefined();
+  });
+
+  test("extractPdf degrades to extraction-without-fonts, rather than failing, when the standard-fonts dir can't be resolved", async () => {
+    const bytes = buildPdf([
+      {
+        contentOps: textOp("F1", 24, 10, 100, "Degraded font path text"),
+        fonts: { F1: "Helvetica" },
+      },
+    ]);
+
+    __setStandardFontDataUrlCacheForTests(undefined);
+    try {
+      const result = await extractPdf(bytes, DEFAULT_EXTRACT_LIMITS);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.text).toContain("Degraded font path text");
+    } finally {
+      __setStandardFontDataUrlCacheForTests(realStandardFontDataUrl());
+    }
   });
 });
 
