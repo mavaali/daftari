@@ -64,14 +64,14 @@
 - Modify: `test/search/index-state.test.ts`
 - Modify: `test/search/watcher-integration.test.ts`
 
-- [ ] Add failing full-reindex tests that persist authored valid scalar values with correct typed columns, omit missing/defaulted/invalid values, normalize dates, and reject text over 4,096 UTF-8 bytes from projection while retaining the document's normal invalid-frontmatter warning behavior.
-- [ ] Add failing incremental-index tests proving an edit replaces stale field rows and deletion removes them.
-- [ ] Add failing freshness tests proving unchanged declarations remain fresh while changing indexed names, types, enum members, or order makes the index stale.
-- [ ] Run focused reindex/index-state tests and observe failures for absent projection/fingerprint behavior.
-- [ ] Pass resolved declarations into full and incremental staging. Validate raw frontmatter with schema extensions, derive only authored values, and attach `IndexedFieldValue[]` to each staged document.
-- [ ] Compute a stable JSON fingerprint over resolved `{field,type,enum}` declarations in authored order, store it in index metadata, and compare it in `isIndexFresh` for local and mount indexes.
-- [ ] Write document fields atomically during full and incremental index updates; preserve the current warning/reporting contract for invalid frontmatter.
-- [ ] Rerun focused tests and build; commit as `feat(reindex): project configured frontmatter fields`.
+- [x] Add failing full-reindex tests that persist authored valid scalar values with correct typed columns, omit missing/defaulted/invalid values, normalize dates, and reject text over 4,096 UTF-8 bytes from projection while retaining the document's normal invalid-frontmatter warning behavior.
+- [x] Add failing incremental-index tests proving an edit replaces stale field rows and deletion removes them.
+- [x] Add failing freshness tests proving unchanged declarations remain fresh while changing indexed names, types, enum members, or order makes the index stale.
+- [x] Run focused reindex/index-state tests and observe failures for absent projection/fingerprint behavior.
+- [x] Pass resolved declarations into full and incremental staging. Validate raw frontmatter with schema extensions, derive only authored values, and attach `IndexedFieldValue[]` to each staged document.
+- [x] Compute a stable fingerprint over resolved `{field,type,enum}` declarations in authored order, store it in index metadata, and compare it in `isIndexFresh` for local and mount indexes.
+- [x] Write document fields atomically during full and incremental index updates; preserve the current warning/reporting contract for invalid frontmatter.
+- [x] Rerun focused tests and build; commit as `feat(reindex): project configured frontmatter fields`.
 
 ## Task 4: Validate filters and compile safe SQL predicates
 

@@ -22,6 +22,7 @@ import { rebuildEdgesIndex } from "../curation/edges.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
 import { buildPathIndexes, extractLinks, outgoingLinkTargets } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
+import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   allDocumentPaths,
@@ -38,6 +39,7 @@ import {
   hasEmbeddingVec,
   type IndexDb,
   type IndexedDocument,
+  type IndexedFieldValue,
   insertChunkRow,
   insertDocument,
   insertEmbedding,
@@ -45,10 +47,13 @@ import {
   openIndexDb,
   pruneStaleVecRows,
   replaceDocLinks,
+  replaceDocumentFields,
   setMeta,
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
+import { type DaftariConfig, type IndexedFieldDeclaration, loadConfig } from "../utils/config.js";
+import { normalizeIsoDate } from "../utils/dates.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
 import { chunkText, embed, getProvider } from "./vector.js";
@@ -109,6 +114,16 @@ function readCachedVector(db: IndexDb, hash: string, modelId: string): Float32Ar
 // indexDocument after each incremental write, so a startup freshness check
 // can decide whether the persisted index already reflects the files on disk.
 const MANIFEST_META_KEY = "vault_manifest";
+const INDEXED_FIELDS_META_KEY = "indexed_fields_fingerprint";
+const MAX_INDEXED_TEXT_BYTES = 4096;
+
+export function indexedFieldsFingerprint(fields: IndexedFieldDeclaration[]): string {
+  return sha256Hex(
+    JSON.stringify(
+      fields.map(({ field, type, enum: enumValues }) => ({ field, type, enumValues })),
+    ),
+  );
+}
 
 // How many files the reindex fan-outs (the stat pass in buildManifest and the
 // readFile+parse pass in stageDocuments) keep in flight at once. Benchmarked
@@ -178,11 +193,18 @@ function manifestsMatch(a: Record<string, number>, b: Record<string, number>): b
 // matches the stored value. Used by `main()` to skip a 20+ minute re-embed
 // pass on every restart of a vault that hasn't changed.
 export async function isIndexFresh(vaultRoot: string): Promise<boolean> {
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return false;
   const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return false;
   const db = dbResult.value;
   try {
     if (documentCount(db) === 0) return false;
+    if (
+      getMeta(db, INDEXED_FIELDS_META_KEY) !== indexedFieldsFingerprint(config.value.indexedFields)
+    ) {
+      return false;
+    }
     const stored = readManifest(db);
     if (!stored) return false;
     const current = await buildManifest(vaultRoot);
@@ -277,6 +299,7 @@ export function reindexWarnings(result: ReindexResult): string[] {
 
 interface StagedDocument {
   doc: IndexedDocument;
+  fields: IndexedFieldValue[];
   chunks: string[];
   hashes: string[];
 }
@@ -296,7 +319,59 @@ type StageOutcome =
 // staged for indexing — validation is advisory (a read of such a file
 // succeeds; the source of truth is the markdown) — but its `invalidReason` is
 // returned so the coercion the index applies is reported rather than silent.
-async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcome> {
+function projectIndexedFields(
+  raw: Record<string, unknown>,
+  declarations: IndexedFieldDeclaration[],
+  invalidFields: Set<string>,
+): { fields: IndexedFieldValue[]; extraIssues: Array<{ field: string; message: string }> } {
+  const fields: IndexedFieldValue[] = [];
+  const extraIssues: Array<{ field: string; message: string }> = [];
+  for (const declaration of declarations) {
+    const value = raw[declaration.field];
+    if (value === undefined || invalidFields.has(declaration.field)) continue;
+    if (declaration.type === "number" && typeof value === "number" && Number.isFinite(value)) {
+      fields.push({ field: declaration.field, kind: "number", numberValue: value });
+      continue;
+    }
+    if (declaration.type === "boolean" && typeof value === "boolean") {
+      fields.push({ field: declaration.field, kind: "boolean", boolValue: value });
+      continue;
+    }
+    if (declaration.type === "date") {
+      const normalized =
+        value instanceof Date && !Number.isNaN(value.getTime())
+          ? value.toISOString().slice(0, 10)
+          : typeof value === "string"
+            ? normalizeIsoDate(value)
+            : null;
+      if (normalized !== null) {
+        fields.push({ field: declaration.field, kind: "date", textValue: normalized });
+      }
+      continue;
+    }
+    if (
+      (declaration.type === "string" || declaration.type === "enum") &&
+      typeof value === "string"
+    ) {
+      const bytes = Buffer.byteLength(value, "utf8");
+      if (bytes > MAX_INDEXED_TEXT_BYTES) {
+        extraIssues.push({
+          field: declaration.field,
+          message: `indexed value is ${bytes} UTF-8 bytes; maximum is ${MAX_INDEXED_TEXT_BYTES}`,
+        });
+        continue;
+      }
+      fields.push({ field: declaration.field, kind: declaration.type, textValue: value });
+    }
+  }
+  return { fields, extraIssues };
+}
+
+async function stageOne(
+  vaultRoot: string,
+  relPath: string,
+  config: DaftariConfig,
+): Promise<StageOutcome> {
   const resolved = resolveVaultPath(vaultRoot, relPath);
   if (!resolved.ok)
     return { kind: "skipped", reason: `path could not be resolved: ${resolved.error.message}` };
@@ -311,15 +386,17 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
   // still index it (advisory, never hide content — same posture as vault_read),
   // but surface the issues so the divergence isn't silent. vault_lint is the
   // repair path; vault_write rejects the same frontmatter at the write boundary.
+  const validated = validateFrontmatter(parsed.value.raw, config.schemaExtensions);
+  const invalidFields = new Set(validated.report.issues.map((issue) => issue.field));
+  const projection = projectIndexedFields(parsed.value.raw, config.indexedFields, invalidFields);
+  const issues = [...validated.report.issues, ...projection.extraIssues];
   let invalidReason: string | null = null;
-  if (!parsed.value.validation.valid) {
-    const summary = parsed.value.validation.issues
-      .map((issue) => `${issue.field} (${issue.message})`)
-      .join("; ");
+  if (issues.length > 0) {
+    const summary = issues.map((issue) => `${issue.field} (${issue.message})`).join("; ");
     invalidReason = `invalid frontmatter: ${summary}`;
   }
 
-  const fm = parsed.value.frontmatter;
+  const fm = validated.frontmatter;
   const body = parsed.value.content;
   // BM25 indexes title, tags, and body together so a title- or tag-only
   // match still ranks.
@@ -349,6 +426,7 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
         validFrom: fm.valid_from,
         validUntil: fm.valid_until,
       },
+      fields: projection.fields,
       chunks,
       hashes,
     },
@@ -358,7 +436,10 @@ async function stageOne(vaultRoot: string, relPath: string): Promise<StageOutcom
 // Reads and parses every markdown file into the shape the index needs. A file
 // that stageOne rejects is skipped (recorded in `skipped`) rather than
 // aborting the whole rebuild.
-async function stageDocuments(vaultRoot: string): Promise<
+async function stageDocuments(
+  vaultRoot: string,
+  config: DaftariConfig,
+): Promise<
   Result<
     {
       staged: StagedDocument[];
@@ -380,7 +461,7 @@ async function stageDocuments(vaultRoot: string): Promise<
   // mapWithConcurrency returns outcomes in input order, so the buckets below
   // are filled in exactly the order the serial loop produced.
   const outcomes = await mapWithConcurrency(list.value, REINDEX_IO_CONCURRENCY, (relPath) =>
-    stageOne(vaultRoot, relPath),
+    stageOne(vaultRoot, relPath, config),
   );
   for (let i = 0; i < list.value.length; i++) {
     const relPath = list.value[i] ?? "";
@@ -407,8 +488,9 @@ function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
   const linkIndexes = buildPathIndexes(staged.map(({ doc }) => ({ path: doc.path })));
   const write = db.transaction(() => {
     clearIndex(db);
-    for (const { doc, chunks, hashes } of staged) {
+    for (const { doc, fields, chunks, hashes } of staged) {
       insertDocument(db, doc);
+      replaceDocumentFields(db, doc.path, fields);
       replaceDocLinks(db, doc.path, outgoingLinkTargets(doc.content, doc.path, linkIndexes));
       chunks.forEach((text, chunkIndex) => {
         const row: ChunkRowInput = {
@@ -430,7 +512,9 @@ export async function reindexVault(
   vaultRoot: string,
   opts: ReindexOptions = {},
 ): Promise<Result<ReindexResult, Error>> {
-  const staging = await stageDocuments(vaultRoot);
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const staging = await stageDocuments(vaultRoot, config.value);
   if (!staging.ok) return staging;
   const { staged, skipped, invalidFrontmatter } = staging.value;
 
@@ -551,6 +635,7 @@ export async function reindexVault(
     setMeta(db, "vector_enabled", String(vectorEnabled));
     setMeta(db, "embedding_dim", String(provider.dim));
     setMeta(db, "embedding_model", provider.id);
+    setMeta(db, INDEXED_FIELDS_META_KEY, indexedFieldsFingerprint(config.value.indexedFields));
     // Persist a freshness manifest so the next startup can skip this whole
     // pass when nothing on disk has changed.
     const manifest = await buildManifest(vaultRoot);
@@ -597,6 +682,8 @@ export async function indexDocument(
   vaultRoot: string,
   relPath: string,
 ): Promise<Result<IndexDocumentResult, Error>> {
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
   // Open the index once and keep this handle for both the empty-check and the
   // incremental write. The previous code opened, checked the count, closed,
   // then reopened — paying the sqlite-vec extension load and 1-vector ABI
@@ -606,6 +693,21 @@ export async function indexDocument(
   const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
+
+  if (
+    documentCount(db) > 0 &&
+    getMeta(db, INDEXED_FIELDS_META_KEY) !== indexedFieldsFingerprint(config.value.indexedFields)
+  ) {
+    db.close();
+    const full = await reindexVault(vaultRoot);
+    if (!full.ok) return full;
+    return ok({
+      chunkCount: full.value.chunkCount,
+      vectorEnabled: full.value.vectorEnabled,
+      invalidFrontmatter:
+        full.value.invalidFrontmatter.find((entry) => entry.path === relPath)?.reason ?? null,
+    });
+  }
 
   if (documentCount(db) === 0) {
     db.close();
@@ -619,12 +721,12 @@ export async function indexDocument(
     });
   }
 
-  const outcome = await stageOne(vaultRoot, relPath);
+  const outcome = await stageOne(vaultRoot, relPath, config.value);
   if (outcome.kind !== "staged") {
     db.close();
     return err(new Error(`cannot index document: ${relPath} (${outcome.reason})`));
   }
-  const { doc, chunks, hashes } = outcome.staged;
+  const { doc, fields, chunks, hashes } = outcome.staged;
 
   const createdAt = new Date().toISOString();
 
@@ -691,6 +793,7 @@ export async function indexDocument(
     const write = db.transaction(() => {
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
+      replaceDocumentFields(db, doc.path, fields);
       replaceDocLinks(db, doc.path, linkTargets);
       chunks.forEach((text, chunkIndex) => {
         insertChunkRow(db, {
