@@ -628,8 +628,12 @@ export async function hybridSearch(
 
 export interface FilterOnlySearchOptions {
   limit?: number;
-  overFetch?: boolean;
   readableCollections?: string[];
+  // Push valid_only into SQL before LIMIT. This keeps broad structured
+  // filters bounded without shrinking the page when newer expired/not-yet
+  // documents sort ahead of in-window ones. Inverted intervals remain
+  // unknown (and therefore included), matching computeValidity.
+  validOnlyAt?: string;
 }
 
 export function filterOnlySearch(
@@ -648,12 +652,21 @@ export function filterOnlySearch(
     options.readableCollections === undefined
       ? ""
       : ` AND d.collection IN (${options.readableCollections.map(() => "?").join(",")})`;
+  const validitySql = options.validOnlyAt
+    ? ` AND (
+          (d.valid_from IS NOT NULL AND d.valid_until IS NOT NULL AND d.valid_until <= d.valid_from)
+          OR (
+            (d.valid_from IS NULL OR d.valid_from <= ?)
+            AND (d.valid_until IS NULL OR d.valid_until > ?)
+          )
+        )`
+    : "";
   const limit = options.limit ?? 10;
-  const limitSql = options.overFetch ? "" : " LIMIT ?";
   const params: Array<string | number> = [
     ...compiled.params,
+    ...(options.validOnlyAt ? [options.validOnlyAt, options.validOnlyAt] : []),
     ...(options.readableCollections ?? []),
-    ...(options.overFetch ? [] : [limit]),
+    limit,
   ];
   const paths = db
     .prepare(
@@ -661,8 +674,9 @@ export function filterOnlySearch(
        SELECT d.path AS path
          FROM eligible AS eligible
          JOIN documents AS d ON d.path = eligible.path
-        WHERE 1 = 1${collectionSql}
-        ORDER BY d.updated DESC, d.path ASC${limitSql}`,
+        WHERE 1 = 1${validitySql}${collectionSql}
+        ORDER BY d.updated DESC, d.path ASC
+        LIMIT ?`,
     )
     .all(...params) as { path: string }[];
   const documents = new Map(

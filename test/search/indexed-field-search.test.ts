@@ -185,4 +185,63 @@ describe("indexed field retrieval", () => {
     expect(result.hits.every((hit) => hit.score === 0)).toBe(true);
     expect(result.hits.every((hit) => hit.bm25Score === 0 && hit.vectorScore === 0)).toBe(true);
   });
+
+  it("applies valid-only before the filter-only limit", () => {
+    db.prepare("UPDATE documents SET valid_from = ?, valid_until = ? WHERE path = ?").run(
+      "2026-01-01",
+      "2026-09-01",
+      "b.md",
+    );
+    db.prepare("UPDATE documents SET valid_from = ?, valid_until = ? WHERE path = ?").run(
+      "2026-09-01",
+      null,
+      "c.md",
+    );
+    try {
+      const result = filterOnlySearch(db, filters([{ field: "priority", op: "gte", value: 2 }]), {
+        limit: 1,
+        validOnlyAt: "2026-09-15",
+      });
+      expect(result.hits.map((hit) => hit.path)).toEqual(["c.md"]);
+    } finally {
+      db.prepare(
+        "UPDATE documents SET valid_from = NULL, valid_until = NULL WHERE path IN (?, ?)",
+      ).run("b.md", "c.md");
+    }
+  });
+
+  it("bounds a broad filter before materializing a small valid-only page", () => {
+    const insertDocument = db.prepare(
+      `INSERT INTO documents
+         (path, title, collection, domain, status, confidence, updated, tags, content, tokens,
+          ttl_days, created, superseded_by, valid_from, valid_until)
+       VALUES (?, ?, 'projects', 'accumulation', 'canonical', 'high', ?, '[]', 'broad filter',
+               '[]', NULL, '2026-01-01', NULL, ?, ?)`,
+    );
+    const insertField = db.prepare(
+      `INSERT INTO document_fields
+         (path, field, kind, text_value, number_value, bool_value)
+       VALUES (?, 'priority', 'number', NULL, 9, NULL)`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 1_200; i++) {
+        const path = `bulk/expired-${i.toString().padStart(4, "0")}.md`;
+        insertDocument.run(path, path, "2026-12-01", "2026-01-01", "2026-08-01");
+        insertField.run(path);
+      }
+      insertDocument.run("bulk/valid.md", "Valid", "2026-01-01", "2026-01-01", null);
+      insertField.run("bulk/valid.md");
+    })();
+    try {
+      const result = filterOnlySearch(db, filters([{ field: "priority", op: "eq", value: 9 }]), {
+        limit: 1,
+        validOnlyAt: "2026-09-15",
+      });
+      expect(result.hits.map((hit) => hit.path)).toEqual(["bulk/valid.md"]);
+    } finally {
+      db.exec(
+        "DELETE FROM document_fields WHERE path LIKE 'bulk/%'; DELETE FROM documents WHERE path LIKE 'bulk/%';",
+      );
+    }
+  });
 });

@@ -103,7 +103,7 @@ describe("reindexVault", () => {
     await writeFile(join(vault, "projects-default.md"), customDocument("owner: agent:codex"));
     await writeFile(
       join(vault, "projects-invalid.md"),
-      customDocument(`due_date: "2026-02-30"\nowner: ${"x".repeat(4097)}`),
+      customDocument(`due_date: 2026-02-30\nowner: ${"x".repeat(4097)}`),
     );
 
     const result = await reindexVault(vault, { lexicalOnly: true });

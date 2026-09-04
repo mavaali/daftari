@@ -73,7 +73,7 @@ import { applySupersededSuppression } from "../search/suppression.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
 import { embedQuery, getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
-import { loadConfig } from "../utils/config.js";
+import { type IndexedFieldDeclaration, loadConfig } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
 
@@ -346,6 +346,26 @@ function mountAccess(mount: LoadedMount, user: string | undefined): AccessContex
   return { user: user ?? "guest", roleName: mount.roleName, role: mount.role };
 }
 
+function compatibleIndexedDeclaration(
+  left: IndexedFieldDeclaration,
+  right: IndexedFieldDeclaration,
+): boolean {
+  if (left.type !== right.type) return false;
+  if (left.type !== "enum") return true;
+  const leftDomain = [...new Set(left.enum ?? [])].sort();
+  const rightDomain = [...new Set(right.enum ?? [])].sort();
+  return (
+    leftDomain.length === rightDomain.length &&
+    leftDomain.every((value, index) => value === rightDomain[index])
+  );
+}
+
+function indexedDeclarationSummary(declaration: IndexedFieldDeclaration): string {
+  return declaration.type === "enum"
+    ? `enum [${(declaration.enum ?? []).join(", ")}]`
+    : declaration.type;
+}
+
 // Rewrites every addressable path a mount hit carries into `alias:path` form
 // — the round-trip property: any path a federated tool returns is directly
 // usable as the path argument to any federated read tool.
@@ -417,8 +437,8 @@ async function searchMount(
         ? ok(
             filterOnlySearch(db, opts.filters, {
               limit: opts.limit,
-              overFetch: true,
               readableCollections: readable,
+              validOnlyAt: opts.validOnly ? (opts.validAt ?? undefined) : undefined,
             }),
           )
         : await hybridSearch(db, opts.query, {
@@ -543,18 +563,44 @@ export async function vaultSearch(
   // than silently contributing an unfiltered result set. Selecting only
   // `local` remains the explicit escape hatch for heterogeneous schemas.
   let localFilters: CompiledFieldFilter[] = [];
+  let baselineDeclarations: IndexedFieldDeclaration[] | null = null;
+  let baselineName = "local";
   if (includeLocal) {
     const config = loadConfig(vaultRoot);
     if (!config.ok) return config;
     const parsed = parseFieldFilters(args.filters, config.value.indexedFields);
     if (!parsed.ok) return parsed;
     localFilters = parsed.value;
+    baselineDeclarations = config.value.indexedFields;
   }
   const mountFilters = new Map<string, CompiledFieldFilter[]>();
   for (const mount of mounts) {
     const parsed = parseFieldFilters(args.filters, mount.indexedFields);
     if (!parsed.ok) {
       return err(new Error(`mount "${mount.alias}": ${parsed.error.message}`));
+    }
+    if (baselineDeclarations === null) {
+      baselineDeclarations = mount.indexedFields;
+      baselineName = `mount "${mount.alias}"`;
+    } else {
+      const baselineByField = new Map(
+        baselineDeclarations.map((declaration) => [declaration.field, declaration]),
+      );
+      const mountByField = new Map(
+        mount.indexedFields.map((declaration) => [declaration.field, declaration]),
+      );
+      for (const field of new Set(parsed.value.map((filter) => filter.field))) {
+        const baseline = baselineByField.get(field);
+        const candidate = mountByField.get(field);
+        if (baseline && candidate && !compatibleIndexedDeclaration(baseline, candidate)) {
+          return err(
+            new Error(
+              `mount "${mount.alias}": indexed field '${field}' is incompatible with ${baselineName} ` +
+                `(${indexedDeclarationSummary(candidate)} vs ${indexedDeclarationSummary(baseline)})`,
+            ),
+          );
+        }
+      }
     }
     mountFilters.set(mount.alias, parsed.value);
   }
@@ -676,8 +722,8 @@ async function searchLocalVault(
         ? ok(
             filterOnlySearch(db, filters, {
               limit,
-              overFetch: true,
               readableCollections: readable,
+              validOnlyAt: validOnly ? (validAt ?? undefined) : undefined,
             }),
           )
         : await hybridSearch(db, query, {

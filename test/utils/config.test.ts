@@ -665,15 +665,33 @@ describe("loadConfig — schema extensions", () => {
       expect(result.value.schemaExtensions[0]?.default).toBe("2026-01-15");
     });
 
-    it("rejects an impossible calendar date default", () => {
+    it("preserves YAML merge-key behavior while retaining authored date strings", () => {
       writeConfig(
         [
           "schema_extensions:",
-          "  decided:",
+          "  decided: &date_field",
           "    type: date",
-          '    default: "2026-02-30"',
+          "  reviewed:",
+          "    <<: *date_field",
+          "indexed_fields: [decided, reviewed]",
           "",
         ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.indexedFields).toEqual([
+          { field: "decided", type: "date" },
+          { field: "reviewed", type: "date" },
+        ]);
+      }
+    });
+
+    it("rejects an impossible calendar date default", () => {
+      writeConfig(
+        ["schema_extensions:", "  decided:", "    type: date", "    default: 2026-02-30", ""].join(
+          "\n",
+        ),
       );
       const result = loadConfig(dir);
       expect(result.ok).toBe(false);

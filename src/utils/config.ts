@@ -23,6 +23,7 @@ import { parseCidr } from "../serve/proxy-trust.js";
 import { normalizeIsoDate } from "./dates.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
+import { AUTHOR_PRESERVING_YAML_SCHEMA } from "./yaml.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -1876,7 +1877,10 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   let parsed: unknown;
   try {
-    parsed = parseYaml(text);
+    // Do not let the default YAML timestamp resolver normalize impossible
+    // calendar dates before schema-extension validation sees the authored
+    // scalar. The custom schema retains every other DEFAULT_SCHEMA feature.
+    parsed = parseYaml(text, { schema: AUTHOR_PRESERVING_YAML_SCHEMA });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     // js-yaml's position points at where parsing BROKE, which for a comment

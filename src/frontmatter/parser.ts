@@ -6,6 +6,8 @@
 // validation report carries those issues so a read can still return content.
 
 import matter from "gray-matter";
+import { load as parseYaml } from "js-yaml";
+import { AUTHOR_PRESERVING_YAML_SCHEMA } from "../utils/yaml.js";
 import { validateFrontmatter } from "./schema.js";
 import { err, type Frontmatter, ok, type Result, type ValidationReport } from "./types.js";
 
@@ -38,7 +40,17 @@ export function parseDocument(source: string): Result<ParsedDocument, Error> {
 
   let extracted: matter.GrayMatterFile<string>;
   try {
-    extracted = matter(source);
+    // Keep timestamp-shaped scalars as authored strings. js-yaml's default
+    // timestamp resolver turns even an impossible value such as 2026-02-30
+    // into a normalized Date (2026-03-02), destroying the lexeme before the
+    // real-calendar validator can reject it. The custom schema overrides only
+    // implicit timestamps, preserving the rest of DEFAULT_SCHEMA behavior.
+    extracted = matter(source, {
+      engines: {
+        yaml: (input) =>
+          (parseYaml(input, { schema: AUTHOR_PRESERVING_YAML_SCHEMA }) ?? {}) as object,
+      },
+    });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`malformed YAML frontmatter: ${reason}`));

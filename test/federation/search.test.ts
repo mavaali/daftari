@@ -21,7 +21,12 @@ const REF_CONFIG = `
 schema_extensions:
   priority:
     type: number
-indexed_fields: [priority]
+  due_date:
+    type: date
+  stage:
+    type: enum
+    enum: [active, done]
+indexed_fields: [priority, due_date, stage]
 roles:
   researcher:
     read: ["pricing"]
@@ -42,6 +47,8 @@ updated: 2026-08-01
 updated_by: human:owner
 provenance: direct
 priority: ${priority}
+due_date: 2026-09-05
+stage: active
 ---
 
 ${body}
@@ -74,7 +81,7 @@ beforeEach(() => {
   mkdirSync(join(canonical, ".daftari"), { recursive: true });
   writeFileSync(
     join(canonical, ".daftari", "config.yaml"),
-    "schema_extensions:\n  priority:\n    type: number\nindexed_fields: [priority]\nroles: {}\n",
+    "schema_extensions:\n  priority:\n    type: number\n  due_date:\n    type: date\n  stage:\n    type: enum\n    enum: [active, done]\nindexed_fields: [priority, due_date, stage]\nroles: {}\n",
   );
   mkdirSync(join(canonical, "notes"), { recursive: true });
   writeFileSync(
@@ -149,6 +156,44 @@ describe("federated vault_search", () => {
     );
     expect(local.ok).toBe(true);
     if (local.ok) expect(local.value.hits.every((hit) => hit.vault === "local")).toBe(true);
+  });
+
+  it("rejects the same filtered field when a selected mount declares a different type", async () => {
+    writeFileSync(
+      join(refRoot, ".daftari", "config.yaml"),
+      `schema_extensions:\n  priority:\n    type: number\n  due_date:\n    type: string\n  stage:\n    type: enum\n    enum: [active, done]\nindexed_fields: [priority, due_date, stage]\nroles:\n  researcher:\n    read: ["pricing"]\nfederation:\n  principals:\n    "human:mihir": { role: researcher }\n`,
+    );
+    clearConfigCache();
+    await mountRef();
+    const result = await vaultSearch(
+      canonical,
+      { filters: [{ field: "due_date", op: "eq", value: "2026-09-05" }] },
+      LOCAL_ANALYST,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('mount "research"');
+      expect(result.error.message).toContain("incompatible");
+    }
+  });
+
+  it("rejects overlapping enum values when selected vaults declare different domains", async () => {
+    writeFileSync(
+      join(refRoot, ".daftari", "config.yaml"),
+      `schema_extensions:\n  priority:\n    type: number\n  due_date:\n    type: date\n  stage:\n    type: enum\n    enum: [active, blocked]\nindexed_fields: [priority, due_date, stage]\nroles:\n  researcher:\n    read: ["pricing"]\nfederation:\n  principals:\n    "human:mihir": { role: researcher }\n`,
+    );
+    clearConfigCache();
+    await mountRef();
+    const result = await vaultSearch(
+      canonical,
+      { filters: [{ field: "stage", op: "eq", value: "active" }] },
+      LOCAL_ANALYST,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('mount "research"');
+      expect(result.error.message).toContain("incompatible");
+    }
   });
 
   it("fuses hits from the local vault and the mount, labeled and addressable", async () => {
