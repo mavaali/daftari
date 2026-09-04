@@ -165,10 +165,10 @@
 - Modify if needed: implementation and tests from Tasks 1–8
 - Update through CLI: Beads issue `daftari-j2r`
 
-- [ ] Run focused suites for config, schema extensions, storage, reindex/freshness, filter compiler, hybrid/vector/ACL, tool search, and federation.
-- [ ] Run `npm run build`, `npm run lint`, and `npm test`. Fix every regression introduced by this branch and rerun the failing scope before rerunning the full suite.
-- [ ] Inspect `git diff --check`, `git status --short`, and `git diff --stat origin/main...HEAD`.
-- [ ] Update `daftari-j2r` with implemented behavior, performance result, validation commands/results, and remaining risk. Keep it open until the PR is review-ready and checks are green.
+- [x] Run focused suites for config, schema extensions, storage, reindex/freshness, filter compiler, hybrid/vector/ACL, tool search, and federation.
+- [x] Run `npm run build`, `npm run lint`, and `npm test`. Fix every regression introduced by this branch and rerun the failing scope before rerunning the full suite.
+- [x] Inspect `git diff --check`, `git status --short`, and `git diff --stat origin/main...HEAD`.
+- [x] Update `daftari-j2r` with implemented behavior, performance result, validation commands/results, and remaining risk. Keep it open until the PR is review-ready and checks are green.
 
 ## Task 10: Cold adversarial review and remediation
 
