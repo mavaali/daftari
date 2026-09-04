@@ -71,7 +71,9 @@ export type IndexDb = Database.Database;
 // The bump is cheap now precisely because #305 also removed `embeddings` from
 // the drop list below: derived tables are rebuilt from the markdown, and the
 // durable vector cache survives.
-const SCHEMA_VERSION = "11";
+// 12 adds document_fields, the rebuildable typed projection for explicitly
+// indexed schema-extension values (#512).
+const SCHEMA_VERSION = "12";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -104,6 +106,14 @@ export interface IndexedChunk {
   text: string;
   contentHash: string;
   embedding: Float32Array | null;
+}
+
+export interface IndexedFieldValue {
+  field: string;
+  kind: "string" | "enum" | "date" | "number" | "boolean";
+  textValue?: string;
+  numberValue?: number;
+  boolValue?: boolean;
 }
 
 // The .daftari control directory is excluded from vault listings, so the index
@@ -143,6 +153,22 @@ CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created);
 -- The reverse supersession edge: supersessionPredecessors scans by successor.
 CREATE INDEX IF NOT EXISTS idx_documents_superseded_by ON documents(superseded_by);
 CREATE INDEX IF NOT EXISTS idx_documents_validity ON documents(valid_from, valid_until);
+CREATE TABLE IF NOT EXISTS document_fields (
+  path         TEXT NOT NULL,
+  field        TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  text_value   TEXT,
+  number_value REAL,
+  bool_value   INTEGER,
+  PRIMARY KEY (path, field),
+  FOREIGN KEY (path) REFERENCES documents(path) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_document_fields_text
+  ON document_fields(field, text_value, path);
+CREATE INDEX IF NOT EXISTS idx_document_fields_number
+  ON document_fields(field, number_value, path);
+CREATE INDEX IF NOT EXISTS idx_document_fields_bool
+  ON document_fields(field, bool_value, path);
 CREATE TABLE IF NOT EXISTS chunks (
   path          TEXT NOT NULL,
   chunk_index   INTEGER NOT NULL,
@@ -484,6 +510,7 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
           "DROP TRIGGER IF EXISTS documents_au;" +
           "DROP TABLE IF EXISTS documents_fts;" +
           "DROP TABLE IF EXISTS embeddings_vec;" +
+          "DROP TABLE IF EXISTS document_fields;" +
           "DROP TABLE IF EXISTS documents;" +
           "DROP TRIGGER IF EXISTS chunks_ai;" +
           "DROP TRIGGER IF EXISTS chunks_ad;" +
@@ -526,19 +553,47 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
 // cleared here — they are content-addressed and a subsequent gc pass deletes
 // only the orphaned ones, preserving the cache across reindexes.
 export function clearIndex(db: IndexDb): void {
-  db.exec("DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links;");
+  db.exec(
+    "DELETE FROM document_fields; DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links;",
+  );
 }
 
 // Drops one document and all its chunks. Used by the write path to evict a
 // document's stale rows before re-inserting it: a plain INSERT OR REPLACE on
 // chunks would leave orphaned high-index rows behind if the document shrank.
 export function deleteDocument(db: IndexDb, path: string): void {
+  db.prepare("DELETE FROM document_fields WHERE path = ?").run(path);
   db.prepare("DELETE FROM documents WHERE path = ?").run(path);
   db.prepare("DELETE FROM chunks WHERE path = ?").run(path);
   // Outgoing links die with the doc. Inbound rows pointing AT it may remain
   // (their sources still link here on disk); inboundLinkers joins documents
   // on source_path, so a deleted source can never surface as a linker.
   db.prepare("DELETE FROM doc_links WHERE source_path = ?").run(path);
+}
+
+export function replaceDocumentFields(
+  db: IndexDb,
+  path: string,
+  fields: IndexedFieldValue[],
+): void {
+  db.prepare("DELETE FROM document_fields WHERE path = ?").run(path);
+  if (fields.length === 0) return;
+
+  const insert = db.prepare(
+    `INSERT INTO document_fields
+       (path, field, kind, text_value, number_value, bool_value)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  for (const field of fields) {
+    insert.run(
+      path,
+      field.field,
+      field.kind,
+      field.textValue ?? null,
+      field.numberValue ?? null,
+      field.boolValue === undefined ? null : field.boolValue ? 1 : 0,
+    );
+  }
 }
 
 // --- inbound-link graph (#8) ------------------------------------------------

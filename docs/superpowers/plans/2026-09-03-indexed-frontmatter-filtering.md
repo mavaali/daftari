@@ -46,13 +46,13 @@
 - Modify: `test/storage/index-db.test.ts`
 - Modify: `test/storage/schema-valid-from-migration.test.ts`
 
-- [ ] Add failing storage tests for the `document_fields` table shape, its three typed lookup indexes, replacement of a document's rows, explicit deletion, and clearing the derived projection.
-- [ ] Add a failing migration test proving a version-11 index upgrades without losing durable `embeddings` rows and removes stale projected fields.
-- [ ] Run the focused storage tests and confirm failure because schema version 11 has no projection table.
-- [ ] Bump the index schema version to 12; create `document_fields(path, field, kind, text_value, number_value, bool_value)` with primary key `(path, field)` and the specified foreign key and lookup indexes.
-- [ ] Define `IndexedFieldValue` as a discriminated scalar row and implement `replaceDocumentFields`, `deleteDocumentFields`, and clear-index integration in the same write transactions as document/chunk updates.
-- [ ] Ensure schema recreation drops `document_fields` but preserves `embeddings`; make document deletion explicit instead of depending on foreign-key pragma state.
-- [ ] Rerun focused tests, build, and commit as `feat(index): store typed frontmatter projection`.
+- [x] Add failing storage tests for the `document_fields` table shape, its three typed lookup indexes, replacement of a document's rows, explicit deletion, and clearing the derived projection.
+- [x] Add a failing migration test proving a version-11 index upgrades without losing durable `embeddings` rows and removes stale projected fields.
+- [x] Run the focused storage tests and confirm failure because schema version 11 has no projection table.
+- [x] Bump the index schema version to 12; create `document_fields(path, field, kind, text_value, number_value, bool_value)` with primary key `(path, field)` and the specified foreign key and lookup indexes.
+- [x] Define `IndexedFieldValue` as a discriminated scalar row and implement replacement, explicit deletion, and clear-index integration in the same write transactions as document/chunk updates.
+- [x] Ensure schema recreation drops `document_fields` but preserves `embeddings`; make document deletion explicit instead of depending on foreign-key pragma state.
+- [x] Rerun focused tests, build, and commit as `feat(index): store typed frontmatter projection`.
 
 ## Task 3: Populate fields and fingerprint index configuration
 
