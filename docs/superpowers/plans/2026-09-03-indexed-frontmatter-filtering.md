@@ -213,7 +213,7 @@
 - Update through CLI: GitHub issue #512, pull request, Beads issue `daftari-j2r`
 
 - [x] Read and follow `superpowers:finishing-a-development-branch`. Rebase or merge the latest `origin/main` only if needed, without touching the original dirty checkout; rerun full verification after integration.
-- [ ] Push `codex/issue-512-indexed-frontmatter` to `origin` and verify the remote SHA matches local HEAD.
+- [x] Push `codex/issue-512-indexed-frontmatter` to `origin` and verify the remote SHA matches local HEAD.
 - [ ] Open a PR against `main` that links `Fixes #512`, states behavior/non-goals/security properties, lists tests and performance result, and summarizes adversarial-review dispositions.
 - [ ] Watch required checks to completion. For every failing check, reproduce locally when possible, add or adjust a regression test, fix, rerun proportional/full verification, commit, push, and verify the new remote SHA.
 - [ ] Read all PR review comments and requested changes. Address actionable comments with the same test-first loop; respond with concrete evidence or an explicit technical rationale when no code change is warranted.
