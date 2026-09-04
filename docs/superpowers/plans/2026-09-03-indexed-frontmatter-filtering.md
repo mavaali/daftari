@@ -80,13 +80,13 @@
 - Create: `src/search/field-filters.ts`
 - Create: `test/search/field-filters.test.ts`
 
-- [ ] Define external `FieldFilterInput` and internal `CompiledFieldFilter` types. Add failing tests for `eq` on all supported scalar types and `gt|gte|lt|lte` on only number/date.
-- [ ] Add failing tests for absent/non-array filters, empty arrays, more than 16 predicates, malformed objects, unknown/undeclared fields, wrong value types, impossible dates, non-finite numbers, oversized strings, arrays, and unsupported operators.
-- [ ] Add injection-shaped field/value tests and assert generated SQL contains only fixed `EXISTS` templates plus `?` placeholders while hostile text appears only in bound parameters.
-- [ ] Run `npx vitest run test/search/field-filters.test.ts` and confirm the module/tests fail before implementation.
-- [ ] Implement `parseFieldFilters(raw, declarations): Result<CompiledFieldFilter[], Error>` with clear `vault_search 'filters'` errors and 16-predicate/4,096-byte caps.
-- [ ] Implement `compileFieldFilterSql(filters, pathExpression)` returning `{sql, params}`. Compile each predicate to a correlated `EXISTS` over `document_fields`, AND clauses in input order, and use closed operator/column maps.
-- [ ] Rerun focused tests, build, and commit as `feat(search): validate typed field predicates`.
+- [x] Define external and internal filter types. Add failing tests for `eq` on all supported scalar types and `gt|gte|lt|lte` on only number/date.
+- [x] Add failing tests for absent/non-array filters, empty arrays, more than 16 predicates, malformed objects, unknown/undeclared fields, wrong value types, impossible dates, non-finite numbers, oversized strings, arrays, and unsupported operators.
+- [x] Add injection-shaped field/value tests and assert generated SQL contains only fixed `EXISTS` templates plus `?` placeholders while hostile text appears only in bound parameters.
+- [x] Run `npx vitest run test/search/field-filters.test.ts` and confirm the module/tests fail before implementation.
+- [x] Implement `parseFieldFilters(raw, declarations): Result<CompiledFieldFilter[], Error>` with clear `vault_search 'filters'` errors and 16-predicate/4,096-byte caps.
+- [x] Implement `compileFieldFilterSql(filters, pathExpression)` returning `{sql, params}`. Compile each predicate to a correlated `EXISTS` over `document_fields`, AND clauses in input order, and use closed operator/column maps.
+- [x] Rerun focused tests, build, and commit as `feat(search): validate typed field predicates`.
 
 ## Task 5: Apply filters to lexical and filter-only retrieval
 
