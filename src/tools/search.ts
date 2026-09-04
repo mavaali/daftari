@@ -1423,6 +1423,8 @@ export const searchTools: ToolDefinition[] = [
     description:
       "Hybrid search across the vault: BM25 lexical ranking combined with " +
       "vector semantic similarity. Returns ranked documents with snippets. " +
+      "Optional typed filters over explicitly indexed frontmatter constrain both rankers; " +
+      "filters can also run without a text query for deterministic structured retrieval. " +
       "Falls back to lexical-only ranking if embeddings are unavailable. " +
       "Hits may carry `contested`: unresolved recorded tensions involving " +
       "the document, with both claims shown (`claimSelf`/`claimOther`), " +
@@ -1435,19 +1437,27 @@ export const searchTools: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Free-text search query" },
+        query: {
+          type: "string",
+          description: "Free-text search query. Optional when filters is non-empty.",
+        },
         filters: {
           type: "array",
           maxItems: 16,
           description:
             "Optional AND predicates over frontmatter fields explicitly declared in indexed_fields. " +
             "eq supports string, enum, boolean, number, and date; gt/gte/lt/lte support number and date. " +
-            "A non-empty filters list may be used without query for structured retrieval.",
+            "Missing fields do not match. A non-empty filters list may be used without query for structured retrieval. " +
+            "In federated search, every selected vault must declare each field compatibly.",
           items: {
             type: "object",
             properties: {
-              field: { type: "string" },
-              op: { type: "string", enum: ["eq", "gt", "gte", "lt", "lte"] },
+              field: { type: "string", description: "A field named in indexed_fields." },
+              op: {
+                type: "string",
+                enum: ["eq", "gt", "gte", "lt", "lte"],
+                description: "Typed equality or number/date range operator.",
+              },
               value: { description: "Typed predicate value." },
             },
             required: ["field", "op", "value"],

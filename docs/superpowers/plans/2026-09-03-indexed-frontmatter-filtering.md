@@ -152,11 +152,11 @@
 - Modify: `docs/architecture.md`
 - Modify: `src/tools/search.ts`
 
-- [ ] Add a deterministic 10,000-document performance test/benchmark fixture with a 10% matching predicate and warmed database. Measure the exact filtered-vector query p95 across repeated runs on the supported local development machine.
-- [ ] Run the benchmark. If p95 is at most 250 ms, retain exact filtered vector search and record the measured command/result in the test comment or a results note. If it exceeds 250 ms, change filtered calls to lexical-only with `vectorUsed: false`, add a regression assertion, and do not ship the slow path.
-- [ ] Document `schema_extensions` plus `indexed_fields`, supported types/operators, caps, AND/missing semantics, authored-only indexing, filter-only ordering/scores, federation compatibility, and the fact that the database projection is rebuildable.
-- [ ] Update `vault_search` tool descriptions/examples without describing this as a general query language.
-- [ ] Run the benchmark again after documentation/code cleanup; commit as `docs(search): explain declared field filtering`.
+- [x] Add a deterministic 10,000-document performance test/benchmark fixture with a 10% matching predicate and warmed database. Measure the exact filtered-vector query p95 across repeated runs on the supported local development machine.
+- [x] Run the benchmark. If p95 is at most 250 ms, retain exact filtered vector search and record the measured command/result in the test comment or a results note. If it exceeds 250 ms, change filtered calls to lexical-only with `vectorUsed: false`, add a regression assertion, and do not ship the slow path.
+- [x] Document `schema_extensions` plus `indexed_fields`, supported types/operators, caps, AND/missing semantics, authored-only indexing, filter-only ordering/scores, federation compatibility, and the fact that the database projection is rebuildable.
+- [x] Update `vault_search` tool descriptions/examples without describing this as a general query language.
+- [x] Run the benchmark again after documentation/code cleanup; commit as `docs(search): explain declared field filtering`.
 
 ## Task 9: Full verification and durable issue update
 

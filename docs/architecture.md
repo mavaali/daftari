@@ -191,6 +191,21 @@ Three things sit alongside the markdown:
   `MATCH ... AND k = ?` with cosine distance. Both indexes are SQL-native
   — search is one prepared statement per ranker, not a JavaScript scan.
 
+  Vault owners can also project explicitly selected scalar
+  `schema_extensions` through `indexed_fields`. The `document_fields` table is
+  a typed EAV cache with separate text, number, and boolean indexes; it stores
+  only valid authored values, never inferred defaults or every arbitrary YAML
+  key. `vault_search` compiles its bounded AND predicates into parameterized
+  `EXISTS` clauses for lexical retrieval. For a filtered vector query, Daftari
+  first resolves eligible paths through the typed field index and then performs
+  exact cosine comparison against those paths' durable `embeddings` rows. The
+  unfiltered path retains sqlite-vec KNN. Filter-only retrieval skips embedding
+  entirely and orders by `updated DESC, path ASC`. Like the FTS tables, the
+  field projection is disposable and is rebuilt when its config fingerprint
+  changes. Federation validates predicates against every selected vault's own
+  declarations before any search begins, then applies RBAC within each vault
+  before rank fusion.
+
   **Prerequisite.** sqlite-vec ships a loadable extension (`vec0.dylib`
   / `.so` / `.dll`), and Daftari loads it at index-db open time via
   `better-sqlite3`'s `db.loadExtension()`. For the common case this is
