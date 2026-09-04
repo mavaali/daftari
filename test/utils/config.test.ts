@@ -665,6 +665,22 @@ describe("loadConfig — schema extensions", () => {
       expect(result.value.schemaExtensions[0]?.default).toBe("2026-01-15");
     });
 
+    it("rejects an impossible calendar date default", () => {
+      writeConfig(
+        [
+          "schema_extensions:",
+          "  decided:",
+          "    type: date",
+          '    default: "2026-02-30"',
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'default' must be a YYYY-MM-DD date");
+    });
+
     it("carries typed defaults for each primitive", () => {
       writeConfig(
         [
@@ -697,6 +713,98 @@ describe("loadConfig — schema extensions", () => {
       );
       expect(byField).toEqual({ s: "draft", n: 90, b: false, a: ["x", "y"], e: "low" });
     });
+  });
+
+  describe("indexed_fields", () => {
+    it("resolves supported scalar declarations in authored order", () => {
+      writeConfig(
+        [
+          "schema_extensions:",
+          "  owner:",
+          "    type: string",
+          "  stage:",
+          "    type: enum",
+          "    enum: [queued, active, done]",
+          "  urgent:",
+          "    type: boolean",
+          "  priority:",
+          "    type: number",
+          "  due_date:",
+          "    type: date",
+          "indexed_fields: [due_date, priority, owner, stage, urgent]",
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.indexedFields).toEqual([
+        { field: "due_date", type: "date" },
+        { field: "priority", type: "number" },
+        { field: "owner", type: "string" },
+        { field: "stage", type: "enum", enum: ["queued", "active", "done"] },
+        { field: "urgent", type: "boolean" },
+      ]);
+    });
+
+    it("defaults to an empty list", () => {
+      writeConfig("schema_extensions:\n  owner:\n    type: string\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value.indexedFields).toEqual([]);
+    });
+
+    const tooManyFields = Array.from({ length: 65 }, (_, i) => `f${i}`);
+    const tooManyYaml = [
+      "schema_extensions:",
+      ...tooManyFields.flatMap((field) => [`  ${field}:`, "    type: string"]),
+      `indexed_fields: [${tooManyFields.join(", ")}]`,
+      "",
+    ].join("\n");
+    const longName = "é".repeat(65);
+    const invalidCases: { name: string; yaml: string; contains: string }[] = [
+      {
+        name: "is not a list",
+        yaml: "schema_extensions:\n  owner:\n    type: string\nindexed_fields: owner\n",
+        contains: "'indexed_fields' must be a list",
+      },
+      {
+        name: "contains a non-string",
+        yaml: "schema_extensions:\n  owner:\n    type: string\nindexed_fields: [owner, 3]\n",
+        contains: "indexed_fields[1]",
+      },
+      {
+        name: "references an undeclared field",
+        yaml: "indexed_fields: [owner]\n",
+        contains: "indexed_fields 'owner' is not declared",
+      },
+      {
+        name: "contains a duplicate",
+        yaml: "schema_extensions:\n  owner:\n    type: string\nindexed_fields: [owner, owner]\n",
+        contains: "indexed_fields 'owner' is duplicated",
+      },
+      {
+        name: "references an array field",
+        yaml: "schema_extensions:\n  owners:\n    type: array\n    items: string\nindexed_fields: [owners]\n",
+        contains: "indexed_fields 'owners' has unsupported type 'array'",
+      },
+      { name: "has more than 64 entries", yaml: tooManyYaml, contains: "at most 64" },
+      {
+        name: "has a name over 128 UTF-8 bytes",
+        yaml: `schema_extensions:\n  ${longName}:\n    type: string\nindexed_fields: [${longName}]\n`,
+        contains: "at most 128 UTF-8 bytes",
+      },
+    ];
+
+    for (const testCase of invalidCases) {
+      it(`rejects a declaration that ${testCase.name}`, () => {
+        writeConfig(testCase.yaml);
+        const result = loadConfig(dir);
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error.message).toContain(testCase.contains);
+      });
+    }
   });
 
   describe("malformed declarations fail config load", () => {

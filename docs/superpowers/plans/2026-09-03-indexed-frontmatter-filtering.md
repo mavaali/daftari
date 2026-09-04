@@ -30,13 +30,13 @@
 - Modify: `test/utils/config.test.ts`
 - Modify: `test/frontmatter/schema-extensions.test.ts`
 
-- [ ] Add failing config tests for a valid `indexed_fields` list resolving string, enum, boolean, number, and date declarations from `schema_extensions`.
-- [ ] Add failing tests for unknown names, duplicate names, array fields, more than 64 fields, names over 128 UTF-8 bytes, and non-array/non-string entries. Assert errors name `indexed_fields` and the offending entry.
-- [ ] Add failing calendar-date tests showing impossible extension values/defaults such as `2026-02-30` are invalid, while YAML `Date` objects normalize to `YYYY-MM-DD`.
-- [ ] Run `npx vitest run test/utils/config.test.ts test/frontmatter/schema-extensions.test.ts` and confirm the new assertions fail for missing validation.
-- [ ] Add `IndexedFieldDeclaration` and `indexedFields: IndexedFieldDeclaration[]` to `DaftariConfig`. Parse `indexed_fields` after `schema_extensions`, resolve names without duplicating types, enforce limits, and return declarations in authored order.
-- [ ] Reuse `normalizeIsoDate` for schema-extension date values and defaults rather than regex-only acceptance.
-- [ ] Rerun the focused tests and `npm run build`; commit as `feat(config): declare indexed frontmatter fields`.
+- [x] Add failing config tests for a valid `indexed_fields` list resolving string, enum, boolean, number, and date declarations from `schema_extensions`.
+- [x] Add failing tests for unknown names, duplicate names, array fields, more than 64 fields, names over 128 UTF-8 bytes, and non-array/non-string entries. Assert errors name `indexed_fields` and the offending entry.
+- [x] Add failing calendar-date tests showing impossible extension values/defaults such as `2026-02-30` are invalid, while YAML `Date` objects normalize to `YYYY-MM-DD`.
+- [x] Run `npx vitest run test/utils/config.test.ts test/frontmatter/schema-extensions.test.ts` and confirm the new assertions fail for missing validation.
+- [x] Add `IndexedFieldDeclaration` and `indexedFields: IndexedFieldDeclaration[]` to `DaftariConfig`. Parse `indexed_fields` after `schema_extensions`, resolve names without duplicating types, enforce limits, and return declarations in authored order.
+- [x] Reuse `normalizeIsoDate` for schema-extension date values and defaults rather than regex-only acceptance.
+- [x] Rerun the focused tests and `npm run build`; commit as `feat(config): declare indexed frontmatter fields`.
 
 ## Task 2: Add the derived SQLite field projection and migration
 
@@ -197,4 +197,3 @@
 - [ ] Watch required checks to completion. For every failing check, reproduce locally when possible, add or adjust a regression test, fix, rerun proportional/full verification, commit, push, and verify the new remote SHA.
 - [ ] Read all PR review comments and requested changes. Address actionable comments with the same test-first loop; respond with concrete evidence or an explicit technical rationale when no code change is warranted.
 - [ ] Repeat until required checks are green and there are no unresolved actionable comments. Mark Beads `daftari-j2r` complete only then, recording the PR URL and verified final remote SHA.
-

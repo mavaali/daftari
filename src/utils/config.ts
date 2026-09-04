@@ -20,6 +20,7 @@ import {
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
 import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
 import { parseCidr } from "../serve/proxy-trust.js";
+import { normalizeIsoDate } from "./dates.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
 
@@ -76,6 +77,14 @@ export interface SchemaExtension {
   enum?: string[]; // present iff type === "enum"
   items?: "string"; // present iff type === "array"
   pattern?: string; // present only for type === "string"
+}
+
+export type IndexedFieldType = Exclude<ExtensionType, "array">;
+
+export interface IndexedFieldDeclaration {
+  field: string;
+  type: IndexedFieldType;
+  enum?: string[];
 }
 
 // Recognised values of `embeddings.provider`. The vault owner picks one;
@@ -318,6 +327,7 @@ export const RESERVED_MOUNT_ALIASES: readonly string[] = ["local"];
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
+  indexedFields: IndexedFieldDeclaration[];
   // Vault-owner-supplied pre-write hooks. v1 lists pre-write only; future
   // hook surfaces (read-time, post-write) would extend this block. See the
   // README "Vault hooks" section for the trust model.
@@ -503,6 +513,7 @@ function emptyConfig(): DaftariConfig {
   return {
     roles: {},
     schemaExtensions: [],
+    indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,
@@ -733,7 +744,10 @@ function validateDefault(
       if (value instanceof Date && !Number.isNaN(value.getTime())) {
         return ok(value.toISOString().slice(0, 10));
       }
-      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return ok(value);
+      if (typeof value === "string") {
+        const normalized = normalizeIsoDate(value);
+        if (normalized !== null) return ok(normalized);
+      }
       return bad("a YYYY-MM-DD date");
     }
     case "number":
@@ -922,6 +936,52 @@ function validateExtensions(raw: unknown): Result<SchemaExtension[], Error> {
     const ext = validateExtension(field, decl);
     if (!ext.ok) return ext;
     out.push(ext.value);
+  }
+  return ok(out);
+}
+
+const MAX_INDEXED_FIELDS = 64;
+const MAX_INDEXED_FIELD_NAME_BYTES = 128;
+
+function validateIndexedFields(
+  raw: unknown,
+  extensions: SchemaExtension[],
+): Result<IndexedFieldDeclaration[], Error> {
+  if (raw === undefined) return ok([]);
+  if (!Array.isArray(raw)) return err(new Error("'indexed_fields' must be a list"));
+  if (raw.length > MAX_INDEXED_FIELDS) {
+    return err(new Error(`'indexed_fields' may contain at most ${MAX_INDEXED_FIELDS} fields`));
+  }
+
+  const byField = new Map(extensions.map((extension) => [extension.field, extension]));
+  const seen = new Set<string>();
+  const out: IndexedFieldDeclaration[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const field = raw[i];
+    if (typeof field !== "string" || field.length === 0) {
+      return err(new Error(`'indexed_fields[${i}]' must be a non-empty string`));
+    }
+    if (Buffer.byteLength(field, "utf8") > MAX_INDEXED_FIELD_NAME_BYTES) {
+      return err(
+        new Error(
+          `indexed_fields '${field}' must be at most ${MAX_INDEXED_FIELD_NAME_BYTES} UTF-8 bytes`,
+        ),
+      );
+    }
+    if (seen.has(field)) return err(new Error(`indexed_fields '${field}' is duplicated`));
+    seen.add(field);
+
+    const extension = byField.get(field);
+    if (!extension)
+      return err(new Error(`indexed_fields '${field}' is not declared in schema_extensions`));
+    if (extension.type === "array") {
+      return err(new Error(`indexed_fields '${field}' has unsupported type 'array'`));
+    }
+    out.push({
+      field,
+      type: extension.type,
+      ...(extension.enum ? { enum: [...extension.enum] } : {}),
+    });
   }
   return ok(out);
 }
@@ -1852,6 +1912,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
 
+  const indexedFields = validateIndexedFields(root.indexed_fields, extensions.value);
+  if (!indexedFields.ok) return err(new Error(`malformed config: ${indexedFields.error.message}`));
+
   const hooks = validateHooks(root.hooks);
   if (!hooks.ok) return err(new Error(`malformed config: ${hooks.error.message}`));
 
@@ -2115,6 +2178,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   return ok({
     roles,
     schemaExtensions: extensions.value,
+    indexedFields: indexedFields.value,
     hooks: hooks.value,
     autoCommit,
     watch,

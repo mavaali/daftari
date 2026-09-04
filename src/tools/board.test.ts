@@ -177,6 +177,7 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
   return {
     roles,
     schemaExtensions: [],
+    indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: false,
     watch: false,

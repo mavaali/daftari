@@ -87,6 +87,15 @@ describe("validateFrontmatter — schema extensions", () => {
       expect(issues[0]?.message).toContain("YYYY-MM-DD");
     });
 
+    it("date given an impossible calendar date", () => {
+      const issues = extIssues(base({ when: "2026-02-30" }), [
+        ext({ field: "when", type: "date" }),
+      ]);
+      expect(issues).toEqual([
+        { field: "when", message: 'expected a YYYY-MM-DD date, got "2026-02-30"' },
+      ]);
+    });
+
     it("date accepts a js-yaml Date object", () => {
       const issues = extIssues(base({ when: new Date("2026-04-10T00:00:00Z") }), [
         ext({ field: "when", type: "date" }),
