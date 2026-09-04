@@ -36,6 +36,11 @@ import {
 } from "../search/coverage.js";
 import { resolveCurrentSource } from "../search/current-source.js";
 import {
+  type CompiledFieldFilter,
+  matchingFieldFilterPaths,
+  parseFieldFilters,
+} from "../search/field-filters.js";
+import {
   applyGraphExpansion,
   graphExpandConfig,
   loadGraphForSubset,
@@ -44,6 +49,7 @@ import {
 } from "../search/graph-expansion.js";
 import {
   extractRelatedSeed,
+  filterOnlySearch,
   getDefaultWeights,
   type HybridHit,
   type HybridSearchResult,
@@ -67,6 +73,7 @@ import { applySupersededSuppression } from "../search/suppression.js";
 import { resolveValidAtSource } from "../search/valid-at-source.js";
 import { embedQuery, getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
+import { loadConfig } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import type { ToolDefinition } from "./read.js";
 
@@ -468,11 +475,22 @@ export async function vaultSearch(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<HybridSearchResult, Error>> {
-  const query = args.query;
-  if (typeof query !== "string" || query.trim().length === 0) {
+  if (args.query !== undefined && typeof args.query !== "string") {
     return {
       ok: false,
-      error: new Error("vault_search requires a non-empty 'query' argument"),
+      error: new Error("vault_search 'query' must be a string when provided"),
+    };
+  }
+  const query = typeof args.query === "string" && args.query.trim().length > 0 ? args.query : "";
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const parsedFilters = parseFieldFilters(args.filters, config.value.indexedFields);
+  if (!parsedFilters.ok) return parsedFilters;
+  const filters = parsedFilters.value;
+  if (query.length === 0 && filters.length === 0) {
+    return {
+      ok: false,
+      error: new Error("vault_search requires a non-empty 'query' or 'filters' argument"),
     };
   }
 
@@ -514,7 +532,15 @@ export async function vaultSearch(
 
   let localResult: HybridSearchResult | null = null;
   if (includeLocal) {
-    const local = await searchLocalVault(vaultRoot, args, query, validAt, validOnly, access);
+    const local = await searchLocalVault(
+      vaultRoot,
+      args,
+      query,
+      filters,
+      validAt,
+      validOnly,
+      access,
+    );
     if (!local.ok) return local;
     localResult = local.value;
     for (const hit of localResult.hits) hit.vault = "local";
@@ -590,6 +616,7 @@ async function searchLocalVault(
   vaultRoot: string,
   args: Record<string, unknown>,
   query: string,
+  filters: CompiledFieldFilter[],
   validAt: string | null,
   validOnly: boolean,
   access?: AccessContext,
@@ -607,16 +634,25 @@ async function searchLocalVault(
     // restricted docs occupying the top-`limit` slots would be dropped by
     // canRead below and shrink the permitted page below `limit`, even though
     // more readable docs ranked just past the cut.
-    const result = await hybridSearch(db, query, {
-      weights: parseWeights(args.weights),
-      limit,
-      overFetch: true,
-      // Push the readable-collection allow-list into the vector KNN so a
-      // restricted role's K budget is spent on chunks it can actually read
-      // (2026-07-26 fusion spec, Decision 3). The canRead filter below stays:
-      // pushdown is a recall fix, not the authorization boundary.
-      readableCollections: access ? readableCollections(access.role) : undefined,
-    });
+    const readable = access ? readableCollections(access.role) : undefined;
+    const result =
+      query.length === 0
+        ? ok(
+            filterOnlySearch(db, filters, {
+              limit,
+              overFetch: true,
+              readableCollections: readable,
+            }),
+          )
+        : await hybridSearch(db, query, {
+            weights: parseWeights(args.weights),
+            limit,
+            overFetch: true,
+            // Push the readable-collection allow-list into the vector KNN so a
+            // restricted role's K budget is spent on chunks it can actually read.
+            readableCollections: readable,
+            filters,
+          });
     if (!result.ok) return result;
 
     // RBAC: drop hits in collections the role cannot read (only when an access
@@ -664,9 +700,15 @@ async function searchLocalVault(
     // added docs identically — a coverage pull must never surface a doc the
     // caller could not retrieve directly.
     const widened = applyCoveragePass(db, ranked);
+    const matchingCoverage = matchingFieldFilterPaths(
+      db,
+      filters,
+      widened.map((hit) => hit.path),
+    );
+    const filteredWidened = widened.filter((hit) => matchingCoverage.has(hit.path));
     const permitted = access
-      ? widened.filter((h) => (h.viaCoverage ? canRead(access.role, h.collection) : true))
-      : widened;
+      ? filteredWidened.filter((h) => (h.viaCoverage ? canRead(access.role, h.collection) : true))
+      : filteredWidened;
 
     // off.1/MAV-154: one-hop edge-expansion post-pass (default off). Same shape
     // as the coverage pass — gated by the startup-resolved config, returns
@@ -676,7 +718,7 @@ async function searchLocalVault(
     // path entirely — zero added cost for callers who do not opt in.
     const geCfg = graphExpandConfig();
     let permittedExpanded = permitted;
-    if (geCfg.enabled) {
+    if (geCfg.enabled && query.length > 0) {
       const provider = getProvider();
       const qEmbRes = await embedQuery(query);
       const qEmb = qEmbRes.ok ? qEmbRes.value : null;
@@ -690,6 +732,12 @@ async function searchLocalVault(
       permittedExpanded = access
         ? expanded.filter((h) => (h.viaEdge ? canRead(access.role, h.collection) : true))
         : expanded;
+      const matchingExpanded = matchingFieldFilterPaths(
+        db,
+        filters,
+        permittedExpanded.map((hit) => hit.path),
+      );
+      permittedExpanded = permittedExpanded.filter((hit) => matchingExpanded.has(hit.path));
     }
 
     // Foreground the current source for any hit (ranked OR coverage-added) that
@@ -718,10 +766,16 @@ async function searchLocalVault(
     // exactly the right answer for a past date, so demoting it (or pulling in
     // the current head) would answer the wrong question — per-date chain
     // resolution is validAtSource's job below.
-    const served =
+    const servedWithAdditions =
       validAt === null
         ? applySupersededSuppression(db, permittedExpanded, access, { pullIn: true })
         : permittedExpanded;
+    const matchingServed = matchingFieldFilterPaths(
+      db,
+      filters,
+      servedWithAdditions.map((hit) => hit.path),
+    );
+    const served = servedWithAdditions.filter((hit) => matchingServed.has(hit.path));
 
     if (validAt !== null) {
       for (const hit of served) {
@@ -760,7 +814,7 @@ async function searchLocalVault(
     // RBAC-filtered fused ranking the hits were sliced from (never coverage
     // additions; those are recall, not ranking). Compact judging records
     // only: no enrichment joins, per the protocol text.
-    const rerankK = parseRerankCandidates(args.rerank_candidates);
+    const rerankK = query.length === 0 ? 0 : parseRerankCandidates(args.rerank_candidates);
     const rerank =
       rerankK > 0
         ? {
@@ -1346,6 +1400,24 @@ export const searchTools: ToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Free-text search query" },
+        filters: {
+          type: "array",
+          maxItems: 16,
+          description:
+            "Optional AND predicates over frontmatter fields explicitly declared in indexed_fields. " +
+            "eq supports string, enum, boolean, number, and date; gt/gte/lt/lte support number and date. " +
+            "A non-empty filters list may be used without query for structured retrieval.",
+          items: {
+            type: "object",
+            properties: {
+              field: { type: "string" },
+              op: { type: "string", enum: ["eq", "gt", "gte", "lt", "lte"] },
+              value: { description: "Typed predicate value." },
+            },
+            required: ["field", "op", "value"],
+            additionalProperties: false,
+          },
+        },
         limit: {
           type: "number",
           description: "Maximum results to return (default 10, max 50)",
@@ -1386,7 +1458,6 @@ export const searchTools: ToolDefinition[] = [
             "configured.",
         },
       },
-      required: ["query"],
       additionalProperties: false,
     },
     outputSchema: {
@@ -1420,6 +1491,10 @@ export const searchTools: ToolDefinition[] = [
     summarize: (value) => {
       const result = value as HybridSearchResult;
       const n = result.hits.length;
+      if (result.query.length === 0) {
+        const header = `${n} filtered result${n === 1 ? "" : "s"} (structured filters).`;
+        return summarizeHits(header, result.hits);
+      }
       const mode = result.vectorUsed ? "bm25+vector" : "bm25 only";
       const header =
         n === 0

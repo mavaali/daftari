@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { compileFieldFilterSql, parseFieldFilters } from "../../src/search/field-filters.js";
+import {
+  compileFieldFilterCandidateSql,
+  compileFieldFilterSql,
+  parseFieldFilters,
+} from "../../src/search/field-filters.js";
 import type { IndexedFieldDeclaration } from "../../src/utils/config.js";
 
 const declarations: IndexedFieldDeclaration[] = [
@@ -128,6 +132,19 @@ describe("parseFieldFilters", () => {
 });
 
 describe("compileFieldFilterSql", () => {
+  it("anchors candidate selection on the first typed value index", () => {
+    const parsed = parse([
+      { field: "priority", op: "gte", value: 2 },
+      { field: "due_date", op: "lt", value: "2026-10-01" },
+    ]);
+    if (!parsed.ok) throw parsed.error;
+    const compiled = compileFieldFilterCandidateSql(parsed.value);
+    expect(compiled.sql).toContain("FROM document_fields AS df0");
+    expect(compiled.sql).toContain("df0.number_value >= ?");
+    expect(compiled.sql).toContain("df1.path = df0.path");
+    expect(compiled.params).toEqual(["priority", "number", 2, "due_date", "date", "2026-10-01"]);
+  });
+
   it("compiles ANDed correlated EXISTS clauses with bound values", () => {
     const parsed = parse([
       { field: "priority", op: "gte", value: 2 },

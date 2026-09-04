@@ -1,4 +1,5 @@
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { IndexDb } from "../storage/index-db.js";
 import type { IndexedFieldDeclaration, IndexedFieldType } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 
@@ -121,16 +122,29 @@ export function compileFieldFilterSql(
   filters: CompiledFieldFilter[],
   pathExpression: string,
 ): FieldFilterSql {
+  return compileCorrelatedFilters(filters, pathExpression, 0);
+}
+
+function filterStorage(filter: CompiledFieldFilter): { column: string; value: string | number } {
+  const column =
+    filter.type === "number"
+      ? "number_value"
+      : filter.type === "boolean"
+        ? "bool_value"
+        : "text_value";
+  const value = typeof filter.value === "boolean" ? (filter.value ? 1 : 0) : filter.value;
+  return { column, value };
+}
+
+function compileCorrelatedFilters(
+  filters: CompiledFieldFilter[],
+  pathExpression: string,
+  aliasOffset: number,
+): FieldFilterSql {
   const params: Array<string | number> = [];
   const clauses = filters.map((filter, index) => {
-    const alias = `df${index}`;
-    const column =
-      filter.type === "number"
-        ? "number_value"
-        : filter.type === "boolean"
-          ? "bool_value"
-          : "text_value";
-    const value = typeof filter.value === "boolean" ? (filter.value ? 1 : 0) : filter.value;
+    const alias = `df${index + aliasOffset}`;
+    const { column, value } = filterStorage(filter);
     params.push(filter.field, filter.type, value);
     return (
       `EXISTS (SELECT 1 FROM document_fields AS ${alias} ` +
@@ -139,4 +153,37 @@ export function compileFieldFilterSql(
     );
   });
   return { sql: clauses.join(" AND "), params };
+}
+
+export function compileFieldFilterCandidateSql(filters: CompiledFieldFilter[]): FieldFilterSql {
+  const [first, ...rest] = filters;
+  if (!first) return { sql: "SELECT NULL AS path WHERE 0", params: [] };
+  const { column, value } = filterStorage(first);
+  const trailing = compileCorrelatedFilters(rest, "df0.path", 1);
+  const trailingSql = trailing.sql.length > 0 ? ` AND ${trailing.sql}` : "";
+  return {
+    sql:
+      `SELECT df0.path AS path FROM document_fields AS df0 ` +
+      `WHERE df0.field = ? AND df0.kind = ? ` +
+      `AND df0.${column} ${SQL_OPERATOR[first.op]} ?${trailingSql}`,
+    params: [first.field, first.type, value, ...trailing.params],
+  };
+}
+
+export function matchingFieldFilterPaths(
+  db: IndexDb,
+  filters: CompiledFieldFilter[],
+  paths: string[],
+): Set<string> {
+  if (filters.length === 0) return new Set(paths);
+  if (paths.length === 0) return new Set();
+  const compiled = compileFieldFilterSql(filters, "d.path");
+  const placeholders = paths.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT d.path AS path FROM documents AS d
+        WHERE d.path IN (${placeholders}) AND ${compiled.sql}`,
+    )
+    .all(...paths, ...compiled.params) as { path: string }[];
+  return new Set(rows.map((row) => row.path));
 }

@@ -99,15 +99,15 @@
 - Modify: `test/search/sql-native.test.ts`
 - Modify: `test/search/acl-pushdown.test.ts`
 
-- [ ] Add failing hybrid tests proving document- and chunk-level BM25 exclude nonmatching docs before rank/limit and keep unfiltered results byte-compatible.
-- [ ] Add failing tool tests allowing absent/blank `query` only when `filters` is nonempty, rejecting empty query plus empty/no filters, and returning filter-only results ordered by `updated DESC, path ASC` with all scores zero and `vectorUsed: false`.
-- [ ] Add failing equality/range, AND, missing-field, limit, and RBAC tests. Assert restricted docs do not consume the filter-only result limit and do not leak through counts/messages.
-- [ ] Run focused tests and observe expected failures in query validation and result selection.
-- [ ] Thread compiled filters through `HybridSearchOptions` and both lexical SQL paths. Add a SQL-native filter-only selector that includes readable collection pushdown and still passes results through `canRead`.
-- [ ] Change `vaultSearch` validation so filter parsing happens before opening the index or loading embeddings. Return `query: ""` and a filter-specific summary for filter-only calls.
-- [ ] Apply the same compiled predicate check to independently added coverage and graph-expansion documents before they enter results; leave explanatory current-source attachment behavior unchanged.
-- [ ] Extend the MCP input schema with `filters` and make `query` optional at JSON-schema level while enforcing the query-or-filter invariant in the handler.
-- [ ] Rerun focused tests, build, and commit as `feat(search): filter lexical and structured retrieval`.
+- [x] Add failing hybrid tests proving document- and chunk-level BM25 exclude nonmatching docs before rank/limit and keep unfiltered results byte-compatible.
+- [x] Add failing tool tests allowing absent/blank `query` only when `filters` is nonempty, rejecting empty query plus empty/no filters, and returning filter-only results ordered by `updated DESC, path ASC` with all scores zero and `vectorUsed: false`.
+- [x] Add failing equality/range, AND, missing-field, limit, and RBAC tests. Assert restricted docs do not consume the filter-only result limit and do not leak through counts/messages.
+- [x] Run focused tests and observe expected failures in query validation and result selection.
+- [x] Thread compiled filters through `HybridSearchOptions` and both lexical SQL paths. Add a SQL-native filter-only selector that includes readable collection pushdown and still passes results through `canRead`.
+- [x] Change `vaultSearch` validation so filter parsing happens before opening the index or loading embeddings. Return `query: ""` and a filter-specific summary for filter-only calls.
+- [x] Apply the same compiled predicate check to independently added coverage, graph-expansion, and suppression documents before they enter results; leave explanatory current-source attachment behavior unchanged.
+- [x] Extend the MCP input schema with `filters` and make `query` optional at JSON-schema level while enforcing the query-or-filter invariant in the handler.
+- [x] Rerun focused tests, build, and commit as `feat(search): filter lexical and structured retrieval`.
 
 ## Task 6: Preserve hybrid semantics with exact filtered vector search
 
@@ -118,13 +118,13 @@
 - Modify: `test/search/hybrid.test.ts`
 - Modify: `test/search/acl-pushdown.test.ts`
 
-- [ ] Add failing tests proving filtered vector search never uses the approximate `embeddings_vec ... MATCH ... k=?` path, computes cosine distance from durable cached embeddings only for eligible paths, collapses chunks to the best distance per document, and preserves readable-collection pushdown.
-- [ ] Add failing tests that unfiltered searches still use sqlite-vec KNN and that missing query embeddings fall back to filtered lexical ranking.
-- [ ] Run focused vector/hybrid tests and confirm filtered calls currently consume the unfiltered KNN budget.
-- [ ] Implement an exact filtered vector ranking query: materialize eligible document paths via bound field predicates and readable collections, join chunks to durable `embeddings` for the active model, compute `vec_distance_cosine`, group by path using the best chunk, and rank deterministically.
-- [ ] Select exact filtered vector ranking only when filters are present; retain the existing approximate vec0 path for unfiltered queries and skip all vector work for filter-only queries.
-- [ ] Inspect `EXPLAIN QUERY PLAN` in tests to confirm a `document_fields` lookup index narrows eligible paths before the embeddings scan.
-- [ ] Rerun focused tests, build, and commit as `feat(search): rank filtered vectors exactly`.
+- [x] Add failing tests proving filtered vector search never depends on the approximate `embeddings_vec ... MATCH ... k=?` path, computes cosine distance from durable cached embeddings only for eligible paths, collapses chunks to the best distance per document, and preserves readable-collection pushdown.
+- [x] Add failing tests that unfiltered searches still use sqlite-vec KNN and that missing cached embeddings fall back to filtered lexical ranking.
+- [x] Run focused vector/hybrid tests and confirm filtered calls currently consume the unfiltered KNN budget.
+- [x] Implement an exact filtered vector ranking query: materialize eligible document paths via bound field predicates and readable collections, join chunks to durable `embeddings` for the active model, compute `vec_distance_cosine`, group by path using the best chunk, and rank deterministically.
+- [x] Select exact filtered vector ranking only when filters are present; retain the existing approximate vec0 path for unfiltered queries and skip all vector work for filter-only queries.
+- [x] Inspect `EXPLAIN QUERY PLAN` in tests to confirm a `document_fields` lookup index narrows eligible paths before the embeddings scan.
+- [x] Rerun focused tests, build, and commit as `feat(search): rank filtered vectors exactly`.
 
 ## Task 7: Validate and execute filters across federation
 
