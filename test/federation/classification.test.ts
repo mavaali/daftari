@@ -28,6 +28,7 @@ function registryWith(aliases: string[]): MountRegistry {
           role: null,
           roleName: "guest",
           schemaExtensions: [],
+          indexedFields: [],
           indexMode: "full" as const,
         },
       ]),

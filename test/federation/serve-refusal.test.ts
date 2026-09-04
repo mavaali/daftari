@@ -9,6 +9,7 @@ function baseConfig(overrides: Partial<DaftariConfig>): DaftariConfig {
   return {
     roles: {},
     schemaExtensions: [],
+    indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,

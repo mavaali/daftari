@@ -85,7 +85,7 @@ function validateExtensionField(
     case "date": {
       // js-yaml parses unquoted ISO dates into Date objects.
       if (v instanceof Date && !Number.isNaN(v.getTime())) return;
-      if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+      if (typeof v === "string" && normalizeIsoDate(v) === v) return;
       issues.push({ field, message: `expected a YYYY-MM-DD date, got ${JSON.stringify(v)}` });
       return;
     }

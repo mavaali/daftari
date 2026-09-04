@@ -1,4 +1,4 @@
-import { readFile, rename, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ok, type Result } from "../../src/frontmatter/types.js";
@@ -6,6 +6,7 @@ import type { EmbeddingProvider } from "../../src/search/embedding-provider.js";
 import { LOCAL_MINILM_DIM, localMinilmProvider } from "../../src/search/providers/local-minilm.js";
 import {
   indexDocument,
+  indexedFieldsFingerprint,
   isIndexFresh,
   type ReindexResult,
   reindexVault,
@@ -24,6 +25,7 @@ import {
   getMeta,
   openIndexDb,
 } from "../../src/storage/index-db.js";
+import { clearConfigCache } from "../../src/utils/config.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 describe("reindexVault", () => {
@@ -34,7 +36,208 @@ describe("reindexVault", () => {
   });
 
   afterEach(() => {
+    clearConfigCache();
     cleanupVault(vault);
+  });
+
+  async function writeIndexedConfig(indexedFields: string[]): Promise<void> {
+    await mkdir(join(vault, ".daftari"), { recursive: true });
+    await writeFile(
+      join(vault, ".daftari", "config.yaml"),
+      [
+        "schema_extensions:",
+        "  due_date:",
+        "    type: date",
+        "  priority:",
+        "    type: number",
+        "    default: 9",
+        "  owner:",
+        "    type: string",
+        "  stage:",
+        "    type: enum",
+        "    enum: [queued, active, done]",
+        "  urgent:",
+        "    type: boolean",
+        `indexed_fields: [${indexedFields.join(", ")}]`,
+        "",
+      ].join("\n"),
+    );
+    clearConfigCache();
+  }
+
+  function customDocument(fields: string, body = "Structured project record."): string {
+    return [
+      "---",
+      "title: Structured Project",
+      "domain: accumulation",
+      "collection: projects",
+      "status: canonical",
+      "confidence: high",
+      "created: 2026-09-01",
+      "updated: 2026-09-01",
+      "updated_by: agent:test",
+      "provenance: direct",
+      "tags: []",
+      fields,
+      "---",
+      "",
+      body,
+      "",
+    ].join("\n");
+  }
+
+  it("projects only authored valid configured scalar values", async () => {
+    await writeIndexedConfig(["due_date", "priority", "owner", "stage", "urgent"]);
+    await writeFile(
+      join(vault, "projects-valid.md"),
+      customDocument(
+        [
+          "due_date: 2026-09-15",
+          "priority: 2",
+          "owner: human:mihir",
+          "stage: active",
+          "urgent: true",
+        ].join("\n"),
+      ),
+    );
+    await writeFile(join(vault, "projects-default.md"), customDocument("owner: agent:codex"));
+    await writeFile(
+      join(vault, "projects-invalid.md"),
+      customDocument(`due_date: 2026-02-30\nowner: ${"x".repeat(4097)}`),
+    );
+
+    const result = await reindexVault(vault, { lexicalOnly: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const invalid = result.value.invalidFrontmatter.find(
+      (entry) => entry.path === "projects-invalid.md",
+    );
+    expect(invalid?.reason).toContain("due_date");
+    expect(invalid?.reason).toContain("owner");
+
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    try {
+      const rows = opened.value
+        .prepare(
+          "SELECT path, field, kind, text_value, number_value, bool_value FROM document_fields WHERE path LIKE 'projects-%' ORDER BY path, field",
+        )
+        .all();
+      expect(rows).toEqual([
+        {
+          path: "projects-default.md",
+          field: "owner",
+          kind: "string",
+          text_value: "agent:codex",
+          number_value: null,
+          bool_value: null,
+        },
+        {
+          path: "projects-valid.md",
+          field: "due_date",
+          kind: "date",
+          text_value: "2026-09-15",
+          number_value: null,
+          bool_value: null,
+        },
+        {
+          path: "projects-valid.md",
+          field: "owner",
+          kind: "string",
+          text_value: "human:mihir",
+          number_value: null,
+          bool_value: null,
+        },
+        {
+          path: "projects-valid.md",
+          field: "priority",
+          kind: "number",
+          text_value: null,
+          number_value: 2,
+          bool_value: null,
+        },
+        {
+          path: "projects-valid.md",
+          field: "stage",
+          kind: "enum",
+          text_value: "active",
+          number_value: null,
+          bool_value: null,
+        },
+        {
+          path: "projects-valid.md",
+          field: "urgent",
+          kind: "boolean",
+          text_value: null,
+          number_value: null,
+          bool_value: 1,
+        },
+      ]);
+    } finally {
+      opened.value.close();
+    }
+  }, 60_000);
+
+  it("replaces projected rows during incremental indexing", async () => {
+    await writeIndexedConfig(["due_date", "priority", "owner"]);
+    const path = "projects-incremental.md";
+    await writeFile(
+      join(vault, path),
+      customDocument("due_date: 2026-09-15\npriority: 2\nowner: human:mihir"),
+    );
+    const first = await reindexVault(vault);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    await writeFile(join(vault, path), customDocument("priority: 5\nowner: agent:codex"));
+    const updated = await indexDocument(vault, path);
+    expect(updated.ok).toBe(true);
+    const opened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!opened.ok) throw opened.error;
+    try {
+      expect(
+        opened.value
+          .prepare(
+            "SELECT field, text_value, number_value FROM document_fields WHERE path = ? ORDER BY field",
+          )
+          .all(path),
+      ).toEqual([
+        { field: "owner", text_value: "agent:codex", number_value: null },
+        { field: "priority", text_value: null, number_value: 5 },
+      ]);
+    } finally {
+      opened.value.close();
+    }
+  }, 60_000);
+
+  it("treats an indexed-field declaration change as stale", async () => {
+    await writeIndexedConfig(["priority", "stage"]);
+    const first = await reindexVault(vault, { lexicalOnly: true });
+    expect(first.ok).toBe(true);
+    expect(await isIndexFresh(vault)).toBe(true);
+
+    await writeIndexedConfig(["stage", "priority"]);
+    expect(await isIndexFresh(vault)).toBe(false);
+  }, 60_000);
+
+  it("fingerprints indexed field names, types, enum members, and order", () => {
+    const baseline = [
+      { field: "stage", type: "enum" as const, enum: ["queued", "active"] },
+      { field: "priority", type: "number" as const },
+    ];
+    expect(indexedFieldsFingerprint(baseline)).toBe(indexedFieldsFingerprint(baseline));
+    expect(indexedFieldsFingerprint(baseline)).not.toBe(
+      indexedFieldsFingerprint([...baseline].reverse()),
+    );
+    expect(indexedFieldsFingerprint(baseline)).not.toBe(
+      indexedFieldsFingerprint([
+        { field: "stage", type: "enum", enum: ["queued", "done"] },
+        { field: "priority", type: "number" },
+      ]),
+    );
+    expect(indexedFieldsFingerprint([{ field: "priority", type: "number" }])).not.toBe(
+      indexedFieldsFingerprint([{ field: "priority", type: "string" }]),
+    );
   });
 
   it("indexes every vault document and its chunks", async () => {
