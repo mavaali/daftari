@@ -665,6 +665,22 @@ describe("loadConfig — schema extensions", () => {
       expect(result.value.schemaExtensions[0]?.default).toBe("2026-01-15");
     });
 
+    it("keeps accepting a full YAML timestamp as a date default", () => {
+      writeConfig(
+        [
+          "schema_extensions:",
+          "  decided:",
+          "    type: date",
+          "    default: 2026-01-15T09:30:00Z",
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.schemaExtensions[0]?.default).toBe("2026-01-15");
+    });
+
     it("preserves YAML merge-key behavior while retaining authored date strings", () => {
       writeConfig(
         [

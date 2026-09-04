@@ -52,7 +52,12 @@ import {
 } from "../storage/index-db.js";
 import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
-import { type DaftariConfig, type IndexedFieldDeclaration, loadConfig } from "../utils/config.js";
+import {
+  type DaftariConfig,
+  type IndexedFieldDeclaration,
+  loadConfig,
+  MAX_INDEXED_FIELD_TEXT_BYTES,
+} from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
@@ -115,8 +120,6 @@ function readCachedVector(db: IndexDb, hash: string, modelId: string): Float32Ar
 // can decide whether the persisted index already reflects the files on disk.
 const MANIFEST_META_KEY = "vault_manifest";
 const INDEXED_FIELDS_META_KEY = "indexed_fields_fingerprint";
-const MAX_INDEXED_TEXT_BYTES = 4096;
-
 export function indexedFieldsFingerprint(fields: IndexedFieldDeclaration[]): string {
   return sha256Hex(
     JSON.stringify(
@@ -354,10 +357,10 @@ function projectIndexedFields(
       typeof value === "string"
     ) {
       const bytes = Buffer.byteLength(value, "utf8");
-      if (bytes > MAX_INDEXED_TEXT_BYTES) {
+      if (bytes > MAX_INDEXED_FIELD_TEXT_BYTES) {
         extraIssues.push({
           field: declaration.field,
-          message: `indexed value is ${bytes} UTF-8 bytes; maximum is ${MAX_INDEXED_TEXT_BYTES}`,
+          message: `indexed value is ${bytes} UTF-8 bytes; maximum is ${MAX_INDEXED_FIELD_TEXT_BYTES}`,
         });
         continue;
       }

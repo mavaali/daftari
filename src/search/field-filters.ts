@@ -1,10 +1,13 @@
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { IndexDb } from "../storage/index-db.js";
-import type { IndexedFieldDeclaration, IndexedFieldType } from "../utils/config.js";
+import {
+  type IndexedFieldDeclaration,
+  type IndexedFieldType,
+  MAX_INDEXED_FIELD_TEXT_BYTES,
+} from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 
 export const MAX_FIELD_FILTERS = 16;
-export const MAX_INDEXED_FILTER_TEXT_BYTES = 4096;
 
 export type FieldFilterOperator = "eq" | "gt" | "gte" | "lt" | "lte";
 
@@ -93,9 +96,9 @@ export function parseFieldFilters(
       if (typeof obj.value !== "string") {
         return filterError(`filters[${i}].value must be a string`);
       }
-      if (Buffer.byteLength(obj.value, "utf8") > MAX_INDEXED_FILTER_TEXT_BYTES) {
+      if (Buffer.byteLength(obj.value, "utf8") > MAX_INDEXED_FIELD_TEXT_BYTES) {
         return filterError(
-          `filters[${i}].value must be at most ${MAX_INDEXED_FILTER_TEXT_BYTES} UTF-8 bytes`,
+          `filters[${i}].value must be at most ${MAX_INDEXED_FIELD_TEXT_BYTES} UTF-8 bytes`,
         );
       }
       if (declaration.type === "enum" && !(declaration.enum ?? []).includes(obj.value)) {

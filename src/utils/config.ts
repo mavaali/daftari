@@ -943,6 +943,7 @@ function validateExtensions(raw: unknown): Result<SchemaExtension[], Error> {
 
 const MAX_INDEXED_FIELDS = 64;
 const MAX_INDEXED_FIELD_NAME_BYTES = 128;
+export const MAX_INDEXED_FIELD_TEXT_BYTES = 4096;
 
 function validateIndexedFields(
   raw: unknown,

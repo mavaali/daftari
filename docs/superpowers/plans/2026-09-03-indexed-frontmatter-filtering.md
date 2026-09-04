@@ -218,3 +218,13 @@
 - [x] Watch required checks to completion. For every failing check, reproduce locally when possible, add or adjust a regression test, fix, rerun proportional/full verification, commit, push, and verify the new remote SHA.
 - [x] Read all PR review comments and requested changes. Address actionable comments with the same test-first loop; respond with concrete evidence or an explicit technical rationale when no code change is warranted.
 - [x] Repeat until required checks are green and there are no unresolved actionable comments. Mark Beads `daftari-j2r` complete only then, recording the PR URL and verified final remote SHA.
+
+### Hosted-review dispositions
+
+- **Full YAML timestamp compatibility:** accepted and fixed. Bare calendar dates
+  remain authored strings for real-calendar validation, while full timestamps
+  retain js-yaml's prior `Date` semantics, including its one-digit component
+  grammar. Parser and config-default regressions cover both paths.
+- **Indexed text cap duplication:** accepted and fixed. Index projection and
+  filter validation now import one `MAX_INDEXED_FIELD_TEXT_BYTES` constant, so
+  indexed and queryable bounds cannot drift independently.
