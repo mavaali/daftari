@@ -18,6 +18,10 @@ let canonical: string;
 let refRoot: string;
 
 const REF_CONFIG = `
+schema_extensions:
+  priority:
+    type: number
+indexed_fields: [priority]
 roles:
   researcher:
     read: ["pricing"]
@@ -26,7 +30,7 @@ federation:
     "human:mihir": { role: researcher }
 `;
 
-function doc(title: string, collection: string, body: string): string {
+function doc(title: string, collection: string, body: string, priority = 2): string {
   return `---
 title: ${title}
 domain: accumulation
@@ -37,6 +41,7 @@ created: 2026-01-05
 updated: 2026-08-01
 updated_by: human:owner
 provenance: direct
+priority: ${priority}
 ---
 
 ${body}
@@ -67,7 +72,10 @@ beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "daftari-fedsearch-"));
   canonical = join(base, "canonical");
   mkdirSync(join(canonical, ".daftari"), { recursive: true });
-  writeFileSync(join(canonical, ".daftari", "config.yaml"), "roles: {}\n");
+  writeFileSync(
+    join(canonical, ".daftari", "config.yaml"),
+    "schema_extensions:\n  priority:\n    type: number\nindexed_fields: [priority]\nroles: {}\n",
+  );
   mkdirSync(join(canonical, "notes"), { recursive: true });
   writeFileSync(
     join(canonical, "notes", "zephyr-local.md"),
@@ -97,6 +105,52 @@ afterEach(() => {
 });
 
 describe("federated vault_search", () => {
+  it("validates and applies a shared filter in every selected vault", async () => {
+    await mountRef();
+    const result = await vaultSearch(
+      canonical,
+      { filters: [{ field: "priority", op: "gte", value: 2 }] },
+      LOCAL_ANALYST,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.vectorUsed).toBe(false);
+    expect(result.value.hits.map((hit) => hit.path)).toEqual(
+      expect.arrayContaining(["notes/zephyr-local.md", "research:pricing/zephyr-pricing.md"]),
+    );
+    expect(result.value.hits.some((hit) => hit.path.includes("zephyr-secret"))).toBe(false);
+  });
+
+  it("fails if any selected vault lacks the field but local-only remains usable", async () => {
+    writeFileSync(
+      join(refRoot, ".daftari", "config.yaml"),
+      `roles:\n  researcher:\n    read: ["pricing"]\nfederation:\n  principals:\n    "human:mihir": { role: researcher }\n`,
+    );
+    clearConfigCache();
+    await mountRef();
+    const all = await vaultSearch(
+      canonical,
+      { filters: [{ field: "priority", op: "eq", value: 2 }] },
+      LOCAL_ANALYST,
+    );
+    expect(all.ok).toBe(false);
+    if (!all.ok) {
+      expect(all.error.message).toContain('mount "research"');
+      expect(all.error.message).toContain("field 'priority' is not indexed");
+    }
+
+    const local = await vaultSearch(
+      canonical,
+      {
+        filters: [{ field: "priority", op: "eq", value: 2 }],
+        vaults: ["local"],
+      },
+      LOCAL_ANALYST,
+    );
+    expect(local.ok).toBe(true);
+    if (local.ok) expect(local.value.hits.every((hit) => hit.vault === "local")).toBe(true);
+  });
+
   it("fuses hits from the local vault and the mount, labeled and addressable", async () => {
     await mountRef();
     const result = await vaultSearch(canonical, { query: "zephyrmark" }, LOCAL_ANALYST);

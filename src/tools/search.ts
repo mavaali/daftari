@@ -394,6 +394,7 @@ async function searchMount(
   mount: LoadedMount,
   opts: {
     query: string;
+    filters: CompiledFieldFilter[];
     weights: HybridWeights;
     limit: number;
     validAt: string | null;
@@ -410,12 +411,23 @@ async function searchMount(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
-    const result = await hybridSearch(db, opts.query, {
-      weights: opts.weights,
-      limit: opts.limit,
-      overFetch: true,
-      readableCollections: readableCollections(mount.role),
-    });
+    const readable = readableCollections(mount.role);
+    const result =
+      opts.query.length === 0
+        ? ok(
+            filterOnlySearch(db, opts.filters, {
+              limit: opts.limit,
+              overFetch: true,
+              readableCollections: readable,
+            }),
+          )
+        : await hybridSearch(db, opts.query, {
+            weights: opts.weights,
+            limit: opts.limit,
+            overFetch: true,
+            readableCollections: readable,
+            filters: opts.filters,
+          });
     if (!result.ok) return result;
 
     let permitted = result.value.hits.filter((h) => canRead(mount.role, h.collection));
@@ -438,11 +450,17 @@ async function searchMount(
     // edges against a single local vaultRoot and would need alias path rewriting
     // to cross a mount (same reason MAV-161 suppression is local-only below).
     // Cross-mount edge traversal is out of scope for v1.
-    const widened = applyCoveragePass(db, ranked).filter((h) =>
-      h.viaCoverage ? canRead(mount.role, h.collection) : true,
+    const widened = applyCoveragePass(db, ranked);
+    const matchingWidened = matchingFieldFilterPaths(
+      db,
+      opts.filters,
+      widened.map((hit) => hit.path),
+    );
+    const filteredWidened = widened.filter(
+      (hit) => matchingWidened.has(hit.path) && canRead(mount.role, hit.collection),
     );
     const access = mountAccess(mount, opts.user);
-    for (const hit of widened) {
+    for (const hit of filteredWidened) {
       if (opts.validAt !== null && hit.validity === undefined) {
         hit.validity = validityForPath(db, hit.path, opts.validAt);
       }
@@ -460,8 +478,8 @@ async function searchMount(
     // superseded today can be the right answer for a past date.
     const suppressed =
       opts.validAt === null
-        ? applySupersededSuppression(db, widened, access, { pullIn: false })
-        : widened;
+        ? applySupersededSuppression(db, filteredWidened, access, { pullIn: false })
+        : filteredWidened;
     const capped = enforceTokenCap(suppressed, DEFAULT_COVERAGE_OPTIONS);
     for (const hit of capped) labelMountHit(hit, mount.alias);
     return ok({ hits: capped, vectorUsed: result.value.vectorUsed });
@@ -482,17 +500,6 @@ export async function vaultSearch(
     };
   }
   const query = typeof args.query === "string" && args.query.trim().length > 0 ? args.query : "";
-  const config = loadConfig(vaultRoot);
-  if (!config.ok) return config;
-  const parsedFilters = parseFieldFilters(args.filters, config.value.indexedFields);
-  if (!parsedFilters.ok) return parsedFilters;
-  const filters = parsedFilters.value;
-  if (query.length === 0 && filters.length === 0) {
-    return {
-      ok: false,
-      error: new Error("vault_search requires a non-empty 'query' or 'filters' argument"),
-    };
-  }
 
   // A malformed valid_at is a caller bug, not something to paper over: a
   // silently-ignored date would return today's answers to a question about
@@ -530,13 +537,41 @@ export async function vaultSearch(
   if (!scope.ok) return scope;
   const { includeLocal, mounts } = scope.value;
 
+  // Each selected vault interprets the raw predicates against its own
+  // declarations. Validate the entire federation scope before opening or
+  // searching any index so an incompatible mount fails the request rather
+  // than silently contributing an unfiltered result set. Selecting only
+  // `local` remains the explicit escape hatch for heterogeneous schemas.
+  let localFilters: CompiledFieldFilter[] = [];
+  if (includeLocal) {
+    const config = loadConfig(vaultRoot);
+    if (!config.ok) return config;
+    const parsed = parseFieldFilters(args.filters, config.value.indexedFields);
+    if (!parsed.ok) return parsed;
+    localFilters = parsed.value;
+  }
+  const mountFilters = new Map<string, CompiledFieldFilter[]>();
+  for (const mount of mounts) {
+    const parsed = parseFieldFilters(args.filters, mount.indexedFields);
+    if (!parsed.ok) {
+      return err(new Error(`mount "${mount.alias}": ${parsed.error.message}`));
+    }
+    mountFilters.set(mount.alias, parsed.value);
+  }
+  const filterCount = includeLocal
+    ? localFilters.length
+    : (mountFilters.values().next().value?.length ?? 0);
+  if (query.length === 0 && filterCount === 0) {
+    return err(new Error("vault_search requires a non-empty 'query' or 'filters' argument"));
+  }
+
   let localResult: HybridSearchResult | null = null;
   if (includeLocal) {
     const local = await searchLocalVault(
       vaultRoot,
       args,
       query,
-      filters,
+      localFilters,
       validAt,
       validOnly,
       access,
@@ -560,6 +595,7 @@ export async function vaultSearch(
   for (const mount of mounts) {
     const m = await searchMount(mount, {
       query,
+      filters: mountFilters.get(mount.alias) ?? [],
       weights,
       limit,
       validAt,
@@ -576,7 +612,7 @@ export async function vaultSearch(
   // still excluding synthetic additions — coverage widening and suppression
   // pull-ins alike (recall, not ranking; a score-0 pulled-in head never
   // earned a rank to be judged at).
-  const rerankK = parseRerankCandidates(args.rerank_candidates);
+  const rerankK = query.length === 0 ? 0 : parseRerankCandidates(args.rerank_candidates);
   const rerank =
     rerankK > 0
       ? {

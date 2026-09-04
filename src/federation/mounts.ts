@@ -18,6 +18,7 @@ import { directoryExists, listFiles } from "../storage/local.js";
 import {
   configPath,
   type FederationConfig,
+  type IndexedFieldDeclaration,
   loadConfig,
   type RoleConfig,
   type SchemaExtension,
@@ -42,6 +43,7 @@ export interface LoadedMount {
   // things read from its config (with the policy surface). Used for the
   // advisory validation report on federated reads.
   schemaExtensions: SchemaExtension[];
+  indexedFields: IndexedFieldDeclaration[];
   indexMode: "full" | "lexical";
 }
 
@@ -161,6 +163,7 @@ export async function loadMounts(
           role: null,
           roleName: GUEST_ROLE,
           schemaExtensions: [],
+          indexedFields: [],
           indexMode: decl.index,
         });
         notice(`mount "${decl.alias}" is unavailable (${decl.path} not found) — optional, skipped`);
@@ -269,6 +272,7 @@ export async function loadMounts(
       role,
       roleName,
       schemaExtensions: refConfig.value.schemaExtensions,
+      indexedFields: refConfig.value.indexedFields,
       indexMode: decl.index,
     });
   }

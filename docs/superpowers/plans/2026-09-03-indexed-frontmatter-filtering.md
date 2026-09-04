@@ -134,13 +134,13 @@
 - Modify: `src/tools/search.ts`
 - Modify: `test/federation/search.test.ts`
 
-- [ ] Add failing mount-loading tests proving each `LoadedMount` exposes its resolved indexed declarations.
-- [ ] Add failing federated search tests for shared-compatible filters, a selected vault with an undeclared/incompatible field, explicit `vaults: ["local"]`, filter-only RRF inputs, prefixed paths, RBAC, and no hidden-document existence/count disclosure.
-- [ ] Run federation tests and confirm filters are neither validated nor propagated today.
-- [ ] Add indexed declarations to `LoadedMount`; validate the same raw predicate list independently against every selected vault before any search begins.
-- [ ] Pass each vault's typed compiled predicates into its local search pipeline and preserve existing per-vault post-filtering and cross-vault RRF behavior. Prefix paths only after each vault's filtering/authorization pass.
-- [ ] Return an alias-qualified error when a selected mount cannot support a predicate; keep omission-as-all-vaults semantics and document the `vaults: ["local"]` escape hatch.
-- [ ] Rerun focused federation tests, build, and commit as `feat(federation): enforce indexed filters per vault`.
+- [x] Add failing mount-loading tests proving each `LoadedMount` exposes its resolved indexed declarations.
+- [x] Add failing federated search tests for shared-compatible filters, a selected vault with an undeclared/incompatible field, explicit `vaults: ["local"]`, filter-only RRF inputs, prefixed paths, RBAC, and no hidden-document existence/count disclosure.
+- [x] Run federation tests and confirm filters are neither validated nor propagated today.
+- [x] Add indexed declarations to `LoadedMount`; validate the same raw predicate list independently against every selected vault before any search begins.
+- [x] Pass each vault's typed compiled predicates into its local search pipeline and preserve existing per-vault post-filtering and cross-vault RRF behavior. Prefix paths only after each vault's filtering/authorization pass.
+- [x] Return an alias-qualified error when a selected mount cannot support a predicate; keep omission-as-all-vaults semantics and document the `vaults: ["local"]` escape hatch.
+- [x] Rerun focused federation tests, build, and commit as `feat(federation): enforce indexed filters per vault`.
 
 ## Task 8: Prove the performance fallback and document the contract
 
