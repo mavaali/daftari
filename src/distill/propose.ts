@@ -132,6 +132,14 @@ export interface DistillIds {
    * is date-stable across runs.
    */
   asOf?: string;
+  /**
+   * Optional target collection override (M365 ingestion design, #506).
+   * Defaults to DISTILL_COLLECTION. Set by a selected-source connector whose
+   * enrollment names a target collection other than the default; every other
+   * caller is unaffected. The raw-tier fence (refuseRawDistillOutput) runs
+   * against the resulting path regardless of which collection produced it.
+   */
+  collection?: string;
 }
 
 /** Per-claim staging outcome (the StageOutcome from the queue, or an error). */
@@ -177,7 +185,7 @@ function hash8FromClaimKey(claimKey: string): string {
 // Path-traversal safety: slugifyKey strips everything except [a-z0-9-], so
 // none of the join components can contain ".." or path separators — the
 // sanitizer is the invariant; don't remove it in a future refactor.
-function derivePath(claim: ExtractedClaim, sourceId: string): string {
+function derivePath(claim: ExtractedClaim, sourceId: string, collection: string): string {
   const title = claim.proposed_frontmatter.title;
   const hash8 = hash8FromClaimKey(claim.claim_key);
   const sourceGroup = slugifyKey(sourceId) || "claims";
@@ -188,7 +196,7 @@ function derivePath(claim: ExtractedClaim, sourceId: string): string {
   // "memory", which makes U5's targetPath-based upsert join harder to
   // reason about and produces semantically useless names.
   const titleSlug = title.trim() ? slugifyKey(title) : slugifyKey(claim.claim_key);
-  return join(DISTILL_COLLECTION, sourceGroup, `${titleSlug}--${hash8}.md`);
+  return join(collection, sourceGroup, `${titleSlug}--${hash8}.md`);
 }
 
 // ---------------------------------------------------------------------------
@@ -393,9 +401,11 @@ export async function proposeAllClaims(
 ): Promise<ProposeOutcome> {
   const results: ClaimProposalResult[] = [];
   const errors: Array<{ claim_key: string; error: string }> = [];
+  const collection = ids.collection ?? DISTILL_COLLECTION;
 
   for (const claim of claims) {
-    const targetPath = pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId);
+    const targetPath =
+      pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId, collection);
 
     // R3: frontmatter is hardcoded to draft/low/synthesized. No caller can
     // override these — the emitter owns the invariant.
@@ -407,7 +417,7 @@ export async function proposeAllClaims(
       // missing `created` cannot be approved).
       created: ids.asOf ?? new Date().toISOString().slice(0, 10),
       domain: "accumulation",
-      collection: DISTILL_COLLECTION,
+      collection,
       status: "draft",
       confidence: "low",
       provenance: "synthesized",

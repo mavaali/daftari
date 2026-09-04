@@ -12,12 +12,14 @@ import {
   type ProviderAdapter,
   readProviderWebhookVerificationToken,
   reconcileProvider,
+  requireCollectionWriteAccess,
   startPeriodicIntegrationSync,
   validateContinuousAdapterCapabilities,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
+import type { RoleConfig } from "../../src/utils/config.js";
 import { sha256Hex } from "../../src/utils/hash.js";
 
 const KEY = Buffer.alloc(32, 7);
@@ -1549,5 +1551,146 @@ describe("enrollment-scoped providers (#505)", () => {
       "m365:folder:dir/d1",
     ]);
     expect(readIntegrationState(vault, KEY).value.providers.m365?.cursor).toBe("old-cursor");
+  });
+});
+
+describe("target-collection plumbing (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("threads the owning EnrollmentRecord's targetCollection into distill()", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1",
+          targetCollection: "sensitive-reports",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "file:f1", revision: "1" }]),
+        fetch: async () => ok({ id: "file:f1", revision: "1", text: "enrolled text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:file:f1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "sensitive-reports" }),
+    );
+  });
+
+  it("passes no targetCollection when the source has no enrollment (google/notion unaffected)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "plain text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:doc-1"]);
+    const call = distill.mock.calls[0]?.[0] as { targetCollection?: string };
+    expect(call.targetCollection).toBeUndefined();
+  });
+
+  it("resolves a folder descendant's owning collection via RemoteSource.enrolledRef", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "team-notes",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([{ id: "folder:dir/child-1", revision: "1", enrolledRef: "folder:dir" }]),
+        fetch: async (source) => ok({ id: source.id, revision: "1", text: "child text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:folder:dir/child-1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "team-notes" }),
+    );
+  });
+});
+
+describe("requireCollectionWriteAccess (#506)", () => {
+  it("allows a role whose write list includes the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["sensitive-reports"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows a role with a wildcard write grant", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["*"] } as RoleConfig,
+      "anything",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses by name when the role cannot write the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["distill"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok || result.error.message).toContain('"sensitive-reports"');
+  });
+
+  it("refuses a null role (deny-all fallback)", () => {
+    const result = requireCollectionWriteAccess(null, "distill");
+    expect(result.ok).toBe(false);
   });
 });

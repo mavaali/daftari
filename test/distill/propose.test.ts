@@ -581,3 +581,56 @@ describe("proposeAllClaims (U4)", () => {
     expect(body).toContain("### Reader");
   });
 });
+
+// -----------------------------------------------------------------------------
+// #506: an overridden target collection lands proposals and paths there
+// -----------------------------------------------------------------------------
+
+describe("proposeAllClaims — target collection override (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("lands proposals under an overridden collection when ids.collection is set", async () => {
+    const claim = makeClaim();
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "m365:drive:d1:item-1",
+      runId: "run-collection-override",
+      collection: "sensitive-reports",
+    });
+
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+    const diff = action.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+
+    expect(fm.collection).toBe("sensitive-reports");
+    expect(action.targetPath).toMatch(/^sensitive-reports\//);
+    // Every other default is unaffected by the override.
+    expect(fm.status).toBe("draft");
+    expect(fm.confidence).toBe("low");
+    expect(fm.provenance).toBe("synthesized");
+  });
+
+  it("defaults to DISTILL_COLLECTION when ids.collection is absent (unchanged callers)", async () => {
+    const claim = makeClaim();
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-2",
+      runId: "run-no-override",
+    });
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok && listed.value[0]?.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+  });
+});

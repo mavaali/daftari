@@ -2,7 +2,9 @@
 // and normalization; this module owns encrypted metadata and the change gate.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { canWrite } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { RoleConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import {
   readIntegrationState,
@@ -81,6 +83,14 @@ export type EnrollmentCandidate = Omit<EnrollmentRecord, "enrolledAt" | "enrolle
 export interface RemoteSource {
   id: string;
   revision: string;
+  /**
+   * Ref of the EnrollmentRecord that owns this source (#506). Defaults to
+   * `id` when absent — correct for a directly-enrolled file, whose own ref
+   * IS its id. A folder-enrolled provider whose discovered descendant ids
+   * differ from their owning folder's ref must set this explicitly; the
+   * engine never infers folder membership itself (adapterData is opaque).
+   */
+  enrolledRef?: string;
 }
 
 export interface NormalizedRemoteSource extends RemoteSource {
@@ -120,6 +130,8 @@ export interface DistillationInput {
   providerSourceId: string;
   revision: string;
   text: string;
+  /** The owning EnrollmentRecord's collection (#506); absent for google/notion. */
+  targetCollection?: string;
 }
 
 export interface DistillationRun {
@@ -231,6 +243,34 @@ export function configuredCredential(
 
 export function sourceIdentity(provider: ProviderName, sourceId: string): string {
   return `${provider}:${sourceId}`;
+}
+
+// Stage-time write gate for enrollment (#506) — the same rationale as
+// vault_stage_action's own gate (docs/architecture.md "Stage-time write
+// gate"): manage_integrations alone must not let an operator aim distilled
+// proposals at a collection the serve process cannot write to. #509's
+// enroll route calls this before persisting an EnrollmentRecord.
+export function requireCollectionWriteAccess(
+  role: RoleConfig | null,
+  targetCollection: string,
+): Result<void, Error> {
+  if (!canWrite(role, targetCollection)) {
+    return err(new Error(`the serve process cannot write to collection "${targetCollection}"`));
+  }
+  return ok(undefined);
+}
+
+// The EnrollmentRecord that owns a discovered source: an exact ref match for
+// a directly-enrolled file, or the adapter-attested owner (RemoteSource
+// .enrolledRef) for a folder descendant. Absent enrollment (google/notion)
+// or no match ⇒ undefined, so targetCollection is never set for them.
+function owningEnrollment(
+  enrollment: EnrollmentRecord[] | undefined,
+  remote: RemoteSource,
+): EnrollmentRecord | undefined {
+  if (enrollment === undefined) return undefined;
+  const ownerRef = remote.enrolledRef ?? remote.id;
+  return enrollment.find((record) => record.ref === ownerRef);
 }
 
 export function unavailableEventKey(
@@ -686,12 +726,14 @@ export async function reconcileProvider(
 
         const beforeDistill = writeState(vaultRoot, key.value, persisted.value, deps);
         if (!beforeDistill.ok) return beforeDistill;
+        const owner = owningEnrollment(providerState.enrollment, remote);
         let distilled: Result<DistillationRun, Error>;
         try {
           distilled = await deps.distill({
             providerSourceId,
             revision: fetched.value.revision,
             text: fetched.value.text,
+            ...(owner === undefined ? {} : { targetCollection: owner.targetCollection }),
           });
         } catch {
           outcome.failedSourceIds.push(providerSourceId);

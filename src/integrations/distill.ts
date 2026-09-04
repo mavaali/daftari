@@ -170,6 +170,7 @@ function preparedIntegrationDistill(
       claims: extracted.claims,
       runId: id,
       overlapSearch: makeOverlapHinter(vaultRoot),
+      collection: input.targetCollection,
     });
     if (!upserted.ok) return upserted;
     if ((upserted.value.propose?.errors.length ?? 0) > 0) {

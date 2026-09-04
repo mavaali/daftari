@@ -114,3 +114,25 @@ describe("proposeAllClaims enforces the distill output fence (U11)", () => {
     expect(listed.value).toHaveLength(0);
   });
 });
+
+describe("refuseRawDistillOutput against an overridden collection (#506)", () => {
+  it("allows a normal synthesized proposal under a non-default collection", () => {
+    const r = refuseRawDistillOutput("sensitive-reports/m365-item/x--aabbccdd.md", {
+      collection: "sensitive-reports",
+      provenance: "synthesized",
+      status: "draft",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("still refuses a top-level raw/ landing even when it came from a collection override", () => {
+    // The fence is purely structural (path + frontmatter.tier); it must fire
+    // identically regardless of which collection produced the path.
+    const r = refuseRawDistillOutput("raw/m365-item/x.md", {
+      collection: "raw",
+      provenance: "synthesized",
+      status: "draft",
+    });
+    expect(r.ok).toBe(false);
+  });
+});
