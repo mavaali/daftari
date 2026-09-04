@@ -47,9 +47,16 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
   response.end(JSON.stringify(body));
 }
 
-function providerFrom(pathname: string): ProviderName | null {
-  const matched = /^\/integrations\/(google|notion)(?:\/|$)/.exec(pathname);
-  return matched === null ? null : (matched[1] as ProviderName);
+// Provider names come from the registered adapters, never a hardcoded list —
+// serve stays provider-neutral and a new adapter needs no route change.
+function providerFrom(
+  pathname: string,
+  adapters: Partial<Record<ProviderName, ProviderAdapter>>,
+): ProviderName | null {
+  const matched = /^\/integrations\/([a-z0-9-]+)(?:\/|$)/.exec(pathname);
+  if (matched === null) return null;
+  const name = matched[1] as ProviderName;
+  return adapters[name] === undefined ? null : name;
 }
 
 function nodeHeaders(request: IncomingMessage): WebhookRequest["headers"] {
@@ -134,7 +141,7 @@ export async function handleIntegrationRoute(
   deps: IntegrationRouteDependencies,
 ): Promise<boolean> {
   if (!url.pathname.startsWith("/integrations/")) return false;
-  const provider = providerFrom(url.pathname);
+  const provider = providerFrom(url.pathname, deps.adapters);
   if (provider === null) {
     writeJson(response, 404, { error: "not_found" });
     return true;

@@ -335,3 +335,63 @@ describe("integration routes", () => {
     }
   });
 });
+
+describe("provider-neutral route matching (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-routes-m365-"));
+  });
+
+  afterEach(() => rmSync(vault, { recursive: true, force: true }));
+
+  it("routes any registered adapter and 404s unregistered provider names", async () => {
+    const m365 = adapter({ name: "m365" });
+    const queue = createIntegrationQueue(vault, () => new Date("2026-08-24T12:00:00.000Z"));
+    const engineDeps: EngineDeps = {
+      config,
+      environment,
+      adapters: { m365 },
+      distill: async () => ok({ runId: "run" }),
+    };
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      void handleIntegrationRoute(req, res, url, {
+        vaultRoot: vault,
+        config,
+        environment,
+        adapters: { m365 },
+        engineDeps,
+        queue,
+        publicBaseUrl: "https://vault.example/daftari",
+        authorize: async () => ({ cookieAuthenticated: false, canManageIntegrations: true }),
+        admitPublic: () => () => undefined,
+        checkCsrf: () => null,
+      }).then((handled) => {
+        if (!handled) {
+          res.statusCode = 404;
+          res.end();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (typeof address !== "object" || address === null) throw new Error("missing address");
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      // The registered m365 adapter resolves; it fails later (no m365 OAuth
+      // config here), proving the matcher — not a hardcoded name list — routed.
+      const registered = await fetch(`${base}/integrations/m365/connect`, {
+        method: "POST",
+        redirect: "manual",
+      });
+      expect(registered.status).toBe(503);
+
+      // google is in the old hardcoded list but not registered on this server.
+      const unregistered = await fetch(`${base}/integrations/google/connect`, { method: "POST" });
+      expect(unregistered.status).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

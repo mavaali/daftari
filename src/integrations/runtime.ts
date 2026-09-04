@@ -57,7 +57,8 @@ export interface ConfiguredIntegrationRuntimeOptions {
   waitForShutdown?: (cycle: Promise<void>, timeoutMilliseconds: number) => Promise<void>;
 }
 
-const DEFAULT_FACTORIES: Record<ProviderName, IntegrationAdapterFactory> = {
+// Partial: a provider name may exist in the type before its adapter ships.
+const DEFAULT_FACTORIES: Partial<Record<ProviderName, IntegrationAdapterFactory>> = {
   google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
   notion: (redirectUri) => createNotionAdapter({ redirectUri }),
 };
@@ -266,12 +267,17 @@ export function createConfiguredIntegrationRuntime(
       const resolvedRouteBaseUrl = options.publicBaseUrl ?? fallback.value;
       routeBaseUrl = resolvedRouteBaseUrl;
       integrationRoutePrefix = routePrefix(resolvedRouteBaseUrl);
-      try {
-        adapters = providers.map((provider) =>
-          factories[provider](callbackUrl(resolvedRouteBaseUrl, provider)),
-        );
-      } catch {
-        return err(new Error("integration adapter construction failed"));
+      adapters = [];
+      for (const provider of providers) {
+        const factory = factories[provider];
+        if (factory === undefined) {
+          return err(new Error(`integration provider ${provider} has no adapter factory`));
+        }
+        try {
+          adapters.push(factory(callbackUrl(resolvedRouteBaseUrl, provider)));
+        } catch {
+          return err(new Error("integration adapter construction failed"));
+        }
       }
       for (const adapter of adapters) {
         const capability = validateContinuousAdapterCapabilities(adapter, {
