@@ -178,11 +178,32 @@
 - Create: `.jugalbandi/review-issue-512/findings.md`
 - Modify if needed: any reviewed implementation/test/doc files
 
-- [ ] Resolve the default branch with `git symbolic-ref refs/remotes/origin/HEAD`; generate the raw `origin/main...HEAD` diff at a unique `.jugalbandi/review-issue-512/` path.
-- [ ] Confirm full project checks pass before review. Identify whether a matching Jugalbandi final plan exists; do not attach the approved superpowers spec/plan as reviewer context.
-- [ ] Spawn the cold reviewer with exactly: `Read .jugalbandi/review-issue-512/diff.md. That diff is the entire change under review — it is all the context you get. Write your findings to .jugalbandi/review-issue-512/findings.md.`
-- [ ] Triage findings by Critical/High/Medium/Low. Fix all Critical and High findings through new failing tests. Give each Medium finding an explicit fix or documented disposition; fix useful Low findings without scope expansion.
-- [ ] Rerun focused and full verification after remediation, regenerate the review diff, and commit review-driven fixes. Keep reviewer artifacts uncommitted unless repository convention explicitly tracks them.
+- [x] Resolve the default branch with `git symbolic-ref refs/remotes/origin/HEAD`; generate the raw `origin/main...HEAD` diff at a unique `.jugalbandi/review-issue-512/` path.
+- [x] Confirm full project checks pass before review. Identify whether a matching Jugalbandi final plan exists; do not attach the approved superpowers spec/plan as reviewer context.
+- [x] Spawn the cold reviewer with exactly: `Read .jugalbandi/review-issue-512/diff.md. That diff is the entire change under review — it is all the context you get. Write your findings to .jugalbandi/review-issue-512/findings.md.`
+- [x] Triage findings by Critical/High/Medium/Low. Fix all Critical and High findings through new failing tests. Give each Medium finding an explicit fix or documented disposition; fix useful Low findings without scope expansion.
+- [x] Rerun focused and full verification after remediation, regenerate the review diff, and commit review-driven fixes. Keep reviewer artifacts uncommitted unless repository convention explicitly tracks them.
+
+### Cold-review dispositions
+
+- **High — unquoted impossible dates:** accepted and fixed. Daftari now preserves
+  implicit YAML timestamp scalars as authored strings while retaining the rest
+  of js-yaml's default schema behavior, so real-calendar validation sees and
+  rejects `2026-02-30`. Config, parsed-document, and reindex regressions cover
+  the unquoted form.
+- **High — federation schema compatibility:** accepted and fixed. Selected
+  vaults must now agree on each filtered field's scalar type and, for enums, its
+  complete value domain before any index is searched. Type and overlapping-enum
+  regressions assert alias-qualified mount errors.
+- **Medium — unbounded filter-only over-fetch:** accepted and fixed. RBAC and
+  `valid_only` constraints now run in the filter-only SQL selector before its
+  mandatory `LIMIT`; a 1,201-match regression returns the one valid result for
+  `limit: 1` without materializing the broad match set.
+- **Medium — SQLite variable ceiling:** rejected as stated. The tool slices
+  ranked results to the public limit before `matchingFieldFilterPaths`, and
+  post-rank additions are independently bounded; `getDocumentsByPaths` also
+  chunks path lists in batches of 500. No unbounded placeholder list is reached
+  through the reviewed filter-only path.
 
 ## Task 11: Open the pull request and iterate to review-ready
 

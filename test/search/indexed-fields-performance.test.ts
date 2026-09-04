@@ -36,7 +36,8 @@ const filters: CompiledFieldFilter[] = [{ field: "priority", type: "number", op:
 // Timing is opt-in so ordinary CI proves correctness without converting a
 // wall-clock measurement into a flaky gate. Run with:
 // DAFTARI_PERF=1 npx vitest run test/search/indexed-fields-performance.test.ts
-// Measured 2026-09-04 on Apple M4 Pro (arm64): 20 warmed runs, p95 151.14 ms.
+// Measured 2026-09-04 after adversarial remediation on Apple M4 Pro (arm64):
+// 20 warmed runs, p95 156.62 ms.
 describe.skipIf(process.env.DAFTARI_PERF !== "1")("indexed field search performance", () => {
   let vault: string;
   let db: IndexDb;
