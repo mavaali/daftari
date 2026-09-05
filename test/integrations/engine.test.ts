@@ -12,12 +12,14 @@ import {
   type ProviderAdapter,
   readProviderWebhookVerificationToken,
   reconcileProvider,
+  requireCollectionWriteAccess,
   startPeriodicIntegrationSync,
   validateContinuousAdapterCapabilities,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
+import type { RoleConfig } from "../../src/utils/config.js";
 import { sha256Hex } from "../../src/utils/hash.js";
 
 const KEY = Buffer.alloc(32, 7);
@@ -1318,5 +1320,377 @@ describe("provider reconciliation", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(discoveries).toBe(1);
     vi.useRealTimers();
+  });
+});
+
+describe("enrollment-scoped providers (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-enroll-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  const m365Config: IntegrationConfig = {
+    encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+    pollingIntervalMinutes: 15,
+    m365: { clientIdEnv: "M365_CLIENT_ID", clientSecretEnv: "M365_CLIENT_SECRET" },
+  };
+  const m365Environment = {
+    DAFTARI_INTEGRATIONS_KEY: KEY.toString("base64"),
+    M365_CLIENT_ID: "m365-client-id",
+    M365_CLIENT_SECRET: "m365-client-secret",
+  };
+
+  function enrolledState(extra: Partial<ProviderState> = {}): ProviderState {
+    return {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1.docx",
+          targetCollection: "distill",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+        },
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "distill",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+        },
+      ],
+      sources: {},
+      ...extra,
+    };
+  }
+
+  // The fake selected-source adapter: discover() is DEFINED as expanding the
+  // enrollment set — enrolled files plus current folder descendants — so the
+  // engine's reconciliation machinery is exercised unchanged.
+  function enrolledAdapter(
+    folderChildren: string[],
+    overrides: Partial<ProviderAdapter> = {},
+  ): ProviderAdapter {
+    return {
+      name: "m365",
+      authorizationUrl: () => "https://login.example/authorize",
+      exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+      resolveEnrollment: async (candidates) => ok(candidates),
+      discover: async (state) => {
+        const sources: { id: string; revision: string }[] = [];
+        for (const record of state.enrollment ?? []) {
+          if (record.kind === "file") {
+            sources.push({ id: record.ref, revision: "1" });
+          } else {
+            for (const child of folderChildren) sources.push({ id: child, revision: "1" });
+          }
+        }
+        return ok(sources);
+      },
+      fetch: async (source) =>
+        ok({ id: source.id, revision: source.revision, text: `text of ${source.id}` }),
+      ...overrides,
+    };
+  }
+
+  function m365Deps(overrides: Partial<EngineDeps> = {}): EngineDeps {
+    return {
+      config: m365Config,
+      environment: m365Environment,
+      adapters: {},
+      now,
+      distill: async () => ok({ runId: "run-1" }),
+      ...overrides,
+    };
+  }
+
+  it("discover() expands the enrollment set and rides the unchanged engine", async () => {
+    expect(
+      writeIntegrationState(vault, { providers: { m365: enrolledState() }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(vault, enrolledAdapter(["folder:dir/d1"]), m365Deps());
+    expect(first.ok && first.value.distilledSourceIds).toEqual([
+      "m365:file:f1",
+      "m365:folder:dir/d1",
+    ]);
+
+    // A file leaving an enrolled folder stops being discovered and takes the
+    // existing unavailable path — no new engine mechanism.
+    const recorded: unknown[] = [];
+    const second = await reconcileProvider(
+      vault,
+      enrolledAdapter([]),
+      m365Deps({
+        recordUnavailable: (event) => {
+          recorded.push(event);
+          return ok(undefined);
+        },
+      }),
+    );
+    expect(second.ok && second.value.unavailableSourceIds).toEqual(["m365:folder:dir/d1"]);
+    expect(second.ok && second.value.unchangedSourceIds).toEqual(["m365:file:f1"]);
+    expect(recorded).toMatchObject([
+      { reason: "no_longer_discovered", providerSourceId: "m365:folder:dir/d1" },
+    ]);
+  });
+
+  it("keeps adapterData replayable when a source in the discovery page fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            m365: enrolledState({
+              cursor: "old-cursor",
+              adapterData: { deltaLinks: { drive: "old" } },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async (state) => {
+          state.cursor = "new-cursor";
+          state.adapterData = { deltaLinks: { drive: "new" } };
+          return ok([
+            { id: "file:f1", revision: "1" },
+            { id: "folder:dir/d1", revision: "1" },
+          ]);
+        },
+        fetch: async (source) =>
+          source.id === "file:f1"
+            ? ok({ id: source.id, revision: source.revision, text: "fine" })
+            : err(new Error("transient fetch failure")),
+      }),
+      m365Deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["m365:folder:dir/d1"]);
+    const persisted = readIntegrationState(vault, KEY);
+    expect(persisted.value.providers.m365?.cursor).toBe("old-cursor");
+    expect(persisted.value.providers.m365?.adapterData).toEqual({ deltaLinks: { drive: "old" } });
+  });
+
+  it("commits adapterData with the cursor once every source in the page is handled", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            m365: enrolledState({
+              cursor: "old-cursor",
+              adapterData: { deltaLinks: { drive: "old" } },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async (state) => {
+          state.cursor = "new-cursor";
+          state.adapterData = { deltaLinks: { drive: "new" } };
+          return ok([{ id: "file:f1", revision: "1" }]);
+        },
+      }),
+      m365Deps(),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["m365:file:f1"]);
+    const persisted = readIntegrationState(vault, KEY);
+    expect(persisted.value.providers.m365?.cursor).toBe("new-cursor");
+    expect(persisted.value.providers.m365?.adapterData).toEqual({ deltaLinks: { drive: "new" } });
+  });
+
+  it("maxCycleMs stops starting new fetches and leaves the remainder retryable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { m365: enrolledState({ cursor: "old-cursor" }) }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let tick = 0;
+    const clock = () => new Date(Date.parse("2026-08-24T12:00:00.000Z") + 1000 * tick++);
+    const fetch = vi.fn(async () => err(new Error("must not fetch")));
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async () =>
+          ok([
+            { id: "file:f1", revision: "1" },
+            { id: "folder:dir/d1", revision: "1" },
+          ]),
+        fetch,
+      }),
+      m365Deps({ now: clock, reconcileLimits: { maxCycleMs: 500 } }),
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.ok && result.value.failedSourceIds).toEqual([
+      "m365:file:f1",
+      "m365:folder:dir/d1",
+    ]);
+    expect(readIntegrationState(vault, KEY).value.providers.m365?.cursor).toBe("old-cursor");
+  });
+});
+
+describe("target-collection plumbing (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("threads the owning EnrollmentRecord's targetCollection into distill()", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1",
+          targetCollection: "sensitive-reports",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "file:f1", revision: "1" }]),
+        fetch: async () => ok({ id: "file:f1", revision: "1", text: "enrolled text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:file:f1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "sensitive-reports" }),
+    );
+  });
+
+  it("passes no targetCollection when the source has no enrollment (google/notion unaffected)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "plain text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:doc-1"]);
+    const call = distill.mock.calls[0]?.[0] as { targetCollection?: string };
+    expect(call.targetCollection).toBeUndefined();
+  });
+
+  it("resolves a folder descendant's owning collection via RemoteSource.enrolledRef", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "team-notes",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([{ id: "folder:dir/child-1", revision: "1", enrolledRef: "folder:dir" }]),
+        fetch: async (source) => ok({ id: source.id, revision: "1", text: "child text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:folder:dir/child-1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "team-notes" }),
+    );
+  });
+});
+
+describe("requireCollectionWriteAccess (#506)", () => {
+  it("allows a role whose write list includes the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["sensitive-reports"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows a role with a wildcard write grant", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["*"] } as RoleConfig,
+      "anything",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses by name when the role cannot write the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["distill"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok || result.error.message).toContain('"sensitive-reports"');
+  });
+
+  it("refuses a null role (deny-all fallback)", () => {
+    const result = requireCollectionWriteAccess(null, "distill");
+    expect(result.ok).toBe(false);
   });
 });

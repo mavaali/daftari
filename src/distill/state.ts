@@ -204,6 +204,12 @@ export interface DistillUpsertInput {
    * callers remain valid — this field is optional.
    */
   overlapSearch?: OverlapSearchFn;
+  /**
+   * Optional target collection override (#506). Defaults to
+   * propose.ts's DISTILL_COLLECTION when absent — every existing caller is
+   * unaffected. Set by a selected-source connector's enrolled collection.
+   */
+  collection?: string;
   /** Injectable proposal writer used to verify atomic retry behavior. */
   proposeClaims?: typeof proposeAllClaims;
 }
@@ -288,7 +294,7 @@ export async function distillUpsert(
   const attempted = await (input.proposeClaims ?? proposeAllClaims)(
     vaultRoot,
     toPropose,
-    { sourceId: input.sourceId, runId: input.runId },
+    { sourceId: input.sourceId, runId: input.runId, collection: input.collection },
     pathOverrides,
     input.overlapSearch,
   );

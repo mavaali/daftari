@@ -120,3 +120,56 @@ describe("encrypted integration state", () => {
     expect(writeIntegrationState(vault, both, KEY).ok).toBe(false);
   });
 });
+
+describe("enrollment and adapter data state (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-state-enroll-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("round-trips enrollment records and opaque adapter data", () => {
+    const input: IntegrationState = {
+      providers: {
+        m365: {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          enrollment: [
+            {
+              ref: "drive:d1:item-1",
+              kind: "folder",
+              label: "Reports",
+              targetCollection: "distill",
+              enrolledAt: "2026-09-04T00:00:00.000Z",
+              enrolledBy: "user:me",
+            },
+          ],
+          adapterData: { deltaLinks: { d1: "delta-token" } },
+          sources: {},
+        },
+      },
+      oauthStates: {},
+    };
+    expect(writeIntegrationState(vault, input, KEY)).toEqual(ok(undefined));
+    expect(readIntegrationState(vault, KEY)).toEqual(ok(input));
+  });
+
+  it("rejects a malformed enrollment record at the validation gate", () => {
+    const malformed = {
+      providers: {
+        m365: {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          enrollment: [{ ref: "drive:d1:item-1", kind: "everything" }],
+          sources: {},
+        },
+      },
+      oauthStates: {},
+    } as unknown as IntegrationState;
+    expect(writeIntegrationState(vault, malformed, KEY).ok).toBe(false);
+  });
+});
