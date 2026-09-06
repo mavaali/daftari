@@ -940,7 +940,11 @@ export async function verifyProviderWebhook(
   // returns, so a stale or mismatched token falls through to the branches
   // below instead of being treated as a validation.
   const pendingToken = input.query?.pending_token;
-  if (pendingToken !== undefined && snapshotProvider.pendingWebhook?.nonce === pendingToken) {
+  if (
+    pendingToken !== undefined &&
+    snapshotProvider.pendingWebhook !== undefined &&
+    equalSecret(snapshotProvider.pendingWebhook.nonce, pendingToken)
+  ) {
     const verified = await invokeWebhookVerification(adapter, input, snapshotProvider);
     if (!verified.ok) return verified;
     if (verified.value.kind !== "verification") {
