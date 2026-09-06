@@ -935,24 +935,27 @@ export async function verifyProviderWebhook(
   // creation, before ensureProviderWebhook's phase 2 has returned and has
   // anything to commit. The pending token baked into the callback URL by
   // ensureProviderWebhook correlates this request to that specific
-  // in-flight attempt; this only answers the handshake and writes nothing —
-  // the final channel is committed separately once the provider call
-  // returns, so a stale or mismatched token falls through to the branches
-  // below instead of being treated as a validation.
+  // in-flight attempt, so a stale or mismatched token falls through to the
+  // branches below instead of being treated as a validation.
+  //
+  // The registered callback URL keeps carrying that same pending token for
+  // every future notification too, not just the validation handshake — the
+  // provider notifies whatever URL it was given at subscription-creation
+  // time, unscrubbed, for as long as the subscription lives. So a genuine
+  // event can legitimately arrive here with a matching pending token, in
+  // the narrow window between phase 2 returning and phase 3 clearing
+  // pendingWebhook under the lock. This branch does not decide validation
+  // vs. event itself — it forwards whatever the adapter's own protocol
+  // parsing determines and writes nothing either way; treating a
+  // `kind: "event"` result as an error here would silently drop that event
+  // instead of letting it reach the queue.
   const pendingToken = input.query?.pending_token;
   if (
     pendingToken !== undefined &&
     snapshotProvider.pendingWebhook !== undefined &&
     equalSecret(snapshotProvider.pendingWebhook.nonce, pendingToken)
   ) {
-    const verified = await invokeWebhookVerification(adapter, input, snapshotProvider);
-    if (!verified.ok) return verified;
-    if (verified.value.kind !== "verification") {
-      return err(
-        new Error(`integration provider ${adapter.name} webhook verification is already captured`),
-      );
-    }
-    return verified;
+    return invokeWebhookVerification(adapter, input, snapshotProvider);
   }
 
   // Configured signed events only consume an atomic encrypted-state snapshot.

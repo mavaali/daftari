@@ -989,6 +989,46 @@ describe("provider reconciliation", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("forwards a genuine event that arrives with a still-matching pending token instead of dropping it (#507)", async () => {
+    // The callback URL registered with the provider keeps carrying the
+    // pending token for every future notification, not just the create-time
+    // validation — so a real event can legitimately arrive here in the
+    // narrow window before ensureProviderWebhook's phase 3 clears
+    // pendingWebhook. It must reach the queue, not be rejected as a failed
+    // validation.
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), pendingWebhook: { nonce: "in-flight", secret: "s" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async (request) =>
+          request.query?.validationToken === undefined
+            ? ok({ kind: "event", eventId: "race-event", hint: { kind: "reconcile" } })
+            : err(new Error("not an event")),
+      }),
+      {
+        headers: {},
+        body: Buffer.from("real notification payload"),
+        query: { pending_token: "in-flight" },
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "event", eventId: "race-event", hint: { kind: "reconcile" } }),
+    );
+  });
+
   it("returns generic verified webhook events for routes to queue", async () => {
     expect(
       writeIntegrationState(
