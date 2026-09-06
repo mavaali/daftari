@@ -825,6 +825,88 @@ describe("provider reconciliation", () => {
     expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
   });
 
+  it("skips minting a pendingWebhook and any state write when the adapter reports the webhook needs no renewal", async () => {
+    const existing = {
+      id: "fresh-channel",
+      secret: "fresh-secret",
+      expiresAt: "2026-08-25T12:00:00.000Z",
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: { ...providerState(), webhook: existing } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let writes = 0;
+    let ensureWebhookCalled = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        needsWebhookRenewal: () => false,
+        ensureWebhook: async () => {
+          ensureWebhookCalled = true;
+          return ok(existing);
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps({
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+
+    expect(result).toEqual(ok(existing));
+    expect(ensureWebhookCalled).toBe(true);
+    expect(writes).toBe(0);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(existing);
+  });
+
+  it("keeps the two-phase mint/write flow when the adapter has no needsWebhookRenewal capability", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let writes = 0;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () => ok({ id: "channel-1", secret: "webhook-secret" }),
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps({
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(writes).toBe(2);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual({
+      id: "channel-1",
+      secret: "webhook-secret",
+    });
+  });
+
   it("clears the minted pendingWebhook instead of orphaning it when the callback URL is malformed (#507)", async () => {
     expect(
       writeIntegrationState(

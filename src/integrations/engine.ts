@@ -130,6 +130,11 @@ export interface ProviderAdapter {
     state: ProviderState,
     input: EnsureWebhookInput,
   ): Promise<Result<WebhookChannel, Error>>;
+  // Optional fast-path check so ensureProviderWebhook can skip minting and
+  // persisting a pendingWebhook (and the matching phase-3 write) when the
+  // existing webhook is already fresh — the common case on every polling
+  // cycle. Absent, or returning true, keeps the unconditional two-phase flow.
+  needsWebhookRenewal?(state: ProviderState, input: EnsureWebhookInput): boolean;
   verifyWebhook?(
     input: WebhookRequest,
     state: ProviderState,
@@ -830,6 +835,11 @@ export async function ensureProviderWebhook(
   // verification, OAuth) for as long as the provider's create call takes.
   // A stale pending channel from an interrupted prior attempt is simply
   // overwritten here.
+  //
+  // When the adapter can tell us the existing webhook is already fresh
+  // (the steady-state case on every polling cycle), skip minting/persisting
+  // a pendingWebhook entirely and short-circuit to a direct, single
+  // ensureWebhook call — nothing changes, so there is nothing to write.
   const prepared = await withIntegrationStateLock(vaultRoot, async () => {
     const configured = providerConfig(deps.config, adapter.name);
     if (!configured.ok) return configured;
@@ -852,6 +862,10 @@ export async function ensureProviderWebhook(
     if (!refreshed.ok) return refreshed;
     providerState = refreshed.value;
 
+    if (adapter.needsWebhookRenewal?.(providerState, input) === false) {
+      return ok({ key: key.value, providerState, pending: undefined });
+    }
+
     const pending = mintPendingWebhook();
     providerState.pendingWebhook = pending;
     const written = writeState(vaultRoot, key.value, persisted.value, deps);
@@ -860,6 +874,24 @@ export async function ensureProviderWebhook(
   });
   if (!prepared.ok) return prepared;
   const { key, providerState, pending } = prepared.value;
+
+  if (pending === undefined) {
+    let ensured: Result<WebhookChannel, Error>;
+    try {
+      ensured = await adapter.ensureWebhook(providerState, input);
+    } catch {
+      ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    }
+    if (!ensured.ok) {
+      return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    }
+    if (!validWebhookChannel(ensured.value)) {
+      return err(
+        new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
+      );
+    }
+    return ok(ensured.value);
+  }
 
   // Phase 2 (outside the lock): call the provider. A synchronous validation
   // request the provider makes mid-call is answered by verifyProviderWebhook
