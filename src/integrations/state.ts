@@ -149,6 +149,16 @@ function validEnrollmentRecord(value: unknown): boolean {
   );
 }
 
+function validPendingWebhook(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    typeof value.nonce === "string" &&
+    value.nonce.length > 0 &&
+    typeof value.secret === "string" &&
+    value.secret.length > 0
+  );
+}
+
 function validProviderState(value: unknown): value is ProviderState {
   if (
     !isStringRecord(value) ||
@@ -170,6 +180,8 @@ function validProviderState(value: unknown): value is ProviderState {
   )
     return false;
   if (value.adapterData !== undefined && !isStringRecord(value.adapterData)) return false;
+  if (value.pendingWebhook !== undefined && !validPendingWebhook(value.pendingWebhook))
+    return false;
   if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
     return false;
   if (value.webhook === undefined) return true;

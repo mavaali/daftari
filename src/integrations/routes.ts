@@ -65,6 +65,12 @@ function nodeHeaders(request: IncomingMessage): WebhookRequest["headers"] {
   return headers;
 }
 
+function requestQuery(url: URL): Record<string, string> {
+  const query: Record<string, string> = {};
+  for (const [name, value] of url.searchParams) query[name] = value;
+  return query;
+}
+
 function readBoundedBody(
   request: IncomingMessage,
   limit: number,
@@ -305,6 +311,7 @@ export async function handleIntegrationRoute(
         {
           headers: nodeHeaders(request),
           body: body.value,
+          query: requestQuery(url),
           ...(url.searchParams.get("setup_token") === null
             ? {}
             : { setupToken: url.searchParams.get("setup_token") as string }),
@@ -316,6 +323,14 @@ export async function handleIntegrationRoute(
         return true;
       }
       if (verified.value.kind === "verification") {
+        if (verified.value.respondBody !== undefined) {
+          response.writeHead(200, {
+            "content-type": verified.value.respondContentType ?? "text/plain; charset=utf-8",
+            "cache-control": "no-store",
+          });
+          response.end(verified.value.respondBody);
+          return true;
+        }
         writeJson(response, 200, { verificationReceived: true });
         return true;
       }

@@ -144,6 +144,47 @@ describe("integration routes", () => {
     }
   });
 
+  it("echoes a create-time validation token as plaintext without enqueueing an event (#507)", async () => {
+    writeIntegrationState(
+      vault,
+      {
+        providers: {
+          google: {
+            accessToken: "access",
+            refreshToken: "refresh",
+            sources: {},
+            pendingWebhook: { nonce: "pending-nonce", secret: "pending-secret" },
+          },
+        },
+        oauthStates: {},
+      },
+      KEY,
+    );
+    const verifyWebhook = vi.fn(async (request: { query?: Record<string, string> }) => {
+      const token = request.query?.validationToken;
+      if (token === undefined) return err(new Error("not a validation request"));
+      return ok({
+        kind: "verification" as const,
+        channel: { id: "pending-nonce", secret: "pending-secret" },
+        respondBody: token,
+        respondContentType: "text/plain",
+      });
+    });
+    const running = await start(adapter({ verifyWebhook }));
+    try {
+      const response = await fetch(
+        `${running.base}/integrations/google/webhook?pending_token=pending-nonce&validationToken=graph-echo-me`,
+        { method: "POST" },
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/plain");
+      expect(await response.text()).toBe("graph-echo-me");
+      expect(running.queue.pending()).toEqual(ok([]));
+    } finally {
+      await running.close();
+    }
+  });
+
   it("rejects a public webhook before reading or verifying its body when admission is full", async () => {
     const verifyWebhook = vi.fn(async () =>
       ok({ kind: "event" as const, eventId: "evt-full", hint: { kind: "reconcile" as const } }),
