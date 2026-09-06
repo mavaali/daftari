@@ -44,12 +44,12 @@ function adapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
 }
 
 describe("providerFrom", () => {
-  it("matches the microsoft connect path", () => {
-    expect(providerFrom("/integrations/microsoft/connect")).toBe("microsoft");
+  it("matches the m365 connect path", () => {
+    expect(providerFrom("/integrations/m365/connect", { m365: adapter() })).toBe("m365");
   });
 
   it("rejects an unrecognised provider path", () => {
-    expect(providerFrom("/integrations/foo/connect")).toBeNull();
+    expect(providerFrom("/integrations/foo/connect", { m365: adapter() })).toBeNull();
   });
 });
 
@@ -377,7 +377,7 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
   async function startWithAdapter(providerAdapter: ProviderAdapter) {
     const microsoftConfig: IntegrationConfig = {
       ...config,
-      microsoft: {
+      m365: {
         clientIdEnv: "MICROSOFT_ID",
         clientSecretEnv: "MICROSOFT_SECRET",
         tenantId: "tenant-id",
@@ -395,7 +395,7 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
     const engineDeps: EngineDeps = {
       config: microsoftConfig,
       environment: microsoftEnvironment,
-      adapters: { microsoft: providerAdapter },
+      adapters: { m365: providerAdapter },
       distill: async () => ok({ runId: "run" }),
     };
     const wake = vi.fn();
@@ -405,7 +405,7 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
         vaultRoot: vault,
         config: microsoftConfig,
         environment: microsoftEnvironment,
-        adapters: { microsoft: providerAdapter },
+        adapters: { m365: providerAdapter },
         engineDeps,
         queue,
         publicBaseUrl: "https://vault.example/daftari",
@@ -433,7 +433,7 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
 
   it("answers a webhook validation challenge directly, without touching state or the queue", async () => {
     const providerAdapter = adapter({
-      name: "microsoft",
+      name: "m365",
       answerWebhookChallenge: (input) => input.query?.validationToken,
       verifyWebhook: async () => {
         throw new Error("must not be called for a challenge request");
@@ -442,7 +442,7 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
     const running = await startWithAdapter(providerAdapter);
     try {
       const response = await fetch(
-        `${running.base}/integrations/microsoft/webhook?validationToken=abc123`,
+        `${running.base}/integrations/m365/webhook?validationToken=abc123`,
         { method: "POST", body: "" },
       );
       expect(response.status).toBe(200);
@@ -456,10 +456,10 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
   });
 
   it("404s the lifecycle webhook route for a provider without verifyLifecycleWebhook", async () => {
-    const providerAdapter = adapter({ name: "microsoft" });
+    const providerAdapter = adapter({ name: "m365" });
     const running = await startWithAdapter(providerAdapter);
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/webhook/lifecycle`, {
+      const response = await fetch(`${running.base}/integrations/m365/webhook/lifecycle`, {
         method: "POST",
         body: "{}",
       });
@@ -474,20 +474,20 @@ describe("provider-neutral webhook challenge + lifecycle routes (U5)", () => {
       vault,
       {
         providers: {
-          microsoft: { accessToken: "access", refreshToken: "refresh", sources: {} },
+          m365: { accessToken: "access", refreshToken: "refresh", sources: {} },
         },
         oauthStates: {},
       },
       KEY,
     );
     const providerAdapter = adapter({
-      name: "microsoft",
+      name: "m365",
       verifyLifecycleWebhook: async () =>
         ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
     });
     const running = await startWithAdapter(providerAdapter);
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/webhook/lifecycle`, {
+      const response = await fetch(`${running.base}/integrations/m365/webhook/lifecycle`, {
         method: "POST",
         body: "{}",
       });
@@ -513,7 +513,7 @@ describe("enrollment/status routes (U19)", () => {
   const microsoftConfig: IntegrationConfig = {
     encryptionKeyEnv: "INTEGRATION_KEY",
     pollingIntervalMinutes: 15,
-    microsoft: {
+    m365: {
       clientIdEnv: "MICROSOFT_ID",
       clientSecretEnv: "MICROSOFT_SECRET",
       tenantId: "tenant-id",
@@ -530,7 +530,7 @@ describe("enrollment/status routes (U19)", () => {
 
   function microsoftAdapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
     return {
-      name: "microsoft",
+      name: "m365",
       authorizationUrl: ({ state }) => `https://login.example/authorize?state=${state}`,
       exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
       discover: async () => ok([]),
@@ -582,13 +582,9 @@ describe("enrollment/status routes (U19)", () => {
   afterEach(() => rmSync(vault, { recursive: true, force: true }));
 
   function writeState(
-    providerState: Parameters<typeof writeIntegrationState>[1]["providers"]["microsoft"],
+    providerState: Parameters<typeof writeIntegrationState>[1]["providers"]["m365"],
   ): void {
-    writeIntegrationState(
-      vault,
-      { providers: { microsoft: providerState }, oauthStates: {} },
-      KEY2,
-    );
+    writeIntegrationState(vault, { providers: { m365: providerState }, oauthStates: {} }, KEY2);
   }
 
   async function startRoute(options: {
@@ -603,7 +599,7 @@ describe("enrollment/status routes (U19)", () => {
     const engineDeps: EngineDeps = {
       config: microsoftConfig,
       environment: microsoftEnvironment,
-      adapters: { microsoft: options.adapter },
+      adapters: { m365: options.adapter },
       now: () => new Date("2026-09-01T00:00:00.000Z"),
       distill: async () => ok({ runId: "run" }),
     };
@@ -616,7 +612,7 @@ describe("enrollment/status routes (U19)", () => {
         vaultRoot: vault,
         config: microsoftConfig,
         environment: microsoftEnvironment,
-        adapters: { microsoft: options.adapter },
+        adapters: { m365: options.adapter },
         engineDeps,
         queue,
         publicBaseUrl: "https://vault.example/daftari",
@@ -644,7 +640,7 @@ describe("enrollment/status routes (U19)", () => {
   }
 
   it("404s the preview route for an adapter without resolveEnrollment (google)", async () => {
-    const googleConfig: IntegrationConfig = { ...config, microsoft: undefined };
+    const googleConfig: IntegrationConfig = { ...config, m365: undefined };
     const queue = createIntegrationQueue(vault);
     const providerAdapter = adapter();
     const engineDeps: EngineDeps = {
@@ -687,7 +683,7 @@ describe("enrollment/status routes (U19)", () => {
       authorize: vi.fn(async () => authorization({ canManageIntegrations: false })),
     });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/preview`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments/preview`, {
         method: "POST",
         body: JSON.stringify({ collection: "distill", selection: [] }),
       });
@@ -701,7 +697,7 @@ describe("enrollment/status routes (U19)", () => {
     writeState({ accessToken: "access", refreshToken: "refresh", sources: {} });
     const running = await startRoute({ adapter: microsoftAdapter() });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/preview`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments/preview`, {
         method: "POST",
         body: JSON.stringify({ collection: "not-allowed", selection: [] }),
       });
@@ -720,7 +716,7 @@ describe("enrollment/status routes (U19)", () => {
       ),
     });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/preview`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments/preview`, {
         method: "POST",
         body: JSON.stringify({ collection: "distill", selection: [] }),
       });
@@ -761,13 +757,10 @@ describe("enrollment/status routes (U19)", () => {
       checkCsrf: vi.fn(() => "missing CSRF token"),
     });
     try {
-      const response = await fetch(
-        `${cookieRejected.base}/integrations/microsoft/enrollments/preview`,
-        {
-          method: "POST",
-          body: JSON.stringify({ collection: "distill", selection: [] }),
-        },
-      );
+      const response = await fetch(`${cookieRejected.base}/integrations/m365/enrollments/preview`, {
+        method: "POST",
+        body: JSON.stringify({ collection: "distill", selection: [] }),
+      });
       expect(response.status).toBe(403);
     } finally {
       await cookieRejected.close();
@@ -777,13 +770,10 @@ describe("enrollment/status routes (U19)", () => {
       adapter: microsoftAdapter({ resolveEnrollment, estimateEnrollment }),
     });
     try {
-      const response = await fetch(
-        `${bearerAllowed.base}/integrations/microsoft/enrollments/preview`,
-        {
-          method: "POST",
-          body: JSON.stringify({ collection: "distill", selection: [] }),
-        },
-      );
+      const response = await fetch(`${bearerAllowed.base}/integrations/m365/enrollments/preview`, {
+        method: "POST",
+        body: JSON.stringify({ collection: "distill", selection: [] }),
+      });
       expect(response.status).toBe(200);
     } finally {
       await bearerAllowed.close();
@@ -825,7 +815,7 @@ describe("enrollment/status routes (U19)", () => {
       adapter: microsoftAdapter({ resolveEnrollment, estimateEnrollment }),
     });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/preview`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments/preview`, {
         method: "POST",
         body: JSON.stringify({
           collection: "distill",
@@ -835,7 +825,7 @@ describe("enrollment/status routes (U19)", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual(estimate);
       const persisted = readIntegrationState(vault, KEY2);
-      expect(persisted.ok && persisted.value.providers.microsoft?.enrollments).toBeUndefined();
+      expect(persisted.ok && persisted.value.providers.m365?.enrollment).toBeUndefined();
     } finally {
       await running.close();
     }
@@ -845,7 +835,7 @@ describe("enrollment/status routes (U19)", () => {
     writeState({ accessToken: "access", refreshToken: "refresh", sources: {} });
     const running = await startRoute({ adapter: microsoftAdapter() });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments`, {
         method: "POST",
         body: JSON.stringify({ collection: "distill", selection: [] }),
       });
@@ -876,7 +866,7 @@ describe("enrollment/status routes (U19)", () => {
     );
     const running = await startRoute({ adapter: microsoftAdapter({ resolveEnrollment }) });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments`, {
         method: "POST",
         body: JSON.stringify({
           collection: "distill",
@@ -890,9 +880,14 @@ describe("enrollment/status routes (U19)", () => {
       const persisted = readIntegrationState(vault, KEY2);
       expect(persisted.ok).toBe(true);
       if (!persisted.ok) return;
-      const record = persisted.value.providers.microsoft?.enrollments?.[body.enrollmentIds[0]];
+      expect(body.enrollmentIds[0]).toBe("drive-a:item-1");
+      const record = persisted.value.providers.m365?.enrollment?.find(
+        (e) => e.ref === body.enrollmentIds[0],
+      );
       expect(record).toMatchObject({
-        collection: "distill",
+        ref: "drive-a:item-1",
+        kind: "file",
+        targetCollection: "distill",
         includeSpeakerNotes: true,
         enrolledBy: "alice",
         enrolledAt: "2026-09-01T00:00:00.000Z",
@@ -930,7 +925,7 @@ describe("enrollment/status routes (U19)", () => {
       }),
     });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/status`, {
+      const response = await fetch(`${running.base}/integrations/m365/status`, {
         method: "GET",
       });
       expect(response.status).toBe(200);
@@ -954,23 +949,22 @@ describe("enrollment/status routes (U19)", () => {
       accessToken: "access",
       refreshToken: "refresh",
       sources: {
-        "item-1": {
-          id: "item-1",
+        "drive-a:item-1": {
+          id: "drive-a:item-1",
           revision: "rev-1",
           contentHash: "hash-1",
           available: true,
           lastSeenAt: "2026-08-31T00:00:00.000Z",
-          enrollmentId: "enr-1",
         },
       },
-      enrollments: {
-        "enr-1": {
-          id: "enr-1",
-          kind: "item",
+      enrollment: [
+        {
+          ref: "drive-a:item-1",
+          kind: "file",
           driveId: "drive-a",
           remoteId: "item-1",
           label: "a.docx",
-          collection: "distill",
+          targetCollection: "distill",
           includeSpeakerNotes: true,
           enrolledBy: "alice",
           enrolledAt: "2026-08-31T00:00:00.000Z",
@@ -978,27 +972,29 @@ describe("enrollment/status routes (U19)", () => {
           readersAtEnrollment: ["editor"],
           cursorKey: "drive:drive-a",
         },
-      },
+      ],
     });
     const running = await startRoute({ adapter: microsoftAdapter() });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/enr-1`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `${running.base}/integrations/m365/enrollments/${encodeURIComponent("drive-a:item-1")}`,
+        { method: "DELETE" },
+      );
       expect(response.status).toBe(204);
 
       const persisted = readIntegrationState(vault, KEY2);
       expect(persisted.ok).toBe(true);
       if (!persisted.ok) return;
-      expect(persisted.value.providers.microsoft?.enrollments?.["enr-1"]).toBeUndefined();
+      expect(
+        persisted.value.providers.m365?.enrollment?.find((e) => e.ref === "drive-a:item-1"),
+      ).toBeUndefined();
       // R38: source metadata is retained, never deleted.
-      expect(persisted.value.providers.microsoft?.sources["item-1"]).toEqual({
-        id: "item-1",
+      expect(persisted.value.providers.m365?.sources["drive-a:item-1"]).toEqual({
+        id: "drive-a:item-1",
         revision: "rev-1",
         contentHash: "hash-1",
         available: true,
         lastSeenAt: "2026-08-31T00:00:00.000Z",
-        enrollmentId: "enr-1",
       });
 
       const reviewLines = readFileSync(integrationReviewPath(vault), "utf8")
@@ -1006,7 +1002,7 @@ describe("enrollment/status routes (U19)", () => {
         .filter((line) => line.trim().length > 0)
         .map((line) => JSON.parse(line) as { providerSourceId: string; reason: string });
       expect(reviewLines).toEqual(
-        [{ providerSourceId: "item-1", reason: "unenrolled" }].map((e) =>
+        [{ providerSourceId: "drive-a:item-1", reason: "unenrolled" }].map((e) =>
           expect.objectContaining(e),
         ),
       );
@@ -1021,14 +1017,14 @@ describe("enrollment/status routes (U19)", () => {
       accessToken: "access",
       refreshToken: "refresh",
       sources: {},
-      enrollments: {
-        "enr-1": {
-          id: "enr-1",
-          kind: "item",
+      enrollment: [
+        {
+          ref: "drive-a:item-1",
+          kind: "file",
           driveId: "drive-a",
           remoteId: "item-1",
           label: "a.docx",
-          collection: "distill",
+          targetCollection: "distill",
           includeSpeakerNotes: true,
           enrolledBy: "alice",
           enrolledAt: "2026-08-31T00:00:00.000Z",
@@ -1036,7 +1032,7 @@ describe("enrollment/status routes (U19)", () => {
           readersAtEnrollment: ["editor"],
           cursorKey: "drive:drive-a",
         },
-      },
+      ],
     });
     const forbidden = await startRoute({
       adapter: microsoftAdapter(),
@@ -1045,9 +1041,10 @@ describe("enrollment/status routes (U19)", () => {
       ),
     });
     try {
-      const response = await fetch(`${forbidden.base}/integrations/microsoft/enrollments/enr-1`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `${forbidden.base}/integrations/m365/enrollments/${encodeURIComponent("drive-a:item-1")}`,
+        { method: "DELETE" },
+      );
       expect(response.status).toBe(403);
     } finally {
       await forbidden.close();
@@ -1055,7 +1052,7 @@ describe("enrollment/status routes (U19)", () => {
 
     const notFound = await startRoute({ adapter: microsoftAdapter() });
     try {
-      const response = await fetch(`${notFound.base}/integrations/microsoft/enrollments/nope`, {
+      const response = await fetch(`${notFound.base}/integrations/m365/enrollments/nope`, {
         method: "DELETE",
       });
       expect(response.status).toBe(404);
@@ -1074,7 +1071,7 @@ describe("enrollment/status routes (U19)", () => {
       checkCsrf,
     });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/enr-1`, {
+      const response = await fetch(`${running.base}/integrations/m365/enrollments/enr-1`, {
         method: "DELETE",
       });
       expect(response.status).toBe(404);
@@ -1090,23 +1087,22 @@ describe("enrollment/status routes (U19)", () => {
       accessToken: "access",
       refreshToken: "refresh",
       sources: {
-        "item-1": {
-          id: "item-1",
+        "drive-a:item-1": {
+          id: "drive-a:item-1",
           revision: "rev-1",
           contentHash: "hash-1",
           available: true,
           lastSeenAt: "2026-08-31T00:00:00.000Z",
-          enrollmentId: "enr-1",
         },
       },
-      enrollments: {
-        "enr-1": {
-          id: "enr-1",
-          kind: "item",
+      enrollment: [
+        {
+          ref: "drive-a:item-1",
+          kind: "file",
           driveId: "drive-a",
           remoteId: "item-1",
           label: "a.docx",
-          collection: "distill",
+          targetCollection: "distill",
           includeSpeakerNotes: true,
           enrolledBy: "alice",
           enrolledAt: "2026-08-31T00:00:00.000Z",
@@ -1114,7 +1110,7 @@ describe("enrollment/status routes (U19)", () => {
           readersAtEnrollment: ["editor"],
           cursorKey: "drive:drive-a",
         },
-      },
+      ],
     });
     // Force appendUnavailableReview's write to fail: pre-occupy its target
     // path with a directory instead of a file, so its openSync(..., "a", ...)
@@ -1124,14 +1120,16 @@ describe("enrollment/status routes (U19)", () => {
     const onError = vi.fn();
     const running = await startRoute({ adapter: microsoftAdapter(), onError });
     try {
-      const response = await fetch(`${running.base}/integrations/microsoft/enrollments/enr-1`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `${running.base}/integrations/m365/enrollments/${encodeURIComponent("drive-a:item-1")}`,
+        { method: "DELETE" },
+      );
       // The enrollment removal itself still succeeds...
       expect(response.status).toBe(204);
       const persisted = readIntegrationState(vault, KEY2);
       expect(
-        persisted.ok && persisted.value.providers.microsoft?.enrollments?.["enr-1"],
+        persisted.ok &&
+          persisted.value.providers.m365?.enrollment?.find((e) => e.ref === "drive-a:item-1"),
       ).toBeUndefined();
       // ...but the audit-write failure is surfaced, not silently dropped.
       expect(onError).toHaveBeenCalledTimes(1);
@@ -1145,19 +1143,79 @@ describe("enrollment/status routes (U19)", () => {
     writeState({ accessToken: "access", refreshToken: "refresh", sources: {} });
     const running = await startRoute({ adapter: microsoftAdapter() });
     try {
-      const preview = await fetch(`${running.base}/integrations/microsoft/enrollments/preview`, {
+      const preview = await fetch(`${running.base}/integrations/m365/enrollments/preview`, {
         method: "POST",
         body: "{not valid json",
       });
       expect(preview.status).toBe(400);
 
-      const enroll = await fetch(`${running.base}/integrations/microsoft/enrollments`, {
+      const enroll = await fetch(`${running.base}/integrations/m365/enrollments`, {
         method: "POST",
         body: "{not valid json",
       });
       expect(enroll.status).toBe(400);
     } finally {
       await running.close();
+    }
+  });
+});
+
+describe("provider-neutral route matching (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-routes-m365-"));
+  });
+
+  afterEach(() => rmSync(vault, { recursive: true, force: true }));
+
+  it("routes any registered adapter and 404s unregistered provider names", async () => {
+    const m365 = adapter({ name: "m365" });
+    const queue = createIntegrationQueue(vault, () => new Date("2026-08-24T12:00:00.000Z"));
+    const engineDeps: EngineDeps = {
+      config,
+      environment,
+      adapters: { m365 },
+      distill: async () => ok({ runId: "run" }),
+    };
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      void handleIntegrationRoute(req, res, url, {
+        vaultRoot: vault,
+        config,
+        environment,
+        adapters: { m365 },
+        engineDeps,
+        queue,
+        publicBaseUrl: "https://vault.example/daftari",
+        authorize: async () => ({ cookieAuthenticated: false, canManageIntegrations: true }),
+        admitPublic: () => () => undefined,
+        checkCsrf: () => null,
+      }).then((handled) => {
+        if (!handled) {
+          res.statusCode = 404;
+          res.end();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (typeof address !== "object" || address === null) throw new Error("missing address");
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      // The registered m365 adapter resolves; it fails later (no m365 OAuth
+      // config here), proving the matcher — not a hardcoded name list — routed.
+      const registered = await fetch(`${base}/integrations/m365/connect`, {
+        method: "POST",
+        redirect: "manual",
+      });
+      expect(registered.status).toBe(503);
+
+      // google is in the old hardcoded list but not registered on this server.
+      const unregistered = await fetch(`${base}/integrations/google/connect`, { method: "POST" });
+      expect(unregistered.status).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

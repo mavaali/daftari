@@ -350,3 +350,106 @@ describe("integration distillation", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("integration distillation — target collection threading (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-distill-collection-"));
+  });
+
+  afterEach(() => rmSync(vault, { recursive: true, force: true }));
+
+  it("forwards DistillationInput.targetCollection to the upsert collection field", async () => {
+    const upsert = vi.fn(async () =>
+      ok({
+        noop: false,
+        skipped: [],
+        updated: [],
+        created: ["anchor:claim-1"],
+        propose: null,
+        stateWritten: true,
+      }),
+    );
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 2,
+            maxClaims: 3,
+            maxVerbatimChars: 100,
+            inCallInputCap: 64,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract: async () => ({
+        claims: [
+          {
+            claim_key: "anchor:claim-1",
+            statement: "Enrolled source claim.",
+            proposed_frontmatter: { title: "Enrolled source claim." },
+          },
+        ],
+        budget_exhausted: false,
+        llmCalls: 1,
+        chunkErrors: [],
+      }),
+      upsert,
+      now: () => new Date("2026-09-04T00:00:00.000Z"),
+      runNonce: () => "nonce",
+    });
+
+    const result = await distill({
+      providerSourceId: "m365:drive:d1:item-1",
+      revision: "1",
+      text: "enrolled text",
+      targetCollection: "sensitive-reports",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(upsert).toHaveBeenCalledWith(
+      vault,
+      expect.objectContaining({ collection: "sensitive-reports" }),
+    );
+  });
+
+  it("forwards undefined collection when targetCollection is absent (google/notion unaffected)", async () => {
+    const upsert = vi.fn(async () =>
+      ok({
+        noop: false,
+        skipped: [],
+        updated: [],
+        created: [],
+        propose: null,
+        stateWritten: true,
+      }),
+    );
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 2,
+            maxClaims: 3,
+            maxVerbatimChars: 100,
+            inCallInputCap: 64,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract: async () => ({ claims: [], budget_exhausted: false, llmCalls: 0, chunkErrors: [] }),
+      upsert,
+      now: () => new Date("2026-09-04T00:00:00.000Z"),
+      runNonce: () => "nonce",
+    });
+
+    await distill({ providerSourceId: "google:doc-1", revision: "1", text: "plain" });
+
+    const call = upsert.mock.calls[0]?.[1] as { collection?: string };
+    expect(call.collection).toBeUndefined();
+  });
+});

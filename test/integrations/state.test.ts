@@ -123,26 +123,26 @@ describe("encrypted integration state", () => {
 
   describe("provider-neutral state extensions (U2)", () => {
     const enrollment: EnrollmentRecord = {
-      id: "enrollment-1",
-      kind: "item",
+      ref: "drive-1:remote-1",
+      kind: "file",
+      label: "Quarterly plan.docx",
+      targetCollection: "work",
+      enrolledAt: "2026-09-01T12:00:00.000Z",
+      enrolledBy: "mihir",
       driveId: "drive-1",
       remoteId: "remote-1",
-      label: "Quarterly plan.docx",
       webUrl: "https://example.sharepoint.com/quarterly-plan.docx",
-      collection: "work",
       includeSpeakerNotes: false,
-      enrolledBy: "mihir",
-      enrolledAt: "2026-09-01T12:00:00.000Z",
+      cursorKey: "drive:drive-1",
       audienceAckAt: "2026-09-01T12:00:00.000Z",
       readersAtEnrollment: ["mihir@example.com"],
-      cursorKey: "quarterly-plan",
     };
 
     function stateWithExtensions(): IntegrationState {
       const base = state("refresh-token");
       const google = base.providers.google;
       if (google === undefined) throw new Error("missing test provider");
-      google.enrollments = { [enrollment.id]: enrollment };
+      google.enrollment = [enrollment];
       google.account = {
         id: "account-1",
         tenantId: "tenant-1",
@@ -152,12 +152,11 @@ describe("encrypted integration state", () => {
       google.authorization = { status: "reconnect_required", at: "2026-09-01T12:00:00.000Z" };
       const source = google.sources["doc-1"];
       if (source === undefined) throw new Error("missing test source");
-      source.enrollmentId = enrollment.id;
       source.lastFailure = { at: "2026-09-01T12:00:00.000Z", reason: "too_large" };
       return base;
     }
 
-    it("round-trips enrollments, account, and authorization through the encrypted envelope", () => {
+    it("round-trips enrollment, account, and authorization through the encrypted envelope", () => {
       const input = stateWithExtensions();
       expect(writeIntegrationState(vault, input, KEY)).toEqual(ok(undefined));
       expect(readIntegrationState(vault, KEY)).toEqual(ok(input));
@@ -172,10 +171,9 @@ describe("encrypted integration state", () => {
       if (!result.ok) throw new Error("expected parse to succeed");
       const google = result.value.providers.google;
       if (google === undefined) throw new Error("missing test provider");
-      expect(google.enrollments).toBeUndefined();
+      expect(google.enrollment).toBeUndefined();
       expect(google.account).toBeUndefined();
       expect(google.authorization).toBeUndefined();
-      expect(google.sources["doc-1"]?.enrollmentId).toBeUndefined();
       expect(google.sources["doc-1"]?.lastFailure).toBeUndefined();
     });
 
@@ -205,7 +203,7 @@ describe("encrypted integration state", () => {
       if (google === undefined) throw new Error("missing test provider");
       const incomplete = { ...enrollment } as Partial<EnrollmentRecord>;
       delete incomplete.driveId;
-      google.enrollments = { [enrollment.id]: incomplete as EnrollmentRecord };
+      google.enrollment = [incomplete as EnrollmentRecord];
       expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
     });
 
@@ -213,13 +211,13 @@ describe("encrypted integration state", () => {
       const input = stateWithExtensions();
       const google = input.providers.google;
       if (google === undefined) throw new Error("missing test provider");
-      google.enrollments = {
-        [enrollment.id]: {
+      google.enrollment = [
+        {
           ...enrollment,
           // @ts-expect-error intentionally malformed for the validator test
-          kind: "file",
+          kind: "item",
         },
-      };
+      ];
       expect(writeIntegrationState(vault, input, KEY).ok).toBe(false);
     });
 
@@ -256,5 +254,88 @@ describe("encrypted integration state", () => {
       };
       expect(event.reason).toBe("unenrolled");
     });
+  });
+});
+
+describe("enrollment and adapter data state (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-state-enroll-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("round-trips enrollment records and opaque adapter data", () => {
+    const input: IntegrationState = {
+      providers: {
+        m365: {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          enrollment: [
+            {
+              ref: "d1:item-1",
+              kind: "folder",
+              label: "Reports",
+              targetCollection: "distill",
+              enrolledAt: "2026-09-04T00:00:00.000Z",
+              enrolledBy: "user:me",
+              driveId: "d1",
+              remoteId: "item-1",
+              includeSpeakerNotes: true,
+              cursorKey: "enrollment:d1:item-1",
+              audienceAckAt: "2026-09-04T00:00:00.000Z",
+              readersAtEnrollment: [],
+            },
+          ],
+          adapterData: { deltaLinks: { d1: "delta-token" } },
+          sources: {},
+        },
+      },
+      oauthStates: {},
+    };
+    expect(writeIntegrationState(vault, input, KEY)).toEqual(ok(undefined));
+    expect(readIntegrationState(vault, KEY)).toEqual(ok(input));
+  });
+
+  it("rejects a malformed enrollment record at the validation gate", () => {
+    const malformed = {
+      providers: {
+        m365: {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          enrollment: [{ ref: "drive:d1:item-1", kind: "everything" }],
+          sources: {},
+        },
+      },
+      oauthStates: {},
+    } as unknown as IntegrationState;
+    expect(writeIntegrationState(vault, malformed, KEY).ok).toBe(false);
+  });
+
+  it("rejects an enrollment record whose targetCollection is not a safe path segment (security)", () => {
+    const unsafe = {
+      providers: {
+        m365: {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          enrollment: [
+            {
+              ref: "drive:d1:item-1",
+              kind: "folder",
+              label: "Reports",
+              targetCollection: "../../etc",
+              enrolledAt: "2026-09-04T00:00:00.000Z",
+              enrolledBy: "user:me",
+            },
+          ],
+          sources: {},
+        },
+      },
+      oauthStates: {},
+    } as unknown as IntegrationState;
+    expect(writeIntegrationState(vault, unsafe, KEY).ok).toBe(false);
   });
 });

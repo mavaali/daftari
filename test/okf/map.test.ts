@@ -233,6 +233,13 @@ describe("trustTier", () => {
       ]),
     ).toBe("human-reviewed");
   });
+
+  // SPEC §5.2: a single verifier MAY be written as a bare `{ by, at }` mapping
+  // without the list dash, and consumers MUST treat it as a one-element list.
+  it("treats a bare `{ by, at }` mapping as a one-element list", () => {
+    expect(trustTier({ by: "human:ahormati", at: "2026-06-25T09:00:00Z" })).toBe("human-reviewed");
+    expect(trustTier({ by: "agent:checker", at: "2026-07-01" })).toBe("machine-confirmed");
+  });
 });
 
 describe("ttlFromStaleAfter", () => {
@@ -356,6 +363,14 @@ describe("okfToDaftari", () => {
     // Absence never lowers confidence: an unverified v0.2 doc is
     // indistinguishable from a v0.1 doc.
     expect(okfToDaftari({ type: "note" }, ctx).confidence).toBe("medium");
+
+    // SPEC §5.2 bare-mapping shorthand: a human sign-off written without the
+    // list dash must still import as confidence high, not silently downgrade.
+    const bareHuman = okfToDaftari(
+      { type: "note", verified: { by: "human:ahormati", at: "2026-06-25T09:00:00Z" } },
+      ctx,
+    );
+    expect(bareHuman.confidence).toBe("high");
   });
 
   it("keeps deprecated docs deprecated but does not canonize stable ones", () => {

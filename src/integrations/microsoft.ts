@@ -557,7 +557,7 @@ async function ensureWebhook(
     return ok({ id, secret, subscriptions: [] });
   }
 
-  const driveIds = new Set(Object.values(state.enrollments ?? {}).map((record) => record.driveId));
+  const driveIds = new Set((state.enrollment ?? []).map((record) => record.driveId));
   const existingSubscriptions = state.webhook?.subscriptions ?? [];
   const existingByDrive = new Map<string, { id: string; resource: string; expiresAt: string }>();
   for (const subscription of existingSubscriptions) {
@@ -876,11 +876,11 @@ interface MicrosoftDeltaRoot {
 }
 
 function deriveMicrosoftDeltaRoots(
-  enrollments: Record<string, EnrollmentRecord> | undefined,
+  enrollments: EnrollmentRecord[] | undefined,
 ): MicrosoftDeltaRoot[] {
   const roots = new Map<string, MicrosoftDeltaRoot>();
-  for (const record of Object.values(enrollments ?? {})) {
-    if (record.kind === "container") {
+  for (const record of enrollments ?? []) {
+    if (record.kind === "folder") {
       roots.set(record.cursorKey, {
         cursorKey: record.cursorKey,
         kind: "container",
@@ -1478,7 +1478,7 @@ async function discoverMicrosoftSources(
   sleep: (milliseconds: number) => Promise<void>,
   state: ProviderState,
 ): Promise<Result<RemoteSource[], Error>> {
-  const roots = deriveMicrosoftDeltaRoots(state.enrollments);
+  const roots = deriveMicrosoftDeltaRoots(state.enrollment);
   if (roots.length === 0) return ok([]);
 
   const storedRoots = parseMicrosoftCursor(state.cursor);
@@ -1502,7 +1502,13 @@ async function discoverMicrosoftSources(
         walked.value.mode === "fallback"
           ? { link: walked.value.deltaLink, folders: walked.value.folders ?? [] }
           : walked.value.deltaLink;
-      for (const [id, source] of walked.value.sources) allSources.set(id, source);
+      // #506: tag every descendant with the owning folder enrollment's ref
+      // (`${driveId}:${folderId}`, byte-identical to that enrollment's `ref`)
+      // so the engine's owningEnrollment() attaches its targetCollection.
+      const enrolledRef = `${root.driveId}:${root.folderId}`;
+      for (const [id, source] of walked.value.sources) {
+        allSources.set(id, { ...source, enrolledRef });
+      }
     } else {
       const walked = await walkItemGroupRoot(
         transport,
@@ -1515,7 +1521,11 @@ async function discoverMicrosoftSources(
       );
       if (!walked.ok) return walked;
       newRoots[root.cursorKey] = walked.value.deltaLink;
-      for (const [id, source] of walked.value.sources) allSources.set(id, source);
+      // An item enrollment's ref IS its source id, so enrolledRef defaults to
+      // id in owningEnrollment(); set it explicitly for symmetry/robustness.
+      for (const [id, source] of walked.value.sources) {
+        allSources.set(id, { ...source, enrolledRef: id });
+      }
     }
   }
 
@@ -1702,38 +1712,28 @@ async function boundedContentBytes(
 }
 
 // Resolves the per-enrollment includeSpeakerNotes flag (pptx-only; ignored
-// for docx/pdf) for a given source. SourceState.enrollmentId is checked
-// first (the forward-looking channel — see the U14 "KNOWN LIMITATION"
-// comment on rememberedRootSources: no adapter populates it today, so this
-// branch is currently always a miss in practice, kept for when that's
-// wired). Failing that, an item-kind enrollment is matched exactly by
-// driveId+remoteId (always unambiguous — an item enrollment names one
-// specific file). A container-kind enrollment has no per-file membership
-// recorded anywhere reachable from here, so it's matched only when exactly
-// one container enrollment shares this drive (an unambiguous best-effort
+// for docx/pdf) for a given source. A file enrollment is matched exactly by
+// driveId+remoteId (always unambiguous — a file enrollment names one specific
+// file, and its ref IS this source's id). A folder enrollment has no per-file
+// membership recorded anywhere reachable from here, so it's matched only when
+// exactly one folder enrollment shares this drive (an unambiguous best-effort
 // case); with more than one candidate, or none, this falls back to the
 // provider-level config default.
 function resolveIncludeSpeakerNotes(
-  sourceId: string,
   driveId: string,
   itemId: string,
   state: ProviderState,
   config: MicrosoftProviderConfig,
 ): boolean {
-  const enrollmentId = state.sources[sourceId]?.enrollmentId;
-  if (enrollmentId !== undefined) {
-    const record = state.enrollments?.[enrollmentId];
-    if (record !== undefined) return record.includeSpeakerNotes;
-  }
-  const enrollments = Object.values(state.enrollments ?? {});
-  const itemMatch = enrollments.find(
-    (record) => record.kind === "item" && record.driveId === driveId && record.remoteId === itemId,
+  const enrollments = state.enrollment ?? [];
+  const fileMatch = enrollments.find(
+    (record) => record.kind === "file" && record.driveId === driveId && record.remoteId === itemId,
   );
-  if (itemMatch !== undefined) return itemMatch.includeSpeakerNotes;
-  const containerMatches = enrollments.filter(
-    (record) => record.kind === "container" && record.driveId === driveId,
+  if (fileMatch !== undefined) return fileMatch.includeSpeakerNotes;
+  const folderMatches = enrollments.filter(
+    (record) => record.kind === "folder" && record.driveId === driveId,
   );
-  if (containerMatches.length === 1) return containerMatches[0].includeSpeakerNotes;
+  if (folderMatches.length === 1) return folderMatches[0].includeSpeakerNotes;
   return config.includeSpeakerNotes;
 }
 
@@ -1889,7 +1889,7 @@ async function fetchSource(
   // Step 4/5: extract. Legacy `.doc`/`.ppt` bytes are already PDF (Graph did
   // the conversion for us) and run through the same pdf extractor as a
   // native .pdf — lossy (no speaker notes), which is expected (R28).
-  const includeSpeakerNotes = resolveIncludeSpeakerNotes(source.id, driveId, itemId, state, config);
+  const includeSpeakerNotes = resolveIncludeSpeakerNotes(driveId, itemId, state, config);
   const extracted = await extractText(
     bytes.value,
     kind,
@@ -2455,22 +2455,23 @@ function describeMicrosoftStatus(state: ProviderState): ProviderStatus {
   const emptyCounts = Object.fromEntries(
     SOURCE_STATUS_STATES.map((sourceStatusState) => [sourceStatusState, 0]),
   ) as Record<SourceStatusState, number>;
-  const enrollments: EnrollmentStatusSummary[] = Object.values(state.enrollments ?? {}).map(
-    (record) => {
-      const enrolledSources = allSources.filter((source) => source.enrollmentId === record.id);
-      const counts = { ...emptyCounts };
-      for (const source of enrolledSources) counts[microsoftSourceStatusState(source)] += 1;
-      return {
-        id: record.id,
-        label: record.label,
-        collection: record.collection,
-        sourceCount: enrolledSources.length,
-        failedSourceCount: enrolledSources.filter((source) => source.lastFailure !== undefined)
-          .length,
-        counts,
-      };
-    },
-  );
+  const enrollments: EnrollmentStatusSummary[] = (state.enrollment ?? []).map((record) => {
+    // A file enrollment's ref IS its source id; a folder's descendants carry
+    // different ids and are not persisted with an enrollment link, so they
+    // aggregate under the availability sweep rather than here (sourceCount 0).
+    const enrolledSources = allSources.filter((source) => source.id === record.ref);
+    const counts = { ...emptyCounts };
+    for (const source of enrolledSources) counts[microsoftSourceStatusState(source)] += 1;
+    return {
+      id: record.ref,
+      label: record.label,
+      collection: record.targetCollection,
+      sourceCount: enrolledSources.length,
+      failedSourceCount: enrolledSources.filter((source) => source.lastFailure !== undefined)
+        .length,
+      counts,
+    };
+  });
 
   const sources: SourceStatusSummary[] = allSources.map((source) => ({
     id: source.id,
@@ -2498,7 +2499,7 @@ export function createMicrosoftAdapter(options: MicrosoftAdapterOptions): Provid
     maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
   };
   return {
-    name: "microsoft",
+    name: "m365",
     webhookSetup: "automatic",
     authorizationUrl: (input) => authorizationUrl(input, redirectUri, config),
     exchangeCode: (input) => exchangeCode(transport, redirectUri, now, config, limits, input),

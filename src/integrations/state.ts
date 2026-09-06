@@ -5,6 +5,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isValidCollectionName } from "../distill/propose.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   type EnrollmentRecord,
@@ -137,7 +138,6 @@ function validSourceState(value: unknown): value is SourceState {
     typeof value.available === "boolean" &&
     typeof value.lastSeenAt === "string" &&
     validOptionalString(value.lastDistillRunId) &&
-    validOptionalString(value.enrollmentId) &&
     validSourceFailure(value.lastFailure)
   );
 }
@@ -145,22 +145,25 @@ function validSourceState(value: unknown): value is SourceState {
 function validEnrollmentRecord(value: unknown): value is EnrollmentRecord {
   if (!isStringRecord(value)) return false;
   return (
-    typeof value.id === "string" &&
-    (value.kind === "item" || value.kind === "container") &&
+    typeof value.ref === "string" &&
+    (value.kind === "file" || value.kind === "folder") &&
+    typeof value.label === "string" &&
+    // targetCollection is later joined into a staged file path (see
+    // src/distill/propose.ts derivePath) and separately checked against RBAC
+    // as an exact string — it must be a single safe path segment, not just a
+    // string, or the two checks could diverge (confused-deputy escalation).
+    typeof value.targetCollection === "string" &&
+    isValidCollectionName(value.targetCollection) &&
+    typeof value.enrolledAt === "string" &&
+    typeof value.enrolledBy === "string" &&
     typeof value.driveId === "string" &&
     typeof value.remoteId === "string" &&
-    validOptionalString(value.siteId) &&
-    validOptionalString(value.listId) &&
-    typeof value.label === "string" &&
     validOptionalString(value.webUrl) &&
-    typeof value.collection === "string" &&
     typeof value.includeSpeakerNotes === "boolean" &&
-    typeof value.enrolledBy === "string" &&
-    typeof value.enrolledAt === "string" &&
+    typeof value.cursorKey === "string" &&
     typeof value.audienceAckAt === "string" &&
     Array.isArray(value.readersAtEnrollment) &&
-    value.readersAtEnrollment.every((reader) => typeof reader === "string") &&
-    typeof value.cursorKey === "string"
+    value.readersAtEnrollment.every((reader) => typeof reader === "string")
   );
 }
 
@@ -202,13 +205,13 @@ function validProviderState(value: unknown): value is ProviderState {
     (value.webhookSetupToken !== undefined && value.webhookSetupToken.length < 16)
   )
     return false;
-  if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
-    return false;
   if (
-    value.enrollments !== undefined &&
-    (!isStringRecord(value.enrollments) ||
-      !Object.values(value.enrollments).every(validEnrollmentRecord))
+    value.enrollment !== undefined &&
+    (!Array.isArray(value.enrollment) || !value.enrollment.every(validEnrollmentRecord))
   )
+    return false;
+  if (value.adapterData !== undefined && !isStringRecord(value.adapterData)) return false;
+  if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
     return false;
   if (!validProviderAccount(value.account)) return false;
   if (!validAuthorization(value.authorization)) return false;

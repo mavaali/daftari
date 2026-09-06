@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-09-05
+
+### Added
+
+- **Declared frontmatter filtering in search** (#513) — a bounded `indexed_fields` config promotes scalar `schema_extensions` into a typed, rebuildable `document_fields` projection, and `vault_search` gains AND-composed equality and range predicates over those fields (deterministic queryless filtering and exact filtered-vector ranking). Filter values compile to bound SQL parameters, RBAC and validity constraints apply before filter limits, hidden documents stay omitted, and existing unfiltered KNN behavior is unchanged. The projection rebuilds when its config fingerprint changes while preserving durable embeddings.
+
+### Fixed
+
+- **Connector updates stay retryable** (#553, #534) — a failed connector update no longer persists a new revision under the old completed hash; changed revisions keep their empty-hash pending marker until distillation succeeds, so a later sync retries the failed work instead of skipping it. (Revisions already persisted as falsely-complete are not auto-migrated and need a targeted refresh.)
+- **Exact Git path history preserved** (#553, #538) — bulk Git history parsing uses NUL-delimited fields and preserves exact pathnames instead of trimming trailing whitespace on quoted, newline-delimited paths, covering accented/CJK names, tabs, embedded newlines, and control-byte prefixes.
+
+### Changed
+
+- **Dependency and CI bumps** (#497, #483, #502, #503, #504, #434) — the npm-minor-and-patch group plus `qs`, `fast-uri`, `vitest`, and `actions/upload-artifact` are updated.
+
 ## [3.12.1] - 2026-08-27
 
 ### Security

@@ -8,8 +8,8 @@ describe("isProviderName", () => {
     }
   });
 
-  it("accepts microsoft", () => {
-    expect(isProviderName("microsoft")).toBe(true);
+  it("accepts m365", () => {
+    expect(isProviderName("m365")).toBe(true);
   });
 
   it("rejects an unknown provider string", () => {

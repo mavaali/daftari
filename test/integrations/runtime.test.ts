@@ -160,6 +160,63 @@ describe("configured integration runtime", () => {
     expect(factorySpy).not.toHaveBeenCalled();
   });
 
+  it("activates m365 when configured with a matching adapter factory (#505/#506 follow-up)", async () => {
+    const spy = { discover: 0, ensure: 0 };
+    const m365Factory = (redirectUri: string): ProviderAdapter => {
+      spy.redirect = redirectUri;
+      return {
+        name: "m365",
+        authorizationUrl: () => "https://login.example/authorize",
+        exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+        refreshTokens: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+        ensureWebhook: async () => {
+          spy.ensure += 1;
+          return ok({ id: "channel", secret: "secret" });
+        },
+        verifyWebhook: async () =>
+          ok({ kind: "event", eventId: "evt", hint: { kind: "reconcile" } }),
+        discover: async (state) => {
+          spy.discover += 1;
+          state.cursor = "cursor";
+          return ok([]);
+        },
+        fetch: async () => err(new Error("not used")),
+      };
+    };
+    writeIntegrationState(
+      vault,
+      {
+        providers: { m365: { accessToken: "access", refreshToken: "refresh", sources: {} } },
+        oauthStates: {},
+      },
+      KEY,
+    );
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config: {
+        ...config,
+        m365: { clientIdEnv: "M365_ID", clientSecretEnv: "M365_SECRET" },
+      },
+      environment: { ...environment, M365_ID: "id", M365_SECRET: "secret" },
+      distill,
+      adapterFactories: { google: factory({ discover: 0, ensure: 0 }), m365: m365Factory },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    expect(spy.discover).toBeGreaterThan(0);
+    await created.value.close();
+  });
+
+  // (Removed) "surfaces a clear error when m365 is configured without a
+  // matching factory": m365 now ships a real default adapter factory (this
+  // branch implements createMicrosoftAdapter), so a configured m365 provider
+  // always has a factory and that error path is unreachable for it. The guard
+  // in runtime.ts (`integration provider … has no adapter factory`) remains as
+  // defense for any future provider declared in ProviderName/config before its
+  // adapter ships — it just can't be triggered by m365 anymore.
+
   it("surfaces safe lifecycle failures without provider response data", async () => {
     const messages: string[] = [];
     const created = createConfiguredIntegrationRuntime({
@@ -439,7 +496,7 @@ describe("configured integration runtime", () => {
     const microsoftConfig: IntegrationConfig = {
       encryptionKeyEnv: "INTEGRATION_KEY",
       pollingIntervalMinutes: 10,
-      microsoft: {
+      m365: {
         clientIdEnv: "MICROSOFT_ID",
         clientSecretEnv: "MICROSOFT_SECRET",
         tenantId: "tenant-id",
@@ -457,7 +514,7 @@ describe("configured integration runtime", () => {
       vault,
       {
         providers: {
-          microsoft: { accessToken: "access", refreshToken: "refresh", sources: {} },
+          m365: { accessToken: "access", refreshToken: "refresh", sources: {} },
         },
         oauthStates: {},
       },
@@ -521,7 +578,7 @@ describe("configured integration runtime", () => {
       if (typeof address !== "object" || address === null) throw new Error("missing address");
       try {
         const response = await originalFetch(
-          `http://127.0.0.1:${address.port}/integrations/microsoft/enrollments/preview`,
+          `http://127.0.0.1:${address.port}/integrations/m365/enrollments/preview`,
           {
             method: "POST",
             body: JSON.stringify({

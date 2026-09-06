@@ -119,7 +119,7 @@ function providerState(
     sources: previous?.sources ?? {},
     ...(previous?.cursor === undefined ? {} : { cursor: previous.cursor }),
     ...(previous?.webhook === undefined ? {} : { webhook: previous.webhook }),
-    ...(previous?.enrollments === undefined ? {} : { enrollments: previous.enrollments }),
+    ...(previous?.enrollment === undefined ? {} : { enrollment: previous.enrollment }),
     ...(previous?.account === undefined ? {} : { account: previous.account }),
     // A reconnect (previous state exists) always clears any prior
     // reconnect_required/failure signal — the operator just re-authorized.

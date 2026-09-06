@@ -20,7 +20,7 @@ import { microsoftProviderConfig } from "./microsoft-fixtures.js";
 const config: IntegrationConfig = {
   encryptionKeyEnv: "INTEGRATION_KEY",
   pollingIntervalMinutes: 15,
-  microsoft: microsoftProviderConfig({
+  m365: microsoftProviderConfig({
     collections: ["distill", "research"],
     tenantId: "contoso-tenant",
     pickerHost: "https://contoso.sharepoint.com",
@@ -35,7 +35,7 @@ const environment = {
 
 function microsoftAdapter(): ProviderAdapter {
   return {
-    name: "microsoft",
+    name: "m365",
     authorizationUrl: ({ state }) => `https://login.microsoftonline.com/authorize?state=${state}`,
     exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
     discover: async () => ok([]),
@@ -59,7 +59,7 @@ async function start(
   const engineDeps: EngineDeps = {
     config,
     environment,
-    adapters: { microsoft: microsoftAdapter() },
+    adapters: { m365: microsoftAdapter() },
     distill: async () => ok({ runId: "run" }),
   };
   const server = createServer((req, res) => {
@@ -68,7 +68,7 @@ async function start(
       vaultRoot: "/tmp/daftari-ui-test-vault",
       config,
       environment,
-      adapters: { microsoft: microsoftAdapter() },
+      adapters: { m365: microsoftAdapter() },
       engineDeps,
       queue,
       authorize,
@@ -90,11 +90,11 @@ async function start(
   };
 }
 
-describe("GET /integrations/microsoft/ui", () => {
+describe("GET /integrations/m365/ui", () => {
   it("returns 200 HTML with the exact §5.1 CSP header when authorized", async () => {
     const harness = await start();
     try {
-      const res = await fetch(`${harness.base}/integrations/microsoft/ui`);
+      const res = await fetch(`${harness.base}/integrations/m365/ui`);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("text/html");
       expect(res.headers.get("content-security-policy")).toBe(
@@ -122,7 +122,7 @@ describe("GET /integrations/microsoft/ui", () => {
     );
     const harness = await start(authorize);
     try {
-      const res = await fetch(`${harness.base}/integrations/microsoft/ui`);
+      const res = await fetch(`${harness.base}/integrations/m365/ui`);
       expect(res.status).toBe(403);
     } finally {
       await harness.close();
@@ -140,7 +140,7 @@ describe("GET /integrations/microsoft/ui", () => {
     });
     const harness = await start(authorize as never);
     try {
-      const res = await fetch(`${harness.base}/integrations/microsoft/ui`);
+      const res = await fetch(`${harness.base}/integrations/m365/ui`);
       expect(res.status).toBe(401);
     } finally {
       await harness.close();
@@ -150,7 +150,7 @@ describe("GET /integrations/microsoft/ui", () => {
   it("has no inline <script> with executable code — only an external module reference", async () => {
     const harness = await start();
     try {
-      const res = await fetch(`${harness.base}/integrations/microsoft/ui`);
+      const res = await fetch(`${harness.base}/integrations/m365/ui`);
       const body = await res.text();
       // Any <script> tag present must carry a src= (external) and no text
       // content between its tags.
@@ -161,7 +161,7 @@ describe("GET /integrations/microsoft/ui", () => {
         expect(full).toMatch(/\ssrc=/);
         expect(inner.trim()).toBe("");
       }
-      expect(body).toContain('src="/integrations/microsoft/ui/assets/glue.js"');
+      expect(body).toContain('src="/integrations/m365/ui/assets/glue.js"');
     } finally {
       await harness.close();
     }
@@ -170,7 +170,7 @@ describe("GET /integrations/microsoft/ui", () => {
   it("lists the config's collections in the dropdown and disables Enroll by default", async () => {
     const harness = await start();
     try {
-      const res = await fetch(`${harness.base}/integrations/microsoft/ui`);
+      const res = await fetch(`${harness.base}/integrations/m365/ui`);
       const body = await res.text();
       expect(body).toContain('value="distill"');
       expect(body).toContain('value="research"');
@@ -195,12 +195,12 @@ describe("GET /integrations/microsoft/ui", () => {
   });
 });
 
-describe("GET /integrations/microsoft/ui/assets/{file}", () => {
+describe("GET /integrations/m365/ui/assets/{file}", () => {
   it("serves the vendored msal-browser entry as JS", async () => {
     const harness = await start();
     try {
       const res = await fetch(
-        `${harness.base}/integrations/microsoft/ui/assets/vendor/msal-browser/index.mjs`,
+        `${harness.base}/integrations/m365/ui/assets/vendor/msal-browser/index.mjs`,
       );
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("text/javascript");
@@ -214,12 +214,12 @@ describe("GET /integrations/microsoft/ui/assets/{file}", () => {
   it("serves the glue script and the picker-serializer as JS", async () => {
     const harness = await start();
     try {
-      const glue = await fetch(`${harness.base}/integrations/microsoft/ui/assets/glue.js`);
+      const glue = await fetch(`${harness.base}/integrations/m365/ui/assets/glue.js`);
       expect(glue.status).toBe(200);
       expect(glue.headers.get("content-type")).toContain("text/javascript");
 
       const serializer = await fetch(
-        `${harness.base}/integrations/microsoft/ui/assets/picker-serializer.js`,
+        `${harness.base}/integrations/m365/ui/assets/picker-serializer.js`,
       );
       expect(serializer.status).toBe(200);
       expect(serializer.headers.get("content-type")).toContain("text/javascript");
@@ -232,7 +232,7 @@ describe("GET /integrations/microsoft/ui/assets/{file}", () => {
     const harness = await start();
     try {
       const res = await fetch(
-        `${harness.base}/integrations/microsoft/ui/assets/../../../../../../etc/passwd`,
+        `${harness.base}/integrations/m365/ui/assets/../../../../../../etc/passwd`,
         { redirect: "manual" },
       );
       // Node's http URL parsing itself normalizes/collapses ".." within the
@@ -253,7 +253,7 @@ describe("GET /integrations/microsoft/ui/assets/{file}", () => {
       // gets collapsed), so this exercises resolveMicrosoftUiAssetPath's own
       // traversal check end-to-end.
       const res = await fetch(
-        `${harness.base}/integrations/microsoft/ui/assets/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd`,
+        `${harness.base}/integrations/m365/ui/assets/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd`,
       );
       expect(res.status).toBe(404);
     } finally {
@@ -264,7 +264,7 @@ describe("GET /integrations/microsoft/ui/assets/{file}", () => {
   it("rejects an absolute-path asset request", async () => {
     const harness = await start();
     try {
-      const res = await fetch(`${harness.base}/integrations/microsoft/ui/assets/%2Fetc%2Fpasswd`);
+      const res = await fetch(`${harness.base}/integrations/m365/ui/assets/%2Fetc%2Fpasswd`);
       expect(res.status).toBe(404);
     } finally {
       await harness.close();
@@ -275,7 +275,7 @@ describe("GET /integrations/microsoft/ui/assets/{file}", () => {
     const harness = await start();
     try {
       const res = await fetch(
-        `${harness.base}/integrations/microsoft/ui/assets/vendor/msal-browser/package.json`,
+        `${harness.base}/integrations/m365/ui/assets/vendor/msal-browser/package.json`,
       );
       expect(res.status).toBe(404);
     } finally {

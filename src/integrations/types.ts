@@ -1,7 +1,7 @@
 // Shared, provider-neutral integration state. Source text never appears in
 // these types: connector state records only credentials and change metadata.
 
-export const PROVIDER_NAMES = ["google", "notion", "microsoft"] as const;
+export const PROVIDER_NAMES = ["google", "notion", "m365"] as const;
 
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
@@ -14,9 +14,9 @@ export interface IntegrationProviderConfig {
   clientSecretEnv: string;
 }
 
-// Microsoft's `integrations.microsoft` block (U11) carries extra keys beyond
-// the shared client_id_env/client_secret_env pair that Google/Notion use.
-// The parsed/normalized shape always carries concrete `scopeProfile` and
+// The `integrations.m365` block (U11) carries extra keys beyond the shared
+// client_id_env/client_secret_env pair that Google/Notion use. The
+// parsed/normalized shape always carries concrete `scopeProfile` and
 // `includeSpeakerNotes` values — the config loader (src/utils/config.ts)
 // applies their defaults, so downstream code never has to.
 export interface MicrosoftProviderConfig extends IntegrationProviderConfig {
@@ -36,7 +36,7 @@ export interface IntegrationConfig {
   pollingIntervalMinutes: number;
   google?: IntegrationProviderConfig;
   notion?: IntegrationProviderConfig;
-  microsoft?: MicrosoftProviderConfig;
+  m365?: MicrosoftProviderConfig;
 }
 
 export const SOURCE_FAILURE_REASONS = [
@@ -60,6 +60,35 @@ export function isSourceFailureReason(value: unknown): value is SourceFailureRea
   return (SOURCE_FAILURE_REASONS as readonly unknown[]).includes(value);
 }
 
+// An operator's selected-source grant. Enrollment — not the provider token —
+// is the privilege boundary for selected-source providers: discover() expands
+// exactly this set and nothing else is ever fetched. The shared spine (`ref`,
+// `kind`, `targetCollection`, `enrolledAt`, `enrolledBy`) is provider-neutral;
+// the remaining fields are the m365/Graph operational + audience-disclosure
+// details the adapter needs to expand and re-fetch this grant.
+export interface EnrollmentRecord {
+  /** Provider-scoped source reference; m365 = `${driveId}:${remoteId}`. */
+  ref: string;
+  kind: "file" | "folder";
+  /** Display metadata for the operator UI only — never used for dispatch. */
+  label: string;
+  /** The collection distilled claims from this grant are staged into. */
+  targetCollection: string;
+  enrolledAt: string;
+  /** Authenticated principal who made the enrollment. */
+  enrolledBy: string;
+  // --- m365/Graph operational fields (drive the delta-root expansion) ---
+  driveId: string;
+  remoteId: string;
+  webUrl?: string;
+  includeSpeakerNotes: boolean;
+  /** Groups records into discovery delta roots; see deriveMicrosoftDeltaRoots. */
+  cursorKey: string;
+  // --- audience disclosure (R33/R34 audit; write-only snapshot) ---
+  audienceAckAt: string;
+  readersAtEnrollment: string[];
+}
+
 export interface SourceState {
   id: string;
   revision: string;
@@ -67,8 +96,6 @@ export interface SourceState {
   available: boolean;
   lastSeenAt: string;
   lastDistillRunId?: string;
-  /** Groups this source under a human-selected enrollment. */
-  enrollmentId?: string;
   /** Last per-source failure encountered while extracting, fetching, or distilling. */
   lastFailure?: {
     at: string;
@@ -82,25 +109,6 @@ export interface ProviderAccount {
   tenantId: string;
   displayName?: string;
   upn?: string;
-}
-
-/** A human-selected item or container enrolled for ingestion. */
-export interface EnrollmentRecord {
-  id: string;
-  kind: "item" | "container";
-  driveId: string;
-  remoteId: string;
-  siteId?: string;
-  listId?: string;
-  label: string;
-  webUrl?: string;
-  collection: string;
-  includeSpeakerNotes: boolean;
-  enrolledBy: string;
-  enrolledAt: string;
-  audienceAckAt: string;
-  readersAtEnrollment: string[];
-  cursorKey: string;
 }
 
 export interface ProviderState {
@@ -118,9 +126,15 @@ export interface ProviderState {
     /** One webhook channel can fan out to N provider-side subscriptions. */
     subscriptions?: Array<{ id: string; resource: string; expiresAt: string }>;
   };
+  /** Selected-source providers only; absent = discover() enumerates everything. */
+  enrollment?: EnrollmentRecord[];
+  /**
+   * Opaque adapter-owned change metadata (delta links, subscription ids).
+   * Held provisionally with the change cursor: only committed once every
+   * source in a discovery page has been handled.
+   */
+  adapterData?: Record<string, unknown>;
   sources: Record<string, SourceState>;
-  /** The human-selected subset of remote items/containers enrolled for ingestion. */
-  enrollments?: Record<string, EnrollmentRecord>;
   /** Which remote account is connected. */
   account?: ProviderAccount;
   /** Reconnect state, when the provider requires re-authorization. */

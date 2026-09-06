@@ -54,7 +54,7 @@ export function microsoftUiAuthority(tenantId: string): string {
 }
 
 export interface MicrosoftUiPageConfig {
-  provider: "microsoft";
+  provider: "m365";
   clientId: string;
   authority: string;
   pickerHost: string;

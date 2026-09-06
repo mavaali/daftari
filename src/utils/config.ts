@@ -570,7 +570,7 @@ const RECOGNISED_INTEGRATIONS_KEYS = [
 // live in config (existing rule).
 const RECOGNISED_STANDARD_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
 
-// Microsoft's `integrations.microsoft` block carries extra keys beyond the
+// The `integrations.m365` block (Microsoft Graph) carries extra keys beyond the
 // shared pair above (tenant, scope profile, enrollment collection allowlist,
 // speaker-note default, picker host). Per-provider table (U11): each
 // provider's block is checked against its OWN recognised-key set, so these
@@ -590,7 +590,7 @@ const RECOGNISED_MICROSOFT_PROVIDER_KEYS = [
 const RECOGNISED_INTEGRATION_PROVIDER_KEYS: Record<ProviderName, readonly string[]> = {
   google: RECOGNISED_STANDARD_PROVIDER_KEYS,
   notion: RECOGNISED_STANDARD_PROVIDER_KEYS,
-  microsoft: RECOGNISED_MICROSOFT_PROVIDER_KEYS,
+  m365: RECOGNISED_MICROSOFT_PROVIDER_KEYS,
 };
 
 // Compile-time drift guard: every field of MicrosoftProviderConfig must map to
@@ -655,20 +655,20 @@ function validateStandardProvider(
 }
 
 function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig, Error> {
-  const mapping = requireMapping(raw, "'integrations.microsoft'");
+  const mapping = requireMapping(raw, "'integrations.m365'");
   if (!mapping.ok) return mapping;
   const known = rejectUnknownKeys(
     mapping.value,
-    RECOGNISED_INTEGRATION_PROVIDER_KEYS.microsoft,
-    "integrations.microsoft",
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS.m365,
+    "integrations.m365",
   );
   if (!known.ok) return known;
-  const shared = validateSharedProviderCredentials("microsoft", mapping.value);
+  const shared = validateSharedProviderCredentials("m365", mapping.value);
   if (!shared.ok) return shared;
 
   const tenantId = mapping.value.tenant_id;
   if (typeof tenantId !== "string" || tenantId.trim().length === 0) {
-    return err(new Error("'integrations.microsoft.tenant_id' must be a non-empty string"));
+    return err(new Error("'integrations.m365.tenant_id' must be a non-empty string"));
   }
 
   let scopeProfile: MicrosoftProviderConfig["scopeProfile"] = DEFAULT_MICROSOFT_SCOPE_PROFILE;
@@ -680,7 +680,7 @@ function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig
     ) {
       return err(
         new Error(
-          `'integrations.microsoft.scope_profile' must be one of ` +
+          `'integrations.m365.scope_profile' must be one of ` +
             `${MICROSOFT_SCOPE_PROFILES.join(", ")}`,
         ),
       );
@@ -688,21 +688,16 @@ function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig
     scopeProfile = scope as MicrosoftProviderConfig["scopeProfile"];
   }
 
-  const collections = asStringArray(
-    mapping.value.collections,
-    "'integrations.microsoft.collections'",
-  );
+  const collections = asStringArray(mapping.value.collections, "'integrations.m365.collections'");
   if (!collections.ok) return collections;
   if (collections.value.length === 0) {
-    return err(
-      new Error("'integrations.microsoft.collections' must be a non-empty list of strings"),
-    );
+    return err(new Error("'integrations.m365.collections' must be a non-empty list of strings"));
   }
 
   let includeSpeakerNotes = DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES;
   if (mapping.value.include_speaker_notes !== undefined) {
     if (typeof mapping.value.include_speaker_notes !== "boolean") {
-      return err(new Error("'integrations.microsoft.include_speaker_notes' must be true or false"));
+      return err(new Error("'integrations.m365.include_speaker_notes' must be true or false"));
     }
     includeSpeakerNotes = mapping.value.include_speaker_notes;
   }
@@ -711,7 +706,7 @@ function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig
   if (mapping.value.picker_host !== undefined) {
     const host = mapping.value.picker_host;
     if (typeof host !== "string" || host.trim().length === 0) {
-      return err(new Error("'integrations.microsoft.picker_host' must be a non-empty string"));
+      return err(new Error("'integrations.m365.picker_host' must be a non-empty string"));
     }
     pickerHost = host.trim();
   }
@@ -754,10 +749,10 @@ function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefine
   for (const provider of PROVIDER_NAMES) {
     const raw = mapping.value[provider];
     if (raw === undefined) continue;
-    if (provider === "microsoft") {
+    if (provider === "m365") {
       const config = validateMicrosoftProvider(raw);
       if (!config.ok) return config;
-      integrations.microsoft = config.value;
+      integrations.m365 = config.value;
     } else {
       const config = validateStandardProvider(provider, raw);
       if (!config.ok) return config;

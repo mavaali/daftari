@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { canWrite } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -33,12 +32,7 @@ import {
   withIntegrationStateLock,
   writeIntegrationState,
 } from "./state.js";
-import {
-  type EnrollmentRecord,
-  type IntegrationConfig,
-  PROVIDER_NAMES,
-  type ProviderName,
-} from "./types.js";
+import type { EnrollmentRecord, IntegrationConfig, ProviderName } from "./types.js";
 
 const DEFAULT_WEBHOOK_BODY_LIMIT = 256 * 1024;
 const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
@@ -101,11 +95,16 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
   response.end(JSON.stringify(body));
 }
 
-const PROVIDER_ROUTE_PATTERN = new RegExp(`^/integrations/(${PROVIDER_NAMES.join("|")})(?:/|$)`);
-
-export function providerFrom(pathname: string): ProviderName | null {
-  const matched = PROVIDER_ROUTE_PATTERN.exec(pathname);
-  return matched === null ? null : (matched[1] as ProviderName);
+// Provider names come from the registered adapters, never a hardcoded list —
+// serve stays provider-neutral and a new adapter needs no route change.
+export function providerFrom(
+  pathname: string,
+  adapters: Partial<Record<ProviderName, ProviderAdapter>>,
+): ProviderName | null {
+  const matched = /^\/integrations\/([a-z0-9-]+)(?:\/|$)/.exec(pathname);
+  if (matched === null) return null;
+  const name = matched[1] as ProviderName;
+  return adapters[name] === undefined ? null : name;
 }
 
 function nodeHeaders(request: IncomingMessage): WebhookRequest["headers"] {
@@ -272,7 +271,7 @@ export async function handleIntegrationRoute(
   deps: IntegrationRouteDependencies,
 ): Promise<boolean> {
   if (!url.pathname.startsWith("/integrations/")) return false;
-  const provider = providerFrom(url.pathname);
+  const provider = providerFrom(url.pathname, deps.adapters);
   if (provider === null) {
     writeJson(response, 404, { error: "not_found" });
     return true;
@@ -561,7 +560,7 @@ export async function handleIntegrationRoute(
   // adapter, since the page needs the config's `collections` allowlist and
   // tenant/client id — none of which the ProviderAdapter interface carries.
   if (url.pathname === `/integrations/${provider}/ui`) {
-    const microsoftConfig = provider === "microsoft" ? deps.config.microsoft : undefined;
+    const microsoftConfig = provider === "m365" ? deps.config.m365 : undefined;
     if (microsoftConfig === undefined) {
       writeJson(response, 404, { error: "not_found" });
       return true;
@@ -578,7 +577,7 @@ export async function handleIntegrationRoute(
     if (authorized === null) return true;
     const clientId = deps.environment[microsoftConfig.clientIdEnv] ?? "";
     const html = renderMicrosoftUiPage({
-      provider: "microsoft",
+      provider: "m365",
       clientId,
       authority: microsoftUiAuthority(microsoftConfig.tenantId),
       pickerHost: microsoftConfig.pickerHost ?? "",
@@ -604,7 +603,7 @@ export async function handleIntegrationRoute(
   // request) — safe to interpolate into this RegExp unescaped.
   const uiAssetMatch = new RegExp(`^/integrations/${provider}/ui/assets/(.+)$`).exec(url.pathname);
   if (uiAssetMatch !== null) {
-    if (provider !== "microsoft" || deps.config.microsoft === undefined) {
+    if (provider !== "m365" || deps.config.m365 === undefined) {
       writeJson(response, 404, { error: "not_found" });
       return true;
     }
@@ -729,15 +728,19 @@ export async function handleIntegrationRoute(
       const now = deps.engineDeps.now?.() ?? new Date();
       const nowIso = now.toISOString();
       const records: EnrollmentRecord[] = draft.value.items.map((item) => {
-        const id = randomUUID();
+        // Shared-layer identity: `ref` matches a discovered source's
+        // enrolledRef (main #506). For m365 that is `${driveId}:${remoteId}`,
+        // byte-identical to an item's own source.id (see microsoft.ts).
+        const ref = `${item.driveId}:${item.remoteId}`;
         return {
-          id,
-          kind: item.kind,
+          ref,
+          // Graph "item"/"container" → the shared file/folder vocabulary.
+          kind: item.kind === "container" ? ("folder" as const) : ("file" as const),
           driveId: item.driveId,
           remoteId: item.remoteId,
           label: item.label,
           ...(item.webUrl === undefined ? {} : { webUrl: item.webUrl }),
-          collection: draft.value.collection,
+          targetCollection: draft.value.collection,
           includeSpeakerNotes: draft.value.includeSpeakerNotes,
           enrolledBy: authorized.user,
           enrolledAt: nowIso,
@@ -745,12 +748,17 @@ export async function handleIntegrationRoute(
           readersAtEnrollment: draft.value.readersAtEnrollment,
           // §7.1 cursorKey convention: one container enrollment is its own
           // delta root; item enrollments sharing a drive share one root.
-          cursorKey: item.kind === "container" ? `enrollment:${id}` : `drive:${item.driveId}`,
+          cursorKey: item.kind === "container" ? `enrollment:${ref}` : `drive:${item.driveId}`,
         };
       });
-      const enrollments = { ...(providerState.enrollments ?? {}) };
-      for (const record of records) enrollments[record.id] = record;
-      persisted.value.providers[provider] = { ...providerState, enrollments };
+      // Stored as the shared-layer `enrollment[]` array, keyed by ref: a
+      // re-enrollment of the same ref replaces its prior record.
+      const byRef = new Map((providerState.enrollment ?? []).map((e) => [e.ref, e]));
+      for (const record of records) byRef.set(record.ref, record);
+      persisted.value.providers[provider] = {
+        ...providerState,
+        enrollment: [...byRef.values()],
+      };
       const written = writeIntegrationState(deps.vaultRoot, persisted.value, key.value);
       if (!written.ok) return written;
       return ok(records);
@@ -760,7 +768,7 @@ export async function handleIntegrationRoute(
       writeJson(response, 422, { error: "enrollment_rejected", message: created.error.message });
       return true;
     }
-    writeJson(response, 201, { enrollmentIds: created.value.map((record) => record.id) });
+    writeJson(response, 201, { enrollmentIds: created.value.map((record) => record.ref) });
     deps.wake?.();
     return true;
   }
@@ -835,7 +843,7 @@ export async function handleIntegrationRoute(
     const authorized = await requireAuthorization(request, response, deps, true);
     if (authorized === null) return true;
 
-    const enrollmentId = decodeURIComponent(enrollmentIdMatch[1]);
+    const ref = decodeURIComponent(enrollmentIdMatch[1]);
     const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
     if (!key.ok) {
       writeJson(response, 500, { error: "internal" });
@@ -846,12 +854,14 @@ export async function handleIntegrationRoute(
       writeJson(response, 500, { error: "internal" });
       return true;
     }
-    const snapshotRecord = snapshot.value.providers[provider]?.enrollments?.[enrollmentId];
+    const snapshotRecord = snapshot.value.providers[provider]?.enrollment?.find(
+      (e) => e.ref === ref,
+    );
     if (snapshotRecord === undefined) {
       writeJson(response, 404, { error: "not_found" });
       return true;
     }
-    if (!canWrite(authorized.role, snapshotRecord.collection)) {
+    if (!canWrite(authorized.role, snapshotRecord.targetCollection)) {
       writeJson(response, 403, { error: "forbidden" });
       return true;
     }
@@ -860,20 +870,24 @@ export async function handleIntegrationRoute(
       const persisted = readIntegrationState(deps.vaultRoot, key.value);
       if (!persisted.ok) return persisted;
       const providerState = persisted.value.providers[provider];
-      const record = providerState?.enrollments?.[enrollmentId];
+      const record = providerState?.enrollment?.find((e) => e.ref === ref);
       if (providerState === undefined || record === undefined) {
         // Already gone (a concurrent delete won the race) — idempotent no-op.
         return ok([]);
       }
-      const enrollments = { ...providerState.enrollments };
-      delete enrollments[enrollmentId];
+      const enrollment = providerState.enrollment?.filter((e) => e.ref !== ref) ?? [];
       // R38: source metadata is RETAINED, never deleted — only the
       // enrollment record and its grouping are removed. The sources
       // themselves (and their contentHash/available history) are untouched.
+      // A file enrollment's ref IS its source id (see the enroll route), so a
+      // direct id match orphans it; a folder's descendants carry different ids
+      // and their ownership is resolved dynamically at reconcile via
+      // RemoteSource.enrolledRef (not persisted on SourceState), so they are
+      // left for the availability sweep rather than force-marked here.
       const orphanedSources = Object.values(providerState.sources).filter(
-        (source) => source.enrollmentId === enrollmentId,
+        (source) => source.id === ref,
       );
-      persisted.value.providers[provider] = { ...providerState, enrollments };
+      persisted.value.providers[provider] = { ...providerState, enrollment };
       const written = writeIntegrationState(deps.vaultRoot, persisted.value, key.value);
       if (!written.ok) return written;
       return ok(orphanedSources);

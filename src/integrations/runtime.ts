@@ -84,17 +84,17 @@ function defaultFactories(
   return {
     google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
     notion: (redirectUri) => createNotionAdapter({ redirectUri }),
-    microsoft: (redirectUri) => {
+    m365: (redirectUri) => {
       // configuredProviders() only calls this factory for a provider present
-      // in config, so config.microsoft is guaranteed here; the runtime
+      // in config, so config.m365 is guaranteed here; the runtime
       // construction path (start()) already validated its clientId/secret
       // env vars before any factory runs.
-      if (config.microsoft === undefined) {
-        throw new Error("microsoft integration is not configured");
+      if (config.m365 === undefined) {
+        throw new Error("m365 integration is not configured");
       }
       return createMicrosoftAdapter({
         redirectUri,
-        config: config.microsoft,
+        config: config.m365,
         roles,
         estimatedUsdPerCall,
       });
@@ -316,12 +316,17 @@ export function createConfiguredIntegrationRuntime(
       const resolvedRouteBaseUrl = options.publicBaseUrl ?? fallback.value;
       routeBaseUrl = resolvedRouteBaseUrl;
       integrationRoutePrefix = routePrefix(resolvedRouteBaseUrl);
-      try {
-        adapters = providers.map((provider) =>
-          factories[provider](callbackUrl(resolvedRouteBaseUrl, provider)),
-        );
-      } catch {
-        return err(new Error("integration adapter construction failed"));
+      adapters = [];
+      for (const provider of providers) {
+        const factory = factories[provider];
+        if (factory === undefined) {
+          return err(new Error(`integration provider ${provider} has no adapter factory`));
+        }
+        try {
+          adapters.push(factory(callbackUrl(resolvedRouteBaseUrl, provider)));
+        } catch {
+          return err(new Error("integration adapter construction failed"));
+        }
       }
       for (const adapter of adapters) {
         const capability = validateContinuousAdapterCapabilities(adapter, {

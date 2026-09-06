@@ -148,7 +148,7 @@ describe("integration OAuth transactions", () => {
     });
   });
 
-  it("reconnect carries enrollments, account, sources, cursor, and webhook, and resets authorization", async () => {
+  it("reconnect carries enrollment, account, sources, cursor, and webhook, and resets authorization", async () => {
     const priorSources = {
       "doc-1": {
         id: "doc-1",
@@ -159,18 +159,18 @@ describe("integration OAuth transactions", () => {
       },
     };
     const enrollment = {
-      id: "enrollment-1",
-      kind: "item" as const,
+      ref: "drive-1:remote-1",
+      kind: "file" as const,
+      label: "Quarterly Plan",
+      targetCollection: "distill",
+      enrolledAt: "2026-08-01T00:00:00.000Z",
+      enrolledBy: "operator@example.com",
       driveId: "drive-1",
       remoteId: "remote-1",
-      label: "Quarterly Plan",
-      collection: "distill",
       includeSpeakerNotes: false,
-      enrolledBy: "operator@example.com",
-      enrolledAt: "2026-08-01T00:00:00.000Z",
+      cursorKey: "drive:drive-1",
       audienceAckAt: "2026-08-01T00:00:00.000Z",
       readersAtEnrollment: ["operator@example.com"],
-      cursorKey: "cursor-key-1",
     };
     const account = { id: "account-1", tenantId: "tenant-1", displayName: "Operator" };
     const webhook = { id: "channel-1", secret: "webhook-secret" };
@@ -185,7 +185,7 @@ describe("integration OAuth transactions", () => {
               sources: priorSources,
               cursor: "cursor-before-reconnect",
               webhook,
-              enrollments: { [enrollment.id]: enrollment },
+              enrollment: [enrollment],
               account,
               authorization: {
                 status: "reconnect_required",
@@ -221,7 +221,7 @@ describe("integration OAuth transactions", () => {
       sources: priorSources,
       cursor: "cursor-before-reconnect",
       webhook,
-      enrollments: { [enrollment.id]: enrollment },
+      enrollment: [enrollment],
       account,
       authorization: { status: "ok", at: "2026-08-24T12:00:00.000Z" },
     });

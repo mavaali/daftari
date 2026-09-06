@@ -4,7 +4,11 @@
 // pattern already used by test/integrations/google.test.ts.
 
 import type { MicrosoftHttpTransport } from "../../src/integrations/microsoft.js";
-import type { MicrosoftProviderConfig, ProviderState } from "../../src/integrations/types.js";
+import type {
+  EnrollmentRecord,
+  MicrosoftProviderConfig,
+  ProviderState,
+} from "../../src/integrations/types.js";
 
 /**
  * Fixture responses keyed by a URL prefix. Each request consumes (shifts) the
@@ -67,14 +71,20 @@ export function meFixture(overrides: Record<string, unknown> = {}): Response {
 
 /** A minimal, valid ProviderState for constructing adapter calls in tests. */
 export function microsoftProviderState(
-  overrides: Partial<ProviderState> = {},
+  overrides: Partial<ProviderState> & {
+    enrollments?: Record<string, EnrollmentRecord>;
+  } = {},
   sources: ProviderState["sources"] = {},
 ): ProviderState {
+  // Tests express enrollments as an id-keyed object for readability; the model
+  // stores them as the shared-layer `enrollment` array.
+  const { enrollments, ...rest } = overrides;
   return {
     accessToken: "access-token",
     refreshToken: "refresh-token",
     sources,
-    ...overrides,
+    ...(enrollments === undefined ? {} : { enrollment: Object.values(enrollments) }),
+    ...rest,
   };
 }
 

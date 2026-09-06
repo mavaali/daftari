@@ -28,19 +28,39 @@ import {
 
 const KEY = Buffer.alloc(32, 7);
 
-function enrollment(
-  overrides: Partial<EnrollmentRecord> &
-    Pick<EnrollmentRecord, "id" | "kind" | "driveId" | "remoteId" | "cursorKey">,
-): EnrollmentRecord {
+// Test convenience: accepts the adapter's Graph "item"/"container" vocabulary
+// (as well as the shared "file"/"folder") and produces a shared-layer
+// EnrollmentRecord — ref derived from driveId:remoteId, kind mapped, and the
+// old `collection` alias folded into targetCollection.
+function enrollment(overrides: {
+  id?: string;
+  kind: "item" | "container" | "file" | "folder";
+  driveId: string;
+  remoteId: string;
+  cursorKey: string;
+  label?: string;
+  collection?: string;
+  targetCollection?: string;
+  includeSpeakerNotes?: boolean;
+  ref?: string;
+  webUrl?: string;
+  enrolledBy?: string;
+  enrolledAt?: string;
+  audienceAckAt?: string;
+  readersAtEnrollment?: string[];
+}): EnrollmentRecord {
+  const { id, kind, collection, ...rest } = overrides;
   return {
-    label: overrides.id,
-    collection: "distill",
+    ref: `${overrides.driveId}:${overrides.remoteId}`,
+    kind: kind === "container" ? "folder" : kind === "item" ? "file" : kind,
+    label: overrides.label ?? id ?? `${overrides.driveId}:${overrides.remoteId}`,
+    targetCollection: overrides.targetCollection ?? collection ?? "distill",
     includeSpeakerNotes: true,
     enrolledBy: "user-1",
     enrolledAt: "2026-08-24T00:00:00.000Z",
     audienceAckAt: "2026-08-24T00:00:00.000Z",
     readersAtEnrollment: [],
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -51,7 +71,7 @@ describe("Microsoft adapter skeleton (U12)", () => {
       config: microsoftProviderConfig(),
     });
 
-    expect(adapter.name).toBe("microsoft");
+    expect(adapter.name).toBe("m365");
     expect(adapter.webhookSetup).toBe("automatic");
     const withoutWebhooks = validateContinuousAdapterCapabilities(adapter, {
       webhooksRequired: false,
@@ -678,9 +698,9 @@ describe("Microsoft adapter discover (U14)", () => {
     expect(discovered.ok).toBe(true);
     if (!discovered.ok) return;
     expect([...discovered.value].sort((a, b) => a.id.localeCompare(b.id))).toEqual([
-      { id: "drive-a:f1", revision: "e1" },
-      { id: "drive-a:f2", revision: "e2" },
-      { id: "drive-b:item-1", revision: "e3" },
+      { id: "drive-a:f1", revision: "e1", enrolledRef: "drive-a:folder-a" },
+      { id: "drive-a:f2", revision: "e2", enrolledRef: "drive-a:folder-a" },
+      { id: "drive-b:item-1", revision: "e3", enrolledRef: "drive-b:item-1" },
     ]);
 
     expect(JSON.parse(state.cursor as string)).toEqual({
@@ -814,7 +834,10 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-a:f-nested", revision: "e2" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-a:f-nested", revision: "e2", enrolledRef: "drive-a:folder-a" }],
+    });
   });
 
   it("the drive-root fallback walk classifies a nested file correctly even when its record arrives before its subfolder's, in the same page", async () => {
@@ -858,7 +881,10 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-nested", revision: "e1" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-c:f-nested", revision: "e1", enrolledRef: "drive-c:folder-root" }],
+    });
   });
 
   it("the two-pass fixpoint resolves 3+ levels of nesting even when delivered file-first (grandparent and parent both arrive after the file)", async () => {
@@ -914,7 +940,10 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-deep", revision: "e1" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-c:f-deep", revision: "e1", enrolledRef: "drive-c:folder-root" }],
+    });
   });
 
   // Locks in a conscious, documented R21/R37 deviation (fallback path only,
@@ -982,7 +1011,10 @@ describe("Microsoft adapter discover (U14)", () => {
     const discovered = await adapter.discover(state);
     // Lingers: still present, now carrying the stale-but-latest-seen
     // revision from this delta record, not removed.
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f-moved", revision: "e1" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-c:f-moved", revision: "e1", enrolledRef: "drive-c:folder-root" }],
+    });
   });
 
   it("last-occurrence-wins across a page boundary: the same id changing on page 1 and page 2 resolves to page 2's revision", async () => {
@@ -1022,7 +1054,10 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-b:item-1", revision: "e2" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-b:item-1", revision: "e2", enrolledRef: "drive-b:item-1" }],
+    });
   });
 
   it("a deleted item that reappears later in the same stream resolves to present", async () => {
@@ -1059,7 +1094,10 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-b:item-1", revision: "e2" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-b:item-1", revision: "e2", enrolledRef: "drive-b:item-1" }],
+    });
   });
 
   it("410 Gone on one root only re-initializes that root; the other root's stored link is retained", async () => {
@@ -1123,7 +1161,9 @@ describe("Microsoft adapter discover (U14)", () => {
     const discovered = await adapter.discover(state);
     expect(discovered.ok).toBe(true);
     if (!discovered.ok) return;
-    expect(discovered.value).toEqual([{ id: "drive-a:f1", revision: "e1" }]);
+    expect(discovered.value).toEqual([
+      { id: "drive-a:f1", revision: "e1", enrolledRef: "drive-a:folder-a" },
+    ]);
 
     expect(JSON.parse(state.cursor as string)).toEqual({
       v: 1,
@@ -1186,7 +1226,10 @@ describe("Microsoft adapter discover (U14)", () => {
     );
 
     const discovered = await adapter.discover(state);
-    expect(discovered).toEqual({ ok: true, value: [{ id: "drive-c:f1", revision: "e1" }] });
+    expect(discovered).toEqual({
+      ok: true,
+      value: [{ id: "drive-c:f1", revision: "e1", enrolledRef: "drive-c:folder-root" }],
+    });
     // Never re-probed the folder-scoped primary endpoint — a root already
     // known (from its persisted cursor shape) to be in fallback mode skips
     // straight to the drive-root endpoint on resync.
@@ -1246,7 +1289,10 @@ describe("Microsoft adapter discover (U14)", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       const discovered = await discoverPromise;
 
-      expect(discovered).toEqual({ ok: true, value: [{ id: "drive-b:item-1", revision: "e1" }] });
+      expect(discovered).toEqual({
+        ok: true,
+        value: [{ id: "drive-b:item-1", revision: "e1", enrolledRef: "drive-b:item-1" }],
+      });
       expect(attempts).toBe(2);
     } finally {
       vi.useRealTimers();
@@ -1426,8 +1472,8 @@ describe("Microsoft adapter discover (U14)", () => {
     expect(discovered.ok).toBe(true);
     if (!discovered.ok) return;
     expect([...discovered.value].sort((a, b) => a.id.localeCompare(b.id))).toEqual([
-      { id: "drive-c:f-direct", revision: "e3" },
-      { id: "drive-c:f-nested", revision: "e2" },
+      { id: "drive-c:f-direct", revision: "e3", enrolledRef: "drive-c:folder-root" },
+      { id: "drive-c:f-nested", revision: "e2", enrolledRef: "drive-c:folder-root" },
     ]);
     // Fallback mode persists {link, folders} — not a bare link string — so a
     // resumed cycle can seed ancestry from what was already learned instead
@@ -1510,10 +1556,19 @@ function pptxMetadata(overrides: Record<string, unknown> = {}): Record<string, u
 }
 
 function fetchState(
-  overrides: Partial<ProviderState> = {},
+  overrides: Partial<ProviderState> & { enrollments?: Record<string, EnrollmentRecord> } = {},
   sources: Record<string, SourceState> = {},
 ): ProviderState {
-  return { accessToken: "access-token", refreshToken: "refresh-token", sources, ...overrides };
+  // Tests express enrollments as an id-keyed object for readability; the model
+  // stores them as the shared-layer `enrollment` array.
+  const { enrollments, ...rest } = overrides;
+  return {
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+    sources,
+    ...(enrollments === undefined ? {} : { enrollment: Object.values(enrollments) }),
+    ...rest,
+  };
 }
 
 describe("Microsoft adapter fetch (U15)", () => {
@@ -1746,18 +1801,18 @@ describe("Microsoft adapter fetch (U15)", () => {
       const stateWithEnrollment = fetchState({
         enrollments: {
           enr1: {
-            id: "enr1",
-            kind: "item",
+            ref: "drive1:item1",
+            kind: "file",
             driveId: "drive1",
             remoteId: "item1",
             label: "Deck",
-            collection: "distill",
+            targetCollection: "distill",
             includeSpeakerNotes: false,
             enrolledBy: "user-1",
             enrolledAt: "2026-08-24T00:00:00.000Z",
             audienceAckAt: "2026-08-24T00:00:00.000Z",
             readersAtEnrollment: [],
-            cursorKey: "enrollment:enr1",
+            cursorKey: "drive:drive1",
           },
         },
       });
@@ -3345,7 +3400,7 @@ describe("Microsoft adapter describeStatus (U18)", () => {
     expect(status?.sources.map((s) => s.state)).toEqual(["unavailable", "unavailable"]);
   });
 
-  it("summarizes per enrollment using SourceState.enrollmentId where populated, with collection + per-state counts", () => {
+  it("summarizes a file enrollment by ref (source.id === record.ref), with collection + per-state counts", () => {
     const record = enrollment({
       id: "enr-1",
       kind: "item",
@@ -3355,14 +3410,15 @@ describe("Microsoft adapter describeStatus (U18)", () => {
       collection: "engineering",
     });
     const sources: ProviderState["sources"] = {
+      // The file enrollment's own source (id === record.ref) groups under it.
       "drive-a:item-1": source({
         id: "drive-a:item-1",
-        enrollmentId: "enr-1",
         contentHash: "hash-1",
       }),
+      // A different id is NOT linked to the enrollment (a folder's descendant
+      // in the real model) and counts 0 against it.
       "drive-a:item-2": source({
         id: "drive-a:item-2",
-        enrollmentId: "enr-1",
         lastFailure: { at: "2026-09-01T00:00:00.000Z", reason: "malformed" },
       }),
     };
@@ -3371,17 +3427,17 @@ describe("Microsoft adapter describeStatus (U18)", () => {
     );
     expect(status?.enrollments).toEqual([
       {
-        id: "enr-1",
+        id: "drive-a:item-1",
         label: record.label,
         collection: "engineering",
-        sourceCount: 2,
-        failedSourceCount: 1,
-        counts: { pending: 0, current: 1, failed: 1, unavailable: 0, over_limit: 0 },
+        sourceCount: 1,
+        failedSourceCount: 0,
+        counts: { pending: 0, current: 1, failed: 0, unavailable: 0, over_limit: 0 },
       },
     ]);
   });
 
-  it("does not crash when enrollmentId is unpopulated (today's actual engine state)", () => {
+  it("does not crash and groups the file enrollment's own source by ref", () => {
     const record = enrollment({
       id: "enr-1",
       kind: "item",
@@ -3397,12 +3453,12 @@ describe("Microsoft adapter describeStatus (U18)", () => {
     );
     expect(status?.enrollments).toEqual([
       {
-        id: "enr-1",
+        id: "drive-a:item-1",
         label: record.label,
-        collection: record.collection,
-        sourceCount: 0,
+        collection: record.targetCollection,
+        sourceCount: 1,
         failedSourceCount: 0,
-        counts: { pending: 0, current: 0, failed: 0, unavailable: 0, over_limit: 0 },
+        counts: { pending: 0, current: 1, failed: 0, unavailable: 0, over_limit: 0 },
       },
     ]);
   });

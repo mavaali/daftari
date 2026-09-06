@@ -1332,6 +1332,13 @@ describe("loadConfig — integrations", () => {
     });
   });
 
+  // (Removed) "accepts an m365 provider block (#505/#506 follow-up)": that test
+  // configured m365 with only client_id_env/client_secret_env (generic
+  // IntegrationProviderConfig). On this branch m365 is a MicrosoftProviderConfig
+  // that also requires tenant_id + a non-empty collections allowlist, so a bare
+  // block is correctly rejected now. Full m365 config parsing is covered by the
+  // "loadConfig — m365 provider config (U11)" describe below.
+
   it("rejects a client secret declared directly in YAML", () => {
     writeConfig(
       "integrations:\n" +
@@ -1362,7 +1369,7 @@ describe("loadConfig — integrations", () => {
   });
 });
 
-describe("loadConfig — microsoft provider config + distill USD key (U11)", () => {
+describe("loadConfig — m365 provider config + distill USD key (U11)", () => {
   let dir: string;
 
   beforeEach(() => {
@@ -1378,12 +1385,12 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
     writeFileSync(configPath(dir), yaml);
   }
 
-  describe("integrations.microsoft", () => {
+  describe("integrations.m365", () => {
     it("parses a valid block, defaulting scope_profile and include_speaker_notes", () => {
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
@@ -1392,7 +1399,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const result = loadConfig(dir);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.integrations?.microsoft).toEqual({
+      expect(result.value.integrations?.m365).toEqual({
         clientIdEnv: "MS_CLIENT_ID",
         clientSecretEnv: "MS_CLIENT_SECRET",
         tenantId: "11111111-1111-1111-1111-111111111111",
@@ -1406,7 +1413,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: tenant.example.com\n" +
@@ -1418,7 +1425,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const result = loadConfig(dir);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.integrations?.microsoft).toEqual({
+      expect(result.value.integrations?.m365).toEqual({
         clientIdEnv: "MS_CLIENT_ID",
         clientSecretEnv: "MS_CLIENT_SECRET",
         tenantId: "tenant.example.com",
@@ -1433,7 +1440,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: t\n" +
@@ -1443,14 +1450,14 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const result = loadConfig(dir);
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.message).toContain("integrations.microsoft.scope_profile");
+      expect(result.error.message).toContain("integrations.m365.scope_profile");
     });
 
     it("rejects a missing tenant_id", () => {
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    collections:\n      - inbox\n",
@@ -1458,14 +1465,14 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const result = loadConfig(dir);
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.message).toContain("integrations.microsoft.tenant_id");
+      expect(result.error.message).toContain("integrations.m365.tenant_id");
     });
 
     it("rejects missing/empty collections", () => {
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: t\n",
@@ -1473,12 +1480,12 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const missing = loadConfig(dir);
       expect(missing.ok).toBe(false);
       if (missing.ok) return;
-      expect(missing.error.message).toContain("integrations.microsoft.collections");
+      expect(missing.error.message).toContain("integrations.m365.collections");
 
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: t\n" +
@@ -1487,14 +1494,14 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const empty = loadConfig(dir);
       expect(empty.ok).toBe(false);
       if (empty.ok) return;
-      expect(empty.error.message).toContain("integrations.microsoft.collections");
+      expect(empty.error.message).toContain("integrations.m365.collections");
     });
 
-    it("rejects an unknown key under integrations.microsoft", () => {
+    it("rejects an unknown key under integrations.m365", () => {
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: t\n" +
@@ -1504,7 +1511,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const result = loadConfig(dir);
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.message).toContain("integrations.microsoft.foo");
+      expect(result.error.message).toContain("integrations.m365.foo");
     });
 
     it("rejects a microsoft-only key under integrations.google (per-provider table works both ways)", () => {
@@ -1532,7 +1539,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       writeConfig(
         "integrations:\n" +
           "  encryption_key_env: KEY\n" +
-          "  microsoft:\n" +
+          "  m365:\n" +
           "    client_id_env: MS_CLIENT_ID\n" +
           "    client_secret_env: MS_CLIENT_SECRET\n" +
           "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
@@ -1544,7 +1551,7 @@ describe("loadConfig — microsoft provider config + distill USD key (U11)", () 
       const result = loadConfig(dir);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.integrations?.microsoft).toEqual({
+      expect(result.value.integrations?.m365).toEqual({
         clientIdEnv: "MS_CLIENT_ID",
         clientSecretEnv: "MS_CLIENT_SECRET",
         tenantId: "11111111-1111-1111-1111-111111111111",
