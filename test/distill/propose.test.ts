@@ -20,6 +20,7 @@ import { listStagedActions } from "../../src/curation/staged-actions.js";
 import type { ClaimRunMeta, ExtractedClaim } from "../../src/distill/extract.js";
 import {
   DISTILL_COLLECTION,
+  isValidCollectionName,
   type OverlapHint,
   type ProposeOutcome,
   proposeAllClaims,
@@ -632,5 +633,49 @@ describe("proposeAllClaims — target collection override (#506)", () => {
     expect(outcome.proposed).toBe(1);
     const listed = await listStagedActions(vault, "pending");
     expect(listed.ok && listed.value[0]?.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+  });
+});
+
+describe("isValidCollectionName", () => {
+  it("accepts realistic collection names", () => {
+    for (const name of ["distill", "competitive-intel", "pricing", "moonshot", "_drafts"]) {
+      expect(isValidCollectionName(name)).toBe(true);
+    }
+  });
+
+  it("rejects path separators, traversal, and empty strings", () => {
+    for (const name of ["../secrets", "a/b", "a\\b", "", ".", ".."]) {
+      expect(isValidCollectionName(name)).toBe(false);
+    }
+  });
+});
+
+describe("proposeAllClaims — invalid collection is rejected (security)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-bad-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("fails every claim in the batch instead of joining an unsafe collection into a path", async () => {
+    const claim = makeClaim();
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "m365:drive:d1:item-1",
+      runId: "run-bad-collection",
+      collection: "../../etc",
+    });
+
+    expect(outcome.proposed).toBe(0);
+    expect(outcome.results).toHaveLength(0);
+    expect(outcome.errors).toEqual([
+      { claim_key: claim.claim_key, error: expect.stringContaining("invalid collection name") },
+    ]);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok && listed.value).toHaveLength(0);
   });
 });

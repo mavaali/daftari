@@ -172,4 +172,28 @@ describe("enrollment and adapter data state (#505)", () => {
     } as unknown as IntegrationState;
     expect(writeIntegrationState(vault, malformed, KEY).ok).toBe(false);
   });
+
+  it("rejects an enrollment record whose targetCollection is not a safe path segment (security)", () => {
+    const unsafe = {
+      providers: {
+        m365: {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          enrollment: [
+            {
+              ref: "drive:d1:item-1",
+              kind: "folder",
+              label: "Reports",
+              targetCollection: "../../etc",
+              enrolledAt: "2026-09-04T00:00:00.000Z",
+              enrolledBy: "user:me",
+            },
+          ],
+          sources: {},
+        },
+      },
+      oauthStates: {},
+    } as unknown as IntegrationState;
+    expect(writeIntegrationState(vault, unsafe, KEY).ok).toBe(false);
+  });
 });

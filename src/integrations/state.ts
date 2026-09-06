@@ -5,6 +5,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isValidCollectionName } from "../distill/propose.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   IntegrationState,
@@ -137,7 +138,12 @@ function validEnrollmentRecord(value: unknown): boolean {
     typeof value.ref === "string" &&
     (value.kind === "file" || value.kind === "folder") &&
     typeof value.label === "string" &&
+    // targetCollection is later joined into a staged file path (see
+    // src/distill/propose.ts derivePath) and separately checked against RBAC
+    // as an exact string — it must be a single safe path segment, not just a
+    // string, or the two checks could diverge (confused-deputy escalation).
     typeof value.targetCollection === "string" &&
+    isValidCollectionName(value.targetCollection) &&
     typeof value.enrolledAt === "string" &&
     typeof value.enrolledBy === "string"
   );

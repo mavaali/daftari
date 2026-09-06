@@ -41,6 +41,18 @@ export const DISTILL_COLLECTION = "distill";
 /** The proposing agent identity, recorded on every proposal. */
 export const DISTILL_AGENT = "agent:distill";
 
+// A collection name is a single physical top-level directory AND the exact
+// string RBAC's canWrite/canRead match against (src/access/rbac.ts). Those two
+// checks must never diverge, so a collection may not contain a path separator
+// or traversal segment — otherwise a value that passes an RBAC check for one
+// string could resolve to a different directory (or escape the vault root).
+const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** True if `value` is safe to use as both an RBAC-checked collection name and a physical path segment. */
+export function isValidCollectionName(value: string): boolean {
+  return COLLECTION_NAME_PATTERN.test(value);
+}
+
 /**
  * Maximum number of overlap paths attached to a proposal rationale (U8).
  * Small and bounded: the hint is advisory context for the ratifier, not a
@@ -182,9 +194,11 @@ function hash8FromClaimKey(claimKey: string): string {
 // co-located AND stable across runs — U5's re-distill join relies on it);
 // falls back to "claims" if the source-id is empty or non-slug-friendly.
 //
-// Path-traversal safety: slugifyKey strips everything except [a-z0-9-], so
-// none of the join components can contain ".." or path separators — the
-// sanitizer is the invariant; don't remove it in a future refactor.
+// Path-traversal safety: slugifyKey strips everything except [a-z0-9-] from
+// sourceGroup/titleSlug, and proposeAllClaims rejects the batch before this
+// runs if `collection` fails isValidCollectionName — none of the three join
+// components can contain ".." or a path separator. Don't remove either
+// sanitizer in a future refactor.
 function derivePath(claim: ExtractedClaim, sourceId: string, collection: string): string {
   const title = claim.proposed_frontmatter.title;
   const hash8 = hash8FromClaimKey(claim.claim_key);
@@ -402,6 +416,16 @@ export async function proposeAllClaims(
   const results: ClaimProposalResult[] = [];
   const errors: Array<{ claim_key: string; error: string }> = [];
   const collection = ids.collection ?? DISTILL_COLLECTION;
+
+  // collection is shared across the whole batch (see isValidCollectionName) —
+  // an invalid value fails every claim rather than being silently sanitized,
+  // since sanitizing here could make the written path diverge from the
+  // string an RBAC check upstream (e.g. requireCollectionWriteAccess) saw.
+  if (!isValidCollectionName(collection)) {
+    const error = `invalid collection name ${JSON.stringify(collection)}: must match ${COLLECTION_NAME_PATTERN}`;
+    for (const claim of claims) errors.push({ claim_key: claim.claim_key, error });
+    return { proposed: 0, results, errors };
+  }
 
   for (const claim of claims) {
     const targetPath =
