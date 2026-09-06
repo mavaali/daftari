@@ -13,6 +13,30 @@ import { fileURLToPath } from "node:url";
 import { getDocument, PasswordException, VerbosityLevel } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { ExtractLimits, ExtractRequest, ExtractWorkerResponse } from "./types.js";
 
+// pdfjs-dist calls Promise.withResolvers, which only exists on Node 22+. This
+// package supports Node 20 (engines: >=20.9.0, CI matrix includes 20), where it
+// is absent — getDocument() would throw a TypeError. Install the standard
+// polyfill, guarded, before any pdfjs call.
+interface WithResolversResult<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}
+const promiseCtor = Promise as unknown as {
+  withResolvers?: <T>() => WithResolversResult<T>;
+};
+if (typeof promiseCtor.withResolvers !== "function") {
+  promiseCtor.withResolvers = <T>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+}
+
 // tsx's ESM resolve hook doesn't reliably remap a ".js" specifier to its
 // sibling ".ts" source for a *value* import resolved from inside a worker
 // thread (see worker.ts's matching comment) — but `normalize` here is a real
