@@ -825,6 +825,170 @@ describe("provider reconciliation", () => {
     expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
   });
 
+  it("answers a synchronous create-time validation mid-ensure, then commits the channel afterward (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let provider!: ProviderAdapter;
+    provider = adapter({
+      ensureWebhook: async (state, input) => {
+        const pending = state.pendingWebhook;
+        if (pending === undefined) throw new Error("no pending webhook was minted");
+        const callbackUrl = new URL(input.callbackUrl);
+        expect(callbackUrl.searchParams.get("pending_token")).toBe(pending.nonce);
+
+        // Simulate the provider validating the notification URL synchronously,
+        // mid-call, before this function returns — exactly what Graph does
+        // during subscription creation.
+        const validated = await verifyProviderWebhook(
+          vault,
+          provider,
+          {
+            headers: {},
+            body: new Uint8Array(),
+            query: { pending_token: pending.nonce, validationToken: "graph-validation-xyz" },
+          },
+          deps(),
+        );
+        expect(validated).toEqual(
+          ok({
+            kind: "verification",
+            channel: { id: pending.nonce, secret: pending.secret },
+            respondBody: "graph-validation-xyz",
+            respondContentType: "text/plain",
+          }),
+        );
+        // Subscription IDs only land in state after this call returns.
+        expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toBeUndefined();
+
+        return ok({ id: "graph-subscription-1", secret: pending.secret, expiresAt: undefined });
+      },
+      verifyWebhook: async (request, state) => {
+        const token = request.query?.validationToken;
+        const pendingToken = request.query?.pending_token;
+        if (
+          token === undefined ||
+          pendingToken === undefined ||
+          state.pendingWebhook === undefined
+        ) {
+          return err(new Error("not a validation request"));
+        }
+        return ok({
+          kind: "verification",
+          channel: { id: pendingToken, secret: state.pendingWebhook.secret },
+          respondBody: token,
+          respondContentType: "text/plain",
+        });
+      },
+    });
+
+    const result = await ensureProviderWebhook(
+      vault,
+      provider,
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(ok(expect.objectContaining({ id: "graph-subscription-1" })));
+    const finalState = readIntegrationState(vault, KEY).value.providers.google;
+    expect(finalState?.webhook).toMatchObject({ id: "graph-subscription-1" });
+    expect(finalState?.pendingWebhook).toBeUndefined();
+  });
+
+  it("does not hold the state lock across the provider's webhook creation call (#507)", async () => {
+    const notionConfig: IntegrationConfig = { ...config, notion: config.google };
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: { google: providerState(), notion: providerState() },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let release: (() => void) | undefined;
+    const stalled = adapter({
+      ensureWebhook: () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok({ id: "channel-1", secret: "secret-1" }));
+        }),
+    });
+
+    const ensuring = ensureProviderWebhook(
+      vault,
+      stalled,
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+
+    // Any other state-locked operation on a different provider must not be
+    // blocked by the stalled provider call — the lock is released before
+    // it, not held across it.
+    let armed: Awaited<ReturnType<typeof armProviderWebhookSetup>> | undefined;
+    const arming = armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: notionConfig }),
+      () => "concurrent-token",
+    ).then((settled) => {
+      armed = settled;
+    });
+    await vi.waitFor(() => expect(armed).toBeDefined(), { timeout: 100 });
+    expect(armed?.ok).toBe(true);
+    await arming;
+
+    release?.();
+    expect((await ensuring).ok).toBe(true);
+  });
+
+  it("rejects a validation request whose pending token does not match the current attempt (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), pendingWebhook: { nonce: "current", secret: "s" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async () =>
+          ok({ kind: "verification", channel: { id: "x", secret: "y" }, respondBody: "leaked" }),
+      }),
+      {
+        headers: {},
+        body: new Uint8Array(),
+        query: { pending_token: "stale-or-forged", validationToken: "z" },
+      },
+      deps(),
+    );
+
+    // No pendingWebhook match and no established webhook either ⇒ falls
+    // through to the unsigned manual-capture branch, which requires an
+    // armed setup token this request never presented.
+    expect(result.ok).toBe(false);
+  });
+
   it("returns generic verified webhook events for routes to queue", async () => {
     expect(
       writeIntegrationState(
