@@ -6,64 +6,80 @@ import { describe, expect, test } from "vitest";
 import { extractText } from "../../src/extract/index.js";
 import { assertUtf8NoNul, NulByteError, normalize } from "../../src/extract/normalize.js";
 import { DEFAULT_EXTRACT_LIMITS } from "../../src/extract/types.js";
+import { canRunTsWorkers } from "../helpers/ts-worker-support.js";
 
 const FIXTURES_DIR = new URL("./fixtures/", import.meta.url);
 
 describe("extractText harness", () => {
-  test("times out a slow extractor, terminates the worker, and leaves the main thread usable", async () => {
-    const tinyLimits = { ...DEFAULT_EXTRACT_LIMITS, wallClockMs: 100 };
+  test.skipIf(!canRunTsWorkers)(
+    "times out a slow extractor, terminates the worker, and leaves the main thread usable",
+    async () => {
+      const tinyLimits = { ...DEFAULT_EXTRACT_LIMITS, wallClockMs: 100 };
 
-    const result = await extractText(new Uint8Array([1, 2, 3]), "docx", tinyLimits, {
-      workerUrl: new URL("slow-worker.ts", FIXTURES_DIR),
-      execArgv: ["--import", "tsx"],
-    });
+      const result = await extractText(new Uint8Array([1, 2, 3]), "docx", tinyLimits, {
+        workerUrl: new URL("slow-worker.ts", FIXTURES_DIR),
+        execArgv: ["--import", "tsx"],
+      });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.reason).toBe("timeout");
-    }
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.reason).toBe("timeout");
+      }
 
-    // A subsequent, unrelated call must still complete normally — the
-    // timed-out worker's termination must not have wedged anything.
-    const followUp = await extractText(new Uint8Array([1, 2, 3]), "docx", DEFAULT_EXTRACT_LIMITS, {
-      workerUrl: new URL("fixed-worker.ts", FIXTURES_DIR),
-      execArgv: ["--import", "tsx"],
-    });
+      // A subsequent, unrelated call must still complete normally — the
+      // timed-out worker's termination must not have wedged anything.
+      const followUp = await extractText(
+        new Uint8Array([1, 2, 3]),
+        "docx",
+        DEFAULT_EXTRACT_LIMITS,
+        {
+          workerUrl: new URL("fixed-worker.ts", FIXTURES_DIR),
+          execArgv: ["--import", "tsx"],
+        },
+      );
 
-    expect(followUp.ok).toBe(true);
-    if (followUp.ok) {
-      expect(followUp.value.text).toBe("fixed result");
-    }
-  });
+      expect(followUp.ok).toBe(true);
+      if (followUp.ok) {
+        expect(followUp.value.text).toBe("fixed result");
+      }
+    },
+  );
 
-  test("dispatches to the real worker for all three kinds (docx/pptx/pdf all implemented as of U9)", async () => {
-    // Not a valid PDF header, so the real pdf.ts driver (U9) reports
-    // malformed — proving the dispatch table reaches the real handler
-    // through the actual worker_threads path, not a stub.
-    const result = await extractText(new Uint8Array([1, 2, 3]), "pdf", DEFAULT_EXTRACT_LIMITS);
+  test.skipIf(!canRunTsWorkers)(
+    "dispatches to the real worker for all three kinds (docx/pptx/pdf all implemented as of U9)",
+    async () => {
+      // Not a valid PDF header, so the real pdf.ts driver (U9) reports
+      // malformed — proving the dispatch table reaches the real handler
+      // through the actual worker_threads path, not a stub.
+      const result = await extractText(new Uint8Array([1, 2, 3]), "pdf", DEFAULT_EXTRACT_LIMITS);
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.reason).toBe("malformed");
-    }
-  });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.reason).toBe("malformed");
+      }
+    },
+  );
 
-  test("maps a worker resourceLimits (heap-cap) kill to too_large, not malformed", async () => {
-    // A generous wallClockMs so the race is against the heap cap, not the
-    // timeout path — the fixture worker allocates until V8 kills it for
-    // exceeding this tiny heap, which should happen in well under a second.
-    const smallHeapLimits = { ...DEFAULT_EXTRACT_LIMITS, workerHeapMb: 8, wallClockMs: 20_000 };
+  test.skipIf(!canRunTsWorkers)(
+    "maps a worker resourceLimits (heap-cap) kill to too_large, not malformed",
+    async () => {
+      // A generous wallClockMs so the race is against the heap cap, not the
+      // timeout path — the fixture worker allocates until V8 kills it for
+      // exceeding this tiny heap, which should happen in well under a second.
+      const smallHeapLimits = { ...DEFAULT_EXTRACT_LIMITS, workerHeapMb: 8, wallClockMs: 20_000 };
 
-    const result = await extractText(new Uint8Array([1, 2, 3]), "docx", smallHeapLimits, {
-      workerUrl: new URL("oom-worker.ts", FIXTURES_DIR),
-      execArgv: ["--import", "tsx"],
-    });
+      const result = await extractText(new Uint8Array([1, 2, 3]), "docx", smallHeapLimits, {
+        workerUrl: new URL("oom-worker.ts", FIXTURES_DIR),
+        execArgv: ["--import", "tsx"],
+      });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.reason).toBe("too_large");
-    }
-  }, 25_000);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.reason).toBe("too_large");
+      }
+    },
+    25_000,
+  );
 });
 
 describe("normalize", () => {

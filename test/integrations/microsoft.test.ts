@@ -18,6 +18,7 @@ import type {
 } from "../../src/integrations/types.js";
 import type { RoleConfig } from "../../src/utils/config.js";
 import { buildDeck, buildDocxZip, buildPdf, textOp, wrapDocument } from "../extract/fixtures.js";
+import { canRunTsWorkers } from "../helpers/ts-worker-support.js";
 import {
   createFixtureTransport,
   meFixture,
@@ -1516,38 +1517,41 @@ function fetchState(
 }
 
 describe("Microsoft adapter fetch (U15)", () => {
-  it("happy .pptx: metadata -> 302 content -> real bytes -> text; the redirect-followed request carries NO Authorization header", async () => {
-    const requests: Array<{ url: string; init: RequestInit }> = [];
-    const deckBytes = buildDeck({ slideOrder: [1], withNotes: true });
-    const transport = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item1/content`]: [
-          redirectFixture("https://sas.example/blob1"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
-        "https://sas.example/blob1": [bytesFixture(deckBytes)],
-      },
-      requests,
-    );
-    const adapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport,
-    });
+  it.skipIf(!canRunTsWorkers)(
+    "happy .pptx: metadata -> 302 content -> real bytes -> text; the redirect-followed request carries NO Authorization header",
+    async () => {
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      const deckBytes = buildDeck({ slideOrder: [1], withNotes: true });
+      const transport = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item1/content`]: [
+            redirectFixture("https://sas.example/blob1"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+          "https://sas.example/blob1": [bytesFixture(deckBytes)],
+        },
+        requests,
+      );
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
 
-    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+      const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.id).toBe("drive1:item1");
-    expect(result.value.revision).toBe("etag-1"); // revision echo (R21)
-    expect(result.value.text).toContain("Slide 1 body text");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.id).toBe("drive1:item1");
+      expect(result.value.revision).toBe("etag-1"); // revision echo (R21)
+      expect(result.value.text).toContain("Slide 1 body text");
 
-    const sasRequest = requests.find((r) => r.url.startsWith("https://sas.example/blob1"));
-    expect(sasRequest).toBeDefined();
-    const headers = new Headers(sasRequest?.init.headers);
-    expect(headers.get("authorization")).toBeNull();
-  });
+      const sasRequest = requests.find((r) => r.url.startsWith("https://sas.example/blob1"));
+      expect(sasRequest).toBeDefined();
+      const headers = new Headers(sasRequest?.init.headers);
+      expect(headers.get("authorization")).toBeNull();
+    },
+  );
 
   it("a malware facet on the metadata refuses without ever issuing a content request", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -1593,83 +1597,89 @@ describe("Microsoft adapter fetch (U15)", () => {
     expect(requests.some((r) => r.url.includes("/content"))).toBe(false);
   });
 
-  it("legacy .ppt converts via ?format=pdf, extracts through the PDF extractor, and is labeled pdf-conversion", async () => {
-    const requests: Array<{ url: string; init: RequestInit }> = [];
-    const pdfBytes = buildPdf([
-      { contentOps: textOp("F1", 12, 50, 250, "Legacy content"), fonts: { F1: "Helvetica" } },
-    ]);
-    const transport = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item2/content`]: [
-          redirectFixture("https://sas.example/blob2"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item2`]: [
-          jsonFixture(pptxMetadata({ id: "item2", name: "Old.ppt" })),
-        ],
-        "https://sas.example/blob2": [bytesFixture(pdfBytes)],
-      },
-      requests,
-    );
-    const adapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport,
-    });
+  it.skipIf(!canRunTsWorkers)(
+    "legacy .ppt converts via ?format=pdf, extracts through the PDF extractor, and is labeled pdf-conversion",
+    async () => {
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      const pdfBytes = buildPdf([
+        { contentOps: textOp("F1", 12, 50, 250, "Legacy content"), fonts: { F1: "Helvetica" } },
+      ]);
+      const transport = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item2/content`]: [
+            redirectFixture("https://sas.example/blob2"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item2`]: [
+            jsonFixture(pptxMetadata({ id: "item2", name: "Old.ppt" })),
+          ],
+          "https://sas.example/blob2": [bytesFixture(pdfBytes)],
+        },
+        requests,
+      );
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
 
-    const result = await adapter.fetch({ id: "drive1:item2", revision: "etag-2" }, fetchState());
+      const result = await adapter.fetch({ id: "drive1:item2", revision: "etag-2" }, fetchState());
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.text).toContain("Legacy content");
-    expect(result.value.text).not.toContain("[speaker notes]"); // lossy, as expected
-    expect((result.value as { extractor?: string }).extractor).toBe("pdf-conversion");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.text).toContain("Legacy content");
+      expect(result.value.text).not.toContain("[speaker notes]"); // lossy, as expected
+      expect((result.value as { extractor?: string }).extractor).toBe("pdf-conversion");
 
-    const contentRequest = requests.find((r) => r.url.includes("/item2/content"));
-    expect(contentRequest?.url).toContain("format=pdf");
-  });
+      const contentRequest = requests.find((r) => r.url.includes("/item2/content"));
+      expect(contentRequest?.url).toContain("format=pdf");
+    },
+  );
 
-  it("short-circuits a prior durable failure (R30) without any HTTP call when the revision is unchanged, but re-fetches once the revision changes", async () => {
-    const requests: Array<{ url: string; init: RequestInit }> = [];
-    const transport = capturingTransport({}, requests);
-    const adapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport,
-    });
-    const state = fetchState(undefined, {
-      "drive1:item1": {
-        id: "drive1:item1",
-        revision: "etag-1",
-        contentHash: "",
-        available: true,
-        lastSeenAt: "2026-08-24T00:00:00.000Z",
-        lastFailure: { at: "2026-08-24T00:00:00.000Z", reason: "empty" },
-      },
-    });
+  it.skipIf(!canRunTsWorkers)(
+    "short-circuits a prior durable failure (R30) without any HTTP call when the revision is unchanged, but re-fetches once the revision changes",
+    async () => {
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      const transport = capturingTransport({}, requests);
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
+      const state = fetchState(undefined, {
+        "drive1:item1": {
+          id: "drive1:item1",
+          revision: "etag-1",
+          contentHash: "",
+          available: true,
+          lastSeenAt: "2026-08-24T00:00:00.000Z",
+          lastFailure: { at: "2026-08-24T00:00:00.000Z", reason: "empty" },
+        },
+      });
 
-    const unchanged = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, state);
-    expect(unchanged).toMatchObject({ ok: false, error: { reason: "empty" } });
-    expect(requests).toHaveLength(0);
+      const unchanged = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, state);
+      expect(unchanged).toMatchObject({ ok: false, error: { reason: "empty" } });
+      expect(requests).toHaveLength(0);
 
-    const changedTransport = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item1/content`]: [
-          redirectFixture("https://sas.example/blob1"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
-        "https://sas.example/blob1": [bytesFixture(buildDeck({ slideOrder: [1] }))],
-      },
-      requests,
-    );
-    const changedAdapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport: changedTransport,
-    });
-    const changed = await changedAdapter.fetch({ id: "drive1:item1", revision: "etag-2" }, state);
-    expect(changed.ok).toBe(true);
-    expect(requests.length).toBeGreaterThan(0);
-  });
+      const changedTransport = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item1/content`]: [
+            redirectFixture("https://sas.example/blob1"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+          "https://sas.example/blob1": [bytesFixture(buildDeck({ slideOrder: [1] }))],
+        },
+        requests,
+      );
+      const changedAdapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport: changedTransport,
+      });
+      const changed = await changedAdapter.fetch({ id: "drive1:item1", revision: "etag-2" }, state);
+      expect(changed.ok).toBe(true);
+      expect(requests.length).toBeGreaterThan(0);
+    },
+  );
 
   it("an unsupported extension (.xlsx) refuses without any content download", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -1711,119 +1721,128 @@ describe("Microsoft adapter fetch (U15)", () => {
     expect(result).toMatchObject({ ok: false, error: { reason: "permission_revoked" } });
   });
 
-  it("resolves includeSpeakerNotes from the owning item enrollment, falling back to config when unresolvable", async () => {
-    const deckBytes = buildDeck({ slideOrder: [1], withNotes: true });
+  it.skipIf(!canRunTsWorkers)(
+    "resolves includeSpeakerNotes from the owning item enrollment, falling back to config when unresolvable",
+    async () => {
+      const deckBytes = buildDeck({ slideOrder: [1], withNotes: true });
 
-    // Enrollment says false: speaker notes must be OMITTED even though the
-    // provider config default (below) is true.
-    const withEnrollment = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item1/content`]: [
-          redirectFixture("https://sas.example/blob1"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
-        "https://sas.example/blob1": [bytesFixture(deckBytes)],
-      },
-      [],
-    );
-    const adapterWithEnrollment = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig({ includeSpeakerNotes: true }),
-      transport: withEnrollment,
-    });
-    const stateWithEnrollment = fetchState({
-      enrollments: {
-        enr1: {
-          id: "enr1",
-          kind: "item",
-          driveId: "drive1",
-          remoteId: "item1",
-          label: "Deck",
-          collection: "distill",
-          includeSpeakerNotes: false,
-          enrolledBy: "user-1",
-          enrolledAt: "2026-08-24T00:00:00.000Z",
-          audienceAckAt: "2026-08-24T00:00:00.000Z",
-          readersAtEnrollment: [],
-          cursorKey: "enrollment:enr1",
+      // Enrollment says false: speaker notes must be OMITTED even though the
+      // provider config default (below) is true.
+      const withEnrollment = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item1/content`]: [
+            redirectFixture("https://sas.example/blob1"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+          "https://sas.example/blob1": [bytesFixture(deckBytes)],
         },
-      },
-    });
-    const withEnrollmentResult = await adapterWithEnrollment.fetch(
-      { id: "drive1:item1", revision: "etag-1" },
-      stateWithEnrollment,
-    );
-    expect(withEnrollmentResult.ok).toBe(true);
-    if (withEnrollmentResult.ok) {
-      expect(withEnrollmentResult.value.text).not.toContain("[speaker notes]");
-    }
-
-    // No enrollment matches this source: falls back to config default (true).
-    const withoutEnrollment = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item1/content`]: [
-          redirectFixture("https://sas.example/blob1"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
-        "https://sas.example/blob1": [bytesFixture(deckBytes)],
-      },
-      [],
-    );
-    const adapterWithoutEnrollment = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig({ includeSpeakerNotes: true }),
-      transport: withoutEnrollment,
-    });
-    const withoutEnrollmentResult = await adapterWithoutEnrollment.fetch(
-      { id: "drive1:item1", revision: "etag-1" },
-      fetchState(),
-    );
-    expect(withoutEnrollmentResult.ok).toBe(true);
-    if (withoutEnrollmentResult.ok) {
-      expect(withoutEnrollmentResult.value.text).toContain("[speaker notes]");
-    }
-  });
-
-  it("a 429 on the metadata GET with a short Retry-After retries once and succeeds", async () => {
-    vi.useFakeTimers();
-    try {
-      let metadataAttempts = 0;
-      const requests: Array<{ url: string; init: RequestInit }> = [];
-      const deckBytes = buildDeck({ slideOrder: [1] });
-      const transport = async (url: string, init: RequestInit): Promise<Response> => {
-        requests.push({ url, init });
-        if (url.startsWith(`${GRAPH}/drives/drive1/items/item1/content`)) {
-          return redirectFixture("https://sas.example/blob1");
-        }
-        if (url.startsWith("https://sas.example/blob1")) {
-          return bytesFixture(deckBytes);
-        }
-        if (url.startsWith(`${GRAPH}/drives/drive1/items/item1`)) {
-          metadataAttempts += 1;
-          if (metadataAttempts === 1) {
-            return new Response(null, { status: 429, headers: { "retry-after": "10" } });
-          }
-          return jsonFixture(pptxMetadata());
-        }
-        throw new Error(`unexpected request: ${url}`);
-      };
-      const adapter = createMicrosoftAdapter({
+        [],
+      );
+      const adapterWithEnrollment = createMicrosoftAdapter({
         redirectUri: "https://vault.example/integrations/microsoft/callback",
-        config: microsoftProviderConfig(),
-        transport,
+        config: microsoftProviderConfig({ includeSpeakerNotes: true }),
+        transport: withEnrollment,
       });
+      const stateWithEnrollment = fetchState({
+        enrollments: {
+          enr1: {
+            id: "enr1",
+            kind: "item",
+            driveId: "drive1",
+            remoteId: "item1",
+            label: "Deck",
+            collection: "distill",
+            includeSpeakerNotes: false,
+            enrolledBy: "user-1",
+            enrolledAt: "2026-08-24T00:00:00.000Z",
+            audienceAckAt: "2026-08-24T00:00:00.000Z",
+            readersAtEnrollment: [],
+            cursorKey: "enrollment:enr1",
+          },
+        },
+      });
+      const withEnrollmentResult = await adapterWithEnrollment.fetch(
+        { id: "drive1:item1", revision: "etag-1" },
+        stateWithEnrollment,
+      );
+      expect(withEnrollmentResult.ok).toBe(true);
+      if (withEnrollmentResult.ok) {
+        expect(withEnrollmentResult.value.text).not.toContain("[speaker notes]");
+      }
 
-      const fetchPromise = adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
-      await vi.advanceTimersByTimeAsync(10_000);
-      const result = await fetchPromise;
+      // No enrollment matches this source: falls back to config default (true).
+      const withoutEnrollment = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item1/content`]: [
+            redirectFixture("https://sas.example/blob1"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata())],
+          "https://sas.example/blob1": [bytesFixture(deckBytes)],
+        },
+        [],
+      );
+      const adapterWithoutEnrollment = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig({ includeSpeakerNotes: true }),
+        transport: withoutEnrollment,
+      });
+      const withoutEnrollmentResult = await adapterWithoutEnrollment.fetch(
+        { id: "drive1:item1", revision: "etag-1" },
+        fetchState(),
+      );
+      expect(withoutEnrollmentResult.ok).toBe(true);
+      if (withoutEnrollmentResult.ok) {
+        expect(withoutEnrollmentResult.value.text).toContain("[speaker notes]");
+      }
+    },
+  );
 
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.value.text).toContain("Slide 1 body text");
-      expect(metadataAttempts).toBe(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  it.skipIf(!canRunTsWorkers)(
+    "a 429 on the metadata GET with a short Retry-After retries once and succeeds",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        let metadataAttempts = 0;
+        const requests: Array<{ url: string; init: RequestInit }> = [];
+        const deckBytes = buildDeck({ slideOrder: [1] });
+        const transport = async (url: string, init: RequestInit): Promise<Response> => {
+          requests.push({ url, init });
+          if (url.startsWith(`${GRAPH}/drives/drive1/items/item1/content`)) {
+            return redirectFixture("https://sas.example/blob1");
+          }
+          if (url.startsWith("https://sas.example/blob1")) {
+            return bytesFixture(deckBytes);
+          }
+          if (url.startsWith(`${GRAPH}/drives/drive1/items/item1`)) {
+            metadataAttempts += 1;
+            if (metadataAttempts === 1) {
+              return new Response(null, { status: 429, headers: { "retry-after": "10" } });
+            }
+            return jsonFixture(pptxMetadata());
+          }
+          throw new Error(`unexpected request: ${url}`);
+        };
+        const adapter = createMicrosoftAdapter({
+          redirectUri: "https://vault.example/integrations/microsoft/callback",
+          config: microsoftProviderConfig(),
+          transport,
+        });
+
+        const fetchPromise = adapter.fetch(
+          { id: "drive1:item1", revision: "etag-1" },
+          fetchState(),
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        const result = await fetchPromise;
+
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.value.text).toContain("Slide 1 body text");
+        expect(metadataAttempts).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("a 429 on the content GET beyond the retry budget fails without a partial result or further calls", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -1855,69 +1874,75 @@ describe("Microsoft adapter fetch (U15)", () => {
     expect(requests.some((r) => r.url.startsWith("https://sas.example"))).toBe(false);
   });
 
-  it("routes a native .docx through the docx extractor with no ?format=pdf conversion", async () => {
-    const docxBytes = buildDocxZip({
-      "word/document.xml": wrapDocument("<w:p><w:r><w:t>Native docx content</w:t></w:r></w:p>"),
-    });
-    const requests: Array<{ url: string; init: RequestInit }> = [];
-    const transport = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item3/content`]: [
-          redirectFixture("https://sas.example/blob3"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item3`]: [
-          jsonFixture(pptxMetadata({ id: "item3", name: "Doc.docx" })),
-        ],
-        "https://sas.example/blob3": [bytesFixture(docxBytes)],
-      },
-      requests,
-    );
-    const adapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport,
-    });
+  it.skipIf(!canRunTsWorkers)(
+    "routes a native .docx through the docx extractor with no ?format=pdf conversion",
+    async () => {
+      const docxBytes = buildDocxZip({
+        "word/document.xml": wrapDocument("<w:p><w:r><w:t>Native docx content</w:t></w:r></w:p>"),
+      });
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      const transport = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item3/content`]: [
+            redirectFixture("https://sas.example/blob3"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item3`]: [
+            jsonFixture(pptxMetadata({ id: "item3", name: "Doc.docx" })),
+          ],
+          "https://sas.example/blob3": [bytesFixture(docxBytes)],
+        },
+        requests,
+      );
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
 
-    const result = await adapter.fetch({ id: "drive1:item3", revision: "etag-3" }, fetchState());
+      const result = await adapter.fetch({ id: "drive1:item3", revision: "etag-3" }, fetchState());
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.text).toContain("Native docx content");
-    const contentRequest = requests.find((r) => r.url.includes("/item3/content"));
-    expect(contentRequest?.url).not.toContain("format=pdf");
-  });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.text).toContain("Native docx content");
+      const contentRequest = requests.find((r) => r.url.includes("/item3/content"));
+      expect(contentRequest?.url).not.toContain("format=pdf");
+    },
+  );
 
-  it("routes a native .pdf through the pdf extractor with no ?format=pdf conversion", async () => {
-    const pdfBytes = buildPdf([
-      { contentOps: textOp("F1", 12, 50, 250, "Native pdf content"), fonts: { F1: "Helvetica" } },
-    ]);
-    const requests: Array<{ url: string; init: RequestInit }> = [];
-    const transport = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item4/content`]: [
-          redirectFixture("https://sas.example/blob4"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item4`]: [
-          jsonFixture(pptxMetadata({ id: "item4", name: "File.pdf" })),
-        ],
-        "https://sas.example/blob4": [bytesFixture(pdfBytes)],
-      },
-      requests,
-    );
-    const adapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport,
-    });
+  it.skipIf(!canRunTsWorkers)(
+    "routes a native .pdf through the pdf extractor with no ?format=pdf conversion",
+    async () => {
+      const pdfBytes = buildPdf([
+        { contentOps: textOp("F1", 12, 50, 250, "Native pdf content"), fonts: { F1: "Helvetica" } },
+      ]);
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      const transport = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item4/content`]: [
+            redirectFixture("https://sas.example/blob4"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item4`]: [
+            jsonFixture(pptxMetadata({ id: "item4", name: "File.pdf" })),
+          ],
+          "https://sas.example/blob4": [bytesFixture(pdfBytes)],
+        },
+        requests,
+      );
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
 
-    const result = await adapter.fetch({ id: "drive1:item4", revision: "etag-4" }, fetchState());
+      const result = await adapter.fetch({ id: "drive1:item4", revision: "etag-4" }, fetchState());
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.text).toContain("Native pdf content");
-    const contentRequest = requests.find((r) => r.url.includes("/item4/content"));
-    expect(contentRequest?.url).not.toContain("format=pdf");
-  });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.text).toContain("Native pdf content");
+      const contentRequest = requests.find((r) => r.url.includes("/item4/content"));
+      expect(contentRequest?.url).not.toContain("format=pdf");
+    },
+  );
 
   it("a 3xx content response with no Location header fails without crashing", async () => {
     const transport = capturingTransport(
@@ -1998,28 +2023,31 @@ describe("Microsoft adapter fetch (U15)", () => {
     expect(result).toMatchObject({ ok: false, error: { reason: "fetch" } });
   });
 
-  it("a malware facet serialized as null is treated as no-malware, not refused", async () => {
-    const deckBytes = buildDeck({ slideOrder: [1] });
-    const transport = capturingTransport(
-      {
-        [`${GRAPH}/drives/drive1/items/item1/content`]: [
-          redirectFixture("https://sas.example/blob1"),
-        ],
-        [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata({ malware: null }))],
-        "https://sas.example/blob1": [bytesFixture(deckBytes)],
-      },
-      [],
-    );
-    const adapter = createMicrosoftAdapter({
-      redirectUri: "https://vault.example/integrations/microsoft/callback",
-      config: microsoftProviderConfig(),
-      transport,
-    });
+  it.skipIf(!canRunTsWorkers)(
+    "a malware facet serialized as null is treated as no-malware, not refused",
+    async () => {
+      const deckBytes = buildDeck({ slideOrder: [1] });
+      const transport = capturingTransport(
+        {
+          [`${GRAPH}/drives/drive1/items/item1/content`]: [
+            redirectFixture("https://sas.example/blob1"),
+          ],
+          [`${GRAPH}/drives/drive1/items/item1`]: [jsonFixture(pptxMetadata({ malware: null }))],
+          "https://sas.example/blob1": [bytesFixture(deckBytes)],
+        },
+        [],
+      );
+      const adapter = createMicrosoftAdapter({
+        redirectUri: "https://vault.example/integrations/microsoft/callback",
+        config: microsoftProviderConfig(),
+        transport,
+      });
 
-    const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
+      const result = await adapter.fetch({ id: "drive1:item1", revision: "etag-1" }, fetchState());
 
-    expect(result.ok).toBe(true);
-  });
+      expect(result.ok).toBe(true);
+    },
+  );
 });
 
 describe("Microsoft adapter webhooks (U16)", () => {

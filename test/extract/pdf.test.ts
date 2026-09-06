@@ -19,6 +19,7 @@ import {
   handlePdf,
 } from "../../src/extract/pdf.js";
 import { DEFAULT_EXTRACT_LIMITS, type ExtractLimits } from "../../src/extract/types.js";
+import { canRunTsWorkers } from "../helpers/ts-worker-support.js";
 import { buildPdf, type PageSpec, textOp } from "./fixtures.js";
 
 const FIXTURES_DIR = new URL("./fixtures/", import.meta.url);
@@ -188,31 +189,34 @@ describe("standardFontDataUrl resolution resilience (U9 follow-up)", () => {
   });
 });
 
-describe("extractText harness dispatching pdf through the real worker_threads path", () => {
-  // Unlike the extractPdf() unit tests above (which call the driver
-  // in-process), this goes through src/extract/index.ts's real Worker
-  // spawn with no workerUrl override — i.e. worker.ts's actual dispatch
-  // table and its sibling-import loading of pdf.ts, exactly the seam U7's
-  // comment warns doesn't reliably remap .js -> .ts for a value import.
-  test("extracts a real PDF's text through the worker_threads harness", async () => {
-    const bytes = buildPdf([
-      { contentOps: textOp("F1", 24, 10, 100, "Worker thread text"), fonts: { F1: "Helvetica" } },
-    ]);
+describe.skipIf(!canRunTsWorkers)(
+  "extractText harness dispatching pdf through the real worker_threads path",
+  () => {
+    // Unlike the extractPdf() unit tests above (which call the driver
+    // in-process), this goes through src/extract/index.ts's real Worker
+    // spawn with no workerUrl override — i.e. worker.ts's actual dispatch
+    // table and its sibling-import loading of pdf.ts, exactly the seam U7's
+    // comment warns doesn't reliably remap .js -> .ts for a value import.
+    test("extracts a real PDF's text through the worker_threads harness", async () => {
+      const bytes = buildPdf([
+        { contentOps: textOp("F1", 24, 10, 100, "Worker thread text"), fonts: { F1: "Helvetica" } },
+      ]);
 
-    const result = await extractText(bytes, "pdf", DEFAULT_EXTRACT_LIMITS);
+      const result = await extractText(bytes, "pdf", DEFAULT_EXTRACT_LIMITS);
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.text).toContain("Worker thread text");
-  });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.text).toContain("Worker thread text");
+    });
 
-  test("propagates encrypted classification through the worker_threads harness", async () => {
-    const bytes = fs.readFileSync(new URL("pdf-encrypted.pdf", FIXTURES_DIR));
+    test("propagates encrypted classification through the worker_threads harness", async () => {
+      const bytes = fs.readFileSync(new URL("pdf-encrypted.pdf", FIXTURES_DIR));
 
-    const result = await extractText(new Uint8Array(bytes), "pdf", DEFAULT_EXTRACT_LIMITS);
+      const result = await extractText(new Uint8Array(bytes), "pdf", DEFAULT_EXTRACT_LIMITS);
 
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.reason).toBe("encrypted");
-  });
-});
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.reason).toBe("encrypted");
+    });
+  },
+);
