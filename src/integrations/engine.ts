@@ -982,8 +982,12 @@ export async function reconcileProvider(
             text: fetched.value.text,
           });
         } catch (error) {
+          // Keep the revision pending (empty hash) so a later cycle retries it,
+          // just like the pre-distill write above — a non-empty hash would let
+          // the skip-guard treat this unprocessed revision as already done.
           providerState.sources[remote.id] = {
             ...next,
+            contentHash: "",
             lastFailure: { at: seenAt, reason: failureReason(error, "distill") },
           };
           outcome.failedSourceIds.push(providerSourceId);
@@ -992,6 +996,7 @@ export async function reconcileProvider(
         if (!distilled.ok) {
           providerState.sources[remote.id] = {
             ...next,
+            contentHash: "",
             lastFailure: { at: seenAt, reason: failureReason(distilled.error, "distill") },
           };
           outcome.failedSourceIds.push(providerSourceId);
