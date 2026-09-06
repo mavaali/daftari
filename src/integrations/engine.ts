@@ -899,14 +899,10 @@ export async function ensureProviderWebhook(
     if (currentState.pendingWebhook?.nonce === pending.nonce) {
       delete currentState.pendingWebhook;
     }
-    if (!ensured.ok) {
-      const written = writeState(vaultRoot, key, persisted.value, deps);
-      return written.ok ? ensured : written;
-    }
-    currentState.webhook = ensured.value;
+    if (ensured.ok) currentState.webhook = ensured.value;
     const written = writeState(vaultRoot, key, persisted.value, deps);
     if (!written.ok) return written;
-    return ok(ensured.value);
+    return ensured;
   });
 }
 

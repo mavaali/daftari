@@ -57,7 +57,7 @@ export interface ProviderState {
    * Phase-1 handle for an in-flight two-phase webhook ensure (#507): minted
    * and persisted before an automatic provider's subscription-create call,
    * so a synchronous mid-create validation (Graph) can be answered before
-   * the final channel exists. Cleared once ensureProviderWebhook's phase-2
+   * the final channel exists. Cleared once ensureProviderWebhook's phase-3
    * commits or the provider call fails; a stale entry from an interrupted
    * process is simply overwritten by the next ensure.
    */

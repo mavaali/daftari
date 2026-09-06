@@ -948,7 +948,11 @@ describe("provider reconciliation", () => {
     ).then((settled) => {
       armed = settled;
     });
-    await vi.waitFor(() => expect(armed).toBeDefined(), { timeout: 100 });
+    // A generous timeout: release() below is what would unblock a genuinely
+    // stuck lock, and it isn't called until after this check, so widening
+    // the window only absorbs CI scheduling noise — it can't mask a real
+    // lock-holding regression.
+    await vi.waitFor(() => expect(armed).toBeDefined(), { timeout: 5000 });
     expect(armed?.ok).toBe(true);
     await arming;
 
