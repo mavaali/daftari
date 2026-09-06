@@ -632,15 +632,19 @@ export async function reconcileProvider(
         }
         cycleTextBytes += textBytes;
         const next = sourceState(fetched.value, previous, seenAt);
-        providerState.sources[remote.id] = next;
         const contentHash = sha256Hex(fetched.value.text);
         if (previous?.contentHash === contentHash) {
+          providerState.sources[remote.id] = next;
           const written = writeState(vaultRoot, key.value, persisted.value, deps);
           if (!written.ok) return written;
           outcome.unchangedSourceIds.push(providerSourceId);
           continue;
         }
 
+        // A nonempty hash certifies successful processing of this revision.
+        // Persist the observed revision as pending until distillation succeeds,
+        // so failures (including process exit) retry just like a new source.
+        providerState.sources[remote.id] = { ...next, contentHash: "" };
         const beforeDistill = writeState(vaultRoot, key.value, persisted.value, deps);
         if (!beforeDistill.ok) return beforeDistill;
         let distilled: Result<DistillationRun, Error>;

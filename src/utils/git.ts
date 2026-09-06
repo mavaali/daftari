@@ -345,36 +345,46 @@ export async function historyByPath(
     "log",
     "--reverse",
     "--name-only",
-    "--pretty=format:%x1e%H%x1f%aN%x1f%cs",
+    "-z",
+    "--pretty=format:%x00%H%x00%aN%x00%cs%x00",
   ]);
   if (!out.ok) return out;
   const byPath = new Map<string, PathHistory>();
-  let commit: { hash: string; author: string; date: string } | null = null;
-  for (const raw of out.value.split("\n")) {
-    const line = raw.trimEnd();
-    // \x1e (record separator) opens each commit header. A tracked FILE
-    // whose name starts with a control byte is shown quoted by git
-    // (core.quotePath), so a raw \x1e line can only be our header.
-    if (line.startsWith("\u001e")) {
-      const [hash, author, date] = line.slice(1).split("\u001f");
-      commit = { hash: hash ?? "", author: author ?? "", date: date ?? "" };
+  const fields = out.value.split("\u0000");
+  let i = 0;
+  while (i < fields.length) {
+    // Empty NUL fields separate commits; a pathname can never be empty or
+    // contain NUL. Header fields are positional, so filenames cannot imitate
+    // a header (even when they begin with record-separator/control bytes).
+    if (fields[i] === "") {
+      i += 1;
       continue;
     }
-    if (line.length === 0 || commit === null) continue;
-    const existing = byPath.get(line);
-    if (existing) {
-      existing.lastCommit = commit.hash;
-      existing.lastAuthor = commit.author;
-      existing.lastDate = commit.date;
-      existing.commitCount += 1;
-    } else {
-      byPath.set(line, {
-        firstCommitDate: commit.date,
-        lastCommit: commit.hash,
-        lastAuthor: commit.author,
-        lastDate: commit.date,
-        commitCount: 1,
-      });
+    const hash = fields[i++] ?? "";
+    const author = fields[i++] ?? "";
+    const date = fields[i++] ?? "";
+    let firstPath = true;
+    while (i < fields.length && fields[i] !== "") {
+      let path = fields[i++] ?? "";
+      // Git inserts one formatting LF before the first path in each commit.
+      // Remove exactly that byte; all whitespace belonging to a name stays.
+      if (firstPath && path.startsWith("\n")) path = path.slice(1);
+      firstPath = false;
+      const existing = byPath.get(path);
+      if (existing) {
+        existing.lastCommit = hash;
+        existing.lastAuthor = author;
+        existing.lastDate = date;
+        existing.commitCount += 1;
+      } else {
+        byPath.set(path, {
+          firstCommitDate: date,
+          lastCommit: hash,
+          lastAuthor: author,
+          lastDate: date,
+          commitCount: 1,
+        });
+      }
     }
   }
   return ok(byPath);
