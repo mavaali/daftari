@@ -19,6 +19,9 @@ jobs:
     # don't need a Claude review.
     if: ${{ !github.event.pull_request.draft && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
+    # Same hang guard as security-review: a stuck review must not sit on the
+    # merge gate until GitHub's 6h default. Fail fast + visibly retryable.
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write

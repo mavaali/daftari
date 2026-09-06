@@ -90,6 +90,80 @@ but a read is never blocked.
   `vault_read`'s parsed frontmatter automatically. No read-path configuration
   is needed.
 
+## Structured search with `indexed_fields`
+
+Schema validation does not make every extension queryable. A vault opts scalar
+extensions into the rebuildable SQLite search projection with an ordered list:
+
+```yaml
+schema_extensions:
+  due_date:
+    type: date
+  priority:
+    type: number
+  owner:
+    type: string
+  stage:
+    type: enum
+    enum: [planned, active, done]
+
+indexed_fields: [due_date, priority, owner, stage]
+```
+
+Every name must resolve to a declared `schema_extensions` field. `string`,
+`enum`, `boolean`, `number`, and `date` are supported; arrays cannot be indexed.
+A vault may declare at most 64 indexed fields, and each field name may occupy at
+most 128 UTF-8 bytes. Config loading fails on unknown, duplicate, oversized, or
+array declarations.
+
+`vault_search` accepts up to 16 predicates under `filters`. Predicates are
+combined with AND; a document missing any named field does not match. `eq`
+supports every indexable type, while `gt`, `gte`, `lt`, and `lte` support only
+`number` and `date`. Values are typed rather than coerced, and string/enum
+predicate values are capped at 4096 UTF-8 bytes.
+
+```jsonc
+// Hybrid retrieval constrained before lexical and vector ranking
+{
+  "query": "launch dependencies",
+  "filters": [
+    { "field": "stage", "op": "eq", "value": "active" },
+    { "field": "due_date", "op": "lte", "value": "2026-09-30" }
+  ]
+}
+
+// Structured retrieval without a text query
+{
+  "filters": [{ "field": "priority", "op": "gte", "value": 2 }]
+}
+```
+
+A filter-only search orders matches by `updated` descending, then path
+ascending, and reports zero search scores with `vectorUsed: false`. With a text
+query, the same predicates constrain both lexical retrieval and exact cosine
+comparison over the matching documents' durable embeddings; an unavailable
+embedding provider still degrades to lexical-only retrieval.
+
+Only a value authored in a document is projected. A schema default is not
+silently materialized into the index for an older file that omits the field.
+Invalid or oversized authored values remain on disk, are reported during
+reindex, and are omitted from the projection. Changing `indexed_fields` changes
+the index fingerprint, so the next freshness check rebuilds the projection.
+The `document_fields` rows and their typed indexes are derived cache state:
+deleting `.daftari/index.db` and running `vault_reindex` recreates them from the
+Markdown files.
+
+Federated search validates the same raw predicate list independently against
+every selected vault. Each selected vault must declare a compatible indexed
+field or the call fails with that mount's alias; use `vaults: ["local"]` when a
+heterogeneous mount should be excluded. RBAC filtering happens within each
+vault before cross-vault rank fusion, so filtered search does not reveal hidden
+documents or hidden-document counts.
+
+This is deliberately not a general query language: there is no OR, NOT,
+nesting, aggregation, arbitrary SQL, or automatic indexing of undeclared
+frontmatter.
+
 ### Undeclared fields
 
 A field that is neither built-in nor a declared extension is still **preserved**

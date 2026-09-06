@@ -20,6 +20,7 @@ import {
   fileGitMeta,
   gitIdentity,
   hashObjectFile,
+  historyByPath,
   isGitRepo,
   lastCommitContainingPath,
   log,
@@ -39,6 +40,45 @@ describe("git", () => {
 
   afterEach(() => {
     cleanupVault(vault);
+  });
+
+  it("preserves exact unusual pathnames and commit counts in bulk history", async () => {
+    const paths = [
+      "café.md",
+      "東京.md",
+      "tab\tname.md",
+      "line\nname.md",
+      "\nleading.md",
+      "trailing.md ",
+      "\u001eheader.md",
+    ];
+    for (const path of paths) await writeFile(join(vault, path), "first");
+    expect((await commit(vault, paths, "first", "human:first")).ok).toBe(true);
+    // Interleave an empty commit: it must not steal the next commit's paths.
+    execFileSync("git", [
+      "-C",
+      vault,
+      "-c",
+      "user.name=Empty",
+      "-c",
+      "user.email=empty@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "empty",
+    ]);
+    await writeFile(join(vault, "café.md"), "second");
+    expect((await commit(vault, ["café.md"], "second", "human:second")).ok).toBe(true);
+    const history = await historyByPath(vault);
+    expect(history.ok).toBe(true);
+    if (!history.ok) return;
+    for (const path of paths) {
+      expect(history.value.get(path), path).toMatchObject({
+        commitCount: path === paths[0] ? 2 : 1,
+        lastAuthor: path === paths[0] ? "human:second" : "human:first",
+      });
+    }
+    expect([...history.value.keys()].sort()).toEqual([...paths].sort());
   });
 
   it("synthesizes a valid git identity from an agent id", () => {

@@ -30,6 +30,11 @@ import { SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
+import {
+  type CompiledFieldFilter,
+  compileFieldFilterCandidateSql,
+  compileFieldFilterSql,
+} from "./field-filters.js";
 import type { ValidAtSource } from "./valid-at-source.js";
 import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
 
@@ -241,17 +246,23 @@ function tieredLexical(
 // negative for strong hits), so we flip the sign to `larger = better` and
 // then normalise the largest to 1.0 in the caller. A null query (no usable
 // tokens after sanitization) returns an empty map.
-function ftsRanking(db: IndexDb, query: string | null): Map<string, number> {
+function ftsRanking(
+  db: IndexDb,
+  query: string | null,
+  filters: CompiledFieldFilter[] = [],
+): Map<string, number> {
   if (query === null) return new Map();
+  const compiled = compileFieldFilterSql(filters, "d.path");
+  const filterSql = compiled.sql.length > 0 ? ` AND ${compiled.sql}` : "";
   const rows = db
     .prepare(
       `SELECT d.path AS path, -bm25(documents_fts) AS score
          FROM documents_fts
          JOIN documents AS d ON d.rowid = documents_fts.rowid
-        WHERE documents_fts MATCH ?
+        WHERE documents_fts MATCH ?${filterSql}
         ORDER BY bm25(documents_fts)`,
     )
-    .all(query) as { path: string; score: number }[];
+    .all(query, ...compiled.params) as { path: string; score: number }[];
   const result = new Map<string, number>();
   for (const r of rows) {
     // Some rows may produce a negative flipped score if FTS5 returned a
@@ -314,6 +325,43 @@ function vecRanking(
   return result;
 }
 
+function exactFilteredVecRanking(
+  db: IndexDb,
+  queryEmbedding: Float32Array,
+  modelId: string,
+  filters: CompiledFieldFilter[],
+  readableCollections?: string[],
+): Map<string, number> {
+  if (readableCollections !== undefined && readableCollections.length === 0) return new Map();
+  const compiled = compileFieldFilterCandidateSql(filters);
+  const collectionSql =
+    readableCollections === undefined
+      ? ""
+      : ` AND d.collection IN (${readableCollections.map(() => "?").join(",")})`;
+  const rows = db
+    .prepare(
+      `WITH eligible AS MATERIALIZED (${compiled.sql})
+       SELECT c.path AS path,
+              MIN(vec_distance_cosine(e.embedding, ?)) AS distance
+         FROM eligible AS eligible
+         JOIN documents AS d ON d.path = eligible.path
+         JOIN chunks AS c ON c.path = d.path
+         JOIN embeddings AS e ON e.content_hash = c.content_hash
+        WHERE e.model = ?${collectionSql}
+        GROUP BY c.path
+        ORDER BY distance, c.path`,
+    )
+    .all(
+      ...compiled.params,
+      embeddingToBlob(queryEmbedding),
+      modelId,
+      ...(readableCollections ?? []),
+    ) as { path: string; distance: number }[];
+  const result = new Map<string, number>();
+  for (const row of rows) result.set(row.path, Math.max(0, 1 - row.distance));
+  return result;
+}
+
 // snippet() excerpt budget, in tokens. ~48 stemmed tokens lands near the
 // ~280 chars the JS fallback (SNIPPET_RADIUS * 2) produces, so lexical and
 // fallback snippets read at comparable length.
@@ -337,17 +385,20 @@ const FTS_SNIPPET_TOKENS = 48;
 function chunkFtsRanking(
   db: IndexDb,
   query: string | null,
+  filters: CompiledFieldFilter[] = [],
 ): { scores: Map<string, number>; snippets: Map<string, string> } {
   if (query === null) return { scores: new Map(), snippets: new Map() };
+  const compiled = compileFieldFilterSql(filters, "c.path");
+  const filterSql = compiled.sql.length > 0 ? ` AND ${compiled.sql}` : "";
   const rows = db
     .prepare(
       `SELECT c.path AS path, chunks_fts.rowid AS crowid, -bm25(chunks_fts) AS score
          FROM chunks_fts
          JOIN chunks AS c ON c.rowid = chunks_fts.rowid
-        WHERE chunks_fts MATCH ?
+        WHERE chunks_fts MATCH ?${filterSql}
         ORDER BY bm25(chunks_fts)`,
     )
-    .all(query) as { path: string; crowid: number; score: number }[];
+    .all(query, ...compiled.params) as { path: string; crowid: number; score: number }[];
   const scores = new Map<string, number>();
   // The winning chunk's FTS rowid per path — the snippet pass below is
   // restricted to exactly these rows, so snippet()'s tokenize/format cost is
@@ -402,6 +453,7 @@ interface RankOptions {
   lexicalGranularity: "document" | "chunk";
   // Readable-collection allow-list pushed into the KNN scan; see vecRanking.
   readableCollections?: string[];
+  filters?: CompiledFieldFilter[];
 }
 
 // Core ranker shared by query search and related-document search.
@@ -421,26 +473,38 @@ function rankDocuments(
   // Best-chunk excerpts from the lexical pass (#108); empty for the
   // document-granularity path, whose hits fall back to the JS scan.
   let lexicalSnippets = new Map<string, string>();
+  const filters = opts.filters ?? [];
   if (opts.lexicalGranularity === "chunk") {
     // Body granularity (the dilution fix) TIERED with a clean title/tag signal
     // (the native-shape fix). Each is normalized to its own max to reconcile the
     // two FTS score scales; tieredLexical then ranks every body match above every
     // title-only match. The title/tag signal reuses ftsRanking with a column-
     // restricted query so it scores title+tags only (no body dilution).
-    const chunkRanked = chunkFtsRanking(db, matchQuery);
+    const chunkRanked = chunkFtsRanking(db, matchQuery, filters);
     lexicalSnippets = chunkRanked.snippets;
     const chunkNorm = normalize(chunkRanked.scores);
-    const titleTagNorm = normalize(ftsRanking(db, columnRestrict(matchQuery, "{title tags}")));
+    const titleTagNorm = normalize(
+      ftsRanking(db, columnRestrict(matchQuery, "{title tags}"), filters),
+    );
     bm25Norm = tieredLexical(chunkNorm, titleTagNorm);
   } else {
-    bm25Norm = normalize(ftsRanking(db, matchQuery));
+    bm25Norm = normalize(ftsRanking(db, matchQuery, filters));
   }
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
   if (queryEmbedding) {
     const provider = getProvider();
-    vectorRaw = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
+    vectorRaw =
+      filters.length > 0
+        ? exactFilteredVecRanking(
+            db,
+            queryEmbedding,
+            provider.id,
+            filters,
+            opts.readableCollections,
+          )
+        : vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
     if (vectorRaw.size > 0) vectorUsed = true;
   }
   const vectorNorm = normalize(vectorRaw);
@@ -513,6 +577,7 @@ export interface HybridSearchOptions {
   // the tool handler's post-rank canRead filter remains the authorization
   // boundary either way, and still covers the lexical half.
   readableCollections?: string[];
+  filters?: CompiledFieldFilter[];
 }
 
 // Ranks vault documents against a free-text query.
@@ -549,6 +614,7 @@ export async function hybridSearch(
     excludePath: undefined,
     lexicalGranularity,
     readableCollections: options.readableCollections,
+    filters: options.filters,
   });
 
   return ok({
@@ -558,6 +624,97 @@ export async function hybridSearch(
     weights: vectorUsed ? weights : { bm25: 1, vector: 0 },
     hits,
   });
+}
+
+export interface FilterOnlySearchOptions {
+  limit?: number;
+  readableCollections?: string[];
+  // Push valid_only into SQL before LIMIT. This keeps broad structured
+  // filters bounded without shrinking the page when newer expired/not-yet
+  // documents sort ahead of in-window ones. Inverted intervals remain
+  // unknown (and therefore included), matching computeValidity.
+  validOnlyAt?: string;
+}
+
+export function filterOnlySearch(
+  db: IndexDb,
+  filters: CompiledFieldFilter[],
+  options: FilterOnlySearchOptions = {},
+): HybridSearchResult {
+  if (filters.length === 0) {
+    return { query: "", count: 0, vectorUsed: false, weights: { bm25: 1, vector: 0 }, hits: [] };
+  }
+  if (options.readableCollections !== undefined && options.readableCollections.length === 0) {
+    return { query: "", count: 0, vectorUsed: false, weights: { bm25: 1, vector: 0 }, hits: [] };
+  }
+  const compiled = compileFieldFilterCandidateSql(filters);
+  const collectionSql =
+    options.readableCollections === undefined
+      ? ""
+      : ` AND d.collection IN (${options.readableCollections.map(() => "?").join(",")})`;
+  const validitySql = options.validOnlyAt
+    ? ` AND (
+          (d.valid_from IS NOT NULL AND d.valid_until IS NOT NULL AND d.valid_until <= d.valid_from)
+          OR (
+            (d.valid_from IS NULL OR d.valid_from <= ?)
+            AND (d.valid_until IS NULL OR d.valid_until > ?)
+          )
+        )`
+    : "";
+  const limit = options.limit ?? 10;
+  const params: Array<string | number> = [
+    ...compiled.params,
+    ...(options.validOnlyAt ? [options.validOnlyAt, options.validOnlyAt] : []),
+    ...(options.readableCollections ?? []),
+    limit,
+  ];
+  const paths = db
+    .prepare(
+      `WITH eligible AS MATERIALIZED (${compiled.sql})
+       SELECT d.path AS path
+         FROM eligible AS eligible
+         JOIN documents AS d ON d.path = eligible.path
+        WHERE 1 = 1${validitySql}${collectionSql}
+        ORDER BY d.updated DESC, d.path ASC
+        LIMIT ?`,
+    )
+    .all(...params) as { path: string }[];
+  const documents = new Map(
+    getDocumentsByPaths(
+      db,
+      paths.map((row) => row.path),
+    ).map((document) => [document.path, document]),
+  );
+  const hits: HybridHit[] = [];
+  for (const { path } of paths) {
+    const doc = documents.get(path);
+    if (!doc) continue;
+    hits.push({
+      path,
+      title: doc.title,
+      collection: doc.collection,
+      status: doc.status,
+      score: 0,
+      bm25Score: 0,
+      vectorScore: 0,
+      snippet: makeSnippet(doc.content, []),
+      decay: computeDecay({
+        status: doc.status,
+        confidence: doc.confidence,
+        updated: doc.updated,
+        created: doc.created,
+        ttl_days: doc.ttlDays,
+        superseded_by: doc.supersededBy,
+      }),
+    });
+  }
+  return {
+    query: "",
+    count: hits.length,
+    vectorUsed: false,
+    weights: { bm25: 1, vector: 0 },
+    hits,
+  };
 }
 
 export interface RelatedSearchResult {

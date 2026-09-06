@@ -437,6 +437,63 @@ describe("provider reconciliation", () => {
     );
   });
 
+  it.each(["result", "throw"])(
+    "retries an updated source after a %s failure from persisted state",
+    async (failure) => {
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex("old"),
+                available: true,
+                lastSeenAt: now().toISOString(),
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      );
+      const remote = adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "2" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "2", text: "new" }),
+      });
+      let pending: unknown;
+      const failed = await reconcileProvider(
+        vault,
+        remote,
+        deps({
+          distill: async () => {
+            pending = readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"];
+            if (failure === "throw") throw new Error("transient outage");
+            return err(new Error("transient outage"));
+          },
+        }),
+      );
+      expect(pending).toMatchObject({ revision: "2", contentHash: "" });
+      expect(failed.value?.failedSourceIds).toEqual(["google:doc-1"]);
+      // A fresh invocation reads the encrypted checkpoint, as after restart.
+      const recovered = vi.fn(async () => ok({ runId: "recovered" }));
+      const retried = await reconcileProvider(vault, remote, deps({ distill: recovered }));
+      expect(retried.value?.distilledSourceIds).toEqual(["google:doc-1"]);
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(
+        readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"],
+      ).toMatchObject({
+        revision: "2",
+        contentHash: sha256Hex("new"),
+        lastDistillRunId: "recovered",
+      });
+      const unchanged = await reconcileProvider(vault, remote, deps({ distill: recovered }));
+      expect(unchanged.value?.unchangedSourceIds).toEqual(["google:doc-1"]);
+      expect(recovered).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("continues after one distillation failure without advancing that source hash", async () => {
     const failedText = "This source fails distillation";
     expect(

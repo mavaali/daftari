@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseDocument } from "../../src/frontmatter/parser.js";
 import { validateFrontmatter } from "../../src/frontmatter/schema.js";
 import type { SchemaExtension } from "../../src/utils/config.js";
 
@@ -85,6 +86,44 @@ describe("validateFrontmatter — schema extensions", () => {
       expect(issues).toHaveLength(1);
       expect(issues[0]?.field).toBe("when");
       expect(issues[0]?.message).toContain("YYYY-MM-DD");
+    });
+
+    it("date given an impossible calendar date", () => {
+      const issues = extIssues(base({ when: "2026-02-30" }), [
+        ext({ field: "when", type: "date" }),
+      ]);
+      expect(issues).toEqual([
+        { field: "when", message: 'expected a YYYY-MM-DD date, got "2026-02-30"' },
+      ]);
+    });
+
+    it("preserves an unquoted impossible YAML date for calendar validation", () => {
+      const parsed = parseDocument(
+        [
+          "---",
+          "title: Impossible date",
+          "domain: accumulation",
+          "collection: decisions",
+          "status: draft",
+          "confidence: medium",
+          "created: 2026-05-01",
+          "updated: 2026-05-01",
+          "updated_by: agent:test",
+          "provenance: direct",
+          "due_date: 2026-02-30",
+          "---",
+          "",
+        ].join("\n"),
+      );
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.value.raw.due_date).toBe("2026-02-30");
+      expect(
+        extIssues(parsed.value.raw, [ext({ field: "due_date", type: "date" })]),
+      ).toContainEqual({
+        field: "due_date",
+        message: 'expected a YYYY-MM-DD date, got "2026-02-30"',
+      });
     });
 
     it("date accepts a js-yaml Date object", () => {

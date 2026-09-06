@@ -118,6 +118,36 @@ It returns ranked hits with snippets and per-ranker scores. `vault_search_relate
 takes a document path instead of a query and surfaces thematically adjacent
 documents — useful before writing, to find what the vault already knows.
 
+To filter custom frontmatter, first declare the field under `schema_extensions`
+and opt it into `indexed_fields` in `.daftari/config.yaml`:
+
+```yaml
+schema_extensions:
+  priority:
+    type: number
+  due_date:
+    type: date
+indexed_fields: [priority, due_date]
+```
+
+Then constrain a text query, or omit `query` for a filter-only lookup:
+
+```jsonc
+// vault_search
+{
+  "query": "northwind launch",
+  "filters": [
+    { "field": "priority", "op": "gte", "value": 2 },
+    { "field": "due_date", "op": "lte", "value": "2026-09-30" }
+  ]
+}
+```
+
+All predicates are ANDed, and a document missing a filtered field does not
+match. See [Schema extensions](schema-extensions.md#structured-search-with-indexed_fields)
+for the supported types, operators, caps, filter-only ordering, and federation
+rules.
+
 ## 6. Lint the vault
 
 `vault_lint` runs advisory curation checks across the whole vault:
@@ -192,3 +222,4 @@ it did, and it knows *how* it came to know it.
 - [architecture.md](architecture.md) — how the layers fit together.
 - [curation-workflow.md](curation-workflow.md) — the reference loop for acting on `vault_lint` output.
 - [file-format.md](file-format.md) — the complete frontmatter reference.
+- [schema-extensions.md](schema-extensions.md) — typed custom fields and opt-in filtering.
