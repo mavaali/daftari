@@ -825,6 +825,36 @@ describe("provider reconciliation", () => {
     expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
   });
 
+  it("clears the minted pendingWebhook instead of orphaning it when the callback URL is malformed (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensureWebhookCalled = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () => {
+          ensureWebhookCalled = true;
+          return ok({ id: "unreachable", secret: "unreachable" });
+        },
+      }),
+      {
+        callbackUrl: "not a valid url",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(ensureWebhookCalled).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+  });
+
   it("answers a synchronous create-time validation mid-ensure, then commits the channel afterward (#507)", async () => {
     expect(
       writeIntegrationState(

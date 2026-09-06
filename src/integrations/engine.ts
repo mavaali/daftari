@@ -861,27 +861,32 @@ export async function ensureProviderWebhook(
   if (!prepared.ok) return prepared;
   const { key, providerState, pending } = prepared.value;
 
-  const callbackUrl = withPendingToken(input.callbackUrl, pending.nonce);
-  if (!callbackUrl.ok) return callbackUrl;
-
   // Phase 2 (outside the lock): call the provider. A synchronous validation
   // request the provider makes mid-call is answered by verifyProviderWebhook
-  // against `providerState.pendingWebhook`, set up in phase 1.
+  // against `providerState.pendingWebhook`, set up in phase 1. A malformed
+  // callback URL is treated the same as any other phase-2 failure — it
+  // still needs phase 3 to clear the pendingWebhook minted above, not an
+  // early return that would leave it orphaned in state.
+  const callbackUrl = withPendingToken(input.callbackUrl, pending.nonce);
   let ensured: Result<WebhookChannel, Error>;
-  try {
-    ensured = await adapter.ensureWebhook(providerState, {
-      ...input,
-      callbackUrl: callbackUrl.value,
-    });
-  } catch {
-    ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
-  }
-  if (!ensured.ok) {
-    ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
-  } else if (!validWebhookChannel(ensured.value)) {
-    ensured = err(
-      new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
-    );
+  if (!callbackUrl.ok) {
+    ensured = callbackUrl;
+  } else {
+    try {
+      ensured = await adapter.ensureWebhook(providerState, {
+        ...input,
+        callbackUrl: callbackUrl.value,
+      });
+    } catch {
+      ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    }
+    if (!ensured.ok) {
+      ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    } else if (!validWebhookChannel(ensured.value)) {
+      ensured = err(
+        new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
+      );
+    }
   }
 
   // Phase 3 (under the lock): record the outcome. State is re-read rather
