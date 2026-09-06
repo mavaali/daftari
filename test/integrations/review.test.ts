@@ -33,3 +33,37 @@ describe("integration unavailable review", () => {
     expect(readFileSync(derived, "utf8")).toBe("canonical derived knowledge\n");
   });
 });
+
+describe("integration unavailable review reasons (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-review-reasons-"));
+  });
+
+  afterEach(() => rmSync(vault, { recursive: true, force: true }));
+
+  it("accepts the widened reason vocabulary alongside existing entries", () => {
+    const legacy = {
+      idempotencyKey: "google:doc-1:rev-1",
+      providerSourceId: "google:doc-1",
+      reason: "no_longer_discovered" as const,
+      revision: "rev-1",
+      occurredAt: "2026-09-04T00:00:00.000Z",
+    };
+    const widened = {
+      idempotencyKey: "m365:doc-2:rev-1",
+      providerSourceId: "m365:doc-2",
+      reason: "unenrolled" as const,
+      revision: "rev-1",
+      occurredAt: "2026-09-04T00:00:00.000Z",
+    };
+
+    expect(appendUnavailableReview(vault, legacy).ok).toBe(true);
+    expect(appendUnavailableReview(vault, widened).ok).toBe(true);
+
+    const lines = readFileSync(integrationReviewPath(vault), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines.at(-1) ?? "")).toMatchObject({ reason: "unenrolled" });
+  });
+});

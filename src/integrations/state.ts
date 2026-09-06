@@ -5,6 +5,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isValidCollectionName } from "../distill/propose.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   IntegrationState,
@@ -108,7 +109,7 @@ function asBase64(
 }
 
 function isProviderName(value: unknown): value is ProviderName {
-  return value === "google" || value === "notion";
+  return value === "google" || value === "notion" || value === "m365";
 }
 
 function isStringRecord(value: unknown): value is Record<string, unknown> {
@@ -131,6 +132,23 @@ function validSourceState(value: unknown): value is SourceState {
   );
 }
 
+function validEnrollmentRecord(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    typeof value.ref === "string" &&
+    (value.kind === "file" || value.kind === "folder") &&
+    typeof value.label === "string" &&
+    // targetCollection is later joined into a staged file path (see
+    // src/distill/propose.ts derivePath) and separately checked against RBAC
+    // as an exact string — it must be a single safe path segment, not just a
+    // string, or the two checks could diverge (confused-deputy escalation).
+    typeof value.targetCollection === "string" &&
+    isValidCollectionName(value.targetCollection) &&
+    typeof value.enrolledAt === "string" &&
+    typeof value.enrolledBy === "string"
+  );
+}
+
 function validProviderState(value: unknown): value is ProviderState {
   if (
     !isStringRecord(value) ||
@@ -146,6 +164,12 @@ function validProviderState(value: unknown): value is ProviderState {
     (value.webhookSetupToken !== undefined && value.webhookSetupToken.length < 16)
   )
     return false;
+  if (
+    value.enrollment !== undefined &&
+    (!Array.isArray(value.enrollment) || !value.enrollment.every(validEnrollmentRecord))
+  )
+    return false;
+  if (value.adapterData !== undefined && !isStringRecord(value.adapterData)) return false;
   if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
     return false;
   if (value.webhook === undefined) return true;

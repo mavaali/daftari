@@ -20,6 +20,7 @@ import { listStagedActions } from "../../src/curation/staged-actions.js";
 import type { ClaimRunMeta, ExtractedClaim } from "../../src/distill/extract.js";
 import {
   DISTILL_COLLECTION,
+  isValidCollectionName,
   type OverlapHint,
   type ProposeOutcome,
   proposeAllClaims,
@@ -579,5 +580,147 @@ describe("proposeAllClaims (U4)", () => {
 
     expect(body).toContain("## Provenance");
     expect(body).toContain("### Reader");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #506: an overridden target collection lands proposals and paths there
+// -----------------------------------------------------------------------------
+
+describe("proposeAllClaims — target collection override (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("lands proposals under an overridden collection when ids.collection is set", async () => {
+    const claim = makeClaim();
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "m365:drive:d1:item-1",
+      runId: "run-collection-override",
+      collection: "sensitive-reports",
+    });
+
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+    const diff = action.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+
+    expect(fm.collection).toBe("sensitive-reports");
+    expect(action.targetPath).toMatch(/^sensitive-reports\//);
+    // Every other default is unaffected by the override.
+    expect(fm.status).toBe("draft");
+    expect(fm.confidence).toBe("low");
+    expect(fm.provenance).toBe("synthesized");
+  });
+
+  it("defaults to DISTILL_COLLECTION when ids.collection is absent (unchanged callers)", async () => {
+    const claim = makeClaim();
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-2",
+      runId: "run-no-override",
+    });
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok && listed.value[0]?.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+  });
+});
+
+describe("isValidCollectionName", () => {
+  it("accepts realistic collection names", () => {
+    for (const name of ["distill", "competitive-intel", "pricing", "moonshot", "_drafts"]) {
+      expect(isValidCollectionName(name)).toBe(true);
+    }
+  });
+
+  it("rejects path separators, traversal, and empty strings", () => {
+    for (const name of ["../secrets", "a/b", "a\\b", "", ".", ".."]) {
+      expect(isValidCollectionName(name)).toBe(false);
+    }
+  });
+});
+
+describe("proposeAllClaims — update-in-place preserves the landed collection (security)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-landed-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("stamps frontmatter.collection from the override path, not the current run's collection", async () => {
+    const claim = makeClaim();
+    const landedPath = "old-collection/source-group/title--abcd1234.md";
+
+    const outcome = await proposeAllClaims(
+      vault,
+      [claim],
+      {
+        sourceId: "m365:drive:d1:item-1",
+        runId: "run-reenrolled",
+        // The enrollment's targetCollection changed since this claim landed.
+        collection: "new-collection",
+      },
+      { [claim.claim_key]: landedPath },
+    );
+
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+
+    // Physical path is unchanged (still the prior landing spot).
+    expect(action.targetPath).toBe(landedPath);
+    // frontmatter.collection must describe where the file actually lives,
+    // not the batch's current collection — a mismatch here would make
+    // downstream RBAC/collection-scoped logic reason about the wrong grant.
+    const diff = action.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+    expect(fm.collection).toBe("old-collection");
+  });
+});
+
+describe("proposeAllClaims — invalid collection is rejected (security)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-bad-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("fails every claim in the batch instead of joining an unsafe collection into a path", async () => {
+    const claim = makeClaim();
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "m365:drive:d1:item-1",
+      runId: "run-bad-collection",
+      collection: "../../etc",
+    });
+
+    expect(outcome.proposed).toBe(0);
+    expect(outcome.results).toHaveLength(0);
+    expect(outcome.errors).toEqual([
+      { claim_key: claim.claim_key, error: expect.stringContaining("invalid collection name") },
+    ]);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok && listed.value).toHaveLength(0);
   });
 });

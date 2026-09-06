@@ -1332,6 +1332,23 @@ describe("loadConfig — integrations", () => {
     });
   });
 
+  it("accepts an m365 provider block (#505/#506 follow-up)", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+        "  m365:\n" +
+        "    client_id_env: M365_CLIENT_ID\n" +
+        "    client_secret_env: M365_CLIENT_SECRET\n",
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.integrations?.m365).toEqual({
+      clientIdEnv: "M365_CLIENT_ID",
+      clientSecretEnv: "M365_CLIENT_SECRET",
+    });
+  });
+
   it("rejects a client secret declared directly in YAML", () => {
     writeConfig(
       "integrations:\n" +

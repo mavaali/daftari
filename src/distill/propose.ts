@@ -41,6 +41,18 @@ export const DISTILL_COLLECTION = "distill";
 /** The proposing agent identity, recorded on every proposal. */
 export const DISTILL_AGENT = "agent:distill";
 
+// A collection name is a single physical top-level directory AND the exact
+// string RBAC's canWrite/canRead match against (src/access/rbac.ts). Those two
+// checks must never diverge, so a collection may not contain a path separator
+// or traversal segment — otherwise a value that passes an RBAC check for one
+// string could resolve to a different directory (or escape the vault root).
+const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** True if `value` is safe to use as both an RBAC-checked collection name and a physical path segment. */
+export function isValidCollectionName(value: string): boolean {
+  return COLLECTION_NAME_PATTERN.test(value);
+}
+
 /**
  * Maximum number of overlap paths attached to a proposal rationale (U8).
  * Small and bounded: the hint is advisory context for the ratifier, not a
@@ -132,6 +144,14 @@ export interface DistillIds {
    * is date-stable across runs.
    */
   asOf?: string;
+  /**
+   * Optional target collection override (M365 ingestion design, #506).
+   * Defaults to DISTILL_COLLECTION. Set by a selected-source connector whose
+   * enrollment names a target collection other than the default; every other
+   * caller is unaffected. The raw-tier fence (refuseRawDistillOutput) runs
+   * against the resulting path regardless of which collection produced it.
+   */
+  collection?: string;
 }
 
 /** Per-claim staging outcome (the StageOutcome from the queue, or an error). */
@@ -174,10 +194,12 @@ function hash8FromClaimKey(claimKey: string): string {
 // co-located AND stable across runs — U5's re-distill join relies on it);
 // falls back to "claims" if the source-id is empty or non-slug-friendly.
 //
-// Path-traversal safety: slugifyKey strips everything except [a-z0-9-], so
-// none of the join components can contain ".." or path separators — the
-// sanitizer is the invariant; don't remove it in a future refactor.
-function derivePath(claim: ExtractedClaim, sourceId: string): string {
+// Path-traversal safety: slugifyKey strips everything except [a-z0-9-] from
+// sourceGroup/titleSlug, and proposeAllClaims rejects the batch before this
+// runs if `collection` fails isValidCollectionName — none of the three join
+// components can contain ".." or a path separator. Don't remove either
+// sanitizer in a future refactor.
+function derivePath(claim: ExtractedClaim, sourceId: string, collection: string): string {
   const title = claim.proposed_frontmatter.title;
   const hash8 = hash8FromClaimKey(claim.claim_key);
   const sourceGroup = slugifyKey(sourceId) || "claims";
@@ -188,7 +210,7 @@ function derivePath(claim: ExtractedClaim, sourceId: string): string {
   // "memory", which makes U5's targetPath-based upsert join harder to
   // reason about and produces semantically useless names.
   const titleSlug = title.trim() ? slugifyKey(title) : slugifyKey(claim.claim_key);
-  return join(DISTILL_COLLECTION, sourceGroup, `${titleSlug}--${hash8}.md`);
+  return join(collection, sourceGroup, `${titleSlug}--${hash8}.md`);
 }
 
 // ---------------------------------------------------------------------------
@@ -393,9 +415,30 @@ export async function proposeAllClaims(
 ): Promise<ProposeOutcome> {
   const results: ClaimProposalResult[] = [];
   const errors: Array<{ claim_key: string; error: string }> = [];
+  const collection = ids.collection ?? DISTILL_COLLECTION;
+
+  // collection is shared across the whole batch (see isValidCollectionName) —
+  // an invalid value fails every claim rather than being silently sanitized,
+  // since sanitizing here could make the written path diverge from the
+  // string an RBAC check upstream (e.g. requireCollectionWriteAccess) saw.
+  if (!isValidCollectionName(collection)) {
+    const error = `invalid collection name ${JSON.stringify(collection)}: must match ${COLLECTION_NAME_PATTERN}`;
+    for (const claim of claims) errors.push({ claim_key: claim.claim_key, error });
+    return { proposed: 0, results, errors };
+  }
 
   for (const claim of claims) {
-    const targetPath = pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId);
+    const targetPath =
+      pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId, collection);
+    const isUpdate = pathOverrides?.[claim.claim_key] !== undefined;
+    // U5: an update-in-place proposal's targetPath is pinned to wherever the
+    // claim landed on a PRIOR run (see joinClaims in state.ts) — under
+    // whatever collection was in effect then, which can differ from the
+    // current run's `collection` if the enrollment's targetCollection was
+    // since changed. frontmatter.collection drives RBAC/collection-scoped
+    // logic downstream, so it must describe where the file actually lives,
+    // not the current run's batch collection.
+    const landedCollection = isUpdate ? (targetPath.split("/")[0] ?? collection) : collection;
 
     // R3: frontmatter is hardcoded to draft/low/synthesized. No caller can
     // override these — the emitter owns the invariant.
@@ -407,7 +450,7 @@ export async function proposeAllClaims(
       // missing `created` cannot be approved).
       created: ids.asOf ?? new Date().toISOString().slice(0, 10),
       domain: "accumulation",
-      collection: DISTILL_COLLECTION,
+      collection: landedCollection,
       status: "draft",
       confidence: "low",
       provenance: "synthesized",
@@ -444,7 +487,7 @@ export async function proposeAllClaims(
     // 6mf.4: the op is "update" iff this claim has a path override (meaning it is
     // an update-in-place re-distillation of an existing landed belief), else "ingest".
     // The land-time union (Task 2) merges the incoming lineage with the existing one.
-    const isUpdate = pathOverrides?.[claim.claim_key] !== undefined;
+    // (isUpdate computed above, alongside landedCollection.)
     const lineageOp: LineageOp = isUpdate ? "update" : "ingest";
     const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta, lineageOp) : null;
     if (reader) Object.assign(frontmatter, reader);
