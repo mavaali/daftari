@@ -430,6 +430,15 @@ export async function proposeAllClaims(
   for (const claim of claims) {
     const targetPath =
       pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId, collection);
+    const isUpdate = pathOverrides?.[claim.claim_key] !== undefined;
+    // U5: an update-in-place proposal's targetPath is pinned to wherever the
+    // claim landed on a PRIOR run (see joinClaims in state.ts) — under
+    // whatever collection was in effect then, which can differ from the
+    // current run's `collection` if the enrollment's targetCollection was
+    // since changed. frontmatter.collection drives RBAC/collection-scoped
+    // logic downstream, so it must describe where the file actually lives,
+    // not the current run's batch collection.
+    const landedCollection = isUpdate ? (targetPath.split("/")[0] ?? collection) : collection;
 
     // R3: frontmatter is hardcoded to draft/low/synthesized. No caller can
     // override these — the emitter owns the invariant.
@@ -441,7 +450,7 @@ export async function proposeAllClaims(
       // missing `created` cannot be approved).
       created: ids.asOf ?? new Date().toISOString().slice(0, 10),
       domain: "accumulation",
-      collection,
+      collection: landedCollection,
       status: "draft",
       confidence: "low",
       provenance: "synthesized",
@@ -478,7 +487,7 @@ export async function proposeAllClaims(
     // 6mf.4: the op is "update" iff this claim has a path override (meaning it is
     // an update-in-place re-distillation of an existing landed belief), else "ingest".
     // The land-time union (Task 2) merges the incoming lineage with the existing one.
-    const isUpdate = pathOverrides?.[claim.claim_key] !== undefined;
+    // (isUpdate computed above, alongside landedCollection.)
     const lineageOp: LineageOp = isUpdate ? "update" : "ingest";
     const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta, lineageOp) : null;
     if (reader) Object.assign(frontmatter, reader);

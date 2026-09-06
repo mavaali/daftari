@@ -650,6 +650,51 @@ describe("isValidCollectionName", () => {
   });
 });
 
+describe("proposeAllClaims — update-in-place preserves the landed collection (security)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-landed-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("stamps frontmatter.collection from the override path, not the current run's collection", async () => {
+    const claim = makeClaim();
+    const landedPath = "old-collection/source-group/title--abcd1234.md";
+
+    const outcome = await proposeAllClaims(
+      vault,
+      [claim],
+      {
+        sourceId: "m365:drive:d1:item-1",
+        runId: "run-reenrolled",
+        // The enrollment's targetCollection changed since this claim landed.
+        collection: "new-collection",
+      },
+      { [claim.claim_key]: landedPath },
+    );
+
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+
+    // Physical path is unchanged (still the prior landing spot).
+    expect(action.targetPath).toBe(landedPath);
+    // frontmatter.collection must describe where the file actually lives,
+    // not the batch's current collection — a mismatch here would make
+    // downstream RBAC/collection-scoped logic reason about the wrong grant.
+    const diff = action.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+    expect(fm.collection).toBe("old-collection");
+  });
+});
+
 describe("proposeAllClaims — invalid collection is rejected (security)", () => {
   let vault: string;
 

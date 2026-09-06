@@ -539,12 +539,13 @@ const RECOGNISED_INTEGRATIONS_KEYS = [
   "polling_interval_minutes",
   "google",
   "notion",
+  "m365",
 ] as const;
 const RECOGNISED_INTEGRATION_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
 const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
 
 function validateIntegrationProvider(
-  provider: "google" | "notion",
+  provider: "google" | "notion" | "m365",
   raw: unknown,
 ): Result<IntegrationProviderConfig, Error> {
   const mapping = requireMapping(raw, `'integrations.${provider}'`);
@@ -592,7 +593,7 @@ function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefine
     encryptionKeyEnv: encryptionKeyEnv.trim(),
     pollingIntervalMinutes,
   };
-  for (const provider of ["google", "notion"] as const) {
+  for (const provider of ["google", "notion", "m365"] as const) {
     if (mapping.value[provider] === undefined) continue;
     const config = validateIntegrationProvider(provider, mapping.value[provider]);
     if (!config.ok) return config;

@@ -160,6 +160,72 @@ describe("configured integration runtime", () => {
     expect(factorySpy).not.toHaveBeenCalled();
   });
 
+  it("activates m365 when configured with a matching adapter factory (#505/#506 follow-up)", async () => {
+    const spy = { discover: 0, ensure: 0 };
+    const m365Factory = (redirectUri: string): ProviderAdapter => {
+      spy.redirect = redirectUri;
+      return {
+        name: "m365",
+        authorizationUrl: () => "https://login.example/authorize",
+        exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+        refreshTokens: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+        ensureWebhook: async () => {
+          spy.ensure += 1;
+          return ok({ id: "channel", secret: "secret" });
+        },
+        verifyWebhook: async () =>
+          ok({ kind: "event", eventId: "evt", hint: { kind: "reconcile" } }),
+        discover: async (state) => {
+          spy.discover += 1;
+          state.cursor = "cursor";
+          return ok([]);
+        },
+        fetch: async () => err(new Error("not used")),
+      };
+    };
+    writeIntegrationState(
+      vault,
+      {
+        providers: { m365: { accessToken: "access", refreshToken: "refresh", sources: {} } },
+        oauthStates: {},
+      },
+      KEY,
+    );
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config: {
+        ...config,
+        m365: { clientIdEnv: "M365_ID", clientSecretEnv: "M365_SECRET" },
+      },
+      environment: { ...environment, M365_ID: "id", M365_SECRET: "secret" },
+      distill,
+      adapterFactories: { google: factory({ discover: 0, ensure: 0 }), m365: m365Factory },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await created.value.start("http://127.0.0.1:8787")).toEqual(ok(undefined));
+    await created.value.runOnce();
+    expect(spy.discover).toBeGreaterThan(0);
+    await created.value.close();
+  });
+
+  it("surfaces a clear error when m365 is configured without a matching factory", async () => {
+    const created = createConfiguredIntegrationRuntime({
+      vaultRoot: vault,
+      config: {
+        ...config,
+        m365: { clientIdEnv: "M365_ID", clientSecretEnv: "M365_SECRET" },
+      },
+      environment: { ...environment, M365_ID: "id", M365_SECRET: "secret" },
+      distill,
+      adapterFactories: { google: factory({ discover: 0, ensure: 0 }) },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const started = await created.value.start("http://127.0.0.1:8787");
+    expect(started).toEqual(err(new Error("integration provider m365 has no adapter factory")));
+  });
+
   it("surfaces safe lifecycle failures without provider response data", async () => {
     const messages: string[] = [];
     const created = createConfiguredIntegrationRuntime({

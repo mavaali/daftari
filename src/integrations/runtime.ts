@@ -64,7 +64,9 @@ const DEFAULT_FACTORIES: Partial<Record<ProviderName, IntegrationAdapterFactory>
 };
 
 function configuredProviders(config: IntegrationConfig): ProviderName[] {
-  return (["google", "notion"] as const).filter((provider) => config[provider] !== undefined);
+  return (["google", "notion", "m365"] as const).filter(
+    (provider) => config[provider] !== undefined,
+  );
 }
 
 function callbackUrl(baseUrl: string, provider: ProviderName): string {

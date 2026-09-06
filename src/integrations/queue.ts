@@ -91,7 +91,7 @@ function validQueueItem(value: unknown): value is IntegrationQueueItem {
   if (typeof value !== "object" || value === null) return false;
   const item = value as Record<string, unknown>;
   return (
-    (item.provider === "google" || item.provider === "notion") &&
+    (item.provider === "google" || item.provider === "notion" || item.provider === "m365") &&
     typeof item.eventId === "string" &&
     item.eventId.length > 0 &&
     validHint(item.hint) &&

@@ -198,4 +198,16 @@ describe("durable integration queue", () => {
     const queue = createIntegrationQueue(vault);
     expect(queue.pending().ok).toBe(false);
   });
+
+  it("accepts an m365 event without corrupting the rest of the queue (security)", () => {
+    const first = createIntegrationQueue(vault);
+    first.enqueue({ provider: "notion", eventId: "notion-evt", hint: { kind: "reconcile" } });
+    first.enqueue({ provider: "m365", eventId: "m365-evt", hint: { kind: "reconcile" } });
+
+    const recovered = createIntegrationQueue(vault);
+    const pending = recovered.pending();
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) return;
+    expect(pending.value.map((item) => item.provider).sort()).toEqual(["m365", "notion"]);
+  });
 });
