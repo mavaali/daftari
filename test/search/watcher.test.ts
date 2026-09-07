@@ -14,6 +14,7 @@ import { err, ok, type Result } from "../../src/frontmatter/types.js";
 import { getInflightPaths, resetIndexState } from "../../src/search/index-state.js";
 import { noteSelfWrite, resetSelfWriteState } from "../../src/search/self-write.js";
 import { startWatcher, watchIgnored } from "../../src/search/watcher.js";
+import { listFiles } from "../../src/storage/local.js";
 
 // Sleep helper: tests use a tiny debounce window (20ms) so a single waitFor
 // covers both the debounce timer and the indexFn microtask resolution.
@@ -280,6 +281,50 @@ describe("startWatcher", () => {
     await w.close();
   });
 
+  it("matches walker exclusions at every depth and rejects leaked events", async () => {
+    const files = [
+      "notes/keep.md",
+      "notes/my.notes/keep.md",
+      "node_modules/pkg/readme.md",
+      "notes/node_modules/pkg/readme.md",
+      "notes/.cache/note.md",
+      "notes/.draft.md",
+      "notes/.git/note.md",
+      "notes/.obsidian/note.md",
+    ];
+    const calls: string[] = [];
+    const fake = new FakeChokidar();
+    const watcher = startWatcher(vault, {
+      watcherFactory: () => fake as never,
+      debounceMs: 20,
+      indexFn: async (_root, path) => {
+        calls.push(path);
+        return ok(undefined);
+      },
+    });
+    try {
+      for (const path of files) {
+        await mkdir(join(vault, ...path.split("/").slice(0, -1)), { recursive: true });
+        await writeFile(abs(vault, path), "fixture");
+        fake.emit("add", abs(vault, path));
+      }
+      const listed = await listFiles(vault);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      expect(listed.value).toEqual(["notes/keep.md", "notes/my.notes/keep.md"]);
+      for (const path of files) {
+        expect(watchIgnored(vault, abs(vault, path)), path).toBe(!listed.value.includes(path));
+      }
+      for (const dir of ["node_modules", "notes/node_modules", "notes/.cache"]) {
+        expect(watchIgnored(vault, abs(vault, dir))).toBe(true);
+      }
+      await sleep(60);
+      expect(calls.sort()).toEqual(listed.value);
+    } finally {
+      await watcher.close();
+    }
+  });
+
   it("ignores .daftari/** events even if chokidar leaks them", async () => {
     // The chokidar `ignored` option already filters these at watch time;
     // the dispatch-level check is a defense in depth for macOS quirks. We
@@ -412,12 +457,18 @@ describe("startWatcher", () => {
     await sleep(300);
 
     await writeFile(filePath, "# changed\n");
+    // Excluded directories created after startup must not admit new files.
+    for (const dir of ["notes/.cache", "notes/node_modules/pkg"]) {
+      await mkdir(abs(vault, dir), { recursive: true });
+      await writeFile(abs(vault, `${dir}/ignored.md`), "# ignored\n");
+    }
     // Wait well past the debounce window. FSEvents on macOS can take
     // hundreds of ms to deliver — 1500ms is generous but bounded.
     await sleep(1500);
 
     await w.close();
     expect(calls).toContain("live.md");
+    expect(calls.every((path) => path === "live.md")).toBe(true);
   }, 10_000);
 });
 

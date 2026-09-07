@@ -143,6 +143,14 @@ export async function readFile(absolutePath: string): Promise<Result<string, Err
   }
 }
 
+// Shared exclusion rule for vault-relative POSIX paths, including directories.
+// Keep reactive indexing and full walks on the same managed-file boundary.
+export function isIgnoredVaultPath(relPath: string): boolean {
+  return relPath
+    .split("/")
+    .some((segment) => segment.startsWith(".") || segment === "node_modules");
+}
+
 // Lists files under vaultRoot matching a glob pattern. Returns vault-relative
 // POSIX-style paths, sorted. The .daftari control directory is always excluded.
 export async function listFiles(
@@ -161,7 +169,7 @@ export async function listFiles(
       // versions. .daftari (control dir) and node_modules are excluded too.
       ignore: ["**/.daftari/**", "**/node_modules/**", "**/.obsidian/**", "**/.trash/**"],
     });
-    return ok([...matches].sort());
+    return ok(matches.filter((path) => !isIgnoredVaultPath(path)).sort());
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot list files: ${reason}`));

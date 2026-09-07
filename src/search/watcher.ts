@@ -34,7 +34,7 @@ import { relative, resolve, sep } from "node:path";
 import { default as chokidar, type FSWatcher } from "chokidar";
 import { ok, type Result } from "../frontmatter/types.js";
 import { deleteDocument, openIndexDb } from "../storage/index-db.js";
-import { resolveVaultPath } from "../storage/local.js";
+import { isIgnoredVaultPath, resolveVaultPath } from "../storage/local.js";
 import { getIndexStatus, markPathIndexing, markPathReady, onceIndexReady } from "./index-state.js";
 import { indexDocument, readManifest, writeManifest } from "./reindex.js";
 import { consumeSelfWrite } from "./self-write.js";
@@ -148,23 +148,6 @@ function toVaultRelative(vaultRoot: string, absPath: string): string | null {
   return sep === "/" ? rel : rel.split(sep).join("/");
 }
 
-// Returns true when chokidar's path points inside a directory we want to
-// ignore (the .daftari control dir, .git, any other hidden top-level path).
-// chokidar's `ignored` option already excludes these at watch time, but we
-// double-check at dispatch time because chokidar sometimes ignores its own
-// `ignored` pattern for `unlinkDir` events on macOS.
-function isIgnoredPath(relPath: string): boolean {
-  // Anything inside .daftari/ is the index itself or a lock file. Watching
-  // it would feed our own writes back as events.
-  if (relPath.startsWith(".daftari/") || relPath === ".daftari") return true;
-  // .git/ — same problem, plus we don't index git internals.
-  if (relPath.startsWith(".git/") || relPath === ".git") return true;
-  // Other hidden top-level paths (editor swap files, etc).
-  const first = relPath.split("/")[0] ?? "";
-  if (first.startsWith(".") && first !== ".") return true;
-  return false;
-}
-
 // Markdown-only: chokidar watches every file under the root, but only .md
 // files are indexed. Skipping non-markdown here keeps random sibling files
 // (LICENSE, CHANGELOG.md aside — .md, that counts — images, .DS_Store) from
@@ -187,7 +170,7 @@ export function watchIgnored(root: string, p: string, stats?: Stats): boolean {
   if (p === root) return false;
   const rel = toVaultRelative(root, p);
   if (rel === null) return false;
-  if (isIgnoredPath(rel)) return true;
+  if (isIgnoredVaultPath(rel)) return true;
   return stats?.isFile() === true && !isMarkdown(rel);
 }
 
@@ -343,7 +326,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
   // followed by an add inside the window arrives at dispatch() as an add.
   function schedule(relPath: string, event: PendingEvent): void {
     if (closed) return;
-    if (isIgnoredPath(relPath)) return;
+    if (isIgnoredVaultPath(relPath)) return;
     if (!isMarkdown(relPath)) return;
 
     const existing = pending.get(relPath);
