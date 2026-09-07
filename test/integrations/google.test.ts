@@ -570,6 +570,43 @@ describe("Google Docs adapter", () => {
     expect(insecure.ok).toBe(false);
   });
 
+  it("reports renewal need with the same expiry check ensureWebhook uses to retain a channel", () => {
+    const adapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      transport: async () => {
+        throw new Error("needsWebhookRenewal must not make network requests");
+      },
+    });
+    const needsWebhookRenewal = requireCapability(
+      adapter.needsWebhookRenewal,
+      "needsWebhookRenewal",
+    );
+    const input = {
+      callbackUrl: "https://vault.example/integrations/google/webhook",
+      now: new Date("2026-08-24T12:00:00.000Z"),
+      renewBefore: new Date("2026-08-24T12:05:00.000Z"),
+    };
+
+    const noWebhook = state("changes-7");
+    expect(needsWebhookRenewal(noWebhook, input)).toBe(true);
+
+    const expiring = state("changes-7");
+    expiring.webhook = {
+      id: "expired-channel",
+      secret: "expired-secret",
+      expiresAt: "2026-08-24T11:59:00.000Z",
+    };
+    expect(needsWebhookRenewal(expiring, input)).toBe(true);
+
+    const fresh = state("changes-7");
+    fresh.webhook = {
+      id: "current-channel",
+      secret: "current-secret",
+      expiresAt: "2026-08-24T13:00:00.000Z",
+    };
+    expect(needsWebhookRenewal(fresh, input)).toBe(false);
+  });
+
   it("accepts only the active Google change-channel credentials", async () => {
     const providerState = state("changes-7");
     providerState.webhook = { id: "channel-1", secret: "channel-token" };

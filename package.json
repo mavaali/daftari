@@ -1,6 +1,6 @@
 {
   "name": "daftari",
-  "version": "3.13.0",
+  "version": "3.13.1",
   "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
   "mcpName": "io.github.mavaali/daftari",
   "license": "MIT",
@@ -95,7 +95,9 @@
   },
   "overrides": {
     "protobufjs": "^7.6.1",
-    "hono": "^4.12.25"
+    "hono": "^4.12.25",
+    "sharp": "^0.35.0",
+    "adm-zip": "^0.6.0"
   },
   "peerDependencies": {
     "@aws-sdk/client-s3": "^3.600.0",

@@ -623,6 +623,7 @@ export function createGoogleDocsAdapter(options: GoogleDocsAdapterOptions): Prov
     exchangeCode: (input) => exchangeCode(transport, options.redirectUri, now, input, limits),
     refreshTokens: (input) => refreshTokens(transport, now, input, limits),
     ensureWebhook: (state, input) => ensureWebhook(transport, state, input, limits),
+    needsWebhookRenewal: (state, input) => currentWebhook(state, input.renewBefore) === undefined,
     verifyWebhook,
     discover: async (state) => {
       let discovered: Result<RemoteSource[], Error>;

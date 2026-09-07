@@ -254,6 +254,22 @@ describe("encrypted integration state", () => {
       };
       expect(event.reason).toBe("unenrolled");
     });
+
+    it("round-trips a pending two-phase webhook and rejects a malformed one (#507)", () => {
+      const withPending = state("refresh-token");
+      const google = withPending.providers.google;
+      if (google === undefined) throw new Error("missing test provider");
+      google.pendingWebhook = { nonce: "pending-nonce", secret: "pending-secret" };
+      expect(writeIntegrationState(vault, withPending, KEY)).toEqual(ok(undefined));
+      expect(readIntegrationState(vault, KEY)).toEqual(ok(withPending));
+
+      const malformed = state("refresh-token");
+      const malformedGoogle = malformed.providers.google;
+      if (malformedGoogle === undefined) throw new Error("missing test provider");
+      // @ts-expect-error -- exercising the runtime shape guard against a malformed envelope
+      malformedGoogle.pendingWebhook = { nonce: "" };
+      expect(writeIntegrationState(vault, malformed, KEY).ok).toBe(false);
+    });
   });
 });
 

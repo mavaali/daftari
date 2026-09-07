@@ -1,7 +1,7 @@
 // Provider-neutral reconciliation. Provider adapters own OAuth HTTP, discovery,
 // and normalization; this module owns encrypted metadata and the change gate.
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { canWrite } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { RoleConfig } from "../utils/config.js";
@@ -75,7 +75,14 @@ export interface WebhookRequest {
   body: Uint8Array;
   /** One-time route nonce for an unsigned manual provider verification request. */
   setupToken?: string;
-  /** Webhook validation token arrives as a query param for some providers. */
+  /**
+   * Query parameters from the webhook request URL. Used to correlate a
+   * synchronous create-time validation handshake (Graph, #507) with the
+   * pending channel it is answering (see `pending_token` in
+   * `ensureProviderWebhook`/`verifyProviderWebhook`), and passed through
+   * opaquely so a provider's `verifyWebhook` can read its own
+   * protocol-specific parameters (e.g. Graph's `validationToken`).
+   */
   query?: Record<string, string>;
 }
 
@@ -85,7 +92,17 @@ export type RefreshHint =
   | { kind: "lifecycle"; action: "reauthorize" | "recreate" | "reconcile" };
 
 export type VerifiedWebhook =
-  | { kind: "verification"; channel: WebhookChannel }
+  | {
+      kind: "verification";
+      channel: WebhookChannel;
+      /**
+       * Raw body to echo back verbatim instead of the default JSON
+       * acknowledgement — Graph's create-time validation handshake (#507)
+       * requires the exact `validationToken` value echoed as `text/plain`.
+       */
+      respondBody?: string;
+      respondContentType?: string;
+    }
   | { kind: "event"; eventId: string; hint: RefreshHint }
   | { kind: "lifecycle"; eventId: string; action: "reauthorize" | "recreate" | "reconcile" };
 
@@ -260,6 +277,11 @@ export interface ProviderAdapter {
     state: ProviderState,
     input: EnsureWebhookInput,
   ): Promise<Result<WebhookChannel, Error>>;
+  // Optional fast-path check so ensureProviderWebhook can skip minting and
+  // persisting a pendingWebhook (and the matching phase-3 write) when the
+  // existing webhook is already fresh — the common case on every polling
+  // cycle. Absent, or returning true, keeps the unconditional two-phase flow.
+  needsWebhookRenewal?(state: ProviderState, input: EnsureWebhookInput): boolean;
   verifyWebhook?(
     input: WebhookRequest,
     state: ProviderState,
@@ -695,7 +717,13 @@ function validRefreshHint(hint: RefreshHint): boolean {
 }
 
 function validVerifiedWebhook(value: VerifiedWebhook): boolean {
-  if (value.kind === "verification") return validWebhookChannel(value.channel);
+  if (value.kind === "verification") {
+    return (
+      validWebhookChannel(value.channel) &&
+      (value.respondBody === undefined || typeof value.respondBody === "string") &&
+      (value.respondContentType === undefined || typeof value.respondContentType === "string")
+    );
+  }
   if (value.kind === "event") {
     return (
       typeof value.eventId === "string" && value.eventId.length > 0 && validRefreshHint(value.hint)
@@ -734,6 +762,29 @@ async function invokeWebhookVerification(
     );
   }
   return verified;
+}
+
+function equalSecret(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function mintPendingWebhook(): { nonce: string; secret: string } {
+  return {
+    nonce: randomBytes(16).toString("base64url"),
+    secret: randomBytes(32).toString("base64url"),
+  };
+}
+
+function withPendingToken(callbackUrl: string, nonce: string): Result<string, Error> {
+  try {
+    const url = new URL(callbackUrl);
+    url.searchParams.set("pending_token", nonce);
+    return ok(url.toString());
+  } catch {
+    return err(new Error("integration webhook callback URL is invalid"));
+  }
 }
 
 export async function armProviderWebhookSetup(
@@ -1102,10 +1153,24 @@ export async function ensureProviderWebhook(
   input: EnsureWebhookInput,
   deps: EngineDeps,
 ): Promise<Result<WebhookChannel, Error>> {
-  return withIntegrationStateLock(vaultRoot, async () => {
-    if (adapter.ensureWebhook === undefined) {
-      return err(new Error(`integration provider ${adapter.name} cannot ensure webhooks`));
-    }
+  if (adapter.ensureWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot ensure webhooks`));
+  }
+
+  // Phase 1 (under the lock): refresh tokens if needed, then mint and
+  // persist a pending channel. The lock is released before calling the
+  // provider — Graph validates the notification URL synchronously *during*
+  // subscription creation, and holding the lock across that call would
+  // block every other state-locked operation (reconciliation, webhook
+  // verification, OAuth) for as long as the provider's create call takes.
+  // A stale pending channel from an interrupted prior attempt is simply
+  // overwritten here.
+  //
+  // When the adapter can tell us the existing webhook is already fresh
+  // (the steady-state case on every polling cycle), skip minting/persisting
+  // a pendingWebhook entirely and short-circuit to a direct, single
+  // ensureWebhook call — nothing changes, so there is nothing to write.
+  const prepared = await withIntegrationStateLock(vaultRoot, async () => {
     const configured = providerConfig(deps.config, adapter.name);
     if (!configured.ok) return configured;
     const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
@@ -1127,23 +1192,84 @@ export async function ensureProviderWebhook(
     if (!refreshed.ok) return refreshed;
     providerState = refreshed.value;
 
+    if (adapter.needsWebhookRenewal?.(providerState, input) === false) {
+      return ok({ key: key.value, providerState, pending: undefined });
+    }
+
+    const pending = mintPendingWebhook();
+    providerState.pendingWebhook = pending;
+    const written = writeState(vaultRoot, key.value, persisted.value, deps);
+    if (!written.ok) return written;
+    return ok({ key: key.value, providerState, pending });
+  });
+  if (!prepared.ok) return prepared;
+  const { key, providerState, pending } = prepared.value;
+
+  if (pending === undefined) {
     let ensured: Result<WebhookChannel, Error>;
     try {
       ensured = await adapter.ensureWebhook(providerState, input);
     } catch {
+      ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    }
+    if (!ensured.ok) {
       return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
     }
-    if (!ensured.ok)
-      return err(new Error(`integration provider ${adapter.name} webhook setup failed`));
     if (!validWebhookChannel(ensured.value)) {
       return err(
         new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
       );
     }
-    providerState.webhook = ensured.value;
-    const written = writeState(vaultRoot, key.value, persisted.value, deps);
-    if (!written.ok) return written;
     return ok(ensured.value);
+  }
+
+  // Phase 2 (outside the lock): call the provider. A synchronous validation
+  // request the provider makes mid-call is answered by verifyProviderWebhook
+  // against `providerState.pendingWebhook`, set up in phase 1. A malformed
+  // callback URL is treated the same as any other phase-2 failure — it
+  // still needs phase 3 to clear the pendingWebhook minted above, not an
+  // early return that would leave it orphaned in state.
+  const callbackUrl = withPendingToken(input.callbackUrl, pending.nonce);
+  let ensured: Result<WebhookChannel, Error>;
+  if (!callbackUrl.ok) {
+    ensured = callbackUrl;
+  } else {
+    try {
+      ensured = await adapter.ensureWebhook(providerState, {
+        ...input,
+        callbackUrl: callbackUrl.value,
+      });
+    } catch {
+      ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    }
+    if (!ensured.ok) {
+      ensured = err(new Error(`integration provider ${adapter.name} webhook setup failed`));
+    } else if (!validWebhookChannel(ensured.value)) {
+      ensured = err(
+        new Error(`integration provider ${adapter.name} webhook setup returned invalid channel`),
+      );
+    }
+  }
+
+  // Phase 3 (under the lock): record the outcome. State is re-read rather
+  // than reusing the phase-1 snapshot, since reconciliation or another
+  // request may have changed unrelated fields meanwhile. pendingWebhook is
+  // only cleared if it is still the one this call minted — a newer,
+  // concurrent ensure may have already superseded it.
+  return withIntegrationStateLock(vaultRoot, () => {
+    const persisted = readIntegrationState(vaultRoot, key);
+    if (!persisted.ok) return persisted;
+    const currentState = persisted.value.providers[adapter.name];
+    if (currentState === undefined) {
+      return err(new Error(`integration provider ${adapter.name} is not authorized`));
+    }
+    if (currentState.pendingWebhook?.nonce === pending.nonce) {
+      delete currentState.pendingWebhook;
+    }
+    if (ensured.ok) currentState.webhook = ensured.value;
+    const written = writeState(vaultRoot, key, persisted.value, deps);
+    if (!written.ok) return written;
+    return ensured;
   });
 }
 
@@ -1165,6 +1291,34 @@ export async function verifyProviderWebhook(
   const snapshotProvider = snapshot.value.providers[adapter.name];
   if (snapshotProvider === undefined) {
     return err(new Error(`integration provider ${adapter.name} is not authorized`));
+  }
+
+  // Two-phase webhook creation (#507): an automatic provider (Graph) may
+  // validate the notification URL synchronously during subscription
+  // creation, before ensureProviderWebhook's phase 2 has returned and has
+  // anything to commit. The pending token baked into the callback URL by
+  // ensureProviderWebhook correlates this request to that specific
+  // in-flight attempt, so a stale or mismatched token falls through to the
+  // branches below instead of being treated as a validation.
+  //
+  // The registered callback URL keeps carrying that same pending token for
+  // every future notification too, not just the validation handshake — the
+  // provider notifies whatever URL it was given at subscription-creation
+  // time, unscrubbed, for as long as the subscription lives. So a genuine
+  // event can legitimately arrive here with a matching pending token, in
+  // the narrow window between phase 2 returning and phase 3 clearing
+  // pendingWebhook under the lock. This branch does not decide validation
+  // vs. event itself — it forwards whatever the adapter's own protocol
+  // parsing determines and writes nothing either way; treating a
+  // `kind: "event"` result as an error here would silently drop that event
+  // instead of letting it reach the queue.
+  const pendingToken = input.query?.pending_token;
+  if (
+    pendingToken !== undefined &&
+    snapshotProvider.pendingWebhook !== undefined &&
+    equalSecret(snapshotProvider.pendingWebhook.nonce, pendingToken)
+  ) {
+    return invokeWebhookVerification(adapter, input, snapshotProvider);
   }
 
   // Configured signed events only consume an atomic encrypted-state snapshot.
