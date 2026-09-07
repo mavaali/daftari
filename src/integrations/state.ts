@@ -7,12 +7,16 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join } from "node:path";
 import { isValidCollectionName } from "../distill/propose.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import type {
-  IntegrationState,
-  OAuthState,
-  ProviderName,
-  ProviderState,
-  SourceState,
+import {
+  type EnrollmentRecord,
+  type IntegrationState,
+  isProviderName,
+  isSourceFailureReason,
+  type OAuthState,
+  type ProviderAccount,
+  type ProviderState,
+  type SourceFailureReason,
+  type SourceState,
 } from "./types.js";
 
 const STATE_VERSION = 1;
@@ -108,16 +112,21 @@ function asBase64(
   return ok(decoded);
 }
 
-function isProviderName(value: unknown): value is ProviderName {
-  return value === "google" || value === "notion" || value === "m365";
-}
-
 function isStringRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function validOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
+}
+
+function validSourceFailure(
+  value: unknown,
+): value is { at: string; reason: SourceFailureReason } | undefined {
+  if (value === undefined) return true;
+  return (
+    isStringRecord(value) && typeof value.at === "string" && isSourceFailureReason(value.reason)
+  );
 }
 
 function validSourceState(value: unknown): value is SourceState {
@@ -128,13 +137,14 @@ function validSourceState(value: unknown): value is SourceState {
     typeof value.contentHash === "string" &&
     typeof value.available === "boolean" &&
     typeof value.lastSeenAt === "string" &&
-    validOptionalString(value.lastDistillRunId)
+    validOptionalString(value.lastDistillRunId) &&
+    validSourceFailure(value.lastFailure)
   );
 }
 
-function validEnrollmentRecord(value: unknown): boolean {
+function validEnrollmentRecord(value: unknown): value is EnrollmentRecord {
+  if (!isStringRecord(value)) return false;
   return (
-    isStringRecord(value) &&
     typeof value.ref === "string" &&
     (value.kind === "file" || value.kind === "folder") &&
     typeof value.label === "string" &&
@@ -145,7 +155,38 @@ function validEnrollmentRecord(value: unknown): boolean {
     typeof value.targetCollection === "string" &&
     isValidCollectionName(value.targetCollection) &&
     typeof value.enrolledAt === "string" &&
-    typeof value.enrolledBy === "string"
+    typeof value.enrolledBy === "string" &&
+    typeof value.driveId === "string" &&
+    typeof value.remoteId === "string" &&
+    validOptionalString(value.webUrl) &&
+    typeof value.includeSpeakerNotes === "boolean" &&
+    typeof value.cursorKey === "string" &&
+    typeof value.audienceAckAt === "string" &&
+    Array.isArray(value.readersAtEnrollment) &&
+    value.readersAtEnrollment.every((reader) => typeof reader === "string")
+  );
+}
+
+function validProviderAccount(value: unknown): value is ProviderAccount | undefined {
+  if (value === undefined) return true;
+  return (
+    isStringRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.tenantId === "string" &&
+    validOptionalString(value.displayName) &&
+    validOptionalString(value.upn)
+  );
+}
+
+function validAuthorization(
+  value: unknown,
+): value is { status: "ok" | "reconnect_required"; at: string; reason?: string } | undefined {
+  if (value === undefined) return true;
+  return (
+    isStringRecord(value) &&
+    (value.status === "ok" || value.status === "reconnect_required") &&
+    typeof value.at === "string" &&
+    validOptionalString(value.reason)
   );
 }
 
@@ -184,6 +225,8 @@ function validProviderState(value: unknown): value is ProviderState {
     return false;
   if (!isStringRecord(value.sources) || !Object.values(value.sources).every(validSourceState))
     return false;
+  if (!validProviderAccount(value.account)) return false;
+  if (!validAuthorization(value.authorization)) return false;
   if (value.webhook === undefined) return true;
   if (value.webhookSetupToken !== undefined) return false;
   return (
@@ -192,7 +235,16 @@ function validProviderState(value: unknown): value is ProviderState {
     typeof value.webhook.secret === "string" &&
     validOptionalString(value.webhook.expiresAt) &&
     (value.webhook.verificationRequired === undefined ||
-      typeof value.webhook.verificationRequired === "boolean")
+      typeof value.webhook.verificationRequired === "boolean") &&
+    (value.webhook.subscriptions === undefined ||
+      (Array.isArray(value.webhook.subscriptions) &&
+        value.webhook.subscriptions.every(
+          (subscription: unknown) =>
+            isStringRecord(subscription) &&
+            typeof subscription.id === "string" &&
+            typeof subscription.resource === "string" &&
+            typeof subscription.expiresAt === "string",
+        )))
   );
 }
 

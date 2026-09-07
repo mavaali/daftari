@@ -1332,22 +1332,12 @@ describe("loadConfig — integrations", () => {
     });
   });
 
-  it("accepts an m365 provider block (#505/#506 follow-up)", () => {
-    writeConfig(
-      "integrations:\n" +
-        "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
-        "  m365:\n" +
-        "    client_id_env: M365_CLIENT_ID\n" +
-        "    client_secret_env: M365_CLIENT_SECRET\n",
-    );
-    const result = loadConfig(dir);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.integrations?.m365).toEqual({
-      clientIdEnv: "M365_CLIENT_ID",
-      clientSecretEnv: "M365_CLIENT_SECRET",
-    });
-  });
+  // (Removed) "accepts an m365 provider block (#505/#506 follow-up)": that test
+  // configured m365 with only client_id_env/client_secret_env (generic
+  // IntegrationProviderConfig). On this branch m365 is a MicrosoftProviderConfig
+  // that also requires tenant_id + a non-empty collections allowlist, so a bare
+  // block is correctly rejected now. Full m365 config parsing is covered by the
+  // "loadConfig — m365 provider config (U11)" describe below.
 
   it("rejects a client secret declared directly in YAML", () => {
     writeConfig(
@@ -1376,5 +1366,234 @@ describe("loadConfig — integrations", () => {
       writeConfig(`server:\n  public_base_url: ${JSON.stringify(value)}\n`);
       expect(loadConfig(dir).ok).toBe(false);
     }
+  });
+});
+
+describe("loadConfig — m365 provider config + distill USD key (U11)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-m365-config-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  describe("integrations.m365", () => {
+    it("parses a valid block, defaulting scope_profile and include_speaker_notes", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.m365).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+        scopeProfile: "sharepoint",
+        collections: ["inbox"],
+        includeSpeakerNotes: true,
+      });
+    });
+
+    it("accepts an explicit onedrive scope_profile", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: tenant.example.com\n" +
+          "    scope_profile: onedrive\n" +
+          "    collections:\n      - notes\n" +
+          "    include_speaker_notes: false\n" +
+          "    picker_host: picker.example.com\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.m365).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "tenant.example.com",
+        scopeProfile: "onedrive",
+        collections: ["notes"],
+        includeSpeakerNotes: false,
+        pickerHost: "picker.example.com",
+      });
+    });
+
+    it("rejects an unrecognised scope_profile value", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    scope_profile: dropbox\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.m365.scope_profile");
+    });
+
+    it("rejects a missing tenant_id", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.m365.tenant_id");
+    });
+
+    it("rejects missing/empty collections", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n",
+      );
+      const missing = loadConfig(dir);
+      expect(missing.ok).toBe(false);
+      if (missing.ok) return;
+      expect(missing.error.message).toContain("integrations.m365.collections");
+
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    collections: []\n",
+      );
+      const empty = loadConfig(dir);
+      expect(empty.ok).toBe(false);
+      if (empty.ok) return;
+      expect(empty.error.message).toContain("integrations.m365.collections");
+    });
+
+    it("rejects an unknown key under integrations.m365", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    collections:\n      - inbox\n" +
+          "    foo: 1\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.m365.foo");
+    });
+
+    it("rejects a microsoft-only key under integrations.google (per-provider table works both ways)", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  google:\n" +
+          "    client_id_env: GOOGLE_CLIENT_ID\n" +
+          "    client_secret_env: GOOGLE_CLIENT_SECRET\n" +
+          "    tenant_id: should-not-be-accepted\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.google.tenant_id");
+    });
+
+    // Drift guard: RECOGNISED_MICROSOFT_PROVIDER_KEYS is a hand-maintained
+    // array, not derived from MicrosoftProviderConfig. If a field is ever
+    // added to the config type without adding its snake_case key here,
+    // rejectUnknownKeys would start rejecting an otherwise-valid block. This
+    // test populates EVERY recognised key at once, so a key silently missing
+    // from the array (or never wired into the parser) fails loud here first.
+    it("recognises every Microsoft key at once — no unknown-key error", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
+          "    scope_profile: onedrive\n" +
+          "    collections:\n      - inbox\n      - notes\n" +
+          "    include_speaker_notes: false\n" +
+          "    picker_host: picker.example.com\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.m365).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+        scopeProfile: "onedrive",
+        collections: ["inbox", "notes"],
+        includeSpeakerNotes: false,
+        pickerHost: "picker.example.com",
+      });
+    });
+  });
+
+  describe("distill.estimated_usd_per_call (R39)", () => {
+    it("parses a declared estimate", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: 0.002\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.estimatedUsdPerCall).toBe(0.002);
+    });
+
+    it("exposes it as undefined when absent (USD estimation disabled)", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.estimatedUsdPerCall).toBeUndefined();
+    });
+
+    it("rejects a negative estimate", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: -0.1\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("estimated_usd_per_call");
+    });
+
+    it("rejects a zero estimate — absence already means 'no estimate'", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: 0\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("estimated_usd_per_call");
+    });
   });
 });

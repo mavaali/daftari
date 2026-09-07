@@ -1,7 +1,7 @@
 // Google Docs integration adapter. It owns only Google OAuth and HTTP; the
 // provider-neutral engine owns persistence, reconciliation, and distillation.
 
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type {
   AuthorizationRequest,
@@ -15,8 +15,21 @@ import type {
   WebhookChannel,
   WebhookRequest,
 } from "./engine.js";
+import {
+  boundedJson,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
+  type HttpTransport,
+  jsonResponse,
+  providerResponse,
+  stringValue,
+  timingSafeSecretEqual,
+  tokenExpiration,
+  validHttpsUrl,
+} from "./http-json.js";
 import type { ProviderState } from "./types.js";
 
+const GOOGLE = "Google";
 const GOOGLE_DOCUMENT_MIME = "application/vnd.google-apps.document";
 const GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -26,8 +39,6 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/documents.readonly",
   "https://www.googleapis.com/auth/drive.metadata.readonly",
 ].join(" ");
-const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
-const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_DISCOVERY_SOURCES = 10_000;
 const DEFAULT_MAX_DISCOVERY_PAGES = 1_000;
 
@@ -111,7 +122,7 @@ interface GoogleDocument {
   tabs?: GoogleTab[];
 }
 
-export type GoogleHttpTransport = (url: string, init: RequestInit) => Promise<Response>;
+export type GoogleHttpTransport = HttpTransport;
 
 export interface GoogleDocsAdapterOptions {
   redirectUri: string;
@@ -140,10 +151,6 @@ function requestUrl(path: string, parameters: Record<string, string | undefined>
     if (value !== undefined) url.searchParams.set(key, value);
   }
   return url.toString();
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function nativeGoogleDoc(file: unknown): RemoteSource | undefined {
@@ -204,13 +211,6 @@ function normalizeGoogleDocument(document: GoogleDocument): string {
   return text.replace(/\n+$/, "");
 }
 
-function tokenExpiration(expiresIn: unknown, now: () => Date): string | undefined {
-  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-    return undefined;
-  }
-  return new Date(now().getTime() + expiresIn * 1000).toISOString();
-}
-
 function providerTokens(
   response: GoogleTokenResponse,
   now: () => Date,
@@ -227,97 +227,6 @@ function providerTokens(
     refreshToken,
     ...(accessTokenExpiresAt === undefined ? {} : { accessTokenExpiresAt }),
   });
-}
-
-async function boundedJson(
-  response: Response,
-  limits: RequestLimits,
-): Promise<Result<unknown, Error>> {
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength !== null && Number(declaredLength) > limits.maxResponseBytes) {
-    return err(new Error("Google response body is too large"));
-  }
-  if (response.body === null) return err(new Error("Google returned an invalid JSON response"));
-  const reader = response.body.getReader();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const read = async (): Promise<Result<unknown, Error>> => {
-      const chunks: Uint8Array[] = [];
-      let length = 0;
-      for (;;) {
-        const next = await reader.read();
-        if (next.done) break;
-        length += next.value.byteLength;
-        if (length > limits.maxResponseBytes) {
-          await reader.cancel();
-          return err(new Error("Google response body is too large"));
-        }
-        chunks.push(next.value);
-      }
-      const body = Buffer.concat(
-        chunks.map((chunk) => Buffer.from(chunk)),
-        length,
-      ).toString("utf8");
-      try {
-        return ok(JSON.parse(body));
-      } catch {
-        return err(new Error("Google returned an invalid JSON response"));
-      }
-    };
-    return await Promise.race([
-      read(),
-      new Promise<Result<unknown, Error>>((resolve) => {
-        timeout = setTimeout(() => {
-          void reader.cancel();
-          resolve(err(new Error("Google request failed")));
-        }, limits.timeoutMilliseconds);
-      }),
-    ]);
-  } catch {
-    return err(new Error("Google request failed"));
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
-}
-
-async function providerResponse(
-  transport: GoogleHttpTransport,
-  url: string,
-  init: RequestInit,
-  limits: RequestLimits,
-): Promise<Result<Response, Error>> {
-  const controller = new AbortController();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const deadline = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
-        controller.abort();
-        reject(new Error("deadline"));
-      }, limits.timeoutMilliseconds);
-    });
-    const response = await Promise.race([
-      transport(url, { ...init, signal: controller.signal }),
-      deadline,
-    ]);
-    return ok(response);
-  } catch {
-    return err(new Error("Google request failed"));
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
-}
-
-async function jsonResponse(
-  transport: GoogleHttpTransport,
-  url: string,
-  init: RequestInit,
-  limits: RequestLimits,
-): Promise<Result<unknown, Error>> {
-  const fetched = await providerResponse(transport, url, init, limits);
-  if (!fetched.ok) return fetched;
-  const response = fetched.value;
-  if (!response.ok) return err(new Error(`Google request failed with status ${response.status}`));
-  return boundedJson(response, limits);
 }
 
 async function listFiles(
@@ -341,6 +250,7 @@ async function listFiles(
       seenPageTokens.add(nextPageToken);
     }
     const response = await jsonResponse(
+      GOOGLE,
       transport,
       requestUrl(`${GOOGLE_DRIVE_URL}/files`, {
         corpora: "allDrives",
@@ -381,6 +291,7 @@ async function startPageToken(
   limits: RequestLimits,
 ): Promise<Result<string, Error>> {
   const response = await jsonResponse(
+    GOOGLE,
     transport,
     requestUrl(`${GOOGLE_DRIVE_URL}/changes/startPageToken`, { supportsAllDrives: "true" }),
     { headers: authorizationHeaders(state.accessToken) },
@@ -473,6 +384,7 @@ async function changedSources(
       seenPageTokens.add(nextPageToken);
     }
     const fetched = await providerResponse(
+      GOOGLE,
       transport,
       requestUrl(`${GOOGLE_DRIVE_URL}/changes`, {
         fields:
@@ -490,7 +402,7 @@ async function changedSources(
       return ok(undefined);
     }
     if (!response.ok) return err(new Error(`Google request failed with status ${response.status}`));
-    const parsed = await boundedJson(response, limits);
+    const parsed = await boundedJson(GOOGLE, response, limits);
     if (!parsed.ok) return parsed;
     const page = parsed.value as GoogleChangesResponse;
     if (page.changes !== undefined && !Array.isArray(page.changes)) {
@@ -547,6 +459,7 @@ async function exchangeCode(
   limits: RequestLimits,
 ): Promise<Result<ProviderTokens, Error>> {
   const response = await jsonResponse(
+    GOOGLE,
     transport,
     GOOGLE_TOKEN_URL,
     {
@@ -574,6 +487,7 @@ async function refreshTokens(
   limits: RequestLimits,
 ): Promise<Result<ProviderTokens, Error>> {
   const response = await jsonResponse(
+    GOOGLE,
     transport,
     GOOGLE_TOKEN_URL,
     {
@@ -597,14 +511,6 @@ function currentWebhook(state: ProviderState, renewBefore: Date): WebhookChannel
   if (webhook?.expiresAt === undefined) return undefined;
   const expiresAt = Date.parse(webhook.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt > renewBefore.getTime() ? webhook : undefined;
-}
-
-function validHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 function channelExpiration(value: unknown): Result<string | undefined, Error> {
@@ -637,6 +543,7 @@ async function ensureWebhook(
   const id = randomUUID();
   const secret = randomBytes(32).toString("base64url");
   const response = await jsonResponse(
+    GOOGLE,
     transport,
     requestUrl(`${GOOGLE_DRIVE_URL}/changes/watch`, {
       includeItemsFromAllDrives: "true",
@@ -675,12 +582,6 @@ function webhookHeader(headers: WebhookRequest["headers"], name: string): string
   return undefined;
 }
 
-function equalWebhookSecret(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, "utf8");
-  const rightBuffer = Buffer.from(right, "utf8");
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-}
-
 async function verifyWebhook(
   input: WebhookRequest,
   state: ProviderState,
@@ -694,7 +595,7 @@ async function verifyWebhook(
     webhook === undefined ||
     channelId !== webhook.id ||
     token === undefined ||
-    !equalWebhookSecret(token, webhook.secret) ||
+    !timingSafeSecretEqual(token, webhook.secret) ||
     messageNumber === undefined ||
     (resourceState !== "sync" && resourceState !== "change" && resourceState !== "changed")
   ) {
@@ -743,6 +644,7 @@ export function createGoogleDocsAdapter(options: GoogleDocsAdapterOptions): Prov
     },
     fetch: async (source, state) => {
       const response = await jsonResponse(
+        GOOGLE,
         transport,
         requestUrl(`${GOOGLE_DOCS_URL}/documents/${encodeURIComponent(source.id)}`, {
           includeTabsContent: "true",

@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!test/regression/fixtures/**"]
+    "includes": ["**", "!test/regression/fixtures/**", "!src/integrations/microsoft/assets/vendor/**"]
   },
   "formatter": {
     "enabled": true,

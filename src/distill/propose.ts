@@ -14,8 +14,11 @@
 //   is the existing boundary — no new gate is introduced here.
 //
 // Collection:
-//   Defaulting to "distill". This is a named constant (DISTILL_COLLECTION)
-//   so a future config hook can override it without touching call sites.
+//   Defaults to "distill" (DISTILL_COLLECTION). The default is resolved ONCE
+//   in proposeAllClaims (see the `collection` local there, ~line 407-408):
+//   DistillIds.collection unset or "" ⇒ DISTILL_COLLECTION, else the caller's
+//   override, verbatim. derivePath (below) just receives the already-resolved
+//   value — it does not know about defaulting.
 
 import { join } from "node:path";
 import type { AccessContext } from "../access/rbac.js";
@@ -415,7 +418,12 @@ export async function proposeAllClaims(
 ): Promise<ProposeOutcome> {
   const results: ClaimProposalResult[] = [];
   const errors: Array<{ claim_key: string; error: string }> = [];
-  const collection = ids.collection ?? DISTILL_COLLECTION;
+  // An unset OR empty-string collection means "the default": the engine only
+  // ever passes a validated non-empty targetCollection or undefined, so "" is
+  // never a real target — coerce it to the default rather than failing the
+  // batch on an empty name.
+  const collection =
+    ids.collection && ids.collection.length > 0 ? ids.collection : DISTILL_COLLECTION;
 
   // collection is shared across the whole batch (see isValidCollectionName) —
   // an invalid value fails every claim rather than being silently sanitized,

@@ -1,21 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import type { RoleConfig } from "../utils/config.js";
 import { type IntegrationDistill, prepareIntegrationDistill } from "./distill.js";
 import {
   configuredCredential,
   type EngineDeps,
   ensureProviderWebhook,
   type ProviderAdapter,
+  type ReconcileOutcome,
   reconcileProvider,
   validateContinuousAdapterCapabilities,
 } from "./engine.js";
 import { createGoogleDocsAdapter } from "./google.js";
+import { createMicrosoftAdapter } from "./microsoft.js";
 import { createNotionAdapter } from "./notion.js";
 import { createIntegrationQueue } from "./queue.js";
 import { appendUnavailableReview } from "./review.js";
 import { handleIntegrationRoute, type IntegrationRouteAuthorization } from "./routes.js";
 import { readIntegrationState, resolveIntegrationStateKey } from "./state.js";
-import type { IntegrationConfig, ProviderName } from "./types.js";
+import { type IntegrationConfig, PROVIDER_NAMES, type ProviderName } from "./types.js";
 
 const WEBHOOK_RENEWAL_LEAD_MILLISECONDS = 24 * 60 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MILLISECONDS = 5_000;
@@ -31,6 +34,12 @@ export interface IntegrationRuntimeAuthorization {
   checkCsrf(request: IncomingMessage): string | null;
 }
 
+/** The most recent reconcile cycle's outcome for one provider (R36 last-cycle summary). */
+export interface RuntimeReconcileOutcome {
+  at: string;
+  outcome: ReconcileOutcome;
+}
+
 export interface IntegrationRuntime {
   start(localBaseUrl: string): Promise<Result<void, Error>>;
   handle(
@@ -40,6 +49,8 @@ export interface IntegrationRuntime {
     authorization: IntegrationRuntimeAuthorization,
   ): Promise<boolean>;
   runOnce(): Promise<void>;
+  /** Provider-neutral: the last reconcile outcome retained in memory, for a future status route. */
+  lastOutcome(provider: ProviderName): RuntimeReconcileOutcome | undefined;
   close(): Promise<void>;
 }
 
@@ -55,18 +66,44 @@ export interface ConfiguredIntegrationRuntimeOptions {
   distill?: IntegrationDistill;
   shutdownTimeoutMilliseconds?: number;
   waitForShutdown?: (cycle: Promise<void>, timeoutMilliseconds: number) => Promise<void>;
+  // U19: threaded into createMicrosoftAdapter so U17's resolveEnrollment/
+  // estimateEnrollment compute real readers/ratifiers (RBAC role→collection
+  // config) and estimateEnrollment can emit a USD estimate, in production —
+  // not just in tests that construct the adapter directly.
+  /** The config-declared RBAC role table (`.daftari/config.yaml` `roles:`). */
+  roles?: Record<string, RoleConfig>;
+  /** `distill.estimated_usd_per_call` (R39), forwarded unchanged. */
+  estimatedUsdPerCall?: number;
 }
 
-// Partial: a provider name may exist in the type before its adapter ships.
-const DEFAULT_FACTORIES: Partial<Record<ProviderName, IntegrationAdapterFactory>> = {
-  google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
-  notion: (redirectUri) => createNotionAdapter({ redirectUri }),
-};
+function defaultFactories(
+  config: IntegrationConfig,
+  roles: Record<string, RoleConfig> | undefined,
+  estimatedUsdPerCall: number | undefined,
+): Record<ProviderName, IntegrationAdapterFactory> {
+  return {
+    google: (redirectUri) => createGoogleDocsAdapter({ redirectUri }),
+    notion: (redirectUri) => createNotionAdapter({ redirectUri }),
+    m365: (redirectUri) => {
+      // configuredProviders() only calls this factory for a provider present
+      // in config, so config.m365 is guaranteed here; the runtime
+      // construction path (start()) already validated its clientId/secret
+      // env vars before any factory runs.
+      if (config.m365 === undefined) {
+        throw new Error("m365 integration is not configured");
+      }
+      return createMicrosoftAdapter({
+        redirectUri,
+        config: config.m365,
+        roles,
+        estimatedUsdPerCall,
+      });
+    },
+  };
+}
 
 function configuredProviders(config: IntegrationConfig): ProviderName[] {
-  return (["google", "notion", "m365"] as const).filter(
-    (provider) => config[provider] !== undefined,
-  );
+  return PROVIDER_NAMES.filter((provider) => config[provider] !== undefined);
 }
 
 function callbackUrl(baseUrl: string, provider: ProviderName): string {
@@ -176,7 +213,10 @@ export function createConfiguredIntegrationRuntime(
   const queue = createIntegrationQueue(options.vaultRoot, options.now);
   const readableQueue = queue.pending();
   if (!readableQueue.ok) return readableQueue;
-  const factories = { ...DEFAULT_FACTORIES, ...options.adapterFactories };
+  const factories = {
+    ...defaultFactories(options.config, options.roles, options.estimatedUsdPerCall),
+    ...options.adapterFactories,
+  };
   const now = options.now ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const waitForShutdown = options.waitForShutdown ?? boundedShutdownWait;
@@ -190,6 +230,11 @@ export function createConfiguredIntegrationRuntime(
     options.publicBaseUrl === undefined ? "" : routePrefix(options.publicBaseUrl);
   let started = false;
   let closing = false;
+  const lastOutcomes = new Map<ProviderName, RuntimeReconcileOutcome>();
+
+  function retainOutcome(provider: ProviderName, outcome: ReconcileOutcome): void {
+    lastOutcomes.set(provider, { at: now().toISOString(), outcome });
+  }
 
   async function cycle(): Promise<void> {
     const deps = engineDeps;
@@ -201,6 +246,7 @@ export function createConfiguredIntegrationRuntime(
       if (adapter === undefined) return err(new Error("integration queue provider is unavailable"));
       const reconciled = await reconcileProvider(options.vaultRoot, adapter, deps, batch.hint);
       if (!reconciled.ok) return reconciled;
+      retainOutcome(adapter.name, reconciled.value);
       if (reconciled.value.failedSourceIds.length > 0) {
         const count = reconciled.value.failedSourceIds.length;
         onError(
@@ -218,6 +264,7 @@ export function createConfiguredIntegrationRuntime(
           onError(`integration ${adapter.name} reconcile failed`);
           continue;
         }
+        retainOutcome(adapter.name, reconciled.value);
         if (reconciled.value.failedSourceIds.length > 0) {
           const count = reconciled.value.failedSourceIds.length;
           onError(
@@ -327,6 +374,8 @@ export function createConfiguredIntegrationRuntime(
         authorize: authorization.authorize,
         admitPublic: authorization.admitPublic,
         checkCsrf: authorization.checkCsrf,
+        lastOutcome: (p) => lastOutcomes.get(p),
+        onError,
         wake: () => {
           if (closing || !started) return;
           queueMicrotask(() => {
@@ -337,6 +386,10 @@ export function createConfiguredIntegrationRuntime(
     },
 
     runOnce,
+
+    lastOutcome(provider) {
+      return lastOutcomes.get(provider);
+    },
 
     async close() {
       closing = true;

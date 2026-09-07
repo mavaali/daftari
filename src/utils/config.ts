@@ -18,7 +18,13 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
-import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
+import {
+  type IntegrationConfig,
+  type IntegrationProviderConfig,
+  type MicrosoftProviderConfig,
+  PROVIDER_NAMES,
+  type ProviderName,
+} from "../integrations/types.js";
 import { parseCidr } from "../serve/proxy-trust.js";
 import { normalizeIsoDate } from "./dates.js";
 import { sha256Hex } from "./hash.js";
@@ -280,6 +286,13 @@ export interface DistillConfig {
    * rest stay queued for a human. A float in [0, 1].
    */
   corroborationThreshold: number;
+  /**
+   * R39: optional USD-per-call cost estimate for the distill pipeline's LLM
+   * calls. Absent ⇒ downstream USD estimation is disabled (the enrollment
+   * preview only emits `estimatedUsd` when this is set) — an explicit opt-in,
+   * never a silent guess at spend.
+   */
+  estimatedUsdPerCall?: number;
 }
 
 // Conservative default: a high bar queues more for human review and
@@ -549,34 +562,162 @@ export function configPath(vaultRoot: string): string {
 const RECOGNISED_INTEGRATIONS_KEYS = [
   "encryption_key_env",
   "polling_interval_minutes",
-  "google",
-  "notion",
-  "m365",
+  ...PROVIDER_NAMES,
 ] as const;
-const RECOGNISED_INTEGRATION_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+
+// Shared key set for a plain OAuth-only provider block (Google, Notion): just
+// the env-var NAMES holding the client id/secret — the secret VALUES never
+// live in config (existing rule).
+const RECOGNISED_STANDARD_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+
+// The `integrations.m365` block (Microsoft Graph) carries extra keys beyond the
+// shared pair above (tenant, scope profile, enrollment collection allowlist,
+// speaker-note default, picker host). Per-provider table (U11): each
+// provider's block is checked against its OWN recognised-key set, so these
+// Microsoft-only keys are rejected under `integrations.google` /
+// `integrations.notion` just as an unknown key would be, and Google/Notion's
+// set stays exactly what it was before Microsoft grew extra keys.
+const RECOGNISED_MICROSOFT_PROVIDER_KEYS = [
+  "client_id_env",
+  "client_secret_env",
+  "tenant_id",
+  "scope_profile",
+  "collections",
+  "include_speaker_notes",
+  "picker_host",
+] as const;
+
+const RECOGNISED_INTEGRATION_PROVIDER_KEYS: Record<ProviderName, readonly string[]> = {
+  google: RECOGNISED_STANDARD_PROVIDER_KEYS,
+  notion: RECOGNISED_STANDARD_PROVIDER_KEYS,
+  m365: RECOGNISED_MICROSOFT_PROVIDER_KEYS,
+};
+
+// Compile-time drift guard: every field of MicrosoftProviderConfig must map to
+// one of the snake_case keys in RECOGNISED_MICROSOFT_PROVIDER_KEYS above. If a
+// field is later added to the config type without adding its YAML key to the
+// array, this Record literal fails to typecheck (missing property) rather
+// than letting rejectUnknownKeys silently reject that field's otherwise-valid
+// config as "not a recognised setting". (Runtime coverage lives in the
+// "recognises every Microsoft key" test in test/utils/config.test.ts.)
+const _MICROSOFT_CONFIG_FIELD_TO_KEY: Record<
+  keyof MicrosoftProviderConfig,
+  (typeof RECOGNISED_MICROSOFT_PROVIDER_KEYS)[number]
+> = {
+  clientIdEnv: "client_id_env",
+  clientSecretEnv: "client_secret_env",
+  tenantId: "tenant_id",
+  scopeProfile: "scope_profile",
+  collections: "collections",
+  includeSpeakerNotes: "include_speaker_notes",
+  pickerHost: "picker_host",
+};
+void _MICROSOFT_CONFIG_FIELD_TO_KEY;
+
+const MICROSOFT_SCOPE_PROFILES = ["onedrive", "sharepoint"] as const;
+const DEFAULT_MICROSOFT_SCOPE_PROFILE: MicrosoftProviderConfig["scopeProfile"] = "sharepoint";
+const DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES = true;
+
 const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
 
-function validateIntegrationProvider(
-  provider: "google" | "notion" | "m365",
+// Validates the shared client_id_env/client_secret_env pair common to every
+// provider block, returning the trimmed mapping (callers layer any
+// provider-specific fields on top of this).
+function validateSharedProviderCredentials(
+  provider: ProviderName,
+  mapping: Record<string, unknown>,
+): Result<IntegrationProviderConfig, Error> {
+  for (const key of RECOGNISED_STANDARD_PROVIDER_KEYS) {
+    const value = mapping[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
+    }
+  }
+  return ok({
+    clientIdEnv: (mapping.client_id_env as string).trim(),
+    clientSecretEnv: (mapping.client_secret_env as string).trim(),
+  });
+}
+
+function validateStandardProvider(
+  provider: "google" | "notion",
   raw: unknown,
 ): Result<IntegrationProviderConfig, Error> {
   const mapping = requireMapping(raw, `'integrations.${provider}'`);
   if (!mapping.ok) return mapping;
   const known = rejectUnknownKeys(
     mapping.value,
-    RECOGNISED_INTEGRATION_PROVIDER_KEYS,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS[provider],
     `integrations.${provider}`,
   );
   if (!known.ok) return known;
-  for (const key of RECOGNISED_INTEGRATION_PROVIDER_KEYS) {
-    const value = mapping.value[key];
-    if (typeof value !== "string" || value.trim().length === 0) {
-      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
-    }
+  return validateSharedProviderCredentials(provider, mapping.value);
+}
+
+function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig, Error> {
+  const mapping = requireMapping(raw, "'integrations.m365'");
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(
+    mapping.value,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS.m365,
+    "integrations.m365",
+  );
+  if (!known.ok) return known;
+  const shared = validateSharedProviderCredentials("m365", mapping.value);
+  if (!shared.ok) return shared;
+
+  const tenantId = mapping.value.tenant_id;
+  if (typeof tenantId !== "string" || tenantId.trim().length === 0) {
+    return err(new Error("'integrations.m365.tenant_id' must be a non-empty string"));
   }
+
+  let scopeProfile: MicrosoftProviderConfig["scopeProfile"] = DEFAULT_MICROSOFT_SCOPE_PROFILE;
+  if (mapping.value.scope_profile !== undefined) {
+    const scope = mapping.value.scope_profile;
+    if (
+      typeof scope !== "string" ||
+      !(MICROSOFT_SCOPE_PROFILES as readonly string[]).includes(scope)
+    ) {
+      return err(
+        new Error(
+          `'integrations.m365.scope_profile' must be one of ` +
+            `${MICROSOFT_SCOPE_PROFILES.join(", ")}`,
+        ),
+      );
+    }
+    scopeProfile = scope as MicrosoftProviderConfig["scopeProfile"];
+  }
+
+  const collections = asStringArray(mapping.value.collections, "'integrations.m365.collections'");
+  if (!collections.ok) return collections;
+  if (collections.value.length === 0) {
+    return err(new Error("'integrations.m365.collections' must be a non-empty list of strings"));
+  }
+
+  let includeSpeakerNotes = DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES;
+  if (mapping.value.include_speaker_notes !== undefined) {
+    if (typeof mapping.value.include_speaker_notes !== "boolean") {
+      return err(new Error("'integrations.m365.include_speaker_notes' must be true or false"));
+    }
+    includeSpeakerNotes = mapping.value.include_speaker_notes;
+  }
+
+  let pickerHost: string | undefined;
+  if (mapping.value.picker_host !== undefined) {
+    const host = mapping.value.picker_host;
+    if (typeof host !== "string" || host.trim().length === 0) {
+      return err(new Error("'integrations.m365.picker_host' must be a non-empty string"));
+    }
+    pickerHost = host.trim();
+  }
+
   return ok({
-    clientIdEnv: (mapping.value.client_id_env as string).trim(),
-    clientSecretEnv: (mapping.value.client_secret_env as string).trim(),
+    ...shared.value,
+    tenantId: tenantId.trim(),
+    scopeProfile,
+    collections: collections.value,
+    includeSpeakerNotes,
+    ...(pickerHost !== undefined ? { pickerHost } : {}),
   });
 }
 
@@ -605,11 +746,18 @@ function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefine
     encryptionKeyEnv: encryptionKeyEnv.trim(),
     pollingIntervalMinutes,
   };
-  for (const provider of ["google", "notion", "m365"] as const) {
-    if (mapping.value[provider] === undefined) continue;
-    const config = validateIntegrationProvider(provider, mapping.value[provider]);
-    if (!config.ok) return config;
-    integrations[provider] = config.value;
+  for (const provider of PROVIDER_NAMES) {
+    const raw = mapping.value[provider];
+    if (raw === undefined) continue;
+    if (provider === "m365") {
+      const config = validateMicrosoftProvider(raw);
+      if (!config.ok) return config;
+      integrations.m365 = config.value;
+    } else {
+      const config = validateStandardProvider(provider, raw);
+      if (!config.ok) return config;
+      integrations[provider] = config.value;
+    }
   }
   return ok(integrations);
 }
@@ -1137,6 +1285,7 @@ const RECOGNISED_DISTILL_KEYS = [
   "max_verbatim_chars",
   "in_call_input_cap",
   "corroboration_threshold",
+  "estimated_usd_per_call",
 ] as const;
 
 function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error> {
@@ -1180,6 +1329,18 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
       return err(new Error("'distill.corroboration_threshold' must be a number in [0, 1]"));
     }
     out.corroborationThreshold = ct;
+  }
+
+  // estimated_usd_per_call (R39): optional; absent leaves USD estimation
+  // disabled downstream. A positive number only — a zero or negative
+  // estimate is a config mistake, not a valid "no cost" signal (absence
+  // already means that).
+  const usdPerCall = obj.estimated_usd_per_call;
+  if (usdPerCall !== undefined) {
+    if (typeof usdPerCall !== "number" || !Number.isFinite(usdPerCall) || usdPerCall <= 0) {
+      return err(new Error("'distill.estimated_usd_per_call' must be a positive number"));
+    }
+    out.estimatedUsdPerCall = usdPerCall;
   }
   return ok(out);
 }

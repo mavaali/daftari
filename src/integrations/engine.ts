@@ -6,19 +6,23 @@ import { canWrite } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { RoleConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
+import { TERMINAL_REFRESH_STATUSES, timingSafeSecretEqual } from "./http-json.js";
 import {
   readIntegrationState,
   resolveIntegrationStateKey,
   withIntegrationStateLock,
   writeIntegrationState,
 } from "./state.js";
-import type {
-  EnrollmentRecord,
-  IntegrationConfig,
-  IntegrationProviderConfig,
-  ProviderName,
-  ProviderState,
-  SourceState,
+import {
+  type EnrollmentRecord,
+  type IntegrationConfig,
+  type IntegrationProviderConfig,
+  isSourceFailureReason,
+  type ProviderAccount,
+  type ProviderName,
+  type ProviderState,
+  type SourceFailureReason,
+  type SourceState,
 } from "./types.js";
 
 export interface AuthorizationRequest {
@@ -41,6 +45,8 @@ export interface ProviderTokens {
   accessToken: string;
   refreshToken: string;
   accessTokenExpiresAt?: string;
+  /** Which remote account exchangeCode authenticated as. */
+  account?: ProviderAccount;
 }
 
 export interface RefreshTokenRequest {
@@ -54,6 +60,8 @@ export interface WebhookChannel {
   secret: string;
   expiresAt?: string;
   verificationRequired?: boolean;
+  /** One channel can fan out to N provider-side subscriptions. */
+  subscriptions?: Array<{ id: string; resource: string; expiresAt: string }>;
 }
 
 export interface EnsureWebhookInput {
@@ -80,7 +88,8 @@ export interface WebhookRequest {
 
 export type RefreshHint =
   | { kind: "reconcile" }
-  | { kind: "sources"; sourceIds: string[]; rediscover: boolean };
+  | { kind: "sources"; sourceIds: string[]; rediscover: boolean }
+  | { kind: "lifecycle"; action: "reauthorize" | "recreate" | "reconcile" };
 
 export type VerifiedWebhook =
   | {
@@ -94,7 +103,8 @@ export type VerifiedWebhook =
       respondBody?: string;
       respondContentType?: string;
     }
-  | { kind: "event"; eventId: string; hint: RefreshHint };
+  | { kind: "event"; eventId: string; hint: RefreshHint }
+  | { kind: "lifecycle"; eventId: string; action: "reauthorize" | "recreate" | "reconcile" };
 
 /** Untrusted, operator-picked enrollment input before server-side validation. */
 export type EnrollmentCandidate = Omit<EnrollmentRecord, "enrolledAt" | "enrolledBy">;
@@ -114,6 +124,143 @@ export interface RemoteSource {
 
 export interface NormalizedRemoteSource extends RemoteSource {
   text: string;
+}
+
+/** The enrolling request context passed to an adapter's enrollment resolver. */
+export interface EnrollmentContext {
+  user: string;
+  role: string;
+  collection: string;
+  includeSpeakerNotes: boolean;
+}
+
+/** A validated, pre-persistence enrollment produced by an adapter's resolver. */
+export interface EnrollmentDraft {
+  items: Array<{
+    driveId: string;
+    remoteId: string;
+    kind: "item" | "container";
+    label: string;
+    webUrl?: string;
+    /**
+     * Cached metadata size (bytes) for an "item" kind, captured by the
+     * resolver's own metadata re-fetch — lets estimateEnrollment skip a
+     * redundant Graph round-trip for the common resolve-then-estimate
+     * preview flow. Optional: a caller that POSTs a bare draft straight to
+     * an /estimate route without this cached data still works via a
+     * stateless fallback (a fresh metadata fetch).
+     */
+    size?: number;
+    /**
+     * Cached, already-expanded eligible children for a "container" kind
+     * (the folder-scoped delta walk the resolver already performed to
+     * enforce the per-container bound) — same rationale as `size` above.
+     * Optional for the same stateless-fallback reason.
+     */
+    children?: Array<{ id: string; name: string; size: number }>;
+  }>;
+  collection: string;
+  includeSpeakerNotes: boolean;
+  /** The roles that may read `collection` at resolve time (design §9.2 audience disclosure). */
+  readersAtEnrollment: string[];
+  /**
+   * Picker references rejected by name — unreadable, unsupported, or
+   * malformed (R12). This reason vocabulary (`not_readable`,
+   * `invalid_reference`, `unsupported_type`, `malware`, ...) is a
+   * PREVIEW-only space, distinct from `SourceFailureReason` — never pass one
+   * of these strings to `isSourceFailureReason`.
+   */
+  skipped: Array<{ name: string; reason: string }>;
+}
+
+/** The cost/preview estimate for an enrollment draft (design §12). */
+export interface EnrollmentEstimate {
+  eligible: number;
+  /** Same PREVIEW-only reason vocabulary as EnrollmentDraft.skipped above — not SourceFailureReason. */
+  skipped: Array<{ name: string; reason: string }>;
+  bytes: number;
+  byType: Record<string, number>;
+  estimatedCalls: { low: number; expected: number; high: number };
+  estimatedUsd?: { expected: number };
+  collection: string;
+  readers: string[];
+  ratifiers: string[];
+  warnings: string[];
+}
+
+/** Provider connection status surfaced to a status route (design §13). */
+export type ProviderConnectionStatus =
+  | { kind: "disconnected" }
+  | { kind: "connected"; account: ProviderAccount }
+  | { kind: "reconnect_required"; reason: string };
+
+/** Provider webhook status surfaced to a status route (design §13). */
+export type ProviderWebhookStatus =
+  | { kind: "off" }
+  | {
+      kind: "active";
+      eventCount: number;
+      /** Earliest `expiresAt` across `ProviderState.webhook.subscriptions` (ISO string). */
+      earliestExpiry?: string;
+    }
+  | { kind: "degraded"; reason: string };
+
+/** The §13 per-source lifecycle state, derived from real SourceState fields. */
+export const SOURCE_STATUS_STATES = [
+  "pending",
+  "current",
+  "failed",
+  "unavailable",
+  "over_limit",
+] as const;
+
+export type SourceStatusState = (typeof SOURCE_STATUS_STATES)[number];
+
+/** Per-enrollment state summary surfaced to a status route (design §13). */
+export interface EnrollmentStatusSummary {
+  id: string;
+  label: string;
+  collection: string;
+  sourceCount: number;
+  failedSourceCount: number;
+  /** Per-state breakdown of this enrollment's sources (design §13). */
+  counts: Record<SourceStatusState, number>;
+}
+
+/** Per-source state summary surfaced to a status route (design §13). */
+export interface SourceStatusSummary {
+  id: string;
+  available: boolean;
+  /**
+   * Best-available proxy for "since" when `state` is `unavailable` —
+   * SourceState carries no dedicated became-unavailable timestamp, so this
+   * is the last time the source was actually seen, not a marked
+   * unavailable-since instant.
+   */
+  lastSeenAt: string;
+  lastFailure?: { at: string; reason: SourceFailureReason };
+  state: SourceStatusState;
+}
+
+/** The provider-neutral status shape a status route renders (design §13). */
+export interface ProviderStatus {
+  connection: ProviderConnectionStatus;
+  webhook: ProviderWebhookStatus;
+  enrollments: EnrollmentStatusSummary[];
+  sources: SourceStatusSummary[];
+  /**
+   * Constant V1 disclosure (R34): no provider adapter checks sensitivity
+   * labels yet, so every describeStatus() implementation reports the same
+   * fixed string rather than a per-source computed value.
+   */
+  sensitivityLabels: "not checked (V1)";
+  lastCycle?: {
+    at: string;
+    distilled: number;
+    unchanged: number;
+    failed: number;
+    unavailable: number;
+  };
 }
 
 export interface ProviderAdapter {
@@ -139,22 +286,36 @@ export interface ProviderAdapter {
     input: WebhookRequest,
     state: ProviderState,
   ): Promise<Result<VerifiedWebhook, Error>>;
-  // Selected-source providers re-validate operator-picked candidates with the
-  // connected account before they become enrollment records; a provider whose
-  // discover() enumerates everything the token can see omits this.
-  resolveEnrollment?(
-    candidates: EnrollmentCandidate[],
-    state: ProviderState,
-  ): Promise<Result<EnrollmentCandidate[], Error>>;
   discover(state: ProviderState): Promise<Result<RemoteSource[], Error>>;
   fetch(source: RemoteSource, state: ProviderState): Promise<Result<NormalizedRemoteSource, Error>>;
+  // Provider-neutral optional surface (U5). Microsoft implements these
+  // starting U12+; Google/Notion never provide them, so a route that needs
+  // one 404s for those providers (see the capability-missing pattern in
+  // routes.ts).
+  /** Echoes a provider's webhook validation-challenge token, if this request is one. */
+  answerWebhookChallenge?(input: WebhookRequest): string | undefined;
+  /** Verifies a lifecycle (as opposed to a change) notification. */
+  verifyLifecycleWebhook?(
+    input: WebhookRequest,
+    state: ProviderState,
+  ): Promise<Result<VerifiedWebhook, Error>>;
+  resolveEnrollment?(
+    selection: unknown,
+    state: ProviderState,
+    ctx: EnrollmentContext,
+  ): Promise<Result<EnrollmentDraft, Error>>;
+  estimateEnrollment?(
+    draft: EnrollmentDraft,
+    state: ProviderState,
+  ): Promise<Result<EnrollmentEstimate, Error>>;
+  describeStatus?(state: ProviderState): ProviderStatus;
 }
 
 export interface DistillationInput {
   providerSourceId: string;
   revision: string;
   text: string;
-  /** The owning EnrollmentRecord's collection (#506); absent for google/notion. */
+  /** The owning EnrollmentRecord's targetCollection (#506); absent for google/notion. */
   targetCollection?: string;
 }
 
@@ -342,6 +503,43 @@ function sourceState(
   };
 }
 
+// Prefers a specific reason an adapter/extract error already carries (duck-typed,
+// since ProviderAdapter.fetch returns a plain Error) over the generic stage name.
+function failureReason(error: unknown, fallback: SourceFailureReason): SourceFailureReason {
+  if (typeof error === "object" && error !== null) {
+    const candidate = (error as { reason?: unknown }).reason;
+    if (isSourceFailureReason(candidate)) return candidate;
+  }
+  return fallback;
+}
+
+function markSourceFailure(
+  previous: SourceState | undefined,
+  remoteId: string,
+  revision: string,
+  reason: SourceFailureReason,
+  at: string,
+): SourceState {
+  return {
+    ...(previous ?? {
+      id: remoteId,
+      revision,
+      contentHash: "",
+      available: true,
+      lastSeenAt: at,
+    }),
+    // A source that fails every cycle is still attempted every cycle — advance
+    // lastSeenAt/revision to reflect that attempt, so a status/staleness
+    // surface reading this state doesn't read a month-old "last seen" for a
+    // source that's actually failing daily. Retry logic already keys off the
+    // freshly-discovered remote.revision passed in here, not off this stored
+    // field, so this only fixes the stored reflection — no behavior change.
+    revision,
+    lastSeenAt: at,
+    lastFailure: { at, reason },
+  };
+}
+
 function validRemoteSource(source: RemoteSource): boolean {
   return (
     typeof source.id === "string" &&
@@ -364,6 +562,41 @@ function accessTokenExpired(state: ProviderState, deps: Pick<EngineDeps, "now">)
   if (state.accessTokenExpiresAt === undefined) return false;
   const expiration = Date.parse(state.accessTokenExpiresAt);
   return !Number.isFinite(expiration) || expiration <= currentTime(deps).getTime();
+}
+
+// Positive-identification only: default to transient (no reconnect_required)
+// unless a refresh failure is affirmatively an auth/consent rejection. A
+// network-transport throw or a 5xx response is the textbook transient case —
+// this function is never even consulted for the former (see the catch branch
+// in refreshExpiredTokens) and returns false for the latter. Two ways a
+// failure can be positively terminal:
+//   1. A structured signal on the error — `.terminal === true`, or a
+//      `.status` in {400, 401, 403}. This is the contract a future adapter
+//      (e.g. Microsoft/U13) should emit for a precise signal instead of
+//      relying on message sniffing.
+//   2. A fallback for today's Google/Notion adapters, whose jsonResponse only
+//      embeds the HTTP status in the Error message: a message naming a
+//      400/401/403 status, or a known terminal OAuth error code
+//      (invalid_grant, interaction_required, AADSTS70008 — Entra ID's
+//      "consent required" code, the Microsoft analog of interaction_required).
+// A missed terminal case degrades to "prior state retained, refresh retried
+// next cycle" — a lesser evil than a false "please reconnect" prompt.
+// TERMINAL_REFRESH_STATUSES lives in http-json.ts so an adapter (e.g.
+// Microsoft) can import the same set it's classified against.
+const TERMINAL_REFRESH_MESSAGE_PATTERN = /invalid_grant|interaction_required|AADSTS70008/i;
+
+function isTerminalRefreshError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null) {
+    const signal = error as { terminal?: unknown; status?: unknown };
+    if (signal.terminal === true) return true;
+    if (typeof signal.status === "number" && TERMINAL_REFRESH_STATUSES.has(signal.status)) {
+      return true;
+    }
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (TERMINAL_REFRESH_MESSAGE_PATTERN.test(message)) return true;
+  const statusMatch = /\bstatus (\d{3})\b/.exec(message);
+  return statusMatch !== null && TERMINAL_REFRESH_STATUSES.has(Number(statusMatch[1]));
 }
 
 async function refreshExpiredTokens(
@@ -393,6 +626,16 @@ async function refreshExpiredTokens(
   );
   if (!clientSecret.ok) return clientSecret;
 
+  // Marks state only; it does not change which error refreshExpiredTokens
+  // itself returns. Only called for a positively-identified terminal failure
+  // — see isTerminalRefreshError.
+  const markReconnectRequired = (reason: string): Result<ProviderState, Error> => {
+    state.authorization = { status: "reconnect_required", at: timestamp(deps), reason };
+    const written = writeState(vaultRoot, key, persisted, deps);
+    if (!written.ok) return written;
+    return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  };
+
   let refreshed: Result<ProviderTokens, Error>;
   try {
     refreshed = await adapter.refreshTokens({
@@ -401,10 +644,19 @@ async function refreshExpiredTokens(
       refreshToken: state.refreshToken,
     });
   } catch {
+    // A network-transport failure never reaches an HTTP response, so it can
+    // never be positively identified as terminal — always transient: retain
+    // state, retry next cycle.
     return err(new Error(`integration provider ${adapter.name} token refresh failed`));
   }
-  if (!refreshed.ok)
+  if (!refreshed.ok) {
+    if (isTerminalRefreshError(refreshed.error)) {
+      return markReconnectRequired(refreshed.error.message);
+    }
+    // Transient (e.g. a 5xx from the token endpoint): prior state retained,
+    // same as before this task — no reconnect prompt for a momentary blip.
     return err(new Error(`integration provider ${adapter.name} token refresh failed`));
+  }
   if (refreshed.value.accessToken.length === 0 || refreshed.value.refreshToken.length === 0) {
     return err(
       new Error(`integration provider ${adapter.name} token refresh returned incomplete tokens`),
@@ -416,6 +668,7 @@ async function refreshExpiredTokens(
     ...unchanged,
     accessToken: refreshed.value.accessToken,
     refreshToken: refreshed.value.refreshToken,
+    authorization: { status: "ok", at: timestamp(deps) },
     ...(refreshed.value.accessTokenExpiresAt === undefined
       ? {}
       : { accessTokenExpiresAt: refreshed.value.accessTokenExpiresAt }),
@@ -434,12 +687,27 @@ function validWebhookChannel(channel: WebhookChannel): boolean {
     channel.secret.length > 0 &&
     (channel.expiresAt === undefined || typeof channel.expiresAt === "string") &&
     (channel.verificationRequired === undefined ||
-      typeof channel.verificationRequired === "boolean")
+      typeof channel.verificationRequired === "boolean") &&
+    (channel.subscriptions === undefined ||
+      (Array.isArray(channel.subscriptions) &&
+        channel.subscriptions.every(
+          (subscription) =>
+            typeof subscription.id === "string" &&
+            subscription.id.length > 0 &&
+            typeof subscription.resource === "string" &&
+            subscription.resource.length > 0 &&
+            typeof subscription.expiresAt === "string",
+        )))
   );
 }
 
 function validRefreshHint(hint: RefreshHint): boolean {
   if (hint.kind === "reconcile") return true;
+  if (hint.kind === "lifecycle") {
+    return (
+      hint.action === "reauthorize" || hint.action === "recreate" || hint.action === "reconcile"
+    );
+  }
   return (
     hint.kind === "sources" &&
     Array.isArray(hint.sourceIds) &&
@@ -456,11 +724,16 @@ function validVerifiedWebhook(value: VerifiedWebhook): boolean {
       (value.respondContentType === undefined || typeof value.respondContentType === "string")
     );
   }
+  if (value.kind === "event") {
+    return (
+      typeof value.eventId === "string" && value.eventId.length > 0 && validRefreshHint(value.hint)
+    );
+  }
   return (
-    value.kind === "event" &&
+    value.kind === "lifecycle" &&
     typeof value.eventId === "string" &&
     value.eventId.length > 0 &&
-    validRefreshHint(value.hint)
+    (value.action === "reauthorize" || value.action === "recreate" || value.action === "reconcile")
   );
 }
 
@@ -621,11 +894,23 @@ export async function reconcileProvider(
 
       const limits = reconcileLimits(deps);
       const cycleStart = currentTime(deps).getTime();
-      const shouldDiscover = hint.kind === "reconcile" || hint.rediscover;
+      // A "lifecycle" hint reaching reconcileProvider directly (e.g. queued
+      // but not intercepted before this drain) falls back to the same full
+      // discovery a "reconcile" hint gets — conservative and lossless, since
+      // this function has no lifecycle-action dispatch of its own (that's a
+      // later unit's job; see the route-side queueing in routes.ts).
+      const shouldDiscover = hint.kind !== "sources" || hint.rediscover;
       const previousCursor = providerState.cursor;
       const previousAdapterData = snapshotAdapterData(providerState.adapterData);
       let discovered: Result<RemoteSource[], Error>;
-      if (shouldDiscover) {
+      if (hint.kind === "sources" && !hint.rediscover) {
+        discovered = ok(
+          [...new Set(hint.sourceIds)].map((sourceId) => ({
+            id: sourceId,
+            revision: providerState.sources[sourceId]?.revision ?? "targeted-refresh",
+          })),
+        );
+      } else {
         try {
           discovered = await adapter.discover(providerState);
         } catch {
@@ -633,13 +918,6 @@ export async function reconcileProvider(
         }
         if (!discovered.ok)
           return err(new Error(`integration provider ${adapter.name} discovery failed`));
-      } else {
-        discovered = ok(
-          [...new Set(hint.sourceIds)].map((sourceId) => ({
-            id: sourceId,
-            revision: providerState.sources[sourceId]?.revision ?? "targeted-refresh",
-          })),
-        );
       }
       if (!discovered.ok) {
         return err(new Error(`integration provider ${adapter.name} discovery failed`));
@@ -717,7 +995,11 @@ export async function reconcileProvider(
           previous.revision === remote.revision &&
           previous.contentHash.length > 0
         ) {
-          providerState.sources[remote.id] = { ...previous, lastSeenAt: seenAt };
+          providerState.sources[remote.id] = {
+            ...previous,
+            lastSeenAt: seenAt,
+            lastFailure: undefined,
+          };
           const written = writeState(vaultRoot, key.value, persisted.value, deps);
           if (!written.ok) return written;
           outcome.unchangedSourceIds.push(providerSourceId);
@@ -726,7 +1008,14 @@ export async function reconcileProvider(
         let fetched: Result<NormalizedRemoteSource, Error>;
         try {
           fetched = await adapter.fetch(remote, providerState);
-        } catch {
+        } catch (error) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            failureReason(error, "fetch"),
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -735,6 +1024,13 @@ export async function reconcileProvider(
           !validRemoteSource(fetched.ok ? fetched.value : remote) ||
           typeof fetched.value.text !== "string"
         ) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            fetched.ok ? "fetch" : failureReason(fetched.error, "fetch"),
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -742,6 +1038,13 @@ export async function reconcileProvider(
           fetched.value.id !== remote.id ||
           (!targetedWithoutDiscovery && fetched.value.revision !== remote.revision)
         ) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            "fetch",
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -751,9 +1054,23 @@ export async function reconcileProvider(
           textBytes > limits.maxSourceTextBytes ||
           cycleTextBytes + textBytes > limits.maxCycleTextBytes
         ) {
+          providerState.sources[remote.id] = markSourceFailure(
+            previous,
+            remote.id,
+            remote.revision,
+            "limit",
+            seenAt,
+          );
           outcome.failedSourceIds.push(providerSourceId);
           if (cycleTextBytes + textBytes > limits.maxCycleTextBytes) {
             for (const remaining of scopedSources.slice(index + 1)) {
+              providerState.sources[remaining.id] = markSourceFailure(
+                providerState.sources[remaining.id],
+                remaining.id,
+                remaining.revision,
+                "limit",
+                seenAt,
+              );
               outcome.failedSourceIds.push(sourceIdentity(adapter.name, remaining.id));
             }
             break;
@@ -786,11 +1103,24 @@ export async function reconcileProvider(
             text: fetched.value.text,
             ...(owner === undefined ? {} : { targetCollection: owner.targetCollection }),
           });
-        } catch {
+        } catch (error) {
+          // Keep the revision pending (empty hash) so a later cycle retries it,
+          // just like the pre-distill write above — a non-empty hash would let
+          // the skip-guard treat this unprocessed revision as already done.
+          providerState.sources[remote.id] = {
+            ...next,
+            contentHash: "",
+            lastFailure: { at: seenAt, reason: failureReason(error, "distill") },
+          };
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
         if (!distilled.ok) {
+          providerState.sources[remote.id] = {
+            ...next,
+            contentHash: "",
+            lastFailure: { at: seenAt, reason: failureReason(distilled.error, "distill") },
+          };
           outcome.failedSourceIds.push(providerSourceId);
           continue;
         }
@@ -1036,7 +1366,7 @@ export async function verifyProviderWebhook(
       if (
         expected === undefined ||
         input.setupToken === undefined ||
-        !equalSecret(input.setupToken, expected)
+        !timingSafeSecretEqual(input.setupToken, expected)
       ) {
         return err(new Error(`integration provider ${adapter.name} webhook setup is not armed`));
       }
@@ -1062,6 +1392,46 @@ export async function verifyProviderWebhook(
   } finally {
     activeWebhookVerifications.delete(lockKey);
   }
+}
+
+export async function verifyProviderLifecycleWebhook(
+  vaultRoot: string,
+  adapter: ProviderAdapter,
+  input: WebhookRequest,
+  deps: EngineDeps,
+): Promise<Result<Extract<VerifiedWebhook, { kind: "lifecycle" }>, Error>> {
+  if (adapter.verifyLifecycleWebhook === undefined) {
+    return err(new Error(`integration provider ${adapter.name} cannot verify lifecycle webhooks`));
+  }
+  const configured = providerConfig(deps.config, adapter.name);
+  if (!configured.ok) return configured;
+  const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+  if (!key.ok) return key;
+  const snapshot = readIntegrationState(vaultRoot, key.value);
+  if (!snapshot.ok) return snapshot;
+  const snapshotProvider = snapshot.value.providers[adapter.name];
+  if (snapshotProvider === undefined) {
+    return err(new Error(`integration provider ${adapter.name} is not authorized`));
+  }
+
+  let verified: Result<VerifiedWebhook, Error>;
+  try {
+    verified = await adapter.verifyLifecycleWebhook(input, snapshotProvider);
+  } catch {
+    return err(new Error(`integration provider ${adapter.name} lifecycle verification failed`));
+  }
+  if (!verified.ok) {
+    return err(new Error(`integration provider ${adapter.name} lifecycle verification failed`));
+  }
+  const value = verified.value;
+  if (!validVerifiedWebhook(value) || value.kind !== "lifecycle") {
+    return err(
+      new Error(
+        `integration provider ${adapter.name} lifecycle verification returned invalid result`,
+      ),
+    );
+  }
+  return ok(value);
 }
 
 export function startPeriodicIntegrationSync(

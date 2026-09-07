@@ -1,15 +1,38 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { canWrite } from "../access/rbac.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import type { EngineDeps, ProviderAdapter, WebhookRequest } from "./engine.js";
+import type { RoleConfig } from "../utils/config.js";
+import type {
+  EngineDeps,
+  EnrollmentContext,
+  ProviderAdapter,
+  ProviderStatus,
+  UnavailableSourceEvent,
+  WebhookRequest,
+} from "./engine.js";
 import {
   armProviderWebhookSetup,
   confirmProviderWebhookVerification,
   readProviderWebhookVerificationToken,
+  verifyProviderLifecycleWebhook,
   verifyProviderWebhook,
 } from "./engine.js";
+import {
+  MICROSOFT_UI_CSP,
+  microsoftUiAuthority,
+  readMicrosoftUiAsset,
+  renderMicrosoftUiPage,
+} from "./microsoft.ui.js";
 import { beginAuthorizationRedirect, completeAuthorization } from "./oauth.js";
 import type { IntegrationQueue } from "./queue.js";
-import type { IntegrationConfig, ProviderName } from "./types.js";
+import { appendUnavailableReview } from "./review.js";
+import {
+  readIntegrationState,
+  resolveIntegrationStateKey,
+  withIntegrationStateLock,
+  writeIntegrationState,
+} from "./state.js";
+import type { EnrollmentRecord, IntegrationConfig, ProviderName } from "./types.js";
 
 const DEFAULT_WEBHOOK_BODY_LIMIT = 256 * 1024;
 const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
@@ -17,6 +40,21 @@ const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = 10_000;
 export interface IntegrationRouteAuthorization {
   cookieAuthenticated: boolean;
   canManageIntegrations: boolean;
+  /** U19: the resolved caller identity, for enrollment routes' collection-allowlist + canWrite gate. */
+  user: string;
+  role: RoleConfig | null;
+  /** U19: the caller's role NAME (as opposed to its resolved RoleConfig above) — EnrollmentContext.role is a plain string. */
+  roleName: string;
+}
+
+export interface IntegrationRouteLastOutcome {
+  at: string;
+  outcome: {
+    distilledSourceIds: string[];
+    unchangedSourceIds: string[];
+    failedSourceIds: string[];
+    unavailableSourceIds: string[];
+  };
 }
 
 export interface IntegrationRouteDependencies {
@@ -37,6 +75,16 @@ export interface IntegrationRouteDependencies {
   maxWebhookBodyBytes?: number;
   webhookBodyTimeoutMs?: number;
   wake?: () => void;
+  /** R36: the runtime's last-cycle summary for a provider, merged into the /status response. */
+  lastOutcome?(provider: ProviderName): IntegrationRouteLastOutcome | undefined;
+  /**
+   * U19 follow-up: the runtime's existing error-surfacing channel (the same
+   * `onError` a reconcile cycle logs through). Used so a failed unenroll
+   * review-event write is surfaced rather than silently dropped — the
+   * enrollment removal itself still succeeds; only the audit write's failure
+   * needs somewhere to go.
+   */
+  onError?: (message: string) => void;
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
@@ -49,7 +97,7 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
 
 // Provider names come from the registered adapters, never a hardcoded list —
 // serve stays provider-neutral and a new adapter needs no route change.
-function providerFrom(
+export function providerFrom(
   pathname: string,
   adapters: Partial<Record<ProviderName, ProviderAdapter>>,
 ): ProviderName | null {
@@ -123,21 +171,103 @@ async function requireAuthorization(
   response: ServerResponse,
   deps: IntegrationRouteDependencies,
   csrfProtected: boolean,
-): Promise<boolean> {
+): Promise<IntegrationRouteAuthorization | null> {
   const authorized = await deps.authorize(request, response);
-  if (authorized === null) return false;
+  if (authorized === null) return null;
   if (!authorized.canManageIntegrations) {
     writeJson(response, 403, { error: "forbidden" });
-    return false;
+    return null;
   }
   if (csrfProtected && authorized.cookieAuthenticated) {
     const csrfError = deps.checkCsrf(request);
     if (csrfError !== null) {
       writeJson(response, 403, { error: "forbidden", message: csrfError });
-      return false;
+      return null;
     }
   }
-  return true;
+  return authorized;
+}
+
+const DEFAULT_ENROLLMENT_BODY_LIMIT = 1024 * 1024;
+const DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS = 10_000;
+
+async function readJsonBody(
+  request: IncomingMessage,
+  limit: number,
+  timeoutMs: number,
+): Promise<Result<unknown, Error>> {
+  const body = await readBoundedBody(request, limit, timeoutMs);
+  if (!body.ok) return body;
+  try {
+    return ok(JSON.parse(Buffer.from(body.value).toString("utf8")) as unknown);
+  } catch {
+    return err(new Error("request body is not valid JSON"));
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Only Microsoft's provider config carries a `collections` enrollment
+// allowlist (R33/R39) — Google/Notion never implement resolveEnrollment, so
+// their providerConfig[provider] simply yields an empty allowlist here (moot,
+// since those routes 404 on the missing-capability check before this is read).
+function collectionAllowlist(config: IntegrationConfig, provider: ProviderName): string[] {
+  const providerConfig = config[provider] as { collections?: string[] } | undefined;
+  return providerConfig?.collections ?? [];
+}
+
+function includeSpeakerNotesDefault(config: IntegrationConfig, provider: ProviderName): boolean {
+  const providerConfig = config[provider] as { includeSpeakerNotes?: boolean } | undefined;
+  return providerConfig?.includeSpeakerNotes ?? true;
+}
+
+interface ParsedEnrollmentRequest {
+  body: Record<string, unknown>;
+  collection: string;
+  includeSpeakerNotes: boolean;
+}
+
+// Shared by preview and the full enroll POST (U19 follow-up): parse the JSON
+// body, then apply the two gates every enrollment route needs regardless of
+// whether it persists — the collection allowlist (422) and canWrite (403).
+// Writes the rejection response itself and returns null on any failure, so a
+// caller only has to check for that.
+async function parseEnrollmentRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  deps: IntegrationRouteDependencies,
+  provider: ProviderName,
+  authorized: IntegrationRouteAuthorization,
+): Promise<ParsedEnrollmentRequest | null> {
+  const parsedBody = await readJsonBody(
+    request,
+    DEFAULT_ENROLLMENT_BODY_LIMIT,
+    DEFAULT_ENROLLMENT_BODY_TIMEOUT_MS,
+  );
+  if (!parsedBody.ok) {
+    writeJson(response, 400, { error: "invalid_request", message: parsedBody.error.message });
+    return null;
+  }
+  const body = isRecord(parsedBody.value) ? parsedBody.value : {};
+  const collection = typeof body.collection === "string" ? body.collection : undefined;
+  if (
+    collection === undefined ||
+    !collectionAllowlist(deps.config, provider).includes(collection)
+  ) {
+    writeJson(response, 422, { error: "collection_not_allowed" });
+    return null;
+  }
+  if (!canWrite(authorized.role, collection)) {
+    writeJson(response, 403, { error: "forbidden" });
+    return null;
+  }
+  const includeSpeakerNotes =
+    typeof body.includeSpeakerNotes === "boolean"
+      ? body.includeSpeakerNotes
+      : includeSpeakerNotesDefault(deps.config, provider);
+  return { body, collection, includeSpeakerNotes };
 }
 
 export async function handleIntegrationRoute(
@@ -305,17 +435,29 @@ export async function handleIntegrationRoute(
         });
         return true;
       }
+      const webhookRequest: WebhookRequest = {
+        headers: nodeHeaders(request),
+        body: body.value,
+        query: requestQuery(url),
+        ...(url.searchParams.get("setup_token") === null
+          ? {}
+          : { setupToken: url.searchParams.get("setup_token") as string }),
+      };
+      // R16: a provider's webhook validation challenge is answered directly,
+      // ahead of signature verification — it never touches state or the
+      // durable queue.
+      if (adapter.answerWebhookChallenge !== undefined) {
+        const challenge = adapter.answerWebhookChallenge(webhookRequest);
+        if (challenge !== undefined) {
+          response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
+          response.end(challenge);
+          return true;
+        }
+      }
       const verified = await verifyProviderWebhook(
         deps.vaultRoot,
         adapter,
-        {
-          headers: nodeHeaders(request),
-          body: body.value,
-          query: requestQuery(url),
-          ...(url.searchParams.get("setup_token") === null
-            ? {}
-            : { setupToken: url.searchParams.get("setup_token") as string }),
-        },
+        webhookRequest,
         deps.engineDeps,
       );
       if (!verified.ok) {
@@ -334,6 +476,20 @@ export async function handleIntegrationRoute(
         writeJson(response, 200, { verificationReceived: true });
         return true;
       }
+      if (verified.value.kind === "lifecycle") {
+        const queued = deps.queue.enqueue({
+          provider,
+          eventId: verified.value.eventId,
+          hint: { kind: "lifecycle", action: verified.value.action },
+        });
+        if (!queued.ok) {
+          writeJson(response, 503, { error: "queue_unavailable" });
+          return true;
+        }
+        writeJson(response, 202, { accepted: true });
+        deps.wake?.();
+        return true;
+      }
       const queued = deps.queue.enqueue({
         provider,
         eventId: verified.value.eventId,
@@ -349,6 +505,436 @@ export async function handleIntegrationRoute(
     } finally {
       release();
     }
+  }
+
+  if (url.pathname === `/integrations/${provider}/webhook/lifecycle`) {
+    if (adapter.verifyLifecycleWebhook === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const release = deps.admitPublic(request, response);
+    if (release === null) return true;
+    try {
+      const body = await readBoundedBody(
+        request,
+        deps.maxWebhookBodyBytes ?? DEFAULT_WEBHOOK_BODY_LIMIT,
+        deps.webhookBodyTimeoutMs ?? DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
+      );
+      if (!body.ok) {
+        const timedOut = body.error.message === "request body timed out";
+        writeJson(response, timedOut ? 408 : 413, {
+          error: timedOut ? "request_timeout" : "payload_too_large",
+        });
+        return true;
+      }
+      const verified = await verifyProviderLifecycleWebhook(
+        deps.vaultRoot,
+        adapter,
+        {
+          headers: nodeHeaders(request),
+          body: body.value,
+          query: requestQuery(url),
+        },
+        deps.engineDeps,
+      );
+      if (!verified.ok) {
+        writeJson(response, 401, { error: "webhook_rejected" });
+        return true;
+      }
+      // R18 (route side): the verified lifecycle notification is durably
+      // enqueued through the same queue the change-notification path uses,
+      // carrying its `action` unchanged — dispatch on that action is a later
+      // task's concern (U16), not this route's.
+      const queued = deps.queue.enqueue({
+        provider,
+        eventId: verified.value.eventId,
+        hint: { kind: "lifecycle", action: verified.value.action },
+      });
+      if (!queued.ok) {
+        writeJson(response, 503, { error: "queue_unavailable" });
+        return true;
+      }
+      writeJson(response, 202, { accepted: true });
+      deps.wake?.();
+      return true;
+    } finally {
+      release();
+    }
+  }
+
+  // U20: the picker `/ui` page (R9). Microsoft-only — the picker is
+  // inherently a Microsoft/SharePoint concept (msal-browser + File Picker v8
+  // against a SharePoint host), so this 404s for google/notion exactly like
+  // the enrollment routes below 404 for adapters that never implement
+  // resolveEnrollment. Gated on deps.config.microsoft rather than the
+  // adapter, since the page needs the config's `collections` allowlist and
+  // tenant/client id — none of which the ProviderAdapter interface carries.
+  if (url.pathname === `/integrations/${provider}/ui`) {
+    const microsoftConfig = provider === "m365" ? deps.config.m365 : undefined;
+    if (microsoftConfig === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    // Read-level: no CSRF requirement for a GET (matches /status above) — the
+    // page's later POSTs to /enrollments/preview and /enrollments carry the
+    // existing double-submit CSRF token that a cookie-authed browser already
+    // holds from board login; this route issues nothing new.
+    const authorized = await requireAuthorization(request, response, deps, false);
+    if (authorized === null) return true;
+    const clientId = deps.environment[microsoftConfig.clientIdEnv] ?? "";
+    const html = renderMicrosoftUiPage({
+      provider: "m365",
+      clientId,
+      authority: microsoftUiAuthority(microsoftConfig.tenantId),
+      pickerHost: microsoftConfig.pickerHost ?? "",
+      collections: microsoftConfig.collections,
+    });
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": MICROSOFT_UI_CSP,
+      "cache-control": "no-store",
+    });
+    response.end(html);
+    return true;
+  }
+
+  // U20: the page's own static assets — vendored msal-browser/msal-common +
+  // the hand-authored glue/serializer (R9). Unauthenticated, like the
+  // vendored cytoscape asset the `daftari view` server already serves this
+  // way: none of this is secret, and requiring a session here would only
+  // break the very first (unauthenticated, by definition, since it's static
+  // JS) <script> fetch a browser makes while loading the page above.
+  // `provider` here is already constrained to one of PROVIDER_NAMES by
+  // providerFrom()'s own regex above (the enum, not free text off the
+  // request) — safe to interpolate into this RegExp unescaped.
+  const uiAssetMatch = new RegExp(`^/integrations/${provider}/ui/assets/(.+)$`).exec(url.pathname);
+  if (uiAssetMatch !== null) {
+    if (provider !== "m365" || deps.config.m365 === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const requested = decodeURIComponent(uiAssetMatch[1] as string);
+    const asset = readMicrosoftUiAsset(requested);
+    if (asset === null) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    response.writeHead(200, {
+      "content-type": asset.contentType,
+      "cache-control": "no-store",
+    });
+    response.end(asset.body);
+    return true;
+  }
+
+  // U19: enrollment/status routes (R10, R13, R14, R33, R36, R39). Provider-
+  // neutral — Google/Notion never implement resolveEnrollment/
+  // estimateEnrollment/describeStatus, so these 404 for them before any
+  // authorization work happens, exactly like the webhookSetup/
+  // verifyLifecycleWebhook capability checks above.
+  if (url.pathname === `/integrations/${provider}/enrollments/preview`) {
+    if (adapter.resolveEnrollment === undefined || adapter.estimateEnrollment === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const authorized = await requireAuthorization(request, response, deps, true);
+    if (authorized === null) return true;
+
+    const parsed = await parseEnrollmentRequest(request, response, deps, provider, authorized);
+    if (parsed === null) return true;
+    const { body, collection, includeSpeakerNotes } = parsed;
+
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const persisted = readIntegrationState(deps.vaultRoot, key.value);
+    if (!persisted.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const providerState = persisted.value.providers[provider];
+    if (providerState === undefined) {
+      writeJson(response, 409, { error: "provider_not_connected" });
+      return true;
+    }
+
+    const ctx: EnrollmentContext = {
+      user: authorized.user,
+      role: authorized.roleName,
+      collection,
+      includeSpeakerNotes,
+    };
+    const draft = await adapter.resolveEnrollment(body.selection, providerState, ctx);
+    if (!draft.ok) {
+      writeJson(response, 422, { error: "enrollment_rejected", message: draft.error.message });
+      return true;
+    }
+    const estimate = await adapter.estimateEnrollment(draft.value, providerState);
+    if (!estimate.ok) {
+      writeJson(response, 422, { error: "enrollment_rejected", message: estimate.error.message });
+      return true;
+    }
+    writeJson(response, 200, estimate.value);
+    return true;
+  }
+
+  if (url.pathname === `/integrations/${provider}/enrollments`) {
+    const resolveEnrollment = adapter.resolveEnrollment;
+    if (resolveEnrollment === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const authorized = await requireAuthorization(request, response, deps, true);
+    if (authorized === null) return true;
+
+    const parsed = await parseEnrollmentRequest(request, response, deps, provider, authorized);
+    if (parsed === null) return true;
+    const { body, collection, includeSpeakerNotes } = parsed;
+    // R33: the audience ACL disclosure must be explicitly acknowledged by the
+    // enrolling caller — never inferred from the request merely existing.
+    if (body.acknowledged !== true) {
+      writeJson(response, 422, { error: "acknowledgement_required" });
+      return true;
+    }
+
+    const selection = body.selection;
+
+    const created = await withIntegrationStateLock(deps.vaultRoot, async () => {
+      const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+      if (!key.ok) return key;
+      const persisted = readIntegrationState(deps.vaultRoot, key.value);
+      if (!persisted.ok) return persisted;
+      const providerState = persisted.value.providers[provider];
+      if (providerState === undefined) {
+        return err(new Error("provider is not connected"));
+      }
+      const ctx: EnrollmentContext = {
+        user: authorized.user,
+        role: authorized.roleName,
+        collection,
+        includeSpeakerNotes,
+      };
+      const draft = await resolveEnrollment(selection, providerState, ctx);
+      if (!draft.ok) return draft;
+
+      const now = deps.engineDeps.now?.() ?? new Date();
+      const nowIso = now.toISOString();
+      const records: EnrollmentRecord[] = draft.value.items.map((item) => {
+        // Shared-layer identity: `ref` matches a discovered source's
+        // enrolledRef (main #506). For m365 that is `${driveId}:${remoteId}`,
+        // byte-identical to an item's own source.id (see microsoft.ts).
+        const ref = `${item.driveId}:${item.remoteId}`;
+        return {
+          ref,
+          // Graph "item"/"container" → the shared file/folder vocabulary.
+          kind: item.kind === "container" ? ("folder" as const) : ("file" as const),
+          driveId: item.driveId,
+          remoteId: item.remoteId,
+          label: item.label,
+          ...(item.webUrl === undefined ? {} : { webUrl: item.webUrl }),
+          targetCollection: draft.value.collection,
+          includeSpeakerNotes: draft.value.includeSpeakerNotes,
+          enrolledBy: authorized.user,
+          enrolledAt: nowIso,
+          audienceAckAt: nowIso,
+          readersAtEnrollment: draft.value.readersAtEnrollment,
+          // §7.1 cursorKey convention: one container enrollment is its own
+          // delta root; item enrollments sharing a drive share one root.
+          cursorKey: item.kind === "container" ? `enrollment:${ref}` : `drive:${item.driveId}`,
+        };
+      });
+      // Stored as the shared-layer `enrollment[]` array, keyed by ref: a
+      // re-enrollment of the same ref replaces its prior record.
+      const byRef = new Map((providerState.enrollment ?? []).map((e) => [e.ref, e]));
+      for (const record of records) byRef.set(record.ref, record);
+      persisted.value.providers[provider] = {
+        ...providerState,
+        enrollment: [...byRef.values()],
+      };
+      const written = writeIntegrationState(deps.vaultRoot, persisted.value, key.value);
+      if (!written.ok) return written;
+      return ok(records);
+    });
+
+    if (!created.ok) {
+      writeJson(response, 422, { error: "enrollment_rejected", message: created.error.message });
+      return true;
+    }
+    writeJson(response, 201, { enrollmentIds: created.value.map((record) => record.ref) });
+    deps.wake?.();
+    return true;
+  }
+
+  if (url.pathname === `/integrations/${provider}/status`) {
+    if (adapter.describeStatus === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    // Read-level: no CSRF requirement for a GET.
+    const authorized = await requireAuthorization(request, response, deps, false);
+    if (authorized === null) return true;
+
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const persisted = readIntegrationState(deps.vaultRoot, key.value);
+    if (!persisted.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    // A provider that is configured but never connected still reports status
+    // (as "disconnected") rather than 404ing — describeStatus is a pure
+    // projection that tolerates an empty ProviderState.
+    const providerState = persisted.value.providers[provider] ?? {
+      accessToken: "",
+      refreshToken: "",
+      sources: {},
+    };
+    const status: ProviderStatus = adapter.describeStatus(providerState);
+    const lastOutcome = deps.lastOutcome?.(provider);
+    const merged: ProviderStatus =
+      lastOutcome === undefined
+        ? status
+        : {
+            ...status,
+            lastCycle: {
+              at: lastOutcome.at,
+              distilled: lastOutcome.outcome.distilledSourceIds.length,
+              unchanged: lastOutcome.outcome.unchangedSourceIds.length,
+              failed: lastOutcome.outcome.failedSourceIds.length,
+              unavailable: lastOutcome.outcome.unavailableSourceIds.length,
+            },
+          };
+    writeJson(response, 200, merged);
+    return true;
+  }
+
+  const enrollmentIdMatch = new RegExp(`^/integrations/${provider}/enrollments/([^/]+)$`).exec(
+    url.pathname,
+  );
+  if (enrollmentIdMatch !== null && enrollmentIdMatch[1] !== "preview") {
+    // Same provider-neutral capability gate as preview/POST/GET above: a
+    // provider that never implements resolveEnrollment never has enrollments
+    // to unenroll either, so the 404 must not depend on the enrollment id
+    // happening to be absent — otherwise google/notion would run real
+    // manage_integrations + CSRF work before falling through to a 404.
+    if (adapter.resolveEnrollment === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (request.method !== "DELETE") {
+      writeJson(response, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const authorized = await requireAuthorization(request, response, deps, true);
+    if (authorized === null) return true;
+
+    const ref = decodeURIComponent(enrollmentIdMatch[1]);
+    const key = resolveIntegrationStateKey(deps.config.encryptionKeyEnv, deps.environment);
+    if (!key.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const snapshot = readIntegrationState(deps.vaultRoot, key.value);
+    if (!snapshot.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+    const snapshotRecord = snapshot.value.providers[provider]?.enrollment?.find(
+      (e) => e.ref === ref,
+    );
+    if (snapshotRecord === undefined) {
+      writeJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (!canWrite(authorized.role, snapshotRecord.targetCollection)) {
+      writeJson(response, 403, { error: "forbidden" });
+      return true;
+    }
+
+    const removed = await withIntegrationStateLock(deps.vaultRoot, async () => {
+      const persisted = readIntegrationState(deps.vaultRoot, key.value);
+      if (!persisted.ok) return persisted;
+      const providerState = persisted.value.providers[provider];
+      const record = providerState?.enrollment?.find((e) => e.ref === ref);
+      if (providerState === undefined || record === undefined) {
+        // Already gone (a concurrent delete won the race) — idempotent no-op.
+        return ok([]);
+      }
+      const enrollment = providerState.enrollment?.filter((e) => e.ref !== ref) ?? [];
+      // R38: source metadata is RETAINED, never deleted — only the
+      // enrollment record and its grouping are removed. The sources
+      // themselves (and their contentHash/available history) are untouched.
+      // A file enrollment's ref IS its source id (see the enroll route), so a
+      // direct id match orphans it; a folder's descendants carry different ids
+      // and their ownership is resolved dynamically at reconcile via
+      // RemoteSource.enrolledRef (not persisted on SourceState), so they are
+      // left for the availability sweep rather than force-marked here.
+      const orphanedSources = Object.values(providerState.sources).filter(
+        (source) => source.id === ref,
+      );
+      persisted.value.providers[provider] = { ...providerState, enrollment };
+      const written = writeIntegrationState(deps.vaultRoot, persisted.value, key.value);
+      if (!written.ok) return written;
+      return ok(orphanedSources);
+    });
+    if (!removed.ok) {
+      writeJson(response, 500, { error: "internal" });
+      return true;
+    }
+
+    const now = deps.engineDeps.now?.() ?? new Date();
+    for (const source of removed.value) {
+      const event: UnavailableSourceEvent = {
+        idempotencyKey: `${provider}:${source.id}:${source.revision}:unenrolled`,
+        providerSourceId: source.id,
+        reason: "unenrolled",
+        revision: source.revision,
+        occurredAt: now.toISOString(),
+      };
+      // The enrollment removal above already committed — a failed audit
+      // write must not be silently dropped, but it also must not turn a
+      // successful removal into an error response. Surface it through the
+      // runtime's existing error channel instead.
+      const appended = appendUnavailableReview(deps.vaultRoot, event);
+      if (!appended.ok) {
+        deps.onError?.(
+          `integration ${provider} unenrolled-review write failed for source ${source.id}: ${appended.error.message}`,
+        );
+      }
+    }
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    deps.wake?.();
+    return true;
   }
 
   writeJson(response, 404, { error: "not_found" });

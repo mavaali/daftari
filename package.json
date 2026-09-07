@@ -19,11 +19,12 @@
     "url": "https://github.com/mavaali/daftari/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   },
   "files": [
     "dist",
     "templates",
+    "src/integrations/microsoft/assets",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -62,10 +63,12 @@
     "@modelcontextprotocol/server": "^2.0.0",
     "better-sqlite3": "^12.10.0",
     "chokidar": "^4.0.3",
+    "fflate": "^0.8.3",
     "glob": "^13.0.6",
     "gray-matter": "^4.0.3",
     "jose": "^6.2.4",
     "js-yaml": "^4.1.1",
+    "pdfjs-dist": "^6.3.289",
     "rehype-sanitize": "^6.0.0",
     "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",
@@ -75,6 +78,7 @@
     "unified": "^11.0.5"
   },
   "devDependencies": {
+    "@azure/msal-browser": "^5.20.0",
     "@biomejs/biome": "^2.4.15",
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",

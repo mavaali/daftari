@@ -15,8 +15,10 @@ import {
   requireCollectionWriteAccess,
   startPeriodicIntegrationSync,
   validateContinuousAdapterCapabilities,
+  verifyProviderLifecycleWebhook,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
+import { createGoogleDocsAdapter } from "../../src/integrations/google.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
 import type { RoleConfig } from "../../src/utils/config.js";
@@ -1667,6 +1669,350 @@ describe("provider reconciliation", () => {
     ).toBe(false);
   });
 
+  it("persists a fetch failure reason and clears it once the source succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let fetchFails = true;
+    const provider = adapter({
+      discover: async () => ok([{ id: "flaky", revision: "1" }]),
+      fetch: async (source) =>
+        fetchFails
+          ? err(new Error("temporary provider failure"))
+          : ok({ id: source.id, revision: source.revision, text: "Recovered" }),
+    });
+
+    const first = await reconcileProvider(vault, provider, deps());
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "fetch" });
+
+    fetchFails = false;
+    const second = await reconcileProvider(vault, provider, deps());
+    expect(second.ok && second.value.distilledSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toBeUndefined();
+  });
+
+  it("threads a specific failure reason from a fetch error when the adapter provides one", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const specificError = Object.assign(new Error("file is encrypted"), {
+      reason: "encrypted",
+    });
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "locked", revision: "1" }]),
+        fetch: async () => err(specificError),
+      }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:locked"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.locked?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "encrypted" });
+  });
+
+  it("persists a distill failure reason distinct from a fetch failure", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "Some content" }),
+      }),
+      deps({ distill: async () => err(new Error("distillation failed")) }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "distill" });
+  });
+
+  it("persists a limit failure reason for a source that exceeds the per-source byte cap", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "huge", revision: "1" }]),
+        fetch: async () => ok({ id: "huge", revision: "1", text: "12345" }),
+      }),
+      deps({ reconcileLimits: { maxSourceTextBytes: 4 } }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:huge"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.huge?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "limit" });
+  });
+
+  it("sets reconnect_required after a terminal refresh failure and clears it on the next success", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const failing = await reconcileProvider(
+      vault,
+      adapter({ refreshTokens: async () => err(new Error("invalid_grant")) }),
+      deps(),
+    );
+    expect(failing.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "invalid_grant",
+    });
+
+    const succeeding = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          ok({ accessToken: "rotated-access", refreshToken: "rotated-refresh" }),
+      }),
+      deps(),
+    );
+    expect(succeeding.ok).toBe(true);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "ok",
+      at: "2026-08-24T12:00:00.000Z",
+    });
+  });
+
+  it("treats a network-transport refresh failure as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => {
+          throw new Error("fetch failed: ECONNRESET");
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("treats a 5xx token-endpoint response as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 503")),
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("recognizes a 4xx status embedded in a message, or a structured terminal signal, as terminal", async () => {
+    const write = (refreshToken: string) =>
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken,
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      );
+
+    expect(write("old-refresh-1")).toEqual(ok(undefined));
+    const messageStatus = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 400")),
+      }),
+      deps(),
+    );
+    expect(messageStatus.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+
+    expect(write("old-refresh-2")).toEqual(ok(undefined));
+    const structuredSignal = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          err(Object.assign(new Error("token expired"), { terminal: true })),
+      }),
+      deps(),
+    );
+    expect(structuredSignal.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+  });
+
+  it("advances lastSeenAt and revision for a source that fails on consecutive cycles", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "1" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-24T12:00:00.000Z") }),
+    );
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-24T12:00:00.000Z", revision: "1" });
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "2" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-25T09:00:00.000Z") }),
+    );
+    expect(second.ok && second.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-25T09:00:00.000Z", revision: "2" });
+  });
+
+  it("marks reconnect_required through the real Google refresh-failure formatting (golden, end to end)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const realGoogleAdapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      now,
+      transport: async (url) => {
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const result = await reconcileProvider(vault, realGoogleAdapter, deps());
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "Google request failed with status 400",
+    });
+  });
+
   it("returns a stop function that prevents future periodic reconciliations", async () => {
     vi.useFakeTimers();
     expect(
@@ -1697,6 +2043,61 @@ describe("provider reconciliation", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(discoveries).toBe(1);
     vi.useRealTimers();
+  });
+
+  it("verifies a lifecycle webhook and returns the adapter's verified result", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+    );
+  });
+
+  it("rejects a lifecycle webhook for a provider that lacks verifyLifecycleWebhook", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter(),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects an unauthorized provider's lifecycle webhook", async () => {
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "e", action: "reconcile" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -1734,6 +2135,12 @@ describe("enrollment-scoped providers (#505)", () => {
           targetCollection: "distill",
           enrolledAt: "2026-09-04T00:00:00.000Z",
           enrolledBy: "user:test",
+          driveId: "file",
+          remoteId: "f1",
+          includeSpeakerNotes: false,
+          cursorKey: "drive:file",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
         },
         {
           ref: "folder:dir",
@@ -1742,6 +2149,12 @@ describe("enrollment-scoped providers (#505)", () => {
           targetCollection: "distill",
           enrolledAt: "2026-09-04T00:00:00.000Z",
           enrolledBy: "user:test",
+          driveId: "folder",
+          remoteId: "dir",
+          includeSpeakerNotes: false,
+          cursorKey: "enrollment:folder:dir",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
         },
       ],
       sources: {},
@@ -1954,6 +2367,12 @@ describe("target-collection plumbing (#506)", () => {
           targetCollection: "sensitive-reports",
           enrolledAt: "2026-09-04T00:00:00.000Z",
           enrolledBy: "user:test",
+          driveId: "file",
+          remoteId: "f1",
+          includeSpeakerNotes: false,
+          cursorKey: "drive:file",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
         },
       ],
       sources: {},
@@ -2014,6 +2433,12 @@ describe("target-collection plumbing (#506)", () => {
           targetCollection: "team-notes",
           enrolledAt: "2026-09-04T00:00:00.000Z",
           enrolledBy: "user:test",
+          driveId: "folder",
+          remoteId: "dir",
+          includeSpeakerNotes: false,
+          cursorKey: "enrollment:folder:dir",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
         },
       ],
       sources: {},

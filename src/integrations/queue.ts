@@ -14,7 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { RefreshHint } from "./engine.js";
-import type { ProviderName } from "./types.js";
+import { isProviderName, type ProviderName } from "./types.js";
 
 const QUEUE_VERSION = 2;
 const REPLAY_HORIZON_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -79,6 +79,11 @@ function validHint(value: unknown): value is RefreshHint {
   if (typeof value !== "object" || value === null) return false;
   const hint = value as Record<string, unknown>;
   if (hint.kind === "reconcile") return true;
+  if (hint.kind === "lifecycle") {
+    return (
+      hint.action === "reauthorize" || hint.action === "recreate" || hint.action === "reconcile"
+    );
+  }
   return (
     hint.kind === "sources" &&
     Array.isArray(hint.sourceIds) &&
@@ -91,7 +96,7 @@ function validQueueItem(value: unknown): value is IntegrationQueueItem {
   if (typeof value !== "object" || value === null) return false;
   const item = value as Record<string, unknown>;
   return (
-    (item.provider === "google" || item.provider === "notion" || item.provider === "m365") &&
+    isProviderName(item.provider) &&
     typeof item.eventId === "string" &&
     item.eventId.length > 0 &&
     validHint(item.hint) &&
@@ -125,7 +130,30 @@ function pruneProcessedEvents(state: QueueState, now: Date): QueueState {
   };
 }
 
+// Higher wins when a batch coalesces multiple lifecycle items into one hint.
+// Only used to pick a single survivor among several lifecycle actions in the
+// same drain batch — it does not decide how any action is executed (U16).
+const LIFECYCLE_ACTION_PRIORITY: Record<"reauthorize" | "recreate" | "reconcile", number> = {
+  reauthorize: 2,
+  recreate: 1,
+  reconcile: 0,
+};
+
 function mergeHints(items: IntegrationQueueItem[]): RefreshHint {
+  // A lifecycle action is never a fungible reconcile signal — dropping it (or
+  // letting an unrelated reconcile item in the same batch clobber it) would
+  // strand U16 with nothing to act on, so it always wins the merge.
+  const lifecycleActions = items.flatMap((item) =>
+    item.hint.kind === "lifecycle" ? [item.hint.action] : [],
+  );
+  if (lifecycleActions.length > 0) {
+    const action = lifecycleActions.reduce((strongest, candidate) =>
+      LIFECYCLE_ACTION_PRIORITY[candidate] > LIFECYCLE_ACTION_PRIORITY[strongest]
+        ? candidate
+        : strongest,
+    );
+    return { kind: "lifecycle", action };
+  }
   if (items.some((item) => item.hint.kind === "reconcile")) return { kind: "reconcile" };
   const sourceIds = new Set<string>();
   let rediscover = false;

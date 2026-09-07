@@ -199,6 +199,52 @@ describe("durable integration queue", () => {
     expect(queue.pending().ok).toBe(false);
   });
 
+  it("preserves a lifecycle action when an unrelated reconcile hint shares its drain batch", async () => {
+    const queue = createIntegrationQueue(vault);
+    queue.enqueue({
+      provider: "m365",
+      eventId: "lifecycle-1",
+      hint: { kind: "lifecycle", action: "reauthorize" },
+    });
+    queue.enqueue({
+      provider: "m365",
+      eventId: "change-1",
+      hint: { kind: "reconcile" },
+    });
+
+    const seenHints: unknown[] = [];
+    expect(
+      await queue.drain(async (batch) => {
+        seenHints.push(batch.hint);
+        return ok(undefined);
+      }),
+    ).toEqual(ok({ processed: 2, skipped: false }));
+
+    expect(seenHints).toEqual([{ kind: "lifecycle", action: "reauthorize" }]);
+  });
+
+  it("keeps the strongest lifecycle action when several coalesce in one batch", async () => {
+    const queue = createIntegrationQueue(vault);
+    queue.enqueue({
+      provider: "m365",
+      eventId: "lifecycle-recreate",
+      hint: { kind: "lifecycle", action: "recreate" },
+    });
+    queue.enqueue({
+      provider: "m365",
+      eventId: "lifecycle-reauthorize",
+      hint: { kind: "lifecycle", action: "reauthorize" },
+    });
+
+    const seenHints: unknown[] = [];
+    await queue.drain(async (batch) => {
+      seenHints.push(batch.hint);
+      return ok(undefined);
+    });
+
+    expect(seenHints).toEqual([{ kind: "lifecycle", action: "reauthorize" }]);
+  });
+
   it("accepts an m365 event without corrupting the rest of the queue (security)", () => {
     const first = createIntegrationQueue(vault);
     first.enqueue({ provider: "notion", eventId: "notion-evt", hint: { kind: "reconcile" } });

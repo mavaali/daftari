@@ -472,6 +472,12 @@ describe("Google Docs adapter", () => {
     });
 
     expect(refreshed.ok).toBe(false);
+    // Golden-pinned: engine.ts's isTerminalRefreshError sniffs this exact
+    // wording (a "status <4xx>" substring) as its fallback terminal signal,
+    // since Google's adapter has no structured error code today. If this
+    // message ever changes, that detector silently stops firing — this
+    // assertion exists so a refactor here trips a test instead.
+    expect(refreshed.ok || refreshed.error.message).toBe("Google request failed with status 400");
   });
 
   it("creates a renewed Drive change channel from the stored cursor", async () => {
