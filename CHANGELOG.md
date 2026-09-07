@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.1] - 2026-09-06
+
+### Security
+
+- **OKF import confinement and validation** (#540) — preflight the complete import batch before mutation, reject unsafe source and destination paths and conflicting destinations, and validate imported frontmatter before writing. Includes regression coverage for path confinement and failure recovery.
+- **Dependency fixes** (#557) — override sharp and adm-zip to patched versions.
+
+### Fixed
+
+- **OKF failure reporting and retries** (#540) — report incomplete writes, commits, and indexing as failures. Retrying unchanged documents completes pending commit or indexing work without an empty commit. Runtime write failures can still leave partial files; the CLI reports that state explicitly.
+- **Webhook registration** (#558, #559) — persist two-phase webhook registration state before provider callbacks, support plaintext validation echoes, and avoid replacing pending webhook state while an existing webhook remains fresh.
+
 ## [3.13.0] - 2026-09-05
 
 ### Added
