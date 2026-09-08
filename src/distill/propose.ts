@@ -22,6 +22,7 @@ import type { AccessContext } from "../access/rbac.js";
 import { type StageOutcome, stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { slugifyKey } from "../import/langgraph-store.js";
 import { vaultSearch } from "../tools/search.js";
+import type { CitationCheckResult } from "./citation-check.js";
 import type { ClaimRunMeta, ExtractedClaim } from "./extract.js";
 import { refuseRawDistillOutput } from "./output-fence.js";
 import {
@@ -313,6 +314,26 @@ function readerProvenanceLines(reader: ReaderFrontmatter | null): string[] {
   ];
 }
 
+// Human-readable "Citation check" subsection of the Provenance body. Returns
+// [] (no subsection) when the claim carries no citation_check, or when the
+// check found nothing to verify (an uncited claim has nothing to report) — so
+// a claim with no cited numbers/dates/quotes produces the original body.
+function citationCheckLines(check: CitationCheckResult | undefined): string[] {
+  if (!check || check.citations.length === 0) return [];
+  const violationsClause =
+    check.violations.length > 0
+      ? `${check.violations.length} violation(s): ` +
+        check.violations.map((v) => `${v.type}:"${v.value}"`).join(", ")
+      : "none";
+  return [
+    "",
+    "### Citation check",
+    "",
+    `- **Citations checked:** ${check.citations.length}`,
+    `- **Violations:** ${violationsClause}`,
+  ];
+}
+
 function assembleBody(
   claim: ExtractedClaim,
   ids: DistillIds,
@@ -328,6 +349,7 @@ function assembleBody(
     `- **Run id:** \`${ids.runId}\``,
     `- **Source ref:** \`distill:${ids.sourceId}#${claim.claim_key}\``,
     ...readerProvenanceLines(reader),
+    ...citationCheckLines(claim.citation_check),
     "",
   ].join("\n");
 }
