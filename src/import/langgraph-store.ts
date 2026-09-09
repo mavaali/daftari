@@ -16,10 +16,13 @@
 // { content: string } — treated as semantic. Unknown shapes are skipped and
 // counted, never guessed at.
 
-import { mkdirSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { dump } from "js-yaml";
+import { parseDocument } from "../frontmatter/parser.js";
+import { listFiles, resolveVaultPath } from "../storage/local.js";
 import { commit, ensureGitRepo } from "../utils/git.js";
 
 export type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
@@ -55,6 +58,9 @@ export interface DerivedNote {
   title: string;
   body: string; // full file contents (frontmatter + body)
   sourceRef: string; // langgraph-store:<prefix>/<key> — tension nodes trace here
+  namespace: string;
+  key: string;
+  legacySourceRef?: string; // unescaped reference used by older imports
   session: string; // last namespace segment, the session/user attribution
 }
 
@@ -116,12 +122,13 @@ export function deriveNotes(rows: StoreRow[], opts: LanggraphImportOptions): Imp
 
     const session = row.prefix.split(".").pop() ?? row.prefix;
     const title = text.split(/\s+/).slice(0, 10).join(" ");
-    const sourceRef = `langgraph-store:${row.prefix}/${row.key}`;
-    const relPath = join(
-      opts.collection,
-      session,
-      `${slugifyKey(title)}--${row.key.slice(0, 8)}.md`,
-    );
+    const sourceRef = `langgraph-store:${encodeURIComponent(row.prefix)}/${encodeURIComponent(row.key)}`;
+    // Hash the full tuple, not a mutable title or a truncated source key.
+    const identity = createHash("sha256")
+      .update(JSON.stringify(["langgraph-store", row.prefix, row.key]))
+      .digest("hex");
+    const legacySourceRef = `langgraph-store:${row.prefix}/${row.key}`;
+    const relPath = join(opts.collection, slugifyKey(session), `memory--${identity}.md`);
 
     const frontmatter = {
       title,
@@ -157,7 +164,16 @@ export function deriveNotes(rows: StoreRow[], opts: LanggraphImportOptions): Imp
       "",
     ].join("\n");
 
-    notes.push({ relPath, title, body, sourceRef, session });
+    notes.push({
+      relPath,
+      title,
+      body,
+      sourceRef,
+      legacySourceRef,
+      session,
+      namespace: row.prefix,
+      key: row.key,
+    });
   }
 
   const skipped = [...skippedCounts.entries()].map(([kind, count]) => ({ kind, count }));
@@ -319,7 +335,12 @@ export async function runLanggraphImport(vaultRoot: string, argv: string[]): Pro
     };
     const derived = deriveNotes(rows.value, opts);
     if (!apply) {
-      process.stdout.write(renderPlan(derived, opts));
+      const prepared = await prepareImportPlan(derived, opts);
+      if (!prepared.ok) {
+        process.stderr.write(`daftari import langgraph-store: ${prepared.error.message}\n`);
+        return 1;
+      }
+      process.stdout.write(renderPlan(prepared.value, opts));
       return 0;
     }
     const result = await applyPlan(derived, opts);
@@ -341,21 +362,130 @@ export async function runLanggraphImport(vaultRoot: string, argv: string[]): Pro
   }
 }
 
+// Reject aliases as well as traversal: an import must not overwrite an
+// unrelated document through a symlink (including a dangling one).
+function importDestination(vaultRoot: string, relPath: string) {
+  const resolved = resolveVaultPath(vaultRoot, relPath);
+  if (!resolved.ok) return resolved;
+  let current = vaultRoot;
+  for (const part of relPath.split("/")) {
+    if (!part || part.startsWith(".") || part === "node_modules") {
+      return err(new Error(`invalid import destination: ${relPath}`));
+    }
+    current = join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        return err(new Error(`symlink import destination: ${relPath}`));
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+  }
+  return resolved;
+}
+
+// Resolve existing imported notes by provenance, so legacy names and changed
+// titles update in place. Ambiguous provenance or occupied destinations fail
+// before Git initialization or any file mutation. Plan and apply share this.
+export async function prepareImportPlan(
+  plan: ImportPlan,
+  opts: LanggraphImportOptions,
+): Promise<Result<ImportPlan>> {
+  try {
+    const collection = importDestination(opts.vaultRoot, opts.collection);
+    if (!collection.ok) return collection;
+    const listed = await listFiles(collection.value.absPath);
+    if (!listed.ok) return listed;
+    const existingByRef = new Map<string, string[]>();
+    const occupied = new Set<string>();
+    const existingBodies = new Map<string, string>();
+    for (const relativePath of listed.value) {
+      const path = join(opts.collection, relativePath);
+      const target = importDestination(opts.vaultRoot, path);
+      if (!target.ok) return target;
+      occupied.add(target.value.relPath);
+      const parsed = parseDocument(await readFile(target.value.absPath, "utf8"));
+      if (!parsed.ok) return parsed;
+      existingBodies.set(target.value.relPath, parsed.value.content);
+      const { sources, tags } = parsed.value.raw;
+      if (!Array.isArray(tags) || !tags.includes("langgraph-import")) continue;
+      if (!Array.isArray(sources) || sources.length !== 1 || typeof sources[0] !== "string")
+        continue;
+      const paths = existingByRef.get(sources[0]) ?? [];
+      paths.push(target.value.relPath);
+      existingByRef.set(sources[0], paths);
+    }
+    const destinations = new Set<string>();
+    const identities = new Set<string>();
+    const notes: DerivedNote[] = [];
+    for (const note of plan.notes) {
+      if (identities.has(note.sourceRef))
+        return err(new Error(`duplicate import source: ${note.sourceRef}`));
+      identities.add(note.sourceRef);
+      const prior = new Set([
+        ...(existingByRef.get(note.sourceRef) ?? []),
+        ...(note.legacySourceRef ? (existingByRef.get(note.legacySourceRef) ?? []) : []),
+      ]);
+      if (prior.size > 1) return err(new Error(`ambiguous existing import: ${note.sourceRef}`));
+      // Legacy references were not escaped. Check their original provenance
+      // too, so an encoded key or a slash cannot impersonate another source.
+      for (const path of prior) {
+        const body = existingBodies.get(path) ?? "";
+        if (
+          !body.split("\n").includes(`- **Namespace:** \`${note.namespace}\``) ||
+          !body.split("\n").includes(`- **Memory id:** \`${note.key}\``)
+        )
+          return err(new Error(`ambiguous existing source identity: ${note.sourceRef}`));
+      }
+      const relPath = [...prior][0] ?? note.relPath;
+      if (!relPath.startsWith(`${opts.collection}/`) || !relPath.endsWith(".md")) {
+        return err(new Error(`invalid import destination: ${relPath}`));
+      }
+      const target = importDestination(opts.vaultRoot, relPath);
+      if (!target.ok) return target;
+      if (destinations.has(target.value.relPath))
+        return err(new Error(`duplicate import destination: ${relPath}`));
+      if (prior.size === 0 && occupied.has(target.value.relPath)) {
+        return err(new Error(`import destination belongs to another document: ${relPath}`));
+      }
+      // Also reject non-file destinations, which listFiles deliberately omits.
+      try {
+        if (!lstatSync(target.value.absPath).isFile())
+          return err(new Error(`import destination is not a file: ${relPath}`));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      destinations.add(target.value.relPath);
+      notes.push({ ...note, relPath: target.value.relPath });
+    }
+    return ok({ ...plan, notes });
+  } catch (e) {
+    return err(e instanceof Error ? e : new Error(String(e)));
+  }
+}
+
 export async function applyPlan(
   plan: ImportPlan,
   opts: LanggraphImportOptions,
 ): Promise<Result<{ written: number; commit: string | null }>> {
+  const prepared = await prepareImportPlan(plan, opts);
+  if (!prepared.ok) return prepared;
+  if (prepared.value.notes.length === 0) return ok({ written: 0, commit: null });
   const ensured = await ensureGitRepo(opts.vaultRoot);
   if (!ensured.ok) return err(ensured.error);
 
   const relPaths: string[] = [];
-  for (const note of plan.notes) {
-    const abs = join(opts.vaultRoot, note.relPath);
-    mkdirSync(dirname(abs), { recursive: true });
-    await writeFile(abs, note.body, "utf-8");
-    relPaths.push(note.relPath);
+  try {
+    for (const note of prepared.value.notes) {
+      const target = importDestination(opts.vaultRoot, note.relPath);
+      if (!target.ok) return target;
+      mkdirSync(dirname(target.value.absPath), { recursive: true });
+      await writeFile(target.value.absPath, note.body, "utf-8");
+      relPaths.push(note.relPath);
+    }
+  } catch (e) {
+    return err(e instanceof Error ? e : new Error(String(e)));
   }
-  if (relPaths.length === 0) return ok({ written: 0, commit: null });
 
   const committed = await commit(
     opts.vaultRoot,

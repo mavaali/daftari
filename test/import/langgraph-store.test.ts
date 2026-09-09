@@ -4,9 +4,17 @@
 // is tested.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { load } from "js-yaml";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -14,6 +22,7 @@ import {
   applyPlan,
   deriveNotes,
   type LanggraphImportOptions,
+  prepareImportPlan,
   readStoreRows,
   renderPlan,
   type StoreRow,
@@ -60,7 +69,7 @@ describe("deriveNotes", () => {
     // provenance: the tension-graph node must trace back to the store row
     expect(note.sourceRef).toBe("langgraph-store:v1.pricing/abc12345-dead-beef");
     expect(note.session).toBe("pricing");
-    expect(note.relPath).toMatch(/^langgraph\/pricing\/.*--abc12345\.md$/);
+    expect(note.relPath).toMatch(/^langgraph\/pricing\/memory--[a-f0-9]{64}\.md$/);
 
     // frontmatter carries the metadata layer
     const fmText = note.body.split("---")[1];
@@ -77,6 +86,30 @@ describe("deriveNotes", () => {
     expect(note.body).toContain("guaranteed 500 requests per second");
     expect(note.body).toContain("## Provenance");
     expect(note.body).toContain("`v1.pricing`");
+  });
+
+  it("uses distinct, portable paths for full namespace and key identities", () => {
+    const rows = [
+      makeRow({ prefix: "org.team", key: "same1234-a" }),
+      makeRow({ prefix: "org.team", key: "same1234-b" }),
+      makeRow({ prefix: "other.team", key: "same1234-a" }),
+      makeRow({ prefix: "org.team", key: "記憶/../一" }),
+      makeRow({ prefix: "org.team", key: "記憶/../二" }),
+    ];
+    const notes = deriveNotes(rows, makeOpts("/tmp/nowhere")).notes;
+    expect(new Set(notes.map((n) => n.relPath)).size).toBe(rows.length);
+    for (const note of notes)
+      expect(note.relPath).toMatch(/^langgraph\/team\/memory--[a-f0-9]{64}\.md$/);
+  });
+
+  it("keeps the same destination when source text changes", () => {
+    const opts = makeOpts("/tmp/nowhere");
+    const before = deriveNotes([makeRow()], opts).notes[0];
+    const after = deriveNotes(
+      [makeRow({ value: { content: "A completely revised claim." } })],
+      opts,
+    ).notes[0];
+    expect(after.relPath).toBe(before.relPath);
   });
 
   it("skips episodic and procedural memories, counting them by kind", () => {
@@ -196,6 +229,131 @@ describe("applyPlan", () => {
     expect(log.split("\n")).toHaveLength(1);
     expect(log).toContain("agent:test-import");
     expect(log).toContain("import(langgraph-store): 2 memories from v1");
+  });
+
+  it("rejects duplicate destinations before writing any files", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const plan = deriveNotes([makeRow(), makeRow({ key: "other" })], opts);
+    plan.notes[1].relPath = plan.notes[0].relPath;
+    const result = await applyPlan(plan, opts);
+    expect(result.ok).toBe(false);
+    expect(existsSync(join(vault, plan.notes[0].relPath))).toBe(false);
+    expect(existsSync(join(vault, ".git"))).toBe(false);
+  });
+
+  it("reuses a legacy imported path after the source title changes", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const original = deriveNotes([makeRow()], opts).notes[0];
+    const legacyPath = "langgraph/pricing/original-title--abc12345.md";
+    mkdirSync(dirname(join(vault, legacyPath)), { recursive: true });
+    writeFileSync(join(vault, legacyPath), original.body);
+    const plan = deriveNotes([makeRow({ value: { content: "Revised claim." } })], opts);
+    const result = await applyPlan(plan, opts);
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(vault, legacyPath), "utf8")).toContain("Revised claim.");
+    expect(existsSync(join(vault, plan.notes[0].relPath))).toBe(false);
+  });
+
+  it("refuses to overwrite an unrelated document at a planned path", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const plan = deriveNotes([makeRow()], opts);
+    const target = join(vault, plan.notes[0].relPath);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, "User-owned note.");
+    const result = await applyPlan(plan, opts);
+    expect(result.ok).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("User-owned note.");
+    expect(existsSync(join(vault, ".git"))).toBe(false);
+  });
+
+  it("refuses ambiguous legacy provenance before writing", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const plan = deriveNotes([makeRow()], opts);
+    mkdirSync(join(vault, "langgraph"));
+    for (const name of ["a.md", "b.md"])
+      writeFileSync(join(vault, "langgraph", name), plan.notes[0].body);
+    const result = await applyPlan(plan, opts);
+    expect(result.ok).toBe(false);
+    expect(existsSync(join(vault, plan.notes[0].relPath))).toBe(false);
+  });
+
+  it("previews the same legacy destination that apply will use", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const note = deriveNotes([makeRow()], opts).notes[0];
+    mkdirSync(join(vault, "langgraph"));
+    writeFileSync(join(vault, "langgraph/legacy.md"), note.body);
+    const plan = await prepareImportPlan(deriveNotes([makeRow()], opts), opts);
+    expect(plan.ok && plan.value.notes[0].relPath).toBe("langgraph/legacy.md");
+    expect(existsSync(join(vault, ".git"))).toBe(false);
+  });
+
+  it("does not confuse escaped references with another legacy source", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const legacy = deriveNotes([makeRow({ key: "%E8%A8%98" })], opts).notes[0];
+    mkdirSync(join(vault, "langgraph"));
+    writeFileSync(
+      join(vault, "langgraph/legacy.md"),
+      legacy.body.replace(legacy.sourceRef, legacy.legacySourceRef ?? ""),
+    );
+    const result = await applyPlan(deriveNotes([makeRow({ key: "記" })], opts), opts);
+    expect(result.ok).toBe(false);
+    expect(readFileSync(join(vault, "langgraph/legacy.md"), "utf8")).toContain("%E8%A8%98");
+  });
+
+  it("updates legacy Unicode references in place", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const row = makeRow({ key: "記憶", prefix: "org.團隊" });
+    const note = deriveNotes([row], opts).notes[0];
+    mkdirSync(join(vault, "langgraph"));
+    writeFileSync(
+      join(vault, "langgraph/legacy.md"),
+      note.body.replace(note.sourceRef, note.legacySourceRef ?? ""),
+    );
+    const result = await applyPlan(
+      deriveNotes([{ ...row, value: { content: "Changed memory." } }], opts),
+      opts,
+    );
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(vault, "langgraph/legacy.md"), "utf8")).toContain("Changed memory.");
+    expect(existsSync(join(vault, note.relPath))).toBe(false);
+  });
+
+  it("preserves both memories that formerly collided and updates one in place", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const rows = [makeRow({ key: "same1234-a" }), makeRow({ key: "same1234-b" })];
+    const plan = deriveNotes(rows, opts);
+    expect((await applyPlan(plan, opts)).ok).toBe(true);
+    for (const note of plan.notes)
+      expect(readFileSync(join(vault, note.relPath), "utf8")).toBe(note.body);
+    const changed = deriveNotes(
+      [{ ...rows[0], value: { content: "Updated first memory." } }],
+      opts,
+    );
+    expect((await applyPlan(changed, opts)).ok).toBe(true);
+    expect(readFileSync(join(vault, plan.notes[0].relPath), "utf8")).toContain(
+      "Updated first memory.",
+    );
+    expect(readFileSync(join(vault, plan.notes[1].relPath), "utf8")).toBe(plan.notes[1].body);
+  });
+
+  it("rejects a dangling destination alias before any writes", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const plan = deriveNotes([makeRow()], opts);
+    mkdirSync(dirname(join(vault, plan.notes[0].relPath)), { recursive: true });
+    const outside = join(makeVault(), "untouched.md");
+    symlinkSync(outside, join(vault, plan.notes[0].relPath));
+    expect((await applyPlan(plan, opts)).ok).toBe(false);
+    expect(existsSync(outside)).toBe(false);
+    expect(existsSync(join(vault, ".git"))).toBe(false);
   });
 
   it("no-ops cleanly on an empty plan", async () => {
