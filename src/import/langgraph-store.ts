@@ -397,13 +397,11 @@ export async function prepareImportPlan(
     const listed = await listFiles(collection.value.absPath);
     if (!listed.ok) return listed;
     const existingByRef = new Map<string, string[]>();
-    const occupied = new Set<string>();
     const existingBodies = new Map<string, string>();
     for (const relativePath of listed.value) {
       const path = join(opts.collection, relativePath);
       const target = importDestination(opts.vaultRoot, path);
       if (!target.ok) return target;
-      occupied.add(target.value.relPath);
       const parsed = parseDocument(await readFile(target.value.absPath, "utf8"));
       if (!parsed.ok) return parsed;
       existingBodies.set(target.value.relPath, parsed.value.content);
@@ -445,13 +443,13 @@ export async function prepareImportPlan(
       if (!target.ok) return target;
       if (destinations.has(target.value.relPath))
         return err(new Error(`duplicate import destination: ${relPath}`));
-      if (prior.size === 0 && occupied.has(target.value.relPath)) {
-        return err(new Error(`import destination belongs to another document: ${relPath}`));
-      }
-      // Also reject non-file destinations, which listFiles deliberately omits.
+      // Check the actual destination even when enumeration omitted it (for
+      // example an uppercase extension on a case-insensitive filesystem).
       try {
         if (!lstatSync(target.value.absPath).isFile())
           return err(new Error(`import destination is not a file: ${relPath}`));
+        if (prior.size === 0)
+          return err(new Error(`import destination belongs to another document: ${relPath}`));
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }

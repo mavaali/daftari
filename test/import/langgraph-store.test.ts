@@ -16,8 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { load } from "js-yaml";
-import { afterEach, describe, expect, it } from "vitest";
-
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyPlan,
   deriveNotes,
@@ -28,6 +27,7 @@ import {
   type StoreRow,
   slugifyKey,
 } from "../../src/import/langgraph-store.js";
+import * as storage from "../../src/storage/local.js";
 
 function makeRow(overrides: Partial<StoreRow> = {}): StoreRow {
   return {
@@ -196,6 +196,7 @@ describe("readStoreRows", () => {
 describe("applyPlan", () => {
   const tmpDirs: string[] = [];
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
@@ -266,6 +267,19 @@ describe("applyPlan", () => {
     const result = await applyPlan(plan, opts);
     expect(result.ok).toBe(false);
     expect(readFileSync(target, "utf8")).toBe("User-owned note.");
+    expect(existsSync(join(vault, ".git"))).toBe(false);
+  });
+
+  it("protects an occupied destination omitted by file enumeration", async () => {
+    const vault = makeVault();
+    const opts = makeOpts(vault);
+    const plan = deriveNotes([makeRow()], opts);
+    const target = join(vault, plan.notes[0].relPath);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, "Unlisted user note.");
+    vi.spyOn(storage, "listFiles").mockResolvedValueOnce({ ok: true, value: [] });
+    expect((await applyPlan(plan, opts)).ok).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("Unlisted user note.");
     expect(existsSync(join(vault, ".git"))).toBe(false);
   });
 
