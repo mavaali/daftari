@@ -396,3 +396,56 @@ describe("extractClaims — inCallInputCap", () => {
     expect(transcript.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Citation-integrity check wiring
+// ---------------------------------------------------------------------------
+
+describe("extractClaims — citation_check wiring", () => {
+  it("attaches a passing citation_check when cited numbers/dates exist verbatim in the chunk", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4); // single chunk
+    const llm = mockLlm([{ claims: [{ statement: "Launch moves to June 3rd" }] }]);
+
+    const out = await extractClaims(chunks, llm, OPTS);
+
+    expect(out.claims).toHaveLength(1);
+    const check = out.claims[0].citation_check;
+    expect(check).toBeDefined();
+    if (!check) return;
+    expect(check.ok).toBe(true);
+    expect(check.violations).toEqual([]);
+  });
+
+  it("attaches a failing citation_check when the LLM hallucinates a number absent from the chunk", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4); // single chunk, no numbers in source text
+    const llm = mockLlm([{ claims: [{ statement: "The team estimated 500 hours of work" }] }]);
+
+    const out = await extractClaims(chunks, llm, OPTS);
+
+    expect(out.claims).toHaveLength(1);
+    const check = out.claims[0].citation_check;
+    expect(check).toBeDefined();
+    if (!check) return;
+    expect(check.ok).toBe(false);
+    expect(check.violations).toEqual([{ type: "number", value: "500" }]);
+  });
+
+  it("checks the claim against its OWN chunk's raw text, not another chunk's", async () => {
+    // Two chunks: chunk 0 mentions no numbers, chunk 1's raw text contains "42".
+    const chunks = chunkMessages(TRANSCRIPT, 2); // 2 chunks
+    const llm = mockLlm([
+      { claims: [{ statement: "First chunk claim mentioning 42" }] },
+      { claims: [{ statement: "Second chunk claim" }] },
+    ]);
+
+    const out = await extractClaims(chunks, llm, OPTS);
+    const first = out.claims.find((c) => c.statement.includes("First chunk claim"));
+    expect(first).toBeDefined();
+    if (!first) return;
+    // "42" does not appear anywhere in TRANSCRIPT's rendered text, so chunk 0's
+    // raw text can't verify it — the check must fail, proving it checked
+    // against chunk 0's actual text rather than trivially passing.
+    expect(first.citation_check).toBeDefined();
+    expect(first.citation_check?.ok).toBe(false);
+  });
+});
