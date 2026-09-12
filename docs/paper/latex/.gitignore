@@ -1,0 +1,11 @@
+# LaTeX build artifacts — rebuild with: latexmk -xelatex preserve-dont-resolve.tex
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.xdv
+*.toc
+*.pdf
