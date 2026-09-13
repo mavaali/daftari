@@ -24,6 +24,7 @@ import {
   isUnderTmpdir,
   resolveAnswererClient,
   projectedConsolidateCalls,
+  rmVaultWithRetry,
 } from "./adapter.js";
 import { parseConfig } from "./config.js";
 
@@ -172,6 +173,66 @@ describe("teardown without setup", () => {
   it("is a safe no-op (nothing to remove)", async () => {
     const adapter = await createDaftariAdapter({ answererModel: "stub" });
     await expect(adapter.teardown()).resolves.toBeUndefined();
+  });
+});
+
+// --- rmVaultWithRetry ---
+//
+// Regression coverage for the recall-bench distill-arm CI flake: git's own
+// post-commit `gc --auto` daemonizes (gc.autoDetach defaults true) and can
+// keep repacking .git/objects/pack after our awaited `git commit` call has
+// already returned, so teardown's rm() can walk a directory that looked
+// empty and then hit ENOTEMPTY as the detached gc process writes into it.
+// rmVaultWithRetry absorbs that transient race with bounded retries, mirroring
+// the same fix already applied to this exact symptom in
+// test/helpers/temp-vault.ts's cleanupVault().
+function fsError(code: string, message: string): NodeJS.ErrnoException {
+  const e = new Error(message) as NodeJS.ErrnoException;
+  e.code = code;
+  return e;
+}
+
+describe("rmVaultWithRetry (teardown ENOTEMPTY resilience)", () => {
+  it("retries past a transient ENOTEMPTY and eventually succeeds", async () => {
+    let calls = 0;
+    const rmFn = async () => {
+      calls += 1;
+      if (calls < 3) {
+        throw fsError("ENOTEMPTY", "ENOTEMPTY: directory not empty, rmdir '/tmp/rb-x/.git/objects/pack'");
+      }
+    };
+    await expect(
+      rmVaultWithRetry("/tmp/rb-x", { retryDelayMs: 1 }, rmFn as unknown as typeof import("node:fs/promises").rm),
+    ).resolves.toBeUndefined();
+    expect(calls).toBe(3);
+  });
+
+  it("does not retry a non-transient error — fails fast on the first attempt", async () => {
+    let calls = 0;
+    const rmFn = async () => {
+      calls += 1;
+      throw fsError("EACCES", "EACCES: permission denied");
+    };
+    await expect(
+      rmVaultWithRetry("/tmp/rb-x", { retryDelayMs: 1 }, rmFn as unknown as typeof import("node:fs/promises").rm),
+    ).rejects.toThrow(/EACCES/);
+    expect(calls).toBe(1);
+  });
+
+  it("gives up after maxAttempts and reports the failure", async () => {
+    let calls = 0;
+    const rmFn = async () => {
+      calls += 1;
+      throw fsError("ENOTEMPTY", "ENOTEMPTY: directory not empty, rmdir '/tmp/rb-x/.git/objects/pack'");
+    };
+    await expect(
+      rmVaultWithRetry(
+        "/tmp/rb-x",
+        { maxAttempts: 3, retryDelayMs: 1 },
+        rmFn as unknown as typeof import("node:fs/promises").rm,
+      ),
+    ).rejects.toThrow(/still failing/);
+    expect(calls).toBe(3);
   });
 });
 

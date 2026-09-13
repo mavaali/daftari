@@ -18,7 +18,7 @@
 // Lifecycle methods MAY throw (per the bench adapter contract), unlike daftari's
 // internal Result convention.
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { runConsolidate } from "../../../dist/consolidate/index.js";
@@ -124,6 +124,51 @@ export function resolveAnswererClient(cfg: AdapterConfig, deps: AdapterDeps): Ll
   return cfg.answererTransport === "openrouter"
     ? createOpenRouterClient()
     : createAnthropicClient();
+}
+
+// Bounded retry around teardown's rm -rf. Git's own post-commit `gc --auto`
+// daemonizes (gc.autoDetach defaults true on Unix), so it can keep repacking
+// .git/objects/pack in the background after our awaited `git commit` call has
+// already returned — rm() then walks a directory that looked empty and hits
+// ENOTEMPTY (or EBUSY) as the detached gc writes into it. Only those two
+// transient codes are retried; anything else rethrows immediately. Mirrors the
+// fix already applied to this exact symptom in test/helpers/temp-vault.ts's
+// cleanupVault(). rmFn is a test seam (default: the real fs/promises rm).
+const RETRYABLE_RM_CODES = new Set(["ENOTEMPTY", "EBUSY"]);
+
+export async function rmVaultWithRetry(
+  path: string,
+  opts: { maxAttempts?: number; retryDelayMs?: number } = {},
+  rmFn: typeof rm = rm,
+): Promise<void> {
+  const maxAttempts = opts.maxAttempts ?? 40;
+  const retryDelayMs = opts.retryDelayMs ?? 120;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await rmFn(path, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (!code || !RETRYABLE_RM_CODES.has(code)) throw e;
+      lastError = e;
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+      }
+    }
+  }
+  let survivors: string[] = [];
+  try {
+    survivors = (await readdir(path, { recursive: true } as { recursive: true })).slice(0, 25);
+  } catch {
+    survivors = ["<unlistable>"];
+  }
+  throw new Error(
+    `recall-bench: teardown rm of ${path} still failing after ${maxAttempts} attempts; ` +
+      `surviving entries: ${survivors.join(", ")} — a straggler process (e.g. git auto-gc) is ` +
+      `likely still writing`,
+    { cause: lastError },
+  );
 }
 
 export async function createDaftariAdapter(
@@ -254,7 +299,7 @@ export async function createDaftariAdapter(
           `recall-bench: refusing to rm a vault outside os.tmpdir(): ${resolve(vaultRoot)}`,
         );
       }
-      await rm(resolve(vaultRoot), { recursive: true, force: true });
+      await rmVaultWithRetry(resolve(vaultRoot));
       vaultRoot = null;
       answer = null;
       compiler = null;
