@@ -55,6 +55,34 @@ describe("renderDocBody (P4 / R11)", () => {
   });
 });
 
+describe("renderDocBody code syntax highlighting (R11)", () => {
+  it("highlights a fenced code block with a recognized language using controlled hljs- classes", () => {
+    const { html } = renderDocBody("```js\nconst x = 1;\n```\n");
+    expect(html).toContain('class="hljs language-js"');
+    expect(html).toMatch(/class="hljs-[\w-]+"/);
+  });
+
+  it("only ever emits class names from the hljs/language- allowlist, never arbitrary text", () => {
+    const { html } = renderDocBody("```js\nconst x = 'a\"b<c'; // weird\n```\n");
+    const classNames = [...html.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1]!.split(/\s+/));
+    for (const name of classNames) {
+      expect(name).toMatch(/^(hljs|hljs-[\w-]+|language-[\w-]+)$/);
+    }
+  });
+
+  it("leaves a code block with an unrecognized language untouched but still safe", () => {
+    const { html } = renderDocBody("```made-up-lang\nfoo bar\n```\n");
+    expect(html).toContain("foo bar");
+    expect(html).not.toContain("hljs-");
+  });
+
+  it("leaves a code block without a language unhighlighted", () => {
+    const { html } = renderDocBody("```\nplain text\n```\n");
+    expect(html).toContain("plain text");
+    expect(html).not.toContain("hljs");
+  });
+});
+
 describe("doc page render integration (P4)", () => {
   let vault: string;
   beforeEach(() => {
