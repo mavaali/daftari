@@ -75,3 +75,23 @@ describe("viewer P1.5 — epistemic-first visual contract", () => {
     expect(html).toContain("dot bad"); // low confidence → bad dot
   });
 });
+
+describe("viewer R11 — code syntax highlighting styles", () => {
+  it("the doc page stylesheet styles hljs tokens", () => {
+    const html = renderDocPage({ path: "a.md", frontmatter: fm, bodyHtml: "", backlinks: [] });
+    expect(html).toContain(".hljs-comment");
+    expect(html).toContain(".hljs-keyword");
+  });
+
+  it("keeps the epistemic accent color reserved for contested — hljs rules never use --accent", () => {
+    const html = renderDocPage({ path: "a.md", frontmatter: fm, bodyHtml: "", backlinks: [] });
+    const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
+    expect(styleMatch).not.toBeNull();
+    const css = styleMatch![1]!;
+    const hljsRules = css.match(/\.hljs[\w-]*\s*\{[^}]*\}/g) ?? [];
+    expect(hljsRules.length).toBeGreaterThan(0);
+    for (const rule of hljsRules) {
+      expect(rule).not.toContain("--accent");
+    }
+  });
+});
