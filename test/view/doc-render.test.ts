@@ -62,11 +62,21 @@ describe("renderDocBody code syntax highlighting (R11)", () => {
     expect(html).toMatch(/class="hljs-[\w-]+"/);
   });
 
-  it("only ever emits class names from the hljs/language- allowlist, never arbitrary text", () => {
-    const { html } = renderDocBody("```js\nconst x = 'a\"b<c'; // weird\n```\n");
+  it("emits only grammar-derived class names, incl. nested-scope compound classes, never arbitrary text", () => {
+    // A function + class exercises highlight.js NESTED scopes, which emit bare
+    // compound classes like `function_`/`class_` (not just `hljs-*`). Those are
+    // still grammar-derived — never document text — so they are allowed; the
+    // weird string literal confirms document content never leaks into a class.
+    const { html } = renderDocBody(
+      "```js\nfunction foo() { const x = 'a\"b<c'; }\nclass Bar {}\n```\n",
+    );
     const classNames = [...html.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1]!.split(/\s+/));
+    // the nested-scope compound classes must actually be present — otherwise this
+    // is a false-confidence test (it passed before only because the fixture had
+    // no nesting, so `function_`/`class_` were never emitted to check).
+    expect(classNames).toContain("function_");
     for (const name of classNames) {
-      expect(name).toMatch(/^(hljs|hljs-[\w-]+|language-[\w-]+)$/);
+      expect(name).toMatch(/^(hljs|hljs-[\w-]+|language-[\w-]+|[a-z][a-z0-9]*_+)$/);
     }
   });
 

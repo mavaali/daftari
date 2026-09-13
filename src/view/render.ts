@@ -67,8 +67,10 @@ const HEADING_TAGS = new Set(["h1", "h2", "h3"]);
 
 // Fenced-code highlighting runs post-sanitize, like the link/heading pass
 // below: it walks the already-sanitized tree and only ever writes class names
-// it generates itself (lowlight's fixed "hljs-*" token set, plus our own
-// "hljs"/"language-*" markers), never anything derived from document text.
+// it generates itself — lowlight's grammar-derived classes (the "hljs-*" token
+// set plus the bare compound sub-scope classes like `function_`/`class_` that
+// highlight.js emits for nested scopes), plus our own "hljs"/"language-*"
+// markers — never anything derived from document text.
 // `common` is a ~35-language subset of highlight.js's full grammar catalogue —
 // enough for everyday fenced code without pulling every grammar into memory
 // (the dep-caution tradeoff: highlight.js ships all grammars on disk, but only
