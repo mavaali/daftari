@@ -21,6 +21,14 @@ import { listTensions } from "../../src/curation/tension.js";
 
 let vault: string;
 let preAdoption: string;
+// A per-process output dir for CLI report artifacts. The outputs used to land
+// in `join(vault, "..")` (= the shared $TMPDIR) under names keyed by the
+// deterministic commit hash — so two concurrent test processes (vitest runs
+// files in parallel workers; CI runs whole suites in parallel) wrote and
+// rmSync'd the SAME file, and one deleted it before the other read → empty
+// read → false-red under load. A unique mkdtemp dir makes every artifact path
+// process-local.
+let outDir: string;
 
 function git(args: string[], date: string): void {
   execFileSync("git", ["-C", vault, ...args], {
@@ -60,6 +68,7 @@ function md(path: string, validity: Record<string, string>): void {
 
 beforeAll(() => {
   vault = mkdtempSync(join(tmpdir(), "daftari-asof-validity-"));
+  outDir = mkdtempSync(join(tmpdir(), "daftari-asof-out-"));
   execFileSync("git", ["-C", vault, "init", "-q", "-b", "main"]);
 
   // Commit 1 — the pre-adoption state: no validity fields anywhere.
@@ -80,6 +89,7 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(vault, { recursive: true, force: true });
+  rmSync(outDir, { recursive: true, force: true });
 });
 
 describe("beliefSnapshot — validity partition", () => {
@@ -148,7 +158,7 @@ describe("daftari asof --valid (CLI)", () => {
     const head = execFileSync("git", ["-C", vault, "rev-parse", "HEAD"], {
       encoding: "utf-8",
     }).trim();
-    const out = join(vault, "..", `asof-flag-${head.slice(0, 8)}.md`);
+    const out = join(outDir, `asof-flag-${head.slice(0, 8)}.md`);
     const code = await runAsof([
       "--vault",
       vault,
@@ -171,12 +181,12 @@ describe("daftari asof --valid (CLI)", () => {
   });
 
   it("emits a Valid at section only when the flag is present", async () => {
-    const out = join(vault, "..", `asof-${Date.now()}.md`);
+    const out = join(outDir, `asof-${Date.now()}.md`);
     await runAsof(["--vault", vault, "HEAD", "--output", out]);
     const plain = readFileSync(out, "utf-8");
     expect(plain).not.toContain("## Valid at");
 
-    const out2 = join(vault, "..", `asof2-${Date.now()}.md`);
+    const out2 = join(outDir, `asof2-${Date.now()}.md`);
     await runAsof(["--vault", vault, "HEAD", "--valid", "2026-02-15", "--output", out2]);
     const dated = readFileSync(out2, "utf-8");
     expect(dated).toContain("## Valid at 2026-02-15");
@@ -185,7 +195,7 @@ describe("daftari asof --valid (CLI)", () => {
   });
 
   it("says so in words when nothing at the ref carries validity", async () => {
-    const out = join(vault, "..", `asof3-${Date.now()}.md`);
+    const out = join(outDir, `asof3-${Date.now()}.md`);
     await runAsof(["--vault", vault, preAdoption, "--valid", "2026-02-15", "--output", out]);
     const text = readFileSync(out, "utf-8");
     // A bare "0 covering" would read as "nothing was true then".

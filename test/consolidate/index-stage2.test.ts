@@ -60,6 +60,8 @@ vi.mock("../../src/tools/search.js", async () => {
 
 const { runConsolidate } = await import("../../src/consolidate/index.js");
 const { addTension } = await import("../../src/curation/tension.js");
+const { observeEdge } = await import("../../src/curation/edges.js");
+const { commit } = await import("../../src/utils/git.js");
 
 let dir: string;
 // Hermeticity: a developer shell with DAFTARI_LLM_TRANSPORT=openrouter (and a
@@ -101,6 +103,22 @@ function captureStdout(): { out: string[]; restore: () => void } {
     return true;
   });
   return { out, restore: () => spy.mockRestore() };
+}
+
+async function seedStrongDueEdge(fromPath: string, toPath: string): Promise<void> {
+  const at = new Date(Date.now() - 100 * 86_400_000).toISOString();
+  for (let i = 0; i < 6; i++) {
+    const result = await observeEdge(dir, {
+      fromPath,
+      toPath,
+      observedBy: `agent:seed-${i}`,
+      blind: true,
+      axis: "model",
+      model: `seed-model-${i}`,
+      at,
+    });
+    expect(result.ok).toBe(true);
+  }
 }
 
 describe("--mode flag validation", () => {
@@ -173,6 +191,90 @@ describe("Stage 2 dispatch — birth", () => {
       .filter((l) => l.trim())
       .map((l) => JSON.parse(l) as { decision?: string });
     expect(journal.some((r) => r.decision === "admitted")).toBe(true);
+  });
+});
+
+describe("Stage 2 dispatch — vanished revision endpoints", () => {
+  it("reports one terminal missing_endpoint row without retry work across cycles", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
+    await seedStrongDueEdge("a.md", "b.md");
+    await commit(dir, ["a.md", "b.md"], "seed docs", "agent:test");
+
+    const baselineOutput = captureStdout();
+    expect(await runConsolidate(["--vault", dir])).toBe(0);
+    baselineOutput.restore();
+
+    rmSync(join(dir, "b.md"));
+    await commit(dir, ["b.md"], "delete endpoint", "agent:test");
+    const edgeLogBefore = readFileSync(join(dir, ".daftari", "edges.jsonl"), "utf-8");
+
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const { out, restore } = captureStdout();
+      const errors: string[] = [];
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation((s) => {
+        errors.push(String(s));
+        return true;
+      });
+
+      const code = await runConsolidate(["--vault", dir, "--mode", "revision"]);
+      restore();
+      stderr.mockRestore();
+
+      expect(code).toBe(0);
+      const text = out.join("");
+      expect(text).toContain("skipped edge pairs (1):");
+      expect(text.match(/\[missing_endpoint\] a\.md ← b\.md/g)).toHaveLength(1);
+      expect(text).toContain("missing: b.md");
+      expect(text).toContain("panels_cast: 0 | votes_cast: 0");
+      expect(text).toContain("llm_calls: 0");
+      expect(errors.join("")).not.toContain("revision failed");
+      expect(readFileSync(join(dir, ".daftari", "edges.jsonl"), "utf-8")).toBe(edgeLogBefore);
+    }
+  });
+
+  it("deduplicates an event+decay pair and names both missing endpoints", async () => {
+    await seedStrongDueEdge("a.md", "b.md");
+    await commit(dir, ["a.md", "b.md"], "seed docs", "agent:test");
+
+    const baselineOutput = captureStdout();
+    expect(await runConsolidate(["--vault", dir])).toBe(0);
+    baselineOutput.restore();
+
+    rmSync(join(dir, "a.md"));
+    rmSync(join(dir, "b.md"));
+    await commit(dir, ["a.md", "b.md"], "delete both endpoints", "agent:test");
+
+    const { out, restore } = captureStdout();
+    const code = await runConsolidate(["--vault", dir]);
+    restore();
+
+    expect(code).toBe(0);
+    const text = out.join("");
+    expect(text).toContain("edge due-queue (0):");
+    expect(text).toContain("skipped edge pairs (1):");
+    expect(text.match(/\[missing_endpoint\] a\.md ← b\.md/g)).toHaveLength(1);
+    expect(text).toContain("missing: a.md, b.md");
+  });
+
+  it("keeps a valid directed cycle executable", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
+    writeFileSync(join(dir, "c.md"), readFileSync(join(dir, "a.md"), "utf-8").replaceAll("A", "C"));
+    await seedStrongDueEdge("a.md", "b.md");
+    await seedStrongDueEdge("b.md", "c.md");
+    await seedStrongDueEdge("c.md", "a.md");
+    await commit(dir, ["a.md", "b.md", "c.md"], "seed cyclic docs", "agent:test");
+
+    const { out, restore } = captureStdout();
+    const code = await runConsolidate(["--vault", dir, "--mode", "revision"]);
+    restore();
+
+    expect(code).toBe(0);
+    const text = out.join("");
+    expect(text).toContain("skipped edge pairs (0):");
+    expect(text).toContain("panels_cast: 3 | votes_cast: 6");
+    expect(text).toContain("llm_calls: 6");
   });
 });
 

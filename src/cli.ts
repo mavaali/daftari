@@ -23,6 +23,7 @@ import { main, parseFlag } from "./index.js";
 import { reindexVault, reindexWarnings } from "./search/reindex.js";
 import { commit } from "./utils/git.js";
 import { VAULT_GITIGNORE } from "./utils/vault-gitignore.js";
+import { DAFTARI_VERSION } from "./version.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,7 @@ Usage:
   daftari distill <file|-> [options]  Compile-on-ingest: extract claims from a source file (see: daftari distill --help)
   daftari canary [options]            Falsify the read-path fence (see: daftari canary --help)
   daftari eval [options]              Cortex quality metric (see: daftari eval --help)
+  daftari schema <infer|diff>         Infer/diff frontmatter schema (see: daftari schema --help)
   daftari backfill [options]          Derive frontmatter for an existing wiki (see: daftari backfill --help)
   daftari consolidate [options]       Cortex loop scheduler — emit due/birth queues (see: daftari consolidate --help)
   daftari court [rule <id>] [options] Tension Court — docket, briefs, rulings (see: daftari court --help)
@@ -53,6 +55,10 @@ Server options:
   --user <username>    Identity the server runs as (default: guest)
   --role <rolename>    RBAC role from .daftari/config.yaml (default: deny-all guest)
   --reindex            Rebuild the SQLite index from scratch, then exit
+
+Other:
+  --version, -v        Print the daftari version and exit
+  --help, -h           Show this usage screen
 
 Examples:
   npx daftari --init ./my-vault
@@ -270,6 +276,12 @@ export async function run(argv: string[]): Promise<void> {
     return;
   }
 
+  if (argv[0] === "schema") {
+    const { runSchema } = await import("./schema/index.js");
+    process.exitCode = await runSchema(argv.slice(1));
+    return;
+  }
+
   if (argv[0] === "backfill") {
     const { runBackfill } = await import("./backfill/index.js");
     process.exitCode = await runBackfill(argv.slice(1));
@@ -339,6 +351,11 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "distill") {
     const { runDistill } = await import("./distill/cli.js");
     process.exitCode = await runDistill(argv.slice(1));
+    return;
+  }
+
+  if (argv.includes("--version") || argv.includes("-v")) {
+    process.stdout.write(`${DAFTARI_VERSION}\n`);
     return;
   }
 

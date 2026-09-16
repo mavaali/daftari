@@ -6,7 +6,6 @@
 // bug cannot take the stdio connection down.
 
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
   acceptedContent,
   type CallToolResult,
@@ -23,6 +22,7 @@ import { federatedRefusal, scanArgsForFederatedPath } from "./federation/classif
 import { getMountRegistry } from "./federation/mounts.js";
 import { docUri, listResources, readResource, resourceTemplates } from "./resources.js";
 import { backlinksTools } from "./tools/backlinks.js";
+import { boardTools } from "./tools/board.js";
 import { canonTools } from "./tools/canon.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
@@ -39,16 +39,11 @@ import { tier2Tools } from "./tools/tier2.js";
 import { witnessTools } from "./tools/witness.js";
 import { writeTools } from "./tools/write.js";
 import type { ToolsConfig } from "./utils/config.js";
+import { DAFTARI_VERSION } from "./version.js";
 
 export const SERVER_NAME = "daftari";
 
-// The version is read from the package manifest so it never drifts from the
-// published version. src/server.ts and dist/server.js both sit one level under
-// the package root, so this relative path resolves the same in dev and build.
-const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as {
-  version: string;
-};
-export const SERVER_VERSION = manifest.version;
+export const SERVER_VERSION = DAFTARI_VERSION;
 
 // The full registry. Static — assembled once at module load, shared by every
 // server instance and by the tier-exposure helpers below.
@@ -69,6 +64,7 @@ const allTools: ToolDefinition[] = [
   ...tier1Tools,
   ...tier2Tools,
   ...edgeStalenessTools,
+  ...boardTools,
 ];
 
 export function registeredToolNames(): string[] {

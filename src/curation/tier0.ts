@@ -14,13 +14,13 @@
 //      Ratification is already a gate, so blocking there does not violate the
 //      advisory-curation rule; the direct write tools stay unblocked.
 //
-// Scope discipline: referential integrity covers the TYPED dependency
-// channels only — the `sources` frontmatter array and `superseded_by`. Body
-// links are the advisory channel (see tension-blast.ts) and broken body links
-// are the audit engine's territory (audit/checks/broken_refs). A `sources`
-// entry is only checked when it looks like a vault path (contains "/" or ends
-// in ".md"); opaque citation strings ("interview-2026-04", a book title) and
-// external URLs are legitimate non-vault citations and are never flagged.
+// Scope discipline: referential integrity covers vault dependencies declared
+// by `sources` plus `superseded_by`. Body links are the advisory channel (see
+// tension-blast.ts), and broken body links belong to audit/checks/broken_refs.
+// `vault:` entries are explicit dependencies and must resolve. Existing legacy
+// unprefixed references retain their historical in-vault resolution; unresolved
+// legacy strings are opaque provenance, not certain failures. `repo:`, web,
+// distill, and other URI schemes never enter the vault dependency graph.
 //
 // Lifecycle consistency deliberately does NOT treat a `superseded` source as
 // a conflict: a superseded doc has a designated successor and the
@@ -30,6 +30,7 @@
 // alone already routes readers away), and archived (no live claim).
 
 import type { Status } from "../frontmatter/types.js";
+import { resolveVaultSourceRef } from "./source-refs.js";
 import { buildPathIndexes, type LoadedDoc, resolveLink } from "./vault-docs.js";
 
 // Lint check names contributed by this module (appended to LINT_CHECKS).
@@ -51,15 +52,9 @@ export const CONFLICTING_SOURCE_STATUSES: ReadonlySet<Status> = new Set([
   "archived",
 ]);
 
-// Exported so write-time advisories (domain_warnings) share the same
-// definition of "external reference" and the two can't drift.
-export const EXTERNAL_REF = /^(https?:|mailto:)/i;
-
-// A sources entry is checked for referential integrity only when it plausibly
-// names a vault document. Everything else is an opaque citation.
-function isPathLike(raw: string): boolean {
-  return raw.includes("/") || raw.endsWith(".md");
-}
+// `superseded_by` predates typed source references. Keep its historical URL
+// guard separate: unlike `sources`, this field is otherwise always a vault path.
+const EXTERNAL_REF = /^(https?:|mailto:)/i;
 
 export interface Tier0Finding {
   path: string;
@@ -100,10 +95,11 @@ export function tier0Findings(docs: LoadedDoc[]): Tier0Findings {
     const leaks: string[] = [];
 
     for (const raw of doc.frontmatter.sources ?? []) {
-      if (EXTERNAL_REF.test(raw)) continue;
-      const target = resolveLink(raw, doc.path, byPath, byBasename);
+      const source = resolveVaultSourceRef(raw, doc.path, byPath, byBasename);
+      if (source.kind !== "vault") continue;
+      const target = source.target;
       if (!target) {
-        if (isPathLike(raw)) broken.push(raw);
+        if (source.explicit) broken.push(raw);
         continue;
       }
       if (target === doc.path) continue;
@@ -175,7 +171,7 @@ export interface PromoteGateResult {
 }
 
 // Would promoting targetPath to canonical create a tier-0 violation? Checks
-// the target's schema report, its path-like sources for resolvability, and
+// the target's schema report, its explicit vault sources for resolvability, and
 // its resolved sources for conflicting lifecycle states (as-if canonical —
 // the post-state of the promote).
 export function tier0PromoteGate(
@@ -201,10 +197,11 @@ export function tier0PromoteGate(
   }
 
   for (const raw of target.frontmatter.sources ?? []) {
-    if (EXTERNAL_REF.test(raw)) continue;
-    const resolved = resolveLink(raw, target.path, byPath, byBasename);
+    const source = resolveVaultSourceRef(raw, target.path, byPath, byBasename);
+    if (source.kind !== "vault") continue;
+    const resolved = source.target;
     if (!resolved) {
-      if (isPathLike(raw)) violations.push(`unresolvable source: ${raw}`);
+      if (source.explicit) violations.push(`unresolvable source: ${raw}`);
       continue;
     }
     if (resolved === target.path) continue;
@@ -242,10 +239,10 @@ export function tier0DeprecateGate(
   for (const doc of docs) {
     if (doc.path === targetPath) continue;
     if (doc.frontmatter.status !== "canonical") continue;
-    const cites = (doc.frontmatter.sources ?? []).some(
-      (raw) =>
-        !EXTERNAL_REF.test(raw) && resolveLink(raw, doc.path, byPath, byBasename) === targetPath,
-    );
+    const cites = (doc.frontmatter.sources ?? []).some((raw) => {
+      const source = resolveVaultSourceRef(raw, doc.path, byPath, byBasename);
+      return source.kind === "vault" && source.target === targetPath;
+    });
     if (!cites) continue;
     if (visible && !visible(doc)) hiddenDependents += 1;
     else dependents.push(doc.path);

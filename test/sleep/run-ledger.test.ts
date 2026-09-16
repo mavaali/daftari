@@ -15,6 +15,13 @@ import {
 function cycle(overrides: Partial<SleepCycleResult> = {}): SleepCycleResult {
   return {
     staleness: { fresh: 10, aging: 2, stale: 1, total: 13 },
+    compiledEdgeCoverage: {
+      status: "partial",
+      total_documents: 13,
+      instrumented_documents: 5,
+      uninstrumented_documents: 8,
+      message: "compiled-edge data observed for 5 of 13 docs (8 uninstrumented)",
+    },
     wake: [],
     decayedQuiet: [],
     generativeStale: 0,
@@ -98,6 +105,12 @@ describe("sleep run ledger (slice B)", () => {
     const s = summarizeCircadian(cycle());
     expect(s).toMatchObject({
       staleness: { fresh: 10, aging: 2, stale: 1, total: 13 },
+      compiledEdgeCoverage: {
+        status: "partial",
+        total_documents: 13,
+        instrumented_documents: 5,
+        uninstrumented_documents: 8,
+      },
       wake: 0,
       tensionsOpen: 3,
       ratification: { pending: 2, ratified: 5, rejected: 1, expired: 0 },

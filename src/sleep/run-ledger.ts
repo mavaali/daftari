@@ -107,6 +107,7 @@ export function readRun(vaultRoot: string, id: string): RunRecord | null {
 export function summarizeCircadian(cycle: SleepCycleResult): Record<string, unknown> {
   return {
     staleness: cycle.staleness,
+    compiledEdgeCoverage: cycle.compiledEdgeCoverage,
     wake: cycle.wake.length,
     decayedQuiet: cycle.decayedQuiet.length,
     generativeStale: cycle.generativeStale,

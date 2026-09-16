@@ -349,6 +349,37 @@ describe("write tools", () => {
       expect(clean.value.domain_warnings).toBeUndefined();
     }, 60_000);
 
+    it("follows explicit vault sources but not same-shaped repository sources", async () => {
+      await vaultWrite(vault, {
+        path: "sketches/source.md",
+        frontmatter: newFrontmatter({
+          title: "Source",
+          domain: "generative",
+          collection: "sketches",
+        }),
+        body: "# Source\n",
+        agent: AGENT,
+      });
+
+      const vaultRef = await vaultWrite(vault, {
+        path: "pricing/vault-ref.md",
+        frontmatter: newFrontmatter({ sources: ["vault:sketches/source.md"] }),
+        body: "# Vault ref\n",
+        agent: AGENT,
+      });
+      expect(vaultRef.ok).toBe(true);
+      if (vaultRef.ok) expect(vaultRef.value.domain_warnings).toHaveLength(1);
+
+      const repoRef = await vaultWrite(vault, {
+        path: "pricing/repo-ref.md",
+        frontmatter: newFrontmatter({ sources: ["repo:sketches/source.md"] }),
+        body: "# Repo ref\n",
+        agent: AGENT,
+      });
+      expect(repoRef.ok).toBe(true);
+      if (repoRef.ok) expect(repoRef.value.domain_warnings).toBeUndefined();
+    }, 60_000);
+
     it("an append that links a generative doc warns too", async () => {
       await vaultWrite(vault, {
         path: "sketches/wild-idea.md",

@@ -9,8 +9,15 @@
 // Result, never throws) plus an MCP ToolDefinition, mirroring the read- and
 // write-path tools.
 
-import { type AccessContext, canRatify, canRead, hasAnyRead } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canRatify,
+  canRead,
+  canVerifyRepoSources,
+  hasAnyRead,
+} from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
+import type { CompiledEdgeCoverageSummary } from "../curation/consumes.js";
 import type { CoverageEquitySummary } from "../curation/coverage.js";
 import {
   clip,
@@ -398,6 +405,7 @@ export interface VaultLintResult {
   stagedActions: StagedActionLintItem[];
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
+  compiledEdgeCoverage: CompiledEdgeCoverageSummary;
   reviewThroughput: ReviewThroughputSummary;
 }
 
@@ -439,7 +447,12 @@ export async function vaultLint(
   try {
     report = await runLint(
       vaultRoot,
-      access ? { pathVisible: (p) => sourceReadable(db, access, p) } : {},
+      access
+        ? {
+            pathVisible: (p) => sourceReadable(db, access, p),
+            verifyRepoSources: canVerifyRepoSources(access.role),
+          }
+        : {},
     );
   } finally {
     db?.close();
@@ -457,6 +470,7 @@ export async function vaultLint(
       stagedActions: report.value.stagedActions,
       shadowActions: report.value.shadowActions,
       coverageEquity: report.value.coverageEquity,
+      compiledEdgeCoverage: report.value.compiledEdgeCoverage,
       reviewThroughput: report.value.reviewThroughput,
     });
   }
@@ -470,6 +484,7 @@ export async function vaultLint(
     stagedActions: report.value.stagedActions,
     shadowActions: report.value.shadowActions,
     coverageEquity: report.value.coverageEquity,
+    compiledEdgeCoverage: report.value.compiledEdgeCoverage,
     reviewThroughput: report.value.reviewThroughput,
   });
 }
@@ -989,6 +1004,27 @@ const lintOutputSchema: Record<string, unknown> = {
       ],
       additionalProperties: false,
     },
+    compiledEdgeCoverage: {
+      type: "object",
+      description:
+        "Coverage of mechanically observed compiled dependencies over readable documents; " +
+        "separate from freshness and dependency completeness",
+      properties: {
+        status: { type: "string", enum: ["no-data", "partial", "complete"] },
+        total_documents: { type: "integer" },
+        instrumented_documents: { type: "integer" },
+        uninstrumented_documents: { type: "integer" },
+        message: { type: "string" },
+      },
+      required: [
+        "status",
+        "total_documents",
+        "instrumented_documents",
+        "uninstrumented_documents",
+        "message",
+      ],
+      additionalProperties: false,
+    },
     reviewThroughput: {
       type: "object",
       properties: {
@@ -1030,6 +1066,7 @@ const lintOutputSchema: Record<string, unknown> = {
     "stagedActions",
     "shadowActions",
     "coverageEquity",
+    "compiledEdgeCoverage",
     "reviewThroughput",
   ],
   additionalProperties: false,
@@ -1111,7 +1148,8 @@ export function summarizeLint(value: unknown): string {
     `staged: ${report.stagedActions.length} pending, ` +
       `${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
       `shadow: ${report.shadowActions.total} logged, ${report.shadowActions.gated} would-gate; ` +
-      `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s)`,
+      `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s); ` +
+      `compiled-edge coverage: ${report.compiledEdgeCoverage.message}`,
   ];
 
   const top = flat.slice(0, LINT_SUMMARY_TOP_FINDINGS);

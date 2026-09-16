@@ -35,6 +35,13 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/erasures.jsonl
 .daftari/consolidate-state.json
 .daftari/distill-state.json
+# OAuth credentials, webhook metadata, durable event delivery, and review-only
+# source lifecycle records are machine-local integration state.
+.daftari/integrations.state.enc
+.daftari/integrations.state.enc.*.tmp
+.daftari/integration-queue.json
+.daftari/integration-queue.json.tmp-*
+.daftari/integration-review.jsonl
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl
@@ -45,11 +52,19 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 // A stable line guaranteed to appear in VAULT_GITIGNORE; used as the marker to
 // detect whether an existing .gitignore already carries the Daftari block.
 const MARKER = ".daftari/index.db";
+const REQUIRED_INTEGRATION_RULES = [
+  ".daftari/integrations.state.enc",
+  ".daftari/integrations.state.enc.*.tmp",
+  ".daftari/integration-queue.json",
+  ".daftari/integration-queue.json.tmp-*",
+  ".daftari/integration-review.jsonl",
+] as const;
 
 // Ensures the vault's .gitignore carries the Daftari ignore block. Idempotent:
 //   "created"  — no .gitignore existed; wrote VAULT_GITIGNORE.
 //   "appended" — a .gitignore existed without the block; appended it.
-//   "present"  — the block was already there; left the file untouched.
+//   "present"  — the complete block was already there; left the file untouched.
+// Older Daftari blocks are upgraded by appending only newly required rules.
 export async function ensureVaultGitignore(
   vaultRoot: string,
 ): Promise<"created" | "appended" | "present"> {
@@ -66,7 +81,15 @@ export async function ensureVaultGitignore(
     throw e;
   }
 
-  if (existing.includes(MARKER)) return "present";
+  if (existing.includes(MARKER)) {
+    const missingRules = REQUIRED_INTEGRATION_RULES.filter((rule) => !existing.includes(rule));
+    if (missingRules.length === 0) return "present";
+    await appendFile(
+      path,
+      `\n# Daftari local integration state — never commit it.\n${missingRules.join("\n")}\n`,
+    );
+    return "appended";
+  }
 
   // Separate the user's content from our block so it doesn't glue onto their
   // last line. A leading "\n" guarantees a clean break whether or not the file

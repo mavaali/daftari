@@ -31,6 +31,27 @@ describe("diffBaseline", () => {
     expect(diffs).toHaveLength(3);
   });
 
+  it("applies an explicitly supplied numeric tolerance", () => {
+    write({ a: { score: 0.5, ranks: [1, 2] } });
+    expect(
+      diffBaseline(file(), { a: { score: 0.500_001, ranks: [1, 2] } }, { numericTolerance: 0 }),
+    ).toHaveLength(1);
+    expect(
+      diffBaseline(
+        file(),
+        { a: { score: 0.500_001, ranks: [1, 2] } },
+        { numericTolerance: 0.000_001 },
+      ),
+    ).toEqual([]);
+  });
+
+  it("rejects invalid numeric tolerances", () => {
+    write({ a: { score: 0.5 } });
+    expect(() => diffBaseline(file(), { a: { score: 0.5 } }, { numericTolerance: -1 })).toThrow(
+      "finite non-negative",
+    );
+  });
+
   it("reports a missing baseline file as a diff, not a crash", () => {
     const diffs = diffBaseline(file(), { a: { hit: true } });
     expect(diffs).toHaveLength(1);

@@ -66,6 +66,16 @@ function isExcluded(relPath: string): boolean {
   // manifest. After a restore, remotes and local config are re-added by the
   // operator.
   if (relPath === ".git/config" || relPath.startsWith(".git/hooks/")) return true;
+  // Vault hooks (.daftari/config.yaml → hooks.pre_write*) are ESM modules the
+  // server dynamic-imports on write. Carrying them through the backing would
+  // turn backend write access — or a poisoned restore manifest — into code
+  // execution (F2), exactly the risk that excludes git hooks above. Hook
+  // paths are arbitrary vault-relative paths, so exclude by executable module
+  // extension rather than a fixed directory; a restored config that references
+  // one then fails closed (hook file not found) until trusted local
+  // reprovisioning. A markdown knowledge vault never needs to back up JS.
+  const lower = relPath.toLowerCase();
+  if (lower.endsWith(".mjs") || lower.endsWith(".cjs") || lower.endsWith(".js")) return true;
   // Defensive: a vault should never contain one, but never ship it if it does.
   return relPath.split("/").includes("node_modules");
 }

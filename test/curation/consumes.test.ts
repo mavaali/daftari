@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type ConsumesEdge,
+  compiledEdgeCoverageSummary,
   currentConsumesEdges,
   forwardConsumes,
   listConsumesEdges,
@@ -95,5 +96,44 @@ describe("consumes graph (#233)", () => {
         .sort(),
     ).toEqual(["pricing/x.md", "pricing/y.md"]);
     expect(reverseConsumes(all.value, "pricing/unrelated.md")).toEqual([]);
+  });
+
+  it("distinguishes no compiled-edge data from partial and complete observation", () => {
+    const docs = ["pricing/a.md", "pricing/b.md"];
+    expect(compiledEdgeCoverageSummary(docs, [])).toEqual({
+      status: "no-data",
+      total_documents: 2,
+      instrumented_documents: 0,
+      uninstrumented_documents: 2,
+      message: "no compiled-edge data (2 docs uninstrumented)",
+    });
+
+    const edge = (artifact: string, unit: string, compile_ts: string): ConsumesEdge => ({
+      artifact,
+      unit,
+      edge_type: "whole-doc-read",
+      fields: ["*"],
+      run_id: compile_ts,
+      compile_ts,
+    });
+    expect(
+      compiledEdgeCoverageSummary(docs, [
+        edge("pricing/a.md", "pricing/source.md", "2026-01-01T00:00:00Z"),
+      ]),
+    ).toMatchObject({
+      status: "partial",
+      instrumented_documents: 1,
+      uninstrumented_documents: 1,
+    });
+    expect(
+      compiledEdgeCoverageSummary(docs, [
+        edge("pricing/a.md", "pricing/source.md", "2026-01-01T00:00:00Z"),
+        edge("pricing/b.md", "pricing/source.md", "2026-01-02T00:00:00Z"),
+      ]),
+    ).toMatchObject({
+      status: "complete",
+      instrumented_documents: 2,
+      uninstrumented_documents: 0,
+    });
   });
 });

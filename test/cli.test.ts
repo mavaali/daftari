@@ -24,6 +24,9 @@ describe("daftari --init", () => {
     expect(code).toBe(0);
 
     expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+    expect(readFileSync(join(vault, ".daftari", "config.yaml"), "utf8")).toContain(
+      "manage_integrations: true",
+    );
     expect(existsSync(join(vault, ".gitignore"))).toBe(true);
     for (const collection of ["competitive-intel", "pricing", "moonshot", "_drafts"]) {
       expect(existsSync(join(vault, collection))).toBe(true);
@@ -107,6 +110,36 @@ describe("daftari --vault", () => {
   }, 60_000);
 });
 
+describe("daftari --version", () => {
+  const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf-8")) as {
+    version: string;
+  };
+
+  it("prints the package version on --version and exits 0", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    process.exitCode = undefined;
+    await run(["--version"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining(manifest.version));
+    expect(process.exitCode ?? 0).toBe(0);
+    out.mockRestore();
+    process.exitCode = undefined;
+  });
+
+  it("prints the package version on the -v short flag", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    process.exitCode = undefined;
+    await run(["-v"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining(manifest.version));
+    expect(process.exitCode ?? 0).toBe(0);
+    out.mockRestore();
+    process.exitCode = undefined;
+  });
+});
+
 describe("daftari audit subcommand", () => {
   it("prints audit help on `daftari audit --help`", async () => {
     const { vi } = await import("vitest");
@@ -124,6 +157,20 @@ describe("daftari audit subcommand", () => {
     await run(["audit"]);
     expect(out).toHaveBeenCalledWith(expect.stringContaining("daftari audit"));
     out.mockRestore();
+  });
+});
+
+describe("daftari schema subcommand", () => {
+  it("routes schema help through the top-level CLI", async () => {
+    const { vi } = await import("vitest");
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { run } = await import("../src/cli.js");
+    process.exitCode = undefined;
+    await run(["schema", "--help"]);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining("daftari schema"));
+    expect(process.exitCode).toBe(0);
+    out.mockRestore();
+    process.exitCode = undefined;
   });
 });
 

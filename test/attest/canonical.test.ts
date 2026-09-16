@@ -48,7 +48,7 @@ describe("manifest canonicalization round-trip", () => {
     const m = await buildManifest(vault, { daftariVersion: "0.0.0-test" });
     expect(m.ok).toBe(true);
     if (!m.ok) return;
-    const keys = generateAttestKeys(vault + "-keys");
+    const keys = generateAttestKeys(`${vault}-keys`);
     expect(keys.ok).toBe(true);
     if (!keys.ok) return;
     const key = loadAttestKey(keys.value.keyPath);
@@ -63,6 +63,6 @@ describe("manifest canonicalization round-trip", () => {
     expect(rebytes).toBe(manifestBytes(envelope.manifest));
     // …and the signature verifies over the RE-PARSED bytes.
     expect(verifyBytes(key.value.publicKeyPem, rebytes, reparsed.signature.value)).toBe(true);
-    rmSync(vault + "-keys", { recursive: true, force: true });
+    rmSync(`${vault}-keys`, { recursive: true, force: true });
   });
 });

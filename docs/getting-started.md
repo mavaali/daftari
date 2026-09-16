@@ -57,7 +57,8 @@ Add Daftari to your `claude_desktop_config.json` (on macOS:
     "daftari": {
       "command": "npx",
       "args": [
-        "daftari",
+        "-y",
+        "daftari@latest",
         "--vault",
         "/absolute/path/to/my-vault",
         "--user",
@@ -70,9 +71,11 @@ Add Daftari to your `claude_desktop_config.json` (on macOS:
 }
 ```
 
-Use an absolute vault path. Restart Claude Desktop and the 13 `vault_*` tools
-appear. The rest of this walkthrough describes those tool calls — an agent
-makes them for you, but they map one-to-one to what you would ask for.
+Use an absolute vault path. Restart Claude Desktop and Daftari's advertised
+`vault_*` tools appear. The exact set depends on the `tools.tier` configured for
+the vault; MCP clients receive current names and schemas from `tools/list`.
+The rest of this walkthrough describes those tool calls—an agent makes them
+for you, but they map one-to-one to what you would ask for.
 
 ## 4. Write your first document
 
@@ -115,23 +118,56 @@ It returns ranked hits with snippets and per-ranker scores. `vault_search_relate
 takes a document path instead of a query and surfaces thematically adjacent
 documents — useful before writing, to find what the vault already knows.
 
+To filter custom frontmatter, first declare the field under `schema_extensions`
+and opt it into `indexed_fields` in `.daftari/config.yaml`:
+
+```yaml
+schema_extensions:
+  priority:
+    type: number
+  due_date:
+    type: date
+indexed_fields: [priority, due_date]
+```
+
+Then constrain a text query, or omit `query` for a filter-only lookup:
+
+```jsonc
+// vault_search
+{
+  "query": "northwind launch",
+  "filters": [
+    { "field": "priority", "op": "gte", "value": 2 },
+    { "field": "due_date", "op": "lte", "value": "2026-09-30" }
+  ]
+}
+```
+
+All predicates are ANDed, and a document missing a filtered field does not
+match. See [Schema extensions](schema-extensions.md#structured-search-with-indexed_fields)
+for the supported types, operators, caps, filter-only ordering, and federation
+rules.
+
 ## 6. Lint the vault
 
-`vault_lint` runs six advisory curation checks across the whole vault:
+`vault_lint` runs advisory curation checks across the whole vault:
 
 ```jsonc
 // vault_lint
 {}
 ```
 
-It reports — never fixes:
+It reports—never fixes—problems such as:
 
 - **staleFiles** — past their `ttl_days` and overdue for review
 - **orphanFiles** — no inbound links from any other document
 - **oldDrafts** — drafts that have sat unpromoted too long
 - **stagnantLowConfidence** — low-confidence documents that have not improved
-- **retiredStillLinked** — deprecated or superseded documents still cited by canonical ones
-- **unansweredQuestions** — questions in `questions_raised` that no document answers
+- **retiredStillLinked** — retired sources still cited by canonical documents
+- **unansweredQuestions** — open questions no document answers
+
+The full report also covers structural, grounding, validity, edge, and
+cross-domain problems as those features apply to the vault.
 
 Pass `{ "filter": "oldDrafts" }` to restrict the report to one check.
 
@@ -186,3 +222,4 @@ it did, and it knows *how* it came to know it.
 - [architecture.md](architecture.md) — how the layers fit together.
 - [curation-workflow.md](curation-workflow.md) — the reference loop for acting on `vault_lint` output.
 - [file-format.md](file-format.md) — the complete frontmatter reference.
+- [schema-extensions.md](schema-extensions.md) — typed custom fields and opt-in filtering.

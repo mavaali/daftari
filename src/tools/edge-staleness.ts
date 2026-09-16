@@ -25,7 +25,11 @@
 // the empty report, indistinguishable from a nonexistent one.
 
 import { type AccessContext, hasAnyRead } from "../access/rbac.js";
-import { listConsumesEdges } from "../curation/consumes.js";
+import {
+  type CompiledEdgeCoverageSummary,
+  compiledEdgeCoverageSummary,
+  listConsumesEdges,
+} from "../curation/consumes.js";
 import {
   splitUpstreamVisibility,
   summarizeUpstream,
@@ -36,9 +40,10 @@ import {
 import { listEdges } from "../curation/edges.js";
 import { readProvenanceLog } from "../curation/provenance.js";
 import { readReadLog } from "../curation/read-log.js";
-import { sourceReadable } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../curation/tension-access.js";
 import type { HiddenDownstream } from "../curation/tension-blast.js";
 import { readTier2Verdicts } from "../curation/tier2.js";
+import { loadDocuments } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { canonicalVaultRelPath, readFile, resolveVaultPath } from "../storage/local.js";
@@ -74,6 +79,10 @@ export interface BrokenReadReport {
   // Reported so a low rate over a mostly-uninstrumented window cannot pass
   // for a healthy one.
   uninstrumented: number;
+  // Separate from freshness: whether current documents have any mechanically
+  // observed compiled inputs at all. Counts are scoped to the caller's
+  // readable document set; no paths or edge cardinalities cross this surface.
+  compiled_edge_coverage: CompiledEdgeCoverageSummary;
 }
 
 async function artifactReport(
@@ -92,7 +101,7 @@ async function artifactReport(
     summary: summarizeUpstream([]),
   });
 
-  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  const db = openIndexForAccessOrNull(vaultRoot);
   try {
     // Unreadable anchor: the empty report, byte-identical to a document with
     // no upstream edges — nothing below is computed, so the response cannot
@@ -135,6 +144,7 @@ async function artifactReport(
       declaredUnits,
       earned,
       verdicts: verdicts.value,
+      isVerifiable: (unit) => sourceVerifiable(db, access, unit),
     });
 
     const { visible, hiddenPending } = access
@@ -156,9 +166,25 @@ async function artifactReport(
 async function brokenReadReport(
   vaultRoot: string,
   windowDays: number,
+  access?: AccessContext,
 ): Promise<Result<BrokenReadReport, Error>> {
   const log = await readReadLog(vaultRoot);
   if (!log.ok) return log;
+  const docs = await loadDocuments(vaultRoot);
+  if (!docs.ok) return docs;
+  const consumes = await listConsumesEdges(vaultRoot);
+  if (!consumes.ok) return consumes;
+
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  let readablePaths: string[];
+  try {
+    readablePaths = docs.value
+      .filter((doc) => !access || sourceReadable(db, access, doc.path))
+      .map((doc) => doc.path);
+  } finally {
+    db?.close();
+  }
+  const compiledEdgeCoverage = compiledEdgeCoverageSummary(readablePaths, consumes.value);
 
   const cutoff = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
   let serves = 0;
@@ -192,6 +218,7 @@ async function brokenReadReport(
     broken_read_rate: serves > 0 ? brokenServes / serves : null,
     by_tool: byTool,
     uninstrumented,
+    compiled_edge_coverage: compiledEdgeCoverage,
   });
 }
 
@@ -221,7 +248,7 @@ export async function vaultStaleness(
     }
     days = args.days;
   }
-  return brokenReadReport(vaultRoot, days);
+  return brokenReadReport(vaultRoot, days, access);
 }
 
 // One classified upstream edge (UpstreamStaleness).
@@ -236,7 +263,13 @@ const upstreamStalenessSchema: Record<string, unknown> = {
     },
     staleness: {
       type: "string",
-      enum: ["current", "pending-unchecked", "pending-compatible", "pending-broken"],
+      enum: [
+        "current",
+        "pending-unchecked",
+        "pending-compatible",
+        "pending-broken",
+        "unverifiable",
+      ],
       description: "Compatibility class of the change since this edge's baseline",
     },
     baseline: {
@@ -287,8 +320,15 @@ const artifactStalenessSchema: Record<string, unknown> = {
         pending_unchecked: { type: "integer" },
         pending_compatible: { type: "integer" },
         pending_broken: { type: "integer" },
+        unverifiable: { type: "integer" },
       },
-      required: ["current", "pending_unchecked", "pending_compatible", "pending_broken"],
+      required: [
+        "current",
+        "pending_unchecked",
+        "pending_compatible",
+        "pending_broken",
+        "unverifiable",
+      ],
     },
   },
   required: ["mode", "artifact", "edges", "hidden_pending", "summary"],
@@ -329,6 +369,27 @@ const brokenReadReportSchema: Record<string, unknown> = {
         "In-window entries predating the telemetry (no broken_upstream field), " +
         "so a low rate over a mostly-uninstrumented window cannot pass for a healthy one",
     },
+    compiled_edge_coverage: {
+      type: "object",
+      description:
+        "Compiled-dependency instrumentation coverage over documents readable by the caller; " +
+        "separate from freshness and never a claim that every expected input was captured",
+      properties: {
+        status: { type: "string", enum: ["no-data", "partial", "complete"] },
+        total_documents: { type: "integer" },
+        instrumented_documents: { type: "integer" },
+        uninstrumented_documents: { type: "integer" },
+        message: { type: "string" },
+      },
+      required: [
+        "status",
+        "total_documents",
+        "instrumented_documents",
+        "uninstrumented_documents",
+        "message",
+      ],
+      additionalProperties: false,
+    },
   },
   required: [
     "mode",
@@ -338,6 +399,7 @@ const brokenReadReportSchema: Record<string, unknown> = {
     "broken_read_rate",
     "by_tool",
     "uninstrumented",
+    "compiled_edge_coverage",
   ],
 };
 
@@ -358,7 +420,9 @@ export const edgeStalenessTools: ToolDefinition[] = [
       "Without 'artifact': the vault-global broken-read report over the " +
       "read log — what fraction of served reads (vault_read + search hits, " +
       "last 'days' days, default 30) carried at least one pending-broken " +
-      "upstream at serve time. Distinct from TTL decay (doc age) and audit " +
+      "upstream at serve time, plus compiled-edge instrumentation coverage " +
+      "so an absent machine-local consumes log cannot pass for all-current. " +
+      "Distinct from TTL decay (doc age) and audit " +
       "staleness (link mtime ordering): this is per-edge compatibility, " +
       "advisory, derived at query time.",
     inputSchema: {

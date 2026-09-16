@@ -31,6 +31,13 @@ function fixture(): VaultLintResult {
     stagedActions: [],
     shadowActions: { total: 0, gated: 0 },
     coverageEquity: { backstopOverdue: { count: 0 } },
+    compiledEdgeCoverage: {
+      status: "no-data",
+      total_documents: 0,
+      instrumented_documents: 0,
+      uninstrumented_documents: 0,
+      message: "no compiled-edge data (0 docs uninstrumented)",
+    },
     reviewThroughput: { lifetime: { expired: 0 } },
   } as unknown as VaultLintResult;
 }

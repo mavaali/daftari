@@ -8,10 +8,12 @@ import {
   chargePenalty,
   DEFAULT_LIMITS,
   makeBucket,
+  makeBucketRegistry,
   makePenaltyBox,
   makeSlotGate,
   penaltyAllows,
   releaseSlot,
+  takeFromRegistry,
   tryAcquireSlot,
   tryTake,
 } from "../../src/serve/limits.js";
@@ -74,6 +76,31 @@ describe("auth-failure penalty box", () => {
     chargePenalty(box, "b", T0 + 3_600_000);
     chargePenalty(box, "b", T0 + 3_600_000);
     expect(penaltyAllows(box, "b", T0 + 3_600_000).allowed).toBe(false);
+  });
+
+  it("holds a hard cap even when no bucket is fully refilled (F7)", () => {
+    const box = makePenaltyBox(2, 6, 3); // maxEntries 3
+    // Drain many distinct source IPs at the same instant: none can refill, so
+    // the full-bucket sweep frees nothing. The map must still stay bounded
+    // (source-IP churn otherwise grows it without limit).
+    for (let i = 0; i < 50; i++) {
+      chargePenalty(box, `10.0.0.${i}`, T0);
+    }
+    expect(box.buckets.size).toBeLessThanOrEqual(3);
+  });
+});
+
+describe("bounded bucket registry", () => {
+  it("expires idle keys and evicts least-recently-used keys at the hard cap", () => {
+    const registry = makeBucketRegistry(2, 60, 2, 1_000);
+    expect(takeFromRegistry(registry, "a", T0).allowed).toBe(true);
+    expect(takeFromRegistry(registry, "b", T0).allowed).toBe(true);
+    expect(takeFromRegistry(registry, "a", T0 + 1).allowed).toBe(true);
+    expect(takeFromRegistry(registry, "c", T0 + 2).allowed).toBe(true);
+    expect([...registry.buckets.keys()]).toEqual(["a", "c"]);
+
+    expect(takeFromRegistry(registry, "d", T0 + 2_000).allowed).toBe(true);
+    expect([...registry.buckets.keys()]).toEqual(["d"]);
   });
 });
 

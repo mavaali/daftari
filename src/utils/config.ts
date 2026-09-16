@@ -18,8 +18,18 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
+import {
+  type IntegrationConfig,
+  type IntegrationProviderConfig,
+  type MicrosoftProviderConfig,
+  PROVIDER_NAMES,
+  type ProviderName,
+} from "../integrations/types.js";
+import { parseCidr } from "../serve/proxy-trust.js";
+import { normalizeIsoDate } from "./dates.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
+import { AUTHOR_PRESERVING_YAML_SCHEMA } from "./yaml.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -43,6 +53,20 @@ export interface RoleConfig {
   // destructive grant — a history rewrite + force-push is irreversible — so it
   // is opt-in, off by default. YAML key: erase. Optional; absent means false.
   erase?: boolean;
+  // R13/R16 (U10): may perform human disposition actions on board items
+  // (owner assignment, reassign). Provisioned true on a human operator's role;
+  // omitted on an agent role. This is the config-declared signal distinguishing
+  // humans from agents — AccessContext carries no principal_type. YAML key:
+  // dispose. Optional; absent means false.
+  dispose?: boolean;
+  // #454: may verify filesystem metadata for repo: source references. This is
+  // separate from vault read/write grants because repo_root may expose a much
+  // larger tree than the vault ACL covers. YAML key: verify_repo_sources.
+  // Optional; absent means false.
+  verifyRepoSources?: boolean;
+  // May connect providers and manage webhook verification material. This is
+  // independent of vault content grants. YAML key: manage_integrations.
+  manageIntegrations?: boolean;
 }
 
 // The primitive types a schema-extension field may declare. `array` is v1
@@ -60,6 +84,14 @@ export interface SchemaExtension {
   enum?: string[]; // present iff type === "enum"
   items?: "string"; // present iff type === "array"
   pattern?: string; // present only for type === "string"
+}
+
+export type IndexedFieldType = Exclude<ExtensionType, "array">;
+
+export interface IndexedFieldDeclaration {
+  field: string;
+  type: IndexedFieldType;
+  enum?: string[];
 }
 
 // Recognised values of `embeddings.provider`. The vault owner picks one;
@@ -136,21 +168,44 @@ export interface OAuthConfig {
   subjects: Record<string, OAuthSubjectConfig>;
 }
 
+// Browser-login shim (bead 7q9): a cookie session so a browser — which cannot
+// send `Authorization: Bearer` on navigation — can authenticate to `/board`.
+// Like tokens, the secret VALUES live in env vars named here, never in config.
+// `maps_to` is the single identity a successful login receives; multi-user
+// browser login is OAuth's job, not this block's.
+export interface SessionConfig {
+  signingKeyEnv: string; // env var holding the HMAC signing key (>= 32 bytes)
+  credentialEnv: string; // env var holding the login password
+  mapsTo: { user: string; role: string }; // role must exist in `roles`
+  lifetimeHours: number; // session lifetime; default 12
+}
+
 export interface ServerConfig {
   // "external" is the operator's explicit acknowledgment that TLS terminates
   // upstream (or the network is trusted). Required for non-loopback binds —
   // the shadow_mode precedent applied to transport.
   transportSecurity?: "external";
+  // CIDRs of the reverse proxies we operate. X-Forwarded-For is honored for
+  // public-route rate limiting ONLY when the immediate peer is inside one of
+  // these; from any other peer the header is ignored (it is spoofable). Empty
+  // = trust no proxy, the safe default. Replaces the old boolean trust_proxy,
+  // which trusted a forged header from a direct attacker (finding F4).
+  trustedProxies: string[];
   tokens: ServerTokenConfig[];
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
   oauth?: OAuthConfig;
+  // Optional and composable with tokens/oauth (bead 7q9): humans log in from a
+  // browser and receive a signed session cookie; machines keep using bearers.
+  session?: SessionConfig;
   // The serve ops floor (multi-user item 6). Defaults ALWAYS apply in serve
   // mode — an opt-in floor is still a missing floor. stdio ignores the
   // whole block: single caller, single identity, no request boundary.
   limits: ServeLimitsConfig;
   // .daftari/auth-log.jsonl on/off (operator-only audit; serve only).
   audit: boolean;
+  /** Public HTTPS origin/base path used for connector OAuth and webhook callbacks. */
+  publicBaseUrl?: string;
 }
 
 export interface ServeLimitsConfig {
@@ -159,6 +214,10 @@ export interface ServeLimitsConfig {
   authFailureBurst: number;
   authFailuresPerMinute: number;
   maxInFlight: number;
+  // Hard ceiling on a request body, in bytes. The MCP adapter buffers the
+  // whole body in memory, so this bounds what one request (× maxInFlight) can
+  // pin. 4 MiB clears real tool-call payloads while staying far below a DoS.
+  maxBodyBytes: number;
 }
 
 export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
@@ -167,6 +226,7 @@ export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
   authFailureBurst: 10,
   authFailuresPerMinute: 6,
   maxInFlight: 32,
+  maxBodyBytes: 4_194_304,
 };
 
 // `storage` block (#6, spec 2026-07-20 Decision 3): a durable sync target
@@ -226,6 +286,13 @@ export interface DistillConfig {
    * rest stay queued for a human. A float in [0, 1].
    */
   corroborationThreshold: number;
+  /**
+   * R39: optional USD-per-call cost estimate for the distill pipeline's LLM
+   * calls. Absent ⇒ downstream USD estimation is disabled (the enrollment
+   * preview only emits `estimatedUsd` when this is set) — an explicit opt-in,
+   * never a silent guess at spend.
+   */
+  estimatedUsdPerCall?: number;
 }
 
 // Conservative default: a high bar queues more for human review and
@@ -274,6 +341,7 @@ export const RESERVED_MOUNT_ALIASES: readonly string[] = ["local"];
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
   schemaExtensions: SchemaExtension[];
+  indexedFields: IndexedFieldDeclaration[];
   // Vault-owner-supplied pre-write hooks. v1 lists pre-write only; future
   // hook surfaces (read-time, post-write) would extend this block. See the
   // README "Vault hooks" section for the trust model.
@@ -303,6 +371,17 @@ export interface DaftariConfig {
   // providers preserves both side's rows — the new provider populates a
   // fresh row set on first reindex, and switching back reuses the old.
   embeddingProvider: EmbeddingProviderId;
+  // Retrieval tuning (`search` block). `coverage` re-enables the date-window
+  // coverage pass in vault_search — retired to default-off after losing to
+  // naive rank-extension at every budget on Recall Bench (2026-06-22 kill,
+  // reconfirmed on the frozen 3.7.0 baseline, MAV-156); the discriminating-tag
+  // half is untested on native vaults, so opting back in stays supported.
+  // `vecKnnK` is the vector-arm KNN fan-out (chunks fetched before the
+  // best-chunk-per-doc collapse). Default 256, measured (MAV-159 sweep,
+  // 2026-08-18): recall rises monotonically to a saturation point at 256
+  // with distractor load flat — see
+  // docs/superpowers/results/2026-08-18-mav159-knn-sweep.md.
+  search: SearchTuningConfig;
   // Optional git-author → identity mapping consumed by `daftari backfill`
   // (§11.1) when deriving the `updated_by` frontmatter field from a doc's git
   // history. Keys are raw git author names (`%aN`); values are Daftari
@@ -331,6 +410,9 @@ export interface DaftariConfig {
   // static `.git` file while git's churn lives off-cloud. Always resolved
   // outside the vault.
   gitDir?: string;
+  // Root used by explicit `repo:` source references. It may equal the vault
+  // root or contain a nested vault, but may never sit below/outside the vault.
+  repoRoot?: string;
   // Human-facing voice for vault_lint's `content` channel. "plain" (default) is
   // the compact summary; "ledger_keeper" re-renders the same findings in the
   // ledger-keeper register. Presentation only — the structured lint payload is
@@ -374,7 +456,70 @@ export interface DaftariConfig {
   // — no mounts, no principals grants. stdio-only in v1: `daftari serve`
   // refuses to start on a config carrying a `mounts` list.
   federation?: FederationConfig;
+  // Deployment-owned OAuth settings. Secret values never live in YAML: this
+  // block names only environment variables that the deployment must supply.
+  integrations?: IntegrationConfig;
+  // U10: optional explicit principal list (`principals:` top-level key).
+  // Supplements the implicit set derived from server.auth.tokens[].user.
+  // The union of both sets is the configured principal set. Absent ⇒ []
+  // (leniently parsed; not required). Used by isConfiguredPrincipal to gate
+  // board owner/reassign actions to known identities only.
+  principals: string[];
 }
+
+export type GraphExpandSubset = "trigger" | "all" | "tensions";
+export interface GraphExpandConfig {
+  enabled: boolean;
+  cap: number;
+  tau: number;
+  subset: GraphExpandSubset;
+}
+
+export interface SearchTuningConfig {
+  coverage: boolean;
+  vecKnnK: number;
+  // Hybrid fusion weights. Default 0.8/0.2, measured (fusion weight sweep,
+  // 2026-08-18): the recall-vs-weight curve is an inverted U — a light
+  // vector contribution beats both the old 0.5/0.5 split (worst measured
+  // vector-on setting, ~-2pp everywhere) and pure lexical at most budgets.
+  // See docs/superpowers/results/2026-08-18-fusion-weight-sweep.md.
+  weights: { bm25: number; vector: number };
+  // MAV-161: supersession suppression in vault_search — demote hits whose
+  // superseded_by chain resolves to a readable current head, pulling that
+  // head into the list when absent. Default off until the hallucination-
+  // judged bench decides; the deterministic mechanics ship gated.
+  suppressSuperseded: boolean;
+  // off.1/MAV-154: one-hop edge expansion post-pass in vault_search. Default off
+  // — the $0 ceiling arm cleared but wild-alignment is unproven (bead off.6).
+  // `subset` picks the edge kinds (trigger = tensions + trigger-bearing
+  // derives_from, the ceiling winner). `tau` is the vector-cosine affinity floor;
+  // `cap` the fixed global add budget.
+  graphExpand: GraphExpandConfig;
+}
+
+export const SEARCH_TUNING_DEFAULTS: SearchTuningConfig = {
+  coverage: false,
+  weights: { bm25: 0.8, vector: 0.2 },
+  // 256 is the measured saturation point of the MAV-159 recall-vs-K sweep on
+  // the frozen RB corpus: +1.0–2.8pp multi-day recall over the historical 64
+  // depending on budget, distractor load flat, K=512 byte-identical to 256.
+  vecKnnK: 256,
+  suppressSuperseded: false,
+  graphExpand: { enabled: false, cap: 10, tau: 0.3, subset: "trigger" },
+};
+
+const RECOGNISED_SEARCH_KEYS = [
+  "coverage",
+  "vec_knn_k",
+  "suppress_superseded",
+  "graph_expand",
+  "weights",
+] as const;
+
+// Guardrail, not a tuning recommendation: past ~4096 chunks the KNN pool is
+// larger than any realistic per-query candidate need and the config is more
+// likely a typo (e.g. a chunk count pasted in) than an intent.
+const VEC_KNN_K_MAX = 4096;
 
 // A config with no roles and no extensions. Returned for a missing or empty
 // config file — both are valid, not malformed.
@@ -382,31 +527,239 @@ function emptyConfig(): DaftariConfig {
   return {
     roles: {},
     schemaExtensions: [],
+    indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
+    search: { ...SEARCH_TUNING_DEFAULTS },
     backfillIdentityMap: {},
     holderAliases: {},
     shadowMode: false,
     shadowModeSet: false,
     gitDir: undefined,
+    repoRoot: undefined,
     lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
-    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true },
+    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true, trustedProxies: [] },
     storage: undefined,
     codeRepos: {},
     jitAnchors: true,
     autoRepin: true,
     distill: undefined,
     federation: undefined,
+    integrations: undefined,
+    principals: [],
   };
 }
 
 export function configPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "config.yaml");
+}
+
+const RECOGNISED_INTEGRATIONS_KEYS = [
+  "encryption_key_env",
+  "polling_interval_minutes",
+  ...PROVIDER_NAMES,
+] as const;
+
+// Shared key set for a plain OAuth-only provider block (Google, Notion): just
+// the env-var NAMES holding the client id/secret — the secret VALUES never
+// live in config (existing rule).
+const RECOGNISED_STANDARD_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+
+// The `integrations.m365` block (Microsoft Graph) carries extra keys beyond the
+// shared pair above (tenant, scope profile, enrollment collection allowlist,
+// speaker-note default, picker host). Per-provider table (U11): each
+// provider's block is checked against its OWN recognised-key set, so these
+// Microsoft-only keys are rejected under `integrations.google` /
+// `integrations.notion` just as an unknown key would be, and Google/Notion's
+// set stays exactly what it was before Microsoft grew extra keys.
+const RECOGNISED_MICROSOFT_PROVIDER_KEYS = [
+  "client_id_env",
+  "client_secret_env",
+  "tenant_id",
+  "scope_profile",
+  "collections",
+  "include_speaker_notes",
+  "picker_host",
+] as const;
+
+const RECOGNISED_INTEGRATION_PROVIDER_KEYS: Record<ProviderName, readonly string[]> = {
+  google: RECOGNISED_STANDARD_PROVIDER_KEYS,
+  notion: RECOGNISED_STANDARD_PROVIDER_KEYS,
+  m365: RECOGNISED_MICROSOFT_PROVIDER_KEYS,
+};
+
+// Compile-time drift guard: every field of MicrosoftProviderConfig must map to
+// one of the snake_case keys in RECOGNISED_MICROSOFT_PROVIDER_KEYS above. If a
+// field is later added to the config type without adding its YAML key to the
+// array, this Record literal fails to typecheck (missing property) rather
+// than letting rejectUnknownKeys silently reject that field's otherwise-valid
+// config as "not a recognised setting". (Runtime coverage lives in the
+// "recognises every Microsoft key" test in test/utils/config.test.ts.)
+const _MICROSOFT_CONFIG_FIELD_TO_KEY: Record<
+  keyof MicrosoftProviderConfig,
+  (typeof RECOGNISED_MICROSOFT_PROVIDER_KEYS)[number]
+> = {
+  clientIdEnv: "client_id_env",
+  clientSecretEnv: "client_secret_env",
+  tenantId: "tenant_id",
+  scopeProfile: "scope_profile",
+  collections: "collections",
+  includeSpeakerNotes: "include_speaker_notes",
+  pickerHost: "picker_host",
+};
+void _MICROSOFT_CONFIG_FIELD_TO_KEY;
+
+const MICROSOFT_SCOPE_PROFILES = ["onedrive", "sharepoint"] as const;
+const DEFAULT_MICROSOFT_SCOPE_PROFILE: MicrosoftProviderConfig["scopeProfile"] = "sharepoint";
+const DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES = true;
+
+const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
+
+// Validates the shared client_id_env/client_secret_env pair common to every
+// provider block, returning the trimmed mapping (callers layer any
+// provider-specific fields on top of this).
+function validateSharedProviderCredentials(
+  provider: ProviderName,
+  mapping: Record<string, unknown>,
+): Result<IntegrationProviderConfig, Error> {
+  for (const key of RECOGNISED_STANDARD_PROVIDER_KEYS) {
+    const value = mapping[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
+    }
+  }
+  return ok({
+    clientIdEnv: (mapping.client_id_env as string).trim(),
+    clientSecretEnv: (mapping.client_secret_env as string).trim(),
+  });
+}
+
+function validateStandardProvider(
+  provider: "google" | "notion",
+  raw: unknown,
+): Result<IntegrationProviderConfig, Error> {
+  const mapping = requireMapping(raw, `'integrations.${provider}'`);
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(
+    mapping.value,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS[provider],
+    `integrations.${provider}`,
+  );
+  if (!known.ok) return known;
+  return validateSharedProviderCredentials(provider, mapping.value);
+}
+
+function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig, Error> {
+  const mapping = requireMapping(raw, "'integrations.m365'");
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(
+    mapping.value,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS.m365,
+    "integrations.m365",
+  );
+  if (!known.ok) return known;
+  const shared = validateSharedProviderCredentials("m365", mapping.value);
+  if (!shared.ok) return shared;
+
+  const tenantId = mapping.value.tenant_id;
+  if (typeof tenantId !== "string" || tenantId.trim().length === 0) {
+    return err(new Error("'integrations.m365.tenant_id' must be a non-empty string"));
+  }
+
+  let scopeProfile: MicrosoftProviderConfig["scopeProfile"] = DEFAULT_MICROSOFT_SCOPE_PROFILE;
+  if (mapping.value.scope_profile !== undefined) {
+    const scope = mapping.value.scope_profile;
+    if (
+      typeof scope !== "string" ||
+      !(MICROSOFT_SCOPE_PROFILES as readonly string[]).includes(scope)
+    ) {
+      return err(
+        new Error(
+          `'integrations.m365.scope_profile' must be one of ` +
+            `${MICROSOFT_SCOPE_PROFILES.join(", ")}`,
+        ),
+      );
+    }
+    scopeProfile = scope as MicrosoftProviderConfig["scopeProfile"];
+  }
+
+  const collections = asStringArray(mapping.value.collections, "'integrations.m365.collections'");
+  if (!collections.ok) return collections;
+  if (collections.value.length === 0) {
+    return err(new Error("'integrations.m365.collections' must be a non-empty list of strings"));
+  }
+
+  let includeSpeakerNotes = DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES;
+  if (mapping.value.include_speaker_notes !== undefined) {
+    if (typeof mapping.value.include_speaker_notes !== "boolean") {
+      return err(new Error("'integrations.m365.include_speaker_notes' must be true or false"));
+    }
+    includeSpeakerNotes = mapping.value.include_speaker_notes;
+  }
+
+  let pickerHost: string | undefined;
+  if (mapping.value.picker_host !== undefined) {
+    const host = mapping.value.picker_host;
+    if (typeof host !== "string" || host.trim().length === 0) {
+      return err(new Error("'integrations.m365.picker_host' must be a non-empty string"));
+    }
+    pickerHost = host.trim();
+  }
+
+  return ok({
+    ...shared.value,
+    tenantId: tenantId.trim(),
+    scopeProfile,
+    collections: collections.value,
+    includeSpeakerNotes,
+    ...(pickerHost !== undefined ? { pickerHost } : {}),
+  });
+}
+
+function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefined, Error> {
+  if (raw === undefined) return ok(undefined);
+  const mapping = requireMapping(raw, "'integrations'");
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(mapping.value, RECOGNISED_INTEGRATIONS_KEYS, "integrations");
+  if (!known.ok) return known;
+
+  const encryptionKeyEnv = mapping.value.encryption_key_env;
+  if (typeof encryptionKeyEnv !== "string" || encryptionKeyEnv.trim().length === 0) {
+    return err(new Error("'integrations.encryption_key_env' must be a non-empty string"));
+  }
+
+  let pollingIntervalMinutes = DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES;
+  if (mapping.value.polling_interval_minutes !== undefined) {
+    const interval = mapping.value.polling_interval_minutes;
+    if (typeof interval !== "number" || !Number.isInteger(interval) || interval <= 0) {
+      return err(new Error("'integrations.polling_interval_minutes' must be a positive integer"));
+    }
+    pollingIntervalMinutes = interval;
+  }
+
+  const integrations: IntegrationConfig = {
+    encryptionKeyEnv: encryptionKeyEnv.trim(),
+    pollingIntervalMinutes,
+  };
+  for (const provider of PROVIDER_NAMES) {
+    const raw = mapping.value[provider];
+    if (raw === undefined) continue;
+    if (provider === "m365") {
+      const config = validateMicrosoftProvider(raw);
+      if (!config.ok) return config;
+      integrations.m365 = config.value;
+    } else {
+      const config = validateStandardProvider(provider, raw);
+      if (!config.ok) return config;
+      integrations[provider] = config.value;
+    }
+  }
+  return ok(integrations);
 }
 
 function asStringArray(value: unknown, where: string): Result<string[], Error> {
@@ -465,6 +818,30 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     erase = obj.erase;
   }
 
+  let dispose = false;
+  if (obj.dispose !== undefined) {
+    if (typeof obj.dispose !== "boolean") {
+      return err(new Error(`role '${name}' dispose must be true or false`));
+    }
+    dispose = obj.dispose;
+  }
+
+  let verifyRepoSources = false;
+  if (obj.verify_repo_sources !== undefined) {
+    if (typeof obj.verify_repo_sources !== "boolean") {
+      return err(new Error(`role '${name}' verify_repo_sources must be true or false`));
+    }
+    verifyRepoSources = obj.verify_repo_sources;
+  }
+
+  let manageIntegrations = false;
+  if (obj.manage_integrations !== undefined) {
+    if (typeof obj.manage_integrations !== "boolean") {
+      return err(new Error(`role '${name}' manage_integrations must be true or false`));
+    }
+    manageIntegrations = obj.manage_integrations;
+  }
+
   // Contradictory grants fail loud at load: a propose-only role proposes, it
   // does not decide. Allowing both would let vault_ratify's write dispatch be
   // coerced back into a NEW proposal while marking the original ratified.
@@ -492,6 +869,9 @@ function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
     ratify,
     ...(proposeOnly ? { proposeOnly } : {}),
     ...(erase ? { erase } : {}),
+    ...(dispose ? { dispose } : {}),
+    ...(verifyRepoSources ? { verifyRepoSources } : {}),
+    ...(manageIntegrations ? { manageIntegrations } : {}),
   });
 }
 
@@ -514,7 +894,10 @@ function validateDefault(
       if (value instanceof Date && !Number.isNaN(value.getTime())) {
         return ok(value.toISOString().slice(0, 10));
       }
-      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return ok(value);
+      if (typeof value === "string") {
+        const normalized = normalizeIsoDate(value);
+        if (normalized !== null) return ok(normalized);
+      }
       return bad("a YYYY-MM-DD date");
     }
     case "number":
@@ -707,6 +1090,53 @@ function validateExtensions(raw: unknown): Result<SchemaExtension[], Error> {
   return ok(out);
 }
 
+const MAX_INDEXED_FIELDS = 64;
+const MAX_INDEXED_FIELD_NAME_BYTES = 128;
+export const MAX_INDEXED_FIELD_TEXT_BYTES = 4096;
+
+function validateIndexedFields(
+  raw: unknown,
+  extensions: SchemaExtension[],
+): Result<IndexedFieldDeclaration[], Error> {
+  if (raw === undefined) return ok([]);
+  if (!Array.isArray(raw)) return err(new Error("'indexed_fields' must be a list"));
+  if (raw.length > MAX_INDEXED_FIELDS) {
+    return err(new Error(`'indexed_fields' may contain at most ${MAX_INDEXED_FIELDS} fields`));
+  }
+
+  const byField = new Map(extensions.map((extension) => [extension.field, extension]));
+  const seen = new Set<string>();
+  const out: IndexedFieldDeclaration[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const field = raw[i];
+    if (typeof field !== "string" || field.length === 0) {
+      return err(new Error(`'indexed_fields[${i}]' must be a non-empty string`));
+    }
+    if (Buffer.byteLength(field, "utf8") > MAX_INDEXED_FIELD_NAME_BYTES) {
+      return err(
+        new Error(
+          `indexed_fields '${field}' must be at most ${MAX_INDEXED_FIELD_NAME_BYTES} UTF-8 bytes`,
+        ),
+      );
+    }
+    if (seen.has(field)) return err(new Error(`indexed_fields '${field}' is duplicated`));
+    seen.add(field);
+
+    const extension = byField.get(field);
+    if (!extension)
+      return err(new Error(`indexed_fields '${field}' is not declared in schema_extensions`));
+    if (extension.type === "array") {
+      return err(new Error(`indexed_fields '${field}' has unsupported type 'array'`));
+    }
+    out.push({
+      field,
+      type: extension.type,
+      ...(extension.enum ? { enum: [...extension.enum] } : {}),
+    });
+  }
+  return ok(out);
+}
+
 // Recognised child keys of the `hooks` block. Anything else is a loud config
 // error so a typo can't silently shadow a hook surface.
 const RECOGNISED_HOOK_KEYS = ["pre_write", "pre_write_transform"] as const;
@@ -855,6 +1285,7 @@ const RECOGNISED_DISTILL_KEYS = [
   "max_verbatim_chars",
   "in_call_input_cap",
   "corroboration_threshold",
+  "estimated_usd_per_call",
 ] as const;
 
 function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error> {
@@ -898,6 +1329,18 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
       return err(new Error("'distill.corroboration_threshold' must be a number in [0, 1]"));
     }
     out.corroborationThreshold = ct;
+  }
+
+  // estimated_usd_per_call (R39): optional; absent leaves USD estimation
+  // disabled downstream. A positive number only — a zero or negative
+  // estimate is a config mistake, not a valid "no cost" signal (absence
+  // already means that).
+  const usdPerCall = obj.estimated_usd_per_call;
+  if (usdPerCall !== undefined) {
+    if (typeof usdPerCall !== "number" || !Number.isFinite(usdPerCall) || usdPerCall <= 0) {
+      return err(new Error("'distill.estimated_usd_per_call' must be a positive number"));
+    }
+    out.estimatedUsdPerCall = usdPerCall;
   }
   return ok(out);
 }
@@ -1012,16 +1455,33 @@ function validateFederation(raw: unknown): Result<FederationConfig | undefined, 
   return ok({ mounts, principals });
 }
 
-const RECOGNISED_SERVER_KEYS = ["transport_security", "auth", "limits", "audit"] as const;
+const RECOGNISED_SERVER_KEYS = [
+  "transport_security",
+  "trusted_proxies",
+  "public_base_url",
+  "auth",
+  "limits",
+  "audit",
+] as const;
 const RECOGNISED_SERVER_LIMITS_KEYS = [
   "rate_per_minute",
   "burst",
   "auth_failure_burst",
   "auth_failures_per_minute",
   "max_in_flight",
+  "max_body_bytes",
 ] as const;
-const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth"] as const;
+const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth", "session"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
+const RECOGNISED_SESSION_KEYS = [
+  "signing_key_env",
+  "credential_env",
+  "maps_to",
+  "lifetime_hours",
+] as const;
+const RECOGNISED_MAPS_TO_KEYS = ["user", "role"] as const;
+// Default browser-session lifetime when `lifetime_hours` is omitted.
+export const DEFAULT_SESSION_LIFETIME_HOURS = 12;
 const RECOGNISED_OAUTH_KEYS = ["issuer", "audience", "jwks_uri", "subjects"] as const;
 
 // `server.auth.oauth` (#7). Shape-only validation here; URL parseability and
@@ -1076,19 +1536,116 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
   });
 }
 
+// `server.auth.session` (bead 7q9). Shape-only validation here; whether the
+// named env vars are actually set, and whether `maps_to.role` is declared, is
+// checked at serve startup (same posture as tokens/oauth) so config load stays
+// pure of process.env.
+function validateSession(raw: unknown): Result<SessionConfig, Error> {
+  const mapping = requireMapping(raw, "'server.auth.session'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_SESSION_KEYS, "server.auth.session");
+  if (!known.ok) return known;
+  for (const field of ["signing_key_env", "credential_env"] as const) {
+    if (typeof obj[field] !== "string" || (obj[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.session.${field}' must be a non-empty string`));
+    }
+  }
+  const mapsToMapping = requireMapping(obj.maps_to, "'server.auth.session.maps_to'");
+  if (!mapsToMapping.ok) return mapsToMapping;
+  const mapsTo = mapsToMapping.value;
+  const mapsToKnown = rejectUnknownKeys(
+    mapsTo,
+    RECOGNISED_MAPS_TO_KEYS,
+    "server.auth.session.maps_to",
+  );
+  if (!mapsToKnown.ok) return mapsToKnown;
+  for (const field of RECOGNISED_MAPS_TO_KEYS) {
+    if (typeof mapsTo[field] !== "string" || (mapsTo[field] as string).trim().length === 0) {
+      return err(new Error(`'server.auth.session.maps_to.${field}' must be a non-empty string`));
+    }
+  }
+  let lifetimeHours = DEFAULT_SESSION_LIFETIME_HOURS;
+  if (obj.lifetime_hours !== undefined) {
+    const v = obj.lifetime_hours;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) {
+      return err(
+        new Error(
+          `'server.auth.session.lifetime_hours' must be a positive integer (got ${JSON.stringify(v)})`,
+        ),
+      );
+    }
+    lifetimeHours = v;
+  }
+  return ok({
+    signingKeyEnv: (obj.signing_key_env as string).trim(),
+    credentialEnv: (obj.credential_env as string).trim(),
+    mapsTo: {
+      user: (mapsTo.user as string).trim(),
+      role: (mapsTo.role as string).trim(),
+    },
+    lifetimeHours,
+  });
+}
+
 // `server` block (#5). Malformed shapes fail loud like every block; the
 // things only serve startup can know (env var set? role exists? bind rules?)
 // are validated there, not here.
 function validateServer(raw: unknown): Result<ServerConfig, Error> {
   if (raw === undefined) {
-    return ok({ tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true });
+    return ok({
+      tokens: [],
+      limits: { ...DEFAULT_SERVE_LIMITS },
+      audit: true,
+      trustedProxies: [],
+    });
   }
   const mapping = requireMapping(raw, "'server'");
   if (!mapping.ok) return mapping;
   const obj = mapping.value;
   const known = rejectUnknownKeys(obj, RECOGNISED_SERVER_KEYS, "server");
   if (!known.ok) return known;
-  const out: ServerConfig = { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true };
+  const out: ServerConfig = {
+    tokens: [],
+    limits: { ...DEFAULT_SERVE_LIMITS },
+    audit: true,
+    trustedProxies: [],
+  };
+  if (obj.trusted_proxies !== undefined) {
+    if (!Array.isArray(obj.trusted_proxies)) {
+      return err(new Error("'server.trusted_proxies' must be a list of CIDR strings"));
+    }
+    for (const entry of obj.trusted_proxies) {
+      if (typeof entry !== "string" || parseCidr(entry) === null) {
+        return err(
+          new Error(
+            `'server.trusted_proxies' entries must be CIDRs or IPs (got ${JSON.stringify(entry)})`,
+          ),
+        );
+      }
+    }
+    out.trustedProxies = obj.trusted_proxies as string[];
+  }
+  if (obj.public_base_url !== undefined) {
+    if (typeof obj.public_base_url !== "string" || obj.public_base_url.trim().length === 0) {
+      return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+    }
+    try {
+      const publicUrl = new URL(obj.public_base_url.trim());
+      if (
+        publicUrl.protocol !== "https:" ||
+        publicUrl.username ||
+        publicUrl.password ||
+        publicUrl.search ||
+        publicUrl.hash
+      ) {
+        return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+      }
+      out.publicBaseUrl = publicUrl.toString().replace(/\/$/, "");
+    } catch {
+      return err(new Error("'server.public_base_url' must be an absolute HTTPS URL"));
+    }
+  }
   if (obj.limits !== undefined) {
     const limitsMapping = requireMapping(obj.limits, "'server.limits'");
     if (!limitsMapping.ok) return limitsMapping;
@@ -1105,6 +1662,7 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
       ["auth_failure_burst", "authFailureBurst"],
       ["auth_failures_per_minute", "authFailuresPerMinute"],
       ["max_in_flight", "maxInFlight"],
+      ["max_body_bytes", "maxBodyBytes"],
     ];
     for (const [key, field] of numeric) {
       const v = limits[key];
@@ -1170,6 +1728,11 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
           role: (t.role as string).trim(),
         });
       }
+    }
+    if (auth.session !== undefined) {
+      const session = validateSession(auth.session);
+      if (!session.ok) return session;
+      out.session = session.value;
     }
   }
   return ok(out);
@@ -1313,6 +1876,22 @@ function resolveGitDir(raw: unknown, vaultRoot: string): Result<string | undefin
     );
   }
   return ok(gitDirAbs);
+}
+
+function resolveRepoRoot(raw: unknown, vaultRoot: string): Result<string | undefined, Error> {
+  if (raw === undefined || raw === null) return ok(undefined);
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return err(new Error("malformed config: 'repo_root' must be a non-empty string"));
+  }
+  const vaultAbs = resolve(vaultRoot);
+  const repoRootAbs = resolve(vaultAbs, expandTilde(raw));
+  const vaultFromRepo = relative(repoRootAbs, vaultAbs);
+  if (vaultFromRepo.startsWith("..") || isAbsolute(vaultFromRepo)) {
+    return err(
+      new Error(`malformed config: 'repo_root' must contain the vault (got ${repoRootAbs})`),
+    );
+  }
+  return ok(repoRootAbs);
 }
 
 // Resolves the optional `code_repos` block (JIT anchor pins). A mapping of
@@ -1461,7 +2040,10 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   let parsed: unknown;
   try {
-    parsed = parseYaml(text);
+    // Do not let the default YAML timestamp resolver normalize impossible
+    // calendar dates before schema-extension validation sees the authored
+    // scalar. The custom schema retains every other DEFAULT_SCHEMA feature.
+    parsed = parseYaml(text, { schema: AUTHOR_PRESERVING_YAML_SCHEMA });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     // js-yaml's position points at where parsing BROKE, which for a comment
@@ -1497,6 +2079,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
 
+  const indexedFields = validateIndexedFields(root.indexed_fields, extensions.value);
+  if (!indexedFields.ok) return err(new Error(`malformed config: ${indexedFields.error.message}`));
+
   const hooks = validateHooks(root.hooks);
   if (!hooks.ok) return err(new Error(`malformed config: ${hooks.error.message}`));
 
@@ -1520,6 +2105,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   const gitDir = resolveGitDir(root.git_dir, vaultRoot);
   if (!gitDir.ok) return gitDir;
+
+  const repoRoot = resolveRepoRoot(root.repo_root, vaultRoot);
+  if (!repoRoot.ok) return repoRoot;
 
   const lintVoice = resolveLintVoice(root.lint_voice);
   if (!lintVoice.ok) return lintVoice;
@@ -1552,6 +2140,11 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
   const federationConfig = validateFederation(root.federation);
   if (!federationConfig.ok) {
     return err(new Error(`malformed config: ${federationConfig.error.message}`));
+  }
+
+  const integrationsConfig = validateIntegrations(root.integrations);
+  if (!integrationsConfig.ok) {
+    return err(new Error(`malformed config: ${integrationsConfig.error.message}`));
   }
 
   const toolsConfig = validateTools(root.tools);
@@ -1627,19 +2220,144 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     );
   }
 
+  // Retrieval tuning. Absent block = the defaults (coverage off — MAV-156
+  // retirement; KNN fan-out 256, the MAV-159 measured saturation point).
+  const search: SearchTuningConfig = { ...SEARCH_TUNING_DEFAULTS };
+  if (root.search !== undefined) {
+    if (root.search === null || typeof root.search !== "object" || Array.isArray(root.search)) {
+      return err(new Error("malformed config: 'search' must be a mapping"));
+    }
+    const block = root.search as Record<string, unknown>;
+    const unknown = rejectUnknownKeys(block, RECOGNISED_SEARCH_KEYS, "search");
+    if (!unknown.ok) return err(new Error(`malformed config: ${unknown.error.message}`));
+    if (block.coverage !== undefined) {
+      if (typeof block.coverage !== "boolean") {
+        return err(new Error("malformed config: 'search.coverage' must be true or false"));
+      }
+      search.coverage = block.coverage;
+    }
+    if (block.suppress_superseded !== undefined) {
+      if (typeof block.suppress_superseded !== "boolean") {
+        return err(
+          new Error("malformed config: 'search.suppress_superseded' must be true or false"),
+        );
+      }
+      search.suppressSuperseded = block.suppress_superseded;
+    }
+    if (block.weights !== undefined) {
+      const w = block.weights;
+      if (w === null || typeof w !== "object" || Array.isArray(w)) {
+        return err(new Error("malformed config: 'search.weights' must be a mapping"));
+      }
+      const wr = w as Record<string, unknown>;
+      const unknownW = rejectUnknownKeys(wr, ["bm25", "vector"], "search.weights");
+      if (!unknownW.ok) return err(new Error(`malformed config: ${unknownW.error.message}`));
+      const bm25 = wr.bm25;
+      const vector = wr.vector;
+      if (
+        typeof bm25 !== "number" ||
+        typeof vector !== "number" ||
+        !Number.isFinite(bm25) ||
+        !Number.isFinite(vector) ||
+        bm25 < 0 ||
+        vector < 0 ||
+        bm25 + vector <= 0
+      ) {
+        return err(
+          new Error(
+            "malformed config: 'search.weights' needs numeric non-negative 'bm25' and 'vector' summing above zero",
+          ),
+        );
+      }
+      search.weights = { bm25, vector };
+    }
+    if (block.vec_knn_k !== undefined) {
+      if (
+        typeof block.vec_knn_k !== "number" ||
+        !Number.isInteger(block.vec_knn_k) ||
+        block.vec_knn_k < 1 ||
+        block.vec_knn_k > VEC_KNN_K_MAX
+      ) {
+        return err(
+          new Error(
+            `malformed config: 'search.vec_knn_k' must be an integer between 1 and ${VEC_KNN_K_MAX}`,
+          ),
+        );
+      }
+      search.vecKnnK = block.vec_knn_k;
+    }
+    if (block.graph_expand !== undefined) {
+      if (
+        typeof block.graph_expand !== "object" ||
+        block.graph_expand === null ||
+        Array.isArray(block.graph_expand)
+      ) {
+        return err(new Error("malformed config: 'search.graph_expand' must be a mapping"));
+      }
+      const ge = block.graph_expand as Record<string, unknown>;
+      const g = { ...SEARCH_TUNING_DEFAULTS.graphExpand };
+      if (ge.enabled !== undefined) {
+        if (typeof ge.enabled !== "boolean") {
+          return err(
+            new Error("malformed config: 'search.graph_expand.enabled' must be true or false"),
+          );
+        }
+        g.enabled = ge.enabled;
+      }
+      if (ge.cap !== undefined) {
+        if (typeof ge.cap !== "number" || !Number.isInteger(ge.cap) || ge.cap < 0) {
+          return err(
+            new Error("malformed config: 'search.graph_expand.cap' must be a non-negative integer"),
+          );
+        }
+        g.cap = ge.cap;
+      }
+      if (ge.tau !== undefined) {
+        if (typeof ge.tau !== "number" || ge.tau < -1 || ge.tau > 1) {
+          return err(
+            new Error("malformed config: 'search.graph_expand.tau' must be a number in [-1, 1]"),
+          );
+        }
+        g.tau = ge.tau;
+      }
+      if (ge.subset !== undefined) {
+        if (ge.subset !== "trigger" && ge.subset !== "all" && ge.subset !== "tensions") {
+          return err(
+            new Error(
+              "malformed config: 'search.graph_expand.subset' must be trigger | all | tensions",
+            ),
+          );
+        }
+        g.subset = ge.subset;
+      }
+      search.graphExpand = g;
+    }
+  }
+
+  // Optional `principals:` top-level list (U10). Union with tokens[].user in
+  // principals.ts — config layer just collects the explicit additions here.
+  // Absent ⇒ [] (lenient: not required, not an error).
+  const principalsList = asStringArray(root.principals, "'principals'");
+  if (!principalsList.ok) {
+    return err(new Error(`malformed config: ${principalsList.error.message}`));
+  }
+
   return ok({
     roles,
     schemaExtensions: extensions.value,
+    indexedFields: indexedFields.value,
     hooks: hooks.value,
     autoCommit,
     watch,
     warmEmbeddings,
     embeddingProvider,
+    search,
     backfillIdentityMap: backfillIdentityMap.value,
     holderAliases: holderAliases.value,
     shadowMode,
     shadowModeSet,
     gitDir: gitDir.value,
+    repoRoot: repoRoot.value,
     lintVoice: lintVoice.value,
     tensionScan: tensionScan.value,
     tools: toolsConfig.value,
@@ -1650,5 +2368,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     autoRepin,
     distill: distillConfig.value,
     federation: federationConfig.value,
+    integrations: integrationsConfig.value,
+    principals: principalsList.value,
   });
 }

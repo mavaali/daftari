@@ -66,6 +66,8 @@ export interface EraseResult {
 // run the orchestration without git-filter-repo installed or a live remote.
 export interface GitEraseDeps {
   filterRepoAvailable?: () => Promise<boolean>;
+  /** Last reversible gate, run after history/remotes preflight and before filter-repo. */
+  validateBeforeRewrite?: () => Promise<Result<void, Error>>;
   runFilterRepo?: (
     vaultRoot: string,
     gitDir: string,
@@ -208,6 +210,9 @@ export async function eraseFromHistory(
 
   // Capture remotes BEFORE the rewrite (filter-repo drops them on completion).
   const remotes = await configuredRemotes(vaultRoot);
+
+  const validated = await (deps.validateBeforeRewrite?.() ?? Promise.resolve(ok(undefined)));
+  if (!validated.ok) return validated;
 
   const rewrite = await (deps.runFilterRepo ?? defaultRunFilterRepo)(vaultRoot, gitDir, [
     ...allNames,

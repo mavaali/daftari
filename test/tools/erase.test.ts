@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
-import { vaultErase } from "../../src/tools/erase.js";
+import { vaultErase, vaultErasePlan } from "../../src/tools/erase.js";
 import { resolveGitDir } from "../../src/utils/git-erase.js";
 
 const MARKER = "SUPER_SECRET_MARKER_XYZZY";
@@ -32,6 +32,35 @@ function initRepo(vault: string, file: string, body: string, gitDir?: string): v
   git(vault, ["config", "user.name", "Tester"]);
   git(vault, ["add", "."]);
   git(vault, ["commit", "--quiet", "-m", "init"]);
+}
+
+function markdown(path: string, sources: string[] = [], body = "Body."): string {
+  return [
+    "---",
+    `title: "${path}"`,
+    "domain: accumulation",
+    `collection: ${path.split("/")[0] ?? "docs"}`,
+    "status: canonical",
+    "confidence: high",
+    "created: 2026-01-01",
+    "updated: 2026-01-01",
+    "updated_by: agent:test",
+    "provenance: direct",
+    `sources: [${sources.map((source) => `"${source}"`).join(", ")}]`,
+    "superseded_by: null",
+    "ttl_days: null",
+    "tags: []",
+    "---",
+    "",
+    body,
+  ].join("\n");
+}
+
+function addCommittedFile(vault: string, path: string, body: string): void {
+  mkdirSync(join(vault, dirname(path)), { recursive: true });
+  writeFileSync(join(vault, path), body);
+  git(vault, ["add", "--", path]);
+  git(vault, ["commit", "--quiet", "-m", `add ${path}`]);
 }
 
 function filterRepoInstalled(): boolean {
@@ -52,6 +81,11 @@ const nonEraser: AccessContext = {
   user: "writer",
   roleName: "writer",
   role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+};
+const scopedEraser: AccessContext = {
+  user: "scoped-admin",
+  roleName: "scoped-admin",
+  role: { read: ["notes", "analysis"], write: ["*"], promote: true, ratify: true, erase: true },
 };
 
 describe("vault_erase — guardrails", () => {
@@ -161,6 +195,110 @@ describe("vault_erase — history scrub", () => {
     expect(receipt).toContain(file);
   });
 
+  it("refuses to dispatch a nonzero downstream blast without a plan acknowledgment", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(vault, "analysis/dependent.md", markdown("analysis/dependent.md", [target]));
+    let rewriteCalled = false;
+
+    const r = await vaultErase(vault, { path: target, confirm: target }, eraser, {
+      filterRepoAvailable: async () => true,
+      runFilterRepo: async () => {
+        rewriteCalled = true;
+        return { ok: true, value: undefined };
+      },
+    });
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/downstream dependents|plan_hash/);
+    expect(rewriteCalled).toBe(false);
+  });
+
+  it("rejects an arbitrary plan hash before dispatch", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(vault, "analysis/dependent.md", markdown("analysis/dependent.md", [target]));
+    let rewriteCalled = false;
+
+    const r = await vaultErase(
+      vault,
+      { path: target, confirm: target, plan_hash: "0".repeat(64) },
+      eraser,
+      {
+        filterRepoAvailable: async () => true,
+        runFilterRepo: async () => {
+          rewriteCalled = true;
+          return { ok: true, value: undefined };
+        },
+      },
+    );
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/plan_hash.*current erase plan|stale/i);
+    expect(rewriteCalled).toBe(false);
+  });
+
+  it("dispatches a nonzero downstream blast with the exact current plan hash", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(vault, "analysis/dependent.md", markdown("analysis/dependent.md", [target]));
+    const plan = await vaultErasePlan(vault, { path: target }, eraser);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    let rewriteCalled = false;
+
+    const r = await vaultErase(
+      vault,
+      { path: target, confirm: target, plan_hash: plan.value.plan_hash },
+      eraser,
+      {
+        filterRepoAvailable: async () => true,
+        runFilterRepo: async () => {
+          rewriteCalled = true;
+          return { ok: true, value: undefined };
+        },
+      },
+    );
+
+    expect(r.ok).toBe(true);
+    expect(rewriteCalled).toBe(true);
+  });
+
+  it("rejects graph drift that lands during the pre-rewrite phase", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(vault, "analysis/dependent.md", markdown("analysis/dependent.md", [target]));
+    const plan = await vaultErasePlan(vault, { path: target }, eraser);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    let rewriteCalled = false;
+
+    const r = await vaultErase(
+      vault,
+      { path: target, confirm: target, plan_hash: plan.value.plan_hash },
+      eraser,
+      {
+        filterRepoAvailable: async () => {
+          const added = "links/late-dependent.md";
+          mkdirSync(join(vault, dirname(added)), { recursive: true });
+          writeFileSync(join(vault, added), markdown(added, [], `See [target](${target}).`));
+          return true;
+        },
+        runFilterRepo: async () => {
+          rewriteCalled = true;
+          return { ok: true, value: undefined };
+        },
+      },
+    );
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/plan_hash.*current erase plan|stale/i);
+    expect(rewriteCalled).toBe(false);
+  });
+
   it("names a configured remote in incomplete[] (remote-side gc is not self-serve)", async () => {
     const file = "notes/leak.md";
     initRepo(vault, file, MARKER);
@@ -232,6 +370,130 @@ describe("vault_erase — history scrub", () => {
     if (!r.ok) return;
     expect(r.value.erased).toContain("notes/claim.md");
     expect(r.value.incomplete.some((s) => s.includes("worktree only"))).toBe(true);
+  });
+});
+
+describe("vault_erase — dependents plan", () => {
+  let vault: string;
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-erase-plan-"));
+  });
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("returns a deterministic pre-scrub plan across both dependency channels", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(
+      vault,
+      "analysis/source-dependent.md",
+      markdown("analysis/source-dependent.md", [target]),
+    );
+    addCommittedFile(
+      vault,
+      "links/link-dependent.md",
+      markdown("links/link-dependent.md", [], `See [target](${target}).`),
+    );
+
+    const first = await vaultErasePlan(vault, { path: target }, eraser);
+    const second = await vaultErasePlan(vault, { path: target }, eraser);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value).toMatchObject({
+      target: { kind: "path", value: target },
+      target_paths: [target],
+      hidden_targets: "none",
+      downstream: [
+        { path: "analysis/source-dependent.md", dependency_type: "source", distance: 1 },
+        { path: "links/link-dependent.md", dependency_type: "link", distance: 1 },
+      ],
+      primary_blast: 1,
+      advisory_blast: 1,
+      hidden_downstream: "none",
+    });
+    expect(first.value.vault_head).toMatch(/^[0-9a-f]{40}$/);
+    expect(first.value.plan_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(second.value.plan_hash).toBe(first.value.plan_hash);
+  });
+
+  it("omits unreadable dependents and coarsens the hidden remainder", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(vault, "analysis/visible.md", markdown("analysis/visible.md", [target]));
+    addCommittedFile(vault, "restricted/hidden.md", markdown("restricted/hidden.md", [target]));
+
+    const plan = await vaultErasePlan(vault, { path: target }, scopedEraser);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.value.downstream).toEqual([
+      { path: "analysis/visible.md", dependency_type: "source", distance: 1 },
+    ]);
+    expect(plan.value.primary_blast).toBe(1);
+    expect(plan.value.advisory_blast).toBe(0);
+    expect(plan.value.hidden_downstream).toBe("some");
+    expect(JSON.stringify(plan.value)).not.toContain("restricted/hidden.md");
+  });
+
+  it("unions and deduplicates dependents across every source_ref-selected target", async () => {
+    const sourceRef = "distill:session-a#claim-1";
+    const firstTarget = "notes/a.md";
+    const secondTarget = "notes/b.md";
+    initRepo(vault, firstTarget, markdown(firstTarget, [sourceRef]));
+    addCommittedFile(vault, secondTarget, markdown(secondTarget, [sourceRef]));
+    addCommittedFile(
+      vault,
+      "analysis/shared.md",
+      markdown("analysis/shared.md", [firstTarget, secondTarget]),
+    );
+
+    const plan = await vaultErasePlan(vault, { source_ref: sourceRef }, eraser);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.value.target_paths).toEqual([firstTarget, secondTarget]);
+    expect(plan.value.downstream).toEqual([
+      { path: "analysis/shared.md", dependency_type: "source", distance: 1 },
+    ]);
+    expect(plan.value.primary_blast).toBe(1);
+  });
+
+  it("invalidates an acknowledged plan when vault HEAD changes", async () => {
+    const target = "notes/target.md";
+    initRepo(vault, target, markdown(target));
+    addCommittedFile(vault, "analysis/dependent.md", markdown("analysis/dependent.md", [target]));
+    const plan = await vaultErasePlan(vault, { path: target }, eraser);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    addCommittedFile(vault, "unrelated.md", markdown("unrelated.md"));
+    let rewriteCalled = false;
+
+    const r = await vaultErase(
+      vault,
+      { path: target, confirm: target, plan_hash: plan.value.plan_hash },
+      eraser,
+      {
+        filterRepoAvailable: async () => true,
+        runFilterRepo: async () => {
+          rewriteCalled = true;
+          return { ok: true, value: undefined };
+        },
+      },
+    );
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/plan_hash.*current erase plan|stale/i);
+    expect(rewriteCalled).toBe(false);
+  });
+
+  it("documents the pre-scrub plan and exposure gate", () => {
+    const protocol = readFileSync(join(process.cwd(), "docs/erasure-protocol.md"), "utf8");
+    expect(protocol).toContain("vaultErasePlan");
+    expect(protocol).toContain("plan_hash");
+    expect(protocol).toMatch(/source.*link.*dependents/is);
+    expect(protocol).toMatch(/stale.*plan.*retry/is);
+    expect(protocol).toMatch(/not.*registered.*MCP.*CLI/is);
   });
 });
 

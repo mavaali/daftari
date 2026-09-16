@@ -26,9 +26,15 @@ import {
   getDocumentsByPaths,
   type IndexDb,
 } from "../storage/index-db.js";
+import { SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
+import {
+  type CompiledFieldFilter,
+  compileFieldFilterCandidateSql,
+  compileFieldFilterSql,
+} from "./field-filters.js";
 import type { ValidAtSource } from "./valid-at-source.js";
 import { embedQuery, getProvider, meanEmbedding } from "./vector.js";
 
@@ -37,7 +43,22 @@ export interface HybridWeights {
   vector: number;
 }
 
-export const DEFAULT_WEIGHTS: HybridWeights = { bm25: 0.5, vector: 0.5 };
+// Fusion default: 0.8/0.2, measured (2026-08-18 weight sweep on the frozen
+// corpus): the recall-vs-weight curve is an inverted U with a broad 0.7-0.9
+// plateau beating both the historical 0.5/0.5 (the worst measured vector-on
+// setting) and pure lexical at most budgets — the vector arm earns its keep
+// as a tiebreaker, not a co-ranker. `search.weights` in config.yaml
+// overrides per vault, applied at startup like the other retrieval knobs;
+// callers can still pass per-query weights.
+let defaultWeights: HybridWeights = { ...SEARCH_TUNING_DEFAULTS.weights };
+
+export function setDefaultWeights(w: HybridWeights): void {
+  defaultWeights = { ...w };
+}
+
+export function getDefaultWeights(): HybridWeights {
+  return defaultWeights;
+}
 
 export interface HybridHit {
   path: string;
@@ -74,6 +95,9 @@ export interface HybridHit {
   // #234: pending changes (any class, severity withheld) on compiled
   // upstream edges to units the caller cannot read. Absent = none.
   hiddenPendingUpstream?: "some" | "many";
+  // Coarse bucket of VISIBLE upstream inputs the caller can no longer verify
+  // (deleted, or evicted from a readable collection). Never an exact count (#217/#416).
+  unverifiableUpstream?: "some" | "many";
   // #8 structural decay, coarse per-hit booleans (linker names live on
   // vault_read's structural field, not here). Computed from the caller's
   // vantage — hidden linkers neither count nor leak. Absent = healthy.
@@ -82,6 +106,15 @@ export interface HybridHit {
   retiredStillLinked?: boolean;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
+  // off.1/MAV-154: set when the graph-expansion pass injected this hit (not the
+  // ranker, not the coverage pass). `seed` is the ranked doc it was reached from;
+  // `edgeType` is which edge kind bridged them. Distinct signal from viaCoverage/
+  // coverageReason — an edge-injected hit sets viaEdge and NO coverageReason.
+  viaEdge?: { seed: string; edgeType: "derives_from" | "tension" };
+  // MAV-161 supersession suppression (src/search/suppression.ts). Both are
+  // set by the tool handler's post-pass, never the ranker.
+  viaForeground?: boolean; // a current head pulled into the stale doc's rank slot
+  demoted?: "superseded"; // moved to the tail: a readable current head exists
 }
 
 // #3: one entry of the agent-as-judge rerank pool. A compact judging record
@@ -121,9 +154,20 @@ const SNIPPET_RADIUS = 140;
 // best-per-document. A multiple of the user-facing limit keeps the hybrid
 // fusion honest — if we only fetched `limit` chunks we'd risk every one
 // belonging to the same document and starving the rest of the candidate set.
-// 64 is empirically generous for typical limit ≤ 10; bump if vault chunk
-// counts grow into the millions.
-const VEC_KNN_K = 64;
+// Default 256, measured (MAV-159 sweep): recall is monotone in K and
+// saturates at 256 with distractor load flat, so the fan-out captures the
+// ceiling at negligible KNN cost. `search.vec_knn_k` in config.yaml
+// overrides, applied at startup like setProvider. Config validation owns
+// the bounds; this setter stays dumb.
+let vecKnnK = SEARCH_TUNING_DEFAULTS.vecKnnK;
+
+export function setVecKnnK(k: number): void {
+  vecKnnK = k;
+}
+
+export function getVecKnnK(): number {
+  return vecKnnK;
+}
 
 // Pulls a readable excerpt from a document body, centred on the earliest
 // occurrence of any query term. Falls back to the document head when no term
@@ -202,17 +246,23 @@ function tieredLexical(
 // negative for strong hits), so we flip the sign to `larger = better` and
 // then normalise the largest to 1.0 in the caller. A null query (no usable
 // tokens after sanitization) returns an empty map.
-function ftsRanking(db: IndexDb, query: string | null): Map<string, number> {
+function ftsRanking(
+  db: IndexDb,
+  query: string | null,
+  filters: CompiledFieldFilter[] = [],
+): Map<string, number> {
   if (query === null) return new Map();
+  const compiled = compileFieldFilterSql(filters, "d.path");
+  const filterSql = compiled.sql.length > 0 ? ` AND ${compiled.sql}` : "";
   const rows = db
     .prepare(
       `SELECT d.path AS path, -bm25(documents_fts) AS score
          FROM documents_fts
          JOIN documents AS d ON d.rowid = documents_fts.rowid
-        WHERE documents_fts MATCH ?
+        WHERE documents_fts MATCH ?${filterSql}
         ORDER BY bm25(documents_fts)`,
     )
-    .all(query) as { path: string; score: number }[];
+    .all(query, ...compiled.params) as { path: string; score: number }[];
   const result = new Map<string, number>();
   for (const r of rows) {
     // Some rows may produce a negative flipped score if FTS5 returned a
@@ -262,7 +312,7 @@ function vecRanking(
           AND v.k = ?${collectionFilter}
         ORDER BY v.distance`,
     )
-    .all(queryBlob, modelId, VEC_KNN_K, ...(readableCollections ?? [])) as {
+    .all(queryBlob, modelId, vecKnnK, ...(readableCollections ?? [])) as {
     path: string;
     distance: number;
   }[];
@@ -272,6 +322,43 @@ function vecRanking(
     const prev = result.get(r.path) ?? -Infinity;
     if (sim > prev) result.set(r.path, sim);
   }
+  return result;
+}
+
+function exactFilteredVecRanking(
+  db: IndexDb,
+  queryEmbedding: Float32Array,
+  modelId: string,
+  filters: CompiledFieldFilter[],
+  readableCollections?: string[],
+): Map<string, number> {
+  if (readableCollections !== undefined && readableCollections.length === 0) return new Map();
+  const compiled = compileFieldFilterCandidateSql(filters);
+  const collectionSql =
+    readableCollections === undefined
+      ? ""
+      : ` AND d.collection IN (${readableCollections.map(() => "?").join(",")})`;
+  const rows = db
+    .prepare(
+      `WITH eligible AS MATERIALIZED (${compiled.sql})
+       SELECT c.path AS path,
+              MIN(vec_distance_cosine(e.embedding, ?)) AS distance
+         FROM eligible AS eligible
+         JOIN documents AS d ON d.path = eligible.path
+         JOIN chunks AS c ON c.path = d.path
+         JOIN embeddings AS e ON e.content_hash = c.content_hash
+        WHERE e.model = ?${collectionSql}
+        GROUP BY c.path
+        ORDER BY distance, c.path`,
+    )
+    .all(
+      ...compiled.params,
+      embeddingToBlob(queryEmbedding),
+      modelId,
+      ...(readableCollections ?? []),
+    ) as { path: string; distance: number }[];
+  const result = new Map<string, number>();
+  for (const row of rows) result.set(row.path, Math.max(0, 1 - row.distance));
   return result;
 }
 
@@ -298,17 +385,20 @@ const FTS_SNIPPET_TOKENS = 48;
 function chunkFtsRanking(
   db: IndexDb,
   query: string | null,
+  filters: CompiledFieldFilter[] = [],
 ): { scores: Map<string, number>; snippets: Map<string, string> } {
   if (query === null) return { scores: new Map(), snippets: new Map() };
+  const compiled = compileFieldFilterSql(filters, "c.path");
+  const filterSql = compiled.sql.length > 0 ? ` AND ${compiled.sql}` : "";
   const rows = db
     .prepare(
       `SELECT c.path AS path, chunks_fts.rowid AS crowid, -bm25(chunks_fts) AS score
          FROM chunks_fts
          JOIN chunks AS c ON c.rowid = chunks_fts.rowid
-        WHERE chunks_fts MATCH ?
+        WHERE chunks_fts MATCH ?${filterSql}
         ORDER BY bm25(chunks_fts)`,
     )
-    .all(query) as { path: string; crowid: number; score: number }[];
+    .all(query, ...compiled.params) as { path: string; crowid: number; score: number }[];
   const scores = new Map<string, number>();
   // The winning chunk's FTS rowid per path — the snippet pass below is
   // restricted to exactly these rows, so snippet()'s tokenize/format cost is
@@ -363,6 +453,7 @@ interface RankOptions {
   lexicalGranularity: "document" | "chunk";
   // Readable-collection allow-list pushed into the KNN scan; see vecRanking.
   readableCollections?: string[];
+  filters?: CompiledFieldFilter[];
 }
 
 // Core ranker shared by query search and related-document search.
@@ -382,26 +473,38 @@ function rankDocuments(
   // Best-chunk excerpts from the lexical pass (#108); empty for the
   // document-granularity path, whose hits fall back to the JS scan.
   let lexicalSnippets = new Map<string, string>();
+  const filters = opts.filters ?? [];
   if (opts.lexicalGranularity === "chunk") {
     // Body granularity (the dilution fix) TIERED with a clean title/tag signal
     // (the native-shape fix). Each is normalized to its own max to reconcile the
     // two FTS score scales; tieredLexical then ranks every body match above every
     // title-only match. The title/tag signal reuses ftsRanking with a column-
     // restricted query so it scores title+tags only (no body dilution).
-    const chunkRanked = chunkFtsRanking(db, matchQuery);
+    const chunkRanked = chunkFtsRanking(db, matchQuery, filters);
     lexicalSnippets = chunkRanked.snippets;
     const chunkNorm = normalize(chunkRanked.scores);
-    const titleTagNorm = normalize(ftsRanking(db, columnRestrict(matchQuery, "{title tags}")));
+    const titleTagNorm = normalize(
+      ftsRanking(db, columnRestrict(matchQuery, "{title tags}"), filters),
+    );
     bm25Norm = tieredLexical(chunkNorm, titleTagNorm);
   } else {
-    bm25Norm = normalize(ftsRanking(db, matchQuery));
+    bm25Norm = normalize(ftsRanking(db, matchQuery, filters));
   }
 
   let vectorRaw = new Map<string, number>();
   let vectorUsed = false;
   if (queryEmbedding) {
     const provider = getProvider();
-    vectorRaw = vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
+    vectorRaw =
+      filters.length > 0
+        ? exactFilteredVecRanking(
+            db,
+            queryEmbedding,
+            provider.id,
+            filters,
+            opts.readableCollections,
+          )
+        : vecRanking(db, queryEmbedding, provider.id, opts.readableCollections);
     if (vectorRaw.size > 0) vectorUsed = true;
   }
   const vectorNorm = normalize(vectorRaw);
@@ -474,6 +577,7 @@ export interface HybridSearchOptions {
   // the tool handler's post-rank canRead filter remains the authorization
   // boundary either way, and still covers the lexical half.
   readableCollections?: string[];
+  filters?: CompiledFieldFilter[];
 }
 
 // Ranks vault documents against a free-text query.
@@ -482,7 +586,7 @@ export async function hybridSearch(
   query: string,
   options: HybridSearchOptions = {},
 ): Promise<Result<HybridSearchResult, Error>> {
-  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const weights = options.weights ?? getDefaultWeights();
   const limit = options.limit ?? 10;
   // Default flipped to "chunk" in v1.29.0: chunk-level BM25 recovers the
   // multi-topic-document dilution gap (RB recall + SQuAD retrieval) and produces
@@ -510,6 +614,7 @@ export async function hybridSearch(
     excludePath: undefined,
     lexicalGranularity,
     readableCollections: options.readableCollections,
+    filters: options.filters,
   });
 
   return ok({
@@ -519,6 +624,97 @@ export async function hybridSearch(
     weights: vectorUsed ? weights : { bm25: 1, vector: 0 },
     hits,
   });
+}
+
+export interface FilterOnlySearchOptions {
+  limit?: number;
+  readableCollections?: string[];
+  // Push valid_only into SQL before LIMIT. This keeps broad structured
+  // filters bounded without shrinking the page when newer expired/not-yet
+  // documents sort ahead of in-window ones. Inverted intervals remain
+  // unknown (and therefore included), matching computeValidity.
+  validOnlyAt?: string;
+}
+
+export function filterOnlySearch(
+  db: IndexDb,
+  filters: CompiledFieldFilter[],
+  options: FilterOnlySearchOptions = {},
+): HybridSearchResult {
+  if (filters.length === 0) {
+    return { query: "", count: 0, vectorUsed: false, weights: { bm25: 1, vector: 0 }, hits: [] };
+  }
+  if (options.readableCollections !== undefined && options.readableCollections.length === 0) {
+    return { query: "", count: 0, vectorUsed: false, weights: { bm25: 1, vector: 0 }, hits: [] };
+  }
+  const compiled = compileFieldFilterCandidateSql(filters);
+  const collectionSql =
+    options.readableCollections === undefined
+      ? ""
+      : ` AND d.collection IN (${options.readableCollections.map(() => "?").join(",")})`;
+  const validitySql = options.validOnlyAt
+    ? ` AND (
+          (d.valid_from IS NOT NULL AND d.valid_until IS NOT NULL AND d.valid_until <= d.valid_from)
+          OR (
+            (d.valid_from IS NULL OR d.valid_from <= ?)
+            AND (d.valid_until IS NULL OR d.valid_until > ?)
+          )
+        )`
+    : "";
+  const limit = options.limit ?? 10;
+  const params: Array<string | number> = [
+    ...compiled.params,
+    ...(options.validOnlyAt ? [options.validOnlyAt, options.validOnlyAt] : []),
+    ...(options.readableCollections ?? []),
+    limit,
+  ];
+  const paths = db
+    .prepare(
+      `WITH eligible AS MATERIALIZED (${compiled.sql})
+       SELECT d.path AS path
+         FROM eligible AS eligible
+         JOIN documents AS d ON d.path = eligible.path
+        WHERE 1 = 1${validitySql}${collectionSql}
+        ORDER BY d.updated DESC, d.path ASC
+        LIMIT ?`,
+    )
+    .all(...params) as { path: string }[];
+  const documents = new Map(
+    getDocumentsByPaths(
+      db,
+      paths.map((row) => row.path),
+    ).map((document) => [document.path, document]),
+  );
+  const hits: HybridHit[] = [];
+  for (const { path } of paths) {
+    const doc = documents.get(path);
+    if (!doc) continue;
+    hits.push({
+      path,
+      title: doc.title,
+      collection: doc.collection,
+      status: doc.status,
+      score: 0,
+      bm25Score: 0,
+      vectorScore: 0,
+      snippet: makeSnippet(doc.content, []),
+      decay: computeDecay({
+        status: doc.status,
+        confidence: doc.confidence,
+        updated: doc.updated,
+        created: doc.created,
+        ttl_days: doc.ttlDays,
+        superseded_by: doc.supersededBy,
+      }),
+    });
+  }
+  return {
+    query: "",
+    count: hits.length,
+    vectorUsed: false,
+    weights: { bm25: 1, vector: 0 },
+    hits,
+  };
 }
 
 export interface RelatedSearchResult {
@@ -563,7 +759,7 @@ export function relatedSearchFromSeed(
   excludePath: string | null,
   options: HybridSearchOptions = {},
 ): { hits: HybridHit[]; vectorUsed: boolean } {
-  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const weights = options.weights ?? getDefaultWeights();
   const limit = options.limit ?? 10;
   const rankLimit = options.overFetch ? Number.POSITIVE_INFINITY : limit;
 
@@ -598,7 +794,7 @@ export function relatedSearch(
   path: string,
   options: HybridSearchOptions = {},
 ): Result<RelatedSearchResult, Error> {
-  const weights = options.weights ?? DEFAULT_WEIGHTS;
+  const weights = options.weights ?? getDefaultWeights();
   const seed = extractRelatedSeed(db, path);
   if (!seed.ok) return seed;
 

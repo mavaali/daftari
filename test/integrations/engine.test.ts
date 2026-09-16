@@ -1,0 +1,2498 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { err, ok } from "../../src/frontmatter/types.js";
+import {
+  armProviderWebhookSetup,
+  confirmProviderWebhookVerification,
+  type DistillationInput,
+  type EngineDeps,
+  ensureProviderWebhook,
+  type ProviderAdapter,
+  readProviderWebhookVerificationToken,
+  reconcileProvider,
+  requireCollectionWriteAccess,
+  startPeriodicIntegrationSync,
+  validateContinuousAdapterCapabilities,
+  verifyProviderLifecycleWebhook,
+  verifyProviderWebhook,
+} from "../../src/integrations/engine.js";
+import { createGoogleDocsAdapter } from "../../src/integrations/google.js";
+import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
+import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
+import type { RoleConfig } from "../../src/utils/config.js";
+import { sha256Hex } from "../../src/utils/hash.js";
+
+const KEY = Buffer.alloc(32, 7);
+const config: IntegrationConfig = {
+  encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+  pollingIntervalMinutes: 15,
+  google: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" },
+};
+const environment = {
+  DAFTARI_INTEGRATIONS_KEY: KEY.toString("base64"),
+  GOOGLE_CLIENT_ID: "google-client-id",
+  GOOGLE_CLIENT_SECRET: "google-client-secret",
+};
+const now = () => new Date("2026-08-24T12:00:00.000Z");
+
+function providerState(sources: ProviderState["sources"] = {}): ProviderState {
+  return { accessToken: "access", refreshToken: "refresh", sources };
+}
+
+function adapter(input: Partial<ProviderAdapter> = {}): ProviderAdapter {
+  return {
+    name: "google",
+    authorizationUrl: () => "https://accounts.example/authorize",
+    exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+    discover: async () => ok([]),
+    fetch: async () => err(new Error("not used")),
+    ...input,
+  };
+}
+
+function deps(overrides: Partial<EngineDeps> = {}): EngineDeps {
+  return {
+    config,
+    environment,
+    adapters: {},
+    now,
+    distill: async () => ok({ runId: "run-1" }),
+    ...overrides,
+  };
+}
+
+describe("provider reconciliation", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-engine-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("does not invoke distillation when a normalized source hash is unchanged", async () => {
+    const text = "A stable normalized document";
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex(text),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const distill = vi.fn(async () => ok({ runId: "should-not-run" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "2" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "2", text }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: [],
+        unchangedSourceIds: ["google:doc-1"],
+        failedSourceIds: [],
+        unavailableSourceIds: [],
+      }),
+    );
+    expect(distill).not.toHaveBeenCalled();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]).toMatchObject(
+      {
+        revision: "2",
+        available: true,
+        lastSeenAt: "2026-08-24T12:00:00.000Z",
+      },
+    );
+  });
+
+  it("does not fetch a source whose stable revision already has a content hash", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              stable: {
+                id: "stable",
+                revision: "7",
+                contentHash: sha256Hex("already distilled"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const fetch = vi.fn(async () => err(new Error("must not fetch")));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([{ id: "stable", revision: "7" }]), fetch }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.unchangedSourceIds).toEqual(["google:stable"]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("scopes a source hint without discovering or marking other sources unavailable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              changed: {
+                id: "changed",
+                revision: "1",
+                contentHash: sha256Hex("old"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+              unscoped: {
+                id: "unscoped",
+                revision: "1",
+                contentHash: sha256Hex("keep"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const discover = vi.fn(async () => err(new Error("must not discover")));
+    const fetch = vi.fn(async () => ok({ id: "changed", revision: "2", text: "new" }));
+
+    const result = await reconcileProvider(vault, adapter({ discover, fetch }), deps(), {
+      kind: "sources",
+      sourceIds: ["changed"],
+      rediscover: false,
+    });
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: ["google:changed"],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: [],
+      }),
+    );
+    expect(discover).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const persisted = readIntegrationState(vault, KEY).value.providers.google?.sources;
+    expect(persisted?.changed.revision).toBe("2");
+    expect(persisted?.unscoped.available).toBe(true);
+  });
+
+  it("bounds source count and normalized text accepted during a reconcile", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const tooMany = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([
+            { id: "one", revision: "1" },
+            { id: "two", revision: "1" },
+          ]),
+      }),
+      deps({ reconcileLimits: { maxSources: 1 } }),
+    );
+    expect(tooMany.ok).toBe(false);
+
+    const fetched: string[] = [];
+    const distilled: string[] = [];
+    const bounded = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([
+            { id: "large", revision: "1" },
+            { id: "first", revision: "1" },
+            { id: "second", revision: "1" },
+            { id: "unfetched", revision: "1" },
+          ]),
+        fetch: async (source) => {
+          fetched.push(source.id);
+          return ok({
+            ...source,
+            text: source.id === "large" ? "12345" : "abc",
+          });
+        },
+      }),
+      deps({
+        reconcileLimits: { maxSources: 4, maxSourceTextBytes: 4, maxCycleTextBytes: 5 },
+        distill: async (input) => {
+          distilled.push(input.providerSourceId);
+          return ok({ runId: input.providerSourceId });
+        },
+      }),
+    );
+
+    expect(bounded.ok && bounded.value.failedSourceIds).toEqual([
+      "google:large",
+      "google:second",
+      "google:unfetched",
+    ]);
+    expect(distilled).toEqual(["google:first"]);
+    expect(fetched).toEqual(["large", "first", "second"]);
+  });
+
+  it("persists provider discovery metadata when no sources are returned", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async (state) => {
+          state.cursor = "cursor-after-empty-page";
+          return ok([]);
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
+      "cursor-after-empty-page",
+    );
+  });
+
+  it("commits a discovery cursor only after every discovered source succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: { google: { ...providerState(), cursor: "cursor-before-discovery" } },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let fetchFails = true;
+
+    const provider = adapter({
+      discover: async (state) => {
+        state.cursor = "cursor-after-discovery";
+        return ok([{ id: "doc-1", revision: "1" }]);
+      },
+      fetch: async () =>
+        fetchFails
+          ? err(new Error("unavailable"))
+          : ok({ id: "doc-1", revision: "1", text: "eventually available" }),
+    });
+    const first = await reconcileProvider(vault, provider, deps());
+
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
+      "cursor-before-discovery",
+    );
+
+    fetchFails = false;
+    const second = await reconcileProvider(vault, provider, deps());
+
+    expect(second.ok && second.value.distilledSourceIds).toEqual(["google:doc-1"]);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.cursor).toBe(
+      "cursor-after-discovery",
+    );
+  });
+
+  it("serializes encrypted state changes across different providers", async () => {
+    const bothProviders: IntegrationConfig = {
+      ...config,
+      notion: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" },
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: { google: providerState(), notion: providerState() },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let releaseDiscovery: (() => void) | undefined;
+    const reconciling = reconcileProvider(
+      vault,
+      adapter({
+        discover: () =>
+          new Promise((resolve) => {
+            releaseDiscovery = () => resolve(ok([{ id: "doc-1", revision: "1" }]));
+          }),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "normalized" }),
+      }),
+      deps({ config: bothProviders }),
+    );
+    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
+
+    let armSettled = false;
+    const arming = armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: bothProviders }),
+      () => "notion-cross-provider-token",
+    ).then((result) => {
+      armSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(armSettled).toBe(false);
+    releaseDiscovery?.();
+
+    expect((await reconciling).ok).toBe(true);
+    expect((await arming).ok).toBe(true);
+    const state = readIntegrationState(vault, KEY);
+    expect(state.value.providers.google?.sources["doc-1"]?.contentHash).toBeTypeOf("string");
+    expect(state.value.providers.notion?.webhookSetupToken).toBe("notion-cross-provider-token");
+  });
+
+  it("stages only changed normalized text and never persists that text", async () => {
+    const text = "A changed normalized document";
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const inputs: DistillationInput[] = [];
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "2" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "2", text }),
+      }),
+      deps({
+        distill: async (input) => {
+          inputs.push(input);
+          return ok({ runId: "run-2" });
+        },
+      }),
+    );
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: ["google:doc-1"],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: [],
+      }),
+    );
+    expect(inputs).toEqual([{ providerSourceId: "google:doc-1", revision: "2", text }]);
+    expect(readIntegrationState(vault, KEY)).toEqual(
+      ok({
+        providers: {
+          google: {
+            accessToken: "access",
+            refreshToken: "refresh",
+            sources: {
+              "doc-1": {
+                id: "doc-1",
+                revision: "2",
+                contentHash: sha256Hex(text),
+                available: true,
+                lastSeenAt: "2026-08-24T12:00:00.000Z",
+                lastDistillRunId: "run-2",
+              },
+            },
+          },
+        },
+        oauthStates: {},
+      }),
+    );
+  });
+
+  it.each(["result", "throw"])(
+    "retries an updated source after a %s failure from persisted state",
+    async (failure) => {
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex("old"),
+                available: true,
+                lastSeenAt: now().toISOString(),
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      );
+      const remote = adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "2" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "2", text: "new" }),
+      });
+      let pending: unknown;
+      const failed = await reconcileProvider(
+        vault,
+        remote,
+        deps({
+          distill: async () => {
+            pending = readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"];
+            if (failure === "throw") throw new Error("transient outage");
+            return err(new Error("transient outage"));
+          },
+        }),
+      );
+      expect(pending).toMatchObject({ revision: "2", contentHash: "" });
+      expect(failed.value?.failedSourceIds).toEqual(["google:doc-1"]);
+      // A fresh invocation reads the encrypted checkpoint, as after restart.
+      const recovered = vi.fn(async () => ok({ runId: "recovered" }));
+      const retried = await reconcileProvider(vault, remote, deps({ distill: recovered }));
+      expect(retried.value?.distilledSourceIds).toEqual(["google:doc-1"]);
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(
+        readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"],
+      ).toMatchObject({
+        revision: "2",
+        contentHash: sha256Hex("new"),
+        lastDistillRunId: "recovered",
+      });
+      const unchanged = await reconcileProvider(vault, remote, deps({ distill: recovered }));
+      expect(unchanged.value?.unchangedSourceIds).toEqual(["google:doc-1"]);
+      expect(recovered).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("continues after one distillation failure without advancing that source hash", async () => {
+    const failedText = "This source fails distillation";
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([
+            { id: "failed", revision: "2" },
+            { id: "good", revision: "1" },
+          ]),
+        fetch: async (source) =>
+          ok({
+            id: source.id,
+            revision: source.revision,
+            text: source.id === "failed" ? failedText : "Good",
+          }),
+      }),
+      deps({
+        distill: async (input) =>
+          input.providerSourceId === "google:failed"
+            ? err(new Error("distillation failed"))
+            : ok({ runId: "run-good" }),
+      }),
+    );
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: ["google:good"],
+        unchangedSourceIds: [],
+        failedSourceIds: ["google:failed"],
+        unavailableSourceIds: [],
+      }),
+    );
+    const sources = readIntegrationState(vault, KEY).value.providers.google?.sources;
+    expect(sources?.failed.contentHash).toBe("");
+    expect(sources?.failed.revision).toBe("2");
+    expect(sources?.good.contentHash).toBe(sha256Hex("Good"));
+  });
+
+  it("continues after one source fetch throws", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([
+            { id: "failed", revision: "1" },
+            { id: "good", revision: "1" },
+          ]),
+        fetch: async (source) => {
+          if (source.id === "failed") throw new Error("temporary provider failure");
+          return ok({ id: source.id, revision: source.revision, text: "Good" });
+        },
+      }),
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: ["google:good"],
+        unchangedSourceIds: [],
+        failedSourceIds: ["google:failed"],
+        unavailableSourceIds: [],
+      }),
+    );
+  });
+
+  it("persists rotated tokens before discovering with an expired access token", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let refreshInput: unknown;
+    let discoveredState: ProviderState | undefined;
+    let persistedAccessToken: string | undefined;
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async (input) => {
+          refreshInput = input;
+          return ok({
+            accessToken: "rotated-access",
+            refreshToken: "rotated-refresh",
+            accessTokenExpiresAt: "2026-08-24T13:00:00.000Z",
+          });
+        },
+        discover: async (state) => {
+          discoveredState = state;
+          const persisted = readIntegrationState(vault, KEY);
+          if (persisted.ok) persistedAccessToken = persisted.value.providers.google?.accessToken;
+          return ok([]);
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(refreshInput).toEqual({
+      clientId: "google-client-id",
+      clientSecret: "google-client-secret",
+      refreshToken: "old-refresh",
+    });
+    expect(discoveredState).toMatchObject({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+    });
+    expect(persistedAccessToken).toBe("rotated-access");
+    expect(readIntegrationState(vault, KEY).value.providers.google).toMatchObject({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+      accessTokenExpiresAt: "2026-08-24T13:00:00.000Z",
+    });
+  });
+
+  it("does not call a provider when expired-token refresh fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let discovered = false;
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("refresh failed")),
+        discover: async () => {
+          discovered = true;
+          return ok([]);
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(discovered).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("persists a webhook channel only after provider setup succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () =>
+          ok({ id: "channel-1", secret: "webhook-secret", expiresAt: "2026-08-25T12:00:00.000Z" }),
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ id: "channel-1", secret: "webhook-secret", expiresAt: "2026-08-25T12:00:00.000Z" }),
+    );
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual({
+      id: "channel-1",
+      secret: "webhook-secret",
+      expiresAt: "2026-08-25T12:00:00.000Z",
+    });
+  });
+
+  it("refreshes and persists expired tokens before ensuring a webhook", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensuredAccessToken: string | undefined;
+    let persistedAccessToken: string | undefined;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          ok({
+            accessToken: "rotated-access",
+            refreshToken: "rotated-refresh",
+            accessTokenExpiresAt: "2026-08-24T13:00:00.000Z",
+          }),
+        ensureWebhook: async (state) => {
+          ensuredAccessToken = state.accessToken;
+          const persisted = readIntegrationState(vault, KEY);
+          if (persisted.ok) persistedAccessToken = persisted.value.providers.google?.accessToken;
+          return ok({ id: "channel-1", secret: "webhook-secret" });
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(ensuredAccessToken).toBe("rotated-access");
+    expect(persistedAccessToken).toBe("rotated-access");
+    expect(readIntegrationState(vault, KEY).value.providers.google).toMatchObject({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+      webhook: { id: "channel-1", secret: "webhook-secret" },
+    });
+  });
+
+  it("does not ensure a webhook after expired-token refresh fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensured = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("refresh failed")),
+        ensureWebhook: async () => {
+          ensured = true;
+          return ok({ id: "channel-1", secret: "webhook-secret" });
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(ensured).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("preserves a prior webhook channel when provider setup fails", async () => {
+    const previous = { id: "previous-channel", secret: "previous-secret" };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: { ...providerState(), webhook: previous } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({ ensureWebhook: async () => err(new Error("webhook setup failed")) }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
+  });
+
+  it("skips minting a pendingWebhook and any state write when the adapter reports the webhook needs no renewal", async () => {
+    const existing = {
+      id: "fresh-channel",
+      secret: "fresh-secret",
+      expiresAt: "2026-08-25T12:00:00.000Z",
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: { ...providerState(), webhook: existing } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let writes = 0;
+    let ensureWebhookCalled = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        needsWebhookRenewal: () => false,
+        ensureWebhook: async () => {
+          ensureWebhookCalled = true;
+          return ok(existing);
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps({
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+
+    expect(result).toEqual(ok(existing));
+    expect(ensureWebhookCalled).toBe(true);
+    expect(writes).toBe(0);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(existing);
+  });
+
+  it("keeps the two-phase mint/write flow when the adapter has no needsWebhookRenewal capability", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let writes = 0;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () => ok({ id: "channel-1", secret: "webhook-secret" }),
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps({
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(writes).toBe(2);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual({
+      id: "channel-1",
+      secret: "webhook-secret",
+    });
+  });
+
+  it("clears the minted pendingWebhook instead of orphaning it when the callback URL is malformed (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensureWebhookCalled = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () => {
+          ensureWebhookCalled = true;
+          return ok({ id: "unreachable", secret: "unreachable" });
+        },
+      }),
+      {
+        callbackUrl: "not a valid url",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(ensureWebhookCalled).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+  });
+
+  it("answers a synchronous create-time validation mid-ensure, then commits the channel afterward (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let provider!: ProviderAdapter;
+    provider = adapter({
+      ensureWebhook: async (state, input) => {
+        const pending = state.pendingWebhook;
+        if (pending === undefined) throw new Error("no pending webhook was minted");
+        const callbackUrl = new URL(input.callbackUrl);
+        expect(callbackUrl.searchParams.get("pending_token")).toBe(pending.nonce);
+
+        // Simulate the provider validating the notification URL synchronously,
+        // mid-call, before this function returns — exactly what Graph does
+        // during subscription creation.
+        const validated = await verifyProviderWebhook(
+          vault,
+          provider,
+          {
+            headers: {},
+            body: new Uint8Array(),
+            query: { pending_token: pending.nonce, validationToken: "graph-validation-xyz" },
+          },
+          deps(),
+        );
+        expect(validated).toEqual(
+          ok({
+            kind: "verification",
+            channel: { id: pending.nonce, secret: pending.secret },
+            respondBody: "graph-validation-xyz",
+            respondContentType: "text/plain",
+          }),
+        );
+        // Subscription IDs only land in state after this call returns.
+        expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toBeUndefined();
+
+        return ok({ id: "graph-subscription-1", secret: pending.secret, expiresAt: undefined });
+      },
+      verifyWebhook: async (request, state) => {
+        const token = request.query?.validationToken;
+        const pendingToken = request.query?.pending_token;
+        if (
+          token === undefined ||
+          pendingToken === undefined ||
+          state.pendingWebhook === undefined
+        ) {
+          return err(new Error("not a validation request"));
+        }
+        return ok({
+          kind: "verification",
+          channel: { id: pendingToken, secret: state.pendingWebhook.secret },
+          respondBody: token,
+          respondContentType: "text/plain",
+        });
+      },
+    });
+
+    const result = await ensureProviderWebhook(
+      vault,
+      provider,
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(ok(expect.objectContaining({ id: "graph-subscription-1" })));
+    const finalState = readIntegrationState(vault, KEY).value.providers.google;
+    expect(finalState?.webhook).toMatchObject({ id: "graph-subscription-1" });
+    expect(finalState?.pendingWebhook).toBeUndefined();
+  });
+
+  it("does not hold the state lock across the provider's webhook creation call (#507)", async () => {
+    const notionConfig: IntegrationConfig = { ...config, notion: config.google };
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: { google: providerState(), notion: providerState() },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let release: (() => void) | undefined;
+    const stalled = adapter({
+      ensureWebhook: () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok({ id: "channel-1", secret: "secret-1" }));
+        }),
+    });
+
+    const ensuring = ensureProviderWebhook(
+      vault,
+      stalled,
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+
+    // Any other state-locked operation on a different provider must not be
+    // blocked by the stalled provider call — the lock is released before
+    // it, not held across it.
+    let armed: Awaited<ReturnType<typeof armProviderWebhookSetup>> | undefined;
+    const arming = armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: notionConfig }),
+      () => "concurrent-token",
+    ).then((settled) => {
+      armed = settled;
+    });
+    // A generous timeout: release() below is what would unblock a genuinely
+    // stuck lock, and it isn't called until after this check, so widening
+    // the window only absorbs CI scheduling noise — it can't mask a real
+    // lock-holding regression.
+    await vi.waitFor(() => expect(armed).toBeDefined(), { timeout: 5000 });
+    expect(armed?.ok).toBe(true);
+    await arming;
+
+    release?.();
+    expect((await ensuring).ok).toBe(true);
+  });
+
+  it("rejects a validation request whose pending token does not match the current attempt (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), pendingWebhook: { nonce: "current", secret: "s" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async () =>
+          ok({ kind: "verification", channel: { id: "x", secret: "y" }, respondBody: "leaked" }),
+      }),
+      {
+        headers: {},
+        body: new Uint8Array(),
+        query: { pending_token: "stale-or-forged", validationToken: "z" },
+      },
+      deps(),
+    );
+
+    // No pendingWebhook match and no established webhook either ⇒ falls
+    // through to the unsigned manual-capture branch, which requires an
+    // armed setup token this request never presented.
+    expect(result.ok).toBe(false);
+  });
+
+  it("forwards a genuine event that arrives with a still-matching pending token instead of dropping it (#507)", async () => {
+    // The callback URL registered with the provider keeps carrying the
+    // pending token for every future notification, not just the create-time
+    // validation — so a real event can legitimately arrive here in the
+    // narrow window before ensureProviderWebhook's phase 3 clears
+    // pendingWebhook. It must reach the queue, not be rejected as a failed
+    // validation.
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), pendingWebhook: { nonce: "in-flight", secret: "s" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async (request) =>
+          request.query?.validationToken === undefined
+            ? ok({ kind: "event", eventId: "race-event", hint: { kind: "reconcile" } })
+            : err(new Error("not an event")),
+      }),
+      {
+        headers: {},
+        body: Buffer.from("real notification payload"),
+        query: { pending_token: "in-flight" },
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "event", eventId: "race-event", hint: { kind: "reconcile" } }),
+    );
+  });
+
+  it("returns generic verified webhook events for routes to queue", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), webhook: { id: "channel", secret: "secret" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async () =>
+          ok({
+            kind: "event",
+            eventId: "evt-1",
+            hint: { kind: "sources", sourceIds: ["doc-1"], rediscover: true },
+          }),
+      }),
+      { headers: { "x-provider-signature": "signature" }, body: Buffer.from("event") },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({
+        kind: "event",
+        eventId: "evt-1",
+        hint: { kind: "sources", sourceIds: ["doc-1"], rediscover: true },
+      }),
+    );
+  });
+
+  it("verifies concurrent configured webhook events without waiting for reconciliation", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), webhook: { id: "channel", secret: "secret" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let releaseDiscovery: (() => void) | undefined;
+    const provider = adapter({
+      discover: () =>
+        new Promise((resolve) => {
+          releaseDiscovery = () => resolve(ok([]));
+        }),
+      verifyWebhook: async (request) =>
+        ok({
+          kind: "event",
+          eventId: Buffer.from(request.body).toString("utf8"),
+          hint: { kind: "reconcile" },
+        }),
+    });
+    const reconciling = reconcileProvider(vault, provider, deps());
+    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
+
+    let verified: Awaited<ReturnType<typeof verifyProviderWebhook>>[] | undefined;
+    const verification = Promise.all([
+      verifyProviderWebhook(vault, provider, { headers: {}, body: Buffer.from("evt-1") }, deps()),
+      verifyProviderWebhook(vault, provider, { headers: {}, body: Buffer.from("evt-2") }, deps()),
+    ]).then((results) => {
+      verified = results;
+    });
+
+    await vi.waitFor(() => expect(verified).toBeDefined(), { timeout: 100 });
+    expect(verified).toEqual([
+      ok({ kind: "event", eventId: "evt-1", hint: { kind: "reconcile" } }),
+      ok({ kind: "event", eventId: "evt-2", hint: { kind: "reconcile" } }),
+    ]);
+    releaseDiscovery?.();
+    await verification;
+    expect((await reconciling).ok).toBe(true);
+  });
+
+  it("persists a provider verification channel before returning it", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: { ...providerState(), webhook: undefined } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const channel = {
+      id: "notion-verification",
+      secret: "operator-verification-token",
+      verificationRequired: true,
+    };
+    const armed = await armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: { ...config, google: undefined, notion: config.google } }),
+      () => "one-time-setup-token",
+    );
+    expect(armed).toEqual(ok({ setupToken: "one-time-setup-token" }));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        name: "notion",
+        verifyWebhook: async () => ok({ kind: "verification", channel }),
+      }),
+      {
+        headers: {},
+        body: Buffer.from('{"verification_token":"operator-verification-token"}'),
+        setupToken: "one-time-setup-token",
+      },
+      deps({
+        config: { ...config, google: undefined, notion: config.google },
+        adapters: {},
+      }),
+    );
+
+    expect(result).toEqual(ok({ kind: "verification", channel }));
+    expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook).toEqual(channel);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.notion?.webhookSetupToken,
+    ).toBeUndefined();
+  });
+
+  it("rejects unsolicited, wrong, and replayed manual webhook verification", async () => {
+    const notionConfig = { ...config, google: undefined, notion: config.google };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const verifyWebhook = vi.fn(async () =>
+      ok({
+        kind: "verification" as const,
+        channel: { id: "notion-manual", secret: "captured", verificationRequired: true },
+      }),
+    );
+    const notion = adapter({ name: "notion", verifyWebhook });
+    const notionDeps = deps({ config: notionConfig });
+    const body = Buffer.from('{"verification_token":"captured"}');
+
+    expect((await verifyProviderWebhook(vault, notion, { headers: {}, body }, notionDeps)).ok).toBe(
+      false,
+    );
+    expect(verifyWebhook).not.toHaveBeenCalled();
+    const eventAdapter = adapter({
+      name: "notion",
+      verifyWebhook: async () =>
+        ok({ kind: "event", eventId: "poison", hint: { kind: "reconcile" } }),
+    });
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          eventAdapter,
+          { headers: {}, body, setupToken: "armed-setup-token-value" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook).toBeUndefined();
+    expect(
+      (await armProviderWebhookSetup(vault, "notion", notionDeps, () => "armed-setup-token-value"))
+        .ok,
+    ).toBe(true);
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body, setupToken: "wrong-token" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(verifyWebhook).not.toHaveBeenCalled();
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body, setupToken: "armed-setup-token-value" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body, setupToken: "armed-setup-token-value" },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("serializes concurrent verification capture for one vault and provider", async () => {
+    const notionConfig = { ...config, google: undefined, notion: config.google };
+    const notionDeps = deps({ config: notionConfig });
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    expect(
+      (await armProviderWebhookSetup(vault, "notion", notionDeps, () => "concurrent-setup-token"))
+        .ok,
+    ).toBe(true);
+    let release: (() => void) | undefined;
+    const verifyWebhook = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof ok<{ kind: "verification"; channel: typeof channel }>>>(
+          (resolve) => {
+            release = () => resolve(ok({ kind: "verification", channel }));
+          },
+        ),
+    );
+    const channel = {
+      id: "notion-manual",
+      secret: "first-secret",
+      verificationRequired: true,
+    };
+    const notion = adapter({ name: "notion", verifyWebhook });
+    const request = {
+      headers: {},
+      body: Buffer.from('{"verification_token":"first-secret"}'),
+      setupToken: "concurrent-setup-token",
+    };
+    const first = verifyProviderWebhook(vault, notion, request, notionDeps);
+    await Promise.resolve();
+    const second = await verifyProviderWebhook(vault, notion, request, notionDeps);
+    expect(second.ok).toBe(false);
+    release?.();
+    expect((await first).ok).toBe(true);
+    expect(verifyWebhook).toHaveBeenCalledTimes(1);
+    expect(readIntegrationState(vault, KEY).value.providers.notion?.webhook?.secret).toBe(
+      "first-secret",
+    );
+  });
+
+  it("blocks signed events until the operator confirms manual verification", async () => {
+    const notionConfig = { ...config, google: undefined, notion: config.google };
+    const channel = {
+      id: "notion-manual",
+      secret: "captured-token",
+      verificationRequired: true,
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { notion: { ...providerState(), webhook: channel } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const verifyWebhook = vi.fn(async () =>
+      ok({ kind: "event" as const, eventId: "evt-1", hint: { kind: "reconcile" as const } }),
+    );
+    const notion = adapter({ name: "notion", verifyWebhook });
+    const notionDeps = deps({ config: notionConfig });
+
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body: Buffer.alloc(0) },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(verifyWebhook).not.toHaveBeenCalled();
+    expect(readProviderWebhookVerificationToken(vault, "notion", notionDeps)).toEqual(
+      ok({ verificationToken: "captured-token" }),
+    );
+    expect(readProviderWebhookVerificationToken(vault, "notion", notionDeps)).toEqual(
+      ok({ verificationToken: "captured-token" }),
+    );
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body: Buffer.alloc(0) },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(await confirmProviderWebhookVerification(vault, "notion", notionDeps)).toEqual(
+      ok(undefined),
+    );
+    expect(
+      (
+        await verifyProviderWebhook(
+          vault,
+          notion,
+          { headers: {}, body: Buffer.alloc(0) },
+          notionDeps,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.notion?.webhook?.verificationRequired,
+    ).toBe(false);
+  });
+
+  it("rejects a polling adapter missing token refresh capability", () => {
+    expect(validateContinuousAdapterCapabilities(adapter(), { webhooksRequired: false }).ok).toBe(
+      false,
+    );
+  });
+
+  it("rejects a webhook adapter missing both webhook capabilities", () => {
+    expect(
+      validateContinuousAdapterCapabilities(
+        adapter({ refreshTokens: async () => ok({ accessToken: "next", refreshToken: "next" }) }),
+        { webhooksRequired: true },
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("accepts a complete continuous adapter contract", () => {
+    expect(
+      validateContinuousAdapterCapabilities(
+        adapter({
+          refreshTokens: async () => ok({ accessToken: "next", refreshToken: "next" }),
+          ensureWebhook: async () => ok({ id: "channel-1", secret: "secret" }),
+          verifyWebhook: async () =>
+            ok({ kind: "event", eventId: "evt-1", hint: { kind: "reconcile" } }),
+        }),
+        { webhooksRequired: true },
+      ),
+    ).toEqual(ok(undefined));
+  });
+
+  it("marks a no-longer-discovered source unavailable while preserving its hash", async () => {
+    const priorHash = sha256Hex("Previously available");
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: priorHash,
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const unavailable: Array<{ providerSourceId: string; reason: string }> = [];
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({
+        recordUnavailable: (event) => {
+          unavailable.push(event);
+          return ok(undefined);
+        },
+      }),
+    );
+
+    expect(result).toEqual(
+      ok({
+        distilledSourceIds: [],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: ["google:doc-1"],
+      }),
+    );
+    expect(unavailable).toEqual([
+      {
+        idempotencyKey: "google:doc-1:1",
+        providerSourceId: "google:doc-1",
+        reason: "no_longer_discovered",
+        revision: "1",
+        occurredAt: "2026-08-24T12:00:00.000Z",
+      },
+    ]);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]).toMatchObject(
+      {
+        contentHash: priorHash,
+        available: false,
+      },
+    );
+  });
+
+  it("retries an unavailable review event before marking its source unavailable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex("Previously available"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const events: string[] = [];
+    let firstAttempt = true;
+    const recordUnavailable = (event: { providerSourceId: string }) => {
+      if (firstAttempt) {
+        firstAttempt = false;
+        return err(new Error("review queue unavailable"));
+      }
+      events.push(event.providerSourceId);
+      return ok(undefined);
+    };
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({ recordUnavailable }),
+    );
+    expect(first.ok).toBe(false);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(true);
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({ recordUnavailable }),
+    );
+    expect(second).toEqual(
+      ok({
+        distilledSourceIds: [],
+        unchangedSourceIds: [],
+        failedSourceIds: [],
+        unavailableSourceIds: ["google:doc-1"],
+      }),
+    );
+    expect(events).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(false);
+  });
+
+  it("reuses an unavailable event key when the state write fails after event persistence", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: providerState({
+              "doc-1": {
+                id: "doc-1",
+                revision: "1",
+                contentHash: sha256Hex("Previously available"),
+                available: true,
+                lastSeenAt: "2026-08-23T12:00:00.000Z",
+              },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const eventKeys: string[] = [];
+    const recordUnavailable = (event: { idempotencyKey: string }) => {
+      eventKeys.push(event.idempotencyKey);
+      return ok(undefined);
+    };
+
+    let writes = 0;
+    const first = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({
+        recordUnavailable,
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writes === 1
+            ? err(new Error("state disk unavailable"))
+            : writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+    expect(first.ok).toBe(false);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(true);
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({ discover: async () => ok([]) }),
+      deps({ recordUnavailable }),
+    );
+    expect(second.ok).toBe(true);
+    expect(eventKeys).toEqual(["google:doc-1:1", "google:doc-1:1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.available,
+    ).toBe(false);
+  });
+
+  it("persists a fetch failure reason and clears it once the source succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let fetchFails = true;
+    const provider = adapter({
+      discover: async () => ok([{ id: "flaky", revision: "1" }]),
+      fetch: async (source) =>
+        fetchFails
+          ? err(new Error("temporary provider failure"))
+          : ok({ id: source.id, revision: source.revision, text: "Recovered" }),
+    });
+
+    const first = await reconcileProvider(vault, provider, deps());
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "fetch" });
+
+    fetchFails = false;
+    const second = await reconcileProvider(vault, provider, deps());
+    expect(second.ok && second.value.distilledSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toBeUndefined();
+  });
+
+  it("threads a specific failure reason from a fetch error when the adapter provides one", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const specificError = Object.assign(new Error("file is encrypted"), {
+      reason: "encrypted",
+    });
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "locked", revision: "1" }]),
+        fetch: async () => err(specificError),
+      }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:locked"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.locked?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "encrypted" });
+  });
+
+  it("persists a distill failure reason distinct from a fetch failure", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "Some content" }),
+      }),
+      deps({ distill: async () => err(new Error("distillation failed")) }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "distill" });
+  });
+
+  it("persists a limit failure reason for a source that exceeds the per-source byte cap", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "huge", revision: "1" }]),
+        fetch: async () => ok({ id: "huge", revision: "1", text: "12345" }),
+      }),
+      deps({ reconcileLimits: { maxSourceTextBytes: 4 } }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:huge"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.huge?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "limit" });
+  });
+
+  it("sets reconnect_required after a terminal refresh failure and clears it on the next success", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const failing = await reconcileProvider(
+      vault,
+      adapter({ refreshTokens: async () => err(new Error("invalid_grant")) }),
+      deps(),
+    );
+    expect(failing.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "invalid_grant",
+    });
+
+    const succeeding = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          ok({ accessToken: "rotated-access", refreshToken: "rotated-refresh" }),
+      }),
+      deps(),
+    );
+    expect(succeeding.ok).toBe(true);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "ok",
+      at: "2026-08-24T12:00:00.000Z",
+    });
+  });
+
+  it("treats a network-transport refresh failure as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => {
+          throw new Error("fetch failed: ECONNRESET");
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("treats a 5xx token-endpoint response as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 503")),
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("recognizes a 4xx status embedded in a message, or a structured terminal signal, as terminal", async () => {
+    const write = (refreshToken: string) =>
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken,
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      );
+
+    expect(write("old-refresh-1")).toEqual(ok(undefined));
+    const messageStatus = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 400")),
+      }),
+      deps(),
+    );
+    expect(messageStatus.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+
+    expect(write("old-refresh-2")).toEqual(ok(undefined));
+    const structuredSignal = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          err(Object.assign(new Error("token expired"), { terminal: true })),
+      }),
+      deps(),
+    );
+    expect(structuredSignal.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+  });
+
+  it("advances lastSeenAt and revision for a source that fails on consecutive cycles", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "1" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-24T12:00:00.000Z") }),
+    );
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-24T12:00:00.000Z", revision: "1" });
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "2" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-25T09:00:00.000Z") }),
+    );
+    expect(second.ok && second.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-25T09:00:00.000Z", revision: "2" });
+  });
+
+  it("marks reconnect_required through the real Google refresh-failure formatting (golden, end to end)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const realGoogleAdapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      now,
+      transport: async (url) => {
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const result = await reconcileProvider(vault, realGoogleAdapter, deps());
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "Google request failed with status 400",
+    });
+  });
+
+  it("returns a stop function that prevents future periodic reconciliations", async () => {
+    vi.useFakeTimers();
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let discoveries = 0;
+    const stop = startPeriodicIntegrationSync(
+      vault,
+      [
+        adapter({
+          discover: async () => {
+            discoveries += 1;
+            return ok([]);
+          },
+        }),
+      ],
+      deps(),
+      1,
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(discoveries).toBe(1);
+    stop();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(discoveries).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it("verifies a lifecycle webhook and returns the adapter's verified result", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+    );
+  });
+
+  it("rejects a lifecycle webhook for a provider that lacks verifyLifecycleWebhook", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter(),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects an unauthorized provider's lifecycle webhook", async () => {
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "e", action: "reconcile" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("enrollment-scoped providers (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-enroll-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  const m365Config: IntegrationConfig = {
+    encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+    pollingIntervalMinutes: 15,
+    m365: { clientIdEnv: "M365_CLIENT_ID", clientSecretEnv: "M365_CLIENT_SECRET" },
+  };
+  const m365Environment = {
+    DAFTARI_INTEGRATIONS_KEY: KEY.toString("base64"),
+    M365_CLIENT_ID: "m365-client-id",
+    M365_CLIENT_SECRET: "m365-client-secret",
+  };
+
+  function enrolledState(extra: Partial<ProviderState> = {}): ProviderState {
+    return {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1.docx",
+          targetCollection: "distill",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "file",
+          remoteId: "f1",
+          includeSpeakerNotes: false,
+          cursorKey: "drive:file",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "distill",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "folder",
+          remoteId: "dir",
+          includeSpeakerNotes: false,
+          cursorKey: "enrollment:folder:dir",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+      ],
+      sources: {},
+      ...extra,
+    };
+  }
+
+  // The fake selected-source adapter: discover() is DEFINED as expanding the
+  // enrollment set — enrolled files plus current folder descendants — so the
+  // engine's reconciliation machinery is exercised unchanged.
+  function enrolledAdapter(
+    folderChildren: string[],
+    overrides: Partial<ProviderAdapter> = {},
+  ): ProviderAdapter {
+    return {
+      name: "m365",
+      authorizationUrl: () => "https://login.example/authorize",
+      exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+      resolveEnrollment: async (candidates) => ok(candidates),
+      discover: async (state) => {
+        const sources: { id: string; revision: string }[] = [];
+        for (const record of state.enrollment ?? []) {
+          if (record.kind === "file") {
+            sources.push({ id: record.ref, revision: "1" });
+          } else {
+            for (const child of folderChildren) sources.push({ id: child, revision: "1" });
+          }
+        }
+        return ok(sources);
+      },
+      fetch: async (source) =>
+        ok({ id: source.id, revision: source.revision, text: `text of ${source.id}` }),
+      ...overrides,
+    };
+  }
+
+  function m365Deps(overrides: Partial<EngineDeps> = {}): EngineDeps {
+    return {
+      config: m365Config,
+      environment: m365Environment,
+      adapters: {},
+      now,
+      distill: async () => ok({ runId: "run-1" }),
+      ...overrides,
+    };
+  }
+
+  it("discover() expands the enrollment set and rides the unchanged engine", async () => {
+    expect(
+      writeIntegrationState(vault, { providers: { m365: enrolledState() }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(vault, enrolledAdapter(["folder:dir/d1"]), m365Deps());
+    expect(first.ok && first.value.distilledSourceIds).toEqual([
+      "m365:file:f1",
+      "m365:folder:dir/d1",
+    ]);
+
+    // A file leaving an enrolled folder stops being discovered and takes the
+    // existing unavailable path — no new engine mechanism.
+    const recorded: unknown[] = [];
+    const second = await reconcileProvider(
+      vault,
+      enrolledAdapter([]),
+      m365Deps({
+        recordUnavailable: (event) => {
+          recorded.push(event);
+          return ok(undefined);
+        },
+      }),
+    );
+    expect(second.ok && second.value.unavailableSourceIds).toEqual(["m365:folder:dir/d1"]);
+    expect(second.ok && second.value.unchangedSourceIds).toEqual(["m365:file:f1"]);
+    expect(recorded).toMatchObject([
+      { reason: "no_longer_discovered", providerSourceId: "m365:folder:dir/d1" },
+    ]);
+  });
+
+  it("keeps adapterData replayable when a source in the discovery page fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            m365: enrolledState({
+              cursor: "old-cursor",
+              adapterData: { deltaLinks: { drive: "old" } },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async (state) => {
+          state.cursor = "new-cursor";
+          state.adapterData = { deltaLinks: { drive: "new" } };
+          return ok([
+            { id: "file:f1", revision: "1" },
+            { id: "folder:dir/d1", revision: "1" },
+          ]);
+        },
+        fetch: async (source) =>
+          source.id === "file:f1"
+            ? ok({ id: source.id, revision: source.revision, text: "fine" })
+            : err(new Error("transient fetch failure")),
+      }),
+      m365Deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["m365:folder:dir/d1"]);
+    const persisted = readIntegrationState(vault, KEY);
+    expect(persisted.value.providers.m365?.cursor).toBe("old-cursor");
+    expect(persisted.value.providers.m365?.adapterData).toEqual({ deltaLinks: { drive: "old" } });
+  });
+
+  it("commits adapterData with the cursor once every source in the page is handled", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            m365: enrolledState({
+              cursor: "old-cursor",
+              adapterData: { deltaLinks: { drive: "old" } },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async (state) => {
+          state.cursor = "new-cursor";
+          state.adapterData = { deltaLinks: { drive: "new" } };
+          return ok([{ id: "file:f1", revision: "1" }]);
+        },
+      }),
+      m365Deps(),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["m365:file:f1"]);
+    const persisted = readIntegrationState(vault, KEY);
+    expect(persisted.value.providers.m365?.cursor).toBe("new-cursor");
+    expect(persisted.value.providers.m365?.adapterData).toEqual({ deltaLinks: { drive: "new" } });
+  });
+
+  it("maxCycleMs stops starting new fetches and leaves the remainder retryable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { m365: enrolledState({ cursor: "old-cursor" }) }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let tick = 0;
+    const clock = () => new Date(Date.parse("2026-08-24T12:00:00.000Z") + 1000 * tick++);
+    const fetch = vi.fn(async () => err(new Error("must not fetch")));
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async () =>
+          ok([
+            { id: "file:f1", revision: "1" },
+            { id: "folder:dir/d1", revision: "1" },
+          ]),
+        fetch,
+      }),
+      m365Deps({ now: clock, reconcileLimits: { maxCycleMs: 500 } }),
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.ok && result.value.failedSourceIds).toEqual([
+      "m365:file:f1",
+      "m365:folder:dir/d1",
+    ]);
+    expect(readIntegrationState(vault, KEY).value.providers.m365?.cursor).toBe("old-cursor");
+  });
+});
+
+describe("target-collection plumbing (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("threads the owning EnrollmentRecord's targetCollection into distill()", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1",
+          targetCollection: "sensitive-reports",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "file",
+          remoteId: "f1",
+          includeSpeakerNotes: false,
+          cursorKey: "drive:file",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "file:f1", revision: "1" }]),
+        fetch: async () => ok({ id: "file:f1", revision: "1", text: "enrolled text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:file:f1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "sensitive-reports" }),
+    );
+  });
+
+  it("passes no targetCollection when the source has no enrollment (google/notion unaffected)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "plain text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:doc-1"]);
+    const call = distill.mock.calls[0]?.[0] as { targetCollection?: string };
+    expect(call.targetCollection).toBeUndefined();
+  });
+
+  it("resolves a folder descendant's owning collection via RemoteSource.enrolledRef", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "team-notes",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "folder",
+          remoteId: "dir",
+          includeSpeakerNotes: false,
+          cursorKey: "enrollment:folder:dir",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([{ id: "folder:dir/child-1", revision: "1", enrolledRef: "folder:dir" }]),
+        fetch: async (source) => ok({ id: source.id, revision: "1", text: "child text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:folder:dir/child-1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "team-notes" }),
+    );
+  });
+});
+
+describe("requireCollectionWriteAccess (#506)", () => {
+  it("allows a role whose write list includes the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["sensitive-reports"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows a role with a wildcard write grant", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["*"] } as RoleConfig,
+      "anything",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses by name when the role cannot write the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["distill"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok || result.error.message).toContain('"sensitive-reports"');
+  });
+
+  it("refuses a null role (deny-all fallback)", () => {
+    const result = requireCollectionWriteAccess(null, "distill");
+    expect(result.ok).toBe(false);
+  });
+});

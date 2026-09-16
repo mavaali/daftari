@@ -1,5 +1,12 @@
 # Cortex Consolidation Loop (Components A + C) — Design Direction
 
+> **ISSUE #97 DISPOSITION (2026-08-23):** this historical design is not the
+> difficulty-adaptive repeated `tension-scan` intervention described in the
+> original issue. The A+C design below shipped as `daftari consolidate`; the
+> repeated-scan hypothesis was separately tested and killed. See
+> `docs/superpowers/results/2026-08-23-sleep-extensions-evidence-verdict.md` for
+> the evidence boundary, shipped-component ledger, and threshold for reopening.
+>
 > **STATUS: pre-spec brainstorm synthesis.** This is NOT the validated spec. It is a
 > working document that re-establishes the frameworks and captures decisions reached so a
 > fresh session can resume the brainstorm cold and move to a real spec. Written 2026-06-06

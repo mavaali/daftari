@@ -22,6 +22,9 @@ import {
   observeEdge,
 } from "../curation/edges.js";
 import { ok, type Result } from "../frontmatter/types.js";
+import { vaultRead } from "../tools/read.js";
+import { vaultWrite } from "../tools/write.js";
+import { CONSOLIDATE_AGENT } from "./constants.js";
 
 export interface EdgeWriteConfig {
   vaultRoot: string;
@@ -69,6 +72,47 @@ export function makeObserve(
     // Shadow mode: advance nothing. Return the stub so the caller's success
     // branch (which keys on `ok` + counts, not the row contents) is satisfied.
     return ok(stubEdge(input.fromPath, input.toPath, nowIso(), "candidate", null));
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 6mf.4 R3: revision-panel reader-lineage appender
+// ---------------------------------------------------------------------------
+
+/**
+ * Shadow-aware factory for the revision-panel lineage appender.
+ *
+ * Live mode: reads the target doc and re-writes it with the new lineage entry
+ * appended via `reader_lineage: [entry]`. The Task 2 land-time union in vaultWrite
+ * handles dedup and scalar-drop — this function never touches lineage directly.
+ *
+ * Shadow mode: no-op (mirrors makeObserve/makeContest's shadow contract; the
+ * shadow loop writes nothing to docs, only journals the simulated outcome).
+ */
+export function makeAppendReaderLineage(
+  config: EdgeWriteConfig,
+): (path: string, entry: string) => Promise<Result<void, Error>> {
+  return async (path, entry) => {
+    if (config.shadowMode) {
+      return ok(undefined); // no-op in shadow mode
+    }
+    // Read existing doc to get body + frontmatter for the round-trip write.
+    const doc = await vaultRead(config.vaultRoot, path);
+    if (!doc.ok) return doc;
+
+    // Supply reader_lineage + readers so the #113 land-time union applies.
+    // All other frontmatter fields are preserved from the existing doc via #113.
+    const result = await vaultWrite(config.vaultRoot, {
+      path,
+      body: doc.value.content,
+      frontmatter: {
+        ...doc.value.raw,
+        reader_lineage: [entry],
+      },
+      agent: CONSOLIDATE_AGENT,
+    });
+    if (!result.ok) return result;
+    return ok(undefined);
   };
 }
 

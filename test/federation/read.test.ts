@@ -127,6 +127,28 @@ describe("federated vault_read", () => {
     expect(result.value.validation.issues.map((i) => i.field)).toContain("region");
   });
 
+  it("labels distill provenance on a readable mounted document", async () => {
+    writeFileSync(
+      join(base, "ref", "pricing", "distilled.md"),
+      PRICING_DOC.replace(
+        "provenance: direct\n",
+        'provenance: synthesized\nsources: ["distill:session-42#claim-7"]\n',
+      ),
+    );
+    await mountRef("human:mihir");
+    const result = await vaultRead(canonical, "research:pricing/distilled.md");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.source_verifiability).toEqual([
+      {
+        source: "distill:session-42#claim-7",
+        status: "born-unverifiable",
+        reason:
+          "external source, discarded by design — re-derivation means re-presenting the source",
+      },
+    ]);
+  });
+
   it("denies a collection outside the granted role's read list", async () => {
     await mountRef("human:mihir");
     const result = await vaultRead(canonical, "research:strategy/hidden.md");

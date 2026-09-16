@@ -409,6 +409,131 @@ describe("vault_merge", () => {
     lockDb.close();
   }, 60_000);
 
+  it("rejects a merge composed from a source changed before its locks were acquired", async () => {
+    const pathA = "pricing/a-race.md";
+    await seed(vault, pathA);
+    await seed(vault, "pricing/b-race.md");
+
+    const result = await withInjectedRace(
+      join(vault, pathA),
+      async () => {
+        const asserted = await vaultAssert(
+          vault,
+          { path: pathA, stance: "assert", confidence: "high", agent: "agent:concurrent" },
+          {
+            user: "alice",
+            roleName: "writer",
+            role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+          },
+        );
+        if (!asserted.ok) throw asserted.error;
+      },
+      () =>
+        vaultMerge(vault, {
+          path_a: pathA,
+          path_b: "pricing/b-race.md",
+          target_path: "pricing/merged-race.md",
+          body: "# Merged\n\nCombined content.\n",
+          agent: AGENT,
+        }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("stale merge:");
+
+    const source = await vaultRead(vault, pathA);
+    expect(source.ok).toBe(true);
+    if (!source.ok) return;
+    expect(source.value.frontmatter.status).toBe("canonical");
+    expect(source.value.frontmatter.positions?.some((p) => p.principal === "alice")).toBe(true);
+
+    const target = await vaultRead(vault, "pricing/merged-race.md");
+    expect(target.ok).toBe(false);
+  }, 60_000);
+
+  it("rejects a merge composed from path_b changed before its locks were acquired", async () => {
+    const pathB = "pricing/b-race.md";
+    await seed(vault, "pricing/a-race.md");
+    await seed(vault, pathB);
+
+    const result = await withInjectedRace(
+      join(vault, pathB),
+      async () => {
+        const asserted = await vaultAssert(
+          vault,
+          { path: pathB, stance: "assert", confidence: "high", agent: "agent:concurrent" },
+          {
+            user: "bob",
+            roleName: "writer",
+            role: { read: ["*"], write: ["*"], promote: false, ratify: false },
+          },
+        );
+        if (!asserted.ok) throw asserted.error;
+      },
+      () =>
+        vaultMerge(vault, {
+          path_a: "pricing/a-race.md",
+          path_b: pathB,
+          target_path: "pricing/merged-race.md",
+          body: "# Merged\n\nCombined content.\n",
+          agent: AGENT,
+        }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("stale merge:");
+
+    const source = await vaultRead(vault, pathB);
+    expect(source.ok).toBe(true);
+    if (!source.ok) return;
+    expect(source.value.frontmatter.status).toBe("canonical");
+    expect(source.value.frontmatter.positions?.some((p) => p.principal === "bob")).toBe(true);
+  }, 60_000);
+
+  it("rejects a merge when its absent target is created before locks are acquired", async () => {
+    const targetPath = "pricing/created-target-race.md";
+    await seed(vault, "pricing/a-race.md");
+    await seed(vault, "pricing/b-race.md");
+
+    const result = await withInjectedRace(
+      join(vault, targetPath),
+      async () => {
+        const written = await vaultWrite(vault, {
+          path: targetPath,
+          body: "# Concurrent target\n\nThis must survive.\n",
+          frontmatter: frontmatter({ title: "Concurrent target" }),
+          agent: "agent:concurrent",
+        });
+        if (!written.ok) throw written.error;
+      },
+      () =>
+        vaultMerge(vault, {
+          path_a: "pricing/a-race.md",
+          path_b: "pricing/b-race.md",
+          target_path: targetPath,
+          body: "# Merged\n\nStale merge body.\n",
+          agent: AGENT,
+        }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("stale merge:");
+
+    const target = await vaultRead(vault, targetPath);
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+    expect(target.value.content).toContain("This must survive.");
+    expect(target.value.content).not.toContain("Stale merge body.");
+
+    const sourceA = await vaultRead(vault, "pricing/a-race.md");
+    const sourceB = await vaultRead(vault, "pricing/b-race.md");
+    expect(sourceA.ok && sourceA.value.frontmatter.status).toBe("canonical");
+    expect(sourceB.ok && sourceB.value.frontmatter.status).toBe("canonical");
+  }, 60_000);
+
   it("authors the merge commit as the authenticated principal", async () => {
     await seed(vault, "pricing/a.md");
     await seed(vault, "pricing/b.md");

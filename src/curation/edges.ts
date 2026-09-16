@@ -84,11 +84,12 @@ export const EDGE_HALF_LIFE_DAYS = 90;
 // (~90d) and k=5 for ~300d — nothing stays trusted forever without re-test.
 export const EDGE_TRIGGER_STRENGTH = 0.5;
 
-// Minimum gap before the SAME (observer, axis) attestation counts as a fresh
-// vote (C-Q4: the inter-session gap is what makes a repeat re-derivation an
-// independent vote; a same-sitting replay is cramming). A new (observer, axis)
-// pair counts immediately — two different models voting in one sitting ARE
-// independent.
+// Minimum gap before the SAME (observer, axis, model) attestation counts as a
+// fresh vote (C-Q4: the inter-session gap is what makes a repeat re-derivation
+// an independent vote; a same-sitting replay is cramming). A new
+// (observer, axis, model) triple counts immediately — two different models
+// voting on the same (observer, axis) in one sitting ARE independent, and this
+// is now enforced by the dedup key (not just aspirational).
 export const EDGE_REPLAY_GAP_DAYS = 1;
 
 // Q3: the axes a re-derivation can vary to count as an independent vote.
@@ -142,6 +143,13 @@ export interface ObserveEdgeInput {
   // Which endpoint this observation judged the premise (foundational ordering).
   // Optional: legacy/unscored observes omit it and don't affect directionVerdict.
   premiseVote?: PremiseVote;
+  /**
+   * The model that cast this observation (#423). Recorded so two different
+   * models voting on the same (observer, axis) in one sitting count as
+   * independent re-derivations rather than colliding as a replay. Optional:
+   * omitted records keep the pre-#423 dedup behavior exactly.
+   */
+  model?: string;
   // Test-only timestamp override for deterministic aging math.
   at?: string;
 }
@@ -210,6 +218,7 @@ interface RawEdgeRecord {
   note?: string;
   reason?: string;
   premiseVote?: string;
+  model?: string;
 }
 
 function readRawRecords(vaultRoot: string): RawEdgeRecord[] {
@@ -367,7 +376,7 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
         (EDGE_AXES as readonly string[]).includes(rec.axis) &&
         typeof rec.by === "string" &&
         rec.by.length > 0
-          ? [`${rec.by}\n${rec.axis}`]
+          ? [`${rec.by}\n${rec.axis}\n${rec.model ?? ""}`]
           : [];
       byKey.set(key, {
         fromPath: cFrom,
@@ -396,7 +405,7 @@ function collapse(records: RawEdgeRecord[]): Map<string, EdgeState> {
       typeof rec.by === "string" &&
       rec.by.length > 0;
     if (qualifying) {
-      const pair = `${rec.by}\n${rec.axis}`;
+      const pair = `${rec.by}\n${rec.axis}\n${rec.model ?? ""}`;
       const isReplay = existing.votedPairs.has(pair);
       const gapDays = (Date.parse(at) - Date.parse(existing.lastRederived)) / 86_400_000;
       if (!isReplay || gapDays >= EDGE_REPLAY_GAP_DAYS) {
@@ -519,6 +528,10 @@ export async function observeEdge(
     return err(new Error(`observeEdge 'premiseVote' must be one of: ${PREMISE_VOTES.join(", ")}`));
   }
 
+  // Trim before the presence check so a whitespace-only model persists as
+  // absent, not as model:"" — the collapse dedup key uses `rec.model ?? ""`,
+  // so an empty string must be indistinguishable from a legacy no-model record.
+  const model = input.model?.trim();
   const record = {
     kind: "observe",
     from: input.fromPath.trim(),
@@ -529,6 +542,7 @@ export async function observeEdge(
     axis: input.axis ?? null,
     ...(input.note ? { note: input.note } : {}),
     ...(input.premiseVote ? { premiseVote: input.premiseVote } : {}),
+    ...(model ? { model } : {}),
   };
 
   try {

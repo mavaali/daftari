@@ -8,7 +8,16 @@ import { recordProvenance } from "../../src/curation/provenance.js";
 import { readReadLog, recordRead } from "../../src/curation/read-log.js";
 import { addTension, tensionsPath } from "../../src/curation/tension.js";
 import { clearContestedCache } from "../../src/search/contested.js";
-import { vaultReindex, vaultSearch, vaultSearchRelated } from "../../src/tools/search.js";
+import { setCoverageEnabled } from "../../src/search/coverage.js";
+import { setGraphExpandConfig } from "../../src/search/graph-expansion.js";
+import { setSuppressSuperseded } from "../../src/search/suppression.js";
+import { deleteDocument } from "../../src/storage/index-db.js";
+import {
+  openIndexForActiveProvider,
+  vaultReindex,
+  vaultSearch,
+  vaultSearchRelated,
+} from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -341,6 +350,83 @@ function bareVault(
   return dir;
 }
 
+describe("vault_search supersession suppression (MAV-161)", () => {
+  // old.md matches the query strongly and is superseded by new.md, which
+  // shares no query terms — the RB failure shape (the stale doc outranks the
+  // current value). The pass must foreground new.md and demote old.md.
+  let vault: string;
+  beforeAll(async () => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-suppress-"));
+    mkdirSync(join(vault, "notes"), { recursive: true });
+    const write = (name: string, supersededBy: string | null, body: string) =>
+      writeFileSync(
+        join(vault, "notes", name),
+        `---\ntitle: ${name}\ncollection: notes\ndomain: accumulation\nstatus: canonical\nconfidence: high\ncreated: 2026-03-01\nupdated: 2026-03-01\nsuperseded_by: ${supersededBy === null ? "null" : supersededBy}\ntags: []\n---\n\n${body}\n`,
+      );
+    write("old.md", "notes/new.md", "condor purchase price range initial estimate");
+    write("new.md", null, "revised figure after diligence");
+    write("noise.md", null, "condor purchase price commentary aside");
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+  }, 60_000);
+  afterAll(() => {
+    setSuppressSuperseded(false);
+    cleanupVault(vault);
+  });
+
+  it("is inert by default: stale hit keeps its rank, head stays absent", async () => {
+    const res = await vaultSearch(vault, { query: "condor purchase price range", limit: 2 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.hits.some((h) => h.path === "notes/new.md")).toBe(false);
+    const stale = res.value.hits.find((h) => h.path === "notes/old.md");
+    expect(stale).toBeDefined();
+    expect(stale?.demoted).toBeUndefined();
+    expect(stale?.currentSource?.kind).toBe("resolved"); // annotation unchanged
+  });
+
+  it("opted in: pulls the head into the stale slot and demotes the stale hit", async () => {
+    setSuppressSuperseded(true);
+    try {
+      const res = await vaultSearch(vault, { query: "condor purchase price range", limit: 2 });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const paths = res.value.hits.map((h) => h.path);
+      const head = res.value.hits.find((h) => h.path === "notes/new.md");
+      const stale = res.value.hits.find((h) => h.path === "notes/old.md");
+      expect(head).toBeDefined();
+      expect(head?.viaForeground).toBe(true);
+      expect(stale?.demoted).toBe("superseded");
+      // The head sits where the stale doc ranked; the stale doc is at the tail.
+      expect(paths.indexOf("notes/new.md")).toBeLessThan(paths.indexOf("notes/old.md"));
+      expect(paths[paths.length - 1]).toBe("notes/old.md");
+      // Pinned: the pull-in widens limit:2 to exactly 3 served docs — the
+      // documented coverage-style widening posture, bounded by the shared
+      // synthetic token cap in enforceTokenCap.
+      expect(paths.length).toBe(3);
+    } finally {
+      setSuppressSuperseded(false);
+    }
+  });
+
+  it("never runs on valid_at queries — a superseded doc can be the past's answer", async () => {
+    setSuppressSuperseded(true);
+    try {
+      const res = await vaultSearch(vault, {
+        query: "condor purchase price range",
+        limit: 2,
+        valid_at: "2026-03-05",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.hits.some((h) => h.viaForeground)).toBe(false);
+      for (const h of res.value.hits) expect(h.demoted).toBeUndefined();
+    } finally {
+      setSuppressSuperseded(false);
+    }
+  });
+});
+
 describe("vault_search coverage pass", () => {
   let posVault: string; // muon-a/b match the query; muon-c shares the tag but not the terms
   let quietVault: string; // three docs, all-distinct tags → no >=2-seed pair
@@ -389,10 +475,27 @@ describe("vault_search coverage pass", () => {
     if (!r1.ok) throw r1.error;
     const r2 = await vaultReindex(quietVault);
     if (!r2.ok) throw r2.error;
+    // The pass is retired to default-off (MAV-156); these tests exercise the
+    // opted-in behavior a `search.coverage: true` vault gets.
+    setCoverageEnabled(true);
   }, 60_000);
   afterAll(() => {
+    setCoverageEnabled(false);
     cleanupVault(posVault);
     cleanupVault(quietVault);
+  });
+
+  it("stays entirely quiet when retired (the default-off product gate)", async () => {
+    setCoverageEnabled(false);
+    try {
+      const res = await vaultSearch(posVault, { query: "muon spectral scaling laws", limit: 2 });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.hits.some((h) => h.viaCoverage)).toBe(false);
+      expect(res.value.hits.find((h) => h.path === "notes/muon-c.md")).toBeUndefined();
+    } finally {
+      setCoverageEnabled(true);
+    }
   });
 
   it("adds the same-tag in-window doc that ranking missed, flagged viaCoverage", async () => {
@@ -697,6 +800,63 @@ describe("upstream staleness annotations (#234)", () => {
   });
 });
 
+describe("unverifiable upstream bucket (#416)", () => {
+  // Mirrors the upstream staleness annotations (#234) harness exactly, then
+  // evicts the upstream unit from the index so it becomes unverifiable.
+  let vault: string;
+
+  beforeAll(async () => {
+    vault = makeTempVault();
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+    const read = await recordRead(vault, {
+      tool: "vault_read",
+      file: "competitive-intel/vega-insight-positioning.md",
+      run_id: "run-unverifiable",
+    });
+    if (!read.ok) throw read.error;
+    const minted = await mintConsumesEdges(vault, {
+      artifact: "pricing/helios-consumption-pricing.md",
+      runId: "run-unverifiable",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    if (!minted.ok) throw minted.error;
+    // Record a provenance write so the upstream edge has a post-compile change,
+    // but since we are about to delete the upstream from the index the staleness
+    // classifier will see it as unverifiable rather than pending-broken.
+    const changed = await recordProvenance(vault, {
+      tool: "vault_write",
+      file: "competitive-intel/vega-insight-positioning.md",
+      agent: "agent:test",
+      action: "update",
+      body_changed: true,
+    });
+    if (!changed.ok) throw changed.error;
+    // Evict the upstream unit from the index — the dependent hit should now
+    // carry unverifiableUpstream rather than pendingBrokenUpstream.
+    const dbRes = openIndexForActiveProvider(vault);
+    if (!dbRes.ok) throw dbRes.error;
+    try {
+      deleteDocument(dbRes.value, "competitive-intel/vega-insight-positioning.md");
+    } finally {
+      dbRes.value.close();
+    }
+  }, 60_000);
+  afterAll(() => cleanupVault(vault));
+
+  it("hit carries unverifiableUpstream bucket when upstream is evicted from the index", async () => {
+    const result = await vaultSearch(vault, {
+      query: "Helios compute credit consumption pricing",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.value.hits.find((h) => h.path === "pricing/helios-consumption-pricing.md");
+    expect(hit).toBeDefined();
+    expect(hit?.unverifiableUpstream).toMatch(/^(some|many)$/);
+    expect(hit?.pendingBrokenUpstream).toBeUndefined();
+  });
+});
+
 describe("FTS5 lexical snippets (#108)", () => {
   let vault: string;
   beforeAll(async () => {
@@ -745,4 +905,76 @@ describe("FTS5 lexical snippets (#108)", () => {
     expect(hit?.snippet).toContain("throttled escalation");
     expect(hit?.snippet).not.toContain("Filler paragraph 0");
   });
+});
+
+// off.1/MAV-154: graph-augmented retrieval wiring. Loads the real model
+// (reindex embeds + affinity cosine), so gate on RB_INTEGRATION like the other
+// model-loading handler tests.
+const itIntegration = process.env.RB_INTEGRATION ? it : it.skip;
+
+describe("vault_search graph expansion (off.1)", () => {
+  let vault: string;
+  const HELIOS = "pricing/helios-consumption-pricing.md";
+  const VEGA = "competitive-intel/vega-insight-positioning.md";
+
+  beforeAll(async () => {
+    vault = makeTempVault();
+    const r = await vaultReindex(vault);
+    if (!r.ok) throw r.error;
+    // A tension bridges the top hit (HELIOS) to VEGA. The "trigger" subset
+    // includes tensions, so VEGA becomes a one-hop neighbor of the seed.
+    const t = await addTension(vault, {
+      title: "pricing model dispute",
+      kind: "factual",
+      sourceA: HELIOS,
+      sourceB: VEGA,
+      claimA: "credits are consumption-priced",
+      claimB: "Vega undercuts on flat pricing",
+      loggedBy: "test",
+    });
+    if (!t.ok) throw t.error;
+  }, 60_000);
+
+  afterAll(() => {
+    setGraphExpandConfig({ enabled: false, cap: 10, tau: 0.3, subset: "trigger" });
+    rmSync(tensionsPath(vault), { force: true });
+    clearContestedCache();
+    cleanupVault(vault);
+  });
+
+  itIntegration(
+    "injects the edge-reached doc flagged viaEdge when enabled",
+    async () => {
+      // limit:1 → ranked = [HELIOS]; VEGA is sliced out and can only re-enter
+      // via the tension edge. tau low so the wiring, not the floor, is tested.
+      setGraphExpandConfig({ enabled: true, cap: 10, tau: 0.05, subset: "trigger" });
+      const res = await vaultSearch(vault, {
+        query: "Helios compute credit consumption pricing",
+        limit: 1,
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const injected = res.value.hits.find((h) => h.path === VEGA);
+      expect(injected).toBeDefined();
+      expect(injected?.viaEdge).toEqual({ seed: HELIOS, edgeType: "tension" });
+      expect(injected?.coverageReason).toBeUndefined();
+    },
+    60_000,
+  );
+
+  itIntegration(
+    "stays quiet when disabled (default-off ship-safety)",
+    async () => {
+      setGraphExpandConfig({ enabled: false, cap: 10, tau: 0.3, subset: "trigger" });
+      const res = await vaultSearch(vault, {
+        query: "Helios compute credit consumption pricing",
+        limit: 1,
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.hits.some((h) => h.viaEdge)).toBe(false);
+      expect(res.value.hits.find((h) => h.path === VEGA)).toBeUndefined();
+    },
+    60_000,
+  );
 });

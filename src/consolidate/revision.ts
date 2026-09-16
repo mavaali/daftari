@@ -23,6 +23,7 @@ import {
   EDGE_AXES,
   type ObserveEdgeInput,
 } from "../curation/edges.js";
+import { encodeLineageEntry, encodeRevisionReader } from "../distill/reader-fingerprint.js";
 import type { LlmClient } from "../eval/llm.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { CONSOLIDATE_PROMPT_TEMPLATES, type ConsolidatePromptTemplate } from "./constants.js";
@@ -42,6 +43,12 @@ export interface RevisionDeps {
   observe: (input: ObserveEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   contest: (input: ContestEdgeInput) => Promise<Result<DerivesFromEdge, Error>>;
   recordRevisionTrace: (row: RevisionTraceRow) => Promise<Result<void, Error>>;
+  // 6mf.4 R3: Append one lineage entry to a doc's reader_lineage (on the
+  // from-doc) when the panel applies writes. Shadow wiring injects a no-op;
+  // live wiring reads the doc and re-writes with the new lineage entry so
+  // Task 2's land-time union handles the merge. A failed append lands in
+  // writeErrors and never fails the panel.
+  appendReaderLineage: (path: string, entry: string) => Promise<Result<void, Error>>;
 }
 
 export interface RevisionOpts {
@@ -59,7 +66,8 @@ export interface RevisionVote {
 }
 
 export interface RevisionVoteError {
-  axis: ConsolidatePromptTemplate;
+  /** The axis that failed, or "revision-lineage" for a lineage-append failure. */
+  axis: ConsolidatePromptTemplate | "revision-lineage";
   error: string;
 }
 
@@ -103,7 +111,7 @@ export interface RevisionOutcome {
   // itself is valid (the LLM said what it said); the durable record didn't
   // land. Separated from `votes` so the trace doesn't carry a phantom vote
   // entry for the same axis on top of the genuine one.
-  writeErrors: Array<{ axis: ConsolidatePromptTemplate; error: string }>;
+  writeErrors: Array<{ axis: ConsolidatePromptTemplate | "revision-lineage"; error: string }>;
   llmCalls: number;
   inputTokens: number;
   outputTokens: number;
@@ -240,7 +248,10 @@ export async function revisionPanel(
 
   const axes = axesForPanel(opts.panelSize);
   const votes: Array<RevisionVote | RevisionVoteError> = [];
-  const writeErrors: Array<{ axis: ConsolidatePromptTemplate; error: string }> = [];
+  const writeErrors: Array<{
+    axis: ConsolidatePromptTemplate | "revision-lineage";
+    error: string;
+  }> = [];
   let llmCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
@@ -363,6 +374,32 @@ export async function revisionPanel(
     contestedCount,
     ...(decision === "gated" ? { gate, gateReason } : {}),
   });
+
+  // 6mf.4 R3: Append one revision lineage entry to the from-doc iff a write
+  // was actually applied (observedCount > 0 || contestedCount > 0). Gated,
+  // tie, and no-vote panels write nothing and produce no lineage entry.
+  // A failed append is non-fatal: captured in writeErrors, never panics the panel.
+  if (observedCount > 0 || contestedCount > 0) {
+    const revisionEntry = encodeLineageEntry(
+      new Date().toISOString(),
+      "revision",
+      encodeRevisionReader(opts.model),
+    );
+    try {
+      const appendRes = await deps.appendReaderLineage(fromPath, revisionEntry);
+      if (!appendRes.ok) {
+        writeErrors.push({
+          axis: "revision-lineage",
+          error: `lineage append failed: ${appendRes.error.message}`,
+        });
+      }
+    } catch (e) {
+      writeErrors.push({
+        axis: "revision-lineage" as unknown as (typeof writeErrors)[0]["axis"],
+        error: `lineage append threw: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }
 
   return ok({
     fromPath,

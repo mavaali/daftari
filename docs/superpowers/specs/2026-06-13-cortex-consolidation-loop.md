@@ -1,5 +1,14 @@
 # Cortex Consolidation Loop (Components A + C) — Spec
 
+> **CURRENT DISPOSITION (2026-08-23):** Stages 1–4 shipped through PRs
+> #135–#140. Current LLM modes require an explicit `shadow_mode` choice:
+> `true` journals without applying edge writes; `false` permits admitted edge
+> writes. That explicit live posture is not proof that Stage 5's calibration and
+> broad auto-write-graduation gates were satisfied. The later issue-#97
+> N=0/1/2/3 experiment tested repeated `daftari sleep --dream tension-scan`
+> passes, not this scheduler/panel loop. See
+> `docs/superpowers/results/2026-08-23-sleep-extensions-evidence-verdict.md`.
+>
 > **STATUS: spec.** This supersedes the pre-spec synthesis at
 > `docs/superpowers/specs/2026-06-06-cortex-consolidation-loop-design-direction.md`
 > (the "design-direction doc" below). It assumes that doc's locked decisions

@@ -16,6 +16,16 @@ export interface LoadedDoc {
   path: string;
   frontmatter: Frontmatter;
   content: string;
+  // The frontmatter exactly as parsed from YAML, before coercion (mirrors
+  // ParsedDocument.raw). Declared-optional schema extensions (e.g. the f3h
+  // reader_* / readers fields) are NOT copied into the coerced `frontmatter`
+  // — they only exist here — so any consumer that needs a reader fingerprint
+  // (6mf.3's canon projection) must read it off `raw`, not `frontmatter`.
+  // OPTIONAL so existing hand-built LoadedDoc literals (tests, other call
+  // sites that don't carry a reader fingerprint) don't have to synthesize it;
+  // loadDocuments always populates it from the parse pass. A consumer reading
+  // reader fields off a raw-less doc simply sees no reader provenance.
+  raw?: Record<string, unknown>;
   // The schema-validation report from the SAME parse pass that produced
   // `frontmatter`. Carried so downstream consumers (e.g. the consolidate
   // envelope's provenance check) can tell schema-valid from schema-invalid
@@ -129,6 +139,7 @@ async function refresh(vaultRoot: string, c: VaultCache): Promise<Result<LoadedD
       path: relPath,
       frontmatter: parsed.value.frontmatter,
       content: parsed.value.content,
+      raw: parsed.value.raw,
       validation: parsed.value.validation,
     };
     if (fp) nextEntries.set(relPath, { mtimeMs: fp.mtimeMs, size: fp.size, doc });
@@ -179,13 +190,15 @@ export function extractLinks(content: string): string[] {
 
 // Resolves a raw link target to a vault-relative path, or null if it points
 // nowhere. Tries, in order: the target as-is, with a .md suffix, resolved
-// relative to the linking file's directory, then a bare basename match (the
-// common [[note-name]] wikilink form).
+// relative to the linking file's directory, then — only for genuinely bare
+// targets — a unique basename match (the common [[note-name]] wikilink form).
+// A qualified target that no longer exists must stay dangling: falling back
+// from `a/foo.md` to an unrelated `b/foo.md` silently changes the citation.
 export function resolveLink(
   rawTarget: string,
   fromPath: string,
   byPath: Set<string>,
-  byBasename: Map<string, string>,
+  byBasename: Map<string, string | null>,
 ): string | null {
   const withMd = (p: string) => (p.endsWith(".md") ? p : `${p}.md`);
 
@@ -196,23 +209,28 @@ export function resolveLink(
   if (byPath.has(relual)) return relual;
   if (byPath.has(withMd(relual))) return withMd(relual);
 
+  if (rawTarget.includes("/") || rawTarget.includes("\\") || rawTarget.startsWith(".")) {
+    return null;
+  }
+
   const base = posix.basename(rawTarget).replace(/\.md$/, "");
   return byBasename.get(base) ?? null;
 }
 
 // Precomputes the two indexes resolveLink consults: the set of every known
-// vault-relative path, and the basename → path map used for bare-name
-// wikilinks. First write wins on basename collisions so the mapping is
-// deterministic across runs.
+// vault-relative path, and the basename → unique path map used for bare-name
+// wikilinks. A null value records an ambiguous basename; ambiguity is left
+// unresolved instead of choosing an unrelated document by iteration order.
 export function buildPathIndexes(docs: Pick<LoadedDoc, "path">[]): {
   byPath: Set<string>;
-  byBasename: Map<string, string>;
+  byBasename: Map<string, string | null>;
 } {
   const byPath = new Set(docs.map((d) => d.path));
-  const byBasename = new Map<string, string>();
+  const byBasename = new Map<string, string | null>();
   for (const d of docs) {
     const base = posix.basename(d.path).replace(/\.md$/, "");
     if (!byBasename.has(base)) byBasename.set(base, d.path);
+    else byBasename.set(base, null);
   }
   return { byPath, byBasename };
 }
@@ -225,7 +243,7 @@ export function buildPathIndexes(docs: Pick<LoadedDoc, "path">[]): {
 export function outgoingLinkTargets(
   content: string,
   fromPath: string,
-  indexes: { byPath: Set<string>; byBasename: Map<string, string> },
+  indexes: { byPath: Set<string>; byBasename: Map<string, string | null> },
 ): string[] {
   const out = new Set<string>();
   for (const raw of extractLinks(content)) {

@@ -46,6 +46,13 @@ function makeReport(overrides: {
     stagedActions: Array.from({ length: overrides.staged ?? 0 }),
     shadowActions: { total: overrides.shadowTotal ?? 0, gated: overrides.shadowGated ?? 0 },
     coverageEquity: { backstopOverdue: { count: overrides.backstop ?? 0 } },
+    compiledEdgeCoverage: {
+      status: "no-data",
+      total_documents: 0,
+      instrumented_documents: 0,
+      uninstrumented_documents: 0,
+      message: "no compiled-edge data (0 docs uninstrumented)",
+    },
     reviewThroughput: { lifetime: { expired: overrides.expired ?? 0 } },
   } as unknown as VaultLintResult;
 }
@@ -63,7 +70,7 @@ describe("renderLedgerKeeper", () => {
       "The daftari has read the ledger. 1 matter noted — 0 beyond dispute, 1 left to your judgment. [2026-07-30T00:00:00.000Z]",
       "By my account: orphanFiles 1.",
       "Of disputes: 0 entered, 0 settled, 0 left standing by your leave; 0 fresh, 0 aging, 0 past patience; 0 knots (0 large, 0 aged); 0 entries shadowed by a stale dispute.",
-      "Awaiting your ruling: 0 staged, 0 lapsed unread; 0 write(s) watched in shadow, 0 the budget would have stayed; 0 edge(s) overdue for backstop.",
+      "Awaiting your ruling: 0 staged, 0 lapsed unread; 0 write(s) watched in shadow, 0 the budget would have stayed; 0 edge(s) overdue for backstop; compiled-edge coverage: no compiled-edge data (0 docs uninstrumented).",
       "The 1 entry most wanting your eye, of 1:",
       "  Entry notes/lonely.md speaks to no one, and no one to it. (no inbound links from any vault document)",
     ].join("\n");

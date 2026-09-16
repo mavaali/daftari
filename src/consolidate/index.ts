@@ -2,10 +2,12 @@
 //
 // Stage 1 (shipped): computes the edge due-queue + birth queue at session
 // start and prints them. No LLM, no writes.
-// Stage 2 (this PR): adds Component A. With `--mode=birth|revision|both`,
+// Stage 2 (shipped): adds Component A. With `--mode=birth|revision|both`,
 // the LLM re-derives queue items and emits edge_observe/edge_contest. Under
 // `shadow_mode: true` the writes are journaled, not applied (calibration
-// posture, spec §11.5). The auto-write tier graduates in Stage 5.
+// posture, spec §11.5). `shadow_mode: false` is an explicit operator choice
+// that applies admitted consolidation writes; it is not evidence that the
+// spec's broader Stage-5 calibration/graduation gates were met.
 //
 // Default mode is `scan` (Stage 1 behavior): no LLM, no writes — backward
 // compatible. Stage 2 modes are explicit opt-in so an unsuspecting cron
@@ -49,7 +51,7 @@ import {
   isModelPriced,
 } from "./constants.js";
 import { formatDecorrelationReport, loadFixture, runDecorrelation } from "./decorrelation.js";
-import { makeContest, makeObserve } from "./edge-write.js";
+import { makeAppendReaderLineage, makeContest, makeObserve } from "./edge-write.js";
 import { prioritize } from "./priority.js";
 import {
   appendRevisionTrace,
@@ -60,7 +62,7 @@ import {
 } from "./revision.js";
 import { readConsolidateState, writeConsolidateState } from "./state.js";
 
-const HELP = `daftari consolidate — cortex loop scheduler + Component A (shadow-only).
+const HELP = `daftari consolidate — cortex loop scheduler + Component A (explicit live-or-shadow posture).
 
 Usage:
   daftari consolidate [--vault <path>] [--budget <n>] [--mode <m>]
@@ -94,14 +96,14 @@ Modes (--mode, default 'scan'):
             (survives) or edge_contest (fails) per vote.
   both      birth then revision (the full pass).
 
-Stage 2 modes call the LLM and emit edge writes. Under shadow_mode:true those
+Stage 2 modes call the LLM and emit edge writes. Under shadow_mode: true those
 writes go to .daftari/shadow-actions.jsonl, not .daftari/edges.jsonl. With
-shadow_mode off, edge_observe/contest land for real — but Stage 2 ships with
-NO auto-write graduation, so even off-shadow only the auto-write tier from
-spec §4.2 lands (link / confidence-down / tension_log / contest revoke).
+shadow_mode: false, admitted edge_observe/contest writes land live. This
+explicit posture does not claim that the spec's broader Stage-5 calibration
+and auto-write-graduation gates have been satisfied.
 
 Any mode other than 'scan' REQUIRES shadow_mode to be set explicitly in
-.daftari/config.yaml (true = calibrate/journal only, false = write edges live).
+.daftari/config.yaml (true = calibrate/journal only, false = write admitted edges live).
 The loop refuses to run live under an implicit default so a cron pass can't
 silently start writing.
 
@@ -293,8 +295,12 @@ export async function runConsolidate(argv: string[]): Promise<number> {
       ages[e.fromPath] = (now.getTime() - new Date(e.lastRederived).getTime()) / MS_PER_DAY;
     }
 
+    const { runnable: runnableEdgeDue, skipped: skippedEdgePairs } = preflightDueEdges(
+      [...eventEdges, ...decayEdges],
+      docByPath,
+    );
     const { queue, backstopOverdueRemaining } = prioritize({
-      edgeDue: [...eventEdges, ...decayEdges],
+      edgeDue: runnableEdgeDue,
       birth,
       budget,
       ages,
@@ -310,6 +316,10 @@ export async function runConsolidate(argv: string[]): Promise<number> {
     report += `  edge due-queue (${edgeItems.length}):\n`;
     for (const q of edgeItems) {
       if (q.kind === "edge") report += `    [${q.slice}/${q.reason}] ${q.fromPath} ← ${q.toPath}\n`;
+    }
+    report += `  skipped edge pairs (${skippedEdgePairs.length}):\n`;
+    for (const skipped of skippedEdgePairs) {
+      report += `    [${skipped.reason}] ${skipped.fromPath} ← ${skipped.toPath} (missing: ${skipped.missingPaths.join(", ")})\n`;
     }
     report += `  birth queue (${birthItems.length}):\n`;
     for (const q of birthItems) {
@@ -501,6 +511,41 @@ function parseOptionalInt(raw: string | undefined): { value: number | null; erro
   return { value: n };
 }
 
+interface SkippedEdgePair {
+  reason: "missing_endpoint";
+  fromPath: string;
+  toPath: string;
+  missingPaths: string[];
+}
+
+function preflightDueEdges(
+  dueEdges: DueEdge[],
+  docByPath: Map<string, { relPath: string; content: string }>,
+): { runnable: DueEdge[]; skipped: SkippedEdgePair[] } {
+  // A vanished endpoint is terminal for this cycle: exclude it before priority
+  // so it consumes no budget and cannot create a false unserved-backstop exit.
+  // Keep the durable edge untouched; the report is the advisory surface.
+  const runnable: DueEdge[] = [];
+  const skipped = new Map<string, SkippedEdgePair>();
+  for (const edge of dueEdges) {
+    const missingPaths = [edge.fromPath, edge.toPath].filter((path) => !docByPath.has(canon(path)));
+    if (missingPaths.length === 0) {
+      runnable.push(edge);
+      continue;
+    }
+    const key = `${canon(edge.fromPath)}\n${canon(edge.toPath)}`;
+    if (!skipped.has(key)) {
+      skipped.set(key, {
+        reason: "missing_endpoint",
+        fromPath: canon(edge.fromPath),
+        toPath: canon(edge.toPath),
+        missingPaths: [...new Set(missingPaths.map(canon))],
+      });
+    }
+  }
+  return { runnable, skipped: [...skipped.values()] };
+}
+
 interface Stage2Result {
   birthsProcessed: number;
   panelsCast: number;
@@ -646,6 +691,9 @@ async function runRevisionLoop(
     budgetRemaining: Number.POSITIVE_INFINITY,
     model,
   };
+  // 6mf.4 R3: live appender (shadow mode is false here — runRevisionLoop is only
+  // called in live mode; the caller's shadow-mode gate excludes this path).
+  const appendReaderLineage = makeAppendReaderLineage({ vaultRoot, shadowMode: false });
   for (const item of edgeItems) {
     const key = `${canon(item.fromPath)}\n${canon(item.toPath)}`;
     const edge = edgeByKey.get(key);
@@ -658,7 +706,7 @@ async function runRevisionLoop(
     if (edge.directionVerdict === "symmetric") continue;
     const out = await revisionPanel(
       edge,
-      { llm, loadDoc, admit, observe, contest, recordRevisionTrace },
+      { llm, loadDoc, admit, observe, contest, recordRevisionTrace, appendReaderLineage },
       opts,
     );
     if (!out.ok) {

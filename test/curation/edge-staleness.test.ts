@@ -202,6 +202,7 @@ describe("edge staleness (#234)", () => {
       pending_unchecked: 1,
       pending_compatible: 0,
       pending_broken: 1,
+      unverifiable: 0,
     });
   });
 });

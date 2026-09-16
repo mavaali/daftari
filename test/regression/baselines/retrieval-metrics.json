@@ -1,0 +1,12 @@
+{
+  "chunk": {
+    "mrr": 1,
+    "ndcg@5": 1,
+    "recall@5": 1
+  },
+  "document": {
+    "mrr": 1,
+    "ndcg@5": 1,
+    "recall@5": 1
+  }
+}

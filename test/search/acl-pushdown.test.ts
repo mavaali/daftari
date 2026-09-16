@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readableCollections } from "../../src/access/rbac.js";
 import { ok, type Result } from "../../src/frontmatter/types.js";
 import type { EmbeddingProvider } from "../../src/search/embedding-provider.js";
-import { relatedSearch } from "../../src/search/hybrid.js";
+import { relatedSearch, setVecKnnK } from "../../src/search/hybrid.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { reindexVault } from "../../src/search/reindex.js";
 import {
@@ -169,16 +169,23 @@ describe("vector KNN is constrained to readable collections", () => {
 });
 
 describe("K-budget starvation (the bug the pushdown fixes)", () => {
-  // 80 unreadable near-neighbours — more than VEC_KNN_K (64) — plus one
-  // readable one. Vault-wide, the scan's whole budget goes to `secret`, and a
-  // post-filter leaves the reader with nothing. Constrained, the reader's own
-  // document is found.
+  // 80 unreadable near-neighbours — more than the fan-out this suite PINS to
+  // 64 — plus one readable one. Pinning keeps the starvation arithmetic true
+  // by construction regardless of the config default (256 since MAV-159).
+  // Vault-wide, the scan's whole budget goes to `secret`, and a post-filter
+  // leaves the reader with nothing. Constrained, the reader's own document
+  // is found.
   beforeEach(() => {
+    setVecKnnK(64);
     indexDoc(db, "pricing/source.md", "pricing", 1, "h-source");
     for (let i = 0; i < 80; i++) {
       indexDoc(db, `secret/noise-${i}.md`, "secret", 1, `h-noise-${i}`);
     }
     indexDoc(db, "pricing/needle.md", "pricing", 1, "h-needle");
+  });
+
+  afterEach(() => {
+    setVecKnnK(256);
   });
 
   it("finds the readable needle that a vault-wide scan would starve out", () => {

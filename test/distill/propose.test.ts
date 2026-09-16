@@ -17,13 +17,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listStagedActions } from "../../src/curation/staged-actions.js";
-import type { ExtractedClaim } from "../../src/distill/extract.js";
+import type { ClaimRunMeta, ExtractedClaim } from "../../src/distill/extract.js";
 import {
   DISTILL_COLLECTION,
+  isValidCollectionName,
   type OverlapHint,
   type ProposeOutcome,
   proposeAllClaims,
 } from "../../src/distill/propose.js";
+import { encodeReader, READER_PROMPT_VERSION } from "../../src/distill/reader-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -34,6 +36,18 @@ function makeClaim(overrides: Partial<ExtractedClaim> = {}): ExtractedClaim {
     claim_key: "chunk-001:the-team-chose-postgres-a1b2c3d4",
     statement: "The team chose Postgres for the new service.",
     proposed_frontmatter: { title: "The team chose Postgres for the new service." },
+    ...overrides,
+  };
+}
+
+function makeRunMeta(overrides: Partial<ClaimRunMeta> = {}): ClaimRunMeta {
+  return {
+    requestedModel: "claude-opus-4",
+    servedModel: "claude-opus-4-20260101",
+    effectiveTemperature: 0,
+    viaRetry: false,
+    chunkWindow: 12,
+    inputCap: 8000,
     ...overrides,
   };
 }
@@ -353,5 +367,462 @@ describe("proposeAllClaims (U4)", () => {
     // Rationale is exactly the statement — no "Possible overlaps" line.
     expect(action.rationale).toBe(claim.statement);
     expect(action.rationale).not.toMatch(/Possible overlaps:/);
+  });
+
+  // -------------------------------------------------------------------------
+  // f3h: reader provenance stamping
+  // -------------------------------------------------------------------------
+
+  it("stamps all reader_* fields + readers on the frontmatter when the claim carries run_meta", async () => {
+    const runId = "run-reader-full";
+    const runMeta = makeRunMeta();
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-full-aabbccdd",
+      statement: "A claim that carries full reader run metadata.",
+      proposed_frontmatter: { title: "Reader full" },
+      run_meta: runMeta,
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect(fm.reader_model).toBe("claude-opus-4");
+    expect(fm.reader_served_model).toBe("claude-opus-4-20260101");
+    expect(fm.reader_temperature).toBe(0);
+    expect(fm.reader_via_retry).toBe(false);
+    expect(fm.reader_prompt_version).toBe(READER_PROMPT_VERSION);
+    expect(fm.reader_chunk_window).toBe(12);
+    expect(fm.reader_input_cap).toBe(8000);
+    expect(fm.readers).toEqual([encodeReader(runMeta, READER_PROMPT_VERSION)]);
+
+    // The body's Provenance section mirrors the reader fields.
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).toContain("### Reader");
+    expect(body).toContain("claude-opus-4-20260101");
+    expect(body).toContain("does not guarantee bit-identical re-extraction");
+  });
+
+  it("uses the 'unreported' served-model sentinel (never null) when servedModel is undefined", async () => {
+    const runId = "run-reader-sentinel";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-sentinel-11223344",
+      statement: "A claim whose provider did not report a served model.",
+      proposed_frontmatter: { title: "Reader sentinel" },
+      run_meta: makeRunMeta({ servedModel: undefined }),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect(fm.reader_served_model).toBe("unreported");
+    expect(fm.reader_served_model).not.toBeNull();
+  });
+
+  it("omits reader_temperature entirely when effectiveTemperature is undefined", async () => {
+    const runId = "run-reader-no-temp";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-notemp-55667788",
+      statement: "A claim whose call sent no temperature.",
+      proposed_frontmatter: { title: "Reader no temp" },
+      run_meta: makeRunMeta({ effectiveTemperature: undefined }),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect("reader_temperature" in fm).toBe(false);
+    // The 'na' sentinel surfaces only inside the encoded readers SET element.
+    expect((fm.readers as string[])[0]).toContain("@na|");
+  });
+
+  it("defaults reader_via_retry to false when viaRetry is undefined", async () => {
+    const runId = "run-reader-retry-default";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-retrydef-99aabbcc",
+      statement: "A claim whose run_meta omits viaRetry.",
+      proposed_frontmatter: { title: "Reader retry default" },
+      run_meta: makeRunMeta({ viaRetry: undefined }),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    expect(fm.reader_via_retry).toBe(false);
+  });
+
+  it("produces NO reader_* fields and does not crash when the claim has no run_meta", async () => {
+    const runId = "run-reader-absent";
+    const claim = makeClaim({
+      claim_key: "chunk-f3h:reader-absent-ddeeff00",
+      statement: "A legacy claim with no run metadata at all.",
+      proposed_frontmatter: { title: "Reader absent" },
+      // run_meta intentionally omitted.
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+
+    for (const key of Object.keys(fm)) {
+      expect(key.startsWith("reader_")).toBe(false);
+    }
+    expect("readers" in fm).toBe(false);
+
+    // Body has the base Provenance section but no Reader subsection.
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).toContain("## Provenance");
+    expect(body).not.toContain("### Reader");
+  });
+
+  // -------------------------------------------------------------------------
+  // Defect 1: body must NOT embed frontmatter fence (assembleBody fix)
+  // -------------------------------------------------------------------------
+
+  it("body does NOT start with '---' and does not embed a frontmatter fence", async () => {
+    const runId = "run-body-no-fence";
+    const claim = makeClaim({
+      claim_key: "chunk-fence:no-frontmatter-fence-aabbccdd",
+      statement: "The body must not embed a frontmatter fence.",
+      proposed_frontmatter: { title: "Body no fence" },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+
+    // Must not open with a frontmatter fence.
+    expect(body.startsWith("---")).toBe(false);
+
+    // The first non-empty line must be the claim statement, not YAML.
+    const firstNonEmpty = body.split("\n").find((line) => line.trim().length > 0);
+    expect(firstNonEmpty).toBe(claim.statement);
+
+    // Body must still contain the claim statement and Provenance section.
+    expect(body).toContain(claim.statement);
+    expect(body).toContain("## Provenance");
+  });
+
+  it("body does NOT embed a frontmatter fence even when the claim carries run_meta", async () => {
+    const runId = "run-body-no-fence-with-meta";
+    const claim = makeClaim({
+      claim_key: "chunk-fence:no-fence-with-meta-eeff0011",
+      statement: "The body must not embed a frontmatter fence when run_meta is present.",
+      proposed_frontmatter: { title: "Body no fence with meta" },
+      run_meta: makeRunMeta(),
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body.startsWith("---")).toBe(false);
+
+    const firstNonEmpty = body.split("\n").find((line) => line.trim().length > 0);
+    expect(firstNonEmpty).toBe(claim.statement);
+
+    expect(body).toContain("## Provenance");
+    expect(body).toContain("### Reader");
+  });
+
+  // -------------------------------------------------------------------------
+  // Collection override (U3): optional, default byte-identical to today.
+  // -------------------------------------------------------------------------
+
+  describe("collection override (U3)", () => {
+    // Fetch the staged frontmatter + targetPath for a single-claim run.
+    async function stageAndRead(
+      runId: string,
+      collection?: string,
+    ): Promise<{ fm: Record<string, unknown>; targetPath: string }> {
+      const claim = makeClaim({
+        claim_key: `chunk-coll:collection-override-claim-${runId.slice(-8).padEnd(8, "0")}`,
+      });
+      const outcome = await proposeAllClaims(vault, [claim], {
+        sourceId: "chat-export-1",
+        runId,
+        collection,
+      });
+      expect(outcome.proposed).toBe(1);
+      expect(outcome.errors).toHaveLength(0);
+
+      const listed = await listStagedActions(vault, "pending");
+      if (!listed.ok) throw listed.error;
+      const action = listed.value.find((a) => a.runId === runId);
+      if (!action) throw new Error("expected a staged action for this run");
+      const diff = action.proposedDiff as Record<string, unknown>;
+      return {
+        fm: diff.frontmatter as Record<string, unknown>,
+        targetPath: action.targetPath,
+      };
+    }
+
+    it("collection unset ⇒ byte-identical to today (regression golden)", async () => {
+      // ids with no `collection` key at all (the pre-U3 shape).
+      const claim = makeClaim({ claim_key: "chunk-coll:unset-key-deadbeef" });
+      const runId = "run-coll-unset-nokey";
+      const outcome = await proposeAllClaims(vault, [claim], {
+        sourceId: "chat-export-1",
+        runId,
+      });
+      expect(outcome.proposed).toBe(1);
+
+      const listed = await listStagedActions(vault, "pending");
+      if (!listed.ok) throw listed.error;
+      const action = listed.value.find((a) => a.runId === runId);
+      if (!action) throw new Error("expected a staged action for this run");
+      const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+        string,
+        unknown
+      >;
+
+      expect(fm.collection).toBe(DISTILL_COLLECTION);
+      expect(fm.status).toBe("draft");
+      expect(fm.confidence).toBe("low");
+      expect(fm.provenance).toBe("synthesized");
+      expect(fm.proposed_by).toBe("agent:distill");
+      expect(fm.domain).toBe("accumulation");
+      expect(action.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+
+      // And explicitly passing collection: undefined must produce the exact
+      // same frontmatter + path (minus the run-specific claim_key/hash8/path
+      // suffix, which we hold constant by reusing the same claim shape).
+      const explicit = await stageAndRead("run-coll-unset-explicit", undefined);
+      expect(explicit.fm.collection).toBe(fm.collection);
+      expect(explicit.fm.status).toBe(fm.status);
+      expect(explicit.fm.confidence).toBe(fm.confidence);
+      expect(explicit.fm.provenance).toBe(fm.provenance);
+      expect(explicit.fm.proposed_by).toBe(fm.proposed_by);
+      expect(explicit.fm.domain).toBe(fm.domain);
+      expect(explicit.targetPath.split("/")[0]).toBe(action.targetPath.split("/")[0]);
+    });
+
+    it('collection:"" is treated as unset, falling back to the default (not an empty write)', async () => {
+      const result = await stageAndRead("run-coll-empty-string", "");
+      expect(result.fm.collection).toBe(DISTILL_COLLECTION);
+      expect(result.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+      // Every other invariant unchanged.
+      expect(result.fm.status).toBe("draft");
+      expect(result.fm.confidence).toBe("low");
+      expect(result.fm.provenance).toBe("synthesized");
+      expect(result.fm.proposed_by).toBe("agent:distill");
+      expect(result.fm.domain).toBe("accumulation");
+    });
+
+    it('collection:"decisions" overrides the frontmatter and path root, all other fields unchanged', async () => {
+      const overridden = await stageAndRead("run-coll-decisions", "decisions");
+      const defaulted = await stageAndRead("run-coll-decisions-default", undefined);
+
+      expect(overridden.fm.collection).toBe("decisions");
+      expect(overridden.targetPath).toMatch(/^decisions\//);
+      expect(overridden.targetPath).not.toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+
+      // Every other frontmatter field is unchanged vs the default.
+      expect(overridden.fm.status).toBe(defaulted.fm.status);
+      expect(overridden.fm.confidence).toBe(defaulted.fm.confidence);
+      expect(overridden.fm.provenance).toBe(defaulted.fm.provenance);
+      expect(overridden.fm.proposed_by).toBe(defaulted.fm.proposed_by);
+      expect(overridden.fm.domain).toBe(defaulted.fm.domain);
+      expect(overridden.fm.title).toBe(defaulted.fm.title);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #506: an overridden target collection lands proposals and paths there
+// -----------------------------------------------------------------------------
+
+describe("proposeAllClaims — target collection override (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("lands proposals under an overridden collection when ids.collection is set", async () => {
+    const claim = makeClaim();
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "m365:drive:d1:item-1",
+      runId: "run-collection-override",
+      collection: "sensitive-reports",
+    });
+
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+    const diff = action.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+
+    expect(fm.collection).toBe("sensitive-reports");
+    expect(action.targetPath).toMatch(/^sensitive-reports\//);
+    // Every other default is unaffected by the override.
+    expect(fm.status).toBe("draft");
+    expect(fm.confidence).toBe("low");
+    expect(fm.provenance).toBe("synthesized");
+  });
+
+  it("defaults to DISTILL_COLLECTION when ids.collection is absent (unchanged callers)", async () => {
+    const claim = makeClaim();
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-2",
+      runId: "run-no-override",
+    });
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok && listed.value[0]?.targetPath).toMatch(new RegExp(`^${DISTILL_COLLECTION}/`));
+  });
+});
+
+describe("isValidCollectionName", () => {
+  it("accepts realistic collection names", () => {
+    for (const name of ["distill", "competitive-intel", "pricing", "moonshot", "_drafts"]) {
+      expect(isValidCollectionName(name)).toBe(true);
+    }
+  });
+
+  it("rejects path separators, traversal, and empty strings", () => {
+    for (const name of ["../secrets", "a/b", "a\\b", "", ".", ".."]) {
+      expect(isValidCollectionName(name)).toBe(false);
+    }
+  });
+});
+
+describe("proposeAllClaims — update-in-place preserves the landed collection (security)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-landed-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("stamps frontmatter.collection from the override path, not the current run's collection", async () => {
+    const claim = makeClaim();
+    const landedPath = "old-collection/source-group/title--abcd1234.md";
+
+    const outcome = await proposeAllClaims(
+      vault,
+      [claim],
+      {
+        sourceId: "m365:drive:d1:item-1",
+        runId: "run-reenrolled",
+        // The enrollment's targetCollection changed since this claim landed.
+        collection: "new-collection",
+      },
+      { [claim.claim_key]: landedPath },
+    );
+
+    expect(outcome.proposed).toBe(1);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const action = listed.value[0];
+    if (!action) throw new Error("expected a staged action");
+
+    // Physical path is unchanged (still the prior landing spot).
+    expect(action.targetPath).toBe(landedPath);
+    // frontmatter.collection must describe where the file actually lives,
+    // not the batch's current collection — a mismatch here would make
+    // downstream RBAC/collection-scoped logic reason about the wrong grant.
+    const diff = action.proposedDiff as Record<string, unknown>;
+    const fm = diff.frontmatter as Record<string, unknown>;
+    expect(fm.collection).toBe("old-collection");
+  });
+});
+
+describe("proposeAllClaims — invalid collection is rejected (security)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-bad-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("fails every claim in the batch instead of joining an unsafe collection into a path", async () => {
+    const claim = makeClaim();
+
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "m365:drive:d1:item-1",
+      runId: "run-bad-collection",
+      collection: "../../etc",
+    });
+
+    expect(outcome.proposed).toBe(0);
+    expect(outcome.results).toHaveLength(0);
+    expect(outcome.errors).toEqual([
+      { claim_key: claim.claim_key, error: expect.stringContaining("invalid collection name") },
+    ]);
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok && listed.value).toHaveLength(0);
   });
 });

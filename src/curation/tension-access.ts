@@ -10,7 +10,7 @@
 // take the filter by injection so they never import RBAC or the index.
 
 import { type AccessContext, canRead } from "../access/rbac.js";
-import { collectionForPath, type IndexDb } from "../storage/index-db.js";
+import { collectionForPath, getDocument, type IndexDb } from "../storage/index-db.js";
 import { canonicalRel } from "../utils/paths.js";
 import type { TensionEntry } from "./tension.js";
 
@@ -41,6 +41,25 @@ export function sourceReadable(db: IndexDb | null, access: AccessContext, source
   const canonical = canonicalRel(source);
   if (canonical.length === 0 || canonical.startsWith("..")) return false;
   return canRead(access.role, collectionForPath(db, canonical));
+}
+
+// True iff the caller can VERIFY this unit: it exists in the index AND (when
+// RBAC is configured) the caller may read its collection. A null db means the
+// index is unavailable — we cannot tell, so we report verifiable (advisory
+// telemetry never cries wolf). The predicate is deliberately caller-relative:
+// a hidden-but-alive unit is unverifiable to a narrow role and verifiable to
+// an operator — the accepted #217 cost, and the reason a hidden unit is
+// indistinguishable from a deleted one (no existence oracle).
+export function sourceVerifiable(
+  db: IndexDb | null,
+  access: AccessContext | undefined,
+  unit: string,
+): boolean {
+  if (!db) return true;
+  if (access && !sourceReadable(db, access, unit)) return false;
+  const canonical = canonicalRel(unit);
+  if (canonical.length === 0 || canonical.startsWith("..")) return false;
+  return getDocument(db, canonical) != null;
 }
 
 // The subset of `entries` visible to the caller, original order preserved.

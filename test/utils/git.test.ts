@@ -20,7 +20,9 @@ import {
   fileGitMeta,
   gitIdentity,
   hashObjectFile,
+  historyByPath,
   isGitRepo,
+  lastCommitContainingPath,
   log,
 } from "../../src/utils/git.js";
 import {
@@ -38,6 +40,45 @@ describe("git", () => {
 
   afterEach(() => {
     cleanupVault(vault);
+  });
+
+  it("preserves exact unusual pathnames and commit counts in bulk history", async () => {
+    const paths = [
+      "café.md",
+      "東京.md",
+      "tab\tname.md",
+      "line\nname.md",
+      "\nleading.md",
+      "trailing.md ",
+      "\u001eheader.md",
+    ];
+    for (const path of paths) await writeFile(join(vault, path), "first");
+    expect((await commit(vault, paths, "first", "human:first")).ok).toBe(true);
+    // Interleave an empty commit: it must not steal the next commit's paths.
+    execFileSync("git", [
+      "-C",
+      vault,
+      "-c",
+      "user.name=Empty",
+      "-c",
+      "user.email=empty@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "empty",
+    ]);
+    await writeFile(join(vault, "café.md"), "second");
+    expect((await commit(vault, ["café.md"], "second", "human:second")).ok).toBe(true);
+    const history = await historyByPath(vault);
+    expect(history.ok).toBe(true);
+    if (!history.ok) return;
+    for (const path of paths) {
+      expect(history.value.get(path), path).toMatchObject({
+        commitCount: path === paths[0] ? 2 : 1,
+        lastAuthor: path === paths[0] ? "human:second" : "human:first",
+      });
+    }
+    expect([...history.value.keys()].sort()).toEqual([...paths].sort());
   });
 
   it("synthesizes a valid git identity from an agent id", () => {
@@ -202,6 +243,46 @@ describe("git", () => {
     await ensureGitRepo(vault);
     const result = await catFileBlob(vault, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     expect(result.ok).toBe(false);
+  });
+
+  it("finds the last commit whose tree contained a path, not its deletion commit", async () => {
+    await writeFile(join(vault, "source.md"), "present\n", "utf-8");
+    const added = await commit(vault, ["source.md"], "add source", "agent:tester");
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    const containing = execFileSync("git", ["-C", vault, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+
+    rmSync(join(vault, "source.md"));
+    const deleted = await commit(vault, ["source.md"], "delete source", "agent:tester");
+    expect(deleted.ok).toBe(true);
+
+    const result = await lastCommitContainingPath(vault, "source.md");
+    expect(result).toEqual({ ok: true, value: containing });
+  });
+
+  it("returns null when a path never appeared in available history", async () => {
+    await writeFile(join(vault, "other.md"), "present\n", "utf-8");
+    await commit(vault, ["other.md"], "add other", "agent:tester");
+
+    const result = await lastCommitContainingPath(vault, "never.md");
+    expect(result).toEqual({ ok: true, value: null });
+  });
+
+  it("treats Git pathspec magic in a recovery path as a literal filename", async () => {
+    const literal = ":(glob)q3-*.md";
+    await writeFile(join(vault, literal), "present\n", "utf-8");
+    const added = await commit(vault, [literal], "add literal pathspec", "agent:tester");
+    expect(added.ok).toBe(true);
+    const containing = execFileSync("git", ["-C", vault, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+    rmSync(join(vault, literal));
+    await commit(vault, [literal], "delete literal pathspec", "agent:tester");
+
+    const result = await lastCommitContainingPath(vault, literal);
+    expect(result).toEqual({ ok: true, value: containing });
   });
 });
 

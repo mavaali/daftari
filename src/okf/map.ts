@@ -217,12 +217,16 @@ export function dateFromGenerated(okfRaw: Record<string, unknown>): string | und
 
 // The v0.2 trust tiers, derived from `verified` exactly as the spec defines:
 // no entries = unverified, machine actors only = machine-confirmed, any
-// `human:<id>` confirmation = human-reviewed.
+// `human:<id>` confirmation = human-reviewed. Per SPEC §5.2 a single verifier
+// MAY be written as one `{ by, at }` mapping without the list dash, and a
+// consumer MUST treat that bare mapping as a one-element list — so a bare
+// object is normalized here rather than being read as "unverified".
 export type OkfTrustTier = "unverified" | "machine-confirmed" | "human-reviewed";
 
 export function trustTier(verified: unknown): OkfTrustTier {
-  if (!Array.isArray(verified) || verified.length === 0) return "unverified";
-  const humanReviewed = verified.some((entry) => {
+  const events = Array.isArray(verified) ? verified : asRecord(verified) !== null ? [verified] : [];
+  if (events.length === 0) return "unverified";
+  const humanReviewed = events.some((entry) => {
     const by = asRecord(entry)?.by;
     return typeof by === "string" && by.startsWith("human:");
   });

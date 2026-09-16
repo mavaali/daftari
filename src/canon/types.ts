@@ -15,6 +15,15 @@ export interface CanonDoc {
   valid_until: string | null;
   updated: string; // server-stamped record clock
   collection: string;
+  // 6mf.3: the reader fingerprint that authored this belief, read from the
+  // doc's raw frontmatter (reader_model + the `readers` parentage set). Both
+  // OPTIONAL — undefined for docs (legacy or human-authored) with no reader
+  // fields. Lets canon report which reader authored a canonized belief.
+  readerModel?: string;
+  readers?: string[];
+  // 6mf.4 R9: append-only reader lineage entries, one per read op.
+  // Optional — absent for docs with no reader_lineage field.
+  readerLineage?: string[];
 }
 
 export interface SettledClaim {

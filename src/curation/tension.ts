@@ -117,6 +117,33 @@ export interface TensionEntry {
   resolution?: TensionResolution;
   positionA?: string; // positional kind only: the conflicting positions' ids
   positionB?: string;
+  // 6mf.2: the reader fingerprint of each side document at log time — the
+  // side's `reader_model` (fall back to readers[0] if reader_model is absent;
+  // undefined if neither). Lets a consumer tell a CROSS-reader tension
+  // (readerA != readerB) from a SAME-reader one without opening both docs.
+  // OPTIONAL: legacy entries predate the fields and read back undefined.
+  readerA?: string;
+  readerB?: string;
+}
+
+// Derive one side's reader fingerprint from its (raw or coerced) frontmatter:
+// the `reader_model` scalar, falling back to the first entry of the `readers`
+// parentage set, and undefined when neither is present (legacy docs). Shared by
+// the tension-logging call sites so both sides read the reader the same way.
+// String values only — a non-string reader_model is ignored rather than
+// stringified into a misleading fingerprint.
+export function readerOf(
+  frontmatter: Record<string, unknown> | null | undefined,
+): string | undefined {
+  if (!frontmatter) return undefined;
+  const model = frontmatter.reader_model;
+  if (typeof model === "string" && model.trim().length > 0) return model;
+  const readers = frontmatter.readers;
+  if (Array.isArray(readers)) {
+    const first = readers.find((r): r is string => typeof r === "string" && r.trim().length > 0);
+    if (first !== undefined) return first;
+  }
+  return undefined;
 }
 
 export type TensionInput = Omit<
@@ -161,6 +188,8 @@ function renderEntry(entry: TensionEntry): string {
   lines.push(`- **Logged by:** ${entry.loggedBy}`);
   if (entry.positionA !== undefined) lines.push(`- **Position A:** ${entry.positionA}`);
   if (entry.positionB !== undefined) lines.push(`- **Position B:** ${entry.positionB}`);
+  if (entry.readerA !== undefined) lines.push(`- **Reader A:** ${entry.readerA}`);
+  if (entry.readerB !== undefined) lines.push(`- **Reader B:** ${entry.readerB}`);
   if (entry.decidedByPrincipal)
     lines.push(`- **Decided by principal:** ${entry.decidedByPrincipal}`);
   if (entry.resolution !== undefined) {
@@ -306,6 +335,12 @@ export async function addTension(
           : {}),
         ...(input.positionA !== undefined ? { positionA: input.positionA } : {}),
         ...(input.positionB !== undefined ? { positionB: input.positionB } : {}),
+        ...(input.readerA !== undefined && input.readerA.trim().length > 0
+          ? { readerA: input.readerA.trim() }
+          : {}),
+        ...(input.readerB !== undefined && input.readerB.trim().length > 0
+          ? { readerB: input.readerB.trim() }
+          : {}),
         resolved: false,
       };
       // A leading blank line keeps this block separated from the previous one.
@@ -394,6 +429,10 @@ function parseBlock(block: string): TensionEntry | null {
       entry.positionA = value.trim();
     } else if (label === "position b") {
       entry.positionB = value.trim();
+    } else if (label === "reader a") {
+      entry.readerA = value.trim();
+    } else if (label === "reader b") {
+      entry.readerB = value.trim();
     } else if (label === "decided by principal") {
       entry.decidedByPrincipal = value.trim();
     } else if (label === "resolved at") {

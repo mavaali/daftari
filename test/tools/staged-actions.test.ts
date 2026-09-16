@@ -553,6 +553,47 @@ describe("vault_ratify", () => {
     expect(result.value.applied).toBe(true);
   }, 60_000);
 
+  it("tier-0 gate ignores a same-shaped repository source during promote", async () => {
+    await seedDraft(vault, "pricing/base.md");
+    await seedDraft(vault, "pricing/dep.md", { sources: ["repo:pricing/base.md"] });
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/dep.md",
+      proposedBy: AGENT,
+      rationale: "Repository provenance is not a vault dependency.",
+      proposedDiff: { status: { from: "draft", to: "canonical" } },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.applied).toBe(true);
+  }, 60_000);
+
+  it("tier-0 gate blocks a missing explicit vault source during promote", async () => {
+    await seedDraft(vault, "pricing/dep.md", { sources: ["vault:pricing/missing.md"] });
+    const staged = await stageAction(vault, {
+      actionType: "promote",
+      targetPath: "pricing/dep.md",
+      proposedBy: AGENT,
+      rationale: "The declared dependency must exist.",
+      proposedDiff: { status: { from: "draft", to: "canonical" } },
+    });
+    if (!staged.ok) throw staged.error;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("vault:pricing/missing.md");
+  }, 60_000);
+
   it("tier-0 gate blocks an unforwarded deprecate with canonical dependents", async () => {
     await seedDraft(vault, "pricing/lib.md", { status: "canonical" });
     await seedDraft(vault, "pricing/user.md", {

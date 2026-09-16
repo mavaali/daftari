@@ -54,6 +54,24 @@ describe("parseDocument", () => {
     expect(result.value.frontmatter.updated).toBe("2026-05-14");
   });
 
+  it("keeps accepting full YAML timestamps as dates", () => {
+    const timestamped = VALID.replace("created: 2026-03-12", "created: 2026-03-12T09:30:00Z");
+    const result = parseDocument(timestamped);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.validation.valid).toBe(true);
+    expect(result.value.frontmatter.created).toBe("2026-03-12");
+  });
+
+  it("keeps accepting js-yaml timestamps with one-digit components", () => {
+    const timestamped = VALID.replace("created: 2026-03-12", "created: 2026-3-2T9:30:00Z");
+    const result = parseDocument(timestamped);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.validation.valid).toBe(true);
+    expect(result.value.frontmatter.created).toBe("2026-03-02");
+  });
+
   it("preserves typed fields", () => {
     const result = parseDocument(VALID);
     expect(result.ok).toBe(true);

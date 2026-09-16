@@ -14,17 +14,25 @@
 //   is the existing boundary — no new gate is introduced here.
 //
 // Collection:
-//   Defaulting to "distill". This is a named constant (DISTILL_COLLECTION)
-//   so a future config hook can override it without touching call sites.
+//   Defaults to "distill" (DISTILL_COLLECTION). The default is resolved ONCE
+//   in proposeAllClaims (see the `collection` local there, ~line 407-408):
+//   DistillIds.collection unset or "" ⇒ DISTILL_COLLECTION, else the caller's
+//   override, verbatim. derivePath (below) just receives the already-resolved
+//   value — it does not know about defaulting.
 
 import { join } from "node:path";
-import { dump } from "js-yaml";
 import type { AccessContext } from "../access/rbac.js";
 import { type StageOutcome, stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { slugifyKey } from "../import/langgraph-store.js";
 import { vaultSearch } from "../tools/search.js";
-import type { ExtractedClaim } from "./extract.js";
+import type { ClaimRunMeta, ExtractedClaim } from "./extract.js";
 import { refuseRawDistillOutput } from "./output-fence.js";
+import {
+  encodeLineageEntry,
+  encodeReader,
+  type LineageOp,
+  READER_PROMPT_VERSION,
+} from "./reader-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -35,6 +43,18 @@ export const DISTILL_COLLECTION = "distill";
 
 /** The proposing agent identity, recorded on every proposal. */
 export const DISTILL_AGENT = "agent:distill";
+
+// A collection name is a single physical top-level directory AND the exact
+// string RBAC's canWrite/canRead match against (src/access/rbac.ts). Those two
+// checks must never diverge, so a collection may not contain a path separator
+// or traversal segment — otherwise a value that passes an RBAC check for one
+// string could resolve to a different directory (or escape the vault root).
+const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** True if `value` is safe to use as both an RBAC-checked collection name and a physical path segment. */
+export function isValidCollectionName(value: string): boolean {
+  return COLLECTION_NAME_PATTERN.test(value);
+}
 
 /**
  * Maximum number of overlap paths attached to a proposal rationale (U8).
@@ -127,6 +147,14 @@ export interface DistillIds {
    * is date-stable across runs.
    */
   asOf?: string;
+  /**
+   * Optional target collection override (M365 ingestion design, #506).
+   * Defaults to DISTILL_COLLECTION. Set by a selected-source connector whose
+   * enrollment names a target collection other than the default; every other
+   * caller is unaffected. The raw-tier fence (refuseRawDistillOutput) runs
+   * against the resulting path regardless of which collection produced it.
+   */
+  collection?: string;
 }
 
 /** Per-claim staging outcome (the StageOutcome from the queue, or an error). */
@@ -169,10 +197,12 @@ function hash8FromClaimKey(claimKey: string): string {
 // co-located AND stable across runs — U5's re-distill join relies on it);
 // falls back to "claims" if the source-id is empty or non-slug-friendly.
 //
-// Path-traversal safety: slugifyKey strips everything except [a-z0-9-], so
-// none of the join components can contain ".." or path separators — the
-// sanitizer is the invariant; don't remove it in a future refactor.
-function derivePath(claim: ExtractedClaim, sourceId: string): string {
+// Path-traversal safety: slugifyKey strips everything except [a-z0-9-] from
+// sourceGroup/titleSlug, and proposeAllClaims rejects the batch before this
+// runs if `collection` fails isValidCollectionName — none of the three join
+// components can contain ".." or a path separator. Don't remove either
+// sanitizer in a future refactor.
+function derivePath(claim: ExtractedClaim, sourceId: string, collection: string): string {
   const title = claim.proposed_frontmatter.title;
   const hash8 = hash8FromClaimKey(claim.claim_key);
   const sourceGroup = slugifyKey(sourceId) || "claims";
@@ -183,23 +213,115 @@ function derivePath(claim: ExtractedClaim, sourceId: string): string {
   // "memory", which makes U5's targetPath-based upsert join harder to
   // reason about and produces semantically useless names.
   const titleSlug = title.trim() ? slugifyKey(title) : slugifyKey(claim.claim_key);
-  return join(DISTILL_COLLECTION, sourceGroup, `${titleSlug}--${hash8}.md`);
+  return join(collection, sourceGroup, `${titleSlug}--${hash8}.md`);
+}
+
+// ---------------------------------------------------------------------------
+// Reader provenance frontmatter (f3h)
+// ---------------------------------------------------------------------------
+
+/**
+ * The reader_* frontmatter fields stamped from a claim's run_meta. Every field
+ * is a DECLARED-OPTIONAL schema extension (see docs/schema-extensions.md); the
+ * fields land typed in a vault whose config declares them, untyped-but-preserved
+ * otherwise, and never block a write (optional, advisory).
+ *
+ * null is never written for any field — a null on a declared extension DELETES
+ * it (serializeDocument treats null as absent). So a value that would be null is
+ * either given a sentinel (served_model → "unreported") or the field is OMITTED
+ * (temperature, which is a number and cannot carry a sentinel).
+ */
+export interface ReaderFrontmatter {
+  reader_model: string;
+  reader_served_model: string;
+  reader_temperature?: number;
+  reader_via_retry: boolean;
+  reader_prompt_version: string;
+  reader_chunk_window: number;
+  reader_input_cap: number;
+  readers: string[];
+  /** Append-only lineage (6mf.4 R1). Raw-only; never enters typed Frontmatter. */
+  reader_lineage: string[];
+}
+
+/**
+ * Build the reader_* frontmatter fields from a claim's run_meta. The prompt
+ * version is READER_PROMPT_VERSION (the hash of the effective extraction prompt
+ * contract at this build). `readers` carries exactly ONE entry at ingest — the
+ * parentage SET a later merge bead unions. `reader_lineage` carries the first
+ * append-only provenance entry for this belief (6mf.4 R1).
+ *
+ * Locked field rules (see the bead spec):
+ *   - reader_served_model uses the "unreported" sentinel when servedModel is
+ *     undefined — NEVER null (null deletes the field).
+ *   - reader_temperature is OMITTED when effectiveTemperature is undefined — a
+ *     number field cannot hold a sentinel.
+ *   - reader_via_retry defaults to false when viaRetry is undefined.
+ *
+ * @param runMeta  The extraction run metadata.
+ * @param op       The lineage op for this write. Defaults to `"ingest"` (new
+ *                 belief). Pass `"update"` for update-in-place re-distillations.
+ */
+export function buildReaderFrontmatter(
+  runMeta: ClaimRunMeta,
+  op: LineageOp = "ingest",
+): ReaderFrontmatter {
+  const readerStr = encodeReader(runMeta, READER_PROMPT_VERSION);
+  const ts = new Date().toISOString();
+  const fm: ReaderFrontmatter = {
+    reader_model: runMeta.requestedModel,
+    reader_served_model: runMeta.servedModel ?? "unreported",
+    reader_via_retry: runMeta.viaRetry ?? false,
+    reader_prompt_version: READER_PROMPT_VERSION,
+    reader_chunk_window: runMeta.chunkWindow,
+    reader_input_cap: runMeta.inputCap,
+    readers: [readerStr],
+    reader_lineage: [encodeLineageEntry(ts, op, readerStr)],
+  };
+  // Omit reader_temperature entirely when unknown: a number can't hold a
+  // sentinel and null would delete a declared extension.
+  if (runMeta.effectiveTemperature !== undefined) {
+    fm.reader_temperature = runMeta.effectiveTemperature;
+  }
+  return fm;
 }
 
 // ---------------------------------------------------------------------------
 // Note assembly (mirrors langgraph-store.ts deriveNotes)
 // ---------------------------------------------------------------------------
 
+// Human-readable "Reader" subsection of the Provenance body, mirroring the
+// reader_* frontmatter. Returns [] (no subsection) when the claim carries no
+// run_meta, so a claim without reader provenance produces the original body.
+function readerProvenanceLines(reader: ReaderFrontmatter | null): string[] {
+  if (reader === null) return [];
+  return [
+    "",
+    "### Reader",
+    "",
+    `- **Model (requested):** \`${reader.reader_model}\``,
+    `- **Model (served):** \`${reader.reader_served_model}\``,
+    ...(reader.reader_temperature !== undefined
+      ? [`- **Effective temperature:** \`${reader.reader_temperature}\``]
+      : []),
+    `- **Via retry:** \`${reader.reader_via_retry}\``,
+    `- **Prompt version:** \`${reader.reader_prompt_version}\``,
+    `- **Chunk window:** \`${reader.reader_chunk_window}\``,
+    `- **Input cap:** \`${reader.reader_input_cap}\``,
+    `- **Readers:** \`${reader.readers.join(", ")}\``,
+    "",
+    "_This fingerprint identifies the run configuration; it does not guarantee " +
+      "bit-identical re-extraction (temperature 0 is not seeded; provider/quantization " +
+      "variance)._",
+  ];
+}
+
 function assembleBody(
   claim: ExtractedClaim,
-  frontmatter: Record<string, unknown>,
   ids: DistillIds,
+  reader: ReaderFrontmatter | null,
 ): string {
   return [
-    "---",
-    dump(frontmatter).trimEnd(),
-    "---",
-    "",
     claim.statement.trim(),
     "",
     "## Provenance",
@@ -208,6 +330,7 @@ function assembleBody(
     `- **Claim key:** \`${claim.claim_key}\``,
     `- **Run id:** \`${ids.runId}\``,
     `- **Source ref:** \`distill:${ids.sourceId}#${claim.claim_key}\``,
+    ...readerProvenanceLines(reader),
     "",
   ].join("\n");
 }
@@ -295,9 +418,35 @@ export async function proposeAllClaims(
 ): Promise<ProposeOutcome> {
   const results: ClaimProposalResult[] = [];
   const errors: Array<{ claim_key: string; error: string }> = [];
+  // An unset OR empty-string collection means "the default": the engine only
+  // ever passes a validated non-empty targetCollection or undefined, so "" is
+  // never a real target — coerce it to the default rather than failing the
+  // batch on an empty name.
+  const collection =
+    ids.collection && ids.collection.length > 0 ? ids.collection : DISTILL_COLLECTION;
+
+  // collection is shared across the whole batch (see isValidCollectionName) —
+  // an invalid value fails every claim rather than being silently sanitized,
+  // since sanitizing here could make the written path diverge from the
+  // string an RBAC check upstream (e.g. requireCollectionWriteAccess) saw.
+  if (!isValidCollectionName(collection)) {
+    const error = `invalid collection name ${JSON.stringify(collection)}: must match ${COLLECTION_NAME_PATTERN}`;
+    for (const claim of claims) errors.push({ claim_key: claim.claim_key, error });
+    return { proposed: 0, results, errors };
+  }
 
   for (const claim of claims) {
-    const targetPath = pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId);
+    const targetPath =
+      pathOverrides?.[claim.claim_key] ?? derivePath(claim, ids.sourceId, collection);
+    const isUpdate = pathOverrides?.[claim.claim_key] !== undefined;
+    // U5: an update-in-place proposal's targetPath is pinned to wherever the
+    // claim landed on a PRIOR run (see joinClaims in state.ts) — under
+    // whatever collection was in effect then, which can differ from the
+    // current run's `collection` if the enrollment's targetCollection was
+    // since changed. frontmatter.collection drives RBAC/collection-scoped
+    // logic downstream, so it must describe where the file actually lives,
+    // not the current run's batch collection.
+    const landedCollection = isUpdate ? (targetPath.split("/")[0] ?? collection) : collection;
 
     // R3: frontmatter is hardcoded to draft/low/synthesized. No caller can
     // override these — the emitter owns the invariant.
@@ -309,7 +458,7 @@ export async function proposeAllClaims(
       // missing `created` cannot be approved).
       created: ids.asOf ?? new Date().toISOString().slice(0, 10),
       domain: "accumulation",
-      collection: DISTILL_COLLECTION,
+      collection: landedCollection,
       status: "draft",
       confidence: "low",
       provenance: "synthesized",
@@ -335,14 +484,23 @@ export async function proposeAllClaims(
       continue;
     }
 
-    // 6mf.6 handoff: the producing extraction call's run metadata is available
-    // here as `claim.run_meta` (ClaimRunMeta | undefined) — servedModel,
-    // effectiveTemperature, viaRetry, requestedModel, chunkWindow, inputCap.
-    // It reaches this point untouched via the upsert join. A later bead (f3h)
-    // will read it to stamp per-belief provenance frontmatter. This bead makes
-    // NO behavior change: run_meta is not written into `frontmatter` here.
+    // f3h: the producing extraction call's run metadata reaches this point as
+    // `claim.run_meta` (ClaimRunMeta | undefined) — servedModel,
+    // effectiveTemperature, viaRetry, requestedModel, chunkWindow, inputCap. When
+    // present, stamp the reader fingerprint onto the belief's frontmatter as
+    // declared-optional schema_extensions (reader_*/readers/reader_lineage). When
+    // ABSENT (older paths, mocks that omit it), skip every reader field entirely —
+    // they are optional and must not crash or write empty/null placeholders.
+    //
+    // 6mf.4: the op is "update" iff this claim has a path override (meaning it is
+    // an update-in-place re-distillation of an existing landed belief), else "ingest".
+    // The land-time union (Task 2) merges the incoming lineage with the existing one.
+    // (isUpdate computed above, alongside landedCollection.)
+    const lineageOp: LineageOp = isUpdate ? "update" : "ingest";
+    const reader = claim.run_meta ? buildReaderFrontmatter(claim.run_meta, lineageOp) : null;
+    if (reader) Object.assign(frontmatter, reader);
 
-    const body = assembleBody(claim, frontmatter, ids);
+    const body = assembleBody(claim, ids, reader);
 
     // U8/R5 + R7: overlap-hint. Attach top-K likely-collision neighbor paths to
     // the rationale so the ratifier can see possible overlaps at a glance, and

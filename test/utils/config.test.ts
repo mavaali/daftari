@@ -243,13 +243,15 @@ describe("loadConfig — schema extensions", () => {
 
     it("parses the server block and rejects malformed shapes loud (#5)", () => {
       writeConfig(
-        "version: 1\nserver:\n  transport_security: external\n  auth:\n" +
+        "version: 1\nserver:\n  transport_security: external\n" +
+          "  trusted_proxies:\n    - 10.0.0.0/24\n    - 127.0.0.1\n  auth:\n" +
           "    tokens:\n      - env: T_A\n        user: human:a\n        role: analyst\n",
       );
       const good = loadConfig(dir);
       expect(good.ok).toBe(true);
       if (!good.ok) return;
       expect(good.value.server.transportSecurity).toBe("external");
+      expect(good.value.server.trustedProxies).toEqual(["10.0.0.0/24", "127.0.0.1"]);
       expect(good.value.server.tokens).toEqual([{ env: "T_A", user: "human:a", role: "analyst" }]);
     });
 
@@ -264,14 +266,27 @@ describe("loadConfig — schema extensions", () => {
         authFailureBurst: 10,
         authFailuresPerMinute: 6,
         maxInFlight: 32,
+        maxBodyBytes: 4_194_304,
       });
       expect(good.value.server.audit).toBe(true);
+      expect(good.value.server.trustedProxies).toEqual([]);
+    });
+
+    it("rejects a malformed server.trusted_proxies entry", () => {
+      writeConfig("version: 1\nserver:\n  trusted_proxies:\n    - not-a-cidr\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+
+    it("rejects a non-list server.trusted_proxies", () => {
+      writeConfig("version: 1\nserver:\n  trusted_proxies: 10.0.0.0/24\n");
+      expect(loadConfig(dir).ok).toBe(false);
     });
 
     it("parses server.limits overrides and server.audit", () => {
       writeConfig(
         "version: 1\nserver:\n  limits:\n    rate_per_minute: 30\n    burst: 5\n" +
           "    auth_failure_burst: 3\n    auth_failures_per_minute: 2\n    max_in_flight: 8\n" +
+          "    max_body_bytes: 8388608\n" +
           "  audit: false\n",
       );
       const good = loadConfig(dir);
@@ -283,6 +298,7 @@ describe("loadConfig — schema extensions", () => {
         authFailureBurst: 3,
         authFailuresPerMinute: 2,
         maxInFlight: 8,
+        maxBodyBytes: 8388608,
       });
       expect(good.value.server.audit).toBe(false);
     });
@@ -511,6 +527,32 @@ describe("loadConfig — schema extensions", () => {
     });
   });
 
+  describe("repo_root (typed source references)", () => {
+    it("is absent by default", () => {
+      const cfg = loadConfig(dir);
+      expect(cfg.ok).toBe(true);
+      if (cfg.ok) expect(cfg.value.repoRoot).toBeUndefined();
+    });
+
+    it("resolves a repository root that contains a nested vault", () => {
+      const repo = mkdtempSync(join(tmpdir(), "daftari-repo-root-"));
+      const vault = join(repo, "vault");
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      writeFileSync(configPath(vault), "repo_root: ..\n");
+      const cfg = loadConfig(vault);
+      expect(cfg.ok).toBe(true);
+      if (cfg.ok) expect(cfg.value.repoRoot).toBe(resolve(repo));
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it("rejects non-string roots and roots that do not contain the vault", () => {
+      writeConfig("repo_root: [..]\n");
+      expect(loadConfig(dir).ok).toBe(false);
+      writeConfig("repo_root: ./nested\n");
+      expect(loadConfig(dir).ok).toBe(false);
+    });
+  });
+
   describe("type primitives", () => {
     it("parses every supported extension type", () => {
       writeConfig(
@@ -623,6 +665,56 @@ describe("loadConfig — schema extensions", () => {
       expect(result.value.schemaExtensions[0]?.default).toBe("2026-01-15");
     });
 
+    it("keeps accepting a full YAML timestamp as a date default", () => {
+      writeConfig(
+        [
+          "schema_extensions:",
+          "  decided:",
+          "    type: date",
+          "    default: 2026-01-15T09:30:00Z",
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.schemaExtensions[0]?.default).toBe("2026-01-15");
+    });
+
+    it("preserves YAML merge-key behavior while retaining authored date strings", () => {
+      writeConfig(
+        [
+          "schema_extensions:",
+          "  decided: &date_field",
+          "    type: date",
+          "  reviewed:",
+          "    <<: *date_field",
+          "indexed_fields: [decided, reviewed]",
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.indexedFields).toEqual([
+          { field: "decided", type: "date" },
+          { field: "reviewed", type: "date" },
+        ]);
+      }
+    });
+
+    it("rejects an impossible calendar date default", () => {
+      writeConfig(
+        ["schema_extensions:", "  decided:", "    type: date", "    default: 2026-02-30", ""].join(
+          "\n",
+        ),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("'default' must be a YYYY-MM-DD date");
+    });
+
     it("carries typed defaults for each primitive", () => {
       writeConfig(
         [
@@ -655,6 +747,98 @@ describe("loadConfig — schema extensions", () => {
       );
       expect(byField).toEqual({ s: "draft", n: 90, b: false, a: ["x", "y"], e: "low" });
     });
+  });
+
+  describe("indexed_fields", () => {
+    it("resolves supported scalar declarations in authored order", () => {
+      writeConfig(
+        [
+          "schema_extensions:",
+          "  owner:",
+          "    type: string",
+          "  stage:",
+          "    type: enum",
+          "    enum: [queued, active, done]",
+          "  urgent:",
+          "    type: boolean",
+          "  priority:",
+          "    type: number",
+          "  due_date:",
+          "    type: date",
+          "indexed_fields: [due_date, priority, owner, stage, urgent]",
+          "",
+        ].join("\n"),
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.indexedFields).toEqual([
+        { field: "due_date", type: "date" },
+        { field: "priority", type: "number" },
+        { field: "owner", type: "string" },
+        { field: "stage", type: "enum", enum: ["queued", "active", "done"] },
+        { field: "urgent", type: "boolean" },
+      ]);
+    });
+
+    it("defaults to an empty list", () => {
+      writeConfig("schema_extensions:\n  owner:\n    type: string\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value.indexedFields).toEqual([]);
+    });
+
+    const tooManyFields = Array.from({ length: 65 }, (_, i) => `f${i}`);
+    const tooManyYaml = [
+      "schema_extensions:",
+      ...tooManyFields.flatMap((field) => [`  ${field}:`, "    type: string"]),
+      `indexed_fields: [${tooManyFields.join(", ")}]`,
+      "",
+    ].join("\n");
+    const longName = "é".repeat(65);
+    const invalidCases: { name: string; yaml: string; contains: string }[] = [
+      {
+        name: "is not a list",
+        yaml: "schema_extensions:\n  owner:\n    type: string\nindexed_fields: owner\n",
+        contains: "'indexed_fields' must be a list",
+      },
+      {
+        name: "contains a non-string",
+        yaml: "schema_extensions:\n  owner:\n    type: string\nindexed_fields: [owner, 3]\n",
+        contains: "indexed_fields[1]",
+      },
+      {
+        name: "references an undeclared field",
+        yaml: "indexed_fields: [owner]\n",
+        contains: "indexed_fields 'owner' is not declared",
+      },
+      {
+        name: "contains a duplicate",
+        yaml: "schema_extensions:\n  owner:\n    type: string\nindexed_fields: [owner, owner]\n",
+        contains: "indexed_fields 'owner' is duplicated",
+      },
+      {
+        name: "references an array field",
+        yaml: "schema_extensions:\n  owners:\n    type: array\n    items: string\nindexed_fields: [owners]\n",
+        contains: "indexed_fields 'owners' has unsupported type 'array'",
+      },
+      { name: "has more than 64 entries", yaml: tooManyYaml, contains: "at most 64" },
+      {
+        name: "has a name over 128 UTF-8 bytes",
+        yaml: `schema_extensions:\n  ${longName}:\n    type: string\nindexed_fields: [${longName}]\n`,
+        contains: "at most 128 UTF-8 bytes",
+      },
+    ];
+
+    for (const testCase of invalidCases) {
+      it(`rejects a declaration that ${testCase.name}`, () => {
+        writeConfig(testCase.yaml);
+        const result = loadConfig(dir);
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error.message).toContain(testCase.contains);
+      });
+    }
   });
 
   describe("malformed declarations fail config load", () => {
@@ -1004,6 +1188,50 @@ describe("loadConfig — schema extensions", () => {
       expect(result.error.message).toContain("promote and propose_only");
     });
   });
+
+  describe("verify_repo_sources role flag (#454)", () => {
+    it("parses an explicit repository-metadata verification grant", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    verify_repo_sources: true\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.verifyRepoSources).toBe(true);
+    });
+
+    it("defaults to absent and rejects non-boolean grants", () => {
+      writeConfig("roles:\n  reader:\n    read: ['*']\n");
+      const absent = loadConfig(dir);
+      expect(absent.ok).toBe(true);
+      if (!absent.ok) return;
+      expect(absent.value.roles.reader?.verifyRepoSources).toBeUndefined();
+
+      writeConfig("roles:\n  reader:\n    read: ['*']\n    verify_repo_sources: yes\n");
+      const malformed = loadConfig(dir);
+      expect(malformed.ok).toBe(false);
+      if (malformed.ok) return;
+      expect(malformed.error.message).toContain("verify_repo_sources");
+    });
+  });
+
+  describe("manage_integrations role flag", () => {
+    it("parses an explicit grant and otherwise defaults to absent", () => {
+      writeConfig(
+        "roles:\n  operator:\n    read: ['*']\n    manage_integrations: true\n  reader:\n    read: ['*']\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.roles.operator?.manageIntegrations).toBe(true);
+      expect(result.value.roles.reader?.manageIntegrations).toBeUndefined();
+    });
+
+    it("rejects a non-boolean grant", () => {
+      writeConfig("roles:\n  operator:\n    read: ['*']\n    manage_integrations: yes\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toContain("manage_integrations");
+    });
+  });
 });
 
 describe("malformed-comment hint on YAML parse errors (#26)", () => {
@@ -1062,5 +1290,310 @@ describe("malformed-comment hint on YAML parse errors (#26)", () => {
     ].join("\n");
     expect(malformedCommentHint(text, 3)).toBeNull();
     expect(malformedCommentHint(text, null)).toBeNull();
+  });
+});
+
+describe("loadConfig — integrations", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-integrations-config-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  it("parses environment-variable references for the enabled providers", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+        "  polling_interval_minutes: 20\n" +
+        "  google:\n" +
+        "    client_id_env: GOOGLE_CLIENT_ID\n" +
+        "    client_secret_env: GOOGLE_CLIENT_SECRET\n" +
+        "  notion:\n" +
+        "    client_id_env: NOTION_CLIENT_ID\n" +
+        "    client_secret_env: NOTION_CLIENT_SECRET\n",
+    );
+    const result = loadConfig(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.integrations).toEqual({
+      encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+      pollingIntervalMinutes: 20,
+      google: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" },
+      notion: { clientIdEnv: "NOTION_CLIENT_ID", clientSecretEnv: "NOTION_CLIENT_SECRET" },
+    });
+  });
+
+  // (Removed) "accepts an m365 provider block (#505/#506 follow-up)": that test
+  // configured m365 with only client_id_env/client_secret_env (generic
+  // IntegrationProviderConfig). On this branch m365 is a MicrosoftProviderConfig
+  // that also requires tenant_id + a non-empty collections allowlist, so a bare
+  // block is correctly rejected now. Full m365 config parsing is covered by the
+  // "loadConfig — m365 provider config (U11)" describe below.
+
+  it("rejects a client secret declared directly in YAML", () => {
+    writeConfig(
+      "integrations:\n" +
+        "  encryption_key_env: KEY\n" +
+        "  google:\n" +
+        "    client_id_env: ID\n" +
+        "    client_secret: leaked\n",
+    );
+    expect(loadConfig(dir).ok).toBe(false);
+  });
+
+  it("accepts only an absolute HTTPS server public base URL", () => {
+    writeConfig("server:\n  public_base_url: https://vault.example/daftari\n");
+    const valid = loadConfig(dir);
+    expect(valid.ok).toBe(true);
+    if (valid.ok) expect(valid.value.server.publicBaseUrl).toBe("https://vault.example/daftari");
+
+    for (const value of [
+      "http://vault.example",
+      "/relative",
+      "not a url",
+      "https://vault.example/path?secret=value",
+      "https://vault.example/path#fragment",
+    ]) {
+      writeConfig(`server:\n  public_base_url: ${JSON.stringify(value)}\n`);
+      expect(loadConfig(dir).ok).toBe(false);
+    }
+  });
+});
+
+describe("loadConfig — m365 provider config + distill USD key (U11)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-m365-config-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string): void {
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(configPath(dir), yaml);
+  }
+
+  describe("integrations.m365", () => {
+    it("parses a valid block, defaulting scope_profile and include_speaker_notes", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: DAFTARI_INTEGRATIONS_KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.m365).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+        scopeProfile: "sharepoint",
+        collections: ["inbox"],
+        includeSpeakerNotes: true,
+      });
+    });
+
+    it("accepts an explicit onedrive scope_profile", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: tenant.example.com\n" +
+          "    scope_profile: onedrive\n" +
+          "    collections:\n      - notes\n" +
+          "    include_speaker_notes: false\n" +
+          "    picker_host: picker.example.com\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.m365).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "tenant.example.com",
+        scopeProfile: "onedrive",
+        collections: ["notes"],
+        includeSpeakerNotes: false,
+        pickerHost: "picker.example.com",
+      });
+    });
+
+    it("rejects an unrecognised scope_profile value", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    scope_profile: dropbox\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.m365.scope_profile");
+    });
+
+    it("rejects a missing tenant_id", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    collections:\n      - inbox\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.m365.tenant_id");
+    });
+
+    it("rejects missing/empty collections", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n",
+      );
+      const missing = loadConfig(dir);
+      expect(missing.ok).toBe(false);
+      if (missing.ok) return;
+      expect(missing.error.message).toContain("integrations.m365.collections");
+
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    collections: []\n",
+      );
+      const empty = loadConfig(dir);
+      expect(empty.ok).toBe(false);
+      if (empty.ok) return;
+      expect(empty.error.message).toContain("integrations.m365.collections");
+    });
+
+    it("rejects an unknown key under integrations.m365", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: t\n" +
+          "    collections:\n      - inbox\n" +
+          "    foo: 1\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.m365.foo");
+    });
+
+    it("rejects a microsoft-only key under integrations.google (per-provider table works both ways)", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  google:\n" +
+          "    client_id_env: GOOGLE_CLIENT_ID\n" +
+          "    client_secret_env: GOOGLE_CLIENT_SECRET\n" +
+          "    tenant_id: should-not-be-accepted\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("integrations.google.tenant_id");
+    });
+
+    // Drift guard: RECOGNISED_MICROSOFT_PROVIDER_KEYS is a hand-maintained
+    // array, not derived from MicrosoftProviderConfig. If a field is ever
+    // added to the config type without adding its snake_case key here,
+    // rejectUnknownKeys would start rejecting an otherwise-valid block. This
+    // test populates EVERY recognised key at once, so a key silently missing
+    // from the array (or never wired into the parser) fails loud here first.
+    it("recognises every Microsoft key at once — no unknown-key error", () => {
+      writeConfig(
+        "integrations:\n" +
+          "  encryption_key_env: KEY\n" +
+          "  m365:\n" +
+          "    client_id_env: MS_CLIENT_ID\n" +
+          "    client_secret_env: MS_CLIENT_SECRET\n" +
+          "    tenant_id: 11111111-1111-1111-1111-111111111111\n" +
+          "    scope_profile: onedrive\n" +
+          "    collections:\n      - inbox\n      - notes\n" +
+          "    include_speaker_notes: false\n" +
+          "    picker_host: picker.example.com\n",
+      );
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.integrations?.m365).toEqual({
+        clientIdEnv: "MS_CLIENT_ID",
+        clientSecretEnv: "MS_CLIENT_SECRET",
+        tenantId: "11111111-1111-1111-1111-111111111111",
+        scopeProfile: "onedrive",
+        collections: ["inbox", "notes"],
+        includeSpeakerNotes: false,
+        pickerHost: "picker.example.com",
+      });
+    });
+  });
+
+  describe("distill.estimated_usd_per_call (R39)", () => {
+    it("parses a declared estimate", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: 0.002\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.estimatedUsdPerCall).toBe(0.002);
+    });
+
+    it("exposes it as undefined when absent (USD estimation disabled)", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.distill?.estimatedUsdPerCall).toBeUndefined();
+    });
+
+    it("rejects a negative estimate", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: -0.1\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("estimated_usd_per_call");
+    });
+
+    it("rejects a zero estimate — absence already means 'no estimate'", () => {
+      writeConfig("distill:\n  model: claude-haiku-4-5\n  estimated_usd_per_call: 0\n");
+      const result = loadConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("estimated_usd_per_call");
+    });
   });
 });

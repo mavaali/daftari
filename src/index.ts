@@ -23,6 +23,9 @@ import { materializeStagedActions } from "./curation/staged-actions.js";
 import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
 import { acquireLock, releaseLock } from "./lifecycle/lock.js";
+import { setCoverageEnabled } from "./search/coverage.js";
+import { setGraphExpandConfig } from "./search/graph-expansion.js";
+import { setDefaultWeights, setVecKnnK } from "./search/hybrid.js";
 import {
   markIndexError,
   markIndexing,
@@ -35,6 +38,7 @@ import {
   reindexVault,
   reindexWarnings,
 } from "./search/reindex.js";
+import { setSuppressSuperseded } from "./search/suppression.js";
 import { setProvider, warmModel } from "./search/vector.js";
 import { startWatcher, type VaultWatcher } from "./search/watcher.js";
 import { createServer, resolveToolExposure, SERVER_VERSION } from "./server.js";
@@ -113,6 +117,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exitCode = 1;
     return;
   }
+  // Retrieval tuning (`search` block): validated by loadConfig, applied once
+  // per process, same lifecycle as the provider above.
+  setCoverageEnabled(config.value.search.coverage);
+  setVecKnnK(config.value.search.vecKnnK);
+  setDefaultWeights(config.value.search.weights);
+  setSuppressSuperseded(config.value.search.suppressSuperseded);
+  setGraphExpandConfig(config.value.search.graphExpand);
 
   // Resolve the access identity. With no --role the server runs as the
   // deny-all guest; an unknown role name resolves the same way.
@@ -287,6 +298,14 @@ export async function startVaultServices(
 // per process — the server runs against one vault for its lifetime.
 let activeWatcher: VaultWatcher | null = null;
 
+// Set once a signal-driven shutdown begins. Two jobs: (1) stop a watcher from
+// starting after shutdown has run — the background reindex's onDone fires the
+// watcher start AFTER the transport is up, so a SIGTERM that lands mid-reindex
+// would otherwise spawn a fresh watcher post-shutdown and pin the event loop
+// open forever; (2) make the intent explicit that we are tearing down. See
+// the SIGTERM-during-reindex hang (takeover left two writers on one vault).
+let shuttingDown = false;
+
 // Install once, regardless of whether the watcher starts. The lock release
 // must run for all exit paths:
 //   - SIGTERM / SIGINT (parent MCP client closing the pipe, or another
@@ -296,17 +315,63 @@ let activeWatcher: VaultWatcher | null = null;
 // The 'exit' listener is sync-only (Node guarantees the loop is closed by
 // then), which is why releaseLock is sync.
 //
-// `extra` (#5): serve registers its own teardown (close the HTTP listener
-// and every live session) to run before the lock releases.
-export function installShutdownHandlers(vaultRoot: string, extra?: () => void): void {
+// `extra` (#5): serve registers its own teardown (close the HTTP listener,
+// integration runtime, and every live session) to run before the lock
+// releases. Keep this below the takeover grace so a replacement process does
+// not begin writing while the old server is still draining.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+
+export function installShutdownHandlers(
+  vaultRoot: string,
+  extra?: () => void | Promise<void>,
+): void {
+  let shutdownStarted = false;
   const onShutdown = () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    shuttingDown = true;
+    const drains: Promise<void>[] = [];
     if (activeWatcher) {
       const w = activeWatcher;
       activeWatcher = null;
-      void w.close();
+      drains.push(w.close());
     }
-    extra?.();
-    releaseLock(vaultRoot);
+    if (extra) drains.push(Promise.resolve().then(extra));
+
+    void (async () => {
+      let timeout: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled(drains).then((results) => {
+          for (const result of results) {
+            if (result.status === "rejected") {
+              const reason =
+                result.reason instanceof Error ? result.reason.message : String(result.reason);
+              process.stderr.write(`daftari: warning: shutdown drain failed: ${reason}\n`);
+            }
+          }
+        }),
+        new Promise<void>((resolveTimeout) => {
+          timeout = setTimeout(() => {
+            process.stderr.write(
+              `daftari: warning: shutdown drain exceeded ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; forcing exit\n`,
+            );
+            resolveTimeout();
+          }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      releaseLock(vaultRoot);
+      // Terminate deterministically. Relying on the event loop to drain does
+      // not work when a SIGTERM lands mid-reindex: the unawaited background
+      // reindex keeps running and open handles (and the post-reindex watcher)
+      // pin the loop, so the process hangs past the takeover's SIGTERM grace,
+      // leaving two instances writing one vault's index.db. Exiting is safe
+      // here because the index is SQLite/WAL with per-batch-committed,
+      // resumable reindex writes: a kill mid-reindex cannot corrupt index.db
+      // (uncommitted work rolls back; the next startup resumes from the
+      // committed batches).
+      process.exit(0);
+    })();
   };
   process.once("SIGTERM", onShutdown);
   process.once("SIGINT", onShutdown);
@@ -318,6 +383,10 @@ export function installShutdownHandlers(vaultRoot: string, extra?: () => void): 
 // a config that disables it. Idempotent: a second call is a no-op while the
 // first watcher is still alive.
 function maybeStartWatcher(vaultRoot: string, watchEnabled: boolean): void {
+  // A signal-driven shutdown may have already run (e.g. SIGTERM during the
+  // background reindex, whose onDone calls this). Never start a watcher after
+  // that — it would re-pin the event loop the shutdown is trying to release.
+  if (shuttingDown) return;
   if (!watchEnabled) {
     process.stderr.write(`daftari: vault watcher disabled (watch: false in config)\n`);
     return;
