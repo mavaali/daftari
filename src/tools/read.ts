@@ -13,6 +13,12 @@ import {
   splitUpstreamVisibility,
   type UpstreamStaleness,
 } from "../curation/edge-staleness.js";
+import {
+  ensureLedgerWritable,
+  leakLedgerPath,
+  recordLeakLedgerEntry,
+  sourceVaultId,
+} from "../curation/leak-ledger.js";
 import { comparePositions, isContested, unsuperseded } from "../curation/positions.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import { recordRead } from "../curation/read-log.js";
@@ -365,6 +371,47 @@ export async function vaultRead(
       ? { broken_upstream: rows.filter((r) => r.staleness === "pending-broken").length }
       : {}),
   });
+
+  // Cross-vault leak ledger (U2): a run_id-keyed record that a later
+  // write-time gate (U3) can scan across processes to learn whether THIS run
+  // touched a private-visibility source anywhere — something the per-vault
+  // read log above cannot answer, since it never leaves this vault's
+  // `.daftari/`. Gated on TWO conditions: `runId` present (a read with no
+  // run_id joins nothing, so it is never appended — nothing for U3 to
+  // correlate it against) AND the gate being active (`leak_gate.mode !==
+  // "off"` — an install that never opts in writes nothing to a file outside
+  // any vault's access control).
+  //
+  // Unlike the old best-effort append, a read this vault's OWN active gate
+  // cares about is not allowed to silently go unrecorded: if the ledger
+  // directory is not writable, this read REFUSES to serve rather than let a
+  // later shared-vault scan read the resulting ENOENT as "nothing happened"
+  // (the fail-open hole U3's redteam probe found). A read under an inactive
+  // gate is unaffected — same best-effort silence as before, since nothing
+  // downstream is watching it.
+  if (runId) {
+    const cfg = loadConfig(vaultRoot);
+    if (cfg.ok && cfg.value.leakGate.mode !== "off") {
+      const ledgerPath = leakLedgerPath(cfg.value.leakGate.sessionLedgerPath);
+      const writable = ensureLedgerWritable(ledgerPath);
+      if (!writable.ok) {
+        return err(
+          new Error(
+            `cannot serve this read: leak_gate is active on this vault and the ` +
+              `leak ledger cannot be journaled (${writable.error.message}) — refusing ` +
+              "rather than letting a private read go unrecorded",
+          ),
+        );
+      }
+      await recordLeakLedgerEntry(ledgerPath, {
+        tool: "vault_read",
+        run_id: runId,
+        ...(access?.user != null ? { principal: access.user } : {}),
+        visibility: cfg.value.visibility,
+        source_vault: sourceVaultId(vaultRoot),
+      });
+    }
+  }
 
   // One index handle serves every graph-backed enrichment below: the #234
   // visible/hidden split, structural decay (#8), and the contested join.
