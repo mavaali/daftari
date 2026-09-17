@@ -1,0 +1,17 @@
+# bob-private — Bob's sovereign daftari vault (Gharonda spike, U1).
+#
+# Mirror of alice-private: `federation.principals` grants read to human:bob
+# only. No human:alice entry, no "*" — deny-all-guest for everyone else.
+version: 1
+vault_name: bob-private
+
+roles:
+  owner:
+    read: ["*"]
+    write: ["*"]
+    promote: true
+    ratify: true
+
+federation:
+  principals:
+    "human:bob": { role: owner }

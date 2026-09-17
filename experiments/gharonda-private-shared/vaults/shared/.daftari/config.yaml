@@ -1,0 +1,20 @@
+# shared — the household's shared daftari vault (Gharonda spike, U1).
+#
+# Both spouses are householders here: `federation.principals` grants read to
+# human:alice AND human:bob. This is the vault a mounting process (Gharonda's
+# assistant, addressed per-user) composes alongside whichever private vault
+# matches the authenticated principal.
+version: 1
+vault_name: shared
+
+roles:
+  householder:
+    read: ["*"]
+    write: ["*"]
+    promote: true
+    ratify: true
+
+federation:
+  principals:
+    "human:alice": { role: householder }
+    "human:bob": { role: householder }

@@ -1,0 +1,20 @@
+# alice-private — Alice's sovereign daftari vault (Gharonda spike, U1).
+#
+# 1Password model: this vault is Alice's PRIVATE store. `federation.principals`
+# grants read to human:alice only. Nobody else is listed — not human:bob, not
+# a "*" wildcard — so every other principal (including bob, and any guest)
+# resolves to the deny-all guest at mount load. That absence IS the policy;
+# deny-all-guest is the default posture, not something opted into per reader.
+version: 1
+vault_name: alice-private
+
+roles:
+  owner:
+    read: ["*"]
+    write: ["*"]
+    promote: true
+    ratify: true
+
+federation:
+  principals:
+    "human:alice": { role: owner }
