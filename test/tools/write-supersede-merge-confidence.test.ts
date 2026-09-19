@@ -241,7 +241,13 @@ describe("vault_set_confidence", () => {
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-confidence-race",
+            },
             { user: "alice", roleName: "writer", role: { read: ["*"], write: ["*"] } },
           );
           if (!asserted.ok) throw asserted.error;
@@ -419,7 +425,13 @@ describe("vault_merge", () => {
       async () => {
         const asserted = await vaultAssert(
           vault,
-          { path: pathA, stance: "assert", confidence: "high", agent: "agent:concurrent" },
+          {
+            path: pathA,
+            stance: "assert",
+            confidence: "high",
+            agent: "agent:concurrent",
+            run_id: "test-merge-race-a",
+          },
           {
             user: "alice",
             roleName: "writer",
@@ -462,7 +474,13 @@ describe("vault_merge", () => {
       async () => {
         const asserted = await vaultAssert(
           vault,
-          { path: pathB, stance: "assert", confidence: "high", agent: "agent:concurrent" },
+          {
+            path: pathB,
+            stance: "assert",
+            confidence: "high",
+            agent: "agent:concurrent",
+            run_id: "test-merge-race-b",
+          },
           {
             user: "bob",
             roleName: "writer",
@@ -804,6 +822,7 @@ describe("write-side ACL: path vs declared collection (S1)", () => {
         body: "# Note\n\nBody.\n",
         frontmatter: frontmatter({ collection: "competitive-intel" }),
         agent: AGENT,
+        run_id: "test-acl-writable-dir",
       },
       ANALYST,
     );
@@ -821,6 +840,7 @@ describe("write-side ACL: path vs declared collection (S1)", () => {
         body: "# Staged\n\nBody.\n",
         frontmatter: frontmatter({ collection: "some-future-collection" }),
         agent: AGENT,
+        run_id: "test-acl-physical-dir",
       },
       ANALYST,
     );

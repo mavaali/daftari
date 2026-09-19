@@ -13,6 +13,12 @@ import {
   loadCompiledStaleContext,
   splitUpstreamVisibility,
 } from "../curation/edge-staleness.js";
+import {
+  ensureLedgerWritable,
+  leakLedgerPath,
+  recordLeakLedgerEntries,
+  sourceVaultId,
+} from "../curation/leak-ledger.js";
 import { recordReads } from "../curation/read-log.js";
 import { structuralDecay } from "../curation/structural.js";
 import { TENSION_KINDS } from "../curation/tension.js";
@@ -75,6 +81,7 @@ import { embedQuery, getProvider } from "../search/vector.js";
 import { documentCount, getDocument, type IndexDb, openIndexDb } from "../storage/index-db.js";
 import { type IndexedFieldDeclaration, loadConfig } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
+import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 
 // All tool-side opens pass the active provider's dim so the sqlite-vec
@@ -206,15 +213,19 @@ const RERANK_INSTRUCTIONS =
 // verdict derived from a hidden unit would leak that unit's change activity
 // across the ACL boundary. The visible count is bucketed for hit-payload
 // compactness, not disclosure — vault_read's exact pending_broken is the
-// drill-down. Best-effort: a telemetry failure never fails the search.
+// drill-down. Best-effort: a telemetry failure never fails the search — EXCEPT
+// the leak-ledger append below when this vault's gate is active, which must
+// refuse to serve rather than let a private hit go unrecorded (mirrors
+// vault_read's ensureLedgerWritable precondition).
 async function annotateAndLogServedHits(
   vaultRoot: string,
   db: IndexDb,
   tool: string,
   hits: HybridHit[],
   access?: AccessContext,
-): Promise<void> {
-  if (hits.length === 0) return;
+  runId?: string,
+): Promise<Result<void, Error>> {
+  if (hits.length === 0) return ok(undefined);
   // The newest-compile-group collapse is O(total edges); do it ONCE per
   // call, not per hit. Passing the pre-collapsed set through is sound
   // because currentConsumesEdges is idempotent. An empty consumes log
@@ -263,6 +274,44 @@ async function annotateAndLogServedHits(
     });
   }
   await recordReads(vaultRoot, entries);
+
+  // Cross-vault leak ledger (U2): gated on run_id present (a search with no
+  // run_id joins nothing across processes) AND the gate being active
+  // (`leak_gate.mode !== "off"` — an install that never opts in writes
+  // nothing). Every hit in one call shares the same serving vault, hence one
+  // shared visibility/source_vault entry-shape; the ledger deliberately
+  // carries no per-hit path (see LeakLedgerEntry) — only a count matters to
+  // the write-time gate.
+  //
+  // A read this vault's own active gate cares about must not go silently
+  // unrecorded: if the ledger directory is not writable, refuse to serve
+  // rather than let a later shared-vault scan read the resulting ENOENT as
+  // "nothing happened" (the fail-open hole U3's redteam probe found).
+  if (runId) {
+    const cfg = loadConfig(vaultRoot);
+    if (cfg.ok && cfg.value.leakGate.mode !== "off") {
+      const ledgerPath = leakLedgerPath(cfg.value.leakGate.sessionLedgerPath);
+      const writable = ensureLedgerWritable(ledgerPath);
+      if (!writable.ok) {
+        return err(
+          new Error(
+            `cannot serve this search: leak_gate is active on this vault and the ` +
+              `leak ledger cannot be journaled (${writable.error.message}) — refusing ` +
+              "rather than letting a private hit go unrecorded",
+          ),
+        );
+      }
+      const leakEntries = hits.map(() => ({
+        tool,
+        run_id: runId,
+        ...(access?.user != null ? { principal: access.user } : {}),
+        visibility: cfg.value.visibility,
+        source_vault: sourceVaultId(vaultRoot),
+      }));
+      await recordLeakLedgerEntries(ledgerPath, leakEntries);
+    }
+  }
+  return ok(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +570,9 @@ export async function vaultSearch(
   }
   const query = typeof args.query === "string" && args.query.trim().length > 0 ? args.query : "";
 
+  const runId = readRunId(args, "vault_search");
+  if (!runId.ok) return runId;
+
   // A malformed valid_at is a caller bug, not something to paper over: a
   // silently-ignored date would return today's answers to a question about
   // the past, which is exactly the confusion this axis exists to remove.
@@ -621,6 +673,7 @@ export async function vaultSearch(
       validAt,
       validOnly,
       access,
+      runId.value,
     );
     if (!local.ok) return local;
     localResult = local.value;
@@ -702,6 +755,7 @@ async function searchLocalVault(
   validAt: string | null,
   validOnly: boolean,
   access?: AccessContext,
+  runId?: string,
 ): Promise<Result<HybridSearchResult, Error>> {
   const ready = await ensureIndexReady(vaultRoot);
   if (!ready.ok) return ready;
@@ -890,7 +944,15 @@ async function searchLocalVault(
     // their combined snippets exceed the budget. Never drops ranked hits.
     const capped = enforceTokenCap(served, DEFAULT_COVERAGE_OPTIONS);
 
-    await annotateAndLogServedHits(vaultRoot, db, "vault_search", capped, access);
+    const logged = await annotateAndLogServedHits(
+      vaultRoot,
+      db,
+      "vault_search",
+      capped,
+      access,
+      runId,
+    );
+    if (!logged.ok) return logged;
 
     // #3: opt-in agent-as-judge rerank pool — the top-K of the SAME
     // RBAC-filtered fused ranking the hits were sliced from (never coverage
@@ -943,6 +1005,9 @@ export async function vaultSearchRelated(
     };
   }
 
+  const runId = readRunId(args, "vault_search_related");
+  if (!runId.ok) return runId;
+
   const registry = getMountRegistry();
   const scope = resolveVaultScope(args.vaults, registry, "vault_search_related");
   if (!scope.ok) return scope;
@@ -978,7 +1043,15 @@ export async function vaultSearchRelated(
       const hits = permitted.slice(0, limit);
       for (const hit of hits) hit.vault = "local";
 
-      await annotateAndLogServedHits(vaultRoot, db, "vault_search_related", hits, access);
+      const logged = await annotateAndLogServedHits(
+        vaultRoot,
+        db,
+        "vault_search_related",
+        hits,
+        access,
+        runId.value,
+      );
+      if (!logged.ok) return logged;
 
       return ok({ ...result.value, count: hits.length, hits });
     } finally {
@@ -1059,7 +1132,15 @@ export async function vaultSearchRelated(
         : ranked.hits;
       const hits = permitted.slice(0, limit);
       for (const hit of hits) hit.vault = "local";
-      await annotateAndLogServedHits(vaultRoot, db, "vault_search_related", hits, access);
+      const logged = await annotateAndLogServedHits(
+        vaultRoot,
+        db,
+        "vault_search_related",
+        hits,
+        access,
+        runId.value,
+      );
+      if (!logged.ok) return logged;
       lists.push(hits);
       vectorUsed = vectorUsed || ranked.vectorUsed;
     } finally {
@@ -1549,6 +1630,14 @@ export const searchTools: ToolDefinition[] = [
             "vault plus every available mount. Requires federation to be " +
             "configured.",
         },
+        run_id: {
+          type: "string",
+          description:
+            "Optional trace/run identifier of the calling run. Recorded in " +
+            "the read log, and in the cross-vault leak ledger so a later " +
+            "write-time gate can tell whether this run touched a " +
+            "private-visibility vault.",
+        },
       },
       additionalProperties: false,
     },
@@ -1632,6 +1721,14 @@ export const searchTools: ToolDefinition[] = [
             "Federation scope (#297): which vaults to rank candidates from — " +
             'mount aliases and/or "local". Omit for the local vault plus ' +
             "every available mount.",
+        },
+        run_id: {
+          type: "string",
+          description:
+            "Optional trace/run identifier of the calling run. Recorded in " +
+            "the read log, and in the cross-vault leak ledger so a later " +
+            "write-time gate can tell whether this run touched a " +
+            "private-visibility vault.",
         },
       },
       required: ["path"],

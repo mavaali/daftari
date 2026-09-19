@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-vault private→shared leak gate** (opt-in, default off) — a `visibility: private|shared` vault flag and a `leak_gate.mode: refuse|warn|off` block. In `refuse`, a write to a `shared` vault is blocked when the same agent run (`run_id`) read a `private`-visibility source, correlated via a cross-process, run_id-keyed session ledger (no document paths stored). Covers `vault_write`/`append`/frontmatter tools and `vault_merge`; fail-closed (run_id-less agent write, unreadable ledger, or un-journalable private read all deny). Documented limitations in `docs/leak-gate.md` (rephrase laundering + single-host ledger are out of scope).
+
 ## [3.14.0] - 2026-09-16
 
 ### Added

@@ -101,6 +101,32 @@ export interface IndexedFieldDeclaration {
 export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
 
+// Vault-level visibility marker for the cross-vault leak gate. A vault
+// declares itself "private" or "shared" in .daftari/config.yaml; a later
+// reader stamps documents from it accordingly.
+export const VAULT_VISIBILITIES = ["private", "shared"] as const;
+export type VaultVisibility = (typeof VAULT_VISIBILITIES)[number];
+
+// `leak_gate` block (U2): where the cross-vault, run_id-keyed session ledger
+// lives on disk. The ledger sits OUTSIDE any vault (both a private-owner and
+// a shared-canonical process must be able to reach it), so its path is not a
+// vault-relative setting like everything else in this file — it defaults to
+// an OS-level location (see leak-ledger.ts's defaultLeakLedgerPath) and this
+// key only overrides that default.
+// U3: write-time enforcement mode. "refuse" (default) blocks a shared write
+// that a run's private reads implicate, fail-closed on an unreadable ledger.
+// "warn" lands the write and attaches an advisory (WriteResult.leak_warning)
+// instead of blocking. "off" disables the gate entirely.
+export const LEAK_GATE_MODES = ["refuse", "warn", "off"] as const;
+export type LeakGateMode = (typeof LEAK_GATE_MODES)[number];
+
+export interface LeakGateConfig {
+  sessionLedgerPath?: string;
+  // Always populated once the block is validated (default "refuse") — the
+  // gate itself (write.ts) reads this directly rather than re-defaulting.
+  mode: LeakGateMode;
+}
+
 // Budgets and attribution for the sleep tension-scan dream (`daftari sleep
 // --dream tension-scan`). All values are HARD requirements on the pass:
 // `maxLlmCalls` caps pairwise judgments per pass (the real spend bound),
@@ -405,6 +431,15 @@ export interface DaftariConfig {
   // The consolidate loop refuses live writes (mode != scan) unless the operator
   // has made an explicit choice, so a surprising default can't spend or mutate.
   shadowModeSet: boolean;
+  // Cross-vault leak gate (U1): whether this vault is "private" or "shared".
+  // Vault-level only, not per-doc. Defaults to "shared" — a single-vault
+  // install has no private reads and the future gate is a no-op.
+  visibility: VaultVisibility;
+  // Cross-vault leak gate (U2): where the session ledger lives. Always
+  // populated (an empty object when the `leak_gate` block is absent) — the
+  // ledger module resolves its own OS-level default when sessionLedgerPath
+  // is undefined.
+  leakGate: LeakGateConfig;
   // Absolute path to an external git directory (git's --separate-git-dir), or
   // undefined for a normal in-vault .git. Lets a cloud-synced vault hold only a
   // static `.git` file while git's churn lives off-cloud. Always resolved
@@ -538,6 +573,8 @@ function emptyConfig(): DaftariConfig {
     holderAliases: {},
     shadowMode: false,
     shadowModeSet: false,
+    visibility: "shared",
+    leakGate: { mode: "off" },
     gitDir: undefined,
     repoRoot: undefined,
     lintVoice: "plain",
@@ -1350,6 +1387,46 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
 // all need the filesystem and live at mount load (src/federation/mounts.ts).
 // What IS decidable here fails loud here: alias grammar, reserved and
 // duplicate aliases, index mode, principals shape.
+// `leak_gate` block (U2). Single optional key: an override for the session
+// ledger's OS-level path. Shape-only here, like every block — the ledger
+// module resolves its own default when this is absent.
+// The engine default is "off": the gate is a household-topology feature, not
+// a general-engine default. A household deployment opts in by setting
+// `mode: "refuse"` explicitly in its `.daftari/config.yaml`.
+const RECOGNISED_LEAK_GATE_KEYS = ["session_ledger_path", "mode"] as const;
+const DEFAULT_LEAK_GATE_MODE: LeakGateMode = "off";
+
+function validateLeakGate(raw: unknown): Result<LeakGateConfig, Error> {
+  if (raw === undefined) return ok({ mode: DEFAULT_LEAK_GATE_MODE });
+  const mapping = requireMapping(raw, "'leak_gate'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_LEAK_GATE_KEYS, "leak_gate");
+  if (!known.ok) return known;
+
+  let mode: LeakGateMode = DEFAULT_LEAK_GATE_MODE;
+  if (obj.mode !== undefined) {
+    if (
+      typeof obj.mode !== "string" ||
+      !(LEAK_GATE_MODES as readonly string[]).includes(obj.mode)
+    ) {
+      return err(
+        new Error(
+          `'leak_gate.mode' must be one of ${LEAK_GATE_MODES.join(", ")}, ` +
+            `got ${JSON.stringify(obj.mode)}`,
+        ),
+      );
+    }
+    mode = obj.mode as LeakGateMode;
+  }
+
+  if (obj.session_ledger_path === undefined) return ok({ mode });
+  if (typeof obj.session_ledger_path !== "string" || obj.session_ledger_path.trim().length === 0) {
+    return err(new Error("'leak_gate.session_ledger_path' must be a non-empty string"));
+  }
+  return ok({ sessionLedgerPath: obj.session_ledger_path, mode });
+}
+
 const RECOGNISED_FEDERATION_KEYS = ["mounts", "principals"] as const;
 const RECOGNISED_MOUNT_KEYS = ["alias", "path", "index", "optional"] as const;
 const MOUNT_INDEX_MODES = ["full", "lexical"] as const;
@@ -2181,6 +2258,27 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     shadowMode = root.shadow_mode;
   }
 
+  let visibility: VaultVisibility = "shared";
+  if (root.visibility !== undefined) {
+    if (typeof root.visibility !== "string") {
+      return err(new Error("malformed config: 'visibility' must be a string"));
+    }
+    if (!(VAULT_VISIBILITIES as readonly string[]).includes(root.visibility)) {
+      return err(
+        new Error(
+          `malformed config: unknown visibility ${JSON.stringify(root.visibility)} ` +
+            `(expected one of ${VAULT_VISIBILITIES.join(", ")})`,
+        ),
+      );
+    }
+    visibility = root.visibility as VaultVisibility;
+  }
+
+  const leakGateConfig = validateLeakGate(root.leak_gate);
+  if (!leakGateConfig.ok) {
+    return err(new Error(`malformed config: ${leakGateConfig.error.message}`));
+  }
+
   // Embedding provider selection. Defaults to local-minilm. Unknown ids fail
   // loud — the trust model is "vault owner configures the server" so a typo
   // is a config error, not a fall-through to default. The OPENAI_API_KEY
@@ -2356,6 +2454,8 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     holderAliases: holderAliases.value,
     shadowMode,
     shadowModeSet,
+    visibility,
+    leakGate: leakGateConfig.value,
     gitDir: gitDir.value,
     repoRoot: repoRoot.value,
     lintVoice: lintVoice.value,

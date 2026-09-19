@@ -14,6 +14,11 @@ import matter from "gray-matter";
 import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
 import { mintConsumesEdges } from "../curation/consumes.js";
+import {
+  leakLedgerPath,
+  privateReadsForRun,
+  privateReadsForRunStrict,
+} from "../curation/leak-ledger.js";
 import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
@@ -66,7 +71,13 @@ import { indexDocument } from "../search/reindex.js";
 import { noteSelfWrite } from "../search/self-write.js";
 import { allDocumentPaths, getDocumentsByPaths } from "../storage/index-db.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
-import { type DaftariConfig, loadConfig, type SchemaExtension } from "../utils/config.js";
+import {
+  type DaftariConfig,
+  type LeakGateConfig,
+  loadConfig,
+  type SchemaExtension,
+  type VaultVisibility,
+} from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
@@ -379,6 +390,11 @@ export interface WriteResult {
     advisory_blast: number;
     hidden_downstream: HiddenDownstream;
   };
+  // Cross-vault leak gate (U3), `leak_gate.mode: "warn"` only: this run read
+  // one or more private-visibility sources before writing into a shared
+  // vault. The write landed anyway — `mode: "refuse"` is what blocks it.
+  // Count only, never a path: same non-disclosure rule as the refusal.
+  leak_warning?: string;
 }
 
 // First 12 chars of a 64-char SHA-256, for human-readable provenance reasons.
@@ -432,6 +448,17 @@ async function performWrite(params: {
   // knows its own semantics: content writes compute it, frontmatter-only
   // lifecycle tools pass false.
   bodyChanged?: boolean;
+  // Cross-vault leak gate (U3): the WRITE TARGET vault's own visibility and
+  // leak_gate config, as loaded by the caller (mirrors how shadowMode/
+  // autoCommit/gitDir are threaded from the caller's config, not re-loaded
+  // here). Every performWrite call site supplies these.
+  visibility: VaultVisibility;
+  leakGate: LeakGateConfig;
+  // Whether the caller carries an AccessContext (an authenticated agent) as
+  // opposed to an operator server (no --role, no access). Operators bypass
+  // the leak gate's run_id-less refusal, mirroring the existing operator
+  // bypass on the foreign-position check above (~line 1346).
+  hasAccessContext: boolean;
 }): Promise<Result<WriteResult, Error>> {
   // Shadow mode (spec §11.5): everything up to here ran exactly as live —
   // validation, RBAC, frontmatter assembly, diff — so the logged do() is one
@@ -497,6 +524,30 @@ async function performWrite(params: {
             new Error(`${STALE_WRITE_PREFIX} ${params.relPath} changed since base_version`),
           );
         }
+      }
+
+      // Cross-vault leak gate (U3): the write-time refusal. Runs AFTER the
+      // stale-write check (a stale write should surface as staleness, not a
+      // leak refusal) and BEFORE anything durable — writeFile is the first
+      // side effect below, and mintConsumesEdges (the other candidate
+      // insertion point) runs post-commit, which is too late for a refusal.
+      const gate = await checkLeakGate({
+        visibility: params.visibility,
+        leakGate: params.leakGate,
+        hasAccessContext: params.hasAccessContext,
+        runId: params.runId,
+      });
+      if (gate.outcome === "refuse") {
+        await recordProvenance(params.vaultRoot, {
+          tool: params.tool,
+          file: params.relPath,
+          agent: params.agent,
+          ...(params.principal ? { principal: params.principal } : {}),
+          ...(params.runId ? { run_id: params.runId } : {}),
+          action: "rejected_leak",
+          reason: gate.reason,
+        });
+        return err(new Error(`${LEAK_GATE_PREFIX} ${params.relPath}: ${gate.reason}`));
       }
 
       await mkdir(dirname(params.absPath), { recursive: true });
@@ -573,6 +624,13 @@ async function performWrite(params: {
         updated: params.newFrontmatter.updated,
         validation: params.validation,
         indexUpdated: indexed.ok,
+        ...(gate.outcome === "warn"
+          ? {
+              leak_warning:
+                `this run read ${gate.count} private source(s) this session before ` +
+                `writing into a shared vault (leak_gate.mode: "warn" — the write landed anyway)`,
+            }
+          : {}),
       });
     } finally {
       releaseLock(lockDb, params.relPath, holder);
@@ -661,6 +719,98 @@ export function commitIdentity(
 ): { author: string; trailer: string } {
   if (!principal || principal === agent) return { author: agent, trailer: "" };
   return { author: principal, trailer: `\n\nDaftari-Agent: ${agent}` };
+}
+
+// The one place the leak-gate rejection message prefix is defined, mirroring
+// STALE_WRITE_PREFIX below. `mode: refuse` is the only mode that ever
+// produces this error — `warn` lands the write with a `leak_warning` instead,
+// `off` never runs the check.
+export const LEAK_GATE_PREFIX = "leak gate:";
+
+type LeakGateOutcome =
+  | { outcome: "allow" }
+  | { outcome: "warn"; count: number }
+  | { outcome: "refuse"; reason: string };
+
+// Cross-vault leak gate (U3): decides whether a write into `visibility`
+// should be refused, landed-with-a-warning, or allowed outright, given the
+// run that produced it. Never returns which private document was read —
+// only a count — so a refusal surfacing in a shared context cannot itself
+// leak the private source's path (spec: refusal names the run_id and count
+// only).
+//
+// Known, accepted structural limitation: this can only see what the CURRENT
+// run_id read. An agent that reads a private source under run R and then
+// writes under a DIFFERENT run_id R2 is not caught — the ledger has nothing
+// under R2 to find. Closing that gap needs a stronger caller-identity signal
+// than the free-text, caller-supplied run_id this gate is built on.
+async function checkLeakGate(params: {
+  visibility: VaultVisibility;
+  leakGate: LeakGateConfig;
+  hasAccessContext: boolean;
+  runId?: string;
+}): Promise<LeakGateOutcome> {
+  const mode = params.leakGate.mode;
+  if (mode === "off") return { outcome: "allow" };
+  if (params.visibility !== "shared") return { outcome: "allow" };
+  // Operator servers (no AccessContext) bypass the gate entirely, matching
+  // the existing operator-bypass convention on the foreign-position check
+  // above (`if (access && ...)`) — there is no authenticated agent identity
+  // to hold accountable for an omitted run_id.
+  if (!params.hasAccessContext) return { outcome: "allow" };
+
+  if (!params.runId) {
+    // An agent caller writing into a shared vault with no run_id at all
+    // cannot be checked against the ledger — and omitting run_id is exactly
+    // how an agent would dodge this gate if silence were allowed to pass.
+    // `refuse` treats "cannot verify" as "deny"; `warn` has nothing to warn
+    // about and lets the write through unannotated.
+    if (mode === "refuse") {
+      return {
+        outcome: "refuse",
+        reason:
+          "no run_id was supplied for a write into a shared vault — cannot verify " +
+          "this run read no private source, so the write is refused",
+      };
+    }
+    return { outcome: "allow" };
+  }
+
+  const ledgerPath = leakLedgerPath(params.leakGate.sessionLedgerPath);
+
+  if (mode === "refuse") {
+    // Fail-closed: a ledger the gate cannot read is treated as a possible
+    // leak, not an absence of one. privateReadsForRun's fail-OPEN posture
+    // (used by warn mode and by the read/search instrumentation) is
+    // deliberately not used here — see privateReadsForRunStrict's docs.
+    const scanned = await privateReadsForRunStrict(ledgerPath, params.runId);
+    if (!scanned.ok) {
+      return {
+        outcome: "refuse",
+        reason:
+          `the leak ledger could not be read (${scanned.error.message}) — cannot ` +
+          `verify run ${params.runId} read no private source, so the write into ` +
+          "this shared vault is refused",
+      };
+    }
+    if (scanned.value.count > 0) {
+      return {
+        outcome: "refuse",
+        reason:
+          `run ${params.runId} read ${scanned.value.count} private-visibility source(s) ` +
+          "this session — refusing to write that into a shared vault",
+      };
+    }
+    return { outcome: "allow" };
+  }
+
+  // mode === "warn": best-effort, never blocks. A ledger read failure
+  // degrades to "nothing seen" (privateReadsForRun's own fail-open
+  // contract) — appropriate here because warn mode's whole point is to
+  // never refuse a write.
+  const scanned = await privateReadsForRun(ledgerPath, params.runId);
+  if (scanned.count > 0) return { outcome: "warn", count: scanned.count };
+  return { outcome: "allow" };
 }
 
 // The one place the stale-rejection message prefix is defined: the producer
@@ -800,6 +950,9 @@ export function performFrontmatterWrite(opts: {
     shadowMode: target.config.shadowMode,
     principal: opts.access?.user,
     bodyChanged: false,
+    visibility: target.config.visibility,
+    leakGate: target.config.leakGate,
+    hasAccessContext: opts.access !== undefined,
     ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
   });
 }
@@ -1404,6 +1557,9 @@ export async function vaultWrite(
     principal: access?.user,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
     bodyChanged: !isUpdate || !sameBody(oldContent, body),
+    visibility: config.value.visibility,
+    leakGate: config.value.leakGate,
+    hasAccessContext: access !== undefined,
   });
   // #169: an in-place overwrite destroys the prior version's lineage, and
   // daftari HAS the preserve-not-overwrite primitive — steer toward it at
@@ -1540,6 +1696,9 @@ export async function vaultAppend(
       principal: access?.user,
       ...(runId.value !== undefined ? { runId: runId.value } : {}),
       bodyChanged: true,
+      visibility: target.value.config.visibility,
+      leakGate: target.value.config.leakGate,
+      hasAccessContext: access !== undefined,
     });
     if (!written.ok) return written;
     return ok({ written: written.value, domain: newFrontmatter.domain });
@@ -2143,6 +2302,14 @@ export async function vaultMerge(
   if (!targetPath.ok) return targetPath;
   const agent = requireString(args, "agent", "vault_merge");
   if (!agent.ok) return agent;
+  // Cross-vault leak gate (U3, FIX 1): mirrors vault_write's run_id parsing —
+  // vault_merge writes directly (three files, one commit) rather than going
+  // through performWrite, so it must thread run_id and run the same gate
+  // check itself. Without this, vault_merge was an ungated shared-write path:
+  // a caller-supplied body could land verbatim in a shared/refuse vault with
+  // no leak check at all.
+  const runId = readRunId(args, "vault_merge");
+  if (!runId.ok) return runId;
   const boundary = readBoundary(args, "vault_merge");
   if (!boundary.ok) return boundary;
   const body = args.body;
@@ -2513,6 +2680,30 @@ export async function vaultMerge(
       }
     }
 
+    // Cross-vault leak gate (U3, FIX 1): the same write-time refusal
+    // performWrite runs, mirrored here because vault_merge writes directly.
+    // Runs AFTER the stale-merge revalidation and BEFORE any writeFile call
+    // below — the merge target's `body` is entirely caller-supplied, so an
+    // ungated merge is exactly as dangerous as an ungated vault_write.
+    const gate = await checkLeakGate({
+      visibility: config.value.visibility,
+      leakGate: config.value.leakGate,
+      hasAccessContext: access !== undefined,
+      runId: runId.value,
+    });
+    if (gate.outcome === "refuse") {
+      await recordProvenance(vaultRoot, {
+        tool: "vault_merge",
+        file: targetPath.value,
+        agent: agent.value,
+        ...(access?.user ? { principal: access.user } : {}),
+        ...(runId.value ? { run_id: runId.value } : {}),
+        action: "rejected_leak",
+        reason: gate.reason,
+      });
+      return err(new Error(`${LEAK_GATE_PREFIX} ${targetPath.value}: ${gate.reason}`));
+    }
+
     // Write all files, then a single git commit. This is NOT crash-atomic on
     // the disk-write phase: like the single-file write path (performWrite), a
     // throw mid-loop — or a commit() failure after the files are on disk —
@@ -2587,6 +2778,13 @@ export async function vaultMerge(
       updated: stampedTarget.updated,
       validation: targetReport,
       indexUpdated: allIndexed,
+      ...(gate.outcome === "warn"
+        ? {
+            leak_warning:
+              `this run read ${gate.count} private source(s) this session before ` +
+              `merging into a shared vault (leak_gate.mode: "warn" — the write landed anyway)`,
+          }
+        : {}),
     });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -3302,6 +3500,7 @@ export const writeTools: ToolDefinition[] = [
         },
         predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
+        run_id: runIdProperty,
       },
       required: ["path_a", "path_b", "target_path", "body", "agent"],
       additionalProperties: false,

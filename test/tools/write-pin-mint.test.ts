@@ -391,6 +391,7 @@ describe("vault_write — pin_mint (U2)", () => {
         body: "# Proposed\n",
         frontmatter: baseFrontmatter({ describes: [shalessEntry] }),
         agent: "agent:proposer",
+        run_id: "test-pin-mint-ratify",
       },
       PROPOSER,
     );
