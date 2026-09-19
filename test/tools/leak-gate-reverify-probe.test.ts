@@ -5,14 +5,22 @@
 // visibility keying, and per-run scan-count correctness after `file` was
 // dropped from the ledger entry. Same fixture wiring as the red-team probe.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { privateReadsForRunStrict } from "../../src/curation/leak-ledger.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { LEAK_GATE_PREFIX, vaultMerge, vaultWrite } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
-import { privateReadsForRunStrict } from "../../src/curation/leak-ledger.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT_ACCESS = {
@@ -86,7 +94,13 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     // vault_write under R2 (no private read logged under R2) — lands.
     const w = await vaultWrite(
       sharedVault,
-      { path: "pricing/write-r2.md", frontmatter: fm("w"), body: SECRET_BODY, agent: "agent:claude-code", run_id: "R2" },
+      {
+        path: "pricing/write-r2.md",
+        frontmatter: fm("w"),
+        body: SECRET_BODY,
+        agent: "agent:claude-code",
+        run_id: "R2",
+      },
       AGENT_ACCESS,
     );
     console.log("[ATTACK-1] vault_write under R2 ok?", w.ok);
@@ -148,7 +162,13 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     expect(r.ok).toBe(true);
     const w = await vaultWrite(
       sharedVault,
-      { path: "pricing/warn.md", frontmatter: fm("warn"), body: SECRET_BODY, agent: "agent:claude-code", run_id: "Rwarn" },
+      {
+        path: "pricing/warn.md",
+        frontmatter: fm("warn"),
+        body: SECRET_BODY,
+        agent: "agent:claude-code",
+        run_id: "Rwarn",
+      },
       AGENT_ACCESS,
     );
     const m = await vaultMerge(
@@ -207,7 +227,13 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     // no private read at all this run.
     const w = await vaultWrite(
       sharedVault,
-      { path: "pricing/clean.md", frontmatter: fm("clean"), body: "clean", agent: "agent:claude-code", run_id: "Rclean" },
+      {
+        path: "pricing/clean.md",
+        frontmatter: fm("clean"),
+        body: "clean",
+        agent: "agent:claude-code",
+        run_id: "Rclean",
+      },
       AGENT_ACCESS,
     );
     console.log("[ATTACK-3inv] clean shared write (no private read) ok?", w.ok);
@@ -215,7 +241,12 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
 
     // a gated private read with the absent-but-creatable ledger dir SUCCEEDS.
     const r = await vaultRead(privateVault, PRIVATE_DOC, AGENT_ACCESS, "Rcreate");
-    console.log("[ATTACK-3inv] gated read created ledger dir & served?", r.ok, "; ledger exists?", existsSync(freshLedger));
+    console.log(
+      "[ATTACK-3inv] gated read created ledger dir & served?",
+      r.ok,
+      "; ledger exists?",
+      existsSync(freshLedger),
+    );
     expect(r.ok).toBe(true);
     expect(existsSync(freshLedger)).toBe(true);
   });
@@ -260,7 +291,13 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     // and the refusal reason surfaces that count (2), never a path.
     const w = await vaultWrite(
       sharedVault,
-      { path: "pricing/count.md", frontmatter: fm("count"), body: "x", agent: "agent:claude-code", run_id: "Rcount" },
+      {
+        path: "pricing/count.md",
+        frontmatter: fm("count"),
+        body: "x",
+        agent: "agent:claude-code",
+        run_id: "Rcount",
+      },
       AGENT_ACCESS,
     );
     expect(w.ok).toBe(false);

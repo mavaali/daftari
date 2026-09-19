@@ -1931,7 +1931,13 @@ describe("vault_write foreign-position guard (U-8)", () => {
     }));
     const r = await vaultWrite(
       vault,
-      { path: DOC, body: "# G\n\nx.\n", frontmatter: { positions }, agent: "a", run_id: "test-fpg-edit" },
+      {
+        path: DOC,
+        body: "# G\n\nx.\n",
+        frontmatter: { positions },
+        agent: "a",
+        run_id: "test-fpg-edit",
+      },
       ALICE,
     );
     expect(r.ok).toBe(false);
@@ -2332,7 +2338,13 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-promote-det-race" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-promote-det-race",
+            },
             ALICE_WRITER,
           );
           if (!asserted.ok) throw asserted.error;
@@ -2368,7 +2380,13 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-deprecate-det-race" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-deprecate-det-race",
+            },
             ALICE_WRITER,
           );
           if (!asserted.ok) throw asserted.error;
@@ -2400,7 +2418,13 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-append-det-race" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-append-det-race",
+            },
             ALICE_WRITER,
           );
           if (!asserted.ok) throw asserted.error;

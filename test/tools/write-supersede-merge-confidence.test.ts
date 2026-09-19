@@ -241,7 +241,13 @@ describe("vault_set_confidence", () => {
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-confidence-race" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-confidence-race",
+            },
             { user: "alice", roleName: "writer", role: { read: ["*"], write: ["*"] } },
           );
           if (!asserted.ok) throw asserted.error;
