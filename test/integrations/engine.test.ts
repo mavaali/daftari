@@ -12,12 +12,16 @@ import {
   type ProviderAdapter,
   readProviderWebhookVerificationToken,
   reconcileProvider,
+  requireCollectionWriteAccess,
   startPeriodicIntegrationSync,
   validateContinuousAdapterCapabilities,
+  verifyProviderLifecycleWebhook,
   verifyProviderWebhook,
 } from "../../src/integrations/engine.js";
+import { createGoogleDocsAdapter } from "../../src/integrations/google.js";
 import { readIntegrationState, writeIntegrationState } from "../../src/integrations/state.js";
 import type { IntegrationConfig, ProviderState } from "../../src/integrations/types.js";
+import type { RoleConfig } from "../../src/utils/config.js";
 import { sha256Hex } from "../../src/utils/hash.js";
 
 const KEY = Buffer.alloc(32, 7);
@@ -823,6 +827,326 @@ describe("provider reconciliation", () => {
     expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(previous);
   });
 
+  it("skips minting a pendingWebhook and any state write when the adapter reports the webhook needs no renewal", async () => {
+    const existing = {
+      id: "fresh-channel",
+      secret: "fresh-secret",
+      expiresAt: "2026-08-25T12:00:00.000Z",
+    };
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: { ...providerState(), webhook: existing } }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let writes = 0;
+    let ensureWebhookCalled = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        needsWebhookRenewal: () => false,
+        ensureWebhook: async () => {
+          ensureWebhookCalled = true;
+          return ok(existing);
+        },
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps({
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+
+    expect(result).toEqual(ok(existing));
+    expect(ensureWebhookCalled).toBe(true);
+    expect(writes).toBe(0);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual(existing);
+  });
+
+  it("keeps the two-phase mint/write flow when the adapter has no needsWebhookRenewal capability", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let writes = 0;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () => ok({ id: "channel-1", secret: "webhook-secret" }),
+      }),
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps({
+        writeIntegrationState: (root, state, key) => {
+          writes += 1;
+          return writeIntegrationState(root, state, key);
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(writes).toBe(2);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toEqual({
+      id: "channel-1",
+      secret: "webhook-secret",
+    });
+  });
+
+  it("clears the minted pendingWebhook instead of orphaning it when the callback URL is malformed (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let ensureWebhookCalled = false;
+    const result = await ensureProviderWebhook(
+      vault,
+      adapter({
+        ensureWebhook: async () => {
+          ensureWebhookCalled = true;
+          return ok({ id: "unreachable", secret: "unreachable" });
+        },
+      }),
+      {
+        callbackUrl: "not a valid url",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(ensureWebhookCalled).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.pendingWebhook).toBeUndefined();
+  });
+
+  it("answers a synchronous create-time validation mid-ensure, then commits the channel afterward (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let provider!: ProviderAdapter;
+    provider = adapter({
+      ensureWebhook: async (state, input) => {
+        const pending = state.pendingWebhook;
+        if (pending === undefined) throw new Error("no pending webhook was minted");
+        const callbackUrl = new URL(input.callbackUrl);
+        expect(callbackUrl.searchParams.get("pending_token")).toBe(pending.nonce);
+
+        // Simulate the provider validating the notification URL synchronously,
+        // mid-call, before this function returns — exactly what Graph does
+        // during subscription creation.
+        const validated = await verifyProviderWebhook(
+          vault,
+          provider,
+          {
+            headers: {},
+            body: new Uint8Array(),
+            query: { pending_token: pending.nonce, validationToken: "graph-validation-xyz" },
+          },
+          deps(),
+        );
+        expect(validated).toEqual(
+          ok({
+            kind: "verification",
+            channel: { id: pending.nonce, secret: pending.secret },
+            respondBody: "graph-validation-xyz",
+            respondContentType: "text/plain",
+          }),
+        );
+        // Subscription IDs only land in state after this call returns.
+        expect(readIntegrationState(vault, KEY).value.providers.google?.webhook).toBeUndefined();
+
+        return ok({ id: "graph-subscription-1", secret: pending.secret, expiresAt: undefined });
+      },
+      verifyWebhook: async (request, state) => {
+        const token = request.query?.validationToken;
+        const pendingToken = request.query?.pending_token;
+        if (
+          token === undefined ||
+          pendingToken === undefined ||
+          state.pendingWebhook === undefined
+        ) {
+          return err(new Error("not a validation request"));
+        }
+        return ok({
+          kind: "verification",
+          channel: { id: pendingToken, secret: state.pendingWebhook.secret },
+          respondBody: token,
+          respondContentType: "text/plain",
+        });
+      },
+    });
+
+    const result = await ensureProviderWebhook(
+      vault,
+      provider,
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(ok(expect.objectContaining({ id: "graph-subscription-1" })));
+    const finalState = readIntegrationState(vault, KEY).value.providers.google;
+    expect(finalState?.webhook).toMatchObject({ id: "graph-subscription-1" });
+    expect(finalState?.pendingWebhook).toBeUndefined();
+  });
+
+  it("does not hold the state lock across the provider's webhook creation call (#507)", async () => {
+    const notionConfig: IntegrationConfig = { ...config, notion: config.google };
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: { google: providerState(), notion: providerState() },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let release: (() => void) | undefined;
+    const stalled = adapter({
+      ensureWebhook: () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok({ id: "channel-1", secret: "secret-1" }));
+        }),
+    });
+
+    const ensuring = ensureProviderWebhook(
+      vault,
+      stalled,
+      {
+        callbackUrl: "https://daftari.example/integrations/google/webhook",
+        now: new Date("2026-08-24T12:00:00.000Z"),
+        renewBefore: new Date("2026-08-25T11:00:00.000Z"),
+      },
+      deps(),
+    );
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+
+    // Any other state-locked operation on a different provider must not be
+    // blocked by the stalled provider call — the lock is released before
+    // it, not held across it.
+    let armed: Awaited<ReturnType<typeof armProviderWebhookSetup>> | undefined;
+    const arming = armProviderWebhookSetup(
+      vault,
+      "notion",
+      deps({ config: notionConfig }),
+      () => "concurrent-token",
+    ).then((settled) => {
+      armed = settled;
+    });
+    // A generous timeout: release() below is what would unblock a genuinely
+    // stuck lock, and it isn't called until after this check, so widening
+    // the window only absorbs CI scheduling noise — it can't mask a real
+    // lock-holding regression.
+    await vi.waitFor(() => expect(armed).toBeDefined(), { timeout: 5000 });
+    expect(armed?.ok).toBe(true);
+    await arming;
+
+    release?.();
+    expect((await ensuring).ok).toBe(true);
+  });
+
+  it("rejects a validation request whose pending token does not match the current attempt (#507)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), pendingWebhook: { nonce: "current", secret: "s" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async () =>
+          ok({ kind: "verification", channel: { id: "x", secret: "y" }, respondBody: "leaked" }),
+      }),
+      {
+        headers: {},
+        body: new Uint8Array(),
+        query: { pending_token: "stale-or-forged", validationToken: "z" },
+      },
+      deps(),
+    );
+
+    // No pendingWebhook match and no established webhook either ⇒ falls
+    // through to the unsigned manual-capture branch, which requires an
+    // armed setup token this request never presented.
+    expect(result.ok).toBe(false);
+  });
+
+  it("forwards a genuine event that arrives with a still-matching pending token instead of dropping it (#507)", async () => {
+    // The callback URL registered with the provider keeps carrying the
+    // pending token for every future notification, not just the create-time
+    // validation — so a real event can legitimately arrive here in the
+    // narrow window before ensureProviderWebhook's phase 3 clears
+    // pendingWebhook. It must reach the queue, not be rejected as a failed
+    // validation.
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: { ...providerState(), pendingWebhook: { nonce: "in-flight", secret: "s" } },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderWebhook(
+      vault,
+      adapter({
+        verifyWebhook: async (request) =>
+          request.query?.validationToken === undefined
+            ? ok({ kind: "event", eventId: "race-event", hint: { kind: "reconcile" } })
+            : err(new Error("not an event")),
+      }),
+      {
+        headers: {},
+        body: Buffer.from("real notification payload"),
+        query: { pending_token: "in-flight" },
+      },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "event", eventId: "race-event", hint: { kind: "reconcile" } }),
+    );
+  });
+
   it("returns generic verified webhook events for routes to queue", async () => {
     expect(
       writeIntegrationState(
@@ -1345,6 +1669,350 @@ describe("provider reconciliation", () => {
     ).toBe(false);
   });
 
+  it("persists a fetch failure reason and clears it once the source succeeds", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    let fetchFails = true;
+    const provider = adapter({
+      discover: async () => ok([{ id: "flaky", revision: "1" }]),
+      fetch: async (source) =>
+        fetchFails
+          ? err(new Error("temporary provider failure"))
+          : ok({ id: source.id, revision: source.revision, text: "Recovered" }),
+    });
+
+    const first = await reconcileProvider(vault, provider, deps());
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "fetch" });
+
+    fetchFails = false;
+    const second = await reconcileProvider(vault, provider, deps());
+    expect(second.ok && second.value.distilledSourceIds).toEqual(["google:flaky"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.flaky?.lastFailure,
+    ).toBeUndefined();
+  });
+
+  it("threads a specific failure reason from a fetch error when the adapter provides one", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const specificError = Object.assign(new Error("file is encrypted"), {
+      reason: "encrypted",
+    });
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "locked", revision: "1" }]),
+        fetch: async () => err(specificError),
+      }),
+      deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:locked"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.locked?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "encrypted" });
+  });
+
+  it("persists a distill failure reason distinct from a fetch failure", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "Some content" }),
+      }),
+      deps({ distill: async () => err(new Error("distillation failed")) }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:doc-1"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["doc-1"]?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "distill" });
+  });
+
+  it("persists a limit failure reason for a source that exceeds the per-source byte cap", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "huge", revision: "1" }]),
+        fetch: async () => ok({ id: "huge", revision: "1", text: "12345" }),
+      }),
+      deps({ reconcileLimits: { maxSourceTextBytes: 4 } }),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["google:huge"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources.huge?.lastFailure,
+    ).toEqual({ at: "2026-08-24T12:00:00.000Z", reason: "limit" });
+  });
+
+  it("sets reconnect_required after a terminal refresh failure and clears it on the next success", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const failing = await reconcileProvider(
+      vault,
+      adapter({ refreshTokens: async () => err(new Error("invalid_grant")) }),
+      deps(),
+    );
+    expect(failing.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "invalid_grant",
+    });
+
+    const succeeding = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          ok({ accessToken: "rotated-access", refreshToken: "rotated-refresh" }),
+      }),
+      deps(),
+    );
+    expect(succeeding.ok).toBe(true);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "ok",
+      at: "2026-08-24T12:00:00.000Z",
+    });
+  });
+
+  it("treats a network-transport refresh failure as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => {
+          throw new Error("fetch failed: ECONNRESET");
+        },
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("treats a 5xx token-endpoint response as transient, not reconnect_required", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 503")),
+      }),
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toBeUndefined();
+    expect(readIntegrationState(vault, KEY).value.providers.google?.accessToken).toBe(
+      "expired-access",
+    );
+  });
+
+  it("recognizes a 4xx status embedded in a message, or a structured terminal signal, as terminal", async () => {
+    const write = (refreshToken: string) =>
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken,
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      );
+
+    expect(write("old-refresh-1")).toEqual(ok(undefined));
+    const messageStatus = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () => err(new Error("Google request failed with status 400")),
+      }),
+      deps(),
+    );
+    expect(messageStatus.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+
+    expect(write("old-refresh-2")).toEqual(ok(undefined));
+    const structuredSignal = await reconcileProvider(
+      vault,
+      adapter({
+        refreshTokens: async () =>
+          err(Object.assign(new Error("token expired"), { terminal: true })),
+      }),
+      deps(),
+    );
+    expect(structuredSignal.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization?.status).toBe(
+      "reconnect_required",
+    );
+  });
+
+  it("advances lastSeenAt and revision for a source that fails on consecutive cycles", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "1" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-24T12:00:00.000Z") }),
+    );
+    expect(first.ok && first.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-24T12:00:00.000Z", revision: "1" });
+
+    const second = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "always-failing", revision: "2" }]),
+        fetch: async () => err(new Error("still broken")),
+      }),
+      deps({ now: () => new Date("2026-08-25T09:00:00.000Z") }),
+    );
+    expect(second.ok && second.value.failedSourceIds).toEqual(["google:always-failing"]);
+    expect(
+      readIntegrationState(vault, KEY).value.providers.google?.sources["always-failing"],
+    ).toMatchObject({ lastSeenAt: "2026-08-25T09:00:00.000Z", revision: "2" });
+  });
+
+  it("marks reconnect_required through the real Google refresh-failure formatting (golden, end to end)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            google: {
+              ...providerState(),
+              accessToken: "expired-access",
+              refreshToken: "old-refresh",
+              accessTokenExpiresAt: "2026-08-24T11:00:00.000Z",
+            },
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const realGoogleAdapter = createGoogleDocsAdapter({
+      redirectUri: "https://vault.example/integrations/google/callback",
+      now,
+      transport: async (url) => {
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+    });
+
+    const result = await reconcileProvider(vault, realGoogleAdapter, deps());
+
+    expect(result.ok).toBe(false);
+    expect(readIntegrationState(vault, KEY).value.providers.google?.authorization).toEqual({
+      status: "reconnect_required",
+      at: "2026-08-24T12:00:00.000Z",
+      reason: "Google request failed with status 400",
+    });
+  });
+
   it("returns a stop function that prevents future periodic reconciliations", async () => {
     vi.useFakeTimers();
     expect(
@@ -1375,5 +2043,456 @@ describe("provider reconciliation", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(discoveries).toBe(1);
     vi.useRealTimers();
+  });
+
+  it("verifies a lifecycle webhook and returns the adapter's verified result", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result).toEqual(
+      ok({ kind: "lifecycle", eventId: "lifecycle-1", action: "reauthorize" }),
+    );
+  });
+
+  it("rejects a lifecycle webhook for a provider that lacks verifyLifecycleWebhook", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter(),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects an unauthorized provider's lifecycle webhook", async () => {
+    const result = await verifyProviderLifecycleWebhook(
+      vault,
+      adapter({
+        verifyLifecycleWebhook: async () =>
+          ok({ kind: "lifecycle", eventId: "e", action: "reconcile" }),
+      }),
+      { headers: {}, body: Buffer.from("evt") },
+      deps(),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("enrollment-scoped providers (#505)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-enroll-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  const m365Config: IntegrationConfig = {
+    encryptionKeyEnv: "DAFTARI_INTEGRATIONS_KEY",
+    pollingIntervalMinutes: 15,
+    m365: { clientIdEnv: "M365_CLIENT_ID", clientSecretEnv: "M365_CLIENT_SECRET" },
+  };
+  const m365Environment = {
+    DAFTARI_INTEGRATIONS_KEY: KEY.toString("base64"),
+    M365_CLIENT_ID: "m365-client-id",
+    M365_CLIENT_SECRET: "m365-client-secret",
+  };
+
+  function enrolledState(extra: Partial<ProviderState> = {}): ProviderState {
+    return {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1.docx",
+          targetCollection: "distill",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "file",
+          remoteId: "f1",
+          includeSpeakerNotes: false,
+          cursorKey: "drive:file",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "distill",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "folder",
+          remoteId: "dir",
+          includeSpeakerNotes: false,
+          cursorKey: "enrollment:folder:dir",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+      ],
+      sources: {},
+      ...extra,
+    };
+  }
+
+  // The fake selected-source adapter: discover() is DEFINED as expanding the
+  // enrollment set — enrolled files plus current folder descendants — so the
+  // engine's reconciliation machinery is exercised unchanged.
+  function enrolledAdapter(
+    folderChildren: string[],
+    overrides: Partial<ProviderAdapter> = {},
+  ): ProviderAdapter {
+    return {
+      name: "m365",
+      authorizationUrl: () => "https://login.example/authorize",
+      exchangeCode: async () => ok({ accessToken: "access", refreshToken: "refresh" }),
+      resolveEnrollment: async (candidates) => ok(candidates),
+      discover: async (state) => {
+        const sources: { id: string; revision: string }[] = [];
+        for (const record of state.enrollment ?? []) {
+          if (record.kind === "file") {
+            sources.push({ id: record.ref, revision: "1" });
+          } else {
+            for (const child of folderChildren) sources.push({ id: child, revision: "1" });
+          }
+        }
+        return ok(sources);
+      },
+      fetch: async (source) =>
+        ok({ id: source.id, revision: source.revision, text: `text of ${source.id}` }),
+      ...overrides,
+    };
+  }
+
+  function m365Deps(overrides: Partial<EngineDeps> = {}): EngineDeps {
+    return {
+      config: m365Config,
+      environment: m365Environment,
+      adapters: {},
+      now,
+      distill: async () => ok({ runId: "run-1" }),
+      ...overrides,
+    };
+  }
+
+  it("discover() expands the enrollment set and rides the unchanged engine", async () => {
+    expect(
+      writeIntegrationState(vault, { providers: { m365: enrolledState() }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const first = await reconcileProvider(vault, enrolledAdapter(["folder:dir/d1"]), m365Deps());
+    expect(first.ok && first.value.distilledSourceIds).toEqual([
+      "m365:file:f1",
+      "m365:folder:dir/d1",
+    ]);
+
+    // A file leaving an enrolled folder stops being discovered and takes the
+    // existing unavailable path — no new engine mechanism.
+    const recorded: unknown[] = [];
+    const second = await reconcileProvider(
+      vault,
+      enrolledAdapter([]),
+      m365Deps({
+        recordUnavailable: (event) => {
+          recorded.push(event);
+          return ok(undefined);
+        },
+      }),
+    );
+    expect(second.ok && second.value.unavailableSourceIds).toEqual(["m365:folder:dir/d1"]);
+    expect(second.ok && second.value.unchangedSourceIds).toEqual(["m365:file:f1"]);
+    expect(recorded).toMatchObject([
+      { reason: "no_longer_discovered", providerSourceId: "m365:folder:dir/d1" },
+    ]);
+  });
+
+  it("keeps adapterData replayable when a source in the discovery page fails", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            m365: enrolledState({
+              cursor: "old-cursor",
+              adapterData: { deltaLinks: { drive: "old" } },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async (state) => {
+          state.cursor = "new-cursor";
+          state.adapterData = { deltaLinks: { drive: "new" } };
+          return ok([
+            { id: "file:f1", revision: "1" },
+            { id: "folder:dir/d1", revision: "1" },
+          ]);
+        },
+        fetch: async (source) =>
+          source.id === "file:f1"
+            ? ok({ id: source.id, revision: source.revision, text: "fine" })
+            : err(new Error("transient fetch failure")),
+      }),
+      m365Deps(),
+    );
+
+    expect(result.ok && result.value.failedSourceIds).toEqual(["m365:folder:dir/d1"]);
+    const persisted = readIntegrationState(vault, KEY);
+    expect(persisted.value.providers.m365?.cursor).toBe("old-cursor");
+    expect(persisted.value.providers.m365?.adapterData).toEqual({ deltaLinks: { drive: "old" } });
+  });
+
+  it("commits adapterData with the cursor once every source in the page is handled", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        {
+          providers: {
+            m365: enrolledState({
+              cursor: "old-cursor",
+              adapterData: { deltaLinks: { drive: "old" } },
+            }),
+          },
+          oauthStates: {},
+        },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async (state) => {
+          state.cursor = "new-cursor";
+          state.adapterData = { deltaLinks: { drive: "new" } };
+          return ok([{ id: "file:f1", revision: "1" }]);
+        },
+      }),
+      m365Deps(),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["m365:file:f1"]);
+    const persisted = readIntegrationState(vault, KEY);
+    expect(persisted.value.providers.m365?.cursor).toBe("new-cursor");
+    expect(persisted.value.providers.m365?.adapterData).toEqual({ deltaLinks: { drive: "new" } });
+  });
+
+  it("maxCycleMs stops starting new fetches and leaves the remainder retryable", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { m365: enrolledState({ cursor: "old-cursor" }) }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    let tick = 0;
+    const clock = () => new Date(Date.parse("2026-08-24T12:00:00.000Z") + 1000 * tick++);
+    const fetch = vi.fn(async () => err(new Error("must not fetch")));
+    const result = await reconcileProvider(
+      vault,
+      enrolledAdapter([], {
+        discover: async () =>
+          ok([
+            { id: "file:f1", revision: "1" },
+            { id: "folder:dir/d1", revision: "1" },
+          ]),
+        fetch,
+      }),
+      m365Deps({ now: clock, reconcileLimits: { maxCycleMs: 500 } }),
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.ok && result.value.failedSourceIds).toEqual([
+      "m365:file:f1",
+      "m365:folder:dir/d1",
+    ]);
+    expect(readIntegrationState(vault, KEY).value.providers.m365?.cursor).toBe("old-cursor");
+  });
+});
+
+describe("target-collection plumbing (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-integration-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("threads the owning EnrollmentRecord's targetCollection into distill()", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "file:f1",
+          kind: "file",
+          label: "F1",
+          targetCollection: "sensitive-reports",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "file",
+          remoteId: "f1",
+          includeSpeakerNotes: false,
+          cursorKey: "drive:file",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "file:f1", revision: "1" }]),
+        fetch: async () => ok({ id: "file:f1", revision: "1", text: "enrolled text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:file:f1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "sensitive-reports" }),
+    );
+  });
+
+  it("passes no targetCollection when the source has no enrollment (google/notion unaffected)", async () => {
+    expect(
+      writeIntegrationState(
+        vault,
+        { providers: { google: providerState() }, oauthStates: {} },
+        KEY,
+      ),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () => ok([{ id: "doc-1", revision: "1" }]),
+        fetch: async () => ok({ id: "doc-1", revision: "1", text: "plain text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:doc-1"]);
+    const call = distill.mock.calls[0]?.[0] as { targetCollection?: string };
+    expect(call.targetCollection).toBeUndefined();
+  });
+
+  it("resolves a folder descendant's owning collection via RemoteSource.enrolledRef", async () => {
+    const state: ProviderState = {
+      accessToken: "access",
+      refreshToken: "refresh",
+      enrollment: [
+        {
+          ref: "folder:dir",
+          kind: "folder",
+          label: "Dir",
+          targetCollection: "team-notes",
+          enrolledAt: "2026-09-04T00:00:00.000Z",
+          enrolledBy: "user:test",
+          driveId: "folder",
+          remoteId: "dir",
+          includeSpeakerNotes: false,
+          cursorKey: "enrollment:folder:dir",
+          audienceAckAt: "2026-09-04T00:00:00.000Z",
+          readersAtEnrollment: [],
+        },
+      ],
+      sources: {},
+    };
+    expect(
+      writeIntegrationState(vault, { providers: { google: state }, oauthStates: {} }, KEY),
+    ).toEqual(ok(undefined));
+
+    const distill = vi.fn(async () => ok({ runId: "run-1" }));
+    const result = await reconcileProvider(
+      vault,
+      adapter({
+        discover: async () =>
+          ok([{ id: "folder:dir/child-1", revision: "1", enrolledRef: "folder:dir" }]),
+        fetch: async (source) => ok({ id: source.id, revision: "1", text: "child text" }),
+      }),
+      deps({ distill }),
+    );
+
+    expect(result.ok && result.value.distilledSourceIds).toEqual(["google:folder:dir/child-1"]);
+    expect(distill).toHaveBeenCalledWith(
+      expect.objectContaining({ targetCollection: "team-notes" }),
+    );
+  });
+});
+
+describe("requireCollectionWriteAccess (#506)", () => {
+  it("allows a role whose write list includes the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["sensitive-reports"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows a role with a wildcard write grant", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["*"] } as RoleConfig,
+      "anything",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses by name when the role cannot write the target collection", () => {
+    const result = requireCollectionWriteAccess(
+      { read: ["*"], write: ["distill"] } as RoleConfig,
+      "sensitive-reports",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok || result.error.message).toContain('"sensitive-reports"');
+  });
+
+  it("refuses a null role (deny-all fallback)", () => {
+    const result = requireCollectionWriteAccess(null, "distill");
+    expect(result.ok).toBe(false);
   });
 });

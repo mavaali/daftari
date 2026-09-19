@@ -80,10 +80,10 @@ Dream types (--dream, default 'circadian'):
     for each candidate doc (never-scanned first, then changed since the last
     scan, capped at --max-docs), retrieve related docs and judge ONE pair of
     claims per LLM call. Conservative: related-but-compatible is not a
-    conflict; an unparseable verdict defaults to no-conflict. Conflicts land
+    conflict; a failed verdict logs no conflict and is retried. Conflicts land
     on the tension ledger (kind factual|temporal|interpretive), attributed to
     the scan agent. Judged pairs persist in .daftari/tension-scan-state.json
-    — unchanged pairs are never re-judged; open tensions are never re-logged.
+    — successful unchanged pairs are never re-judged; open tensions are never re-logged.
 
 Flags (circadian):
   --vault <path>         Vault root (default: current directory).

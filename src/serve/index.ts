@@ -987,6 +987,9 @@ export function startHttpServer(
           return {
             cookieAuthenticated: cookieAuthedReqs.has(integrationRequest),
             canManageIntegrations: canManageIntegrations(access.role),
+            user: access.user,
+            role: access.role,
+            roleName: access.roleName,
           };
         },
         checkCsrf,
@@ -1558,6 +1561,10 @@ export async function runServe(argv: string[]): Promise<number> {
         ? {}
         : { publicBaseUrl: config.value.server.publicBaseUrl }),
       onError: (message) => process.stderr.write(`daftari: warning: ${message}\n`),
+      roles: config.value.roles,
+      ...(config.value.distill?.estimatedUsdPerCall === undefined
+        ? {}
+        : { estimatedUsdPerCall: config.value.distill.estimatedUsdPerCall }),
     });
     if (!created.ok) {
       process.stderr.write(`daftari serve: ${created.error.message}\n`);

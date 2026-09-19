@@ -195,7 +195,7 @@ export function renderTensionScanMarkdown(
       `${s.pairsSkippedAccess} access-denied`,
   );
   if (s.parseFailures > 0) {
-    lines.push(`- unparseable verdicts (defaulted to no-conflict): ${s.parseFailures}`);
+    lines.push(`- failed or unparseable verdicts (retryable): ${s.parseFailures}`);
   }
   lines.push("");
   lines.push(`## Tensions logged — ${s.tensionsLogged}`);

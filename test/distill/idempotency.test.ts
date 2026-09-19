@@ -455,3 +455,50 @@ describe("distillUpsert (U5 idempotency)", () => {
     expect(action.rationale).toMatch(/Possible overlaps:/);
   });
 });
+
+describe("distillUpsert — target collection override (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-distill-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("lands the new claim under the overridden collection", async () => {
+    const outcome = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-1",
+      collection: "sensitive-reports",
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.value.created).toEqual([CLAIM_A.claim_key]);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const staged = listed.value.find((a) => a.runId === "run-1");
+    expect(staged?.targetPath).toMatch(/^sensitive-reports\//);
+  });
+
+  it("lands under the default DISTILL_COLLECTION when no override is given", async () => {
+    const outcome = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-2",
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const staged = listed.value.find((a) => a.runId === "run-2");
+    expect(staged?.targetPath).toMatch(/^distill\//);
+  });
+});
