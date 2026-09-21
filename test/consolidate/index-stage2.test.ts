@@ -8,6 +8,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ok } from "../../src/frontmatter/types.js";
 
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 // Mock the LLM client surface BEFORE importing runConsolidate so the import
 // graph sees the mock. The factory returns a client that always answers
 // "survives" / "derives" depending on which mode is calling.
@@ -82,7 +86,7 @@ beforeEach(() => {
   // stays silent (a draft older than 30d would read as stale/warn → invariants
   // gate, which is not what these dispatch/journal tests are exercising).
   const fm = (title: string) =>
-    `---\ntitle: ${title}\ndomain: accumulation\ncollection: c\nstatus: canonical\nconfidence: high\ncreated: 2026-06-17\nupdated: 2026-06-17\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# ${title}\n`;
+    `---\ntitle: ${title}\ndomain: accumulation\ncollection: c\nstatus: canonical\nconfidence: high\ncreated: ${daysAgo(2)}\nupdated: ${daysAgo(1)}\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# ${title}\n`;
   writeFileSync(join(dir, "a.md"), fm("A"));
   writeFileSync(join(dir, "b.md"), fm("B"));
 });
@@ -337,7 +341,7 @@ describe("Stage 2 dispatch — --max-births cap", () => {
     writeFileSync(join(dir, ".daftari", "config.yaml"), "version: 1\nshadow_mode: true\n");
     // Add more docs so the cap matters.
     for (let i = 0; i < 5; i++) {
-      const fm = `---\ntitle: D${i}\ndomain: accumulation\ncollection: c\nstatus: draft\nconfidence: medium\ncreated: 2026-05-01\nupdated: 2026-06-17\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# D${i}\n`;
+      const fm = `---\ntitle: D${i}\ndomain: accumulation\ncollection: c\nstatus: draft\nconfidence: medium\ncreated: ${daysAgo(2)}\nupdated: ${daysAgo(1)}\nupdated_by: agent:test\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: []\n---\n# D${i}\n`;
       writeFileSync(join(dir, `d${i}.md`), fm);
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "daftari",
-  "version": "3.13.1",
+  "version": "3.14.0",
   "description": "An open-source, multi-user knowledge vault exposed to AI agents via an MCP server.",
   "mcpName": "io.github.mavaali/daftari",
   "license": "MIT",

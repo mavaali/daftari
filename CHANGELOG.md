@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-09-16
+
+### Added
+
+- **Microsoft 365 (Graph) human-selected document ingestion connector** (#492, #514) — a third `ProviderAdapter` alongside Google Docs and Notion: Entra OAuth with rotated refresh tokens, Graph `delta` discovery over an opaque-cursor contract, bounded fetch/download with no token leak on the SAS redirect, webhook subscriptions (timing-safe verify, one per drive), enrollment resolve/estimate/status routes, and a File Picker page (vendored MSAL, exact CSP, no token ever reaches Daftari). Native OOXML (docx/pptx, speaker notes preserved) and `pdfjs-dist` text-layer PDF extraction run through a new provider-neutral `src/extract/`, with a bounded `worker_threads` harness and zip-bomb/entity-expansion/encrypted-file guards. Declassification is explicit and twice-gated rather than inherited from per-source permissions. Known follow-ups (bead-tracked, none blocking): per-enrollment status counts need `enrollmentId` engine plumbing, and the picker doesn't yet render the pre-consent cost/readers estimate.
+- **Viewer R11: code syntax highlighting** (#572) — the `/board` viewer highlights code blocks, continuing the R-series redesign.
+
+### Fixed
+
+- **Search walker/watcher parity** (#537, #560) — the file walker and the live watcher applied different rules for which documents count as managed, so a change could be indexed on one path and missed on the other. They now share one exclusion implementation.
+- **Sleep tension-scan retries failed verdicts** (#539) — a failed or unparseable LLM verdict during the tension scan logged no conflict and was then treated as judged, so it was never revisited. Only successfully-judged pairs are now skipped on the next scan; failures are retried.
+
+### Changed
+
+- **Dependency bumps** (#563, #564, #567, #568, #569, #570) — `tsx`, the npm-minor-and-patch group, `hono` (root and `packages/router`), and `sharp`/`next` in the Berlin Bureau example app.
+
 ## [3.13.1] - 2026-09-06
 
 ### Security
