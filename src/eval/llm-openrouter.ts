@@ -123,7 +123,9 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        // Zero data retention on every call (complete + tool loop share this path):
+        // OpenRouter routes only to ZDR endpoints and errors rather than falling back.
+        body: JSON.stringify({ ...payload, provider: { zdr: true } }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {

@@ -75,6 +75,9 @@ describe("complete", () => {
     expect(headers.Authorization).toBe("Bearer sk-or-test");
     const body = JSON.parse(String(init.body));
     expect(body.model).toBe("anthropic/claude-haiku-4.5");
+    // Zero data retention on every request: OpenRouter routes only to ZDR endpoints
+    // and errors (no fallback) when none exists — verified live 2026-09-29.
+    expect(body.provider).toEqual({ zdr: true });
     expect(body.max_tokens).toBe(4096);
     expect(body.temperature).toBe(0);
     expect(body.messages).toEqual([
