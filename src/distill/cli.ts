@@ -584,6 +584,7 @@ export async function runDistill(argv: string[]): Promise<number> {
     claims: outcome.claims,
     runId,
     overlapSearch: hinter,
+    ...(senderFlag !== undefined ? { scope: `sender:${senderFlag}` } : {}),
   });
 
   if (!upsertRes.ok) {
