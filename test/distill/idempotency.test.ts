@@ -136,6 +136,41 @@ describe("distillUpsert (U5 idempotency)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Scenario 1b (83b1): per-sender passes over the SAME file are independent
+  // -------------------------------------------------------------------------
+
+  it("does not no-op a second sender pass over the same content (per-scope hash)", async () => {
+    const scoped = async (scope: string, claims: ExtractedClaim[], runId: string) => {
+      const res = await distillUpsert(vault, {
+        sourceId: SOURCE_ID,
+        sourceContent: CONTENT_V1,
+        claims,
+        runId,
+        scope,
+      });
+      if (!res.ok) throw res.error;
+      return res.value;
+    };
+    const user = await scoped("user", [CLAIM_A], "run-u1");
+    expect(user.noop).toBe(false);
+    // Regression: the assistant pass used to match the user pass's whole-file
+    // hash and return noop:true, silently dropping every assistant claim.
+    const assistant = await scoped("assistant", [CLAIM_C], "run-a1");
+    expect(assistant.noop).toBe(false);
+    expect(assistant.created).toEqual([CLAIM_C.claim_key]);
+    expect(await pendingActions(vault)).toHaveLength(2);
+
+    // Each scope keeps its own idempotency: re-running either is a no-op,
+    // and they don't evict each other.
+    expect((await scoped("user", [CLAIM_A], "run-u2")).noop).toBe(true);
+    expect((await scoped("assistant", [CLAIM_C], "run-a2")).noop).toBe(true);
+    expect(await pendingActions(vault)).toHaveLength(2);
+
+    // One source entry, shared landed map — ratify keys on the bare source-id.
+    expect(Object.keys(readDistillState(vault).sources)).toEqual([SOURCE_ID]);
+  });
+
+  // -------------------------------------------------------------------------
   // Scenario 2: one claim edited → exactly one update-in-place proposal
   // -------------------------------------------------------------------------
 
