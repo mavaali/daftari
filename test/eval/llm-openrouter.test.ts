@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createOpenRouterClient,
   OPENROUTER_BASE_URL,
+  ollamaBaseUrl,
   resolveTransport,
 } from "../../src/eval/llm-openrouter.js";
+import { createTransportClient } from "../../src/eval/transport.js";
 
 // Minimal fake of the fetch Response surface the client uses.
 function fakeRes(status: number, body: unknown) {
@@ -475,5 +477,50 @@ describe("createOpenRouterClient — completeWithTools", () => {
     if (!r.ok) return;
     expect(r.value.text).toBe("recovered");
     expect(r.value.tool_calls[0].output).toEqual({ tool_error: "boom" });
+  });
+});
+
+describe("ollama transport (loopback-only)", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it("resolves 'ollama' as a transport", () => {
+    const r = resolveTransport("ollama");
+    expect(r.ok && r.value).toBe("ollama");
+  });
+
+  it("defaults to the local Ollama OpenAI-compatible endpoint", () => {
+    delete process.env.DAFTARI_OLLAMA_BASE_URL;
+    expect(ollamaBaseUrl()).toBe("http://127.0.0.1:11434/v1");
+  });
+
+  it("refuses an off-host base URL — the transport's guarantee is on-machine", () => {
+    process.env.DAFTARI_OLLAMA_BASE_URL = "https://ollama.example.com/v1";
+    expect(() => ollamaBaseUrl()).toThrow(/loopback-only/);
+    const c = createTransportClient("ollama");
+    expect(c.ok).toBe(false);
+  });
+
+  it("needs no API key and never falls through to Anthropic", () => {
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.DAFTARI_OLLAMA_BASE_URL;
+    expect(createTransportClient("ollama").ok).toBe(true);
+    expect(createTransportClient("anthropic").ok).toBe(false);
+  });
+
+  it("posts to the injected base URL", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeRes(200, { choices: [{ message: { content: "ok" } }] }),
+    );
+    const client = createOpenRouterClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      baseUrl: "http://127.0.0.1:11434/v1",
+      apiKey: "ollama",
+    });
+    await client.complete({ model: "qwen3:14b", system: "s", user: "u" });
+    expect(String(fetchImpl.mock.calls[0][0])).toBe("http://127.0.0.1:11434/v1/chat/completions");
   });
 });

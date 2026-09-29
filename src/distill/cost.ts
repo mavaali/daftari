@@ -111,10 +111,10 @@ export interface BuildReceiptOpts {
   /** The distill config that governed this run. */
   config: DistillConfig;
   /**
-   * Transport that made the LLM calls: "anthropic" | "openrouter".
+   * Transport that made the LLM calls: "anthropic" | "openrouter" | "ollama".
    * Passed explicitly by the CLI (U7) from resolveDistillClient's transport.
    */
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "ollama";
   /**
    * Zero-data-retention flag. Must be supplied explicitly by the caller —
    * never inferred from provider. See ZDR design note at the top of this file.
@@ -143,7 +143,7 @@ export interface DistillReceipt {
   /** Model id used for every extraction call. */
   model: string;
   /** LLM transport used. */
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "ollama";
   /**
    * Whether this run was made under a zero-data-retention arrangement.
    * This is caller-asserted, not verified by daftari. Default: false.

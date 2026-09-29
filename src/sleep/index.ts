@@ -29,6 +29,7 @@ import {
   type LlmTransport,
   resolveTransport,
 } from "../eval/llm-openrouter.js";
+import { createTransportClient } from "../eval/transport.js";
 import { ok } from "../frontmatter/types.js";
 import { openIndexForActiveProvider, vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
@@ -250,17 +251,8 @@ function readPositiveInt(
 // check runs before the constructor so a missing key fails fast with a clear
 // message instead of the client's terse internal throw.
 function constructLlm(transport: LlmTransport): { llm: LlmClient } | { error: string } {
-  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-  if (!process.env[keyVar]) {
-    return { error: `${keyVar} env var is required (transport: ${transport})` };
-  }
-  try {
-    return {
-      llm: transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient(),
-    };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
+  const res = createTransportClient(transport);
+  return res.ok ? { llm: res.value } : { error: res.error.message };
 }
 
 async function runTensionScanCli(argv: string[], vaultRoot: string): Promise<number> {

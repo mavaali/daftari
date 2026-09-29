@@ -74,7 +74,7 @@ Options:
   --max-llm-calls <n>  Override config.maxLlmCalls for this run.
   --max-claims <n>     Override config.maxClaims for this run.
   --model <id>         Override config.model for this run.
-  --transport <t>      LLM transport: anthropic (default) | openrouter.
+  --transport <t>      LLM transport: anthropic (default) | openrouter | ollama (loopback-only).
   --zdr                Assert zero-data-retention for the receipt (default: false).
   --help, -h           Show this help.
 

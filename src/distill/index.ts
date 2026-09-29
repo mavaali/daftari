@@ -40,6 +40,7 @@ import {
   type LlmTransport,
   resolveTransport,
 } from "../eval/llm-openrouter.js";
+import { createTransportClient } from "../eval/transport.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { type DistillConfig, loadConfig } from "../utils/config.js";
 import { ChatTranscriptAdapter } from "./adapters/chat-transcript.js";
@@ -85,16 +86,8 @@ export const DISTILL_NOT_CONFIGURED_MSG =
 // Transport-aware LLM construction — mirrors the pattern in src/consolidate
 // and src/sleep: check the API key BEFORE calling the constructor so a
 // missing key produces a clear error rather than the client's internal throw.
-function constructLlm(transport: "anthropic" | "openrouter"): Result<LlmClient, Error> {
-  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-  if (!process.env[keyVar]) {
-    return err(new Error(`${keyVar} env var is required (transport: ${transport})`));
-  }
-  try {
-    return ok(transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient());
-  } catch (e) {
-    return err(e instanceof Error ? e : new Error(String(e)));
-  }
+function constructLlm(transport: LlmTransport): Result<LlmClient, Error> {
+  return createTransportClient(transport);
 }
 
 /**
