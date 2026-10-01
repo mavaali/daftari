@@ -178,6 +178,25 @@ An imported `Attested Computation` does not automatically receive `tier:
 source`. Source-tier immutability is an enforcement boundary and must be
 granted deliberately with `vault_set_tier`, including a reason in provenance.
 
+## LangGraph store imports
+
+`daftari import langgraph-store <vault> --dsn <postgres-url> --plan` previews
+semantic memories from a read-only LangGraph store connection. Use `--apply
+--yes` instead of `--plan` to write the notes and commit them.
+
+New filenames use a SHA-256 hash of the full provider, namespace, and source
+key, independent of the memory title. Imports reuse existing notes in the
+target collection by their LangGraph provenance, including filenames created
+by older versions. Changing a source title therefore updates the same note.
+The plan preview shows the reused paths.
+
+If multiple existing notes claim the same source, a matching note has
+ambiguous provenance, or a destination belongs to another document, import
+stops before writing. Reconcile conflicting notes before retrying. Keep the
+import tags, source reference, and provenance section intact so future imports
+can recognize legacy notes. Symlink destinations are rejected. Validation happens before writes;
+this does not provide rollback after a runtime filesystem or commit failure.
+
 ## Adoption checklist
 
 - Back up the original folder before the first apply.
