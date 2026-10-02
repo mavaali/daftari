@@ -55,6 +55,7 @@ Server options:
   --user <username>    Identity the server runs as (default: guest)
   --role <rolename>    RBAC role from .daftari/config.yaml (default: deny-all guest)
   --reindex            Rebuild the SQLite index from scratch, then exit
+  --init-if-missing    Scaffold an empty vault at --vault on first start
 
 Other:
   --version, -v        Print the daftari version and exit
@@ -179,7 +180,13 @@ canon — the agent flags tensions here but does not resolve them.
   ];
 }
 
-export async function initVault(targetPath: string): Promise<number> {
+// `examples: false` skips the fictional starter documents, and `stdout: false`
+// sends the summary to stderr — both for --init-if-missing, where the vault is
+// someone's real memory and stdout belongs to the JSON-RPC stream.
+export async function initVault(
+  targetPath: string,
+  { examples = true, stdout = true }: { examples?: boolean; stdout?: boolean } = {},
+): Promise<number> {
   const vaultRoot = resolve(targetPath);
 
   if (existsSync(vaultRoot) && readdirSync(vaultRoot).length > 0) {
@@ -201,7 +208,7 @@ export async function initVault(targetPath: string): Promise<number> {
   writeFileSync(join(vaultRoot, ".gitignore"), VAULT_GITIGNORE);
 
   const today = new Date().toISOString().slice(0, 10);
-  for (const doc of exampleDocs(today)) {
+  for (const doc of examples ? exampleDocs(today) : []) {
     writeFileSync(join(vaultRoot, doc.path), doc.body);
   }
 
@@ -234,11 +241,11 @@ export async function initVault(targetPath: string): Promise<number> {
     );
   }
 
-  process.stdout.write(
+  (stdout ? process.stdout : process.stderr).write(
     `Scaffolded a new Daftari vault at ${vaultRoot}\n\n` +
       `  collections: ${COLLECTIONS.join(", ")}\n` +
       `  config:      .daftari/config.yaml\n` +
-      `  examples:    3 markdown documents\n\n` +
+      `  examples:    ${examples ? "3 markdown documents" : "none"}\n\n` +
       `Next:\n` +
       `  npx daftari --vault ${targetPath} --user me --role admin\n`,
   );
@@ -371,7 +378,17 @@ export async function run(argv: string[]): Promise<void> {
     return;
   }
 
-  if (parseFlag(argv, "vault")) {
+  const vault = parseFlag(argv, "vault");
+  if (vault) {
+    // Plugin hosts hand the server a fresh data directory; create the vault
+    // there on first start instead of failing.
+    if (argv.includes("--init-if-missing") && !existsSync(resolve(vault))) {
+      const code = await initVault(vault, { examples: false, stdout: false });
+      if (code !== 0) {
+        process.exitCode = code;
+        return;
+      }
+    }
     await main(argv);
     return;
   }
