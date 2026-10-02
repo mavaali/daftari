@@ -46,10 +46,34 @@ To rebuild the search index without starting the server:
 npx daftari --vault ./my-vault --reindex
 ```
 
-## 3. Connect from Claude Desktop
+## 3. Connect your MCP client
 
-Add Daftari to your `claude_desktop_config.json` (on macOS:
-`~/Library/Application Support/Claude/claude_desktop_config.json`):
+One command registers the vault with your client:
+
+```bash
+npx daftari install claude-code    --vault ./my-vault
+npx daftari install cursor         --vault ./my-vault
+npx daftari install claude-desktop --vault ./my-vault
+npx daftari install codex          --vault ./my-vault
+npx daftari install gemini         --vault ./my-vault
+npx daftari install vscode         --vault ./my-vault
+```
+
+Claude Code, Codex, Gemini CLI, and VS Code are registered through their own
+`mcp add` command (user scope). Cursor and Claude Desktop get a merge into
+`~/.cursor/mcp.json` or `claude_desktop_config.json` that keeps your other
+servers and saves the original as `.bak`.
+
+Before writing anything, `install` checks that the path is a vault and that the
+role (default `admin`) exists in its config — a missing role would otherwise
+start the server as a deny-all guest. Options:
+
+- `--print` shows the command or config change without applying it.
+- `--name <name>` registers a second vault side by side (default `daftari`).
+- `--user` / `--role` set the identity (defaults `me` / `admin`).
+
+If the client's CLI is not on your PATH, `install` prints the exact command to
+run later. Any other MCP client takes this server definition:
 
 ```json
 {
@@ -71,7 +95,7 @@ Add Daftari to your `claude_desktop_config.json` (on macOS:
 }
 ```
 
-Use an absolute vault path. Restart Claude Desktop and Daftari's advertised
+Use an absolute vault path. Restart the client and Daftari's advertised
 `vault_*` tools appear. The exact set depends on the `tools.tier` configured for
 the vault; MCP clients receive current names and schemas from `tools/list`.
 The rest of this walkthrough describes those tool calls—an agent makes them

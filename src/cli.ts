@@ -32,6 +32,7 @@ const USAGE = `daftari — an MCP server that exposes a curated markdown vault t
 Usage:
   daftari --init [path]               Scaffold a new vault (default: ./daftari-vault)
   daftari --vault <path> [options]    Start the MCP server (stdio) against a vault
+  daftari install <client> --vault <p> Register a vault with Claude Code, Cursor, Codex, … (see: daftari install --help)
   daftari asof <ref-or-date>          Belief archaeology — the vault at a past commit (see: daftari asof --help)
   daftari audit [options]             Run a cross-repo coherence audit (see: daftari audit --help)
   daftari distill <file|-> [options]  Compile-on-ingest: extract claims from a source file (see: daftari distill --help)
@@ -62,6 +63,7 @@ Other:
 
 Examples:
   npx daftari --init ./my-vault
+  npx daftari install claude-code --vault ./my-vault
   npx daftari --vault ./my-vault --user me --role admin
   npx daftari --vault ./my-vault --reindex
 `;
@@ -239,8 +241,8 @@ export async function initVault(targetPath: string): Promise<number> {
       `  collections: ${COLLECTIONS.join(", ")}\n` +
       `  config:      .daftari/config.yaml\n` +
       `  examples:    3 markdown documents\n\n` +
-      `Next:\n` +
-      `  npx daftari --vault ${targetPath} --user me --role admin\n`,
+      `Next — connect your MCP client (claude-code, claude-desktop, codex, cursor, gemini, vscode):\n` +
+      `  npx daftari install claude-code --vault ${targetPath}\n`,
   );
   return 0;
 }
@@ -255,6 +257,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "audit") {
     const { runAudit } = await import("./audit/index.js");
     process.exitCode = await runAudit(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "install") {
+    const { runInstall } = await import("./install/index.js");
+    process.exitCode = await runInstall(argv.slice(1));
     return;
   }
 

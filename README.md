@@ -15,7 +15,7 @@ replaces the other, the contradiction stays flagged until someone settles it.
 
     npx daftari --init ./my-vault
 
-Then [connect Claude Code, Cursor, or Claude Desktop →](docs/getting-started.md)
+Then `npx daftari install claude-code --vault ./my-vault` (or `cursor`, `codex`, `claude-desktop`, …).
 
 - **Yours.** Markdown and Git. Readable in any editor. Uninstall Daftari and
   you keep every word.
@@ -58,33 +58,17 @@ fictional example documents. The markdown is the source of truth;
 
 ### 2. Connect an MCP client
 
-For Claude Desktop on macOS, edit
-`~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "daftari": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "daftari@latest",
-        "--vault",
-        "/absolute/path/to/my-vault",
-        "--user",
-        "me",
-        "--role",
-        "admin"
-      ]
-    }
-  }
-}
+```bash
+npx daftari install claude-code --vault ./my-vault
 ```
 
-Use an absolute vault path, then restart the client. The scaffolded config
-defines an `admin` role. Omit `--role`, or name a role that does not exist,
-and Daftari starts as a guest that can read and write nothing. Other MCP
-clients take the same `command` and `args`.
+Swap `claude-code` for `cursor`, `claude-desktop`, `codex`, `gemini`, or
+`vscode`, then restart the client. `install` checks that the vault's config
+defines the role it registers (default `admin`) — without a valid role,
+Daftari starts as a guest that can read and write nothing. Add `--print` to
+see the change first, or `--name` to register a second vault. Other MCP
+clients: see the server definition in
+[getting started](docs/getting-started.md#3-connect-your-mcp-client).
 
 ### 3. Ask the vault a question
 
