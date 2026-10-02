@@ -3,7 +3,7 @@
   "name": "daftari",
   "version": "3.13.1",
   "display_name": "Daftari",
-  "description": "A persistent cortex Claude reads, writes, and curates over time.",
+  "description": "Memory you own for Claude: plain markdown on your disk, shared with any MCP tool, where recency never decides what's true.",
   "long_description": "An external cortex for AI agents: a persistent markdown vault that agents read, write, and curate over time. Plain text on disk, git-versioned, indexed for BM25 + vector search. Agents promote drafts to canonical knowledge, surface contradictions as tensions, and lint for staleness. Runs offline by default.",
   "author": {
     "name": "Mihir Wagle",
