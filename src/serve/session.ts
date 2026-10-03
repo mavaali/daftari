@@ -12,8 +12,10 @@
 //   - the payload bytes are parsed ONLY after the MAC verifies, so no
 //     attacker-controlled JSON is trusted before authentication;
 //   - `exp` (unix seconds) is enforced against an injected `nowSec` so the
-//     check is deterministic in tests and monotonic in production.
-import { createHmac, timingSafeEqual } from "node:crypto";
+//     check is deterministic in tests and monotonic in production;
+//   - `aud` binds the token to one deployment (3p4.8): a cookie minted by
+//     another vault's server is rejected even if the signing key is shared.
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 export interface SessionPayload {
@@ -21,6 +23,15 @@ export interface SessionPayload {
   role: string;
   // Absolute expiry, unix seconds.
   exp: number;
+  // Deployment audience — sessionAudience(vaultRoot) of the minting server.
+  aud: string;
+}
+
+// The audience a server mints and accepts: a hash of its vault root. The
+// process lock allows one `serve` per vault, so the vault IS the deployment;
+// hashing keeps the filesystem path out of the cookie.
+export function sessionAudience(vaultRoot: string): string {
+  return createHash("sha256").update(vaultRoot).digest("hex").slice(0, 32);
 }
 
 export function signSession(payload: SessionPayload, key: Buffer): string {
@@ -33,6 +44,7 @@ export function verifySession(
   token: string,
   key: Buffer,
   nowSec: number,
+  audience: string,
 ): Result<SessionPayload, Error> {
   const dot = token.indexOf(".");
   // A single interior "." with non-empty halves. `a.b.c` fails here too, since
@@ -76,5 +88,8 @@ export function verifySession(
   if (obj.exp <= nowSec) {
     return err(new Error("session expired"));
   }
-  return ok({ user: obj.user, role: obj.role, exp: obj.exp });
+  if (obj.aud !== audience) {
+    return err(new Error("session audience mismatch"));
+  }
+  return ok({ user: obj.user, role: obj.role, exp: obj.exp, aud: audience });
 }

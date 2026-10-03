@@ -11,6 +11,8 @@
 //   5. malformed / bad-encoding tokens → rejected, never throw.
 //   6. payload is parsed ONLY after the MAC verifies (shape guard on a
 //      validly-signed but malformed payload).
+//   7. audience binding (3p4.8): a cookie minted for another deployment —
+//      or with no audience — is rejected even under a shared key.
 //
 // Run with: npx vitest run test/serve/session.test.ts
 import { createHmac } from "node:crypto";
@@ -20,11 +22,12 @@ import { signSession, verifySession } from "../../src/serve/session.js";
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "utf-8");
 const OTHER = Buffer.from("fedcba9876543210fedcba9876543210", "utf-8");
 const NOW = 1_700_000_000;
+const AUD = "vault-a";
 
 describe("session token", () => {
   it("round-trips a payload", () => {
-    const token = signSession({ user: "mihir", role: "admin", exp: NOW + 3600 }, KEY);
-    const r = verifySession(token, KEY, NOW);
+    const token = signSession({ user: "mihir", role: "admin", exp: NOW + 3600, aud: AUD }, KEY);
+    const r = verifySession(token, KEY, NOW, AUD);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.user).toBe("mihir");
@@ -34,34 +37,34 @@ describe("session token", () => {
   });
 
   it("rejects a token signed with a different key (forgery)", () => {
-    const token = signSession({ user: "mihir", role: "admin", exp: NOW + 3600 }, OTHER);
-    expect(verifySession(token, KEY, NOW).ok).toBe(false);
+    const token = signSession({ user: "mihir", role: "admin", exp: NOW + 3600, aud: AUD }, OTHER);
+    expect(verifySession(token, KEY, NOW, AUD).ok).toBe(false);
   });
 
   it("rejects a tampered payload (role escalation)", () => {
-    const token = signSession({ user: "guest", role: "analyst", exp: NOW + 3600 }, KEY);
+    const token = signSession({ user: "guest", role: "analyst", exp: NOW + 3600, aud: AUD }, KEY);
     const [, mac] = token.split(".");
     const forgedPayload = Buffer.from(
       JSON.stringify({ user: "guest", role: "admin", exp: NOW + 3600 }),
       "utf-8",
     ).toString("base64url");
     const forged = `${forgedPayload}.${mac}`;
-    expect(verifySession(forged, KEY, NOW).ok).toBe(false);
+    expect(verifySession(forged, KEY, NOW, AUD).ok).toBe(false);
   });
 
   it("rejects an expired token", () => {
-    const token = signSession({ user: "mihir", role: "admin", exp: NOW - 1 }, KEY);
-    expect(verifySession(token, KEY, NOW).ok).toBe(false);
+    const token = signSession({ user: "mihir", role: "admin", exp: NOW - 1, aud: AUD }, KEY);
+    expect(verifySession(token, KEY, NOW, AUD).ok).toBe(false);
   });
 
   it("accepts a token expiring in the future", () => {
-    const token = signSession({ user: "mihir", role: "admin", exp: NOW + 1 }, KEY);
-    expect(verifySession(token, KEY, NOW).ok).toBe(true);
+    const token = signSession({ user: "mihir", role: "admin", exp: NOW + 1, aud: AUD }, KEY);
+    expect(verifySession(token, KEY, NOW, AUD).ok).toBe(true);
   });
 
   it("rejects malformed tokens without throwing", () => {
     for (const bad of ["", ".", "nodot", "a.", ".b", "a.b.c"]) {
-      expect(verifySession(bad, KEY, NOW).ok).toBe(false);
+      expect(verifySession(bad, KEY, NOW, AUD).ok).toBe(false);
     }
   });
 
@@ -71,6 +74,25 @@ describe("session token", () => {
       "base64url",
     );
     const mac = createHmac("sha256", KEY).update(payloadB64).digest().toString("base64url");
-    expect(verifySession(`${payloadB64}.${mac}`, KEY, NOW).ok).toBe(false);
+    expect(verifySession(`${payloadB64}.${mac}`, KEY, NOW, AUD).ok).toBe(false);
+  });
+
+  it("3p4.8: rejects a token minted for another audience under the same key", () => {
+    const token = signSession(
+      { user: "mihir", role: "admin", exp: NOW + 3600, aud: "vault-b" },
+      KEY,
+    );
+    const r = verifySession(token, KEY, NOW, AUD);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/audience/);
+  });
+
+  it("3p4.8: rejects a validly-signed token with no audience (pre-binding cookie)", () => {
+    const payloadB64 = Buffer.from(
+      JSON.stringify({ user: "mihir", role: "admin", exp: NOW + 3600 }),
+      "utf-8",
+    ).toString("base64url");
+    const mac = createHmac("sha256", KEY).update(payloadB64).digest().toString("base64url");
+    expect(verifySession(`${payloadB64}.${mac}`, KEY, NOW, AUD).ok).toBe(false);
   });
 });
