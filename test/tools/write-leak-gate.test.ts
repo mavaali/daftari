@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { vaultAssert, vaultConsolidate } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import {
   LEAK_GATE_PREFIX,
@@ -441,44 +442,64 @@ describe("frontmatter tools thread run_id into the leak gate", () => {
   });
 
   const AGENT = "agent:claude-code";
+  const rid = (run_id?: string) => (run_id === undefined ? {} : { run_id });
   const TOOLS: Array<
-    [string, (vault: string, runId: string) => Promise<{ ok: boolean; error?: Error }>]
+    [string, (vault: string, runId?: string) => Promise<{ ok: boolean; error?: Error }>]
   > = [
     [
       "vault_set_confidence",
-      (v, run_id) =>
+      (v, run_id?: string) =>
         vaultSetConfidence(
           v,
-          { path: VEGA, confidence: "low", reason: "r", agent: AGENT, run_id },
+          { path: VEGA, confidence: "low", reason: "r", agent: AGENT, ...rid(run_id) },
           AGENT_ACCESS,
         ),
     ],
     [
       "vault_set_tier",
-      (v, run_id) =>
+      (v, run_id?: string) =>
         vaultSetTier(
           v,
-          { path: VEGA, tier: "compiled", reason: "r", agent: AGENT, run_id },
+          { path: VEGA, tier: "compiled", reason: "r", agent: AGENT, ...rid(run_id) },
           AGENT_ACCESS,
         ),
     ],
     [
       "vault_deprecate",
-      (v, run_id) =>
-        vaultDeprecate(v, { path: VEGA, reason: "r", agent: AGENT, run_id }, AGENT_ACCESS),
+      (v, run_id?: string) =>
+        vaultDeprecate(v, { path: VEGA, reason: "r", agent: AGENT, ...rid(run_id) }, AGENT_ACCESS),
     ],
     [
       "vault_supersede",
-      (v, run_id) =>
+      (v, run_id?: string) =>
         vaultSupersede(
           v,
-          { old_path: VEGA, new_path: PRIVATE_DOC, reason: "r", agent: AGENT, run_id },
+          { old_path: VEGA, new_path: PRIVATE_DOC, reason: "r", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_assert",
+      (v, run_id?: string) =>
+        vaultAssert(
+          v,
+          { path: VEGA, stance: "assert", confidence: "high", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_consolidate",
+      (v, run_id?: string) =>
+        vaultConsolidate(
+          v,
+          { path: VEGA, stance: "assert", confidence: "medium", agent: AGENT, ...rid(run_id) },
           AGENT_ACCESS,
         ),
     ],
     [
       "vault_promote",
-      (v, run_id) => vaultPromote(v, { path: DRAFT, agent: AGENT, run_id }, AGENT_ACCESS),
+      (v, run_id?: string) =>
+        vaultPromote(v, { path: DRAFT, agent: AGENT, ...rid(run_id) }, AGENT_ACCESS),
     ],
   ];
 
@@ -487,6 +508,12 @@ describe("frontmatter tools thread run_id into the leak gate", () => {
       const r = await call(sharedVault, `run-clean-${name}`);
       if (!r.ok) throw r.error;
       expect(r.ok).toBe(true);
+    });
+
+    it(`${name}: refused with no run_id (agent caller, fail-closed)`, async () => {
+      const r = await call(sharedVault);
+      expect(r.ok).toBe(false);
+      expect(r.error?.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
     });
 
     it(`${name}: refused under a run_id that read a private source`, async () => {
