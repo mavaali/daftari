@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).
+
 ## [3.16.0] - 2026-10-03
 
 ### Added
