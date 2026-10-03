@@ -16,11 +16,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
+import { vaultAssert, vaultConsolidate } from "../../src/tools/positions.js";
 import { vaultRead } from "../../src/tools/read.js";
 import {
   LEAK_GATE_PREFIX,
   vaultAppend,
+  vaultDeprecate,
+  vaultPromote,
   vaultSetConfidence,
+  vaultSetTier,
+  vaultSupersede,
   vaultWrite,
 } from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
@@ -392,4 +397,131 @@ describe("write-time leak gate (U3)", () => {
     expect(append.error.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
     expect(append.error.message).not.toContain(PRIVATE_DOC);
   });
+});
+
+describe("frontmatter tools thread run_id into the leak gate", () => {
+  let privateVault: string;
+  let sharedVault: string;
+  let ledgerDir: string;
+  let ledgerPath: string;
+  const VEGA = "competitive-intel/vega-insight-positioning.md";
+  const DRAFT = "pricing/draft-note.md";
+
+  function configureVault(vault: string, yaml: string): void {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(configPath(vault), yaml);
+  }
+
+  beforeEach(async () => {
+    privateVault = makeTempVault();
+    sharedVault = makeTempVault();
+    ledgerDir = mkdtempSync(join(tmpdir(), "daftari-leak-gate-fm-"));
+    ledgerPath = join(ledgerDir, "leak-ledger.jsonl");
+    configureVault(
+      privateVault,
+      `visibility: private\nleak_gate:\n  session_ledger_path: "${ledgerPath}"\n`,
+    );
+    configureVault(
+      sharedVault,
+      `visibility: shared\nleak_gate:\n  session_ledger_path: "${ledgerPath}"\n  mode: refuse\n`,
+    );
+    // Operator write (no AccessContext) seeds a draft for vault_promote.
+    const seeded = await vaultWrite(sharedVault, {
+      path: DRAFT,
+      body: "# Draft\n\nA draft note.\n",
+      frontmatter: newFrontmatter(),
+      agent: "agent:seed",
+    });
+    if (!seeded.ok) throw seeded.error;
+  });
+
+  afterEach(() => {
+    cleanupVault(privateVault);
+    cleanupVault(sharedVault);
+    rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  const AGENT = "agent:claude-code";
+  const rid = (run_id?: string) => (run_id === undefined ? {} : { run_id });
+  const TOOLS: Array<
+    [string, (vault: string, runId?: string) => Promise<{ ok: boolean; error?: Error }>]
+  > = [
+    [
+      "vault_set_confidence",
+      (v, run_id?: string) =>
+        vaultSetConfidence(
+          v,
+          { path: VEGA, confidence: "low", reason: "r", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_set_tier",
+      (v, run_id?: string) =>
+        vaultSetTier(
+          v,
+          { path: VEGA, tier: "compiled", reason: "r", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_deprecate",
+      (v, run_id?: string) =>
+        vaultDeprecate(v, { path: VEGA, reason: "r", agent: AGENT, ...rid(run_id) }, AGENT_ACCESS),
+    ],
+    [
+      "vault_supersede",
+      (v, run_id?: string) =>
+        vaultSupersede(
+          v,
+          { old_path: VEGA, new_path: PRIVATE_DOC, reason: "r", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_assert",
+      (v, run_id?: string) =>
+        vaultAssert(
+          v,
+          { path: VEGA, stance: "assert", confidence: "high", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_consolidate",
+      (v, run_id?: string) =>
+        vaultConsolidate(
+          v,
+          { path: VEGA, stance: "assert", confidence: "medium", agent: AGENT, ...rid(run_id) },
+          AGENT_ACCESS,
+        ),
+    ],
+    [
+      "vault_promote",
+      (v, run_id?: string) =>
+        vaultPromote(v, { path: DRAFT, agent: AGENT, ...rid(run_id) }, AGENT_ACCESS),
+    ],
+  ];
+
+  for (const [name, call] of TOOLS) {
+    it(`${name}: allowed under a run_id that read nothing private`, async () => {
+      const r = await call(sharedVault, `run-clean-${name}`);
+      if (!r.ok) throw r.error;
+      expect(r.ok).toBe(true);
+    });
+
+    it(`${name}: refused with no run_id (agent caller, fail-closed)`, async () => {
+      const r = await call(sharedVault);
+      expect(r.ok).toBe(false);
+      expect(r.error?.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
+    });
+
+    it(`${name}: refused under a run_id that read a private source`, async () => {
+      const read = await vaultRead(privateVault, PRIVATE_DOC, undefined, `run-dirty-${name}`);
+      expect(read.ok).toBe(true);
+      const r = await call(sharedVault, `run-dirty-${name}`);
+      expect(r.ok).toBe(false);
+      expect(r.error?.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
+    });
+  }
 });
