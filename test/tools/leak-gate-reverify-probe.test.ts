@@ -1,4 +1,4 @@
-// ADVERSARIAL RE-VERIFY probes (throwaway, added for the fix-round audit).
+// ADVERSARIAL RE-VERIFY probes — kept as a permanent regression suite.
 // Distinct from write-leak-gate-redteam-probe.test.ts: these target the NEW
 // surfaces the fix round introduced — merge run_id parity, mode:off/warn
 // behavior of merge, over-refusal regressions from FIX 2, target-vs-source

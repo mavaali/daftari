@@ -308,7 +308,16 @@ async function annotateAndLogServedHits(
         visibility: cfg.value.visibility,
         source_vault: sourceVaultId(vaultRoot),
       }));
-      await recordLeakLedgerEntries(ledgerPath, leakEntries);
+      const appended = await recordLeakLedgerEntries(ledgerPath, leakEntries);
+      if (!appended.ok) {
+        return err(
+          new Error(
+            `cannot serve this search: leak_gate is active on this vault and the ` +
+              `leak ledger append failed (${appended.error.message}) — refusing ` +
+              "rather than letting a private hit go unrecorded",
+          ),
+        );
+      }
     }
   }
   return ok(undefined);

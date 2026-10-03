@@ -7,7 +7,7 @@
 // test/curation/leak-ledger.test.ts; this file only proves the two tools
 // wire into it correctly.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,9 +27,8 @@ describe("leak-ledger instrumentation", () => {
     ledgerDir = mkdtempSync(join(tmpdir(), "daftari-leak-ledger-dst-"));
     ledgerPath = join(ledgerDir, "leak-ledger.jsonl");
     mkdirSync(join(vault, ".daftari"), { recursive: true });
-    // mode: refuse — an explicit opt-in. Since FIX 3, appending is gated on
-    // the gate being active (mode !== "off"); leaving mode unset here would
-    // silently stop testing the append path at all.
+    // mode: refuse — explicit, though a private vault with no mode now
+    // defaults to refuse too. Appending is gated on mode !== "off" (FIX 3).
     writeFileSync(
       configPath(vault),
       `visibility: private\nleak_gate:\n  session_ledger_path: "${ledgerPath}"\n  mode: refuse\n`,
@@ -140,5 +139,39 @@ describe("leak-ledger instrumentation", () => {
     expect(log.ok).toBe(true);
     if (!log.ok) return;
     expect(log.value.length).toBe(0);
+  });
+  it("vault_read REFUSES when the ledger file itself is unwritable (append fails)", async () => {
+    // Directory writable, file read-only: ensureLedgerWritable passes, the
+    // append throws. Serving the read anyway would leave it un-journaled and a
+    // later shared write under this run_id would see count 0 and be allowed.
+    writeFileSync(ledgerPath, "");
+    chmodSync(ledgerPath, 0o444);
+    try {
+      const result = await vaultRead(
+        vault,
+        "competitive-intel/aurora-pipelines-vs-helios-connect.md",
+        undefined,
+        "run-append-fail",
+      );
+      expect(result.ok).toBe(false);
+    } finally {
+      chmodSync(ledgerPath, 0o644);
+    }
+  });
+
+  it("vault_search REFUSES when the ledger file itself is unwritable (append fails)", async () => {
+    const reindexed = await vaultReindex(vault);
+    expect(reindexed.ok).toBe(true);
+    writeFileSync(ledgerPath, "");
+    chmodSync(ledgerPath, 0o444);
+    try {
+      const result = await vaultSearch(vault, {
+        query: "Helios compute credit consumption pricing",
+        run_id: "run-append-fail-search",
+      });
+      expect(result.ok).toBe(false);
+    } finally {
+      chmodSync(ledgerPath, 0o644);
+    }
   });
 });

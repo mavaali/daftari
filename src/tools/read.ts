@@ -403,13 +403,25 @@ export async function vaultRead(
           ),
         );
       }
-      await recordLeakLedgerEntry(ledgerPath, {
+      const appended = await recordLeakLedgerEntry(ledgerPath, {
         tool: "vault_read",
         run_id: runId,
         ...(access?.user != null ? { principal: access.user } : {}),
         visibility: cfg.value.visibility,
         source_vault: sourceVaultId(vaultRoot),
       });
+      // A writable directory doesn't guarantee the append lands (read-only
+      // file, full disk) — a failed append must refuse just like an
+      // unwritable directory, or the read goes un-journaled.
+      if (!appended.ok) {
+        return err(
+          new Error(
+            `cannot serve this read: leak_gate is active on this vault and the ` +
+              `leak ledger append failed (${appended.error.message}) — refusing ` +
+              "rather than letting a private read go unrecorded",
+          ),
+        );
+      }
     }
   }
 
