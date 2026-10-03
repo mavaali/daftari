@@ -231,7 +231,7 @@ describe("daftari eval --transport", () => {
   it("exits 2 when --transport openrouter is given without OPENROUTER_API_KEY", async () => {
     const code = await runEval(["run", "--transport", "openrouter", "--questions", "qs-x"]);
     expect(code).toBe(2);
-    expect(stderrText()).toContain("OPENROUTER_API_KEY required");
+    expect(stderrText()).toContain("OPENROUTER_API_KEY env var is required");
   });
 
   it("exits 2 on a malformed --transport value instead of billing a default", async () => {
@@ -244,14 +244,14 @@ describe("daftari eval --transport", () => {
     delete process.env.ANTHROPIC_API_KEY;
     const code = await runEval(["run", "--questions", "qs-x"]);
     expect(code).toBe(2);
-    expect(stderrText()).toContain("ANTHROPIC_API_KEY required");
+    expect(stderrText()).toContain("ANTHROPIC_API_KEY env var is required");
   });
 
   it("honors the DAFTARI_LLM_TRANSPORT env fallback", async () => {
     process.env.DAFTARI_LLM_TRANSPORT = "openrouter";
     const code = await runEval(["score", "--results", "r-x"]);
     expect(code).toBe(2);
-    expect(stderrText()).toContain("OPENROUTER_API_KEY required");
+    expect(stderrText()).toContain("OPENROUTER_API_KEY env var is required");
   });
 });
 

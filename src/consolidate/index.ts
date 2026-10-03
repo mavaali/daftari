@@ -27,6 +27,7 @@ import {
   type LlmTransport,
   resolveTransport,
 } from "../eval/llm-openrouter.js";
+import { createTransportClient } from "../eval/transport.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
@@ -157,15 +158,7 @@ const VALID_MODES: ReadonlySet<string> = new Set(["scan", "birth", "revision", "
 // so a missing key fails fast with a clear message rather than the client's
 // terse internal throw.
 function constructLlm(transport: LlmTransport): Result<LlmClient, Error> {
-  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-  if (!process.env[keyVar]) {
-    return err(new Error(`${keyVar} env var is required (transport: ${transport})`));
-  }
-  try {
-    return ok(transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient());
-  } catch (e) {
-    return err(e instanceof Error ? e : new Error(String(e)));
-  }
+  return createTransportClient(transport);
 }
 
 export async function runConsolidate(argv: string[]): Promise<number> {

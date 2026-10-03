@@ -55,6 +55,13 @@ export interface DistillSourceState {
   emitted_claim_keys?: string[];
   /** Exact failed remainder from an incomplete emit; authoritative on retry. */
   pending_claims?: ExtractedClaim[];
+  /**
+   * Per-scope emit hashes (83b1). A scoped pass (e.g. `--sender assistant`)
+   * distills a different slice of the same file, so it keeps its own hash here
+   * instead of sharing content_hash — otherwise the second sender's pass
+   * matches the first's hash and no-ops. The landed `claims` map stays shared.
+   */
+  scope_hashes?: Record<string, string>;
 }
 
 export interface DistillState {
@@ -212,6 +219,11 @@ export interface DistillUpsertInput {
   collection?: string;
   /** Injectable proposal writer used to verify atomic retry behavior. */
   proposeClaims?: typeof proposeAllClaims;
+  /**
+   * Optional idempotency scope within the source (83b1) — the `--sender`
+   * filter. Scoped passes over the same file are tracked independently.
+   */
+  scope?: string;
 }
 
 export interface DistillUpsertOutcome {
@@ -247,9 +259,13 @@ export async function distillUpsert(
 
   const state = readDistillState(vaultRoot);
   const prior = state.sources[input.sourceId];
-  const contentHash = sourceContentHash(input.sourceContent);
+  const scope = input.scope;
+  const contentHash = sourceContentHash(
+    scope ? `${scope}\u0000${input.sourceContent}` : input.sourceContent,
+  );
+  const priorHash = scope ? prior?.scope_hashes?.[scope] : prior?.content_hash;
 
-  if (prior !== undefined && prior.content_hash === contentHash) {
+  if (prior !== undefined && priorHash === contentHash) {
     return ok({
       noop: true,
       skipped: [],
@@ -327,6 +343,7 @@ export async function distillUpsert(
       pending_content_hash: contentHash,
       emitted_claim_keys: [...emittedClaimKeys].sort(),
       pending_claims: toPropose.filter((claim) => failedClaimKeys.has(claim.claim_key)),
+      ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
     };
     const wrote = writeDistillState(vaultRoot, state);
     return ok({
@@ -343,10 +360,17 @@ export async function distillUpsert(
   }
 
   // Advance the emit clock; the landed map only moves via recordLandedClaim.
-  state.sources[input.sourceId] = {
-    content_hash: contentHash,
-    claims: prior?.claims ?? {},
-  };
+  state.sources[input.sourceId] = scope
+    ? {
+        content_hash: prior?.content_hash ?? "",
+        claims: prior?.claims ?? {},
+        scope_hashes: { ...prior?.scope_hashes, [scope]: contentHash },
+      }
+    : {
+        content_hash: contentHash,
+        claims: prior?.claims ?? {},
+        ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
+      };
   const wrote = writeDistillState(vaultRoot, state);
 
   return ok({

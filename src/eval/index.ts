@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { generateQuestions } from "./generate.js";
 import { createAnthropicClient, type LlmClient } from "./llm.js";
-import { createOpenRouterClient, resolveTransport } from "./llm-openrouter.js";
+import { resolveTransport } from "./llm-openrouter.js";
 import { PROMPT_VERSION } from "./prompts.js";
 import { type DirPruneResult, type PruneRules, parseOlderThan, prune } from "./prune.js";
 import { runAnswerer } from "./run.js";
@@ -23,6 +23,7 @@ import {
   writeScore,
 } from "./storage.js";
 import { sampleSubgraph } from "./subgraph.js";
+import { createTransportClient } from "./transport.js";
 import {
   type EvalRun,
   type Grade,
@@ -162,7 +163,7 @@ interface EvalLlm {
   defaultModel: string;
   // Kept so the one-shot flow can forward the resolved transport to the
   // score stage it invokes in-process.
-  transport: "anthropic" | "openrouter";
+  transport: "anthropic" | "openrouter" | "ollama";
 }
 
 // Artifact ids double as filenames (results/<id>.json, scores/<id>.json), so
@@ -177,17 +178,13 @@ function resolveEvalLlm(argv: string[]): Result<EvalLlm, Error> {
   const transportRes = resolveTransport(flag(argv, "transport"));
   if (!transportRes.ok) return transportRes;
   const transport = transportRes.value;
-  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-  if (!process.env[keyVar]) return err(new Error(`${keyVar} required`));
-  try {
-    return ok({
-      client: transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient(),
-      defaultModel: transport === "openrouter" ? DEFAULT_MODEL_OPENROUTER : DEFAULT_MODEL,
-      transport,
-    });
-  } catch (e) {
-    return err(e instanceof Error ? e : new Error(String(e)));
-  }
+  const clientRes = createTransportClient(transport);
+  if (!clientRes.ok) return clientRes;
+  return ok({
+    client: clientRes.value,
+    defaultModel: transport === "anthropic" ? DEFAULT_MODEL : DEFAULT_MODEL_OPENROUTER,
+    transport,
+  });
 }
 
 async function runGenerate(argv: string[]): Promise<number> {

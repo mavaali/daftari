@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Cross-vault private→shared leak gate** (opt-in, default off) — a `visibility: private|shared` vault flag and a `leak_gate.mode: refuse|warn|off` block. In `refuse`, a write to a `shared` vault is blocked when the same agent run (`run_id`) read a `private`-visibility source, correlated via a cross-process, run_id-keyed session ledger (no document paths stored). Covers `vault_write`/`append`/frontmatter tools and `vault_merge`; fail-closed (run_id-less agent write, unreadable ledger, or un-journalable private read all deny). Documented limitations in `docs/leak-gate.md` (rephrase laundering + single-host ledger are out of scope).
 
+## [3.15.0] - 2026-09-29
+
+### Added
+
+- **Local `ollama` LLM transport** — `--transport ollama` (or `DAFTARI_LLM_TRANSPORT=ollama`) runs distill/sleep/consolidate/eval against an OpenAI-compatible server on this machine (default `http://127.0.0.1:11434/v1`, override `DAFTARI_OLLAMA_BASE_URL`). Loopback-only by construction: an off-host base URL is refused, never honored — the transport's guarantee is that source text never leaves the box. No API key needed. Distill receipts record `provider: "ollama"`.
+
+### Fixed
+
+- **Distill dropped every assistant-side claim** — a `--sender user` pass then a `--sender assistant` pass over the same session file shared one whole-file content hash, so the second pass matched the first and returned `noop` after already paying for extraction. Sender-scoped passes now keep their own hash (`scope_hashes`) on the same source entry; the landed-claim map stays shared. Unscoped callers are unchanged.
+- **A new transport could silently bill the Anthropic key** — four copies of an `openrouter ? … : anthropic` ternary (distill, sleep, consolidate, eval) are replaced by one `createTransportClient`, so an unhandled transport can no longer fall through to Anthropic.
+
+### Changed
+
+- **OpenRouter requests ask for zero data retention** — every OpenRouter call sends `provider: { zdr: true }`, routing only to ZDR endpoints (Haiku 4.5 → Amazon Bedrock / Google). A model with no ZDR endpoint now errors ("No endpoints found matching your data policy") instead of falling back to a retaining provider.
+
 ## [3.14.0] - 2026-09-16
 
 ### Added
