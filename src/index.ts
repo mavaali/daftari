@@ -126,9 +126,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   setGraphExpandConfig(config.value.search.graphExpand);
 
   // Resolve the access identity. With no --role the server runs as the
-  // deny-all guest; an unknown role name resolves the same way.
+  // config's default_role (kg64 — `--init` scaffolds admin for local use), else
+  // the deny-all guest; an unknown role name resolves to the guest too.
   const user = parseFlag(argv, "user") ?? "guest";
-  const roleName = parseFlag(argv, "role") ?? GUEST_ROLE;
+  const roleName = parseFlag(argv, "role") ?? config.value.defaultRole ?? GUEST_ROLE;
   const access = resolveAccess(config.value, user, roleName);
   if (access.role === null && roleName !== GUEST_ROLE) {
     process.stderr.write(
