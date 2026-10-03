@@ -23,7 +23,7 @@ leak_gate:
   session_ledger_path: ~/.daftari/leak-ledger.jsonl   # optional
 ```
 
-- **The engine default is `mode: "off"` — the gate is fully inert and writes nothing to the ledger** unless a deployment opts in. A household deployment sets `visibility` on each vault and `leak_gate.mode: refuse` on the shared vault. This keeps the gate from affecting single-vault / non-household installs.
+- **The engine default is `mode: "off"` — the gate is fully inert and writes nothing to the ledger** unless a deployment opts in. A household deployment sets `visibility` on each vault and `leak_gate.mode: refuse` on the shared vault. A `visibility: private` vault with no `mode` set defaults to `refuse` — its own writes are never gated, so this only means its reads are journaled for the shared vault's gate to see. An explicit `mode: off` on a private vault opts it out. Default visibility is `shared`, so single-vault / non-household installs stay inert.
 - `warn` lets the write land and attaches a `leak_warning` advisory (for calibration before turning on `refuse`).
 
 ## Honest limitations (what it does NOT catch)

@@ -122,7 +122,8 @@ export type LeakGateMode = (typeof LEAK_GATE_MODES)[number];
 
 export interface LeakGateConfig {
   sessionLedgerPath?: string;
-  // Always populated once the block is validated (default "refuse") — the
+  // Always populated once the block is validated (default "off", or "refuse"
+  // on a `visibility: private` vault — see validateLeakGate) — the
   // gate itself (write.ts) reads this directly rather than re-defaulting.
   mode: LeakGateMode;
 }
@@ -1396,15 +1397,23 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
 const RECOGNISED_LEAK_GATE_KEYS = ["session_ledger_path", "mode"] as const;
 const DEFAULT_LEAK_GATE_MODE: LeakGateMode = "off";
 
-function validateLeakGate(raw: unknown): Result<LeakGateConfig, Error> {
-  if (raw === undefined) return ok({ mode: DEFAULT_LEAK_GATE_MODE });
+// A private vault defaults to an active mode: its own writes are never gated
+// (checkLeakGate only gates shared vaults), but its reads must reach the ledger
+// or a shared vault in `refuse` sees nothing and allows every write. An explicit
+// `mode: off` still opts out.
+function validateLeakGate(
+  raw: unknown,
+  visibility: VaultVisibility,
+): Result<LeakGateConfig, Error> {
+  const defaultMode: LeakGateMode = visibility === "private" ? "refuse" : DEFAULT_LEAK_GATE_MODE;
+  if (raw === undefined) return ok({ mode: defaultMode });
   const mapping = requireMapping(raw, "'leak_gate'");
   if (!mapping.ok) return mapping;
   const obj = mapping.value;
   const known = rejectUnknownKeys(obj, RECOGNISED_LEAK_GATE_KEYS, "leak_gate");
   if (!known.ok) return known;
 
-  let mode: LeakGateMode = DEFAULT_LEAK_GATE_MODE;
+  let mode: LeakGateMode = defaultMode;
   if (obj.mode !== undefined) {
     if (
       typeof obj.mode !== "string" ||
@@ -2274,7 +2283,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     visibility = root.visibility as VaultVisibility;
   }
 
-  const leakGateConfig = validateLeakGate(root.leak_gate);
+  const leakGateConfig = validateLeakGate(root.leak_gate, visibility);
   if (!leakGateConfig.ok) {
     return err(new Error(`malformed config: ${leakGateConfig.error.message}`));
   }

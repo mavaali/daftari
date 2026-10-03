@@ -127,6 +127,34 @@ describe("write-time leak gate (U3)", () => {
     expect(rejected?.reason).not.toContain(PRIVATE_DOC);
   });
 
+  it("refuses under the documented recipe: refuse on the shared vault only, private vault at default mode", async () => {
+    // docs/leak-gate.md: a household sets `visibility` on each vault and
+    // `mode: refuse` on the SHARED vault. The private vault's mode stays at the
+    // engine default ("off") — its private reads must still be journaled.
+    configureVault(
+      privateVault,
+      `visibility: private\nleak_gate:\n  session_ledger_path: "${ledgerPath}"\n`,
+    );
+    const readResult = await vaultRead(privateVault, PRIVATE_DOC, undefined, "run-recipe-1");
+    expect(readResult.ok).toBe(true);
+
+    const write = await vaultWrite(
+      sharedVault,
+      {
+        path: "pricing/new-note.md",
+        body: "# Laundered\n\nShould never land.\n",
+        frontmatter: newFrontmatter(),
+        agent: "agent:claude-code",
+        run_id: "run-recipe-1",
+      },
+      AGENT_ACCESS,
+    );
+
+    expect(write.ok).toBe(false);
+    if (write.ok) return;
+    expect(write.error.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
+  });
+
   it("allows a shared write when this run read nothing private", async () => {
     const write = await vaultWrite(
       sharedVault,
