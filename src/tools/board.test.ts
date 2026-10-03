@@ -194,6 +194,8 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
     holderAliases: {},
     shadowMode: false,
     shadowModeSet: false,
+    visibility: "shared",
+    leakGate: { mode: "refuse" },
     gitDir: undefined,
     lintVoice: "plain",
     tensionScan: {
