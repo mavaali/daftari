@@ -120,7 +120,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
     );
 
     const targetAbs = join(sharedVault, "pricing/leaked-via-merge.md");
-    console.log("[VECTOR-1] vault_merge ok?", merged.ok, "; target exists?", existsSync(targetAbs));
     expect(merged.ok).toBe(false);
     if (!merged.ok) expect(merged.error.message).toContain(LEAK_GATE_PREFIX);
     expect(existsSync(targetAbs)).toBe(false);
@@ -170,10 +169,7 @@ describe("RED-TEAM PROBE: leak gate", () => {
 
     try {
       const r = await vaultRead(privateVault, PRIVATE_DOC, AGENT_ACCESS, "run-failopen");
-      console.log("[VECTOR-3] gated private read refused when ledger unwritable?", !r.ok);
       expect(r.ok).toBe(false);
-      const recorded = existsSync(lockedLedger);
-      console.log("[VECTOR-3] ledger file created?", recorded);
 
       // Since the private read never landed, a shared write under the SAME
       // run_id has nothing to correlate against either way — but the point
@@ -204,7 +200,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
         },
         AGENT_ACCESS,
       );
-      console.log("[VECTOR-3] shared write ok?", w.ok);
       expect(w.ok).toBe(true);
     } finally {
       chmodSync(lockedDir, 0o755);
@@ -225,7 +220,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
     const r = await vaultRead(privateVault, PRIVATE_DOC, AGENT_ACCESS, "run-modeoff");
     expect(r.ok).toBe(true);
     const existsWhenOff = existsSync(ledgerPath);
-    console.log("[VECTOR-6] ledger exists with mode off?", existsWhenOff);
     expect(existsWhenOff).toBe(false);
 
     // Private vault opts IN (mode: refuse): an entry is recorded, but it
@@ -238,10 +232,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
     expect(r2.ok).toBe(true);
     const exists = existsSync(ledgerPath);
     const contents = exists ? readFileSync(ledgerPath, "utf-8") : "";
-    console.log(
-      "[VECTOR-6] ledger records the private doc PATH when active?",
-      contents.includes(PRIVATE_DOC),
-    );
     expect(exists).toBe(true);
     expect(contents).not.toContain(PRIVATE_DOC);
     expect(contents).not.toContain("aurora-pipelines-vs-helios-connect");
@@ -275,7 +265,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[VECTOR-2] no-run_id write refused?", !w.ok);
     expect(w.ok).toBe(false);
   });
 
@@ -310,7 +299,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
     );
     expect(w.ok).toBe(false);
     if (!w.ok) {
-      console.log("[VECTOR-5] refusal reason:", w.error.message);
       expect(w.error.message).not.toContain("aurora");
       expect(w.error.message).not.toContain(PRIVATE_DOC);
     }
@@ -320,7 +308,6 @@ describe("RED-TEAM PROBE: leak gate", () => {
     const prov = await readProvenanceLog(sharedVault);
     if (prov.ok) {
       const blob = JSON.stringify(prov.value);
-      console.log("[VECTOR-4] provenance rejected_leak present?", blob.includes("rejected_leak"));
       expect(blob).not.toContain(PRIVATE_DOC);
     }
   });

@@ -113,7 +113,7 @@ export type VaultVisibility = (typeof VAULT_VISIBILITIES)[number];
 // vault-relative setting like everything else in this file — it defaults to
 // an OS-level location (see leak-ledger.ts's defaultLeakLedgerPath) and this
 // key only overrides that default.
-// U3: write-time enforcement mode. "refuse" (default) blocks a shared write
+// U3: write-time enforcement mode. "refuse" blocks a shared write
 // that a run's private reads implicate, fail-closed on an unreadable ledger.
 // "warn" lands the write and attaches an advisory (WriteResult.leak_warning)
 // instead of blocking. "off" disables the gate entirely.

@@ -17,7 +17,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readProvenanceLog } from "../../src/curation/provenance.js";
 import { vaultRead } from "../../src/tools/read.js";
-import { LEAK_GATE_PREFIX, vaultAppend, vaultWrite } from "../../src/tools/write.js";
+import {
+  LEAK_GATE_PREFIX,
+  vaultAppend,
+  vaultSetConfidence,
+  vaultWrite,
+} from "../../src/tools/write.js";
 import { configPath } from "../../src/utils/config.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
@@ -129,8 +134,8 @@ describe("write-time leak gate (U3)", () => {
 
   it("refuses under the documented recipe: refuse on the shared vault only, private vault at default mode", async () => {
     // docs/leak-gate.md: a household sets `visibility` on each vault and
-    // `mode: refuse` on the SHARED vault. The private vault's mode stays at the
-    // engine default ("off") — its private reads must still be journaled.
+    // `mode: refuse` on the SHARED vault only. The private vault sets no `mode`,
+    // so it takes the private default ("refuse") and its reads are journaled.
     configureVault(
       privateVault,
       `visibility: private\nleak_gate:\n  session_ledger_path: "${ledgerPath}"\n`,
@@ -153,6 +158,30 @@ describe("write-time leak gate (U3)", () => {
     expect(write.ok).toBe(false);
     if (write.ok) return;
     expect(write.error.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
+  });
+
+  it("refuses an agent frontmatter write (vault_set_confidence) on a refuse-mode shared vault", async () => {
+    // Frontmatter tools route through performFrontmatterWrite's gate but take no
+    // run_id, so an agent caller cannot be checked against the ledger — the gate
+    // fails closed, exactly like a run_id-less vault_write.
+    const before = await vaultRead(sharedVault, PRIVATE_DOC);
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    const target = before.value.frontmatter.confidence === "high" ? "low" : "high";
+
+    const result = await vaultSetConfidence(
+      sharedVault,
+      { path: PRIVATE_DOC, confidence: target, reason: "probe", agent: "agent:claude-code" },
+      AGENT_ACCESS,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message.startsWith(LEAK_GATE_PREFIX)).toBe(true);
+    const after = await vaultRead(sharedVault, PRIVATE_DOC);
+    expect(after.ok && after.value.frontmatter.confidence).toBe(
+      before.value.frontmatter.confidence,
+    );
   });
 
   it("allows a shared write when this run read nothing private", async () => {

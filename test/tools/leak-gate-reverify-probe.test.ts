@@ -103,7 +103,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[ATTACK-1] vault_write under R2 ok?", w.ok);
     expect(w.ok).toBe(true);
 
     // vault_merge under R2 — must have the SAME outcome (lands). Parity, not worse.
@@ -119,7 +118,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[ATTACK-1] vault_merge under R2 ok?", m.ok, "; parity with write:", m.ok === w.ok);
     expect(m.ok).toBe(true);
     expect(m.ok).toBe(w.ok); // parity
     expect(existsSync(join(sharedVault, "pricing/merge-r2.md"))).toBe(true);
@@ -146,7 +144,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[ATTACK-4b] merge with mode off ok?", m.ok);
     expect(m.ok).toBe(true);
     expect(existsSync(join(sharedVault, "pricing/merge-off.md"))).toBe(true);
   });
@@ -183,7 +180,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[ATTACK-warn] write ok?", w.ok, "merge ok?", m.ok);
     expect(w.ok).toBe(true);
     expect(m.ok).toBe(true);
   });
@@ -201,7 +197,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     chmodSync(lockedDir, 0o555);
     try {
       const r = await vaultRead(privateVault, PRIVATE_DOC, AGENT_ACCESS, "Roff2");
-      console.log("[ATTACK-4a] mode:off read served despite unwritable ledger?", r.ok);
       expect(r.ok).toBe(true);
       expect(existsSync(lockedLedger)).toBe(false);
     } finally {
@@ -236,17 +231,10 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[ATTACK-3inv] clean shared write (no private read) ok?", w.ok);
     expect(w.ok).toBe(true);
 
     // a gated private read with the absent-but-creatable ledger dir SUCCEEDS.
     const r = await vaultRead(privateVault, PRIVATE_DOC, AGENT_ACCESS, "Rcreate");
-    console.log(
-      "[ATTACK-3inv] gated read created ledger dir & served?",
-      r.ok,
-      "; ledger exists?",
-      existsSync(freshLedger),
-    );
     expect(r.ok).toBe(true);
     expect(existsSync(freshLedger)).toBe(true);
   });
@@ -270,7 +258,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
       },
       AGENT_ACCESS,
     );
-    console.log("[ATTACK-4d] merge into private vault ok?", m.ok);
     expect(m.ok).toBe(true);
     expect(existsSync(join(privateVault, "pricing/merge-into-private.md"))).toBe(true);
   });
@@ -285,7 +272,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     const scanned = await privateReadsForRunStrict(ledgerPath, "Rcount");
     expect(scanned.ok).toBe(true);
     if (scanned.ok) {
-      console.log("[ATTACK-4c] private-read count for Rcount:", scanned.value.count);
       expect(scanned.value.count).toBe(2);
     }
     // and the refusal reason surfaces that count (2), never a path.
@@ -302,7 +288,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     );
     expect(w.ok).toBe(false);
     if (!w.ok) {
-      console.log("[ATTACK-4c] refusal reason:", w.error.message);
       expect(w.error.message).toContain("2 private-visibility source");
       expect(w.error.message).not.toContain(PRIVATE_DOC);
       expect(w.error.message).not.toContain(PRIVATE_DOC_2);
@@ -330,7 +315,6 @@ describe("RE-VERIFY probes: leak gate fix round", () => {
     );
     expect(m.ok).toBe(false);
     if (!m.ok) {
-      console.log("[ATTACK-5] merge refusal:", m.error.message);
       expect(m.error.message).toContain(LEAK_GATE_PREFIX);
       expect(m.error.message).toContain("Rmsg");
       expect(m.error.message).not.toContain("aurora");
