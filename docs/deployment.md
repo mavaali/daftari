@@ -137,6 +137,25 @@ server:
           role: analyst
 ```
 
+### Browser board login
+
+For the `/board` UI in a browser, a password login issues a signed, HttpOnly
+session cookie:
+
+```yaml
+server:
+  auth:
+    session:
+      signing_key_env: DAFTARI_SESSION_KEY    # >= 32 bytes, random
+      credential_env: DAFTARI_BOARD_PASSWORD
+      maps_to: { user: human:alice, role: admin }
+      lifetime_hours: 12
+```
+
+A cookie is accepted only by the server that minted it: it is bound to this
+vault and to the configured `maps_to` identity. Still, **use a unique signing
+key per deployment** — never reuse one key across vaults, ports, or hosts.
+
 Daftari resolves the bearer on every request. A missing or invalid credential
 is a 401; a valid JWT whose subject is not mapped is a 403. Neither falls back
 to guest.
@@ -338,6 +357,7 @@ the list empty.
 - Define the least-privileged role each client needs.
 - Keep `ratify` off unattended agent roles.
 - Keep bearer-token values out of config and version control.
+- Give every deployment its own session signing key.
 - Terminate TLS upstream before any non-loopback bind.
 - Test a bad credential and an unmapped OAuth subject before exposing the
   service.
