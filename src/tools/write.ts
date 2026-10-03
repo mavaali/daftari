@@ -1748,6 +1748,8 @@ export async function vaultPromote(
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_promote");
   if (!agent.ok) return agent;
+  const runId = readRunId(args, "vault_promote");
+  if (!runId.ok) return runId;
   const baseVersion = readBaseVersion(args, "vault_promote");
   if (!baseVersion.ok) return baseVersion;
 
@@ -1805,6 +1807,7 @@ export async function vaultPromote(
       commitMessage: `vault_promote: ${path.value} draft→canonical by ${agent.value}`,
       baseVersion: baseVersion.value ?? target.value.contentHash,
       access,
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
     });
   };
 
@@ -1885,6 +1888,8 @@ export async function vaultDeprecate(
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_deprecate");
   if (!agent.ok) return agent;
+  const runId = readRunId(args, "vault_deprecate");
+  if (!runId.ok) return runId;
   const reason = requireString(args, "reason", "vault_deprecate");
   if (!reason.ok) return reason;
   const baseVersion = readBaseVersion(args, "vault_deprecate");
@@ -1942,6 +1947,7 @@ export async function vaultDeprecate(
         (supersededBy ? ` (superseded by ${supersededBy})` : ""),
       baseVersion: baseVersion.value ?? target.value.contentHash,
       access,
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
     });
   };
 
@@ -1977,6 +1983,8 @@ export async function vaultSetConfidence(
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_set_confidence");
   if (!agent.ok) return agent;
+  const runId = readRunId(args, "vault_set_confidence");
+  if (!runId.ok) return runId;
   const reason = requireString(args, "reason", "vault_set_confidence");
   if (!reason.ok) return reason;
   const confidence = requireString(args, "confidence", "vault_set_confidence");
@@ -2042,6 +2050,7 @@ export async function vaultSetConfidence(
         `by ${agent.value} — ${reason.value}`,
       baseVersion: baseVersion.value ?? target.value.contentHash,
       access,
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
     });
   };
 
@@ -2072,6 +2081,8 @@ export async function vaultSetTier(
   if (!path.ok) return path;
   const agent = requireString(args, "agent", "vault_set_tier");
   if (!agent.ok) return agent;
+  const runId = readRunId(args, "vault_set_tier");
+  if (!runId.ok) return runId;
   const reason = requireString(args, "reason", "vault_set_tier");
   if (!reason.ok) return reason;
   const tier = requireString(args, "tier", "vault_set_tier");
@@ -2140,6 +2151,7 @@ export async function vaultSetTier(
         `by ${agent.value} — ${reason.value}`,
       baseVersion: baseVersion.value ?? target.value.contentHash,
       access,
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
     });
   };
 
@@ -2169,6 +2181,8 @@ export async function vaultSupersede(
   if (!newPath.ok) return newPath;
   const agent = requireString(args, "agent", "vault_supersede");
   if (!agent.ok) return agent;
+  const runId = readRunId(args, "vault_supersede");
+  if (!runId.ok) return runId;
   const baseVersion = readBaseVersion(args, "vault_supersede");
   if (!baseVersion.ok) return baseVersion;
   const boundary = readBoundary(args, "vault_supersede");
@@ -2245,6 +2259,7 @@ export async function vaultSupersede(
       `by ${agent.value}${reason ? ` — ${reason}` : ""}`,
     baseVersion: baseVersion.value,
     access,
+    ...(runId.value !== undefined ? { runId: runId.value } : {}),
   });
   if (!written.ok) return written;
   // Build the downstream dependents advisory (best-effort, never fails the write).
@@ -3285,6 +3300,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Vault-relative path of the draft document to promote",
         },
         agent: agentProperty,
+        run_id: runIdProperty,
         base_version: baseVersionProperty,
       },
       required: ["path", "agent"],
@@ -3323,6 +3339,7 @@ export const writeTools: ToolDefinition[] = [
         },
         predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
+        run_id: runIdProperty,
         base_version: baseVersionProperty,
       },
       required: ["path", "reason", "agent"],
@@ -3362,6 +3379,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Why the confidence is changing (recorded in the commit and provenance)",
         },
         agent: agentProperty,
+        run_id: runIdProperty,
         base_version: baseVersionProperty,
       },
       required: ["path", "confidence", "reason", "agent"],
@@ -3407,6 +3425,7 @@ export const writeTools: ToolDefinition[] = [
           description: "Why the tier is changing (recorded in the commit and provenance)",
         },
         agent: agentProperty,
+        run_id: runIdProperty,
         base_version: baseVersionProperty,
       },
       required: ["path", "tier", "reason", "agent"],
@@ -3447,6 +3466,7 @@ export const writeTools: ToolDefinition[] = [
         },
         predecessor_valid_until: boundaryProperty,
         agent: agentProperty,
+        run_id: runIdProperty,
         base_version: baseVersionProperty,
       },
       required: ["old_path", "new_path", "agent"],
