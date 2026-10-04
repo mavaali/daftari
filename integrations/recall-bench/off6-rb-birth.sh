@@ -59,8 +59,14 @@ else
   log "1 corpus: present"
 fi
 
-# 2. vault — the same construction the baseline used.
-if [ ! -f "$VAULT/.daftari/index.db" ]; then
+# 2. vault — the same construction the baseline used. baseline-runner starts
+# with rm -rf of the vault, so never rerun it once birth has journaled
+# verdicts; skip on its completion marker, not on the rebuildable index.db.
+if [ ! -f "$RB/baseline-summary.json" ]; then
+  if [ -e "$VAULT/.daftari/birth-trace.jsonl" ]; then
+    echo "off6: $VAULT has a birth trace but no baseline-summary.json — refusing to rebuild (it would delete paid verdicts)" >&2
+    exit 3
+  fi
   log "2 vault: building via baseline-runner"
   (cd "$HERE" && RB_CORPUS="$CORPUS" RB_OUT="$RB" node baseline-runner.mjs)
 else
