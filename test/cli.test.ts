@@ -126,6 +126,7 @@ describe("daftari --vault", () => {
       const result = await bootServer(vault, []);
       expect(result.ok).toBe(true);
       expect(result.stderr).toContain("role=admin");
+      expect(result.stderr).toContain("no --role given — using default_role 'admin'");
     } finally {
       cleanupVault(vault);
     }

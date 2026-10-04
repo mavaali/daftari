@@ -2170,7 +2170,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   let defaultRole: string | null = null;
   if (root.default_role !== undefined && root.default_role !== null) {
-    if (typeof root.default_role !== "string" || !(root.default_role in roles)) {
+    if (typeof root.default_role !== "string" || !Object.hasOwn(roles, root.default_role)) {
       return err(
         new Error(
           `malformed config: 'default_role' must name a role declared under 'roles' ` +

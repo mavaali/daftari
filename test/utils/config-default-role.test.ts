@@ -44,6 +44,12 @@ describe("loadConfig — default_role", () => {
     if (!result.ok) expect(result.error.message).toMatch(/default_role.*superuser/);
   });
 
+  it("rejects an inherited Object key (constructor/__proto__/toString)", () => {
+    for (const k of ["constructor", "__proto__", "toString"]) {
+      expect(load(`${base}default_role: ${k}\n`).ok, k).toBe(false);
+    }
+  });
+
   it("rejects a non-string value", () => {
     const result = load(`${base}default_role: true\n`);
     expect(result.ok).toBe(false);

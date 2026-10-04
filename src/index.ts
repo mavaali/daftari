@@ -129,7 +129,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // config's default_role (kg64 — `--init` scaffolds admin for local use), else
   // the deny-all guest; an unknown role name resolves to the guest too.
   const user = parseFlag(argv, "user") ?? "guest";
-  const roleName = parseFlag(argv, "role") ?? config.value.defaultRole ?? GUEST_ROLE;
+  const roleFlag = parseFlag(argv, "role");
+  const roleName = roleFlag ?? config.value.defaultRole ?? GUEST_ROLE;
+  if (roleFlag === null && config.value.defaultRole !== null) {
+    // Omitting --role is a privilege decision now — make it visible.
+    process.stderr.write(
+      `daftari: no --role given — using default_role '${config.value.defaultRole}' from config\n`,
+    );
+  }
   const access = resolveAccess(config.value, user, roleName);
   if (access.role === null && roleName !== GUEST_ROLE) {
     process.stderr.write(
