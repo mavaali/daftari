@@ -16,8 +16,11 @@
 //
 // Run with: npx vitest run test/serve/session.test.ts
 import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { signSession, verifySession } from "../../src/serve/session.js";
+import { sessionAudience, signSession, verifySession } from "../../src/serve/session.js";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "utf-8");
 const OTHER = Buffer.from("fedcba9876543210fedcba9876543210", "utf-8");
@@ -94,5 +97,22 @@ describe("session token", () => {
     ).toString("base64url");
     const mac = createHmac("sha256", KEY).update(payloadB64).digest().toString("base64url");
     expect(verifySession(`${payloadB64}.${mac}`, KEY, NOW, AUD).ok).toBe(false);
+  });
+
+  it("3p4.8: audience is a persisted per-vault random id, not a path hash", () => {
+    const a = mkdtempSync(join(tmpdir(), "daftari-aud-a-"));
+    const b = mkdtempSync(join(tmpdir(), "daftari-aud-b-"));
+    try {
+      const first = sessionAudience(a);
+      expect(first).toMatch(/^[0-9a-f]{32}$/);
+      expect(sessionAudience(a)).toBe(first); // stable across restarts
+      expect(sessionAudience(b)).not.toBe(first);
+      // Same path, fresh volume (two containers both mounting /vault): new id.
+      rmSync(join(a, ".daftari"), { recursive: true, force: true });
+      expect(sessionAudience(a)).not.toBe(first);
+    } finally {
+      rmSync(a, { recursive: true, force: true });
+      rmSync(b, { recursive: true, force: true });
+    }
   });
 });

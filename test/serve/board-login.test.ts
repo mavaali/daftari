@@ -280,7 +280,7 @@ describe("board login shim — session configured", () => {
 
   it("3p4.8: a validly-signed cookie for another vault (same key) is rejected", async () => {
     const other = signSession(
-      { user: "human:mihir", role: "admin", exp: exp(), aud: sessionAudience("/some/other/vault") },
+      { user: "human:mihir", role: "admin", exp: exp(), aud: "0".repeat(32) },
       key,
     );
     expect((await boardWith(other)).status).toBe(302);

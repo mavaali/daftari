@@ -15,7 +15,9 @@
 //     check is deterministic in tests and monotonic in production;
 //   - `aud` binds the token to one deployment (3p4.8): a cookie minted by
 //     another vault's server is rejected even if the signing key is shared.
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 export interface SessionPayload {
@@ -27,11 +29,23 @@ export interface SessionPayload {
   aud: string;
 }
 
-// The audience a server mints and accepts: a hash of its vault root. The
-// process lock allows one `serve` per vault, so the vault IS the deployment;
-// hashing keeps the filesystem path out of the cookie.
+// The audience a server mints and accepts: a random id generated once per
+// vault and kept in .daftari/session-audience (gitignored, machine-local).
+// Not derived from the path — containers that all mount at /vault would
+// otherwise share it. Created with 'wx' so concurrent first starts agree.
 export function sessionAudience(vaultRoot: string): string {
-  return createHash("sha256").update(vaultRoot).digest("hex").slice(0, 32);
+  const path = join(vaultRoot, ".daftari", "session-audience");
+  try {
+    return readFileSync(path, "utf-8").trim();
+  } catch {
+    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    try {
+      writeFileSync(path, randomBytes(16).toString("hex"), { flag: "wx", mode: 0o600 });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    return readFileSync(path, "utf-8").trim();
+  }
 }
 
 export function signSession(payload: SessionPayload, key: Buffer): string {

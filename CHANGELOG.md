@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Board session cookies are bound to their deployment** (3p4.8) — the signed session payload now carries an audience derived from the vault, and `/board` accepts a cookie only if it matches this vault and the configured `server.auth.session.maps_to` user and role. A validly-signed cookie from another deployment sharing the key is rejected. Existing board sessions are invalidated once; log in again. Docs now require a unique signing key per deployment.
+- **Board session cookies are bound to their deployment** (3p4.8) — the signed session payload now carries a per-vault random audience (`.daftari/session-audience`, gitignored, generated on first `serve`), and `/board` accepts a cookie only if it matches this vault and the configured `server.auth.session.maps_to` user and role. A validly-signed cookie from another deployment sharing the key is rejected. Existing board sessions are invalidated once; log in again. Docs now require a unique signing key per deployment.
 
 ## [3.16.0] - 2026-10-03
 
