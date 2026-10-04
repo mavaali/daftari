@@ -53,7 +53,8 @@ Usage:
 
 Server options:
   --user <username>    Identity the server runs as (default: guest)
-  --role <rolename>    RBAC role from .daftari/config.yaml (default: deny-all guest)
+  --role <rolename>    RBAC role from .daftari/config.yaml (default: the config's
+                       default_role — admin in an --init vault — else deny-all guest)
   --reindex            Rebuild the SQLite index from scratch, then exit
 
 Other:
@@ -240,7 +241,7 @@ export async function initVault(targetPath: string): Promise<number> {
       `  config:      .daftari/config.yaml\n` +
       `  examples:    3 markdown documents\n\n` +
       `Next:\n` +
-      `  npx daftari --vault ${targetPath} --user me --role admin\n`,
+      `  npx daftari --vault ${targetPath} --user me\n`,
   );
   return 0;
 }

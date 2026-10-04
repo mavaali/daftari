@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`default_role` config key; `--init` vaults default to `admin`** (kg64) — a stdio server started without `--role` now runs as the config's `default_role` instead of silently becoming the deny-all guest. `daftari --init` scaffolds `default_role: admin`, so a fresh local vault works out of the box. Existing vaults without the key keep the deny-all guest default; `daftari serve` ignores it. An undeclared role name is a malformed-config error.
+
 ## [3.16.0] - 2026-10-03
 
 ### Added
