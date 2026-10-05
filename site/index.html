@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Daftari — the long-term memory cortex for your LLM agents</title>
-<meta name="description" content="Daftari is a persistent, structured markdown vault your agents read, write, and curate over time — portable across any model. Rent the brain, own the memory.">
+<title>Daftari — rent the brain, own the memory</title>
+<meta name="description" content="Rent the brain. Own the memory. Daftari keeps what your agents learn as plain markdown in a Git repo on your disk — readable and writable by Claude Code, Claude Desktop, Cursor, or any MCP client.">
 <meta property="og:title" content="Daftari — rent the brain, own the memory">
-<meta property="og:description" content="A long-term memory cortex for LLM agents: plain markdown on your disk, under git, exposed as 27 MCP tools.">
+<meta property="og:description" content="The model is rented. The memory should be yours: plain markdown on your disk, under git, shared by every MCP client.">
 <meta property="og:url" content="https://daftari.dev">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&%23128212;</text></svg>">
@@ -137,9 +137,10 @@
     trading house who maintained the <em>daftar</em>, the bound register where every
     transaction was recorded, cross-referenced, and preserved. Corrections were
     noted, not erased. The ledger got more valuable the longer it was kept.</p>
-    <p style="margin-top:1.75rem">Daftari is the <strong>long-term memory cortex for your
-    LLM agents</strong> — a persistent, structured vault they read, write, and curate
-    over time, portable across any model. A cortex, not a clipboard.</p>
+    <p style="margin-top:1.75rem">The model is rented. The memory your agents build up —
+    decisions, conventions, what was tried and why — should be <strong>yours</strong>.
+    Daftari keeps it as plain markdown in a Git repo on your disk, and Claude Code,
+    Claude Desktop, Cursor, or any other MCP client reads and writes the same vault.</p>
 
     <div class="snippet">
       <button class="copy" onclick="copySnippet(this)">copy</button>
@@ -198,7 +199,7 @@ npx daftari --vault ./my-vault --user me --role admin</code>
   <section>
     <h2>The four layers</h2>
     <p>A directory of markdown files with YAML frontmatter, exposed to agents as
-    27 MCP tools over stdio. All four layers implement one idea — <em>resolve only
+    MCP tools over stdio or HTTP. All four layers implement one idea — <em>resolve only
     by discovery, never by invention.</em></p>
     <table class="layers">
       <tr><th>Layer</th><th>What it does</th><th>Why it matters</th></tr>
