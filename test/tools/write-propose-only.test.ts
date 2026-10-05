@@ -181,6 +181,7 @@ describe("propose-only role (#235)", () => {
         body: "# Settled\n",
         frontmatter: frontmatter({ status: "canonical", title: "Settled" }),
         agent: "human:mihir",
+        run_id: "test-propose-only-seed",
       },
       ADMIN,
     );

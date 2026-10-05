@@ -1,6 +1,6 @@
 {
   "name": "daftari",
-  "version": "3.15.0",
+  "version": "3.16.0",
   "description": "Memory you own for AI agents: a markdown + Git vault every MCP client can share, with sources, replaced beliefs, and open contradictions kept visible.",
   "mcpName": "io.github.mavaali/daftari",
   "license": "MIT",
