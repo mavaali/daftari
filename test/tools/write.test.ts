@@ -451,6 +451,7 @@ describe("write tools", () => {
           }),
           body: "# From blinkered\n\nSee [it](../sketches/hidden-sketch.md).\n",
           agent: AGENT,
+          run_id: "test-domain-warnings-blinkered",
         },
         blinkered,
       );
@@ -479,6 +480,7 @@ describe("write tools", () => {
           }),
           body: "# From sighted\n\nSee [it](../sketches/hidden-sketch.md).\n",
           agent: AGENT,
+          run_id: "test-domain-warnings-sighted",
         },
         sighted,
       );
@@ -1079,6 +1081,7 @@ describe("write tools", () => {
           body: "# Authored\n\nBy alice.\n",
           frontmatter: newFrontmatter({ title: "Authored" }),
           agent: "agent:claude-code",
+          run_id: "test-authorship",
         },
         WRITER,
       );
@@ -1882,7 +1885,7 @@ describe("vault_write foreign-position guard (U-8)", () => {
     if (!r.ok) throw r.error;
     const a = await vaultAssert(
       vault,
-      { path: DOC, stance: "dispute", confidence: "medium", agent: "b" },
+      { path: DOC, stance: "dispute", confidence: "medium", agent: "b", run_id: "test-fpg-seed" },
       BOB,
     );
     if (!a.ok) throw a.error; // pos-000 (unknown, U-12 legacy snapshot) + pos-001 (bob)
@@ -1899,6 +1902,7 @@ describe("vault_write foreign-position guard (U-8)", () => {
         body: "# G\n\nx.\n",
         frontmatter: { ...before.value.raw, positions: [] },
         agent: "agent:alice",
+        run_id: "test-fpg-drop",
       },
       ALICE,
     );
@@ -1927,7 +1931,13 @@ describe("vault_write foreign-position guard (U-8)", () => {
     }));
     const r = await vaultWrite(
       vault,
-      { path: DOC, body: "# G\n\nx.\n", frontmatter: { positions }, agent: "a" },
+      {
+        path: DOC,
+        body: "# G\n\nx.\n",
+        frontmatter: { positions },
+        agent: "a",
+        run_id: "test-fpg-edit",
+      },
       ALICE,
     );
     expect(r.ok).toBe(false);
@@ -1941,6 +1951,7 @@ describe("vault_write foreign-position guard (U-8)", () => {
         body: "# G\n\nnew body.\n",
         frontmatter: { title: "G" },
         agent: "a",
+        run_id: "test-fpg-bodyonly",
       },
       ALICE,
     );
@@ -2086,6 +2097,7 @@ describe("vault_write protects pos-000 (U-12, C-2 guard 3/4)", () => {
         body: "# L\n\nx.\n",
         frontmatter: { positions: mergedPositions },
         agent: "a",
+        run_id: "test-guard4",
       },
       ALICE,
     );
@@ -2188,7 +2200,11 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
     });
 
     const [assertResult, promoteResult] = await Promise.all([
-      vaultAssert(vault, { path, stance: "assert", confidence: "high", agent: "a" }, ALICE_WRITER),
+      vaultAssert(
+        vault,
+        { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-promote-race" },
+        ALICE_WRITER,
+      ),
       vaultPromote(vault, { path, agent: AGENT }),
     ]);
 
@@ -2224,7 +2240,11 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
     });
 
     const [assertResult, deprecateResult] = await Promise.all([
-      vaultAssert(vault, { path, stance: "assert", confidence: "high", agent: "a" }, ALICE_WRITER),
+      vaultAssert(
+        vault,
+        { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-deprecate-race" },
+        ALICE_WRITER,
+      ),
       vaultDeprecate(vault, { path, reason: "superseded elsewhere", agent: AGENT }),
     ]);
 
@@ -2257,7 +2277,11 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
     });
 
     const [assertResult, appendResult] = await Promise.all([
-      vaultAssert(vault, { path, stance: "assert", confidence: "high", agent: "a" }, ALICE_WRITER),
+      vaultAssert(
+        vault,
+        { path, stance: "assert", confidence: "high", agent: "a", run_id: "test-append-race" },
+        ALICE_WRITER,
+      ),
       vaultAppend(vault, { path, section: "## Appended\n\nConcurrent section.", agent: AGENT }),
     ]);
 
@@ -2314,7 +2338,13 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-promote-det-race",
+            },
             ALICE_WRITER,
           );
           if (!asserted.ok) throw asserted.error;
@@ -2350,7 +2380,13 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-deprecate-det-race",
+            },
             ALICE_WRITER,
           );
           if (!asserted.ok) throw asserted.error;
@@ -2382,7 +2418,13 @@ describe("defaulted base_version — no silent lost update (lifecycle tools)", (
         async () => {
           const asserted = await vaultAssert(
             vault,
-            { path, stance: "assert", confidence: "high", agent: "a" },
+            {
+              path,
+              stance: "assert",
+              confidence: "high",
+              agent: "a",
+              run_id: "test-append-det-race",
+            },
             ALICE_WRITER,
           );
           if (!asserted.ok) throw asserted.error;
