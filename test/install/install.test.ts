@@ -145,7 +145,8 @@ describe("daftari install", () => {
     expect(await runInstall(["claude-code", "--vault", bad], io("win32"))).toBe(1);
     expect(await runInstall(["vscode", "--vault", vault], io("win32"))).toBe(1);
     expect(calls).toHaveLength(0);
-    expect(err.join("")).toMatch(/cmd\.exe cannot pass safely.*MCP settings/s);
+    expect(err.join("")).toMatch(/vault path or another option.*MCP settings/s);
+    expect(err.join("")).toMatch(/code --add-mcp.*MCP: Add Server/s);
     expect(err.join("")).toMatch(/"command": "npx"/);
   });
 

@@ -71,6 +71,13 @@ start the server as a deny-all guest. Options:
 - `--print` shows the command or config change without applying it.
 - `--name <name>` registers a second vault side by side (default `daftari`).
 - `--user` / `--role` set the identity (defaults `me` / `admin`).
+- `--force` replaces an existing entry with the same name (all clients but VS Code,
+  which has no remove command).
+
+On Windows, `install vscode` prints the server definition for VS Code's
+**MCP: Add Server** command instead of running `code --add-mcp`: its JSON
+argument can't be passed safely through `cmd.exe`. The same fallback applies
+to any client if the vault path contains `"`, `%` or `!`.
 
 If the client's CLI is not on your PATH, `install` prints the exact command to
 run later. Any other MCP client takes this server definition:

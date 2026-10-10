@@ -14,10 +14,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { ok, type Result } from "../frontmatter/types.js";
 import { loadConfig } from "../utils/config.js";
 import { parseFlag } from "../utils/flags.js";
-
-type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 
 export const CLIENTS = [
   "claude-code",
@@ -70,7 +69,7 @@ Options:
   --role <role>   Role from the vault's .daftari/config.yaml (default: admin)
   --name <name>   Server name in the client (default: daftari) — use one per vault
   --print         Show the command or config change without applying it
-  --force         Replace an existing entry with the same name
+  --force         Replace an existing entry with the same name (not vscode)
 `;
 
 function serverEntry(o: Options): ServerEntry {
@@ -263,8 +262,11 @@ export async function runInstall(argv: string[], io: Io = defaultIo): Promise<nu
     // so hand over the server definition to paste into the client's MCP config.
     if (io.platform === "win32" && plan.value.args.some((a) => cmdQuote(a) === null)) {
       io.stderr(
-        "daftari install: an argument contains a character cmd.exe cannot pass safely " +
-          `(" % ! or a newline). Add this server in ${client}'s MCP settings instead:\n`,
+        client === "vscode"
+          ? "daftari install: on Windows, `code --add-mcp` takes a JSON argument that cmd.exe " +
+              "cannot pass safely. In VS Code run 'MCP: Add Server' and use this definition:\n"
+          : "daftari install: the vault path or another option contains a character cmd.exe " +
+              `cannot pass safely (" % ! or a newline). Add this server in ${client}'s MCP settings instead:\n`,
       );
       io.stderr(`${JSON.stringify({ [opts.name]: serverEntry(opts) }, null, 2)}\n`);
       return 1;
@@ -304,9 +306,6 @@ export async function runInstall(argv: string[], io: Io = defaultIo): Promise<nu
   return 0;
 }
 
-function ok<T>(value: T): Result<T> {
-  return { ok: true, value };
-}
 function fail<T>(message: string): Result<T> {
   return { ok: false, error: new Error(message) };
 }
