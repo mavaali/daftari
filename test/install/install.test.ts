@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type ExecFn, mergeJsonConfig, planInstall, runInstall } from "../../src/install/index.js";
+import {
+  cmdQuote,
+  type ExecFn,
+  mergeJsonConfig,
+  planInstall,
+  runInstall,
+} from "../../src/install/index.js";
 
 const CONFIG = `roles:
   admin:
@@ -25,10 +31,10 @@ describe("daftari install", () => {
     if (execResult === "missing") return { ok: false, missing: true };
     return execResult === "ok" ? { ok: true } : { ok: false, missing: false };
   };
-  const io = () => ({
+  const io = (platform: NodeJS.Platform = "darwin") => ({
     exec,
     home,
-    platform: "darwin" as NodeJS.Platform,
+    platform,
     stdout: (s: string) => out.push(s),
     stderr: (s: string) => err.push(s),
   });
@@ -100,7 +106,52 @@ describe("daftari install", () => {
     expect(calls[0]?.cmd).toBe("codex");
     expect(calls[0]?.args.slice(0, 4)).toEqual(["mcp", "add", "daftari", "--"]);
     expect(calls[1]?.cmd).toBe("gemini");
-    expect(calls[1]?.args.slice(0, 6)).toEqual(["mcp", "add", "-s", "user", "daftari", "npx"]);
+    // Full argv, no `--`: gemini's parser rejects `--` and passes the
+    // server's own flags through without it (checked against gemini 0.59).
+    expect(calls[1]?.args).toEqual([
+      "mcp",
+      "add",
+      "-s",
+      "user",
+      "daftari",
+      "npx",
+      "-y",
+      "daftari@latest",
+      "--vault",
+      vault,
+      "--user",
+      "me",
+      "--role",
+      "admin",
+    ]);
+  });
+
+  it("--force removes an existing entry before re-adding (exec clients)", async () => {
+    await runInstall(["claude-code", "--vault", vault, "--force"], io());
+    expect(calls.map((c) => c.args.slice(0, 2))).toEqual([
+      ["mcp", "remove"],
+      ["mcp", "add"],
+    ]);
+    expect(calls[0]?.args).toEqual(["mcp", "remove", "--scope", "user", "daftari"]);
+    calls = [];
+    await runInstall(["claude-code", "--vault", vault], io());
+    expect(calls).toHaveLength(1);
+  });
+
+  it("on Windows, refuses to pass an arg cmd.exe cannot quote safely", async () => {
+    const bad = join(home, "100%");
+    mkdirSync(join(bad, ".daftari"), { recursive: true });
+    writeFileSync(join(bad, ".daftari", "config.yaml"), CONFIG);
+    expect(await runInstall(["claude-code", "--vault", bad], io("win32"))).toBe(1);
+    expect(await runInstall(["vscode", "--vault", vault], io("win32"))).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(err.join("")).toMatch(/cmd\.exe cannot pass safely.*MCP settings/s);
+    expect(err.join("")).toMatch(/"command": "npx"/);
+  });
+
+  it("on Windows, still runs exec clients for ordinary paths", async () => {
+    expect(await runInstall(["claude-code", "--vault", vault], io("win32"))).toBe(0);
+    expect(calls).toHaveLength(1);
   });
 
   it("vscode passes a JSON server definition to `code --add-mcp`", async () => {
@@ -134,6 +185,17 @@ describe("daftari install", () => {
     const cfg = JSON.parse(readFileSync(path, "utf8"));
     expect(Object.keys(cfg.mcpServers).sort()).toEqual(["daftari", "other"]);
     expect(readFileSync(`${path}.bak`, "utf8")).toContain("other");
+  });
+
+  it("keeps the first .bak, so a later write cannot overwrite the user's original", async () => {
+    const path = join(home, ".cursor", "mcp.json");
+    mkdirSync(join(home, ".cursor"));
+    writeFileSync(path, JSON.stringify({ mcpServers: { other: { command: "x" } } }));
+    await runInstall(["cursor", "--vault", vault, "--name", "work"], io());
+    await runInstall(["cursor", "--vault", vault, "--name", "family"], io());
+    expect(Object.keys(JSON.parse(readFileSync(`${path}.bak`, "utf8")).mcpServers)).toEqual([
+      "other",
+    ]);
   });
 
   it("claude-desktop writes the macOS config path", async () => {
@@ -179,5 +241,21 @@ describe("mergeJsonConfig", () => {
   it("creates the file contents from empty", () => {
     const r = mergeJsonConfig("", "mcpServers", "daftari", entry, false);
     expect(r.ok && JSON.parse(r.value.text).mcpServers.daftari).toEqual(entry);
+  });
+});
+
+describe("cmdQuote", () => {
+  it("wraps args in quotes so cmd.exe metacharacters stay literal", () => {
+    expect(cmdQuote("C:\\Users\\Jane Doe\\notes & calc")).toBe(
+      '"C:\\Users\\Jane Doe\\notes & calc"',
+    );
+  });
+
+  it("doubles trailing backslashes so the closing quote is not escaped", () => {
+    expect(cmdQuote("C:\\vault\\")).toBe('"C:\\vault\\\\"');
+  });
+
+  it("refuses characters quoting cannot contain", () => {
+    for (const a of ['a"b', "100%", "x!y", "a\nb", "a\0b"]) expect(cmdQuote(a)).toBeNull();
   });
 });

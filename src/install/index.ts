@@ -14,8 +14,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parseFlag } from "../index.js";
 import { loadConfig } from "../utils/config.js";
+import { parseFlag } from "../utils/flags.js";
 
 type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 
@@ -55,7 +55,7 @@ interface ServerEntry {
 }
 
 type Plan =
-  | { kind: "exec"; cmd: string; args: string[] }
+  | { kind: "exec"; cmd: string; args: string[]; remove?: string[] }
   | { kind: "json"; path: string; key: string; entry: ServerEntry };
 
 const HELP = `daftari install — register a vault with an MCP client.
@@ -70,7 +70,7 @@ Options:
   --role <role>   Role from the vault's .daftari/config.yaml (default: admin)
   --name <name>   Server name in the client (default: daftari) — use one per vault
   --print         Show the command or config change without applying it
-  --force         Replace an existing entry with the same name (JSON clients)
+  --force         Replace an existing entry with the same name
 `;
 
 function serverEntry(o: Options): ServerEntry {
@@ -96,18 +96,23 @@ export function planInstall(client: Client, o: Options, io: Io): Result<Plan> {
         kind: "exec",
         cmd: "claude",
         args: ["mcp", "add", "--scope", "user", o.name, "--", e.command, ...e.args],
+        remove: ["mcp", "remove", "--scope", "user", o.name],
       });
     case "codex":
       return ok({
         kind: "exec",
         cmd: "codex",
         args: ["mcp", "add", o.name, "--", e.command, ...e.args],
+        remove: ["mcp", "remove", o.name],
       });
+    // No `--` here: gemini's parser rejects it (checked against gemini 0.59),
+    // and passes the server's own flags through as args without it.
     case "gemini":
       return ok({
         kind: "exec",
         cmd: "gemini",
         args: ["mcp", "add", "-s", "user", o.name, e.command, ...e.args],
+        remove: ["mcp", "remove", "-s", "user", o.name],
       });
     case "vscode":
       return ok({
@@ -162,8 +167,23 @@ function shellQuote(a: string): string {
   return /^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`;
 }
 
-function describePlan(plan: Plan, name: string): string {
-  if (plan.kind === "exec") return `${[plan.cmd, ...plan.args].map(shellQuote).join(" ")}\n`;
+// PowerShell quoting, for showing Windows users a command to run themselves.
+function psQuote(a: string): string {
+  return /^[\w@%+=:,./\\-]+$/.test(a) ? a : `'${a.replace(/'/g, "''")}'`;
+}
+
+// On Windows the client CLIs are .cmd shims, which Node only runs through
+// cmd.exe — and with `shell: true` Node joins the args unquoted. Quote each
+// arg ourselves, and refuse what cmd.exe quoting cannot contain (`"`, `%`, `!`,
+// newlines), so a hostile vault path cannot run a second command.
+export function cmdQuote(a: string): string | null {
+  if (/["%!\r\n\0]/.test(a)) return null;
+  return `"${a.replace(/(\\+)$/, "$1$1")}"`;
+}
+
+function describePlan(plan: Plan, name: string, platform: NodeJS.Platform): string {
+  const quote = platform === "win32" ? psQuote : shellQuote;
+  if (plan.kind === "exec") return `${[plan.cmd, ...plan.args].map(quote).join(" ")}\n`;
   return `${plan.path}:\n${JSON.stringify({ [plan.key]: { [name]: plan.entry } }, null, 2)}\n`;
 }
 
@@ -184,7 +204,10 @@ function validateVault(vault: string, role: string): Result<void> {
 }
 
 const defaultExec: ExecFn = (cmd, args) => {
-  const r = spawnSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" });
+  const win = process.platform === "win32";
+  const quoted = win ? args.map(cmdQuote) : args;
+  if (quoted.some((a) => a === null)) return { ok: false, missing: false };
+  const r = spawnSync(cmd, quoted as string[], { stdio: "inherit", shell: win });
   if (r.error) return { ok: false, missing: (r.error as NodeJS.ErrnoException).code === "ENOENT" };
   return r.status === 0 ? { ok: true } : { ok: false, missing: false };
 };
@@ -231,11 +254,23 @@ export async function runInstall(argv: string[], io: Io = defaultIo): Promise<nu
   }
 
   if (argv.includes("--print")) {
-    io.stdout(describePlan(plan.value, opts.name));
+    io.stdout(describePlan(plan.value, opts.name, io.platform));
     return 0;
   }
 
   if (plan.value.kind === "exec") {
+    // Not even a printed command is safe here (a .cmd shim re-parses its args),
+    // so hand over the server definition to paste into the client's MCP config.
+    if (io.platform === "win32" && plan.value.args.some((a) => cmdQuote(a) === null)) {
+      io.stderr(
+        "daftari install: an argument contains a character cmd.exe cannot pass safely " +
+          `(" % ! or a newline). Add this server in ${client}'s MCP settings instead:\n`,
+      );
+      io.stderr(`${JSON.stringify({ [opts.name]: serverEntry(opts) }, null, 2)}\n`);
+      return 1;
+    }
+    // --force: drop any existing entry first; if there is none, the remove just fails.
+    if (plan.value.remove && argv.includes("--force")) io.exec(plan.value.cmd, plan.value.remove);
     const r = io.exec(plan.value.cmd, plan.value.args);
     if (r.ok) {
       io.stdout(`Registered "${opts.name}" with ${client}. Restart the client to load it.\n`);
@@ -246,7 +281,7 @@ export async function runInstall(argv: string[], io: Io = defaultIo): Promise<nu
         ? `daftari install: \`${plan.value.cmd}\` is not on your PATH. Run this once it is:\n  `
         : `daftari install: \`${plan.value.cmd}\` failed. The command was:\n  `,
     );
-    io.stderr(describePlan(plan.value, opts.name));
+    io.stderr(describePlan(plan.value, opts.name, io.platform));
     return 1;
   }
 
@@ -262,7 +297,8 @@ export async function runInstall(argv: string[], io: Io = defaultIo): Promise<nu
     return 0;
   }
   mkdirSync(dirname(path), { recursive: true });
-  if (existing) writeFileSync(`${path}.bak`, existing);
+  // Back up only once, so a later --force or second --name keeps the user's original.
+  if (existing && !existsSync(`${path}.bak`)) writeFileSync(`${path}.bak`, existing);
   writeFileSync(path, merged.value.text);
   io.stdout(`Registered "${opts.name}" in ${path}. Restart ${client} to load it.\n`);
   return 0;
