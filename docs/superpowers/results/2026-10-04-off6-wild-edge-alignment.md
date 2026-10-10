@@ -10,7 +10,7 @@
 
 ## Why this run
 
-off.1's $0 ceiling cleared only on the synthetic edgehop corpus, where the aligned edges are constructed. Whether edges born from real content align with labeled relevance was unmeasured. The 2026-08-18 birth trace that would have answered it lived in `/tmp` and was wiped on 08-23; this run rebuilt it through a durable pipeline.
+Sequenced after the selective integration was shown to work: off.1's graph-augmented retrieval (expand ranked hits along typed edges, trigger-subset selective by default) cleared its $0 ceiling gate and merged as #453 (squash `8528a7c`, 2026-08-26), default-off. But that ceiling cleared only on the synthetic edgehop corpus, where the aligned edges are constructed. Whether edges born from real content align with labeled relevance was unmeasured. The 2026-08-18 birth trace that would have answered it lived in `/tmp` and was wiped on 08-23; this run rebuilt it through a durable pipeline.
 
 ## Birth + replay [DATA]
 
@@ -23,7 +23,7 @@ Seeds = top-10 hybrid hits (seed recall 0.3432; 213/273 questions miss at least 
 
 | subset | mean add budget | ceiling recall | rank-ext recall | expansion precision |
 |---|---|---|---|---|
-| all (tensions + every non-revoked derives_from) | 77.2 | **0.733** | **0.850** | 0.026 |
+| all (every non-revoked derives_from; the store holds no tensions, see below) | 77.2 | **0.733** | **0.850** | 0.026 |
 | trigger-bearing only | 0 | 0.343 | 0.343 | — |
 | tensions only | 0 | 0.343 | 0.343 | — |
 
@@ -33,6 +33,7 @@ Per question on `all`: edges win 39, lose 96, tie 138.
 
 - **Kill (MAV-154 reading):** `ceilingRecall <= rankExtRecall` at matched budget on the target corpus → edge expansion cannot win; do not build further on it. The `all` arm is an upper bound (it assumes every expansion doc is used), and it still loses by 0.117.
 - **Why:** birth edges are dense and weakly selective — ~9 per doc, and a one-hop neighborhood of the top-10 spans ~77 docs, of which ~2.6% are relevant. Rank-extension spends the same budget on the ranker's own next-best docs and does better.
+- **Tension alignment is unmeasured, not negative.** The `tensions only` row is empty because no tension edges exist in the measured store, for two reasons [DATA]. (1) Birth logs a tension only for a pair whose direction comes back `symmetric` or order-contested; that was 4 of 3,600 verdicts in this trace (2,022 directed, 1,574 unrelated). These are direction-pending tensions for a human to adjudicate, not content contradictions. (2) `replay-birth-trace.mjs` deliberately logs no tensions, because replayed unresolved tensions would trip the tension-respect invariant on every later consolidate run that touches those docs. So this run answers the `derives_from` half only. Whether contradiction-type tensions align with relevance would need a corpus where they are actually logged.
 - **Untested:** the `trigger` subset is empty because births are k=0 candidates; only revision panels earn trigger-bearing strength. Whether *reinforced* edges align better is open, and only worth testing if revision runs in production.
 
 ## Consequence
