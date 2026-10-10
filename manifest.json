@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "daftari",
-  "version": "3.13.1",
+  "version": "3.16.0",
   "display_name": "Daftari",
   "description": "A persistent cortex Claude reads, writes, and curates over time.",
   "long_description": "An external cortex for AI agents: a persistent markdown vault that agents read, write, and curate over time. Plain text on disk, git-versioned, indexed for BM25 + vector search. Agents promote drafts to canonical knowledge, surface contradictions as tensions, and lint for staleness. Runs offline by default.",
@@ -78,5 +78,175 @@
       "required": false,
       "sensitive": true
     }
-  }
+  },
+  "tools": [
+    {
+      "name": "vault_read",
+      "description": "Read a single vault document."
+    },
+    {
+      "name": "vault_index",
+      "description": "List vault documents with their metadata, including each document's questions_answered / questions_raised."
+    },
+    {
+      "name": "vault_status",
+      "description": "Vault health dashboard: the running daftari version, total file count, per-collection counts, count of documents with invalid frontmatter, a staleness distribution (fresh/aging/stale), unresolved tensions, and recent write history."
+    },
+    {
+      "name": "vault_receipt",
+      "description": "Compile an epistemic receipt for the vault documents an answer relies on."
+    },
+    {
+      "name": "vault_canon",
+      "description": "Compute settled vs contested belief over a depth-bounded topic graph seeded at `seed`."
+    },
+    {
+      "name": "vault_witness",
+      "description": "Per-principal track records aggregated from the vault's own ledgers (provenance log, tension log, staged actions), priced by the wager schedule: writing a claim at a confidence level stakes points (low 0 / medium 1 / high 3, provisional); a claim later corrected or retired burns the stake; a claim maintained through a full TTL cycle earns credit."
+    },
+    {
+      "name": "vault_search",
+      "description": "Hybrid search across the vault: BM25 lexical ranking combined with vector semantic similarity."
+    },
+    {
+      "name": "vault_search_related",
+      "description": "Find documents related to a given vault document."
+    },
+    {
+      "name": "vault_reindex",
+      "description": "Rebuild the search index from the markdown files on disk."
+    },
+    {
+      "name": "vault_themes",
+      "description": "Surface thematic clusters across the vault using k-means over CHUNK embeddings, with per-document theme distributions."
+    },
+    {
+      "name": "vault_write",
+      "description": "Create a new vault document or overwrite an existing one."
+    },
+    {
+      "name": "vault_append",
+      "description": "Append a markdown section to an existing vault document."
+    },
+    {
+      "name": "vault_promote",
+      "description": "Promote a draft document to canonical status."
+    },
+    {
+      "name": "vault_deprecate",
+      "description": "Mark a document deprecated."
+    },
+    {
+      "name": "vault_set_confidence",
+      "description": "Change only a document's confidence level (low | medium | high), leaving its status and body untouched."
+    },
+    {
+      "name": "vault_set_tier",
+      "description": "Change only a document's write-protection tier (source | compiled | manual), leaving its body untouched."
+    },
+    {
+      "name": "vault_supersede",
+      "description": "Mark a document superseded by a named successor."
+    },
+    {
+      "name": "vault_merge",
+      "description": "Combine two source documents into a target and supersede both sources to point at it, all in one commit."
+    },
+    {
+      "name": "vault_assert",
+      "description": "Assert, dispute, or qualify the calling principal's position on an existing claim document."
+    },
+    {
+      "name": "vault_positions",
+      "description": "Query positions: all positions on one doc ('path'), or all live positions held by a principal across the vault ('principal')."
+    },
+    {
+      "name": "vault_consolidate",
+      "description": "Ratify the org's consolidated stance on a claim document (ratify-gated: requires a role with ratify: true; propose-only roles are denied outright — there is no staged-proposal path for consolidation)."
+    },
+    {
+      "name": "vault_tension_log",
+      "description": "Record a tension — a contradiction or unresolved pull between two vault documents — to the advisory tension log."
+    },
+    {
+      "name": "vault_tension_resolve",
+      "description": "Record the closure of a previously logged tension."
+    },
+    {
+      "name": "vault_tension_clusters",
+      "description": "Compute connected components of the tension graph: groups of vault documents joined transitively by unresolved tensions."
+    },
+    {
+      "name": "vault_tension_blast",
+      "description": "Compute the transitive closure of downstream documents that cite or link a contested document — or the union over a contested cluster."
+    },
+    {
+      "name": "vault_tension_triage",
+      "description": "Compose the vault's LIVE tensions into a human-legible triage card: every unresolved, non-accepted tension grouped by cluster and annotated for a curator deciding what to resolve."
+    },
+    {
+      "name": "vault_lint",
+      "description": "Run the advisory curation checks across the vault: stale files past TTL, orphan files with no inbound links, old drafts, stagnant low-confidence files, deprecated files still linked from canonical ones, and questions raised but unanswered anywhere in the vault."
+    },
+    {
+      "name": "vault_provenance",
+      "description": "Return the write history of a single document from the provenance log: every create, update, append, promote, and deprecate recorded for it, oldest first."
+    },
+    {
+      "name": "vault_stage_action",
+      "description": "Record a proposed change to the vault for later human ratification via vault_ratify."
+    },
+    {
+      "name": "vault_ratify",
+      "description": "Approve or reject a single pending staged action."
+    },
+    {
+      "name": "vault_edge_observe",
+      "description": "Record that a (re-)derivation observed a derives_from edge between two documents."
+    },
+    {
+      "name": "vault_edge_contest",
+      "description": "Record a case-2 contradiction: a re-derivation failed with no upstream change."
+    },
+    {
+      "name": "vault_edges",
+      "description": "List derives_from edges with their live aged strength, strongest first."
+    },
+    {
+      "name": "vault_consumes",
+      "description": "Query the compiled consumes graph (#233): edges minted mechanically from run correlation — a write carrying a run_id consumes every document the same run read beforehand."
+    },
+    {
+      "name": "vault_backlinks",
+      "description": "The reverse of the knowledge graph: given a target, list the documents that reference it."
+    },
+    {
+      "name": "vault_tier1",
+      "description": "Deterministic, LLM-free compatibility dispatch for a changed document (#232 tier 1)."
+    },
+    {
+      "name": "vault_tier2_queue",
+      "description": "The tier-2 semantic-review queue (#232): every declared/earned dependency whose upstream changed but whose compatibility the structure could not decide (tier 1's residual — #234's pending-unchecked class), minus pairs an existing verdict already covers."
+    },
+    {
+      "name": "vault_tier2_verdict",
+      "description": "Record the answer to a vault_tier2_queue item (#232 tier 2)."
+    },
+    {
+      "name": "vault_staleness",
+      "description": "Edge staleness (#234): is a document stale WITH RESPECT TO its upstream inputs, and does it matter?"
+    },
+    {
+      "name": "vault_board_list",
+      "description": "List all current board findings, grouped by disposition column (new / accepted / waiting / resolved / dismissed)."
+    },
+    {
+      "name": "vault_board_dispose",
+      "description": "Record a human disposition decision on a board finding."
+    },
+    {
+      "name": "vault_board_resolve",
+      "description": "Deterministically verify that a finding no longer reproduces, and if so write a system-authored 'resolved' event."
+    }
+  ]
 }
