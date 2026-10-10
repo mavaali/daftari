@@ -24,7 +24,8 @@
 # namespace is proven by this repo's identity, no secret. Before tagging, run
 # `npm run build && npm run sync:release` in the release PR so server.json and
 # manifest.json carry the new version; test/release-metadata.test.ts (run by
-# CI and the gate below) fails on drift.
+# CI and by the publish job's `npm test`) fails on drift, and the publish job
+# checks all three version fields against the tag before `npm publish`.
 
 name: Release
 
@@ -63,14 +64,16 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
-      - name: Verify tag matches package.json version
+      - name: Verify tag matches package.json, server.json and manifest.json
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "tag v$TAG does not match package.json version $PKG" >&2
-            exit 1
-          fi
+          for f in package.json server.json manifest.json; do
+            V="$(node -p "require('./$f').version")"
+            if [ "$TAG" != "$V" ]; then
+              echo "tag v$TAG does not match $f version $V — run npm run sync:release" >&2
+              exit 1
+            fi
+          done
 
       - run: npm publish
 
