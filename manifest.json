@@ -4,7 +4,7 @@
   "version": "3.13.1",
   "display_name": "Daftari",
   "description": "Memory you own for Claude: plain markdown on your disk, shared with any MCP tool, where recency never decides what's true.",
-  "long_description": "An external cortex for AI agents: a persistent markdown vault that agents read, write, and curate over time. Plain text on disk, git-versioned, indexed for BM25 + vector search. Agents promote drafts to canonical knowledge, surface contradictions as tensions, and lint for staleness. Runs offline by default.",
+  "long_description": "Memory you own for AI agents. Daftari keeps what your agents learn — decisions, conventions, what was tried and why — as plain markdown in a Git repo on your disk, and Claude Code, Claude Desktop, Cursor, or any other MCP client reads and writes the same vault. Every belief keeps its source, replaced beliefs stay on the record, and open contradictions stay flagged instead of being silently resolved. Indexed for BM25 + vector search; runs offline by default.",
   "author": {
     "name": "Mihir Wagle",
     "url": "https://github.com/mavaali"
