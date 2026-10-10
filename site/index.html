@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Daftari — rent the brain, own the memory</title>
+<title>Daftari — own your AI's memory</title>
 <meta name="description" content="Rent the brain. Own the memory. Daftari keeps what your agents learn as plain markdown in a Git repo on your disk — readable and writable by Claude Code, Claude Desktop, Cursor, or any MCP client.">
-<meta property="og:title" content="Daftari — rent the brain, own the memory">
+<meta property="og:title" content="Daftari — own your AI's memory">
 <meta property="og:description" content="The model is rented. The memory should be yours: plain markdown on your disk, under git, shared by every MCP client.">
 <meta property="og:url" content="https://daftari.dev">
 <meta property="og:type" content="website">
@@ -93,6 +93,7 @@
   }
   .copy:hover { opacity: 1; }
   .mcp-note { color: var(--muted); font-size: .9rem; }
+  .subline { font-size: 1.1rem; margin-top: .5rem; }
   .law {
     margin: 2rem 0;
     padding: 1.25rem 1.5rem;
@@ -133,6 +134,8 @@
   <section class="hero">
     <h1>Daftari<span class="arabic">دفتری</span></h1>
     <p class="tagline">Rent the brain. Own the memory.</p>
+    <p class="subline">Memory your agents build, kept as plain files you own, shared across
+    every MCP tool, where recency never decides what's true.</p>
     <p class="etym"><em>Daftari</em> is the Urdu word for a ledger-keeper: the person in a
     trading house who maintained the <em>daftar</em>, the bound register where every
     transaction was recorded, cross-referenced, and preserved. Corrections were
@@ -149,6 +152,7 @@ npx daftari --init ./my-vault
 npx daftari --vault ./my-vault --user me --role admin</code>
     </div>
     <p class="mcp-note">Point any MCP client at it — Claude Desktop, Claude Code, an agent SDK.</p>
+    <p><a href="https://github.com/mavaali/daftari/blob/main/docs/getting-started.md">Connect your tools →</a></p>
     <div class="links">
       <a href="https://github.com/mavaali/daftari">GitHub</a>
       <a href="https://www.npmjs.com/package/daftari">npm</a>
