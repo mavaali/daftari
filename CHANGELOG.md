@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tension log fields can no longer forge lines or blocks** — every free-text value written to `.daftari/tensions.md` (title, claims, logged-by, principal, positions, readers, resolution rationale/references) is flattened to one line at the single render boundary. Before, a line break in any of them could inject a `- **Label:**` line (e.g. a fake `Status: resolved`) or a whole `## ` block on re-parse.
+
 ## [3.16.0] - 2026-10-03
 
 ### Added
