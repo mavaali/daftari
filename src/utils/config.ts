@@ -367,6 +367,11 @@ export const RESERVED_MOUNT_ALIASES: readonly string[] = ["local"];
 
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
+  // The role a stdio server runs as when started without --role (kg64).
+  // null (absent) keeps the deny-all guest. `daftari --init` scaffolds
+  // `default_role: admin` so a fresh local vault works out of the box;
+  // `daftari serve` ignores it — network principals come from server.auth.
+  defaultRole: string | null;
   schemaExtensions: SchemaExtension[];
   indexedFields: IndexedFieldDeclaration[];
   // Vault-owner-supplied pre-write hooks. v1 lists pre-write only; future
@@ -562,6 +567,7 @@ const VEC_KNN_K_MAX = 4096;
 function emptyConfig(): DaftariConfig {
   return {
     roles: {},
+    defaultRole: null,
     schemaExtensions: [],
     indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
@@ -2162,6 +2168,19 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     }
   }
 
+  let defaultRole: string | null = null;
+  if (root.default_role !== undefined && root.default_role !== null) {
+    if (typeof root.default_role !== "string" || !Object.hasOwn(roles, root.default_role)) {
+      return err(
+        new Error(
+          `malformed config: 'default_role' must name a role declared under 'roles' ` +
+            `(got ${JSON.stringify(root.default_role)})`,
+        ),
+      );
+    }
+    defaultRole = root.default_role;
+  }
+
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
 
@@ -2451,6 +2470,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   return ok({
     roles,
+    defaultRole,
     schemaExtensions: extensions.value,
     indexedFields: indexedFields.value,
     hooks: hooks.value,

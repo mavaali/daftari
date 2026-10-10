@@ -1,5 +1,13 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -24,9 +32,10 @@ describe("daftari --init", () => {
     expect(code).toBe(0);
 
     expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
-    expect(readFileSync(join(vault, ".daftari", "config.yaml"), "utf8")).toContain(
-      "manage_integrations: true",
-    );
+    const scaffolded = readFileSync(join(vault, ".daftari", "config.yaml"), "utf8");
+    expect(scaffolded).toContain("manage_integrations: true");
+    // kg64: a fresh local vault is usable without --role.
+    expect(scaffolded).toMatch(/^default_role: admin$/m);
     expect(existsSync(join(vault, ".gitignore"))).toBe(true);
     for (const collection of ["competitive-intel", "pricing", "moonshot", "_drafts"]) {
       expect(existsSync(join(vault, collection))).toBe(true);
@@ -65,18 +74,13 @@ describe("daftari --vault", () => {
   // Boots the CLI as a subprocess and waits for the server to report it is
   // serving over stdio. A clean boot proves --vault wiring (config load, index
   // build, server connect) works end to end.
-  function bootServer(vault: string): Promise<{ ok: boolean; stderr: string }> {
+  function bootServer(
+    vault: string,
+    extra: string[] = ["--user", "tester", "--role", "admin"],
+  ): Promise<{ ok: boolean; stderr: string }> {
     return new Promise((resolveBoot) => {
       const tsx = resolve("node_modules/.bin/tsx");
-      const proc = spawn(tsx, [
-        "src/cli.ts",
-        "--vault",
-        vault,
-        "--user",
-        "tester",
-        "--role",
-        "admin",
-      ]);
+      const proc = spawn(tsx, ["src/cli.ts", "--vault", vault, ...extra]);
       let stderr = "";
       // Resolve only from the exit handler so cleanupVault never races the
       // child's background work (the lazy-model warm in #38 PR 2/5 actively
@@ -104,6 +108,36 @@ describe("daftari --vault", () => {
       const result = await bootServer(vault);
       expect(result.ok).toBe(true);
       expect(result.stderr).toContain("role=admin");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+
+  // kg64: an --init vault declares default_role: admin, so a local stdio
+  // start without --role is usable instead of a silent deny-all guest.
+  it("runs as the config's default_role when --role is omitted", async () => {
+    const vault = makeTempVault();
+    try {
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      writeFileSync(
+        join(vault, ".daftari", "config.yaml"),
+        "version: 1\nroles:\n  admin:\n    read: ['*']\n    write: ['*']\ndefault_role: admin\n",
+      );
+      const result = await bootServer(vault, []);
+      expect(result.ok).toBe(true);
+      expect(result.stderr).toContain("role=admin");
+      expect(result.stderr).toContain("no --role given — using default_role 'admin'");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+
+  it("stays deny-all guest without --role when no default_role is set", async () => {
+    const vault = makeTempVault();
+    try {
+      const result = await bootServer(vault, []);
+      expect(result.ok).toBe(true);
+      expect(result.stderr).toContain("role=guest");
     } finally {
       cleanupVault(vault);
     }
