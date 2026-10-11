@@ -16,6 +16,7 @@ import { isBudgetExhaustedError } from "../consolidate/call-budget.js";
 import type { LlmClient } from "../eval/llm.js";
 import { sha256Hex } from "../utils/hash.js";
 import type { Chunk } from "./chunk.js";
+import { type CitationCheckResult, checkCitationIntegrity } from "./citation-check.js";
 
 // --- public surface ----------------------------------------------------------
 
@@ -63,6 +64,13 @@ export interface ExtractedClaim {
    * Optional so every existing constructor / mock stays valid.
    */
   run_meta?: ClaimRunMeta;
+  /**
+   * Deterministic citation-integrity check (numbers/dates/quotes cited in
+   * `statement`, verified verbatim against the producing chunk's raw text).
+   * Computed unconditionally by extractClaims — see citation-check.ts for why
+   * this must happen here rather than as a post-hoc lint over landed docs.
+   */
+  citation_check?: CitationCheckResult;
 }
 
 export interface ExtractOutcome {
@@ -256,6 +264,11 @@ export async function extractClaims(
         statement,
         proposed_frontmatter: { title: titleOf(statement) },
         run_meta: runMeta,
+        // Checked against the FULL chunk text (the actual raw source), not the
+        // (possibly truncated) window sent to the LLM — the citation either
+        // exists verbatim in the source or it doesn't, independent of what the
+        // model happened to see.
+        citation_check: checkCitationIntegrity(statement, chunk.text),
       });
     }
   }
