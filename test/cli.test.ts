@@ -349,6 +349,9 @@ describe("daftari --vault <path> --init-if-missing", () => {
       const { stdout } = await boot(vault);
       expect(JSON.parse(stdout.split("\n")[0] ?? "").result.serverInfo.name).toBe("daftari");
       expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+      const { execFileSync } = await import("node:child_process");
+      const tracked = execFileSync("git", ["ls-files"], { cwd: vault, encoding: "utf8" });
+      expect(tracked).not.toContain(".DS_Store");
     } finally {
       rmSync(vault, { recursive: true, force: true });
     }
