@@ -180,6 +180,12 @@ canon — the agent flags tensions here but does not resolve them.
   ];
 }
 
+// Entries that count against "empty": Finder drops .DS_Store into any folder
+// it has opened, so a folder the user just picked is still empty with one.
+function folderEntries(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name !== ".DS_Store");
+}
+
 // `examples: false` skips the fictional starter documents, and `stdout: false`
 // sends the summary to stderr — both for --init-if-missing, where the vault is
 // someone's real memory and stdout belongs to the JSON-RPC stream.
@@ -189,7 +195,7 @@ export async function initVault(
 ): Promise<number> {
   const vaultRoot = resolve(targetPath);
 
-  if (existsSync(vaultRoot) && readdirSync(vaultRoot).length > 0) {
+  if (existsSync(vaultRoot) && folderEntries(vaultRoot).length > 0) {
     process.stderr.write(`daftari: refusing to scaffold — ${vaultRoot} exists and is not empty\n`);
     return 1;
   }
@@ -380,12 +386,24 @@ export async function run(argv: string[]): Promise<void> {
 
   const vault = parseFlag(argv, "vault");
   if (vault) {
-    // Plugin hosts hand the server a fresh data directory; create the vault
-    // there on first start instead of failing.
-    if (argv.includes("--init-if-missing") && !existsSync(resolve(vault))) {
-      const code = await initVault(vault, { examples: false, stdout: false });
-      if (code !== 0) {
-        process.exitCode = code;
+    // Plugin hosts hand the server a folder the user picked (or a fresh data
+    // directory): seed it when missing or empty, refuse one that already holds
+    // other files, and serve an existing vault as-is.
+    if (argv.includes("--init-if-missing")) {
+      const root = resolve(vault);
+      const entries = existsSync(root) ? folderEntries(root) : [];
+      if (entries.length === 0) {
+        const code = await initVault(vault, { examples: false, stdout: false });
+        if (code !== 0) {
+          process.exitCode = code;
+          return;
+        }
+      } else if (!entries.includes(".daftari")) {
+        process.stderr.write(
+          `daftari: ${root} is not a Daftari vault and is not empty. Pick an empty folder ` +
+            "to start a new vault, or adopt existing notes with `daftari import obsidian`.\n",
+        );
+        process.exitCode = 1;
         return;
       }
     }

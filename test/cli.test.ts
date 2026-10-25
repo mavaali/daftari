@@ -340,6 +340,34 @@ describe("daftari --vault <path> --init-if-missing", () => {
     }
   }, 60_000);
 
+  it("scaffolds into an existing empty folder the user picked", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-picked-"));
+    const { writeFileSync } = await import("node:fs");
+    // Finder drops one of these into any folder it has opened.
+    writeFileSync(join(vault, ".DS_Store"), "");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result.serverInfo.name).toBe("daftari");
+      expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("refuses a non-empty folder that is not a vault", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-notes-"));
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(vault, "notes.md"), "# mine\n");
+    try {
+      const { stdout, stderr } = await boot(vault);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("not a Daftari vault");
+      expect(existsSync(join(vault, ".daftari"))).toBe(false);
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("leaves an existing vault untouched", async () => {
     const vault = makeTempVault();
     const { writeFileSync } = await import("node:fs");

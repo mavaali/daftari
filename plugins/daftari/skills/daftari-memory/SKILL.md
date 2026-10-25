@@ -22,9 +22,10 @@ not save small talk or one-off answers.
 
 1. Search first. If a document already covers the topic, update it with
    `vault_append` instead of creating a duplicate.
-2. Create new documents with `vault_write`, `agent: "agent:chatgpt"`, and
-   `status: draft`. Put them in a plain collection such as `decisions`,
-   `preferences`, `people`, or `projects`.
+2. Create new documents with `vault_write`, `status: draft`, and `agent`
+   naming the app you run in (`agent:claude`, `agent:chatgpt`). Put them in
+   a plain collection such as `decisions`, `preferences`, `people`, or
+   `projects`.
 3. Set `provenance` truthfully: `direct` when the user stated it,
    `synthesized` when you combined sources, `inferred` when you concluded it.
    Set `confidence` to what the evidence supports, and list sources.
