@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-10-25
+
 ### Added
 
 - **Daftari as a plugin for Claude Code, Cowork, ChatGPT, and Codex** — `plugins/daftari/` carries both an [Agent Plugins](https://agent-plugins.org) manifest (ChatGPT / Codex, via `.agents/plugins/marketplace.json`) and a Claude plugin manifest (Claude Code / Cowork, via `.claude-plugin/marketplace.json`), sharing one `daftari-memory` skill that tells the agent when to search, write drafts with truthful provenance, supersede, and leave contradictions visible. Claude installs prompt for a **vault folder**. See `docs/agent-plugin.md`.
