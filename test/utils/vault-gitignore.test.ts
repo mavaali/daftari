@@ -93,8 +93,9 @@ describe("ensureVaultGitignore", () => {
     mkdirSync(join(dir, ".daftari"), { recursive: true });
     const paths = [
       ".daftari/process.lock",
-      ".daftari/process.lock.break",
-      ".daftari/process.lock.0123abcd.tmp",
+      ".daftari/process.lock.hb-0123abcd",
+      ".daftari/process.lock.hb-0123abcd.tmp",
+      ".daftari/process.lock.gone-0123abcd",
     ];
     for (const relativePath of paths) writeFileSync(join(dir, relativePath), "{}\n");
     const ignored = execFileSync("git", ["check-ignore", "--stdin"], {

@@ -6,7 +6,16 @@
 // vault on a shared mount is held by processes we cannot see).
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -17,7 +26,9 @@ import {
   hostId,
   LEASE_MS,
   type LockData,
+  lastHeartbeat,
   releaseLock,
+  removeLockIfUnchanged,
 } from "../../src/lifecycle/lock.js";
 
 const HELPER = resolve("test/helpers/lease-holder.ts");
@@ -132,15 +143,22 @@ describe("lease lock", () => {
     expect(l?.leaseMs).toBe(LEASE_MS);
   });
 
-  it("a heartbeat keeps refreshing heartbeatAt, and stops on release", async () => {
+  it("renewal refreshes the holder's own heartbeat file and never rewrites process.lock", async () => {
     const r = await acquireLock(vault, "1.0.0", { heartbeatMs: 30, leaseMs: 300 });
     expect(r.ok).toBe(true);
-    const first = rawLock(vault)?.heartbeatAt;
-    expect(await waitUntil(() => rawLock(vault)?.heartbeatAt !== first, 2_000)).toBe(true);
-    const nonce = rawLock(vault)?.nonce;
-    expect(nonce).toBeDefined();
+    const claim = readFileSync(lockFile(vault), "utf-8");
+    const lock = rawLock(vault) as LockData;
+    const beat = () => lastHeartbeat(vault, lock);
+    const first = beat();
+    expect(await waitUntil(() => beat() !== first, 2_000)).toBe(true);
+    const second = beat();
+    expect(await waitUntil(() => beat() !== second, 2_000)).toBe(true);
+    // The claim is immutable: a stalled holder resuming can never overwrite a
+    // successor's process.lock, because renewal never writes it.
+    expect(readFileSync(lockFile(vault), "utf-8")).toBe(claim);
     releaseLock(vault);
     expect(existsSync(lockFile(vault))).toBe(false);
+    expect(existsSync(join(vault, ".daftari", `process.lock.hb-${lock.nonce}`))).toBe(false);
     await sleep(150);
     // A stopped heartbeat never resurrects the released lock.
     expect(existsSync(lockFile(vault))).toBe(false);
@@ -317,27 +335,6 @@ describe("lease lock", () => {
     }
   });
 
-  it("renewal takes the break mutex: a holder never renews while a breaker is mid-break", async () => {
-    const r = await acquireLock(vault, "1.0.0", { heartbeatMs: 30, leaseMs: 300 });
-    expect(r.ok).toBe(true);
-    const mutex = join(vault, ".daftari", "process.lock.break");
-    writeFileSync(
-      mutex,
-      JSON.stringify({
-        nonce: "n-breaker",
-        host: FOREIGN_HOST,
-        pid: 1,
-        at: new Date().toISOString(),
-      }),
-    );
-    await sleep(60);
-    const frozen = rawLock(vault)?.heartbeatAt;
-    await sleep(200);
-    expect(rawLock(vault)?.heartbeatAt).toBe(frozen);
-    rmSync(mutex);
-    expect(await waitUntil(() => rawLock(vault)?.heartbeatAt !== frozen, 2_000)).toBe(true);
-  });
-
   it("a pre-lease lockfile with a live pid is refused, never signalled", async () => {
     const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
@@ -361,39 +358,33 @@ describe("lease lock", () => {
     expect(bystander.signalCode).toBeNull();
   });
 
-  it("a breaker holding the takeover mutex is not raced; a stale mutex is cleared", async () => {
-    const stale = {
-      pid: 2 ** 30,
-      heartbeatAt: new Date(Date.now() - 10_000).toISOString(),
-    };
-    writeLease(vault, stale);
-    const mutex = join(vault, ".daftari", "process.lock.break");
-    writeFileSync(
-      mutex,
-      JSON.stringify({
-        nonce: "n-breaker",
-        host: FOREIGN_HOST,
-        pid: 1,
-        at: new Date().toISOString(),
-      }),
-    );
+  it("check-and-remove is atomic: a lock swapped in after inspection is put back, not deleted", () => {
+    writeLease(vault, { pid: 2 ** 30, nonce: "n-stale" });
+    const inspected = readFileSync(lockFile(vault), "utf-8");
+    writeLease(vault, { pid: 2 ** 30, nonce: "n-fresh" });
+    expect(removeLockIfUnchanged(vault, inspected)).toBe(false);
+    expect(rawLock(vault)?.nonce).toBe("n-fresh");
+    expect(readdirSync(join(vault, ".daftari")).filter((f) => f.includes(".gone-"))).toEqual([]);
+    expect(removeLockIfUnchanged(vault, readFileSync(lockFile(vault), "utf-8"))).toBe(true);
+    expect(existsSync(lockFile(vault))).toBe(false);
+  });
+
+  it("a live breaker's succession claim is not raced; a crashed breaker's claim is escalated", async () => {
+    writeLease(vault, { pid: 2 ** 30, heartbeatAt: new Date(Date.now() - 10_000).toISOString() });
+    const raw = readFileSync(lockFile(vault), "utf-8");
+    const key = createHash("sha256").update(raw.trim()).digest("hex").slice(0, 24);
+    const claim = join(vault, ".daftari", `process.lock.succ-${key}-0`);
+    // A breaker on another machine is mid-break: we must not move the lock too.
+    writeFileSync(claim, JSON.stringify({ host: FOREIGN_HOST, pid: 1, at: "x" }));
     const blocked = await acquireLock(vault, "1.0.0");
     expect(blocked.ok).toBe(false);
     expect(rawLock(vault)?.nonce).toBe("n-foreign");
-
-    writeFileSync(
-      mutex,
-      JSON.stringify({
-        nonce: "n-breaker",
-        host: FOREIGN_HOST,
-        pid: 1,
-        at: new Date(Date.now() - 600_000).toISOString(),
-      }),
-    );
+    // The same claim from a crashed breaker on THIS host (dead pid).
+    writeFileSync(claim, JSON.stringify({ host: hostId(), pid: 2 ** 30, at: "x" }));
     const r = await acquireLock(vault, "1.0.0");
     expect(r.ok).toBe(true);
     expect(rawLock(vault)?.pid).toBe(process.pid);
-    expect(existsSync(mutex)).toBe(false);
+    expect(readdirSync(join(vault, ".daftari")).filter((f) => f.includes(".succ-"))).toEqual([]);
   });
 
   it("contended takeover: racing contenders for one lapsed lease produce exactly one holder", async () => {

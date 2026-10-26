@@ -7,7 +7,10 @@
 // folder seen from several VMs, a network share), where the holder's pid means
 // nothing to us and pid reuse is routine, and Windows has no `ps` at all. So:
 //   - The holder id is host identity + pid + a random nonce (hostId(), below).
-//   - The holder rewrites heartbeatAt every heartbeatMs (default HEARTBEAT_MS).
+//   - The holder renews every heartbeatMs (default HEARTBEAT_MS) by rewriting
+//     its OWN side file, process.lock.hb-<nonce>. process.lock itself is
+//     written once, at the claim, and never rewritten — so a holder that
+//     stalls and resumes can never overwrite a successor's lock.
 //   - Another process may take over only once the lease has lapsed: no renewal
 //     for leaseMs (default LEASE_MS = 10 heartbeats). Expiry is judged on the
 //     holder's own recorded heartbeatMs/leaseMs, so a future change of the
@@ -24,19 +27,24 @@
 //   - A holder that finds its lock is no longer its own (taken over while it
 //     was stalled) stops renewing and reports the lost lease; the servers shut
 //     down on it rather than keep writing as a second writer.
-// Takeover is atomic: the claim is always an O_EXCL create; a stale lock is
-// removed only under a short-lived O_EXCL break mutex, and only if it is still
-// exactly the lock that was judged stale.
+// Takeover is atomic: the claim is always an O_EXCL create. Breakers of one
+// stale lock are serialized by an O_EXCL succession claim keyed by its bytes;
+// the single winner removes it by an atomic rename to a private name and
+// checks what it moved — if that is not the lock judged stale, it is put back
+// with an atomic link that never overwrites. Lock-file transitions depend on
+// no clock; only recovering a crashed breaker's claim uses a local timeout.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
+  existsSync,
+  linkSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -76,9 +84,6 @@ export type LockData = {
 // within ~20s. Same-host crashes do not wait at all (dead-pid fast path).
 export const HEARTBEAT_MS = 2_000;
 export const LEASE_MS = 10 * HEARTBEAT_MS;
-// A break mutex is held for the few milliseconds it takes to verify and remove
-// one stale lock; one this old belongs to a breaker that crashed mid-break.
-const BREAK_STALE_MS = 10_000;
 // A lockfile that stays unparseable this long is not one being written.
 const UNREADABLE_GRACE_MS = 1_000;
 
@@ -86,8 +91,30 @@ function lockPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "process.lock");
 }
 
-function breakPath(vaultRoot: string): string {
-  return join(vaultRoot, ".daftari", "process.lock.break");
+// A nonce names a side file, so a foreign lockfile must not be able to steer
+// that path anywhere (no separators, no "..").
+const NONCE_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function heartbeatPath(vaultRoot: string, nonce: string): string | null {
+  return NONCE_RE.test(nonce) ? join(vaultRoot, ".daftari", `process.lock.hb-${nonce}`) : null;
+}
+
+// The holder's latest renewal: its heartbeat side file, or — before the first
+// renewal, or for a lock without one — the claim time recorded in the lock.
+export function lastHeartbeat(vaultRoot: string, lock: LockData): string | undefined {
+  const path = lock.nonce === undefined ? null : heartbeatPath(vaultRoot, lock.nonce);
+  if (path !== null) {
+    const raw = readOptional(path);
+    if (raw) {
+      try {
+        const hb = JSON.parse(raw) as { nonce?: unknown; heartbeatAt?: unknown };
+        if (hb.nonce === lock.nonce && typeof hb.heartbeatAt === "string") return hb.heartbeatAt;
+      } catch {
+        // mid-replace or garbage: fall back to the claim time
+      }
+    }
+  }
+  return lock.heartbeatAt;
 }
 
 function readOptional(path: string): string | null {
@@ -257,108 +284,135 @@ function sameLock(a: LockData, b: LockData): boolean {
   );
 }
 
-// Remove the lockfile iff it still holds exactly `expected` (same pid,
-// startedAt, nonce and heartbeat). If a competing acquirer replaced it with
-// its own valid lock in the race window — or the holder renewed its lease —
-// the content differs and we leave it untouched, so acquireLock re-evaluates
-// it instead of clobbering a valid lock. Callers serialize through the break
-// mutex (breakLock) so two breakers cannot interleave check and unlink.
-export function removeLockIfUnchanged(vaultRoot: string, expected: LockData): void {
-  const current = readLockfile(vaultRoot);
-  if (!current.ok || current.value === null) return;
-  if (!sameLock(current.value, expected)) return;
+// Remove the lockfile iff it still holds `expected` — a parsed lock (same
+// pid, startedAt, nonce, claim time) or the exact raw bytes of an unreadable
+// one. Returns true if it removed it.
+//
+// The check and the removal are one atomic step: rename the file to a name
+// only we know, then look at what we moved. If it is not `expected` (a
+// competing acquirer replaced the stale lock in the race window), put it back
+// with link(), which fails rather than overwrite should yet another lock have
+// appeared meanwhile — in which case the displaced owner finds its lock gone
+// at its next renewal and stops (see startHeartbeat). A plain read-then-unlink
+// here could delete a competitor's fresh lock.
+export function removeLockIfUnchanged(vaultRoot: string, expected: LockData | string): boolean {
+  const path = lockPath(vaultRoot);
+  const isExpected = (raw: string): boolean => {
+    if (typeof expected === "string") return raw === expected.trim();
+    const parsed = parseLock(raw);
+    return parsed !== null && sameLock(parsed, expected);
+  };
+  // Cheap pre-check: never even move a lock that is visibly not ours to move.
+  const before = readOptional(path);
+  if (before === null || !isExpected(before)) return false;
+  const grave = `${path}.gone-${randomBytes(8).toString("hex")}`;
   try {
-    unlinkSync(lockPath(vaultRoot));
+    renameSync(path, grave);
   } catch {
-    // Already gone / concurrent removal — fine; the retry's exclusive create
-    // resolves the outcome.
+    return false; // already gone (or unmovable) — the next exclusive create decides
   }
-}
-
-type BreakMutex = { nonce: string; host: string; pid: number; at: string };
-
-function breakMutexIsStale(path: string, raw: string): boolean {
-  let m: Partial<BreakMutex> | null = null;
+  const movedRaw = readOptional(grave) ?? "";
+  const moved = parseLock(movedRaw);
+  if (!isExpected(movedRaw)) {
+    restoreLock(grave, path);
+    return false;
+  }
   try {
-    m = JSON.parse(raw) as Partial<BreakMutex>;
+    unlinkSync(grave);
   } catch {
-    m = null;
+    // leftover side file; harmless and gitignored
   }
-  if (m === null || typeof m.at !== "string") {
-    // Unparseable: either mid-write (microseconds) or a crashed writer. Judge
-    // by the file's age.
+  const hb = moved?.nonce === undefined ? null : heartbeatPath(vaultRoot, moved.nonce);
+  if (hb !== null) {
     try {
-      return Date.now() - statSync(path).mtimeMs > BREAK_STALE_MS;
+      unlinkSync(hb);
     } catch {
-      return true;
+      // no heartbeat file yet
     }
   }
-  const age = Math.abs(Date.now() - Date.parse(m.at));
-  if (!(age <= BREAK_STALE_MS)) return true;
-  return m.host === hostId() && typeof m.pid === "number" && !isProcessAlive(m.pid);
+  return true;
 }
 
-// Take the break mutex. Returns the token on success, null when another
-// breaker holds it.
-function takeBreakMutex(vaultRoot: string): string | null {
-  const path = breakPath(vaultRoot);
-  const token = randomBytes(16).toString("hex");
-  const body: BreakMutex = {
-    nonce: token,
-    host: hostId(),
-    pid: process.pid,
-    at: new Date().toISOString(),
-  };
-  for (let i = 0; i < 2; i++) {
-    const created = tryCreateExclusive(path, JSON.stringify(body));
-    if (created.ok && created.value) return token;
-    if (!created.ok) return null;
-    const raw = readRaw(path);
-    if (!raw.ok || raw.value === null) continue;
-    if (!breakMutexIsStale(path, raw.value)) return null;
-    // A crashed breaker's mutex: clear it if it is still the one we judged.
-    const again = readRaw(path);
-    if (again.ok && again.value === raw.value) {
-      try {
-        unlinkSync(path);
-      } catch {
-        // Someone else cleared it; the retry decides.
+// Put a lock we moved by mistake back, never overwriting a newer one.
+function restoreLock(grave: string, path: string): void {
+  try {
+    linkSync(grave, path);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") {
+      // No hard links on this filesystem: rename back only into an empty slot.
+      if (!existsSync(path)) {
+        try {
+          renameSync(grave, path);
+          return;
+        } catch {
+          // fall through to cleanup
+        }
       }
     }
   }
-  return null;
-}
-
-function releaseBreakMutex(vaultRoot: string, token: string): void {
-  const raw = readRaw(breakPath(vaultRoot));
-  if (!raw.ok || raw.value === null) return;
   try {
-    if ((JSON.parse(raw.value) as BreakMutex).nonce !== token) return;
-    unlinkSync(breakPath(vaultRoot));
+    unlinkSync(grave);
   } catch {
-    // Best effort; a leftover mutex goes stale in BREAK_STALE_MS.
+    // already renamed back
   }
 }
 
-// Remove a lock judged stale, under the break mutex. `expected` is the parsed
-// lock, or the raw bytes of an unreadable one. Returns false when another
-// breaker is mid-break (the caller backs off and re-evaluates).
-function breakLock(vaultRoot: string, expected: LockData | string): boolean {
-  const token = takeBreakMutex(vaultRoot);
-  if (token === null) return false;
+// A succession claim is held for the microseconds it takes to verify and
+// move one stale lock. One that sits unchanged (by our own observation, not
+// by any clock) this long belongs to a breaker that crashed or stalled.
+const CLAIM_STALE_MS = 10_000;
+const claimSeen = new Map<string, { raw: string; since: number }>();
+
+function claimIsStale(path: string, raw: string): boolean {
   try {
-    if (typeof expected === "string") {
-      const raw = readRaw(lockPath(vaultRoot));
-      if (raw.ok && raw.value === expected) unlinkSync(lockPath(vaultRoot));
-    } else {
-      removeLockIfUnchanged(vaultRoot, expected);
+    const c = JSON.parse(raw) as { host?: unknown; pid?: unknown };
+    if (c.host === hostId() && typeof c.pid === "number" && c.pid !== process.pid) {
+      if (!isProcessAlive(c.pid)) return true;
     }
   } catch {
-    // Gone already; the next exclusive create decides.
-  } finally {
-    releaseBreakMutex(vaultRoot, token);
+    // mid-write or garbage: fall through to observation
   }
-  return true;
+  const seen = claimSeen.get(path);
+  const now = performance.now();
+  if (seen === undefined || seen.raw !== raw) {
+    claimSeen.set(path, { raw, since: now });
+    return false;
+  }
+  return now - seen.since > CLAIM_STALE_MS;
+}
+
+// Break a lock judged stale. Breakers of the same stale lock are serialized
+// by an O_EXCL succession claim keyed by that lock's exact bytes, so only one
+// of them ever moves it (racing breakers would otherwise move each other's
+// fresh locks). A claim whose breaker crashed is escalated by O_EXCL-claiming
+// the next level, never by deleting it, so recovery cannot itself race.
+// Returns true if this call removed the lock.
+function breakStale(vaultRoot: string, raw: string): boolean {
+  const key = createHash("sha256").update(raw.trim()).digest("hex").slice(0, 24);
+  const body = JSON.stringify({ host: hostId(), pid: process.pid, at: new Date().toISOString() });
+  for (let level = 0; level < 8; level++) {
+    const claim = `${lockPath(vaultRoot)}.succ-${key}-${level}`;
+    const created = tryCreateExclusive(claim, body);
+    if (!created.ok) return false;
+    if (created.value) return removeLockIfUnchanged(vaultRoot, raw);
+    const claimant = readOptional(claim);
+    if (claimant === null || !claimIsStale(claim, claimant)) return false; // live breaker: back off
+  }
+  return false;
+}
+
+// Succession claims are only meaningful while the lock they name is current;
+// a new holder clears them. (A late breaker re-creating one still finds the
+// lock changed and moves nothing.)
+function clearClaims(vaultRoot: string): void {
+  try {
+    for (const f of readdirSync(join(vaultRoot, ".daftari"))) {
+      if (f.startsWith("process.lock.succ-")) unlinkSync(join(vaultRoot, ".daftari", f));
+    }
+  } catch {
+    // best effort
+  }
 }
 
 function clampHeartbeat(ms: unknown): number {
@@ -375,14 +429,18 @@ function clampLease(ms: unknown, heartbeatMs: number): number {
 
 // ---- heartbeat -------------------------------------------------------------
 
-type Held = { nonce: string; timer: NodeJS.Timeout };
+type Held = { nonce: string; timer: NodeJS.Timeout; data: LockData };
 const held = new Map<string, Held>();
 
-function writeLeaseAtomic(vaultRoot: string, data: LockData): void {
-  const tmp = join(vaultRoot, ".daftari", `process.lock.${data.nonce}.tmp`);
+// Renewal writes only the holder's own side file (tmp + atomic rename), never
+// process.lock.
+function writeHeartbeat(vaultRoot: string, nonce: string): void {
+  const path = heartbeatPath(vaultRoot, nonce);
+  if (path === null) return;
+  const tmp = `${path}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-    renameSync(tmp, lockPath(vaultRoot));
+    writeFileSync(tmp, JSON.stringify({ nonce, heartbeatAt: new Date().toISOString() }), "utf-8");
+    renameSync(tmp, path);
   } catch (e) {
     try {
       unlinkSync(tmp);
@@ -390,6 +448,16 @@ function writeLeaseAtomic(vaultRoot: string, data: LockData): void {
       // nothing to clean up
     }
     throw e;
+  }
+}
+
+function removeHeartbeat(vaultRoot: string, nonce: string): void {
+  const path = heartbeatPath(vaultRoot, nonce);
+  if (path === null) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    // never written, or already removed by a breaker
   }
 }
 
@@ -403,61 +471,50 @@ function stopHeartbeat(vaultRoot: string): void {
 function startHeartbeat(vaultRoot: string, data: LockData, onLeaseLost?: () => void): void {
   const nonce = data.nonce as string;
   let warned = false;
-  // Renewal runs under the break mutex, the same one a breaker holds while it
-  // verifies and removes a lapsed lock. Without it, a holder that stalled
-  // between checking its nonce and renaming could resume and rename over a
-  // contender's fresh lock, and both would believe they hold the vault. With
-  // it, a breaker either sees the renewed heartbeat (and leaves the lock) or
-  // removes the lock before we look (and we then see it gone or replaced).
+  // Each beat first checks that process.lock is still ours. Renewal touches
+  // only our own heartbeat file, so even a beat that stalls between the check
+  // and the write cannot disturb a successor: a stalled-and-resumed holder at
+  // worst refreshes a heartbeat file nobody reads, then sees the successor's
+  // nonce on the next beat and stops.
   const beat = () => {
     if (held.get(vaultRoot)?.nonce !== nonce) return;
-    const token = takeBreakMutex(vaultRoot);
-    if (token === null) return; // a breaker is mid-break; renew next beat
-    let lostTo: number | null = null;
+    const raw = readRaw(lockPath(vaultRoot));
+    if (!raw.ok) return; // transient read failure — try next beat
+    if (raw.value === null) {
+      // Removed out from under us (by hand, or by a breaker that judged the
+      // lease lapsed and has not claimed yet). Reclaim it with the same atomic
+      // create every acquirer uses: if a contender created first, the next
+      // beat sees its nonce and reports the loss.
+      tryCreateExclusive(lockPath(vaultRoot), JSON.stringify(data, null, 2));
+      return;
+    }
+    const current = parseLock(raw.value);
+    if (current === null) return; // a contender mid-write; judge next beat
+    if (current.nonce !== nonce) {
+      stopHeartbeat(vaultRoot);
+      removeHeartbeat(vaultRoot, nonce);
+      process.stderr.write(
+        `daftari: lost the vault lock for ${vaultRoot} — another process took it over ` +
+          `(holder now: pid=${current.pid}); stopping so two processes never write one vault\n`,
+      );
+      onLeaseLost?.();
+      return;
+    }
     try {
-      const raw = readRaw(lockPath(vaultRoot));
-      if (!raw.ok) return; // transient read failure — try next beat
-      const next: LockData = { ...data, heartbeatAt: new Date().toISOString() };
-      if (raw.value === null) {
-        // Removed out from under us (by hand, or by a breaker that judged the
-        // lease lapsed). Reclaim it with the same atomic create every
-        // acquirer uses: if a contender created first, the next beat sees its
-        // nonce and reports the loss.
-        tryCreateExclusive(lockPath(vaultRoot), JSON.stringify(next, null, 2));
-        return;
-      }
-      const current = parseLock(raw.value);
-      if (current === null) return; // a contender mid-write; judge next beat
-      if (current.nonce !== nonce) {
-        lostTo = current.pid;
-        return;
-      }
-      try {
-        writeLeaseAtomic(vaultRoot, next);
-        warned = false;
-      } catch (e) {
-        if (!warned) {
-          warned = true;
-          process.stderr.write(
-            `daftari: warning: could not renew the vault lease: ${(e as Error).message}\n`,
-          );
-        }
-      }
-    } finally {
-      releaseBreakMutex(vaultRoot, token);
-      if (lostTo !== null) {
-        stopHeartbeat(vaultRoot);
+      writeHeartbeat(vaultRoot, nonce);
+      warned = false;
+    } catch (e) {
+      if (!warned) {
+        warned = true;
         process.stderr.write(
-          `daftari: lost the vault lock for ${vaultRoot} — another process took it over ` +
-            `(holder now: pid=${lostTo}); stopping so two processes never write one vault\n`,
+          `daftari: warning: could not renew the vault lease: ${(e as Error).message}\n`,
         );
-        onLeaseLost?.();
       }
     }
   };
   const timer = setInterval(beat, data.heartbeatMs);
   timer.unref();
-  held.set(vaultRoot, { nonce, timer });
+  held.set(vaultRoot, { nonce, timer, data });
 }
 
 // ---- acquire ---------------------------------------------------------------
@@ -492,12 +549,14 @@ async function watchLease(
   sameHost: boolean,
 ): Promise<Watch> {
   const pollMs = Math.max(10, Math.min(100, clampHeartbeat(prior.heartbeatMs) / 4));
+  const priorBeat = lastHeartbeat(vaultRoot, prior);
   for (;;) {
     const cur = readLockfile(vaultRoot);
     if (cur.ok) {
       if (cur.value === null || cur.value.nonce !== prior.nonce) return { kind: "changed" };
-      if (cur.value.heartbeatAt !== prior.heartbeatAt)
+      if (lastHeartbeat(vaultRoot, cur.value) !== priorBeat) {
         return { kind: "advanced", latest: cur.value };
+      }
     }
     if (sameHost && !isProcessAlive(prior.pid)) return { kind: "dead" };
     if (Date.now() >= deadline) return { kind: "timeout" };
@@ -598,7 +657,7 @@ async function judge(
 
   const heartbeatMs = clampHeartbeat(prior.heartbeatMs);
   const leaseMs = clampLease(prior.leaseMs, heartbeatMs);
-  const lastBeat = Date.parse(prior.heartbeatAt);
+  const lastBeat = Date.parse(lastHeartbeat(vaultRoot, prior) ?? "");
   let latest = prior;
   let proven = false;
 
@@ -649,7 +708,12 @@ async function judge(
   if (!proven) {
     // Signal only a holder whose heartbeat we SEE advance; a live pid alone
     // may be recycled. Bounded by the lease: if it never renews, it is stale.
-    const w = await watchLease(vaultRoot, latest, lastBeat + leaseMs, true);
+    const w = await watchLease(
+      vaultRoot,
+      latest,
+      Date.parse(lastHeartbeat(vaultRoot, latest) ?? "") + leaseMs,
+      true,
+    );
     if (w.kind === "changed") return { kind: "changed" };
     if (w.kind === "dead") {
       return { kind: "stale", why: `pid=${prior.pid} not a live daftari instance` };
@@ -723,6 +787,7 @@ export async function acquireLock(
     if (!created.ok) return created;
     if (created.value) {
       startHeartbeat(vaultRoot, mine, options.onLeaseLost);
+      clearClaims(vaultRoot);
       return ok(undefined);
     }
 
@@ -741,7 +806,7 @@ export async function acquireLock(
       if (!again.ok) return again;
       if (again.value !== raw.value) continue;
       process.stderr.write("daftari: removing unreadable lockfile\n");
-      if (!breakLock(vaultRoot, raw.value)) await sleep(50);
+      if (!breakStale(vaultRoot, raw.value)) await sleep(50);
       continue;
     }
 
@@ -750,7 +815,9 @@ export async function acquireLock(
     if (verdict.kind === "changed") continue;
     if (verdict.kind === "stale") {
       process.stderr.write(`daftari: removing stale lockfile (${verdict.why})\n`);
-      if (!breakLock(vaultRoot, prior)) await sleep(50);
+      // Only if it is still byte-for-byte the lock we judged (a live holder
+      // never rewrites process.lock, so any change means a new claimant).
+      if (!breakStale(vaultRoot, raw.value)) await sleep(50);
       continue;
     }
 
@@ -793,20 +860,8 @@ export function releaseLock(vaultRoot: string): void {
   const mine = held.get(vaultRoot);
   stopHeartbeat(vaultRoot);
   if (mine === undefined) return;
-  // Under the break mutex, so the check-then-unlink cannot remove a lock a
-  // breaker installed in between. If a breaker holds the mutex we leave the
-  // lock: it is stale the moment this process exits (dead same-host pid, or a
-  // lapsing lease elsewhere).
-  const token = takeBreakMutex(vaultRoot);
-  if (token === null) return;
-  try {
-    const existing = readLockfile(vaultRoot);
-    if (!existing.ok || existing.value === null) return;
-    if (existing.value.nonce !== mine.nonce) return;
-    unlinkSync(lockPath(vaultRoot));
-  } catch {
-    // Best-effort. If the file is already gone, fine.
-  } finally {
-    releaseBreakMutex(vaultRoot, token);
-  }
+  // Atomic check-and-remove (see removeLockIfUnchanged): never deletes a lock
+  // a successor installed during our shutdown.
+  removeLockIfUnchanged(vaultRoot, mine.data);
+  removeHeartbeat(vaultRoot, mine.nonce);
 }
