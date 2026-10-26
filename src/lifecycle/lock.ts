@@ -356,24 +356,43 @@ const CLAIM_STALE_MS = 10_000;
 // out a claim happens here, not in the acquire retry budget, so a fresh
 // process can always recover a claim abandoned by a crash. Returns true if
 // this call removed the lock.
-async function breakStale(vaultRoot: string, raw: string): Promise<boolean> {
+function claimPath(vaultRoot: string, raw: string, level: number): string {
   const key = createHash("sha256").update(raw.trim()).digest("hex").slice(0, 24);
-  const body = JSON.stringify({ host: hostId(), pid: process.pid, at: new Date().toISOString() });
+  return `${lockPath(vaultRoot)}.succ-${key}-${level}`;
+}
+
+function claimBody(): string {
+  return JSON.stringify({ host: hostId(), pid: process.pid, at: new Date().toISOString() });
+}
+
+async function breakStale(vaultRoot: string, raw: string): Promise<boolean> {
+  // The holder's renewal as of our judgment. Its process.lock bytes never
+  // change, so a renewal shows only in its heartbeat file: if that moves
+  // before we remove the lock, the holder is alive and we must not.
+  const judged = parseLock(raw);
+  const beatAtJudgment = judged === null ? undefined : lastHeartbeat(vaultRoot, judged);
+  const renewed = (): boolean =>
+    judged !== null && lastHeartbeat(vaultRoot, judged) !== beatAtJudgment;
   for (let level = 0; level < 8; level++) {
-    const claim = `${lockPath(vaultRoot)}.succ-${key}-${level}`;
-    const created = tryCreateExclusive(claim, body);
+    const claim = claimPath(vaultRoot, raw, level);
+    const created = tryCreateExclusive(claim, claimBody());
     if (!created.ok) return false;
-    if (created.value) return removeLockIfUnchanged(vaultRoot, raw);
+    if (created.value) {
+      if (renewed()) return false; // live after all: re-evaluate
+      return removeLockIfUnchanged(vaultRoot, raw);
+    }
     const claimant = readOptional(claim);
     if (claimant === null) return false; // finished just now: re-evaluate
     if (!claimantIsDead(claimant)) {
-      // A breaker is (or was) at work. Watch until it finishes — the lock
-      // changes or the claim goes — or its claim proves abandoned.
+      // A breaker (or the releasing holder) is at work. Watch until it
+      // finishes — the lock changes or the claim goes — the holder renews, or
+      // the claim proves abandoned.
       const since = performance.now();
       for (;;) {
         await sleep(50);
         if ((readOptional(lockPath(vaultRoot)) ?? "") !== raw.trim()) return false;
         if (readOptional(claim) !== claimant) return false;
+        if (renewed()) return false;
         if (performance.now() - since > CLAIM_STALE_MS) break;
       }
     }
@@ -854,8 +873,14 @@ export function releaseLock(vaultRoot: string): void {
   const mine = held.get(vaultRoot);
   stopHeartbeat(vaultRoot);
   if (mine === undefined) return;
-  // Atomic check-and-remove (see removeLockIfUnchanged): never deletes a lock
-  // a successor installed during our shutdown.
-  removeLockIfUnchanged(vaultRoot, mine.data);
+  // Release is a lock transition like any other, so it takes the same
+  // level-0 succession claim a breaker of our lock would. Only the claim
+  // holder may remove a given lock, so no breaker can sit between its check
+  // and its move while we release (and vice versa). If a breaker already
+  // holds the claim, it owns the removal: we leave the lock, which is stale
+  // the moment we exit.
+  const ourRaw = JSON.stringify(mine.data, null, 2);
+  const claimed = tryCreateExclusive(claimPath(vaultRoot, ourRaw, 0), claimBody());
+  if (claimed.ok && claimed.value) removeLockIfUnchanged(vaultRoot, mine.data);
   removeHeartbeat(vaultRoot, mine.nonce);
 }

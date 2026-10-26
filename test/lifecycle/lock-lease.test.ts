@@ -390,6 +390,58 @@ describe("lease lock", () => {
     expect(rawLock(vault)?.nonce).toBe("n-winner");
   });
 
+  it("a holder that renews while we wait out a claim is NOT broken", async () => {
+    writeLease(vault, {
+      pid: 2 ** 30,
+      nonce: "n-sleeper",
+      heartbeatAt: new Date(Date.now() - 10_000).toISOString(),
+    });
+    const raw = readFileSync(lockFile(vault), "utf-8");
+    // A breaker crashed holding the claim (never finishes), so we would
+    // escalate after the wait — but meanwhile the holder wakes and renews.
+    writeFileSync(
+      join(vault, ".daftari", `process.lock.succ-${claimKey(raw)}-0`),
+      JSON.stringify({ host: FOREIGN_HOST, pid: 1, at: "x" }),
+    );
+    const hb = join(vault, ".daftari", "process.lock.hb-n-sleeper");
+    let renewing = false;
+    // Renew only once the acquirer is waiting on the claim (after its ~350ms
+    // lapse-watch), so the renewal lands DURING the claim wait.
+    const t1 = setTimeout(() => {
+      renewing = true;
+    }, 1_000);
+    const t2 = setInterval(() => {
+      if (renewing) {
+        writeFileSync(
+          hb,
+          JSON.stringify({ nonce: "n-sleeper", heartbeatAt: new Date().toISOString() }),
+        );
+      }
+    }, 25);
+    try {
+      const r = await acquireLock(vault, "1.0.0");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.message).toContain("another machine");
+      expect(rawLock(vault)?.nonce).toBe("n-sleeper");
+    } finally {
+      clearTimeout(t1);
+      clearInterval(t2);
+    }
+  }, 30_000);
+
+  it("release takes the succession claim: it leaves the lock to a breaker already at work", async () => {
+    const r = await acquireLock(vault, "1.0.0", { heartbeatMs: 1_000, leaseMs: 10_000 });
+    expect(r.ok).toBe(true);
+    const raw = readFileSync(lockFile(vault), "utf-8");
+    writeFileSync(
+      join(vault, ".daftari", `process.lock.succ-${claimKey(raw)}-0`),
+      JSON.stringify({ host: FOREIGN_HOST, pid: 1, at: "x" }),
+    );
+    releaseLock(vault);
+    // The breaker owns this removal; release must not race it.
+    expect(readFileSync(lockFile(vault), "utf-8")).toBe(raw);
+  });
+
   it("a crashed breaker's claim (dead pid on this host) is escalated at once", async () => {
     writeLease(vault, { pid: 2 ** 30, heartbeatAt: new Date(Date.now() - 10_000).toISOString() });
     const raw = readFileSync(lockFile(vault), "utf-8");
