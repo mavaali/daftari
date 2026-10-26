@@ -85,7 +85,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // stdio daftari is holding this vault, SIGTERM it and wait briefly for it
   // to exit; a live `daftari serve` holder REFUSES the takeover (#5 spec
   // Decision 4). See docs/superpowers/plans/2026-05-20-process-lockfile.md.
-  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION, { mode: "stdio" });
+  // A lost lease (another process took the vault over while this one was
+  // stalled) shuts down rather than leave two writers on one index.db.
+  let shutdown: (() => void) | undefined;
+  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION, {
+    mode: "stdio",
+    onLeaseLost: () => shutdown?.(),
+  });
   if (!lockResult.ok) {
     process.stderr.write(`daftari: failed to acquire vault lock: ${lockResult.error.message}\n`);
     process.exitCode = 1;
@@ -93,7 +99,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   // Install shutdown handlers immediately so the lock is released even if
   // startup fails between here and the transport opening.
-  installShutdownHandlers(vaultRoot);
+  shutdown = installShutdownHandlers(vaultRoot);
 
   // Load the RBAC config. A malformed config fails loud: the server must not
   // start serving content under a policy it could not parse.
@@ -321,10 +327,11 @@ let shuttingDown = false;
 // not begin writing while the old server is still draining.
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 
+// Returns the shutdown routine so a lost vault lease can trigger it too.
 export function installShutdownHandlers(
   vaultRoot: string,
   extra?: () => void | Promise<void>,
-): void {
+): () => void {
   let shutdownStarted = false;
   const onShutdown = () => {
     if (shutdownStarted) return;
@@ -376,6 +383,7 @@ export function installShutdownHandlers(
   process.once("SIGTERM", onShutdown);
   process.once("SIGINT", onShutdown);
   process.once("exit", () => releaseLock(vaultRoot));
+  return onShutdown;
 }
 
 // Spawns the chokidar watcher when config.watch !== false. Wired here, not
