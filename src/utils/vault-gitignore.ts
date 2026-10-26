@@ -18,6 +18,10 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/locks.db-journal
 .daftari/locks.db-wal
 .daftari/locks.db-shm
+# The per-vault process lock and its heartbeat temp / takeover-mutex side
+# files — machine-local liveness state.
+.daftari/process.lock
+.daftari/process.lock.*
 # Local audit state — advisory, not vault content. Matters most when a vault
 # runs with auto_commit: false inside a larger repo: keeps the host repo's
 # git status clean of Daftari's per-write log churn.
@@ -54,7 +58,11 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 // A stable line guaranteed to appear in VAULT_GITIGNORE; used as the marker to
 // detect whether an existing .gitignore already carries the Daftari block.
 const MARKER = ".daftari/index.db";
-const REQUIRED_INTEGRATION_RULES = [
+// Rules added after the first Daftari block shipped; an older block gets the
+// missing ones appended.
+const REQUIRED_RULES = [
+  ".daftari/process.lock",
+  ".daftari/process.lock.*",
   ".daftari/integrations.state.enc",
   ".daftari/integrations.state.enc.*.tmp",
   ".daftari/integration-queue.json",
@@ -84,11 +92,12 @@ export async function ensureVaultGitignore(
   }
 
   if (existing.includes(MARKER)) {
-    const missingRules = REQUIRED_INTEGRATION_RULES.filter((rule) => !existing.includes(rule));
+    const lines = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+    const missingRules = REQUIRED_RULES.filter((rule) => !lines.has(rule));
     if (missingRules.length === 0) return "present";
     await appendFile(
       path,
-      `\n# Daftari local integration state — never commit it.\n${missingRules.join("\n")}\n`,
+      `\n# Daftari machine-local state — never commit it.\n${missingRules.join("\n")}\n`,
     );
     return "appended";
   }
