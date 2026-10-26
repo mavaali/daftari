@@ -136,6 +136,40 @@ describe("distillUpsert (U5 idempotency)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Scenario 1a (bead b4m3): a failed extraction must not poison the state
+  // -------------------------------------------------------------------------
+
+  it("does not record the source when extraction errored and produced no claims", async () => {
+    const failed = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [],
+      runId: "run-failed",
+      extractionErrors: 3,
+    });
+    expect(failed.ok).toBe(true);
+    if (!failed.ok) return;
+    expect(failed.value.noop).toBe(false);
+    expect(failed.value.stateWritten).toBe(false);
+    expect(failed.value.stateError).toMatch(/extraction failed/);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toBeUndefined();
+
+    // The next run over the same content with a working model stages its claims.
+    const retry = await run(vault, CONTENT_V1, [CLAIM_A, CLAIM_B], "run-retry");
+    expect(retry.noop).toBe(false);
+    expect(retry.created).toHaveLength(2);
+    expect(await pendingActions(vault)).toHaveLength(2);
+  });
+
+  it("still records a clean zero-claim run (no extraction errors) as distilled", async () => {
+    const empty = await run(vault, CONTENT_V1, [], "run-empty");
+    expect(empty.stateWritten).toBe(true);
+    expect(readDistillState(vault).sources[SOURCE_ID]?.content_hash).toBe(
+      sourceContentHash(CONTENT_V1),
+    );
+  });
+
+  // -------------------------------------------------------------------------
   // Scenario 1b (83b1): per-sender passes over the SAME file are independent
   // -------------------------------------------------------------------------
 

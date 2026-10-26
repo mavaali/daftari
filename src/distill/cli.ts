@@ -613,6 +613,7 @@ export async function runDistill(argv: string[]): Promise<number> {
     claims: outcome.claims,
     runId,
     overlapSearch: hinter,
+    extractionErrors: outcome.chunkErrors.length,
     ...(senderFlag !== undefined ? { scope: `sender:${senderFlag}` } : {}),
   });
 
@@ -659,11 +660,24 @@ export async function runDistill(argv: string[]): Promise<number> {
     ].join("\n"),
   );
 
-  // I4: warn on stateWritten:false — proposals staged, but next run will
-  // re-distill because the content-hash was not persisted.
+  // I4: warn on stateWritten:false — the content-hash was not persisted, so the
+  // next run re-distills this source (a failed write, or a run whose extraction
+  // errored without producing claims).
   if (!upsert.stateWritten) {
     process.stderr.write(
-      `daftari distill: warning: state write failed — next run will re-distill this source\n`,
+      `daftari distill: warning: source state not recorded` +
+        `${upsert.stateError ? ` (${upsert.stateError})` : ""} — next run will re-distill this source\n`,
+    );
+  }
+
+  // A no-op after a non-empty extraction discards those claims. Never silent:
+  // name the cause and the way out (e.g. a hash recorded by an older build's
+  // failed run, which this build no longer writes).
+  if (upsert.noop && outcome.claims.length > 0) {
+    process.stderr.write(
+      `daftari distill: source ${sourceId} is unchanged since its last recorded distill — ` +
+        `${outcome.claims.length} extracted claim(s) were not staged. To re-stage, remove ` +
+        `sources["${sourceId}"] from .daftari/distill-state.json and re-run.\n`,
     );
   }
 

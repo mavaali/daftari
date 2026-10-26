@@ -5,7 +5,7 @@
 // findings: an all-chunks-failed run must exit non-zero and must not poison
 // the source's distill state for the next run (beads 4v1q, b4m3).
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -74,6 +74,26 @@ function failingClient(): void {
   fake.completeJson = async () => err({ kind: "llm", message: HTTP_400, retryable: false });
 }
 
+function workingClient(statements: string[]): void {
+  fake.completeJson = async () =>
+    ok({
+      text: "{}",
+      parsed: { claims: statements.map((statement) => ({ statement })) },
+      input_tokens: 1,
+      output_tokens: 1,
+      stop_reason: "end_turn",
+    });
+}
+
+function stagedCount(): number {
+  try {
+    const raw = readFileSync(join(vault, ".daftari", "staged-actions.jsonl"), "utf-8");
+    return raw.split("\n").filter((l) => l.trim().length > 0).length;
+  } catch {
+    return 0;
+  }
+}
+
 describe("distill --propose — every chunk errors (bead 4v1q)", () => {
   it("exits 5 and says all chunks failed instead of reporting completion", async () => {
     failingClient();
@@ -86,5 +106,62 @@ describe("distill --propose — every chunk errors (bead 4v1q)", () => {
   it("documents exit code 5 in --help", async () => {
     await runDistill(["--help"]);
     expect(out.join("")).toMatch(/^\s+5\s+.*chunk/m);
+  });
+});
+
+// 31 messages ⇒ two 30-message chunks.
+const TWO_CHUNK_TRANSCRIPT = Array.from(
+  { length: 31 },
+  (_, i) => `[1/2/26, 9:${String(i).padStart(2, "0")}:00 AM] Alice: Point number ${i}.`,
+).join("\n");
+
+describe("distill --propose — a failed run does not poison the next (bead b4m3)", () => {
+  it("run 2 with a working model stages its claims after run 1 failed every chunk", async () => {
+    failingClient();
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(5);
+
+    workingClient(["The project deadline is end of Q2."]);
+    out = [];
+    const code = await runDistill(["--vault", vault, "--propose", source]);
+    expect(code).toBe(0);
+    const summary = out.join("");
+    expect(summary).toMatch(/noop:\s+false/);
+    expect(summary).toMatch(/created:\s+1/);
+    expect(stagedCount()).toBe(1);
+  });
+
+  it("errors on some chunks plus zero claims elsewhere leaves the source unrecorded", async () => {
+    writeFileSync(source, TWO_CHUNK_TRANSCRIPT);
+    let call = 0;
+    fake.completeJson = async () =>
+      call++ === 0
+        ? err({ kind: "llm", message: HTTP_400, retryable: false })
+        : ok({
+            text: "{}",
+            parsed: { claims: [] },
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          });
+    await runDistill(["--vault", vault, "--propose", source]);
+    expect(out.join("")).toMatch(/state written: false/);
+
+    workingClient(["Alice listed thirty-one points."]);
+    out = [];
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    expect(out.join("")).toMatch(/noop:\s+false/);
+    expect(stagedCount()).toBeGreaterThan(0);
+  });
+
+  it("says so on stderr when an unchanged source discards a non-empty extraction", async () => {
+    workingClient(["The project deadline is end of Q2."]);
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    errOut = [];
+    out = [];
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    expect(out.join("")).toMatch(/noop:\s+true/);
+    expect(errOut.join("")).toMatch(
+      /unchanged since its last recorded distill.*1 extracted claim/s,
+    );
   });
 });
