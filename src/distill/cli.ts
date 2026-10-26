@@ -83,6 +83,8 @@ Exit codes:
   2   Usage error (no source, stdin without --source-id, unknown flag).
   3   Config/key refuse (missing distill: block, missing API key on --propose).
   4   Partial failure (some claims failed to stage, or some proposals failed to ratify).
+  5   Extraction failed: every chunk errored, so nothing was staged and the
+      source's distill state was left unchanged (re-run once the cause is fixed).
 `;
 
 /**
@@ -199,7 +201,7 @@ function resolveDistillConfig(vaultRoot: string): Result<DistillConfig, Error> {
  *   --propose:        full LLM-driven extraction + staged proposals.
  *   --review:         batch-ratify a prior run's staged proposals.
  *
- * Returns an exit code (0/2/3/4); the caller sets process.exitCode.
+ * Returns an exit code (0/2/3/4/5); the caller sets process.exitCode.
  * Diagnostics go to stderr; clean output goes to stdout.
  */
 export async function runDistill(argv: string[]): Promise<number> {
@@ -569,6 +571,33 @@ export async function runDistill(argv: string[]): Promise<number> {
     for (const ce of outcome.chunkErrors) {
       process.stderr.write(`  [${ce.anchor}] ${ce.error}\n`);
     }
+  }
+
+  // Every attempted chunk errored (e.g. the model rejects a request parameter):
+  // there is nothing to stage, and calling distillUpsert would record this
+  // source as distilled. Persist the receipt (the calls were still spent) and
+  // fail loudly instead of printing a "complete" summary with claims: 0.
+  const attemptedChunks = outcome.llmCalls - (outcome.budget_exhausted ? 1 : 0);
+  if (attemptedChunks > 0 && outcome.chunkErrors.length === attemptedChunks) {
+    const failedReceipt = buildReceipt({
+      outcome,
+      config,
+      provider: transport,
+      zdr,
+      sourceId,
+      runId,
+    });
+    const persistedFailed = await appendDistillReceipt(vaultRoot, failedReceipt);
+    if (!persistedFailed.ok) {
+      process.stderr.write(
+        `warning: could not persist distill receipt: ${persistedFailed.error.message}\n`,
+      );
+    }
+    process.stderr.write(
+      `daftari distill: extraction failed — all ${attemptedChunks} chunk(s) failed; ` +
+        `nothing staged, source state unchanged (run-id ${runId})\n`,
+    );
+    return 5;
   }
 
   // U8: build the overlap-hinter from the vault's local search index.
