@@ -285,6 +285,59 @@ describe("lease lock", () => {
     }
   });
 
+  it("clock skew: a crashed holder whose clock runs AHEAD frees the vault within one lease", async () => {
+    writeLease(vault, {
+      pid: 2 ** 30,
+      heartbeatAt: new Date(Date.now() + 3_600_000).toISOString(),
+      heartbeatMs: 50,
+      leaseMs: 500,
+    });
+    const started = Date.now();
+    const r = await acquireLock(vault, "1.0.0");
+    expect(r.ok).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("clock skew: a renewing holder whose clock runs AHEAD stays live", async () => {
+    let n = 0;
+    const renew = () =>
+      writeLease(vault, {
+        pid: 2 ** 30,
+        heartbeatAt: new Date(Date.now() + 3_600_000 + n++).toISOString(),
+        heartbeatMs: 50,
+        leaseMs: 500,
+      });
+    renew();
+    const timer = setInterval(renew, 25);
+    try {
+      const r = await acquireLock(vault, "1.0.0");
+      expect(r.ok).toBe(false);
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it("renewal takes the break mutex: a holder never renews while a breaker is mid-break", async () => {
+    const r = await acquireLock(vault, "1.0.0", { heartbeatMs: 30, leaseMs: 300 });
+    expect(r.ok).toBe(true);
+    const mutex = join(vault, ".daftari", "process.lock.break");
+    writeFileSync(
+      mutex,
+      JSON.stringify({
+        nonce: "n-breaker",
+        host: FOREIGN_HOST,
+        pid: 1,
+        at: new Date().toISOString(),
+      }),
+    );
+    await sleep(60);
+    const frozen = rawLock(vault)?.heartbeatAt;
+    await sleep(200);
+    expect(rawLock(vault)?.heartbeatAt).toBe(frozen);
+    rmSync(mutex);
+    expect(await waitUntil(() => rawLock(vault)?.heartbeatAt !== frozen, 2_000)).toBe(true);
+  });
+
   it("a pre-lease lockfile with a live pid is refused, never signalled", async () => {
     const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
