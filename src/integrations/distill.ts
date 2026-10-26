@@ -167,7 +167,9 @@ function preparedIntegrationDistill(
     const upserted = await deps.upsert(vaultRoot, {
       sourceId: input.providerSourceId,
       sourceContent: input.text,
-      claims: extracted.claims,
+      // The chunk timestamps here are the ingestion time (deps.now()), not when
+      // anything was said — drop said_at rather than stamp a false source time.
+      claims: extracted.claims.map(({ said_at: _syntheticTime, ...claim }) => claim),
       runId: id,
       overlapSearch: makeOverlapHinter(vaultRoot),
       collection: input.targetCollection,

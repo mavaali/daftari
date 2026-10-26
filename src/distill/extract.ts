@@ -57,6 +57,14 @@ export interface ExtractedClaim {
    */
   proposed_frontmatter: { title: string };
   /**
+   * When the source message this claim came from was said — the message's
+   * NormalizedMessage.ts, the earliest when the model cites several. Only a
+   * timestamp that matches a message in the producing chunk is accepted; absent
+   * when the model cited none that match. A fact about the source, never
+   * world-validity (it does not set valid_from).
+   */
+  said_at?: string;
+  /**
    * Optional per-claim LLM extraction run metadata (6mf.6). Populated by
    * extractClaims from the producing chunk's call; flows unchanged through the
    * upsert join into proposeAllClaims' inputs so a later bead can stamp it.
@@ -125,7 +133,10 @@ worth keeping (greetings, logistics chatter, media placeholders).
 Paraphrase in your own words by default: a claim is a compiled belief, not a
 transcript excerpt. Do not copy long verbatim spans from the window. If a short
 exact quote is genuinely necessary, keep it brief and enclose only the quoted
-words in double quotes.`;
+words in double quotes.
+
+For each claim, list in source_ts the bracketed timestamp of every message it
+is drawn from, copied exactly as it appears in the window (without brackets).`;
 
 // Exported alongside EXTRACT_SYSTEM: this schema object is what llm.ts's
 // completeJsonWithRetry injects verbatim into the system prompt
@@ -141,6 +152,11 @@ export const EXTRACT_SCHEMA = {
         type: "object",
         properties: {
           statement: { type: "string", description: "One self-contained claim sentence." },
+          source_ts: {
+            type: "array",
+            items: { type: "string" },
+            description: "Timestamps of the message(s) the claim is drawn from, copied exactly.",
+          },
         },
         required: ["statement"],
       },
@@ -178,19 +194,32 @@ function claimKey(anchor: string, statement: string): string {
 // Pull usable statements out of the parsed LLM response. Malformed entries
 // (non-object, missing/empty statement) are skipped, mirroring the adapter
 // posture: never throw on bad model output. A response whose top-level shape
-// is unusable returns err so the chunk is recorded as failed.
-function parseStatements(parsed: unknown): string[] | null {
+// is unusable returns err so the chunk is recorded as failed. Each statement's
+// said_at is the earliest cited source_ts that names a real message in the
+// chunk (`chunkTs`); hallucinated or malformed citations are dropped.
+function parseStatements(
+  parsed: unknown,
+  chunkTs: ReadonlySet<string>,
+): Array<{ statement: string; said_at?: string }> | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const claims = (parsed as { claims?: unknown }).claims;
   if (!Array.isArray(claims)) return null;
-  const out: string[] = [];
+  const out: Array<{ statement: string; said_at?: string }> = [];
   for (const entry of claims) {
     if (typeof entry !== "object" || entry === null) continue;
     const statement = (entry as { statement?: unknown }).statement;
     if (typeof statement !== "string") continue;
     const trimmed = statement.trim();
     if (trimmed.length === 0) continue;
-    out.push(trimmed);
+    const cited = (entry as { source_ts?: unknown }).source_ts;
+    const saidAt = (Array.isArray(cited) ? cited : [])
+      .filter((t): t is string => typeof t === "string")
+      .map((t) => t.trim().replace(/^\[|\]$/g, ""))
+      .filter((t) => chunkTs.has(t))
+      .sort()[0];
+    out.push(
+      saidAt === undefined ? { statement: trimmed } : { statement: trimmed, said_at: saidAt },
+    );
   }
   return out;
 }
@@ -247,7 +276,7 @@ export async function extractClaims(
       continue;
     }
 
-    const statements = parseStatements(res.value.parsed);
+    const statements = parseStatements(res.value.parsed, new Set(chunk.messages.map((m) => m.ts)));
     if (statements === null) {
       chunkErrors.push({
         anchor: chunk.anchor,
@@ -270,7 +299,7 @@ export async function extractClaims(
       inputCap: opts.inCallInputCap,
     };
 
-    for (const statement of statements) {
+    for (const { statement, said_at } of statements) {
       if (claims.length >= opts.maxClaims) break;
       const key = claimKey(chunk.anchor, statement);
       if (seenKeys.has(key)) continue; // same statement twice in one run
@@ -279,6 +308,7 @@ export async function extractClaims(
         claim_key: key,
         statement,
         proposed_frontmatter: { title: titleOf(statement) },
+        ...(said_at !== undefined ? { said_at } : {}),
         run_meta: runMeta,
       });
     }

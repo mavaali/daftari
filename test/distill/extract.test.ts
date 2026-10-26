@@ -421,3 +421,51 @@ describe("resolveMaxClaims", () => {
     expect(resolveMaxClaims(1000, 7)).toBe(1000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// said_at — the source message time a claim was extracted from
+// ---------------------------------------------------------------------------
+
+describe("extractClaims — said_at", () => {
+  // TRANSCRIPT ts: 10:00, 10:01, 10:02, 10:03 on 2026-05-01.
+  const T0 = "2026-05-01T10:00:00";
+  const T2 = "2026-05-01T10:02:00";
+  const T3 = "2026-05-01T10:03:00";
+
+  it("stamps the cited message timestamp, the earliest when several are cited", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4);
+    const llm = mockLlm([
+      {
+        claims: [
+          { statement: "Launch moves to June 3rd", source_ts: [T3, T2] },
+          { statement: "Use postgres", source_ts: [`[${T0}]`] },
+        ],
+      },
+    ]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims.map((c) => c.said_at)).toEqual([T2, T0]);
+  });
+
+  it("ignores timestamps that are not in the chunk and omits said_at when none are", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4);
+    const llm = mockLlm([
+      {
+        claims: [
+          { statement: "Hallucinated time only", source_ts: ["2031-01-01T00:00:00"] },
+          { statement: "One real one fake", source_ts: ["2031-01-01T00:00:00", T3] },
+          { statement: "No citation" },
+          { statement: "Wrong type", source_ts: "not-an-array" },
+        ],
+      },
+    ]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims.map((c) => c.said_at)).toEqual([undefined, T3, undefined, undefined]);
+    expect("said_at" in out.claims[0]).toBe(false);
+  });
+
+  it("asks the model for source timestamps in the extraction schema", async () => {
+    const { EXTRACT_SCHEMA } = await import("../../src/distill/extract.js");
+    expect(EXTRACT_SCHEMA.properties.claims.items.properties).toHaveProperty("source_ts");
+    expect(EXTRACT_SCHEMA.properties.claims.items.required).toEqual(["statement"]);
+  });
+});
